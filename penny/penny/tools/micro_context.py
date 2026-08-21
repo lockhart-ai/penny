@@ -60,7 +60,12 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import PennyConstants
-from penny.text_validity import has_leaked_harmony_envelope, is_degenerate_run
+from penny.llm.refusal import is_refusal
+from penny.text_validity import (
+    half_formed_send_reason,
+    has_leaked_harmony_envelope,
+    is_degenerate_run,
+)
 from penny.tools.micro_context_shape import (
     FieldShape,
     FieldSpec,
@@ -96,6 +101,7 @@ class DrawField(StrEnum):
     CURRENT = "current"
     SEMANTIC = "semantic"
     SKILL = "skill"
+    MESSAGE = "message"
 
 
 # The two output tags — the enumerated contract, present on BOTH sides of the
@@ -579,6 +585,79 @@ BIND_SKILL_SYSTEM_PROMPT = (
     "no explanation, no restating the ask."
 )
 
+# ── Sixth customer: telling the user about a cycle — the notifier (#1911) ──────
+# The five customers above all run around a CHAT turn.  This one closes a COLLECTOR
+# cycle: once the program's calls are covered and the collection says notify, the
+# framework assembles what the cycle did, what it wrote, and the past messages nearest
+# to it — all in Python — and this draw turns that into the one message the user gets.
+#
+# It exists because the same job used to be four numbered steps APPENDED to the
+# collector's own program, carried out by the same loop, on the same context: two
+# ``read_similar`` calls, "compose one short friendly message", and a ``send_message``.
+# Measured, that tail was where the cycles died — 42 of 49 reroll-exhaustion deaths in
+# one instrumented run landed in it, immediately after a ``read_similar``, because by
+# then the context had grown long and chat-flavoured and the model's tool-call envelope
+# decayed.  The tail was 86% of the deaths and almost none of the value.
+#
+# So the two reads move to Python (a store query needs no model), the compose stays a
+# model job (it is prose about a particular find), and the send moves to Python (the
+# queue was always deterministic).  What is left for the model is the ONE thing only a
+# model can do, on a FRESH short context with NO tool channel at all — which is why a
+# decayed tool-call envelope cannot end this cycle: there is no call to decay into.
+MESSAGE_TAG = "MESSAGE:"
+
+# One line spanning the REMAINDER — the ``EXTRACTED:`` shape (#1682), since a message
+# is prose that may run to several lines.  The tag carries its own colon so it is
+# self-delimiting, like the extraction contract's.
+#
+# It is anchored ANYWHERE rather than at the head of the draw, which is the one place
+# this differs from extraction, and deliberately: the tag's whole job here is to say
+# where the message the user receives BEGINS, so a chatty draw's "Sure, here you go."
+# is something to leave behind rather than something to fail the cycle's notification
+# over.  Anything before the tag is dropped; everything after it is the message.
+_MESSAGE_LINE = LineSpec(
+    tag=MESSAGE_TAG,
+    span=PayloadSpan.REMAINDER,
+    fields=(
+        FieldSpec(
+            name=DrawField.MESSAGE,
+            placeholder="<the message — it may begin on this same line>",
+        ),
+    ),
+)
+NOTIFY_SHAPE = MicroContextShape(lines=(_MESSAGE_LINE,))
+
+# WORDING FOR CODE-OWNER REVIEW (#1911).  A minimal distillation of the retired
+# ``Prompt.COLLECTOR_NOTIFY_STEPS`` into a single-purpose framing: the same message
+# shape it asked for (a quick greeting · what was found in plain words · the source url
+# when there is one · a callback ONLY when a past message is genuinely related), with
+# the two ``read_similar`` steps gone because their results are handed in already, and
+# the ``send_message`` step gone because the framework sends.  Nothing about tools, and
+# nothing about deciding WHETHER to write — both were settled before this draw.
+NOTIFY_SYSTEM_PROMPT = (
+    "You are writing one message to the user. A routine of theirs just ran on its own "
+    "and found something, and you are given everything about that run: what it did, "
+    "what it wrote down, and the closest things the two of you have said before.\n"
+    "\n"
+    "Write the message they will actually receive:\n"
+    "1. Open with a quick greeting.\n"
+    "2. Say what the run found, in plain words — the detail that matters, not a "
+    "description of the routine.\n"
+    "3. Include the source link when the run has one.\n"
+    "4. Add one line calling back to an earlier message ONLY when one of them is "
+    "genuinely about this. When none of them is, say nothing about them — that is the "
+    "ordinary case and it is fine.\n"
+    "\n"
+    "Keep it short and friendly, the way a person messages a friend. Write only what "
+    "the run actually found: never a detail that is not in front of you, and never a "
+    "claim about what happens next.\n"
+    "\n"
+    "Respond with this line and nothing else:\n"
+    f"{render_line(_MESSAGE_LINE)}\n"
+    f"Everything after {MESSAGE_TAG} is the message itself, so write no preamble, no "
+    "explanation, and no restating of these instructions."
+)
+
 # A user turn that is the rendered document ALONE — no ``Instruction:``/``Content:``
 # wrapper.  That frame is the extraction customer's (natural for "here's a page, pull X
 # out"); a customer whose ask lives entirely in its system prompt would only repeat the
@@ -928,6 +1007,40 @@ class MicroContext:
         if isinstance(drawn, DrawFailure):
             return None
         return _skill_binding(drawn, declared)
+
+    async def compose_notification(
+        self, content: str, *, run_target: str | None = None
+    ) -> str | None:
+        """Write the one message a finished collector cycle sends the user (#1911) — the
+        SIXTH customer of this machinery, and the first that closes a background cycle
+        rather than a chat turn.
+
+        ``content`` is the framework-assembled document (``penny.notification``): what
+        the cycle did, what it wrote, and the past messages Python already looked up.
+        Rides the SAME ``_valid_draw`` step as the other five against its own declared
+        shape (:data:`NOTIFY_SHAPE`) and the bare-content user turn (the assembled
+        document IS the whole ask), plus the runtime constraint a static shape cannot
+        carry: the drawn text must be a message worth delivering
+        (:func:`_is_sendable`).
+
+        ``None`` when no usable draw came back — the honest escape every run-end
+        customer keeps.  The caller records that on the run and sends nothing, which is
+        the whole degradation: a cycle that found something and could not phrase it
+        still leaves its find written down and its run record saying so."""
+        drawn = await self._valid_draw(
+            content,
+            "",
+            run_target,
+            shape=NOTIFY_SHAPE,
+            accepts=_is_sendable,
+            system_prompt=NOTIFY_SYSTEM_PROMPT,
+            agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
+            prompt_type=PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE,
+            user_template=_BARE_CONTENT_TEMPLATE,
+        )
+        if isinstance(drawn, DrawFailure):
+            return None
+        return drawn.field(MESSAGE_TAG, DrawField.MESSAGE)
 
     async def classify_state(
         self,
@@ -1325,6 +1438,23 @@ def _skill_binding(drawn: ParsedDraw, declared: Sequence[str]) -> SkillBinding:
     if missing:
         return MissingParameters(names=tuple(missing), values=values)
     return BoundValues(values=values)
+
+
+def _is_sendable(drawn: ParsedDraw) -> bool:
+    """The runtime constraint the notify shape cannot carry (#1911): the drawn text has
+    to be a message a user should actually receive.
+
+    Read through the SHARED ``half_formed_send_reason`` rule — the same definition the
+    send path validates with and the run-health classifier flags ``⚠ HALF-FORMED SEND``
+    on — so what the framework draws and what it is willing to deliver are one
+    definition, and a blank / bare-url / trailing-off draw is a contract violation
+    re-drawn on the unchanged context rather than something the queue refuses later.  A
+    model REFUSAL is refused here for the same reason: it is not a message about the
+    run, and nothing downstream would improve it."""
+    message = drawn.field(MESSAGE_TAG, DrawField.MESSAGE)
+    if message is None:
+        return False
+    return half_formed_send_reason(message) is None and not is_refusal(message)
 
 
 def _state_is_bound(

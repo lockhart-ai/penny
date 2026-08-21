@@ -100,6 +100,25 @@ WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
 }
 
 
+# The reason a cycle that ran its whole PROGRAM is stamped with (#1911) — declared
+# here, beside the STOP table, because both are the closed set of structural reasons a
+# collector run record carries, and both are read by the collector that stamps them AND
+# by the render that has to tell one terminal shape from another.  A record whose
+# reason STARTS with this is a completed cycle; the render reads that rather than
+# inferring completion from the absence of a ``done()`` call, which used to be the only
+# available signal and now means something else entirely.
+COLLECTOR_COVERED_REASON = "program complete — every step ran"
+
+# The reason a cycle gets when its stored program names no call the collector could run
+# — a purely prose prompt.  There is no coverage to read, so the structural close was
+# never available to it, and the record says so rather than leaving the state to be
+# diagnosed by exclusion (visible degradation).
+COLLECTOR_UNREADABLE_PROGRAM_REASON = (
+    "cycle ended without a done() call, and its program names no runnable call to read "
+    "completion from"
+)
+
+
 # The write-gate outcomes that changed durable state — either a genuinely new key
 # landed (``NEW_KEY``) or an existing key's baseline was auto-refreshed in place
 # (``KEY_EXISTS_CHANGED``, #1633).  Read by the write path's change-notify and the
@@ -418,6 +437,13 @@ class PennyConstants:
     # The cycle-terminator tool's name.  Only the collector shapes carry it; the
     # chat agent has no ``done`` tool, so failure envelopes that suggest calling
     # it gate that suggestion on the tool actually being registered.
+    # The name of the RETIRED terminator tool (#1911).  No surface carries it: a
+    # collector cycle ends when its program's calls are covered, and a chat turn ends
+    # by replying.  The constant survives because the NAME still appears where no live
+    # tool does — the ``{"name": "done"}`` JSON envelope the model emits from prior,
+    # which the invalid-draw guard discards by name, and the ledger rows written before
+    # the retirement, which the run renders and the skill extractor still have to
+    # recognise.  History is never rewritten.
     DONE_TOOL_NAME = "done"
     # The ledger identity of a browse micro-context extraction — a fresh
     # single-shot model call (content + instruction, no tools) that runs when a
@@ -458,6 +484,18 @@ class PennyConstants:
     # the filling draw stay the two separate questions they are (#1803).
     SKILL_BIND_AGENT_NAME = "skill-binder"
     SKILL_BIND_PROMPT_TYPE = "skill_bind"
+    # The ledger identity of the NOTIFY-COMPOSING micro-context (#1911) — the SIXTH
+    # customer, and the first that closes a collector cycle rather than a chat turn.
+    # Its own agent/prompt type so a run trace shows the message-writing draw apart
+    # from the cycle's own calls: they are two contexts, and the whole point of the
+    # split is that the second one is short and carries no tool channel.
+    NOTIFY_COMPOSE_AGENT_NAME = "notify-composer"
+    NOTIFY_COMPOSE_PROMPT_TYPE = "notify_compose"
+    # How many nearest past messages the notify document carries from each of the two
+    # message logs (#1911) — the ``k=5`` the retired notify steps asked for, kept
+    # because a handful is what a callback line can be judged from and the document
+    # stays short.
+    NOTIFY_RELATED_MESSAGES = 5
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10
@@ -561,22 +599,12 @@ class PennyConstants:
     # messages on the iOS surface (``channels/ios/channel.py``).  No longer a member
     # of ``SYSTEM_COLLECTIONS`` — there is no archived shell left to hide.
     MEMORY_NOTIFIER_COLLECTION = "notifier"
-    # The one surviving built-in preference extractor (seeded by migration 0027):
-    # very narrow and specific, so it stays where the generic catch-alls (likes,
-    # knowledge, thoughts, and the retired notifier/quality/skills/thoughts-pair
-    # shells) were nuked by migration 0097/#1676.
-    MEMORY_DISLIKES_COLLECTION = "dislikes"
-
-    # Built-in framework collections, seeded by migration rather than created by
-    # the user.  ``collection_catalog`` hides them: ``dislikes`` is Penny's own
-    # machinery (the negative-preference extractor), not a collection the *user*
-    # built, so the catalog — which surfaces user-built collections — leaves it out.
-    # The generic catch-alls that used to live here (likes/knowledge/thoughts + the
-    # retired notifier/quality/skills/unnotified-thoughts/notified-thoughts shells)
-    # were removed entirely by migration 0097/#1676 — a deleted row needs no
-    # catalog hiding.  Parallels ``SYSTEM_LOGS``.
-    SYSTEM_COLLECTIONS = frozenset(
-        {
-            MEMORY_DISLIKES_COLLECTION,
-        }
-    )
+    # NOTHING is pre-seeded any more (#1911, migration 0108) — the soft reboot.
+    # ``dislikes`` was the last migration-seeded collection: 0097 removed the eight
+    # generic catch-alls and kept it as "very narrow and specific", and the ruling
+    # retires that exemption too, on the principle that no intermediate legacy
+    # structure should be left standing.  So there is no ``SYSTEM_COLLECTIONS`` set
+    # and no ``MEMORY_DISLIKES_COLLECTION``: every collection in the registry is one
+    # the USER built, which is what let the catalog's hide-list and the duplicate
+    # check's skip-list go with them.  ``SYSTEM_LOGS`` above is untouched — the four
+    # logs are Python-populated perception, not collections anybody would rebuild.

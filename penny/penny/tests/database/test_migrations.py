@@ -3,7 +3,6 @@
 import importlib.util
 import json
 import logging
-import re
 import sqlite3
 from pathlib import Path
 
@@ -85,7 +84,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 107
+        assert count == 108
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -127,7 +126,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 107
+        assert count1 == 108
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -165,8 +164,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 106 migrations
-        assert count == 106
+        # 0001 is skipped; the rest run = 107 migrations
+        assert count == 107
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -192,7 +191,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 107  # all migrations applied
+        assert count == 108  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -681,8 +680,9 @@ class TestMigrate:
         catch-alls now simply do not exist at end-of-chain.  The legacy ``thought``
         + ``preference`` TABLES drop with them (the nuked pipeline was their last
         consumer), as does ``messagelog.thought_id`` — the FK into the dropped
-        ``thought`` table (its 0006 index first).  ``dislikes`` (narrow + specific)
-        and all four logs deliberately survive."""
+        ``thought`` table (its 0006 index first).  ``dislikes`` survived 0097 and is
+        dropped downstream by 0108 (#1911's soft reboot — see
+        ``test_0108_leaves_no_seeded_collection_at_all``); all four logs survive."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -717,11 +717,7 @@ class TestMigrate:
             f"WHERE agent_name IN ({placeholders}) OR memory_name IN ({placeholders})",
             removed + removed,
         ).fetchone()[0]
-        # dislikes survives as an active collector (row + extraction_prompt); the
-        # four logs survive as their marker rows.
-        dislikes = conn.execute(
-            "SELECT archived, extraction_prompt FROM memory WHERE name = 'dislikes'"
-        ).fetchone()
+        # The four logs survive as their marker rows.
         logs = {
             row[0]
             for row in conn.execute(
@@ -748,11 +744,6 @@ class TestMigrate:
         assert surviving_rows == set()
         assert surviving_entries == 0
         assert surviving_cursors == 0
-        # dislikes stays, active (not archived), with its collector prompt intact.
-        assert dislikes is not None
-        archived, prompt = dislikes
-        assert archived == 0
-        assert prompt is not None
         # All four logs stay.
         assert logs == {"user-messages", "penny-messages", "browse-results", "collector-runs"}
         # The legacy tables are DROPPED (0001 created them mid-chain; 0027 read
@@ -789,18 +780,19 @@ class TestMigrate:
         assert "published" not in columns
         assert "notify" in columns
 
-    def test_0087_strips_terminal_done_steps_from_stored_prompts(self, tmp_path):
-        """Migration 0087 (over the full chain): the terminal ``done()`` is assembly's
-        now, so the seeded prompts' bare terminal done-step lines are stripped —
-        ``likes``/``dislikes`` (``6. Call done().``), ``knowledge`` (``4. Call
-        done().``), etc. — while prose *descriptions* of done behaviour survive
-        verbatim (zero-false-positive).
+    def test_0108_leaves_no_seeded_collection_at_all(self, tmp_path):
+        """THE WATCHED DELETION (#1911's soft reboot), over the full chain: migration
+        0108 drops the last migration-seeded collection, so a post-migration database
+        carries NONE.
 
-        Migration 0097 (#1676) nukes every generic catch-all collection downstream,
-        so ``dislikes`` is the sole seeded collector with an ``extraction_prompt``
-        left at end-of-chain — it is now the surviving witness that 0087 stripped
-        the bare terminal done-step (its own ``6. Call done().``) while leaving the
-        rest of the recipe intact."""
+        0097 removed eight generic catch-alls and kept ``dislikes`` as "very narrow and
+        specific"; the ruling retires that exemption too — no intermediate legacy
+        structure is left standing.  Asserted as the whole end-state rather than by
+        name: every collection row is gone, with no entries and no cursors behind it,
+        and the only ``memory`` rows left are the four log markers, which are
+        Python-populated perception rather than collections anybody would rebuild.
+        There is consequently no stored ``extraction_prompt`` in a fresh database at
+        all — every program from here on is one the user taught."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -810,20 +802,22 @@ class TestMigrate:
         migrate(db_path)
 
         conn = sqlite3.connect(db_path)
-        prompts = dict(
-            conn.execute(
-                "SELECT name, extraction_prompt FROM memory WHERE extraction_prompt IS NOT NULL"
-            ).fetchall()
-        )
+        collections = {
+            row[0] for row in conn.execute("SELECT name FROM memory WHERE type = 'collection'")
+        }
+        rows = {row[0] for row in conn.execute("SELECT name FROM memory")}
+        entries = conn.execute("SELECT COUNT(*) FROM memory_entry").fetchone()[0]
+        cursors = conn.execute("SELECT COUNT(*) FROM agent_cursor").fetchone()[0]
+        prompts = conn.execute(
+            "SELECT COUNT(*) FROM memory WHERE extraction_prompt IS NOT NULL"
+        ).fetchone()[0]
         conn.close()
 
-        # ``dislikes`` is the surviving seeded collector (the catch-alls are nuked).
-        assert "dislikes" in prompts
-        # No surviving stored prompt retains a numbered step line that is just a
-        # done call — 0087's strip held for dislikes.
-        bare_done = re.compile(r"^\d+\.[ \t]*(?:Call[ \t]+)?done\([^()]*\)\.?[ \t]*$", re.MULTILINE)
-        for name, prompt in prompts.items():
-            assert not bare_done.search(prompt), f"{name} still has a bare done step line"
+        assert collections == set()
+        assert rows == {"user-messages", "penny-messages", "browse-results", "collector-runs"}
+        assert entries == 0
+        assert cursors == 0
+        assert prompts == 0
 
     def test_0088_adds_emission_provenance_column(self, tmp_path):
         """Migration 0088 adds ``mechanism`` to ``messagelog`` (#1568) — schema

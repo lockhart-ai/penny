@@ -1,20 +1,18 @@
 """Tests for migration 0027 — data migration into the memory framework.
 
-Each surviving block of the migration (messages → the user/penny facades,
-preferences → ``dislikes``) gets a focused test that seeds the relevant old
-table(s), runs the FULL migration chain, and verifies the resulting rows.  A
-separate test pair confirms idempotency and the empty-target guard.
+The surviving block of the migration (messages → the user/penny facades) gets a
+focused test that seeds the old table, runs the FULL migration chain, and verifies
+the resulting rows.
 
-The thoughts/knowledge/likes blocks of 0027 still run, but migration 0097 (#1676)
-nukes those generic catch-all collections entirely downstream — so their
-end-of-chain state is verified by ``test_0097_nukes_generic_seeded_collections``
-in ``test_migrations.py``, and the surviving witness of 0027's split here is
-``dislikes`` (narrow + specific, deliberately retained).
-
-The legacy ``preference`` table 0027 reads from is itself dropped by 0097 (and its
-model removed, so ``create_tables`` no longer materialises it) — the seeding
-helper recreates it as it existed pre-0097, which is honest: 0027's input IS a
-legacy table from an old deployment.
+THE WATCHED DELETION (#1911's soft reboot): the three tests that pinned 0027's
+PREFERENCE split — the valence partition, its idempotency, and its
+already-populated guard — are GONE with their subject.  0027 wrote into ``likes``
+and ``dislikes``; 0097 nuked the first and 0108 now drops the second, so at
+end-of-chain the split has no observable state left to assert on, and the
+end-state that replaced it is
+``test_0108_leaves_no_seeded_collection_at_all`` in ``test_migrations.py``.  The
+message logs stay, because they are facades over ``messagelog`` rather than
+seeded collections — nothing dropped them.
 """
 
 from __future__ import annotations
@@ -122,98 +120,3 @@ def test_messages_split_into_user_and_penny_logs(tmp_path):
     ]
     # The incoming message's embedding survives the facade (read from messagelog).
     assert user_rows[0].content_embedding == incoming_vec
-
-
-def test_preferences_split_by_valence(tmp_path):
-    db = _make_db(tmp_path)
-    base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
-
-    coffee_vec = serialize_embedding([1.0, 0.0, 0.0])
-
-    with sqlite3.connect(db.db_path) as conn:
-        _seed_preference(conn, "dark roast coffee", "positive", base, embedding=coffee_vec)
-        _seed_preference(conn, "country music", "negative", base + timedelta(seconds=1))
-        conn.commit()
-
-    migrate(db.db_path)
-
-    with sqlite3.connect(db.db_path) as conn:
-        likes = _entries(conn, "likes")
-        dislikes = _entries(conn, "dislikes")
-
-    # 0027 splits by valence into likes/dislikes; migration 0097 (#1676) then nukes
-    # the generic ``likes`` catch-all, leaving ``dislikes`` (narrow + specific) as
-    # the surviving preference collection at end-of-chain.  (``coffee_vec`` still
-    # rides the positive→likes path 0027 exercises; it just doesn't survive 0097.)
-    assert likes == []
-    assert dislikes == [("country music", "country music", "history", None, None)]
-
-
-# ── Idempotency / skip-when-populated guards ──────────────────────────────
-
-
-def test_running_migration_twice_does_not_duplicate_entries(tmp_path):
-    """Each block guards on the target memory being empty, so re-running
-    the migration after a manual revert is safe."""
-    db = _make_db(tmp_path)
-    base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
-
-    with sqlite3.connect(db.db_path) as conn:
-        _seed_message(conn, "incoming", "first", base)
-        # A NEGATIVE preference lands in ``dislikes`` — the surviving preference
-        # collection after migration 0097 (#1676) nukes the ``likes`` catch-all.
-        _seed_preference(conn, "tea", "negative", base)
-        conn.commit()
-
-    migrate(db.db_path)
-    # Force-re-run 0027 by clearing its migration record so the runner re-applies
-    # it.  0027 reads columns later migrations have since DROPPED — it seeds into
-    # the legacy ``recall`` column (dropped by 0091, #1583) and selects
-    # ``messagelog.thought_id`` (dropped by 0097, #1676) — so re-provision both
-    # (matching the pre-drop window) so the isolated re-run exercises 0027's
-    # block-empty guards, the point of this test.
-    with sqlite3.connect(db.db_path) as conn:
-        conn.execute("DELETE FROM _migrations WHERE name = '0027_memory_data_migration'")
-        conn.execute("ALTER TABLE memory ADD COLUMN recall TEXT NOT NULL DEFAULT 'recent'")
-        conn.execute("ALTER TABLE messagelog ADD COLUMN thought_id INTEGER")
-        conn.commit()
-    migrate(db.db_path)
-
-    with sqlite3.connect(db.db_path) as conn:
-        # dislikes survives 0097, so the re-run hits 0027's populated-target SKIP
-        # guard (not a re-create) — proving the block is idempotent, no duplicate.
-        assert len(_entries(conn, "user-messages")) == 1
-        assert len(_entries(conn, "dislikes")) == 1
-
-
-def test_skips_block_when_target_memory_already_populated(tmp_path):
-    """If the target memory already has entries, the migration leaves it alone."""
-    db = _make_db(tmp_path)
-    base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
-
-    # Pre-seed an entry directly into dislikes (simulating a partial earlier run
-    # or manual fix-up).  The migration should leave it intact and not append
-    # the seeded preference row alongside it.  ``dislikes`` is the surviving
-    # preference collection after migration 0097 (#1676) — a NEGATIVE preference
-    # targets it.
-    with sqlite3.connect(db.db_path) as conn:
-        _seed_preference(conn, "tea", "negative", base)
-        conn.execute(
-            "INSERT INTO memory"
-            " (name, type, description, archived, created_at, updated_at)"
-            " VALUES ('dislikes', 'collection', 'x', 0, ?, ?)",
-            (base.isoformat(), base.isoformat()),
-        )
-        conn.execute(
-            "INSERT INTO memory_entry"
-            " (memory_name, key, content, author, created_at)"
-            " VALUES ('dislikes', 'pre-existing', 'pre-existing', 'manual', ?)",
-            (base.isoformat(),),
-        )
-        conn.commit()
-
-    migrate(db.db_path)
-
-    with sqlite3.connect(db.db_path) as conn:
-        rows = _entries(conn, "dislikes")
-    assert rows == [("pre-existing", "pre-existing", "manual", None, None)]

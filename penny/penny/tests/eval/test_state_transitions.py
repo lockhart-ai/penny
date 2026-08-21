@@ -826,11 +826,6 @@ def _score_idle_to_elicit(db: Database, before: set[str], reply: str) -> list[Ch
             not fetched,
             kind="state",
         ),
-        Check(
-            "state: the seeded collection untouched",
-            not collection_entries(db, PennyConstants.MEMORY_DISLIKES_COLLECTION),
-            kind="state",
-        ),
         _anchor_check(db),
         Check(
             "reply: asked for no page structure",
@@ -1218,14 +1213,13 @@ def _assert_the_round_reads_as_a_conversation(db: Database, case: _ElicitRound) 
 
 def _assert_nothing_enacted(db: Database, case: _ElicitRound) -> None:
     """The other half of that probe — turn 1 enacted NOTHING, which is the whole of what
-    its five scored state checks assert: no skill learned, no entry written by any run,
-    no page fetched, and the framework's own seeded collection untouched."""
+    its scored state checks assert: no skill learned, no entry written by any run, and no
+    page fetched.  (The seeded-collection check went with the seeded collections
+    themselves, #1911 — nothing is pre-seeded any more, so there is no framework row left
+    to find untouched.)"""
     assert not db.skills.list_all(), f"{case.case_id}: the round starts with no skill learned"
     assert not _entries_written_by_this_run(db), f"{case.case_id}: no run has written anything"
     assert not _pages_fetched(db), f"{case.case_id}: no page has been fetched yet"
-    assert not collection_entries(db, PennyConstants.MEMORY_DISLIKES_COLLECTION), (
-        f"{case.case_id}: the seeded collection starts untouched"
-    )
 
 
 def _seeded_ask_id(db: Database, ask: str, *, limit: int = _ROUND_INCOMING_TURNS) -> int | None:

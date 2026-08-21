@@ -25,6 +25,8 @@ class ListEmailsTool(Tool):
     """List emails from a specific folder."""
 
     name = "list_emails"
+    # A folder listing names the folders to pick from and the read that follows.
+    advises = ("list_folders", "read_emails")
     description = (
         "List emails from one folder of the user's mailbox (Inbox, Sent, Drafts, Trash, "
         "Spam; defaults to Inbox). Returns email summaries — each with an id, subject, "

@@ -42,6 +42,8 @@ class SearchEmailsTool(Tool):
     """Search emails by text, sender, subject, or date range."""
 
     name = "search_emails"
+    # A hit is read; an empty search widens to a folder listing.
+    advises = ("read_emails", "list_folders")
     description = (
         "Search the user's email by keyword, sender, subject, or date range. Returns "
         "matching email summaries — each with an id, subject, sender, date, and preview. "

@@ -166,24 +166,16 @@ class CrashingTool(Tool):
         raise RuntimeError("boom")
 
 
-class StubDoneTool(Tool):
-    """Minimal stand-in for the collector's cycle-terminator, name only."""
-
-    name = "done"
-    description = "Finish the cycle."
-    parameters = {"type": "object", "properties": {}}
-
-    async def execute(self, **kwargs):
-        return "done"
-
-
 class TestCrashEnvelope:
-    """The uncaught-exception envelope suggests ``done`` only when it's available."""
+    """THE WATCHED DELETION (#1911): the uncaught-exception envelope names NO close.
+
+    It used to append `` or call done() to finish`` whenever a ``done`` tool happened to
+    be registered — a surface-conditional clause for a surface that no longer exists.
+    With no terminator anywhere, the remedy is the same on every surface and can never
+    point the model at a tool it cannot call."""
 
     @pytest.mark.asyncio
-    async def test_crash_envelope_omits_done_when_agent_has_no_done_tool(self):
-        """The chat agent has no ``done`` tool, so its crash envelope must not name
-        one — it would point the model at a tool it can't call."""
+    async def test_crash_envelope_names_no_close_to_make(self):
         registry = ToolRegistry()
         registry.register(CrashingTool())
         executor = ToolExecutor(registry, timeout=1.0)
@@ -196,20 +188,3 @@ class TestCrashEnvelope:
         assert result.narration == "You tried to use `crashing_tool` but it errored: boom."
         assert "done" not in result.message
         assert "try a different approach" in result.message
-
-    @pytest.mark.asyncio
-    async def test_crash_envelope_names_done_when_registered(self):
-        """A collector shape carries ``done``, so its crash envelope binds it as the
-        finish move alongside "try a different approach"."""
-        registry = ToolRegistry()
-        registry.register(CrashingTool())
-        registry.register(StubDoneTool())
-        executor = ToolExecutor(registry, timeout=1.0)
-
-        result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
-
-        assert result.success is False
-        # The frame carries the error detail; the remedy body binds done() as the finish
-        # move when the collector shape registers it.
-        assert result.narration == "You tried to use `crashing_tool` but it errored: boom."
-        assert "call done() to finish" in result.message

@@ -33,7 +33,6 @@ from penny.tools.memory_tools import (
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
-    DoneTool,
     ExistsTool,
     GetEventTool,
     LogAppendTool,
@@ -45,7 +44,6 @@ from penny.tools.memory_tools import (
     UpdateEntryTool,
 )
 from penny.tools.models import ToolResult
-from penny.tools.send_message import SendMessageTool
 
 
 class _DummyTool(Tool):
@@ -90,16 +88,6 @@ class TestToolReasoningSchema:
         tool.to_ollama_tool()
         # The tool's own parameters should NOT have reasoning
         assert "reasoning" not in tool.parameters["properties"]
-
-    def test_done_injected_like_every_tool(self):
-        """The terminal done tool gets the injected reasoning param too — the
-        schema is uniform.  ``done()`` is argless (#1569), so it has NO required
-        fields and only the injected optional ``reasoning`` in its properties."""
-        tool = DoneTool()
-        schema = tool.to_ollama_tool()
-        params = schema["function"]["parameters"]
-        assert "reasoning" in params["properties"]
-        assert params.get("required", []) == []
 
     def test_tool_declared_reasoning_not_overwritten(self):
         """A tool that declares reasoning in its OWN parameters (browse) keeps
@@ -366,32 +354,6 @@ class TestMemoryWriteNarration:
         )
 
 
-class TestSendMessageNarration:
-    """``send_message`` narrates a queued send (``mutated``), a correct no-op
-    decline (mute/refusal — ``success`` but not ``mutated``, so she "held off"),
-    and a failure."""
-
-    def test_messaged(self):
-        assert (
-            SendMessageTool.to_result_narration(
-                {}, ToolResult(message="Message sent.", mutated=True)
-            )
-            == "You messaged the user:"
-        )
-
-    def test_held_off(self):
-        assert (
-            SendMessageTool.to_result_narration({}, ToolResult(message="muted", mutated=False))
-            == "You started to message the user but held off:"
-        )
-
-    def test_failure(self):
-        assert (
-            SendMessageTool.to_result_narration({}, ToolResult(message="e", success=False))
-            == "You tried to message the user but it didn't work:"
-        )
-
-
 class TestMemoryLifecycleNarration:
     """Success + failure narration for the collection/log-lifecycle and
     introspection tools — every registered tool speaks (epic #1478)."""
@@ -481,13 +443,4 @@ class TestMemoryLifecycleNarration:
         assert (
             GetEventTool.to_result_narration({}, ToolResult(message="x", success=False))
             == "You tried to look up an event but it didn't work:"
-        )
-
-    def test_done_narration_is_fixed(self):
-        """``done()`` is argless (#1569): its narration is a single fixed line — no
-        ``success`` branch, since the run's outcome is derived structurally from the
-        ledger, not from the terminator call."""
-        assert (
-            DoneTool.to_result_narration({}, ToolResult(message="ok"))
-            == "You wrapped up the cycle:"
         )

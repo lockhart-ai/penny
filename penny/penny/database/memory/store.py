@@ -416,6 +416,29 @@ class MemoryStore:
             grouped.setdefault(run_id, []).append(RunWrite(memory_name=memory_name, key=key))
         return grouped
 
+    def entries_written_by_run(self, run_id: str) -> list[MemoryEntry]:
+        """Every entry whose CURRENT value this run wrote, oldest first (#1911) — what
+        a finished cycle actually produced, read off the ledger stamp rather than
+        inferred from which tools it called.
+
+        ``writes_by_run``'s sibling, and deliberately not a widening of it: that one
+        answers "which keys did these runs touch?" for the self-state header's one-line
+        writes clause, so it projects ``(memory, key)`` across MANY runs and drops
+        keyless rows.  This one is one run's whole rows — content included, log appends
+        included — because the notify document renders what was written and the
+        similarity anchor is built from it.  Reading the stamp rather than a
+        ``collection_write`` call's arguments is what keeps it tool-agnostic: a routine
+        writes through whatever tools it was taught with, including a plugin's (#1783).
+        """
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MemoryEntry)
+                    .where(MemoryEntry.last_written_by_run_id == run_id)
+                    .order_by(col(MemoryEntry.created_at).asc(), col(MemoryEntry.id).asc())
+                ).all()
+            )
+
     def names_with_entry_match(self, search: str) -> set[str]:
         """Names of memories holding an entry whose ``key`` or ``content``
         contains ``search`` — powers the addon's "search entries too" filter
@@ -930,9 +953,9 @@ class MemoryStore:
         resolves on and says nothing about duplication.
 
         Active rows are checked before archived ones (a tombstone), so a live "already
-        watching this" wins over a retired one.  Framework collections
-        (``SYSTEM_COLLECTIONS``) are excluded — Penny's own machinery, not a mechanism
-        a user re-creates.
+        watching this" wins over a retired one.  Nothing is excluded any more (#1911):
+        with no pre-seeded collections left, every row in the registry is one the user
+        built, so there is no framework machinery to skip past.
         """
         candidate = JobSide(
             name=slug(name),
@@ -946,14 +969,13 @@ class MemoryStore:
         return None
 
     def _duplicate_candidates(self) -> tuple[list[MemoryRow], list[MemoryRow]]:
-        """User collections eligible for the idempotency check, partitioned active
-        vs. archived — framework system collections and logs excluded."""
+        """Collections eligible for the idempotency check, partitioned active
+        vs. archived — logs excluded, and nothing else (#1911: every collection is a
+        user collection now)."""
         active: list[MemoryRow] = []
         archived: list[MemoryRow] = []
         for row in self.list_all():
             if row.type != MemoryType.COLLECTION.value:
-                continue
-            if row.name in PennyConstants.SYSTEM_COLLECTIONS:
                 continue
             (archived if row.archived else active).append(row)
         return active, archived

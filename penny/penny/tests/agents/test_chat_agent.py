@@ -80,10 +80,12 @@ async def test_basic_message_flow(
         assert len(signal_server._websockets) == 1, "Penny should have connected to WebSocket"
 
         # Memory seed: exercise every rendering path in one verbatim assertion.
-        # Test-only names avoid colliding with system memories created by
-        # migrations 0026/0027 (user-messages, penny-messages, browse-results,
-        # dislikes) — the generic catch-alls (likes/knowledge/thoughts + the
-        # retired shells) were nuked by migration 0097 (#1676).
+        # Test-only names avoid colliding with the four system LOG markers created
+        # by migration 0026 (user-messages, penny-messages, browse-results,
+        # collector-runs).  No COLLECTION is seeded any more — 0097 nuked the generic
+        # catch-alls and 0108 dropped the last one (#1911's soft reboot), which is why
+        # the mechanisms section below is empty and the memory list is logs + the
+        # collections this test made.
         # Active memories rendered in alphabetical order: "playlists" < "tips".
         penny.db.memories.create_collection("playlists", "favorite playlists")
         penny.db.memory("playlists").write(
@@ -1719,7 +1721,7 @@ _BASIC_FLOW_EXPECTED = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- dislikes — active · no runs yet\n"
+    "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
@@ -1731,8 +1733,6 @@ _BASIC_FLOW_EXPECTED = (
     "- browse-results (log, 0 entries) — Every browse-tool fetch result\n"
     "- collector-runs (log, 0 entries) — One entry per Collector cycle: the target + its "
     "generated structural record (outcome, counts, tool trace)\n"
-    "- dislikes (collection, 0 entries) — Topics the user has expressed negative "
-    "sentiment about\n"
     "- penny-messages (log, 0 entries) — Every outgoing Penny reply\n"
     "- playlists (collection, 1 entries) — favorite playlists\n"
     "- secrets (collection, 1 entries) — hidden\n"

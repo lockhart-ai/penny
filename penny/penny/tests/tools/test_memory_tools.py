@@ -82,7 +82,6 @@ from penny.tools.memory_tools import (
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
-    DoneTool,
     ExistsTool,
     FindTool,
     GetEventTool,
@@ -2641,7 +2640,7 @@ class TestCollectionWritesAndReads:
         assert "done()" not in result.message
 
     @pytest.mark.asyncio
-    async def test_write_all_duplicates_collector_scope_hints_done(self, db, mock_llm):
+    async def test_write_all_duplicates_close_names_no_call(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2658,11 +2657,12 @@ class TestCollectionWritesAndReads:
             memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        # Whole batch was duplicates and this is a collector, so the close names
-        # ``done()`` — the model can close the cycle instead of key-hunting — while
-        # the per-entry rejection still binds the matched key into update_entry.
+        # THE WATCHED DELETION (#1911): the whole batch was duplicates, and the close
+        # names NO call to make — no surface carries a terminator any more, so telling
+        # the model to close would be an instruction it could not follow.  The per-entry
+        # rejection still binds the matched key into update_entry, which it DOES have.
         assert "Nothing new to add" in all_duplicates.message
-        assert "done()" in all_duplicates.message
+        assert "done" not in all_duplicates.message
         assert "update_entry(key='dark roast', content=<richer info>)" in all_duplicates.message
         # A re-write under the SAME key with the SAME value is the change-gate's
         # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
@@ -3887,25 +3887,6 @@ class TestExistsAndDone:
         # checking a candidate name before writing.
         result = await ExistsTool(db, client).execute(memories=["board-games"], content="Catan")
         assert result.message == "yes"
-
-    @pytest.mark.asyncio
-    async def test_done_is_argless_sentinel(self):
-        """done() is argless (#1569): it just marks the cycle finished and returns a
-        fixed marker.  The run record is generated from the ledger, so there is no
-        model-authored success/summary to report."""
-        result = await DoneTool().execute()
-        assert result.message == "Cycle complete."
-        assert result.success is True
-        assert DoneTool.args_model.__name__ == "NoArgs"
-        assert DoneTool.parameters == {"type": "object", "properties": {}}
-
-    @pytest.mark.asyncio
-    async def test_done_rejects_arguments(self):
-        """Argless via NoArgs (extra='forbid'): any argument passed through the
-        validation gate (``Tool.run``) is rejected as an actionable error, not
-        silently dropped."""
-        result = await DoneTool().run(success=True, summary="x")
-        assert result.success is False
 
 
 class TestAuthorAttribution:
