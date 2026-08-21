@@ -1,11 +1,17 @@
 """The rendered program's own calls, and when a run has covered them (#1911).
 
-A configured collection's ``extraction_prompt`` is a numbered program — the rendered
-form of a taught routine (``render_skill`` writes ``N. tool(args)``), or, for the
-legacy hand-authored rows, numbered prose that names its calls in the same notation.
-Either way the calls it makes are DATA, known before the cycle starts, so "is this
-cycle finished?" is a read of that data against what actually executed — not a
-question the model answers with a terminal ``done()``.
+A configured collection's ``extraction_prompt`` is a numbered program: the rendered
+form of a taught routine, which ``render_skill`` writes as ``N. tool(args)``.  The
+calls it makes are therefore DATA, known before the cycle starts, so "is this cycle
+finished?" is a read of that data against what actually executed — not a question the
+model answers with a terminal ``done()``.
+
+There is exactly ONE dialect to read, since #1911's soft reboot dropped the seeded
+collections: every program in the registry was rendered by ``render_skill`` from a
+routine the user taught.  The prose-tolerant read this replaced (a call found anywhere
+in a step, to accommodate ``4. Call collection_write("x", …) once with all of them``)
+went with its subjects — there is no hand-authored row left for it to serve, and a
+lenient parse over prose can only manufacture calls nobody wrote.
 
 That inversion is the point.  The exit used to be a model decision at the end of a
 long, tool-flavoured context, and the measured cost was the tail: the cycle had to
@@ -39,14 +45,12 @@ from penny.agents.models import ToolCallRecord
 # one answer in both places.
 _STEP_RE = re.compile(r"^(\d+)\.\s*(.*)$", re.MULTILINE)
 
-# A call inside a step: an identifier immediately followed by ``(``.  It is searched
-# ANYWHERE in the step, not just at its start, because the two program dialects differ
-# exactly there — a rendered routine writes ``4. collection_write(memory='x', …)`` while
-# a hand-authored row writes ``4. Call collection_write("x", entries=[...]) once with
-# all of them batched.``  The identifier is then checked against the live surface, which
-# is what keeps prose from manufacturing calls: an ordinary sentence has no
-# ``<a-tool-name>(`` in it.
-_CALL_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*\(")
+# The step's call, which must OPEN the step — the rendered dialect exactly, as
+# ``render_skill`` writes it (``4. collection_write(memory='x', …)``).  Anchored rather
+# than searched (#1911): a program is a render now, so a step that does not open with
+# its call is not a step this framework wrote, and reading one leniently would be
+# inventing a program out of prose.
+_CALL_RE = re.compile(r"^([a-z_][a-z0-9_]*)\(")
 
 
 class ProgramCall(BaseModel):
@@ -66,30 +70,28 @@ def program_calls(extraction_prompt: str, surface: frozenset[str]) -> tuple[Prog
 
     ``surface`` is the set of tool names this cycle actually runs with — passed in
     rather than imported, so this module names no tool and a plugin's verb
-    participates for free.  At most one call per step, the FIRST one: a step is one
-    move of the routine, and a later mention in the same step is prose about it (a
-    hand-authored step's "``update_entry`` … or ``collection_delete_entry`` …" is one
-    step offering two ways, not two calls to cover).
+    participates for free.  Exactly one call per step, and it must OPEN the step: a
+    step is one move of the routine, written the one way the renderer writes it.
 
-    An empty result means the program names no call this cycle could run — a purely
-    prose prompt, or one whose every verb has left the surface.  That is a real state
-    with a real consequence (there is no coverage to read, so nothing closes the cycle
-    structurally), and the caller states it rather than treating an empty program as
-    instantly complete."""
+    An empty result means this prompt is not a rendered program — its steps open with
+    something else, or every verb it names has left the surface.  That is a CONFIG
+    DEFECT, not a mode: the collection has no readable job, so nothing can close its
+    cycle, and the caller surfaces it rather than falling back to a second way of
+    running."""
     found: list[ProgramCall] = []
     for match in _STEP_RE.finditer(extraction_prompt):
-        tool = _first_call(match.group(2), surface)
+        tool = _step_call(match.group(2), surface)
         if tool is not None:
             found.append(ProgramCall(ordinal=int(match.group(1)), tool=tool))
     return tuple(found)
 
 
-def _first_call(step: str, surface: frozenset[str]) -> str | None:
-    """The first tool this step calls, or ``None`` when it calls none."""
-    for match in _CALL_RE.finditer(step):
-        if match.group(1) in surface:
-            return match.group(1)
-    return None
+def _step_call(step: str, surface: frozenset[str]) -> str | None:
+    """The tool this step opens with, or ``None`` when it opens with anything else."""
+    match = _CALL_RE.match(step)
+    if match is None or match.group(1) not in surface:
+        return None
+    return match.group(1)
 
 
 def covered_calls(program: Sequence[ProgramCall], records: Sequence[ToolCallRecord]) -> int:

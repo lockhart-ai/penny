@@ -46,6 +46,7 @@ from penny.tests.tools.test_memory_tools import (
     _TAUGHT_URL,
     seed_timetable_skill,
 )
+from penny.tools.base import Tool
 from penny.tools.memory_tools import (
     CollectionSetTool,
     LogReadTool,
@@ -138,10 +139,14 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     )
 
     def _log_read_for(collection: str) -> LogReadTool:
-        db.memories.create_collection(collection, "d")
-        collector._current_target = db.memories.get(collection)
+        # A program that READS the log — the surface is scoped to its calls (#1911), so
+        # the tool under test is on it because the routine names it.
+        db.memories.create_collection(
+            collection, "d", extraction_prompt='1. log_read(memory="chatter")'
+        )
+        collector._bind(db.memories.get(collection))
         tool = next(t for t in collector.get_tools() if isinstance(t, LogReadTool))
-        collector._current_target = None
+        collector._bind(None)
         return tool
 
     alpha = _log_read_for("alpha")
@@ -324,23 +329,27 @@ _LIFECYCLE_TOOL_NAMES = frozenset(
 
 
 def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
-    """A cadence-fired collector run's surface is read / write-entry / browse /
-    notify — the registry-shape tools are ABSENT, not merely discouraged, so a
-    background poll cannot create, reconfigure, merge, or archive a mechanism."""
+    """A cadence-fired collector run cannot reshape the registry: the lifecycle tools
+    are ABSENT, not merely discouraged, so a background poll cannot create,
+    reconfigure, merge, or archive a mechanism.
+
+    Asserted against the collector's UNSCOPED surface — everything a cycle could
+    possibly be given — because that is the set the scoping then narrows, and the mask
+    has to hold before the narrowing as well as after."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("watch", "d")
-    collector._current_target = db.memories.get("watch")
+    collector._bind(db.memories.get("watch"))
     try:
-        names = {tool.name for tool in collector.get_tools()}
+        names = set(collector_tool_surface(db, collector._model_client))
     finally:
-        collector._current_target = None
+        collector._bind(None)
     assert names.isdisjoint(_LIFECYCLE_TOOL_NAMES), (
         f"collector surface leaked lifecycle tools: {names & _LIFECYCLE_TOOL_NAMES}"
     )
-    # It keeps its actual job: reads, scoped entry writes, browse, choose, notify, done.
-    # ``choose`` rides the collector surface so a demonstrated random-pick step renders
-    # into a runnable collector program (skill capture).
-    assert {"collection_write", "collection_read_latest", "browse", "choose", "done"} <= names
+    # It keeps its actual job: reads, scoped entry writes, browse, choose.  ``choose``
+    # rides the collector surface so a demonstrated random-pick step renders into a
+    # runnable collector program (skill capture).
+    assert {"collection_write", "collection_read_latest", "browse", "choose"} <= names
 
 
 def test_choose_is_capture_eligible_on_the_collector_surface(test_config, tmp_path):
@@ -870,7 +879,8 @@ _SCOPED_PROGRAM = (
     "2. collection_write(memory='ferry-departures', entries=[{'key': 'x', 'content': 'y'}])"
 )
 
-# A program the framework cannot read: prose, naming no call in any notation.
+# NOT a program: prose whose steps do not open with a call, which since #1911's strict
+# parser is unreadable rather than leniently scanned.
 _PROSE_PROGRAM = (
     "Watch the summit webcam page, read the status banner, and record the current "
     "trail status in the collection under the key `trail`."
@@ -914,43 +924,49 @@ def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp
     assert "read_similar" not in surface
 
 
-def test_a_scoped_cycle_cannot_call_done(test_config, tmp_path):
-    """THE WATCHED DELETION (#1911): a program-scoped cycle has NO terminator — ``done``
-    is absent from its schema, not merely discouraged in its prompt.
+def test_no_surface_anywhere_carries_done(test_config, tmp_path):
+    """THE WATCHED DELETION (#1911's soft reboot): ``done`` is gone from the codebase —
+    no cycle can close with a call, because there is no call to make.
 
-    Coverage and a write-gate STOP are its only closes.  A genuinely stuck cycle ends on
-    the max-steps / abort path carrying its own honest cause (#1909), which is a truer
-    record than a model-declared clean close it could reach by giving up."""
+    A cycle ends when its program's calls are covered, or on a write-gate STOP.  A
+    genuinely stuck one ends on the max-steps / abort path carrying its own honest cause
+    (#1909), which is a truer record than a model-declared clean close it could reach by
+    giving up.  Asserted at the SCHEMA — what the model is actually handed — and at the
+    authoring guard, so a stored program naming it is refused rather than persisted."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "ferry-departures", "the dawn sailing", extraction_prompt=_SCOPED_PROGRAM
     )
 
     surface = _surface_for(collector, db, "ferry-departures")
+    collector._install_tools(collector.get_tools())
+    schema = {tool["function"]["name"] for tool in collector._tool_registry.get_ollama_tools()}
 
     assert "done" not in surface
-    # Absent from the SCHEMA the model is handed, which is what makes it unavailable.
-    assert (
-        "done"
-        not in {tool["function"]["name"] for tool in collector._tool_registry.get_ollama_tools()}
-        - surface
-    )
-    assert collector._surface_terminator() is None
+    assert "done" not in schema
+    assert "done" not in collector_tool_surface(db, collector._model_client)
+    assert Tool._registry.get("done") is None
 
 
-def test_an_unreadable_program_keeps_the_whole_surface_and_its_done(test_config, tmp_path):
-    """The legacy prose row is UNCHANGED (#1911): with no readable program there is no
-    coverage to close the cycle, so taking its terminator away would leave it nothing —
-    it keeps the full collector surface and its ``done()``, byte-identical to before."""
+def test_an_unreadable_program_has_no_surface_at_all(test_config, tmp_path):
+    """A collection whose stored prompt is NOT a rendered program is a CONFIG DEFECT
+    (#1911), not a second way of running.
+
+    The seeded prose rows that made it a mode were dropped in the soft reboot, so a
+    prompt whose steps do not open with a call has no job this framework can run — its
+    cycle gets nothing to call, closes on nothing, and its run record names the state
+    rather than letting the collection fail quietly forever."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("summit-status", "trail status", extraction_prompt=_PROSE_PROGRAM)
 
     surface = _surface_for(collector, db, "summit-status")
 
-    assert "done" in surface
-    assert collector._surface_terminator() == "done"
-    # The whole surface, not a subset: the reads a scoped cycle loses are all here.
-    assert {"browse", "read_similar", "collection_write", "log_read", "find"} <= surface
+    assert surface == set()
+    assert collector._program == ()
+    assert (
+        collector._unfinished_reason(ControllerResponse(answer="", tool_calls=[]))
+        == COLLECTOR_UNREADABLE_PROGRAM_REASON
+    )
 
 
 def test_a_scoped_cycle_reads_only_the_runtime_rules_it_can_carry_out(test_config, tmp_path):
@@ -1565,65 +1581,46 @@ def _target() -> MemoryRow:
 
 
 def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, tmp_path):
-    """Structural outcome from the tool trace ALONE (#1569) — ``done()`` is an
-    argless sentinel, so there is no ``success``/``summary`` to read.  An EARLY
-    ``done()`` close is ``worked``/``no_work`` by whether real work landed; with no
-    close at all the run never finished → ``incomplete`` (work landed) / ``failed`` (a
-    bail).  The reason is structural: EMPTY on an early ``done()`` close (the run
-    record's header falls back to the outcome enum), the no-close reason otherwise.
+    """Structural outcome from the tool trace ALONE (#1569/#1911), with no terminator
+    anywhere: a cycle that did not COVER its program never finished → ``incomplete``
+    (work landed) / ``failed`` (a bail), each stamped with the reason it ended for.
+
+    THE WATCHED DELETION: the two ``done()`` cases this test used to open with — an
+    early close that landed work and an early close that did not — are gone with the
+    tool, and a trace carrying a stray ``done`` record is simply an unfinished run.
+    Completion has ONE shape now, driven end to end above.
 
     The collector here is bound to a one-call program none of these traces covers, so
-    the completion branch is out of the way — those shapes are driven end to end
-    above."""
+    the completion branch stays out of the way."""
     collector, _ = _make_collector(test_config, tmp_path)
     collector._program = (ProgramCall(ordinal=1, tool="log_read"),)
 
-    # an early done() + work → worked, empty reason.
-    worked = ControllerResponse(
-        answer="",
-        tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
-            ToolCallRecord(tool="done", arguments={}),
-        ],
-    )
-    assert collector._cycle_result(worked, None) == (RunOutcome.WORKED, "")
-
-    # done() + read only (nothing produced) → no_work, empty reason (a quiet cycle).
-    no_work = ControllerResponse(
-        answer="",
-        tool_calls=[
-            ToolCallRecord(tool="collection_read_latest", arguments={}),
-            ToolCallRecord(tool="done", arguments={}),
-        ],
-    )
-    assert collector._cycle_result(no_work, None) == (RunOutcome.NO_WORK, "")
-
-    # Wrote durable state but never closed with done() (trailed off) → incomplete
-    # (the work is real), stamped with the structural no-done() reason.
+    # Wrote durable state but left the program unfinished → incomplete (the work is
+    # real), stamped with the structural unfinished reason.
     incomplete = ControllerResponse(
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, mutated=True)],
     )
     assert collector._cycle_result(incomplete, None) == (
         RunOutcome.INCOMPLETE,
-        "cycle ended without a done() call",
+        "cycle ended with the program unfinished",
     )
 
-    # No done() and nothing changed (only a read/browse) → a real bail, and hitting
-    # the step cap is distinguished from trailing off (the AGENT_MAX_STEPS sentinel).
+    # Nothing changed (only a read/browse) → a real bail, and hitting the step cap is
+    # distinguished from trailing off (the AGENT_MAX_STEPS sentinel).
     maxed = ControllerResponse(
         answer=PennyResponse.AGENT_MAX_STEPS,
         tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})],
     )
     assert collector._cycle_result(maxed, None) == (
         RunOutcome.FAILED,
-        "max steps exceeded — no done() call",
+        "max steps exceeded — the program was left unfinished",
     )
 
     # The loop aborted on a failed model call → the abort's own structural facts are
-    # the reason (#1909), instead of the generic no-done() line that made the whole
-    # class diagnosable only by exclusion.  The aborted response carries no tool
-    # calls, so the outcome stays the FAILED bail it always was.
+    # the reason (#1909), instead of the generic line that made the whole class
+    # diagnosable only by exclusion.  The aborted response carries no tool calls, so
+    # the outcome stays the FAILED bail it always was.
     aborted = ControllerResponse(
         answer=PennyResponse.AGENT_MODEL_ERROR,
         abort=RunAbort(
@@ -1687,17 +1684,21 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
 
 
 def test_should_stop_loop_honors_write_gate_stop(test_config, tmp_path):
-    """The collector loop exits on a successful done() OR a write-gate STOP record
-    (#1587); a plain write record (no done, no stop) does not stop it."""
+    """The collector loop exits on a write-gate STOP record (#1587) or on program
+    coverage — and on NOTHING ELSE (#1911).
+
+    THE WATCHED DELETION: a ``done`` record no longer stops it, because no surface
+    offers one; a plain write (no stop, program unfinished) does not stop it either."""
     collector, _ = _make_collector(test_config, tmp_path)
-    done = ToolCallRecord(tool="done", arguments={})
+    collector._program = (ProgramCall(ordinal=1, tool="collection_write"),)
     stop = ToolCallRecord(
         tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
     )
-    plain = ToolCallRecord(tool="collection_write", arguments={}, mutated=True)
-    assert collector.should_stop_loop([done]) is True
+    covered = ToolCallRecord(tool="collection_write", arguments={}, mutated=True)
     assert collector.should_stop_loop([stop]) is True
-    assert collector.should_stop_loop([plain]) is False
+    assert collector.should_stop_loop([covered]) is True
+    assert collector.should_stop_loop([ToolCallRecord(tool="done", arguments={})]) is False
+    assert collector.should_stop_loop([ToolCallRecord(tool="browse", arguments={})]) is False
 
 
 def test_tool_failures_counts_failed_calls():
@@ -1784,24 +1785,6 @@ def test_tag_promptlog_run_with_unknown_run_id_is_noop(test_config, tmp_path):
     assert db.messages.get_prompt_log_runs() == []
 
 
-def test_should_stop_loop_ignores_failed_done(test_config, tmp_path):
-    """Regression: a malformed ``done(reasoning="x")`` (missing required
-    ``success``/``summary``) used to terminate the cycle anyway because
-    ``should_stop_loop`` only checked the tool name.  Now it also requires
-    the record to not be marked failed, so the loop continues until the
-    model retries with valid args."""
-    collector, _ = _make_collector(test_config, tmp_path)
-    failed_done = ToolCallRecord(tool="done", arguments={"reasoning": "x"})
-    failed_done.failed = True
-    assert collector.should_stop_loop([failed_done]) is False
-
-    valid_done = ToolCallRecord(tool="done", arguments={})
-    assert collector.should_stop_loop([valid_done]) is True
-
-
-# ── run_for: on-demand cycle trigger ────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_run_for_collection_not_found(test_config, tmp_path):
     collector, _ = _make_collector(test_config, tmp_path)
@@ -1853,8 +1836,8 @@ async def test_run_for_rejects_too_short_extraction_prompt(test_config, tmp_path
 @pytest.mark.asyncio
 async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tmp_path):
     """``run_for``'s on-demand message is STRUCTURAL (#1569): the run's outcome (or
-    its write-gate stop reason) plus the tool trace — never a model ``done()``
-    summary.  A done()-only cycle (nothing produced) reads as ``no_work``."""
+    its write-gate stop reason) plus the tool trace — never a model summary (there is
+    no terminator call to carry one, #1911)."""
     from penny.agents.base import CycleResult
 
     collector, db = _make_collector(test_config, tmp_path)
@@ -1862,7 +1845,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     db.memories.create_collection(
         "test-col",
         "test",
-        extraction_prompt="Extract things from user-messages.",
+        extraction_prompt='Extract things.\n1. log_read(memory="user-messages")',
     )
 
     async def mock_run_cycle(run_id: str) -> CycleResult:
@@ -1870,7 +1853,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
             success=True,
             response=ControllerResponse(
                 answer="",
-                tool_calls=[ToolCallRecord(tool="done", arguments={})],
+                tool_calls=[ToolCallRecord(tool="log_read", arguments={"memory": "user-messages"})],
             ),
         )
 
@@ -1878,8 +1861,10 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
 
     success, message = await collector.run_for("test-col")
     assert success is True
-    assert message.startswith("Collector cycle complete: no_work")
-    assert "1. done()" in message
+    # The program is one ``log_read`` and the cycle ran it, so the message reports the
+    # completion reason rather than a bare outcome enum, with the trace under it (#1911).
+    assert message.startswith(f"Collector cycle complete: {COLLECTOR_COVERED_REASON}")
+    assert "1. log_read(memory=user-messages)" in message
 
 
 def test_format_tool_trace_numbers_calls_and_truncates_args():

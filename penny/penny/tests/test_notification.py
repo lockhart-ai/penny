@@ -46,12 +46,15 @@ def _ran(*calls: tuple[str, bool]) -> list[ToolCallRecord]:
 # ── The program's calls (#1911) ───────────────────────────────────────────────
 
 
-def test_program_calls_read_both_dialects_and_ignore_prose():
-    """A program's calls are read off its numbered steps, in both dialects a stored
-    prompt is written in: the rendered ``N. tool(args)`` a taught routine produces, and
-    the legacy hand-authored ``N. Call tool("x") …`` prose that names its call
-    mid-sentence.  A step that calls nothing contributes nothing, and a step naming a
-    tool this cycle does not run with is not a call it could cover."""
+def test_program_calls_read_the_rendered_dialect_only():
+    """A program's calls are read off its numbered steps in the ONE dialect that exists
+    (#1911): the rendered ``N. tool(args)`` a taught routine produces.
+
+    The call must OPEN the step.  Prose that merely NAMES a call — the seeded rows'
+    ``4. Call collection_write("x", …) once with all of them`` — reads as no call at
+    all, which is the point: those rows were dropped in the soft reboot, and a lenient
+    parse over prose can only manufacture a program nobody wrote.  A step naming a tool
+    this cycle does not run with is not a call it could cover either."""
     rendered = (
         "Watch the timetable.\n"
         "1. browse(queries=['https://ex.example/t'], extract='the dawn sailing')\n"
@@ -62,29 +65,18 @@ def test_program_calls_read_both_dialects_and_ignore_prose():
         ProgramCall(ordinal=2, tool="collection_write"),
     )
 
+    # THE WATCHED BOUNDARY: prose naming its calls mid-sentence is not a program.
     hand_authored = (
         "You extract the user's negative preferences from their recent messages.\n"
         '1. Call log_read("user-messages") to fetch new messages you have not seen.\n'
         "2. Identify every genuine DISLIKE — a thing the user avoids.\n"
         '3. Call collection_write("dislikes", entries=[...]) once with all of them.'
     )
-    assert program_calls(hand_authored, _SURFACE) == (
-        ProgramCall(ordinal=1, tool="log_read"),
-        ProgramCall(ordinal=3, tool="collection_write"),
-    )
+    assert program_calls(hand_authored, _SURFACE) == ()
 
     # Prose alone names no call; a verb off this cycle's surface is not one either.
     assert program_calls("Watch the page and write down what changed.", _SURFACE) == ()
     assert program_calls("1. send_message(content=<the message>)", _SURFACE) == ()
-
-
-def test_a_step_contributes_at_most_its_first_call():
-    """One step is one move of the routine: a later mention in the same step is prose
-    about it — a hand-authored step offering two ways to correct an entry is one step,
-    not two calls to cover."""
-    step = "1. Call update_entry(key=<key>, content=<new>) or collection_delete_entry(key=<key>)."
-    surface = _SURFACE | {"update_entry", "collection_delete_entry"}
-    assert program_calls(step, surface) == (ProgramCall(ordinal=1, tool="update_entry"),)
 
 
 def test_coverage_advances_in_order_over_the_programs_own_calls():
@@ -132,7 +124,7 @@ def test_a_program_with_no_write_at_all_is_covered_like_any_other():
     """Coverage is of the program's OWN calls, never of a tool identity: a routine that
     only reads completes exactly the way a routine that writes does.  (The code owner's
     correction: some skills will not have writes at all.)"""
-    read_only = program_calls('1. log_read("user-messages")', _SURFACE)
+    read_only = program_calls('1. log_read(memory="user-messages")', _SURFACE)
     assert is_covered(read_only, _ran(("log_read", True)))
 
 

@@ -50,13 +50,11 @@ from penny.text_validity import (
 )
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
-from penny.tools.memory_tools import DoneTool
 from penny.tools.models import BrowseArgs, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
     Proceed,
-    RejectToolCall,
     Repair,
     Retry,
     run_validators,
@@ -66,7 +64,6 @@ from penny.validation.response_validators import (
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
-    PrematureDoneValidator,
     RefusalValidator,
     SkillNarrationValidator,
     XmlTagValidator,
@@ -2596,6 +2593,31 @@ class TestPromptLogAnnotations:
         await agent.close()
 
 
+class _StubTerminator(Tool):
+    """A terminator tool for the LOOP tests only.
+
+    Production has none since #1911 — a chat turn ends by replying and a collector
+    cycle ends when its program's calls are covered — but the loop mechanics these
+    tests pin (the reroll of an invalid draw, batched-call dedup, the step budget) all
+    need SOME call that ends a background run to be exercised at all.  Supplying one
+    here keeps that coverage without asserting a surface production doesn't have."""
+
+    name = "stub_terminator"
+    description = "End the run."
+    parameters: dict[str, Any] = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        return ToolResult(message="Cycle complete.")
+
+
+class _TerminatingBackgroundAgent(BackgroundAgent):
+    """A background agent that stops on :class:`_StubTerminator` — the seam a real
+    ``Collector`` fills with its program-coverage read."""
+
+    def should_stop_loop(self, records: list[ToolCallRecord]) -> bool:
+        return any(record.tool == _StubTerminator.name and not record.failed for record in records)
+
+
 def _make_background_agent(test_db, *, max_steps=4):
     """A minimal BackgroundAgent (collector shape) for text-nudge testing.
 
@@ -2626,11 +2648,11 @@ def _make_background_agent(test_db, *, max_steps=4):
         max_retries=1,
         retry_delay=0.1,
     )
-    agent = BackgroundAgent(
+    agent = _TerminatingBackgroundAgent(
         system_prompt="test",
         model_client=client,
         embedding_model_client=client,
-        tools=[StubSearchTool(), DoneTool()],
+        tools=[StubSearchTool(), _StubTerminator()],
         db=db,
         config=config,
     )
@@ -2658,7 +2680,7 @@ class TestCollectorInvalidDrawReroll:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
                 return mock_llm._make_text_response(request, "**Done. Summary: wrote the entry.**")
-            return mock_llm._make_tool_call_response(request, "done", {})
+            return mock_llm._make_tool_call_response(request, "stub_terminator", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2672,7 +2694,7 @@ class TestCollectorInvalidDrawReroll:
         assert "Done. Summary: wrote the entry." not in redraw
         assert "you act only through tool calls" not in redraw
         # The cycle closed with a real done() record (not a lost/failed cycle).
-        assert any(record.tool == "done" for record in response.tool_calls)
+        assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
         await agent.close()
 
@@ -2689,7 +2711,7 @@ class TestCollectorInvalidDrawReroll:
                 )
             if count == 2:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "more"})
-            return mock_llm._make_tool_call_response(request, "done", {})
+            return mock_llm._make_tool_call_response(request, "stub_terminator", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2697,7 +2719,7 @@ class TestCollectorInvalidDrawReroll:
 
         tools_called = [record.tool for record in response.tool_calls]
         assert "search" in tools_called
-        assert "done" in tools_called
+        assert "stub_terminator" in tools_called
 
         await agent.close()
 
@@ -2713,7 +2735,7 @@ class TestCollectorInvalidDrawReroll:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
                 return mock_llm._make_text_response(request, "")
-            return mock_llm._make_tool_call_response(request, "done", {})
+            return mock_llm._make_tool_call_response(request, "stub_terminator", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2722,7 +2744,7 @@ class TestCollectorInvalidDrawReroll:
         assert len(mock_llm.requests) == 3
         assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
         assert "Please provide your response" not in str(mock_llm.requests[2]["messages"])
-        assert any(record.tool == "done" for record in response.tool_calls)
+        assert any(record.tool == "stub_terminator" for record in response.tool_calls)
 
         await agent.close()
 
@@ -2738,7 +2760,7 @@ class TestCollectorInvalidDrawReroll:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
                 return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
-            return mock_llm._make_tool_call_response(request, "done", {})
+            return mock_llm._make_tool_call_response(request, "stub_terminator", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2747,7 +2769,7 @@ class TestCollectorInvalidDrawReroll:
         assert len(mock_llm.requests) == 3
         assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
         assert '{"name": "done"' not in str(mock_llm.requests[2]["messages"])
-        done_records = [r for r in response.tool_calls if r.tool == "done"]
+        done_records = [r for r in response.tool_calls if r.tool == "stub_terminator"]
         assert len(done_records) == 1
         assert done_records[0].arguments == {}
 
@@ -2767,7 +2789,7 @@ class TestCollectorInvalidDrawReroll:
 
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        assert not any(record.tool == "done" for record in response.tool_calls)
+        assert not any(record.tool == "stub_terminator" for record in response.tool_calls)
 
         await agent.close()
 
@@ -2790,123 +2812,6 @@ class TestCollectorInvalidDrawReroll:
             ), prose
         # A draw that IS a call is never an invalid draw.
         assert agent._unusable_output_condition(_tool_response("search", {"query": "x"})) is None
-
-
-class TestCollectorPrematureDone:
-    """A collector whose very first tool call is done() — with no prior read /
-    write / browse — is refused with an ERROR TOOL RESPONSE (not a text-step
-    nudge: the model made a coherent tool call, so the correction goes back as
-    that call's failed result).  A failed done() doesn't stop the loop, so the
-    model sees the error and recovers with a real tool call first."""
-
-    @pytest.mark.asyncio
-    async def test_first_move_done_is_rejected_and_recovers(self, test_db, mock_llm):
-        """done() as the opening move → error tool response → model reads, then
-        legitimately closes with done()."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                # The production flavor: "no new matches" without reading anything.
-                return mock_llm._make_tool_call_response(request, "done", {})
-            if count == 2:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # The premature done() did NOT stop the loop — the model was called again.
-        assert len(mock_llm.requests) == 3
-        # The rejection came back as a TOOL result (not a user-turn nudge).
-        retry_messages = mock_llm.requests[1]["messages"]
-        tool_results = [m for m in retry_messages if m["role"] == "tool"]
-        assert tool_results, "premature done() should be refused via a tool result"
-        # Bespoke rejected-call narration (#1485) frames the refusal, and the actionable
-        # rejection body ("...before doing anything...") is preserved after the framing.
-        assert "rejected before it could run" in tool_results[-1]["content"]
-        assert "(done result)" in tool_results[-1]["content"]
-        assert "before doing anything" in tool_results[-1]["content"].lower()
-        assert not any(
-            m["role"] == "user" and "before doing" in m["content"] for m in retry_messages
-        )
-        # It recovered: a real work tool ran, then the cycle closed with done().
-        tools_called = [record.tool for record in response.tool_calls]
-        assert "search" in tools_called
-        assert "done" in tools_called
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_done_after_real_work_is_not_rejected(self, test_db, mock_llm):
-        """A done() that follows a real tool call is legitimate — the guard only
-        fires on a FIRST-move done(), so a normal read-then-done cycle is untouched."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # Two calls only — the done() on step 2 closed cleanly, never refused.
-        assert len(mock_llm.requests) == 2
-        done_records = [r for r in response.tool_calls if r.tool == "done"]
-        assert len(done_records) == 1
-        assert done_records[0].failed is False
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_batched_read_and_done_is_not_premature(self, test_db, mock_llm):
-        """A single response that batches [search, done] is not a bail — a real
-        tool call rode along, so the done() is honoured and closes the cycle."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            return mock_llm._make_parallel_tool_calls_response(
-                request,
-                [
-                    ("search", {"query": "inputs"}),
-                    ("done", {}),
-                ],
-            )
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # One model call: the batched done() stopped the loop, never refused.
-        assert len(mock_llm.requests) == 1
-        tools_called = [record.tool for record in response.tool_calls]
-        assert "search" in tools_called and "done" in tools_called
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_persistent_first_move_done_is_bounded_by_max_steps(self, test_db, mock_llm):
-        """A model that keeps opening with done() never loops forever — refused on
-        each non-final step, bounded by max_steps.  On the final step there's no
-        room to retry (like the text-bail fallback), so that done is honoured and
-        is the only recorded one — the refused earlier ones leave no record."""
-        agent, db, max_steps = _make_background_agent(test_db, max_steps=3)
-
-        mock_llm.set_response_handler(
-            lambda request, count: mock_llm._make_tool_call_response(request, "done", {})
-        )
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # Bounded at max_steps (didn't loop forever); only the final-step done()
-        # was accepted — the two refused first-move dones left no record.
-        assert len(mock_llm.requests) == 3
-        assert len([r for r in response.tool_calls if r.tool == "done"]) == 1
-
-        await agent.close()
 
 
 class TestChatCallShapedTextReroll:
@@ -3128,20 +3033,6 @@ class TestResponseValidators:
         assert is_done_json_bail('{"name": "search", "arguments": {}}') is False
         assert is_done_json_bail('{"name": "done", "arguments": "oops"}') is False
 
-    def test_premature_done_validator(self):
-        done = _tool_response("done", {})
-        # First-move done() with no prior records → reject.
-        reject = PrematureDoneValidator().check(done, _ctx(records=[]))
-        assert isinstance(reject, RejectToolCall)
-        assert "before doing anything" in reject.message.lower()
-        # done() after real work → honoured.
-        after_work = PrematureDoneValidator().check(
-            done, _ctx(records=[ToolCallRecord(tool="search", arguments={})])
-        )
-        assert isinstance(after_work, Proceed)
-        # Final step → honoured (no retry room).
-        assert isinstance(PrematureDoneValidator().check(done, _ctx(is_final_step=True)), Proceed)
-
     def test_chain_composition_is_one_list_entry_per_guard(self):
         """The response-shape chain is chat's and the base's; each agent shape declares
         its own run-shape guards and its own invalid-draw family.  A new guard = one
@@ -3159,13 +3050,12 @@ class TestResponseValidators:
         # its shape is discarded upstream, so there is nothing left for a response-shape
         # guard to say and the collector-flavoured empty nudge retired with it.
         assert "response_validators" not in vars(BackgroundAgent)
-        # Collector run-shape chain = the one guard on a COHERENT call, which survives
-        # the invalid-draw rejection because the model acted — just too early.
-        assert [v.__class__ for v in BackgroundAgent.run_shape_validators] == [
-            PrematureDoneValidator
-        ]
-        # Base agent has no run-shape guards (no shape forbids an early terminator) and
-        # declares no invalid draws (any text is a legitimate answer there).
+        # THE WATCHED DELETION (#1911): the collector's one run-shape guard was the
+        # premature-``done()`` refusal, and it retired with the tool it guarded — a
+        # first-move close is UNAVAILABLE now rather than refused.
+        assert BackgroundAgent.run_shape_validators == []
+        # Base agent has no run-shape guards either, and declares no invalid draws (any
+        # text is a legitimate answer there).
         assert Agent.run_shape_validators == []
         assert Agent.invalid_draw_conditions == ()
         # Chat's run-shape chain is the two narrate-from-the-RECORD nudges — what the run

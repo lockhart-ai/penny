@@ -33,7 +33,6 @@ from penny.tools.memory_tools import (
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
-    DoneTool,
     ExistsTool,
     GetEventTool,
     LogAppendTool,
@@ -89,16 +88,6 @@ class TestToolReasoningSchema:
         tool.to_ollama_tool()
         # The tool's own parameters should NOT have reasoning
         assert "reasoning" not in tool.parameters["properties"]
-
-    def test_done_injected_like_every_tool(self):
-        """The terminal done tool gets the injected reasoning param too — the
-        schema is uniform.  ``done()`` is argless (#1569), so it has NO required
-        fields and only the injected optional ``reasoning`` in its properties."""
-        tool = DoneTool()
-        schema = tool.to_ollama_tool()
-        params = schema["function"]["parameters"]
-        assert "reasoning" in params["properties"]
-        assert params.get("required", []) == []
 
     def test_tool_declared_reasoning_not_overwritten(self):
         """A tool that declares reasoning in its OWN parameters (browse) keeps
@@ -454,13 +443,4 @@ class TestMemoryLifecycleNarration:
         assert (
             GetEventTool.to_result_narration({}, ToolResult(message="x", success=False))
             == "You tried to look up an event but it didn't work:"
-        )
-
-    def test_done_narration_is_fixed(self):
-        """``done()`` is argless (#1569): its narration is a single fixed line — no
-        ``success`` branch, since the run's outcome is derived structurally from the
-        ledger, not from the terminator call."""
-        assert (
-            DoneTool.to_result_narration({}, ToolResult(message="ok"))
-            == "You wrapped up the cycle:"
         )

@@ -20,7 +20,6 @@ Mapping from the old inline ``_check_response`` branches:
   refusal branch          → ``RefusalValidator``       (Retry, no extra nudge)
   hallucinated-URL branch → ``HallucinatedUrlValidator`` (Retry, no extra nudge)
   strip-tool-calls-no-tools → ``HallucinatedToolCallRepair`` (Repair)
-  ``handle_premature_terminator`` → ``PrematureDoneValidator`` (RejectToolCall)
 
 **The call-shaped-text family is NOT here (#1839).** A draw that was meant to be a
 tool call and is not one — a collector's prose or done-as-JSON-text, a chat reply
@@ -45,13 +44,11 @@ from penny.constants import PennyConstants
 from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
 from penny.prompts import Prompt
-from penny.tools.memory_tools import DoneTool
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
     LoopContext,
     NudgeContinue,
     Proceed,
-    RejectToolCall,
     Repair,
     Retry,
     ValidationOutcome,
@@ -342,28 +339,3 @@ class AppliedConfigurationValidator(_RecordNarrationValidator):
 
 
 # ── Collector-only run-shape validator ───────────────────────────────────────
-
-
-class PrematureDoneValidator:
-    """A collector whose very first tool call is ``done()`` — with no prior read /
-    write / browse — is the ``⚠ NO WORK DONE`` bail: the model declared the cycle
-    finished without even checking its inputs.
-
-    The model made a *coherent* tool call, so the correction is an error tool
-    response (not a text-step nudge): the loop appends a failed tool-result for
-    the ``done`` call(s) and continues — a failed ``done`` doesn't stop the loop,
-    so the model sees the error and retries with a real tool call first.  Premature
-    only when (a) this response's calls are all ``done`` and (b) no non-``done``
-    call has run yet this cycle (``ctx.records``).  A batched ``[log_read, done]``
-    or a ``done`` after any read is honoured.  Bounded by ``max_steps``: on the
-    final step the done closes the cycle."""
-
-    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
-        if ctx.is_final_step or not response.has_tool_calls:
-            return Proceed(response=response)
-        calls = response.message.tool_calls or []
-        if any(call.function.name != DoneTool.name for call in calls):
-            return Proceed(response=response)
-        if any(record.tool != DoneTool.name for record in ctx.records):
-            return Proceed(response=response)
-        return RejectToolCall(message=Prompt.COLLECTOR_PREMATURE_DONE_REJECTION)

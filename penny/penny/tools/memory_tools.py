@@ -111,7 +111,7 @@ from penny.tools.memory_args import (
     ReadSimilarArgs,
     UpdateEntryArgs,
 )
-from penny.tools.models import NoArgs, ToolResult
+from penny.tools.models import ToolResult
 from penny.tools.skill_tools import SkillReadTool
 
 if TYPE_CHECKING:
@@ -1271,16 +1271,10 @@ def _is_name_variant(asked: str, existing: str) -> bool:
 # trailing closes only frame how the cycle may END; the actionable call lives per
 # entry.
 _DUPLICATE_CLOSE_SOME = "Refresh with richer info, or skip these."
-# All proposed entries were duplicates — nothing new landed.  The first variant names
-# the surface's OWN terminator, interpolated (#1911) rather than written literally: a
-# chat surface has none, and neither does a program-scoped collector cycle, so the name
-# is only ever the one the surface was built with and the message cannot invent a call
-# that isn't there.
-_DUPLICATE_CLOSE_ALL_TERMINATOR = (
-    "Nothing new to add — refresh one of the above with richer info, "
-    "otherwise call {terminator}() to close the cycle."
-)
-_DUPLICATE_CLOSE_ALL_CHAT = (
+# All proposed entries were duplicates — nothing new landed.  It names NO call to
+# close with (#1911): no surface carries a terminator, so there is nothing to instruct
+# and nothing that could name a tool the model does not have.
+_DUPLICATE_CLOSE_ALL = (
     "Nothing new to add this time — refresh one of the above only if you have richer info."
 )
 
@@ -1441,7 +1435,6 @@ class CollectionWriteTool(MemoryTool):
         author: str,
         scope: str | None = None,
         run_id: str | None = None,
-        terminator: str | None = None,
     ) -> None:
         self._db = db
         self._llm = llm_client
@@ -1450,9 +1443,6 @@ class CollectionWriteTool(MemoryTool):
         # The writing run — stamped on each new entry (created/last-written) so a
         # stored value cites the run that produced it (#1560).
         self._run_id = run_id
-        # The terminator THIS surface carries, or None (#1911) — read by the
-        # all-duplicates close, which may only name a call the model can actually make.
-        self._terminator = terminator
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         # This tool embeds, so a write to a mistyped collection gets the MEANING
@@ -1631,20 +1621,15 @@ class CollectionWriteTool(MemoryTool):
                 return only
         return None
 
-    def _duplicate_close(self, *, all_duplicates: bool) -> str:
+    @staticmethod
+    def _duplicate_close(*, all_duplicates: bool) -> str:
         """The trailing framing after the per-entry rejections (each already binds its
-        own ``update_entry`` call).  When the whole batch was duplicates, a surface that
-        CARRIES a terminator may be told to close with it; every other surface gets the
-        variant that names no call at all.
-
-        Keyed to the surface's own terminator rather than to "is this a collector"
-        (#1911): a program-scoped cycle is a collector and has no ``done`` — naming one
-        would be an instruction it cannot follow."""
-        if not all_duplicates:
-            return _DUPLICATE_CLOSE_SOME
-        if self._terminator is not None:
-            return _DUPLICATE_CLOSE_ALL_TERMINATOR.format(terminator=self._terminator)
-        return _DUPLICATE_CLOSE_ALL_CHAT
+        own ``update_entry`` call).  When the whole batch was duplicates, it says there
+        is nothing new and names no call at all — no surface carries a terminator any
+        more (#1911), so a close is never something to instruct."""
+        if all_duplicates:
+            return _DUPLICATE_CLOSE_ALL
+        return _DUPLICATE_CLOSE_SOME
 
 
 class UpdateEntryTool(MemoryTool):
@@ -2511,14 +2496,13 @@ class CollectionCatalogTool(MemoryTool):
 
     @staticmethod
     def _is_user_collection(row: MemoryRow) -> bool:
-        """A user collection — not a log, not a framework collector
-        (skills/quality/notifier).  Includes INERT collections (no
-        ``extraction_prompt`` yet, #1629): storage the user set up belongs in the
-        inventory, marked as having no routine.  Archived-inclusive (#1566): a
-        retired collection still enumerates, marked by its status."""
-        return (
-            row.type == MemoryType.COLLECTION and row.name not in PennyConstants.SYSTEM_COLLECTIONS
-        )
+        """A collection rather than a log.  There is no hide-list left (#1911): with
+        nothing pre-seeded, every collection IS a user collection, so the catalog shows
+        the registry as it stands.  Includes INERT collections (no ``extraction_prompt``
+        yet, #1629): storage the user set up belongs in the inventory, marked as having
+        no routine.  Archived-inclusive (#1566): a retired collection still enumerates,
+        marked by its status."""
+        return row.type == MemoryType.COLLECTION
 
     def _format(self, row: MemoryRow) -> str:
         # The skill-provenance line (#1603) sits right before the recipe it produced,
@@ -3356,33 +3340,6 @@ class ExistsTool(MemoryTool):
         return ToolResult(message="no")
 
 
-class DoneTool(Tool):
-    """Signal the cycle is finished — an argless sentinel (#1569).
-
-    ``done()`` takes no arguments: it just marks the cycle finished.  The run
-    record is GENERATED from the run's canonical ledger rows (its tool calls +
-    write-gate outcomes + structural counts), so there is no model-authored
-    ``success``/``summary`` to confabulate — what is generated cannot lie."""
-
-    name = PennyConstants.DONE_TOOL_NAME
-    description = (
-        "Call this — with NO arguments — when the cycle is finished.  It just marks "
-        "the cycle done; the run record is generated automatically from the tool "
-        "calls you actually made, so there is nothing to summarise."
-    )
-    parameters = {"type": "object", "properties": {}}
-    args_model = NoArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        return "You wrapped up the cycle:"
-
-    async def execute(self, **kwargs: Any) -> ToolResult:
-        # The done call itself always succeeds and never mutates state; the run's
-        # outcome is derived structurally from the ledger, not from this call.
-        return ToolResult(message="Cycle complete.")
-
-
 # ── On-demand collector trigger ─────────────────────────────────────────────
 
 
@@ -3399,8 +3356,8 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     extractor filters captured steps to (#1668: a skill renders into a collector
     prompt, so only collector-runnable steps belong in the recipe).
 
-    Discovered from the *real* assembly (``build_memory_tools`` + browse + choose +
-    done, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded list, so it can
+    Discovered from the *real* assembly (``build_memory_tools`` + browse + choose,
+    i.e. ``Agent.get_tools`` for a collector) rather than a hardcoded list, so it can
     never drift from what a collector actually runs — add a collector tool and it's
     covered for free.  ``choose`` rides here so a demonstrated
     ``choose`` step is capture-eligible for a skill (it is not orientation and not a
@@ -3411,12 +3368,13 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     archive / merge is rejected at authoring time rather than persisted into a prompt
     the collector could never run.
 
-    ``send_message`` is GONE from it (#1911): telling the user is no longer something
-    a cycle does, so a stored program naming it is refused at authoring time exactly
-    like a hallucinated tool — which is the structural version of the standing rule
-    that the chat agent must map "keep me posted" onto the ``notify`` flag and never
-    onto a step.  ``BrowseTool`` is imported lazily to keep this module's import
-    surface flat.
+    ``send_message`` and ``done`` are both GONE from it (#1911).  Telling the user is
+    no longer something a cycle does, and neither is closing one: a cycle ends when its
+    program's calls are covered.  So a stored program naming either is refused at
+    authoring time exactly like a hallucinated tool — which is the structural version of
+    the standing rule that the chat agent maps "keep me posted" onto the ``notify`` flag
+    and never onto a step.  ``BrowseTool`` is imported lazily to keep this module's
+    import surface flat.
     """
     from penny.tools.browse import BrowseTool
     from penny.tools.choose import ChooseTool
@@ -3425,7 +3383,7 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
         tool.name
         for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT, include_lifecycle=False)
     }
-    return frozenset(memory_names | {BrowseTool.name, ChooseTool.name, DoneTool.name})
+    return frozenset(memory_names | {BrowseTool.name, ChooseTool.name})
 
 
 def _reject_unknown_extraction_tools(
@@ -3452,7 +3410,6 @@ def build_memory_tools(
     run_id: str | None = None,
     include_lifecycle: bool = True,
     round_framing: RoundFraming | None = None,
-    terminator: str | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -3486,11 +3443,10 @@ def build_memory_tools(
     with how to
     address it, the guess-free fallback that every not-found error points at.
 
-    ``DoneTool`` is intentionally not here — it's loop-control, not capability, added
-    in ``BackgroundAgent.get_tools``.  Chat replies via final text and must not have
-    ``done`` available, or the model may call it instead of producing a reply.  There
-    is no ``send_message`` on any surface any more (#1911): an autonomous message is
-    the framework's to write and queue, after a cycle's program is covered.
+    There is no ``done`` and no ``send_message`` on any surface any more (#1911).
+    A chat turn ends by replying, a collector cycle ends when its program's calls are
+    covered, and an autonomous message is the framework's to write and queue after that
+    — so neither loop control nor emission is a capability the model reaches for.
 
     ``run_id`` is the id of the run that built the surface — the chat turn's run,
     or the collector cycle's — passed as an explicit parameter, never ambient state
@@ -3547,9 +3503,7 @@ def build_memory_tools(
         SkillReadTool(db),
     ]
     mutations: list[Tool] = [
-        CollectionWriteTool(
-            db, llm_client, agent_name, scope=scope, run_id=run_id, terminator=terminator
-        ),
+        CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
         UpdateEntryTool(db, agent_name, scope=scope, run_id=run_id),
         CollectionDeleteEntryTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),

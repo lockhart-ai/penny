@@ -437,6 +437,13 @@ class PennyConstants:
     # The cycle-terminator tool's name.  Only the collector shapes carry it; the
     # chat agent has no ``done`` tool, so failure envelopes that suggest calling
     # it gate that suggestion on the tool actually being registered.
+    # The name of the RETIRED terminator tool (#1911).  No surface carries it: a
+    # collector cycle ends when its program's calls are covered, and a chat turn ends
+    # by replying.  The constant survives because the NAME still appears where no live
+    # tool does — the ``{"name": "done"}`` JSON envelope the model emits from prior,
+    # which the invalid-draw guard discards by name, and the ledger rows written before
+    # the retirement, which the run renders and the skill extractor still have to
+    # recognise.  History is never rewritten.
     DONE_TOOL_NAME = "done"
     # The ledger identity of a browse micro-context extraction — a fresh
     # single-shot model call (content + instruction, no tools) that runs when a
@@ -592,22 +599,12 @@ class PennyConstants:
     # messages on the iOS surface (``channels/ios/channel.py``).  No longer a member
     # of ``SYSTEM_COLLECTIONS`` — there is no archived shell left to hide.
     MEMORY_NOTIFIER_COLLECTION = "notifier"
-    # The one surviving built-in preference extractor (seeded by migration 0027):
-    # very narrow and specific, so it stays where the generic catch-alls (likes,
-    # knowledge, thoughts, and the retired notifier/quality/skills/thoughts-pair
-    # shells) were nuked by migration 0097/#1676.
-    MEMORY_DISLIKES_COLLECTION = "dislikes"
-
-    # Built-in framework collections, seeded by migration rather than created by
-    # the user.  ``collection_catalog`` hides them: ``dislikes`` is Penny's own
-    # machinery (the negative-preference extractor), not a collection the *user*
-    # built, so the catalog — which surfaces user-built collections — leaves it out.
-    # The generic catch-alls that used to live here (likes/knowledge/thoughts + the
-    # retired notifier/quality/skills/unnotified-thoughts/notified-thoughts shells)
-    # were removed entirely by migration 0097/#1676 — a deleted row needs no
-    # catalog hiding.  Parallels ``SYSTEM_LOGS``.
-    SYSTEM_COLLECTIONS = frozenset(
-        {
-            MEMORY_DISLIKES_COLLECTION,
-        }
-    )
+    # NOTHING is pre-seeded any more (#1911, migration 0108) — the soft reboot.
+    # ``dislikes`` was the last migration-seeded collection: 0097 removed the eight
+    # generic catch-alls and kept it as "very narrow and specific", and the ruling
+    # retires that exemption too, on the principle that no intermediate legacy
+    # structure should be left standing.  So there is no ``SYSTEM_COLLECTIONS`` set
+    # and no ``MEMORY_DISLIKES_COLLECTION``: every collection in the registry is one
+    # the USER built, which is what let the catalog's hide-list and the duplicate
+    # check's skip-list go with them.  ``SYSTEM_LOGS`` above is untouched — the four
+    # logs are Python-populated perception, not collections anybody would rebuild.

@@ -68,7 +68,6 @@ from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import skill_params
-from penny.tools.memory_tools import DoneTool
 
 if TYPE_CHECKING:
     pass
@@ -238,6 +237,10 @@ class Collector(BackgroundAgent):
         response: ControllerResponse | None = None
         cancelled = False
         notified: NotificationOutcome | None = None
+        # Determined ONCE, inside the lock, while the cycle's program is still bound —
+        # the outcome is read against that program, so computing it again after the
+        # release would read an unbound one and report every cycle as unreadable.
+        outcome, reason = RunOutcome.FAILED, ""
         async with self._cycle_lock:
             try:
                 self._bind(collection)
@@ -274,10 +277,10 @@ class Collector(BackgroundAgent):
                     if not self._archive_if_run_limit_reached(collection, run_id):
                         self._archive_if_expired(collection, run_id)
                 self._bind(None)
-        # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or
-        # its write-gate stop reason) plus the actual tool trace — never a
-        # model-authored ``done()`` summary, which no longer exists.
-        outcome, reason = self._cycle_result(response, notified)
+        # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or its
+        # write-gate stop reason) plus the actual tool trace — never a model-authored
+        # summary, which no longer exists.  It reports the SAME determination the audit
+        # log was stamped with, rather than a second one.
         detail = reason or outcome.value
         message = f"Collector cycle complete: {detail}"
         tool_trace = self._format_tool_trace(response)
@@ -290,18 +293,25 @@ class Collector(BackgroundAgent):
 
         Reading the program HERE — once, when the target is bound — is what makes the
         exit deterministic: the calls the cycle has to make are settled before the
-        first model call, against the tool surface this very cycle runs with
-        (``get_tools`` needs the target bound, which is why the order matters)."""
+        first model call.
+
+        It is read against the UNSCOPED surface (``super().get_tools()``) — every tool a
+        collector could possibly run — because that is the vocabulary a stored program
+        was authored against.  Reading it against ``self.get_tools()`` would be
+        circular: this cycle's surface is derived FROM the program, so an unbound
+        program would offer nothing to recognise a program with."""
         self._current_target = collection
         if collection is None or collection.extraction_prompt is None:
             self._program = ()
             return
-        surface = frozenset(tool.name for tool in self.get_tools())
+        surface = frozenset(tool.name for tool in super().get_tools())
         self._program = program_calls(collection.extraction_prompt, surface)
         if not self._program:
             logger.warning(
-                "Collection '%s' has a program naming no runnable call — its cycles have "
-                "no completion to read and will close only on done() or a write-gate stop",
+                "Collection '%s' has no readable program — its stored prompt is not a "
+                "rendered routine, so its cycles have no calls to make and no completion "
+                "to read.  Re-attach a routine with collection_set(name='%s', skill=…)",
+                collection.name,
                 collection.name,
             )
 
@@ -368,25 +378,24 @@ class Collector(BackgroundAgent):
         """A collector cycle ends when its PROGRAM is covered, on a write-gate STOP, or
         on a successful ``done()``.
 
-        COVERAGE is the ordinary end since #1911, and it is a read rather than a move:
-        the calls the stored program makes are known before the cycle starts, so once
-        every one of them has executed in order the framework closes the loop and the
-        model is never asked to announce it.  That is what removed the four-step notify
-        tail the cycles were dying in.
+        COVERAGE is the ordinary end, and it is a read rather than a move: the calls
+        the stored program makes are known before the cycle starts, so once every one
+        of them has executed in order the framework closes the loop and the model is
+        never asked to announce it.  That is what removed the four-step notify tail the
+        cycles were dying in.
 
         A STOP carried by a tool result (``collection_write`` →
-        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) still aborts EARLY, before
-        coverage — a no-change cycle has nothing left worth doing.  ``done()`` survives
-        as the model's early out for a cycle with nothing left to do (and as the only
-        close a program the framework cannot read has at all); an early ``done()`` is
-        not completion, so it never notifies.
+        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) aborts EARLY, before
+        coverage — a no-change cycle has nothing left worth doing.
+
+        Those two are the ONLY closes.  There is no terminator tool on the surface, so
+        a cycle that cannot finish its program runs out its step budget and records why
+        (#1909) rather than being handed a way to declare itself done.
 
         ``records`` is the run's whole ordered history — coverage is a question about
         the run, not about the step that just finished."""
-        return (
-            is_covered(self._program, records)
-            or super().should_stop_loop(records)
-            or any(record.stop_reason is not None for record in records)
+        return is_covered(self._program, records) or any(
+            record.stop_reason is not None for record in records
         )
 
     def _closed_cleanly(self, response: ControllerResponse) -> bool:
@@ -410,11 +419,10 @@ class Collector(BackgroundAgent):
         - **completed** — every call the program makes executed, in order.  The reason
           says so, and carries what the notification did when the collection notifies:
           queued, or the honest note that nothing was sent and why.
-        - **early close** — a ``done()`` with the program unfinished: clean
-          (``worked``/``no_work``) with an empty reason, exactly as before, and no
-          notification, because an early out is not completion.
         - **aborted** — no close at all: durable state changed → ``incomplete``,
-          nothing changed → a ``failed`` bail, both naming what ended the run.
+          nothing changed → a ``failed`` bail, both naming what ended the run.  With no
+          terminator to reach for, a cycle that gave up lands here honestly instead of
+          declaring a clean close it did not earn.
 
         (``cancelled`` is handled separately — a preempted cycle never reaches here.)
         """
@@ -425,9 +433,7 @@ class Collector(BackgroundAgent):
             return clean, WRITE_GATE_STOP_REASONS[stop]
         if response is not None and is_covered(self._program, response.tool_calls):
             return clean, self._completed_reason(notified)
-        if self._has_done_call(response):
-            return clean, ""
-        reason = self._no_done_reason(response)
+        reason = self._unfinished_reason(response)
         return (RunOutcome.INCOMPLETE if produced else RunOutcome.FAILED), reason
 
     @staticmethod
@@ -557,18 +563,10 @@ class Collector(BackgroundAgent):
             "cancelled by foreground activity",
         )
 
-    @staticmethod
-    def _has_done_call(response: ControllerResponse | None) -> bool:
-        """True when the cycle closed via the argless ``done()`` sentinel (#1569) —
-        a structural read of the tool trace, not a model judgment."""
-        if response is None:
-            return False
-        return any(record.tool == DoneTool.name for record in response.tool_calls)
-
-    def _no_done_reason(self, response: ControllerResponse | None) -> str:
-        """The structural reason a cycle ended without closing — distinguish a run the
-        model call KILLED from actually hitting the step cap from the model trailing
-        off with a text answer (all failures, but for three different reasons).
+    def _unfinished_reason(self, response: ControllerResponse | None) -> str:
+        """The structural reason a cycle ended without finishing its program —
+        distinguish a run the model call KILLED from actually hitting the step cap from
+        the model trailing off (all failures, but for different reasons).
 
         A run that aborted on a model call carries the abort's own facts (#1909): which
         step died, the tool the last successful step ran, and the error's class and
@@ -577,19 +575,19 @@ class Collector(BackgroundAgent):
         only by exclusion.  The loop returns the ``AGENT_MAX_STEPS`` sentinel only on
         the real cap; anything else is an early give-up without reporting an outcome.
 
-        A cycle whose program names no runnable call gets its own line (#1911): with
-        nothing to read completion from, the structural close was never available to
-        it, and a record saying so is the difference between a diagnosable state and
-        one found by exclusion."""
+        A collection whose stored prompt is not a readable program gets its own line
+        (#1911): there is nothing to read completion from, so its cycles can never
+        close, and naming that is the difference between a diagnosable CONFIG DEFECT
+        and a collector that quietly fails forever."""
         if response is None:
             return "no response from cycle"
         if response.abort is not None:
             return response.abort.render()
-        if response.answer == PennyResponse.AGENT_MAX_STEPS:
-            return "max steps exceeded — no done() call"
         if not self._program:
             return COLLECTOR_UNREADABLE_PROGRAM_REASON
-        return "cycle ended without a done() call"
+        if response.answer == PennyResponse.AGENT_MAX_STEPS:
+            return "max steps exceeded — the program was left unfinished"
+        return "cycle ended with the program unfinished"
 
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
 
@@ -767,24 +765,19 @@ class Collector(BackgroundAgent):
         The scope is the program's own calls CLOSED over :attr:`Tool.advises`, so a
         sibling a result message points at (``collection_write``'s duplicate rejection
         naming ``update_entry``) is present to be called: a rendered instruction always
-        resolves in one call.  ``done`` is not in any program, so a scoped cycle has no
-        terminator at all — coverage and a write-gate STOP are its only closes, and a
-        genuinely stuck one ends on the max-steps/abort path with its own honest cause
-        rather than on a model-declared clean close.
+        resolves in one call.  There is no terminator among them — coverage and a
+        write-gate STOP are the cycle's only closes, and a genuinely stuck one ends on
+        the max-steps/abort path with its own honest cause rather than on a
+        model-declared clean close.
 
-        A program the framework CANNOT read (a legacy prose row) keeps the full surface
-        and its ``done()`` — byte-identical to before this change, because there is no
-        coverage to close it and taking its terminator away would leave it nothing."""
-        tools = super().get_tools(run_id)
-        if not self._program:
-            return tools
-        scoped = close_over_advice({call.tool for call in self._program}, tools)
-        return [tool for tool in tools if tool.name in scoped]
-
-    def _surface_terminator(self) -> str | None:
-        """``done`` only while this cycle's surface still carries it — a scoped cycle
-        has none, so nothing rendered on it may tell the model to close with one."""
-        return None if self._program else super()._surface_terminator()
+        A collection whose prompt is NOT a readable program gets an EMPTY surface: it
+        has no job this framework can run, so there is nothing to hand it and nothing
+        it could do.  That is a config defect the run record names (#1911's soft
+        reboot removed the seeded prose rows that used to make it a second mode), not a
+        fallback that quietly runs the collection some other way."""
+        available = super().get_tools(run_id)
+        scoped = close_over_advice({call.tool for call in self._program}, available)
+        return [tool for tool in available if tool.name in scoped]
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""

@@ -40,7 +40,7 @@ from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
 from penny.tools.choose import ChooseTool
-from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
+from penny.tools.memory_tools import CursorReadTool, build_memory_tools
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -57,7 +57,6 @@ from penny.validation.response_validators import (
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
-    PrematureDoneValidator,
     RefusalValidator,
     XmlTagValidator,
     build_strong_nudge,
@@ -186,12 +185,6 @@ class Agent:
     # _build_system_prompt) leave this empty and pass ``system_prompt=``
     # explicitly to ``run()``.
     system_prompt: str = ""
-
-    # Tool name that signals a successful cycle exit.  ``done`` is the only one:
-    # a collector's EARLY out, for a cycle with nothing left to do.  The cycle's
-    # ordinary end is not a tool call at all since #1911 — the framework closes it
-    # once the program's own calls are covered.
-    terminator_tool: str = DoneTool.name
 
     # The composable response-validation chain — one validator per live
     # condition, run in order by ``run_validators`` each model call.  Reads
@@ -327,10 +320,9 @@ class Agent:
         memory inventory + task instructions).  ``user`` is the primary
         Penny user so notify can address them by name and the profile
         section reads correctly.  Reads ``self.name`` (class attr — also
-        the prompt type identifier in promptlog) and ``self.terminator_tool``
-        (class attr) to drive the cycle.  Every cursored read in the surface
-        (``CursorReadTool`` — ``log_read``) has its pending cursor committed on
-        success and discarded on failure.
+        the prompt type identifier in promptlog) to drive the cycle.  Every cursored
+        read in the surface (``CursorReadTool`` — ``log_read``) has its pending cursor
+        committed on success and discarded on failure.
 
         ``run_id`` is supplied by the caller — the same UUID stamps every
         promptlog row this cycle produces, threads to the tool surface as the
@@ -372,21 +364,14 @@ class Agent:
     def _closed_cleanly(self, response: ControllerResponse) -> bool:
         """Did this cycle reach a clean, deliberate close?
 
-        The base answer is the terminator tool or a write-gate STOP (#1587) — both are
-        deliberate closes at the chokepoint, so the cursor commits and the tick isn't
-        re-run.  A model that signals completion as prose instead is not accommodated
-        (no text-form parsing): the cycle is not successful, its cursor doesn't commit,
-        and it re-runs next tick.
-
-        A template method rather than an expression inline, because the ``Collector``
-        adds the close its own run type has (#1911): a cycle whose PROGRAM's calls have
-        all executed is finished, read off the program rather than announced by the
-        model.  The run type decides what closing means; the shell just asks.
+        The base answer is a write-gate STOP (#1587) — a deliberate close at the
+        chokepoint, so the cursor commits and the tick isn't re-run.  There is no
+        terminator TOOL to close with any more (#1911); the ``Collector`` adds the
+        close its run type actually has, a read of its program's coverage.  A model
+        that signals completion as prose is not accommodated (no text-form parsing):
+        the cycle is not successful, its cursor doesn't commit, and it re-runs.
         """
-        return any(
-            record.tool == self.terminator_tool or record.stop_reason is not None
-            for record in response.tool_calls
-        )
+        return any(record.stop_reason is not None for record in response.tool_calls)
 
     @staticmethod
     def _consumed_input(success: bool, response: ControllerResponse) -> bool:
@@ -771,18 +756,14 @@ class Agent:
         """Check if the loop should stop early.
 
         ``records`` is the run's WHOLE ordered tool-call history including the step
-        that just ran — not that step alone.  The base answer reads the same either
-        way (a successful ``done()`` in an earlier step would already have stopped the
-        loop), and what needs the history is the ``Collector``'s coverage read (#1911):
-        "has every call the program makes executed, in order" is a question about the
-        run, not about one step.
+        that just ran — not that step alone, because what reads it is a question about
+        the RUN: the ``Collector``'s "has every call the program makes executed, in
+        order" (#1911).
 
-        Default: any *successful* call to the ``done`` tool is a graceful terminator.
-        A done call whose args failed validation keeps the loop going so the model sees
-        the validation error and can retry — otherwise the cycle would exit with a
-        recorded-but-empty done and produce a misleading audit row.
+        Default: never.  A chat turn ends by replying and there is no terminator tool
+        on any surface, so nothing stops this loop early but the step budget.
         """
-        return any(record.tool == DoneTool.name and not record.failed for record in records)
+        return False
 
     async def _call_model_validated(
         self,
@@ -1157,8 +1138,7 @@ class Agent:
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
 
-        ``BackgroundAgent.get_tools`` extends this with ``done``, the early-out
-        terminator a background cycle keeps.
+        A ``Collector`` narrows what this returns to its program's own calls.
 
         Builds fresh each cycle so runtime config changes take effect
         immediately and the underlying ``BrowseTool``'s author + cursor
@@ -1187,7 +1167,6 @@ class Agent:
             run_id=run_id,
             include_lifecycle=self._include_lifecycle_tools(),
             round_framing=self._configuring_round(),
-            terminator=self._surface_terminator(),
         )
         tools.append(self._build_browse_tool(author=self.name))
         # ``choose`` — the fair random picker — is on every agent surface, like
@@ -1198,23 +1177,11 @@ class Agent:
         tools.append(ChooseTool())
         return tools
 
-    def _surface_terminator(self) -> str | None:
-        """The terminator tool THIS surface carries, or ``None`` when it carries none.
-
-        Chat has none — it terminates by replying — so nothing rendered on a chat
-        surface may tell the model to close with a tool call.  ``BackgroundAgent``
-        returns ``done``, and ``Collector`` returns ``None`` for a program-scoped cycle
-        (#1911), which is what keeps a result message from naming a ``done()`` that
-        cycle does not have.  A template method rather than a flag, because it is the
-        run type that decides.
-        """
-        return None
-
-    def channel_outage_recovery(self) -> str:
-        """The move a browse channel-outage error binds — read from the surface rather
-        than fixed per class, since what a run can be told to do depends on what it
-        actually has (#1911)."""
-        return Prompt.BROWSE_OUTAGE_RECOVERY_CHAT
+    # Recovery move bound into a browse channel-outage error (no browser connected).
+    # Chat answers from memory or tells the user; a collector cycle works from what it
+    # already has.  Neither names a call to make — no surface carries a terminator
+    # (#1911), so an outage message has no close to point at.
+    channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT
 
     def _include_lifecycle_tools(self) -> bool:
         """Whether this agent may reshape the registry — create / update / merge /
@@ -1240,7 +1207,7 @@ class Agent:
             embedding_client=self._embedding_model_client,
             model_client=self._model_client,
             author=author,
-            channel_outage_recovery=self.channel_outage_recovery(),
+            channel_outage_recovery=self.channel_outage_recovery,
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)
@@ -1728,15 +1695,12 @@ class BackgroundAgent(Agent):
     (read inputs → process → write outputs → done) and need more loop
     iterations than a single chat turn.
 
-    Adds ``done`` to the chat-style tool surface so a background cycle with
-    nothing left to do has a way out.  Chat agents reply inline via final text and
-    must not have it — having ``done`` available there causes the model to call it
-    instead of producing a reply.
-
-    It adds NO ``send_message`` (#1911).  Telling the user is not something a cycle
-    does any more: the framework enters a scoped micro-context once the cycle's
-    program is covered and queues the message itself, so there is no send call left
-    on any surface for a decayed tool-call envelope to fail on.
+    It adds NOTHING to the chat-style tool surface (#1911).  A background cycle used
+    to carry ``done`` to close with and ``send_message`` to deliver with; the framework
+    owns both now — a cycle ends when its program's calls are covered, and the message
+    is written and queued after that, by a scoped micro-context with no tool channel at
+    all.  So there is no loop-control call and no send call left on any surface for a
+    decayed tool-call envelope to fail on.
     """
 
     # A collector acts ONLY through tool calls, so a draw carrying none is invalid
@@ -1756,29 +1720,11 @@ class BackgroundAgent(Agent):
         (ConditionKey.TEXT_INSTEAD_OF_TOOL, _any_text),
     )
 
-    # One run-shape guard applies to a collector that doesn't on chat: a first-move
-    # ``done()`` before any real work (``PrematureDoneValidator`` → ``RejectToolCall``).
-    # It is a guard on a COHERENT call, which is why it survives the invalid-draw
-    # rejection: the model acted, it just acted too early.
-    run_shape_validators: list[ResponseValidator] = [PrematureDoneValidator()]
+    # The premature-``done()`` guard retired with the tool it guarded (#1911): a
+    # first-move close is unavailable rather than refused.
+    run_shape_validators: list[ResponseValidator] = []
 
-    def _surface_terminator(self) -> str | None:
-        """A background cycle carries ``done`` as its early out (``Collector`` drops it
-        for a program-scoped cycle, #1911)."""
-        return DoneTool.name
-
-    def channel_outage_recovery(self) -> str:
-        """A cycle that still has ``done()`` is told to close with it; a program-scoped
-        one, which has no terminator at all, is told only to work from what it has —
-        never to make a call it cannot make."""
-        if self._surface_terminator() is None:
-            return Prompt.BROWSE_OUTAGE_RECOVERY_PROGRAM
-        return Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
+    channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
-
-    def get_tools(self, run_id: str | None = None) -> list[Tool]:
-        tools = super().get_tools(run_id)
-        tools.append(DoneTool())
-        return tools

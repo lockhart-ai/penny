@@ -953,9 +953,9 @@ class MemoryStore:
         resolves on and says nothing about duplication.
 
         Active rows are checked before archived ones (a tombstone), so a live "already
-        watching this" wins over a retired one.  Framework collections
-        (``SYSTEM_COLLECTIONS``) are excluded — Penny's own machinery, not a mechanism
-        a user re-creates.
+        watching this" wins over a retired one.  Nothing is excluded any more (#1911):
+        with no pre-seeded collections left, every row in the registry is one the user
+        built, so there is no framework machinery to skip past.
         """
         candidate = JobSide(
             name=slug(name),
@@ -969,14 +969,13 @@ class MemoryStore:
         return None
 
     def _duplicate_candidates(self) -> tuple[list[MemoryRow], list[MemoryRow]]:
-        """User collections eligible for the idempotency check, partitioned active
-        vs. archived — framework system collections and logs excluded."""
+        """Collections eligible for the idempotency check, partitioned active
+        vs. archived — logs excluded, and nothing else (#1911: every collection is a
+        user collection now)."""
         active: list[MemoryRow] = []
         archived: list[MemoryRow] = []
         for row in self.list_all():
             if row.type != MemoryType.COLLECTION.value:
-                continue
-            if row.name in PennyConstants.SYSTEM_COLLECTIONS:
                 continue
             (archived if row.archived else active).append(row)
         return active, archived

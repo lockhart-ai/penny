@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 
 from pydantic import ValidationError
 
-from penny.constants import PennyConstants, ProgressEmoji
+from penny.constants import ProgressEmoji
 from penny.tools.models import NoArgs, ToolArgs, ToolCall, ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -456,17 +456,8 @@ class ToolExecutor:
             logger.exception("Tool execution error: %s", tool_call.tool)
             return ToolResult(
                 narration=FRAMEWORK_NARRATION_EXCEPTION.format(tool_name=tool_call.tool, error=e),
-                message=f"Check the arguments you passed against the tool's parameters; if they "
-                f"look right, try a different approach{self._finish_clause()} rather than "
-                f"repeating the same call.",
+                message="Check the arguments you passed against the tool's parameters; "
+                "if they look right, try a different approach rather than repeating the "
+                "same call.",
                 success=False,
             )
-
-    def _finish_clause(self) -> str:
-        """`` or call done() to finish`` only when a ``done`` tool is registered.
-
-        The collector shapes carry ``done``; the chat agent does not, so the crash
-        envelope must not point a chat run at a tool it can't call."""
-        if self.registry.get(PennyConstants.DONE_TOOL_NAME) is not None:
-            return " or call done() to finish"
-        return ""
