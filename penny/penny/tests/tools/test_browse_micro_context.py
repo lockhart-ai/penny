@@ -195,7 +195,7 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     # The tool result carries the typed value alone — never the page body, and
     # no fetch-handle tail (success renders the value only; the old "saved to
     # browse-results#N" line read as the remembering being done).
-    assert _EXTRACTED_VALUE in result.message
+    assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
     assert _BODY_PHRASE not in result.message
     assert "Closes Friday" not in result.message
     assert _HANDLE_RE.search(result.message) is None
@@ -203,7 +203,7 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     # Byte-identical: the extracted value renders verbatim UNDER this page's own
     # section header (per-page extraction, #1682) — no re-transcription by the parent.
     assert result.message.startswith(
-        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_EXTRACTED_VALUE}"
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     )
 
     # The *built context* — what the agent loop appends as the model-facing tool
@@ -294,7 +294,7 @@ async def test_micro_result_render_forms(tmp_path):
     # browse-results#N" read as the remembering being done on the chat teach
     # round; the failure renders below keep the handle as their remedy).
     result, _handle_id = await _execute_extract(tmp_path, "ok", _TAGGED_VALUE)
-    assert result.message == f"{header}{_EXTRACTED_VALUE}"
+    assert result.message == f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     assert result.success is True
 
     result, handle_id = await _execute_extract(tmp_path, "absent", _TAGGED_NOT_PRESENT)
@@ -646,7 +646,7 @@ def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):
         _INSTRUCTION,
         stored,
     )
-    assert body == _EXTRACTED_VALUE
+    assert body == f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     body = tool._render_micro_result(
         MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason="no bid listed."),
         _INSTRUCTION,
