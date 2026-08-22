@@ -97,12 +97,15 @@ from penny.tests.eval.test_collector_enactment import (
 from penny.tests.eval.test_collector_enactment import (
     DIRECTION_CHECK_LABEL,
     ENACTMENT_CASES,
+    GATE_CASES,
+    _assert_the_baseline_is_stored,
     _EnactmentCase,
     _score_enactment,
     assert_applied_world,
     configured_terms,
     rendered_program,
     seed_applied_job,
+    seed_gate_world,
 )
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
@@ -526,6 +529,54 @@ def test_every_applied_job_seeds_and_reads_back_as_the_apply_turn_left_it(tmp_pa
         assert set(case.joins) <= set(case.values), (
             f"{case.case_id}: the join can only fill parameters the job binds, got "
             f"{sorted(set(case.joins) - set(case.values))}"
+        )
+
+
+def test_every_gate_case_seeds_the_baseline_its_direction_rests_on(tmp_path) -> None:
+    """Each notification-gate case's world seeds cleanly and leaves the collection holding
+    exactly the observation a prior cycle would have: one entry, under the measured modal
+    key, carrying the quiet value.
+
+    The KEY is what the negative direction rests on, and getting it wrong is silent. A
+    cycle that writes under a different key makes a NEW_KEY entry — a change, which
+    notifies — so the case would report the gate broken when what broke was the fixture.
+    The probe's second claim is the one that keeps it honest: the key is rendered in the
+    HOLDINGS block the cycle reads (#1914), which is the surface that makes reusing it the
+    presented path rather than a guess. Driven here against a real migrated database
+    because the probe otherwise runs only under ``make eval``.
+
+    Its own database per case, because that is what the sample gets — and because the two
+    directions of a pair share a seeding, so a defect in one is a defect in both."""
+    for index, case in enumerate(GATE_CASES):
+        db = migrated_db(str(tmp_path / f"gate-{index}.db"))
+        seed_gate_world(case)(db)
+        assert_applied_world(db, case.applied, holding={case.key_now: case.stored})
+        _assert_the_baseline_is_stored(db, case)
+
+
+def test_every_gate_pair_keeps_its_two_values_distinguishable() -> None:
+    """The value a gate case stores and the value its positive twin's page carries are
+    different values — in the bare form and in the instruction-labelled pair (#1918).
+
+    The pair is the whole design: one direction needs the served datum to EQUAL what is
+    stored (so the write gate stops), the other needs it to DIFFER (so the write lands and
+    notifies). A stored value that contained the changed one, or the other way round,
+    would make one of the two unreachable however well the cycle behaved."""
+    for case in GATE_CASES:
+        stored, changed = case.stored.casefold(), case.applied.fact.changed.casefold()
+        assert stored != changed, f"{case.case_id}: the two directions need two values"
+        label = case.container.casefold()
+        for form in (changed, f"{label}: {changed}"):
+            assert stored not in form, (
+                f"{case.case_id}: the stored value {case.stored!r} must not live inside the "
+                f"changed one's stored form {form!r}"
+            )
+        assert changed not in stored, (
+            f"{case.case_id}: the changed value must not live inside the stored one"
+        )
+        expected = case.applied.fact.changed if case.notifies else case.stored
+        assert case.datum == expected, (
+            f"{case.case_id}: the served datum must be the one its direction measures"
         )
 
 

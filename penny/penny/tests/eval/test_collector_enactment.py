@@ -83,10 +83,12 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from typing import NamedTuple
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from penny.agents.base import Agent
+from penny.agents.collector import Collector
 from penny.constants import (
     WRITE_GATE_STOP_REASONS,
     PennyConstants,
@@ -95,6 +97,7 @@ from penny.constants import (
 )
 from penny.conversation_machine import ConversationState, MachineSnapshot, RoundFraming
 from penny.database import Database
+from penny.database.memory import EntryInput
 from penny.database.models import MemoryRow
 from penny.database.skills import (
     _UNSUPPLIED_SLOT,
@@ -117,6 +120,7 @@ from penny.tests.eval.conftest import (
     CycleObservation,
     Preparer,
     Seeder,
+    collection_entries,
     seeded_run_id,
     send_queue_mechanisms,
 )
@@ -705,7 +709,9 @@ def _set_step(case: _EnactmentCase, row: MemoryRow) -> DistillInput:
 # ── The loud probe: the world really is the one the apply turn leaves ─────────
 
 
-def assert_applied_world(db: Database, case: _EnactmentCase) -> None:
+def assert_applied_world(
+    db: Database, case: _EnactmentCase, *, holding: dict[str, str] | None = None
+) -> None:
     """Everything the seeder is responsible for, asserted out loud.
 
     Five cases share one seeder and each sample costs two live cycles, so a drift here is
@@ -719,7 +725,22 @@ def assert_applied_world(db: Database, case: _EnactmentCase) -> None:
     _assert_every_round_is_in_the_ledger(db, journeys)
     _assert_the_applied_conversation(db, case)
     _assert_the_job_is_configured(db, case)
+    _assert_the_container_holds(db, case, holding or {})
     _assert_the_round_landed_in_apply(db, case)
+
+
+def _assert_the_container_holds(
+    db: Database, case: _EnactmentCase, expected: dict[str, str]
+) -> None:
+    """What the collection holds when the cycles start — NOTHING for a job the apply turn
+    just built, and the seeded baseline for a gate case that stands a prior observation
+    behind it.
+
+    Stated as a parameter rather than assumed empty, because the two shapes are two
+    different premises: a journey's first cycle is genuinely a first reading, and a gate
+    case's whole point is that one has already happened."""
+    held = collection_entries(db, case.container)
+    assert held == expected, f"{case.case_id}: the collection must hold {expected}, got {held}"
 
 
 def _assert_the_applied_conversation(db: Database, case: _EnactmentCase) -> None:
@@ -773,19 +794,13 @@ def _assert_the_job_is_configured(db: Database, case: _EnactmentCase) -> None:
 
 
 def _assert_the_program_is_rendered(db: Database, case: _EnactmentCase, row: MemoryRow) -> None:
-    """The stored program is the routine's own steps rendered into THIS container, and the
-    collection holds nothing yet.
-
-    The empty container is the premise of the quiet cycle: a job arriving from apply has
-    never observed anything, so what its first cycle finds is genuinely its first reading."""
+    """The stored program is the routine's own steps rendered into THIS container."""
     assert row.extraction_prompt == rendered_program(case), (
         f"{case.case_id}: the program must be the routine rendered into this container, got "
         f"{row.extraction_prompt!r}"
     )
     _assert_the_values_are_joined(case, row.extraction_prompt or "")
     _assert_the_program_parses(case, row.extraction_prompt or "")
-    entries = require_memory(db, case.container).read_all()
-    assert not entries, f"{case.case_id}: a job the apply turn just built holds nothing yet"
 
 
 def _assert_the_program_parses(case: _EnactmentCase, program: str) -> None:
@@ -858,12 +873,19 @@ def _assert_the_round_landed_in_apply(db: Database, case: _EnactmentCase) -> Non
     )
 
 
-def _probe_applied_world(case: _EnactmentCase) -> Preparer:
+def _baseline_holding(case: _GateCase) -> dict[str, str]:
+    """The one entry a gate case's world holds before its cycle runs."""
+    return {_baseline_key(case): case.stored}
+
+
+def _probe_applied_world(
+    case: _EnactmentCase, *, holding: dict[str, str] | None = None
+) -> Preparer:
     """The prepare hook: the seeder's own claims, run once the runner has laid the fixture
     registry down so the routine the job names is one that exists."""
 
     def probe(penny: Penny) -> None:
-        assert_applied_world(penny.db, case)
+        assert_applied_world(penny.db, case, holding=holding)
         routine = penny.db.skills.get(slug_skill_name(case.skill.name))
         assert routine is not None, f"{case.case_id}: the job's routine must be registered"
         _assert_the_surface_is_the_program(penny, case)
@@ -1251,6 +1273,224 @@ def _score_enactment(
     ]
 
 
+# ── The notification gate, one cycle at a time (#1919) ────────────────────────
+#
+# The journeys above walk a watch through its whole life, which is what makes the middle
+# cycle's silence meaningful — but it also means one number carries three claims, and a
+# red row does not say which direction broke.  The code owner's design splits them: "5x
+# there is a change and it's notified, and 5x there's no change and it's not notified...
+# a duplicate set of the same tests but with one change to the fixture, ie the value
+# retrieved by the browse is the same as the value already stored in the collection.
+# then the write should trigger the dupe STOP case which prevents from getting to notify."
+#
+# So each collection gets a PAIR, sharing one seeding: the applied collection plus its
+# baseline observation already stored, exactly as a prior cycle would have left it.  One
+# cycle each.  Serve the altered page and a notification is owed; serve the page whose
+# datum equals what is stored and the write gate must STOP before the notification is
+# ever entered.  Each case scores only its own direction's claims, which is the point.
+#
+# THE KEY IS THE LOAD-BEARING FIXTURE.  The negative direction only reaches the dupe STOP
+# if the cycle writes under the key the baseline is already stored under: a different key
+# is a NEW_KEY write, which is a change, which notifies — the negative would fail for a
+# reason that has nothing to do with the gate.  So each key is transcribed from the
+# measured modal draw, and the probe asserts it is rendered in the HOLDINGS block the
+# cycle reads (#1914), which is the surface that makes reuse the presented path rather
+# than a guess.
+
+
+class _GateCase(NamedTuple):
+    """One direction of the notification gate for one collection.
+
+    ``applied`` is the journey case this stands on — its world, its routine, its pages,
+    read rather than restated.  ``key``/``stored`` are the baseline observation seeded
+    into the collection: the key transcribed from the measured modal draw, and the value
+    a prior cycle left under it.  ``page`` is what this one cycle is served, ``datum``
+    what that page carries, and ``notifies`` the direction the case measures."""
+
+    case_id: str
+    applied: _EnactmentCase
+    key: str
+    stored: str
+    page: CannedPage
+    datum: str
+    notifies: bool
+
+    @property
+    def container(self) -> str:
+        return self.applied.container
+
+    @property
+    def key_now(self) -> str:
+        """The key the baseline is stored under, with a date-shaped key resolved to the
+        day this is read on — the form a probe compares against."""
+        return _baseline_key(self)
+
+
+# A key the routine derives from the DAY rather than from the thing it watches — the
+# bakery's daily special and the otter census both keyed their entries by date in the
+# measured draws.  Formatted at seed time in the user's own timezone, because that is the
+# date the cycle will derive when it runs.
+_TODAY_KEY = "{today}"
+
+
+def _baseline_key(case: _GateCase) -> str:
+    """The key the baseline is stored under, with a date-shaped key resolved to the day
+    the sample runs — a fixed date would be one the cycle never derives, so its write
+    would land on a fresh key and the negative direction would measure nothing."""
+    today = datetime.now(ZoneInfo(_USER_TIMEZONE)).date().isoformat()
+    return case.key.format(today=today)
+
+
+def seed_gate_world(case: _GateCase) -> Seeder:
+    """The applied world, plus the observation a prior cycle already recorded."""
+
+    def seed(db: Database) -> None:
+        seed_applied_job(case.applied)(db)
+        require_memory(db, case.container).write(
+            [EntryInput(key=_baseline_key(case), content=case.stored)],
+            author=_BASELINE_AUTHOR,
+            run_id=_BASELINE_RUN,
+        )
+
+    return seed
+
+
+# The prior cycle the baseline came from: a seeded-prefix run (so every "what did this
+# sample do" reader excludes it) written by the collector, which is who writes a
+# collection's entries when a cadence run observes something.
+_BASELINE_RUN = seeded_run_id("baseline-cycle")
+_BASELINE_AUTHOR = "collector"
+
+# The timezone the seeded user lives in — the one a date-shaped key is derived in.  Read
+# from where the runner seeds it rather than restated, so a fixture cannot drift into
+# deriving a date the cycle never will.
+_USER_TIMEZONE = "America/Los_Angeles"
+
+
+def _probe_gate_world(case: _GateCase) -> Preparer:
+    """The applied world's own probe, plus the two things this pair rests on: the baseline
+    really is stored, and the key it is stored under is one the cycle will READ."""
+
+    def probe(penny: Penny) -> None:
+        _probe_applied_world(case.applied, holding=_baseline_holding(case))(penny)
+        _assert_the_baseline_is_stored(penny.db, case)
+
+    return probe
+
+
+def _assert_the_baseline_is_stored(db: Database, case: _GateCase) -> None:
+    """The collection holds exactly the observation a prior cycle left, and the holdings
+    block the cycle reads RENDERS its key.
+
+    The second half is the one that keeps the negative direction honest.  A key the cycle
+    cannot see is a key it will not reuse, and a write under a fresh key is a NEW_KEY
+    change that notifies — so the case would report the gate broken when what broke was
+    the fixture.  Asserted against the SHIPPED holdings render, not a restatement of it."""
+    key = _baseline_key(case)
+    holdings = penny_holdings(db, case.container)
+    assert f"key={key!r}" in holdings, (
+        f"{case.case_id}: the cycle must be able to READ the key its baseline is stored "
+        f"under — the holdings block renders {holdings!r}"
+    )
+
+
+def penny_holdings(db: Database, container: str) -> str:
+    """The holdings block a cycle bound to ``container`` would read (#1914), through the
+    shipped render rather than a copy of it."""
+    memory = require_memory(db, container)
+    return Collector._holdings_body(
+        memory.read_latest(PennyConstants.COLLECTOR_HOLDINGS_LIMIT), memory.entry_count()
+    )
+
+
+def _score_gate(db: Database, cycles: list[CycleObservation], *, case: _GateCase) -> list[Check]:
+    """One cycle, scored for ITS OWN direction only — which is what the split buys: a red
+    row names whether the change went unreported or the no-change spoke anyway."""
+    cycle = cycles[0]
+    shared = [
+        _served_check(cycle, datum=case.datum),
+        _fetched_check(case.applied, cycle),
+        _honest_record_check(cycle),
+        _nothing_else_touched_check(db, case.applied),
+    ]
+    if case.notifies:
+        return [
+            *shared,
+            _recorded_check(cycle, fact=case.datum, absent=case.stored),
+            _completed_check(cycle),
+            _one_notify_check(case.applied, cycle),
+        ]
+    return [
+        *shared,
+        _recorded_check(cycle, fact=case.stored),
+        _stopped_check(cycle),
+        _silent_check(cycle),
+    ]
+
+
+async def _run_gate_case(collector_cycles_eval: CollectorCyclesEval, case: _GateCase) -> None:
+    """Drive one direction of one collection's notification gate: the applied world with
+    its baseline already observed, one cycle against the page this direction serves, and
+    the shared checks bound to that direction's claims."""
+    await collector_cycles_eval(
+        case_id=case.case_id,
+        collection=case.container,
+        seed=seed_gate_world(case),
+        seed_skills=[journey.round.skill for journey in case.applied.parked.parked.journeys],
+        prepare=_probe_gate_world(case),
+        cycles=[[case.page, *_SUPPLIED_SPACES]],
+        score=partial(_score_gate, case=case),
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+def _gate_pair(applied: _EnactmentCase, key: str) -> tuple[_GateCase, _GateCase]:
+    """One collection's two directions off a single declaration — the baseline is the
+    QUIET value either way, and only the page served differs."""
+    stem = applied.case_id
+    return (
+        _GateCase(
+            case_id=f"{stem}-notifies",
+            applied=applied,
+            key=key,
+            stored=applied.fact.quiet,
+            page=applied.altered,
+            datum=applied.fact.changed,
+            notifies=True,
+        ),
+        _GateCase(
+            case_id=f"{stem}-quiet",
+            applied=applied,
+            key=key,
+            stored=applied.fact.quiet,
+            page=applied.quiet,
+            datum=applied.fact.quiet,
+            notifies=False,
+        ),
+    )
+
+
+# Each key is the MODAL key the measured cycles wrote under.  Two are date-shaped: the
+# bakery files a special per day and the census keyed its count the same way, so those
+# resolve to the day the sample runs.
+_TIMETABLE_GATE = _gate_pair(_TIMETABLE, "dawn sailing")
+_LISTING_GATE = _gate_pair(_LISTING, "price")
+_COUNT_GATE = _gate_pair(_COUNT, _TODAY_KEY)
+_DIGEST_GATE = _gate_pair(_DIGEST, _TODAY_KEY)
+_HELD_BINDING_GATE = _gate_pair(_HELD_BINDING, "the dawn sailing")
+
+# Both directions of every collection, in one place — so the deterministic pins can drive
+# each seeder and check its claims without a GPU.
+GATE_CASES = (
+    *_TIMETABLE_GATE,
+    *_LISTING_GATE,
+    *_COUNT_GATE,
+    *_DIGEST_GATE,
+    *_HELD_BINDING_GATE,
+)
+
+
 async def _run_enactment_case(
     collector_cycles_eval: CollectorCyclesEval, case: _EnactmentCase
 ) -> None:
@@ -1311,3 +1551,81 @@ async def test_the_held_binding_watch_runs_its_cycles(
     """The timetable job's twin, bound from the other side: the same world, the same
     routine, and a keyword the user spoke rather than one the ask carried."""
     await _run_enactment_case(collector_cycles_eval, _HELD_BINDING)
+
+
+# ── The ten gate cases: five that must speak, five that must not ─────────────
+
+
+async def _gate(collector_cycles_eval: CollectorCyclesEval, case: _GateCase) -> None:
+    await _run_gate_case(collector_cycles_eval, case)
+
+
+async def test_the_timetable_notifies_when_the_sailing_appears(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The board now carries a time where it carried none: a change, and the user is told."""
+    await _gate(collector_cycles_eval, _TIMETABLE_GATE[0])
+
+
+async def test_the_timetable_stays_quiet_when_the_board_is_unchanged(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The board says what it already said: the write gate stops at the chokepoint and
+    nothing reaches the user."""
+    await _gate(collector_cycles_eval, _TIMETABLE_GATE[1])
+
+
+async def test_the_listing_notifies_when_the_price_moves(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The listing is repriced: a change, and the user is told."""
+    await _gate(collector_cycles_eval, _LISTING_GATE[0])
+
+
+async def test_the_listing_stays_quiet_when_the_price_holds(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The listing carries the price it already carried: silence."""
+    await _gate(collector_cycles_eval, _LISTING_GATE[1])
+
+
+async def test_the_count_notifies_when_the_number_drops(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The census is lower than it was: a change, and the user is told."""
+    await _gate(collector_cycles_eval, _COUNT_GATE[0])
+
+
+async def test_the_count_stays_quiet_when_the_number_holds(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The census reads what it already read: silence."""
+    await _gate(collector_cycles_eval, _COUNT_GATE[1])
+
+
+async def test_the_daily_special_notifies_when_the_dish_changes(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """A different dish is on the board: a change, and the user is told."""
+    await _gate(collector_cycles_eval, _DIGEST_GATE[0])
+
+
+async def test_the_daily_special_stays_quiet_when_the_dish_is_the_same(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The same dish is still on the board: silence."""
+    await _gate(collector_cycles_eval, _DIGEST_GATE[1])
+
+
+async def test_the_held_binding_notifies_when_the_sailing_appears(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The timetable job's twin, bound from the other side: a change, and the user is told."""
+    await _gate(collector_cycles_eval, _HELD_BINDING_GATE[0])
+
+
+async def test_the_held_binding_stays_quiet_when_the_board_is_unchanged(
+    collector_cycles_eval: CollectorCyclesEval,
+) -> None:
+    """The twin's no-change direction: the write gate stops and nothing is sent."""
+    await _gate(collector_cycles_eval, _HELD_BINDING_GATE[1])
