@@ -311,9 +311,16 @@ class _WatchedFact(NamedTuple):
     the page has to come back holding.
 
     ``quiet`` is what the page said when the job was set up and ``changed`` what it says
-    on the second cycle.  Both are matched as substrings of the entry the cycle wrote
+    on the later cycles.  Both are matched as substrings of the entry the cycle wrote
     (key or content — where in the entry a fact lands is deliberately open), so a cycle
-    that stored the value with its units or its label still reads as having stored it."""
+    that stored the value with its units or its label still reads as having stored it.
+
+    That substring shape is what makes these survive #1918 unchanged.  The browse result
+    now hands back the extracted value LABELLED with the instruction it answers ("the dawn
+    sailing: scheduled 05:20"), so a cycle copying step 1 verbatim stores the pair rather
+    than the bare value — and a check written against the VALUE reads both forms as the
+    same find, which is the reading it always had.  Neither half needed widening; stating
+    it here so the next reader knows that was checked rather than assumed."""
 
     quiet: str
     changed: str
