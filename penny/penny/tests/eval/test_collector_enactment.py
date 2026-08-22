@@ -32,19 +32,20 @@ entries, the run records, and the SEND QUEUE read explicitly (a collector cycle 
 and the drainer that delivers is a separate schedule, so a pending-only read reports a
 delivered notification as silence).
 
-Since #1911 a cycle CLOSES by covering its program rather than by declaring itself done,
-and telling the user is framework-entered rather than four more steps the model has to
-survive.  So the cycle checks read the four structural terminal shapes off the run's own
-declared reason — stopped at the chokepoint · completed · completed-and-notified ·
-aborted-with-cause — instead of inferring a close from an absent ``done()``, and both
-notify claims read the SEND QUEUE beside the run record's notification outcome: the queue
-says what the user will receive, the outcome says what the framework decided, and a
+Since #1911 telling the user is framework-entered rather than four more steps the model
+has to survive — and since #1916 a cycle again CLOSES by calling ``done()``, because
+deriving the close from program coverage left a cycle that departed from its program for
+a good reason (taking the store's own advice to ``update_entry``) with no way to finish
+at all.  So the cycle checks read the four structural terminal shapes — stopped at the
+chokepoint · closed · closed-and-notified · aborted-with-cause — the STOP off the run's
+declared reason and the close off the LEDGER's own ``done`` record, and both notify
+claims read the SEND QUEUE beside the run record's notification outcome: the queue says
+what the user will receive, the outcome says what the framework decided, and a
 notification entered and then declined is a different finding from one never entered.
-The loud probe gained the two things that state now rests on — the stored program PARSES
+The loud probe holds the two things the surface now rests on — the stored program PARSES
 under the strict rendered dialect, and a cycle's tool surface is exactly that program's
-calls closed over the advice relation — because an unreadable program yields an empty
-surface and a config-defect run record, which every later check would report as the model
-doing nothing.
+calls closed over the advice relation plus the terminator — because an unreadable program
+leaves a cycle with nothing to run but its own close.
 
 The five collections are the five the apply beat leaves behind, transcribed from that
 beat's own measured draws — the configured row (name, routine, injected values, schedule,
@@ -87,7 +88,6 @@ import pytest
 
 from penny.agents.base import Agent
 from penny.constants import (
-    COLLECTOR_COVERED_REASON,
     WRITE_GATE_STOP_REASONS,
     PennyConstants,
     RunOutcome,
@@ -109,6 +109,7 @@ from penny.database.skills import (
 from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.penny import Penny
 from penny.program import program_calls
+from penny.prompts import Prompt
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     Check,
@@ -186,7 +187,7 @@ _BROWSE_TOOL = "browse"
 # the canonical two-step round (read the page, write what it said), so the shape is
 # stated once rather than five times.  It is what the STRICT dialect must parse the
 # stored program back into, so a routine that grows or reorders a step fails in the seed
-# naming the case rather than as a puzzling coverage miss after three live cycles.
+# naming the case rather than as a puzzling empty-surface run after three live cycles.
 _PROGRAM_TOOLS = (_BROWSE_TOOL, "collection_write")
 
 # The write-gate STOP a no-change cycle ends on, as the run record states it — read from
@@ -757,6 +758,10 @@ def _assert_the_program_parses(case: _EnactmentCase, program: str) -> None:
         f"{case.case_id}: the stored program must read back as {list(_PROGRAM_TOOLS)} under "
         f"the rendered dialect, got {list(parsed)} — program: {program!r}"
     )
+    assert Prompt.COLLECTOR_DONE_STEP not in program, (
+        f"{case.case_id}: the terminal step is assembly's to inject (#1916) — a STORED "
+        f"program carrying one is a render a chat ledger cannot produce"
+    )
 
 
 def _assert_the_values_are_joined(case: _EnactmentCase, program: str) -> None:
@@ -832,13 +837,15 @@ def _assert_the_surface_is_the_program(penny: Penny, case: _EnactmentCase) -> No
         collector._bind(row)
         # The UNSCOPED surface, read the way the binding reads it — every tool a collector
         # could run, which is the vocabulary the scoping narrows from.
-        expected = close_over_advice(_PROGRAM_TOOLS, Agent.get_tools(collector))
+        expected = set(close_over_advice(_PROGRAM_TOOLS, Agent.get_tools(collector)))
+        expected.add(PennyConstants.DONE_TOOL_NAME)
         surface = {tool.name for tool in collector.get_tools()}
     finally:
         collector._bind(None)
-    assert surface == set(expected), (
-        f"{case.case_id}: a cycle must run with its program's calls closed over advice — "
-        f"expected {sorted(expected)}, the bound surface is {sorted(surface)}"
+    assert surface == expected, (
+        f"{case.case_id}: a cycle must run with its program's calls closed over advice, "
+        f"plus the terminator assembly injects a step for (#1916) — expected "
+        f"{sorted(expected)}, the bound surface is {sorted(surface)}"
     )
 
 
@@ -852,25 +859,31 @@ def _assert_the_surface_is_the_program(penny: Penny, case: _EnactmentCase) -> No
 class _TerminalShape(StrEnum):
     """How a cycle ended — the four structural shapes a run record carries (#1911).
 
-    ``done()`` is gone, so a cycle no longer declares its own close: it either STOPPED at
-    the write chokepoint, COMPLETED by covering its program, or ABORTED carrying the cause
-    it ended on.  The fourth shape, completed-and-notified, is COMPLETED plus a
-    notification outcome — read separately by ``_notification_of``, because whether the
+    A cycle either STOPPED at the write chokepoint, CLOSED with ``done()`` — back since
+    #1916, because deriving the close from program coverage left a cycle that departed
+    from its program for a good reason with no way to finish at all — or ABORTED
+    carrying the cause it ended on.  The fourth shape, closed-and-notified, is CLOSED
+    plus a notification outcome, read separately by ``_notification_of``: whether the
     user was told is a different question from whether the job finished."""
 
     STOPPED = "stopped"
-    COMPLETED = "completed"
+    CLOSED = "closed"
     ABORTED = "aborted"
 
 
 def _shape_of(cycle: CycleObservation) -> _TerminalShape:
-    """Which terminal shape a cycle's run record carries, read off its declared reason
-    rather than inferred from what is absent (the inference that died with ``done()``)."""
-    reason = cycle.reason or ""
-    if reason == _STOP_REASON:
+    """Which terminal shape a cycle's run record carries.
+
+    The STOP is read off the declared reason; the clean close is read off the LEDGER —
+    a successful ``done`` among the calls — because a clean close carries no reason of
+    its own (the record's header falls back to the outcome enum, and when the collection
+    notifies the reason is the notification note alone).  Reading the close from the call
+    rather than from a stamped phrase is also what makes it robust to the note being
+    there or not."""
+    if cycle.reason == _STOP_REASON:
         return _TerminalShape.STOPPED
-    if reason.startswith(COLLECTOR_COVERED_REASON):
-        return _TerminalShape.COMPLETED
+    if PennyConstants.DONE_TOOL_NAME in cycle.tools:
+        return _TerminalShape.CLOSED
     return _TerminalShape.ABORTED
 
 
@@ -878,13 +891,13 @@ def _notification_of(cycle: CycleObservation) -> NotificationOutcome | None:
     """What the framework's notification came to on this cycle, or ``None`` when it was
     never entered at all.
 
-    Read off the completed reason's own tail — the note the outcome is rendered as — so
-    "the user was told" is a read of the run record rather than an inference from the
-    queue.  The three outcomes are three different findings: queued (delivered or
-    pending), no usable message drawn, and the send declined."""
-    _, _, note = (cycle.reason or "").partition("; ")
+    Read off the closed cycle's reason, which since #1916 is the note ALONE — so "the
+    user was told" is a read of the run record rather than an inference from the queue.
+    The three outcomes are three different findings: queued (delivered or pending), no
+    usable message drawn, and the send declined."""
+    reason = cycle.reason or ""
     return next(
-        (outcome for outcome, text in NOTIFICATION_NOTES.items() if note and text == note),
+        (outcome for outcome, text in NOTIFICATION_NOTES.items() if text == reason),
         None,
     )
 
@@ -967,16 +980,15 @@ def _stopped_check(cycle: CycleObservation) -> Check:
 
 
 def _completed_check(cycle: CycleObservation) -> Check:
-    """The cycle COVERED its program — every call the routine makes executed, in order —
-    which since #1911 is what finishing means.
+    """The cycle CLOSED — it finished its work and said so with ``done()``, which since
+    #1916 is again what finishing means.
 
-    Read off the run's own reason, which opens with the covered line: there is no
-    ``done()`` for the model to close on any more, so a cycle either walks its program or
-    ends carrying the cause it ended on (a write-gate STOP, a failed model call, the step
-    cap).  The rationale names whichever of those it was."""
-    completed = _shape_of(cycle) is _TerminalShape.COMPLETED
+    Read off the ledger's own close rather than off a stamped phrase: a cycle either
+    closes deliberately or ends carrying the cause it ended on (a write-gate STOP, a
+    failed model call, the step cap).  The rationale names whichever of those it was."""
+    completed = _shape_of(cycle) is _TerminalShape.CLOSED
     return Check(
-        f"cycle {cycle.index + 1}: the cycle covered its program",
+        f"cycle {cycle.index + 1}: the cycle closed its run",
         completed,
         rationale=None if completed else f"the run closed {cycle.reason or cycle.outcome or '—'}",
         kind="spine",

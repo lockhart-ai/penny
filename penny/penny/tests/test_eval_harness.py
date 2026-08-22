@@ -29,7 +29,7 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
-from penny.constants import COLLECTOR_COVERED_REASON, PennyConstants, RunOutcome
+from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
 from penny.database.memory import MemoryType
@@ -579,8 +579,9 @@ def test_the_enactment_scorer_passes_three_cycles_that_did_the_job(tmp_path) -> 
 _ENACTMENT_KEY = "current"
 
 # The surface a configured collection's cycle runs with — its program's own two calls
-# (#1911), which is what the runtime-rules block renders against.
-_ENACTMENT_SURFACE = ("browse", "collection_write")
+# (#1911) plus the terminator assembly injects a step for (#1916), which is what the
+# runtime-rules block renders against.
+_ENACTMENT_SURFACE = ("browse", "collection_write", PennyConstants.DONE_TOOL_NAME)
 
 
 def _three_good_cycles(case: _EnactmentCase) -> list[CycleObservation]:
@@ -589,7 +590,7 @@ def _three_good_cycles(case: _EnactmentCase) -> list[CycleObservation]:
     that queues one message naming what moved."""
     quiet = {_ENACTMENT_KEY: case.fact.quiet}
     return [
-        _did_the_job(case, index=0, before={}, after=quiet, reason=COLLECTOR_COVERED_REASON),
+        _did_the_job(case, index=0, before={}, after=quiet),
         _did_the_job(
             case, index=1, before=quiet, after=quiet, outcome=RunOutcome.NO_WORK, reason=_STOP
         ),
@@ -599,7 +600,7 @@ def _three_good_cycles(case: _EnactmentCase) -> list[CycleObservation]:
             before=quiet,
             after={_ENACTMENT_KEY: case.fact.changed},
             sent=[f"heads up — it now says {case.fact.changed}"],
-            reason=f"{COLLECTOR_COVERED_REASON}; {NOTIFICATION_NOTES[NotificationOutcome.QUEUED]}",
+            reason=NOTIFICATION_NOTES[NotificationOutcome.QUEUED],
         ),
     ]
 
@@ -616,12 +617,15 @@ def _did_the_job(
 ) -> CycleObservation:
     """One cycle that did exactly what the watch contract asks of it: fetched the page the
     job is pointed at, wrote what it said, queued whatever the change warranted, and closed
-    with a run record stating it — the program covered, since #1911 deleted ``done()`` and
-    a cycle finishes by walking its own calls."""
+    with a run record stating it — and closed with ``done()``, which #1916 restored as
+    how a cycle says it has finished.  A cycle that STOPPED at the chokepoint never
+    reaches the terminator, so it carries no ``done`` record."""
     calls = [
         CycleCall(tool="browse", arguments={"queries": [case.values["url"]]}),
         CycleCall(tool="collection_write", arguments={"memory": case.container}),
     ]
+    if reason != _STOP:
+        calls.append(CycleCall(tool=PennyConstants.DONE_TOOL_NAME, arguments={}))
     return CycleObservation(
         index=index,
         before=before,
