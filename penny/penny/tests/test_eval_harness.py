@@ -659,6 +659,7 @@ def _did_the_job(
         after=after,
         sent=sent or [],
         calls=calls,
+        served=[f"## browse: {case.values['url']}\n{next(iter(after.values()))}"],
         outcome=outcome.value,
         reason=reason,
     )

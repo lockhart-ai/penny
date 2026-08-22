@@ -243,15 +243,30 @@ def _datum(page: CannedPage, old: str, new: str) -> CannedPage:
     return replace(page, text=page.text.replace(old, new))
 
 
-# The ferry board's watched line becomes the terse status the timetable really posts: the
-# LINE is the datum, so "what is the dawn sailing doing" is answered by copying it.
+# The ferry board's watched line, in the terse form the timetable really posts.  Two
+# things it has to get right, both measured in round 6:
+#
+# The value must read as an ANSWER when it comes back BARE.  The extract is handed the
+# keyword alone and returns the value part without its label, so "Dawn sailing: 05:20."
+# reached the cycle as "05:20" — a naked time with nothing saying what it was — and the
+# model recorded the previous value instead, reasoning that "the extracted value ... was
+# empty".  Its quiet twin survived the same stripping only by accident: "not scheduled"
+# happens to describe itself.  So BOTH sides are schedule statuses, and the change is the
+# status changing.
+#
+# And the line carries the article, because the two ferry cases bind DIFFERENT keywords
+# off the same page — "dawn sailing" and "the dawn sailing" — and a keyword that does not
+# appear verbatim is one the extract can refuse to find (3 of 5 held-binding samples came
+# back with a not-found sentence instead of a value).  "The dawn sailing" contains both.
 _NORTH_PIER_QUIET = _datum(
     _NORTH_PIER_DEPARTURES,
     "Dawn sailing: not on the board this season.",
-    "Dawn sailing: not scheduled.",
+    "The dawn sailing: not scheduled.",
 )
 _NORTH_PIER_WITH_THE_DAWN = _datum(
-    _NORTH_PIER_QUIET, "Dawn sailing: not scheduled.", "Dawn sailing: 05:20."
+    _NORTH_PIER_QUIET,
+    "The dawn sailing: not scheduled.",
+    "The dawn sailing: scheduled 05:20.",
 )
 
 # The listing's own price is labelled as THE current one, so the neighbouring items'
@@ -382,7 +397,7 @@ _TIMETABLE = _EnactmentCase(
     ),
     quiet=_NORTH_PIER_QUIET,
     altered=_NORTH_PIER_WITH_THE_DAWN,
-    fact=_WatchedFact(quiet="not scheduled", changed="05:20"),
+    fact=_WatchedFact(quiet="not scheduled", changed="scheduled 05:20"),
     confirmation=(
         "Got it! I just set up a routine that watches the North Pier departures page "
         "(<https://northpier.example/departures>) for “Dawn Sailing.” It runs once a day at "
@@ -480,7 +495,7 @@ _HELD_BINDING = _EnactmentCase(
     ),
     quiet=_NORTH_PIER_QUIET,
     altered=_NORTH_PIER_WITH_THE_DAWN,
-    fact=_WatchedFact(quiet="not scheduled", changed="05:20"),
+    fact=_WatchedFact(quiet="not scheduled", changed="scheduled 05:20"),
     confirmation=(
         "Got it! I’m now watching the North Pier departures page at "
         "https://northpier.example/departures for a line that says “the dawn sailing.” The "
@@ -925,6 +940,30 @@ def _entry_texts(entries: dict[str, str]) -> str:
     return " ".join([*entries.keys(), *entries.values()]).casefold()
 
 
+def _served_check(cycle: CycleObservation, *, datum: str) -> Check:
+    """THE HARNESS GUARD: this cycle was actually shown its own page.
+
+    A multi-cycle case installs a different browse register per cycle, and every claim it
+    makes rests on that swap having taken effect.  When it does not, nothing else in the
+    report says so — the model behaves correctly for the page it was shown, and the case
+    reports as the model getting it wrong.  Round 6 cost a whole diagnosis to the
+    question this answers in one row: the pages WERE served correctly, and the defect was
+    a datum that did not survive extraction.
+
+    Scored as a guard rather than as behaviour, because a failure here is the harness's,
+    not the model's.  Read off the browse-results log — what the tool actually returned —
+    never off the register the case meant to install."""
+    served = any(datum in page for page in cycle.served)
+    return Check(
+        f"cycle {cycle.index + 1}: was served the page this cycle is about",
+        served,
+        kind="guard",
+        rationale=None
+        if served
+        else f"no page it fetched carries {datum!r} — it read {len(cycle.served)} page(s)",
+    )
+
+
 def _fetched_check(case: _EnactmentCase, cycle: CycleObservation) -> Check:
     """The cycle went to the page the job is pointed at.
 
@@ -1172,6 +1211,9 @@ def _score_enactment(
     second reading of the same value to fire), and the THIRD is the change."""
     first, quiet, changed = cycles
     return [
+        _served_check(first, datum=case.fact.quiet),
+        _served_check(quiet, datum=case.fact.quiet),
+        _served_check(changed, datum=case.fact.changed),
         _fetched_check(case, first),
         _recorded_check(first, fact=case.fact.quiet),
         _baseline_check(first),

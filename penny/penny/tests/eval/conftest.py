@@ -2073,14 +2073,22 @@ class CycleObservation:
 
     ``before``/``after`` are the collection's entries as the cycle found and left them,
     ``sent`` what it put on the SEND QUEUE (read explicitly — see ``queued_sends``),
-    ``calls`` what it called in order, and ``outcome``/``reason`` the run record it closed
-    with (a write-gate STOP names itself in the reason)."""
+    ``calls`` what it called in order, ``served`` the page text the browse tool actually
+    returned, and ``outcome``/``reason`` the run record it closed with (a write-gate STOP
+    names itself in the reason).
+
+    ``served`` exists because a multi-cycle case installs a DIFFERENT browse register per
+    cycle, and every claim the case makes rests on each cycle having been shown its own.
+    A register that failed to swap is invisible in every other reading — the model would
+    behave correctly for the page it saw, and the whole case would report as the model
+    getting it wrong."""
 
     index: int
     before: dict[str, str]
     after: dict[str, str]
     sent: list[str]
     calls: list[CycleCall]
+    served: list[str]
     outcome: str | None
     reason: str | None
 
@@ -2129,6 +2137,18 @@ def _send_queue_rows(db: Database) -> list[SendQueueItem]:
         )
 
 
+def pages_served(db: Database) -> list[str]:
+    """Every page the browse tool has returned this sample, oldest first — read off the
+    browse-results log, which is where the tool journals what it actually fetched.
+
+    The harness's own integrity read: a case that installs a different register per cycle
+    is claiming each cycle saw a different world, and this is the only place that claim
+    can be checked against what the tool really returned."""
+    memory = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
+    entries = memory.read_all() if memory is not None else []
+    return [entry.content for entry in entries]
+
+
 def _live_run_ids(db: Database) -> set[str]:
     """Every run id this sample has written — read through ``live_prompts``, so the seeded
     ledger is excluded by the one chokepoint rather than by remembering to."""
@@ -2142,10 +2162,11 @@ def _observe_cycle(
     index: int,
     before: dict[str, str],
     sent_before: int,
+    served_before: int,
     runs_before: set[str],
 ) -> CycleObservation:
     """One cycle's footprint, composed from the state it left: what it wrote, what it
-    queued, what it called, and the run record it closed with."""
+    queued, what it called, what it was SERVED, and the run record it closed with."""
     runs = _live_run_ids(db) - runs_before
     rows = [row for row in live_prompts(db, _PERF_WINDOW) if row.run_id in runs]
     closed = next((row for row in rows if row.run_outcome is not None), None)
@@ -2155,6 +2176,7 @@ def _observe_cycle(
         after=collection_entries(db, collection),
         sent=queued_sends(db, collection)[sent_before:],
         calls=_ordered_calls(rows),
+        served=pages_served(db)[served_before:],
         outcome=closed.run_outcome if closed is not None else None,
         reason=closed.run_reason if closed is not None else None,
     )
@@ -2228,6 +2250,7 @@ async def _drive_cycles(
         install_browse(penny, pages)
         before = collection_entries(penny.db, collection)
         sent_before = len(queued_sends(penny.db, collection))
+        served_before = len(pages_served(penny.db))
         runs_before = _live_run_ids(penny.db)
         _, message = await penny.collector.run_for(collection)
         if _live_run_ids(penny.db) == runs_before and refusal is None:
@@ -2239,6 +2262,7 @@ async def _drive_cycles(
                 index=index,
                 before=before,
                 sent_before=sent_before,
+                served_before=served_before,
                 runs_before=runs_before,
             )
         )
