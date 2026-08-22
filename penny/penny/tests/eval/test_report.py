@@ -468,3 +468,100 @@ def test_a_single_case_run_still_hoists():
     assert report.SHARED_PROMPT_HEADING in hoisted
     assert hoisted.count(_SHARED) == 1
     assert hoisted.startswith("run header line"), "the header still opens the document"
+
+
+# ── Internal seams for an oversized sample fold (#1917) ──────────────────────
+
+
+def _oversized_sample() -> tuple[int, str, str]:
+    """A sample whose single fold cannot be posted: many DISTINCT step tables, which is the
+    shape that defeats every compression the report has (a degenerate reroll's 25 distinct
+    thinking traces, measured at 71,350 chars against a 65,536 cap).  Each block is unique,
+    so nothing here could be hoisted or deduped away."""
+    steps = [
+        report.Step(
+            number=index,
+            user_message=f"turn {index}",
+            verdict="❌",
+            rows=[report.Row(f"row {index}", f"unique body {index} " + "x" * 400, [])],
+        )
+        for index in range(1, 41)
+    ]
+    body = report.BLOCK_SEPARATOR.join(step.render() for step in steps)
+    return 3, "❌ fail · 1/2 (0.50) · behavioral · 206s · 31 calls", body
+
+
+def test_an_oversized_sample_renders_as_folds_the_splitter_can_cut_between() -> None:
+    """A fold too big to post becomes SEVERAL, each opening on the sample seam — so the
+    splitter gains legal cut points inside what used to be one atom, and needs to know
+    nothing about parts.  Each part is complete markup on its own."""
+    number, banner, body = _oversized_sample()
+    budget = 6000
+    rendered = report.fold_sample_parts(number, banner, body, budget)
+    parts = report.split_sample_blocks(rendered)
+
+    assert len(parts) > 1, "an oversized sample must be given internal seams"
+    assert all(len(part) <= budget for part in parts), "every part must fit the budget"
+    for index, part in enumerate(parts, start=1):
+        recovered_number, recovered_banner, _ = report.parse_sample_block(part)
+        assert recovered_number == number
+        assert recovered_banner.endswith(
+            report.SAMPLE_PART_SUFFIX.format(number=index, total=len(parts))
+        )
+
+
+def test_the_split_parts_reassemble_byte_identical_to_the_unsplit_fold() -> None:
+    """THE LOSSLESS CLAIM: concatenating the parts' bodies reproduces the single fold's body
+    byte for byte.
+
+    Nothing is truncated, summarised or re-wrapped — the rule the whole report is built on
+    (collapsed never means removed), asserted across the seam rather than assumed of it.
+    A seam that dropped a separator, reordered a block or ate a blank line would show here
+    and nowhere else."""
+    number, banner, body = _oversized_sample()
+    parts = report.split_sample_blocks(report.fold_sample_parts(number, banner, body, 6000))
+    bodies = [report.parse_sample_block(part)[2] for part in parts]
+    assert report.BLOCK_SEPARATOR.join(bodies) == body
+    assert report.fold_sample(number, banner, report.BLOCK_SEPARATOR.join(bodies)) == (
+        report.fold_sample(number, banner, body)
+    )
+
+
+def test_a_sample_that_fits_is_rendered_exactly_as_it_always_was() -> None:
+    """The common case is untouched: a fold within budget comes back byte-identical to
+    ``fold_sample``, with no part suffix and no extra seam.  Every run that could already
+    be posted posts the same way."""
+    number, banner, body = _oversized_sample()
+    assert report.fold_sample_parts(number, banner, body, 500_000) == report.fold_sample(
+        number, banner, body
+    )
+
+
+def test_body_blocks_inverts_the_join_it_is_the_inverse_of() -> None:
+    """The seam finder recovers exactly the blocks the body was built from — including a
+    system-prompt fold, whose own body carries the blank lines that make a naive split on
+    ``\n\n`` wrong."""
+    prompt = report.SystemPrompt(context="collector", text="line one\n\nline two")
+    step = report.Step(number=1, user_message="hi", verdict="✅", rows=[])
+    close = report.RunClose(score="1/1", rows=[])
+    blocks = [prompt.render(), step.render(), close.render()]
+    body = report.BLOCK_SEPARATOR.join(blocks)
+    assert report.body_blocks(body) == blocks
+
+
+def test_a_single_block_over_budget_keeps_its_own_fold_for_the_guard_to_refuse() -> None:
+    """The seam rule outranks the budget, exactly as it does in the splitter: one step too
+    big to fit gets its own over-budget fold rather than being cut mid-table.
+
+    That is what leaves the guard something to refuse — a sample whose smallest indivisible
+    piece exceeds the cap genuinely cannot be split losslessly, and saying so is the
+    contract."""
+    huge = report.Step(
+        number=1, user_message="x", verdict="", rows=[report.Row("a", "y" * 9000, [])]
+    )
+    small = report.Step(number=2, user_message="x", verdict="", rows=[report.Row("a", "z", [])])
+    body = report.BLOCK_SEPARATOR.join([huge.render(), small.render()])
+    parts = report.split_sample_blocks(report.fold_sample_parts(7, "banner", body, 2000))
+    assert len(parts) == 2
+    assert max(len(part) for part in parts) > 2000
+    assert report.BLOCK_SEPARATOR.join(report.parse_sample_block(part)[2] for part in parts) == body

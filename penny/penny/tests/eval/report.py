@@ -409,6 +409,107 @@ def fold_sample(number: int, banner: str, body: str) -> str:
 # it is also the ONLY place a run comment may be cut when it exceeds GitHub's comment cap (#1808):
 # one definition of "a sample starts here", shared by the re-normalizer and the splitter.
 SAMPLE_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
+
+
+# ── Internal seams: a sample too big to post as one fold (#1917) ─────────────
+#
+# The splitter may cut only BETWEEN sample folds, so a single fold larger than a comment
+# is unpostable however the document is packed — and it happens: one degenerate reroll
+# sample rendered 71,350 chars against the 65,536 cap.  Compression cannot reach it.  That
+# fold was 25 DISTINCT thinking traces; there was no shared block to hoist and no
+# duplicate to fold, which is what #1763's hoisting and any dedup are for.
+#
+# So an oversized sample renders as SEVERAL folds instead of one, each a complete
+# ``<details>`` opening on the same ``SAMPLE_BLOCK_START`` seam — which gives the splitter
+# legal cut points inside what used to be one atom, with no change to the splitter at all.
+#
+# THE SEAM IS THE STEP.  A step is already the body's unit of composition and already reads
+# alone: a user turn and everything it produced, header row and all.  Cutting anywhere
+# inside one would split a markdown table; cutting between two loses nothing, because
+# nothing spans them.  (A cycle would be the other candidate, and it is not available here:
+# this module renders transcripts and knows steps, never what a collector cycle is.)
+#
+# Both standing rules survive verbatim.  NOTHING IS TRUNCATED — every block appears exactly
+# once, in order, and concatenating the parts' bodies reproduces the single fold's body
+# byte for byte (asserted by ``test_report.py``).  And the guard still REFUSES what cannot
+# be split losslessly: when one STEP alone exceeds the cap there is no seam inside it, and
+# ``comment_split.unsplittable_reason`` says so rather than posting something cut.
+_BODY_BLOCK_START = rf"(?:\| step |\| {RUN_CLOSE_LABEL} |<details><summary>{SYSTEM_PROMPT_LABEL} )"
+_BODY_BOUNDARY = re.compile(rf"\n\n(?={_BODY_BLOCK_START})")
+
+# What a part's banner gains so a reader knows the sample continues.  It rides INSIDE the
+# banner, after the verdict tail, so ``SAMPLE_BLOCK_START`` matches it unchanged and the
+# splitter needs to know nothing about parts.
+SAMPLE_PART_SUFFIX = " · part {number} of {total}"
+
+
+def body_blocks(body: str) -> list[str]:
+    """A rendered sample body cut into its top-level blocks — the system-prompt folds, the
+    step tables and the run-close table, in order.
+
+    ``"\n\n".join(body_blocks(body)) == body`` for every body this module renders: the
+    blocks are joined by exactly that separator, and a block never contains a blank line
+    followed by another block's opening (a step table's rows are joined by single
+    newlines, so no row can look like a step header)."""
+    return _BODY_BOUNDARY.split(body) if body else []
+
+
+def fold_sample_parts(number: int, banner: str, body: str, budget: int) -> str:
+    """One sample rendered as folds that each fit ``budget`` — one fold when it already
+    does (byte-identical to ``fold_sample``, which is the overwhelmingly common case), and
+    otherwise its blocks packed greedily into as many folds as it takes.
+
+    A single block bigger than ``budget`` still gets its own over-budget fold rather than
+    being cut: the seam rule outranks the budget here exactly as it does in the splitter,
+    and the refusal belongs to the guard that knows the hard cap."""
+    whole = fold_sample(number, banner, body)
+    blocks = body_blocks(body)
+    if len(whole) <= budget or len(blocks) < 2:
+        return whole
+    groups = _packed_blocks(blocks, _block_budget(number, banner, budget))
+    return BLOCK_SEPARATOR.join(
+        fold_sample(
+            number,
+            banner + SAMPLE_PART_SUFFIX.format(number=index, total=len(groups)),
+            BLOCK_SEPARATOR.join(group),
+        )
+        for index, group in enumerate(groups, start=1)
+    )
+
+
+# What joins a sample's top-level blocks, and what joins the folds an oversized sample is
+# rendered as — one separator, because the second is the seam the splitter cuts on and the
+# first is what ``body_blocks`` must invert.
+BLOCK_SEPARATOR = "\n\n"
+
+
+def _block_budget(number: int, banner: str, budget: int) -> int:
+    """The budget left for a part's BLOCKS once its own fold markup is paid for — measured
+    off an empty fold carrying the longest part banner this sample could get, so a part can
+    never come out over budget because of its own wrapper."""
+    widest = banner + SAMPLE_PART_SUFFIX.format(number=99, total=99)
+    return budget - len(fold_sample(number, widest, ""))
+
+
+def _packed_blocks(blocks: list[str], budget: int) -> list[list[str]]:
+    """``blocks`` packed greedily into runs of at most ``budget`` characters, order kept and
+    nothing dropped.  A block over budget on its own becomes a run of one."""
+    groups: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for block in blocks:
+        cost = len(block) + (len(BLOCK_SEPARATOR) if current else 0)
+        if current and size + cost > budget:
+            groups.append(current)
+            current, size = [], 0
+            cost = len(block)
+        current.append(block)
+        size += cost
+    if current:
+        groups.append(current)
+    return groups
+
+
 _SAMPLE_BOUNDARY = re.compile(rf"\n\n(?={SAMPLE_BLOCK_START})")
 _FOLDED_SAMPLE = re.compile(
     rf"\A<details><summary>{SAMPLE_ROW} (\d+) — (.*?)</summary>\n\n(.*)\n\n</details>\Z", re.DOTALL
