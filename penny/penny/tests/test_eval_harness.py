@@ -20,6 +20,7 @@ import ast
 import json
 import logging
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import pytest
@@ -538,9 +539,15 @@ def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> No
     byte-identical to the page before it, so the "the collection holds what the page says"
     check would read the SAME value twice and score the change cycle a miss on every
     sample; a variant carrying both facts would score it green without the value ever
-    moving."""
+    moving.
+
+    The ONE-SPAN claim is the code owner's ruling made checkable: "change the datum the
+    skill is looking for, not the structure".  A pair that also moved a date, a wording or
+    an ordering gives a cycle a second thing to notice, and then what the change cycle
+    measured is no longer the datum."""
     for case in ENACTMENT_CASES:
         assert case.quiet.text != case.altered.text, f"{case.case_id}: the pages must differ"
+        _assert_one_span_moved(case)
         assert case.fact.quiet in case.quiet.text, f"{case.case_id}: the quiet fact must be there"
         assert case.fact.changed not in case.quiet.text, (
             f"{case.case_id}: the quiet page must not already carry {case.fact.changed!r}"
@@ -551,6 +558,26 @@ def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> No
         assert case.fact.quiet not in case.altered.text, (
             f"{case.case_id}: the altered page must no longer carry {case.fact.quiet!r}"
         )
+
+
+def _assert_one_span_moved(case: _EnactmentCase) -> None:
+    """The two pages differ in EXACTLY one contiguous span — the datum and nothing else.
+
+    Read line by line through ``difflib`` rather than trusted to the derivation: the
+    helper that builds a variant enforces a single replacement, but the QUIET page is
+    itself derived, and two independently-derived texts can diverge anywhere.  This is
+    the claim that makes the change cycle a measurement of the datum."""
+    moves = [
+        block
+        for block in SequenceMatcher(
+            None, case.quiet.text.splitlines(), case.altered.text.splitlines()
+        ).get_opcodes()
+        if block[0] != "equal"
+    ]
+    assert len(moves) == 1, (
+        f"{case.case_id}: the change page must move the datum and nothing else — "
+        f"{len(moves)} spans differ"
+    )
 
 
 def test_the_enactment_scorer_passes_three_cycles_that_did_the_job(tmp_path) -> None:

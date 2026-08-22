@@ -206,53 +206,70 @@ _APPLIED_MESSAGE_WINDOW = _PARKED_MESSAGE_WINDOW + 2
 DIRECTION_CHECK_LABEL = "state: the configured terms carry the direction the goal gave"
 
 
-# ── The cycle-2 pages: the register's own rich pages with ONE fact moved ───────
+# ── The pages: one crisp datum each, and the cycle-3 twin that moves it ───────
 #
-# Derived from the pages the apply beat measured its own turns against rather than written
-# out again: a watch's contract is that ONE controllable fact moved and everything else
-# stayed put, and a second hand-written body could differ anywhere without anybody
-# noticing.  The derivation RAISES on a replacement that matched nothing, so a page
-# rewritten upstream fails here rather than producing a cycle-2 page identical to cycle 1's
-# — which would score the change cycle a miss on every sample.
+# Both sides of every pair are derived from the register's own rich page by the SAME
+# single-span edit, so a cycle's fixtures are one thing rather than two texts that could
+# drift apart anywhere.  The code owner's ruling on what a datum is: "if the example task
+# is to 'find a difference' then just make it obvious.  change the datum the skill is
+# looking for, not the structure.  what is it looking for?  a price?  a schedule?  keep it
+# simple and focused."
+#
+# So each page's watched datum is a SHORT canonical value on a plainly labelled line — a
+# thing an extract copies verbatim rather than a sentence it paraphrases.  Round 5
+# measured what the alternative costs: a prose datum ("not on the board this season") came
+# back worded differently every cycle, so the write gate saw a changed value where nothing
+# had changed and the no-news STOP never fired.  The RICHNESS stays — a real page has a
+# spec table, neighbouring items and housekeeping notes — it just lives AROUND the datum
+# instead of inside it.
 
 
-def _moved(page: CannedPage, replacements: tuple[tuple[str, str], ...]) -> CannedPage:
-    """The same rich page with the named lines replaced — everything else byte-identical.
+def _datum(page: CannedPage, old: str, new: str) -> CannedPage:
+    """The same rich page with its DATUM — and only its datum — rewritten.
+
+    Exactly one span moves, enforced twice over: the old text must appear, and it must
+    appear ONCE.  A span that matched nothing is a page rewritten upstream (the variant
+    would come back identical to its twin, and the change cycle would score a miss on
+    every sample); a span that matched twice is an edit reaching somewhere the case never
+    named, which is the structural-change-instead-of-datum-change the ruling forbids.
 
     Copied through ``replace`` rather than re-constructed field by field, so a page that
     grows a field carries it into its variant instead of silently losing it."""
-    text = page.text
-    for old, new in replacements:
-        if old not in text:
-            raise ValueError(f"the page no longer carries {old!r} — re-sample the variant")
-        text = text.replace(old, new)
-    return replace(page, text=text)
+    occurrences = page.text.count(old)
+    if occurrences != 1:
+        raise ValueError(
+            f"a datum edit must move exactly one span — {old!r} appears {occurrences} times"
+        )
+    return replace(page, text=page.text.replace(old, new))
 
 
-_NORTH_PIER_WITH_THE_DAWN = _moved(
+# The ferry board's watched line becomes the terse status the timetable really posts: the
+# LINE is the datum, so "what is the dawn sailing doing" is answered by copying it.
+_NORTH_PIER_QUIET = _datum(
     _NORTH_PIER_DEPARTURES,
-    (
-        ("Dawn sailing: not on the board this season.", "Dawn sailing: 05:20 from the pier head."),
-        ("Board last amended four days ago", "Board last amended this morning"),
-    ),
+    "Dawn sailing: not on the board this season.",
+    "Dawn sailing: not scheduled.",
+)
+_NORTH_PIER_WITH_THE_DAWN = _datum(
+    _NORTH_PIER_QUIET, "Dawn sailing: not scheduled.", "Dawn sailing: 05:20."
 )
 
-_KEEL_LANTERN_REPRICED = _moved(
-    _KEEL_LANTERN_LISTING,
-    (
-        ("Price: $128", "Price: $112"),
-        ("Price last changed eleven days ago.", "Price last changed this morning."),
-    ),
-)
+# The listing's own price is labelled as THE current one, so the neighbouring items'
+# prices further down the page cannot be read as it.  Round 5 measured a wrong-price grab.
+_KEEL_LANTERN_QUIET = _datum(_KEEL_LANTERN_LISTING, "Price: $128", "Current price: $128")
+_KEEL_LANTERN_REPRICED = _datum(_KEEL_LANTERN_QUIET, "Current price: $128", "Current price: $112")
 
-_RIVER_OTTERS_FEWER = _moved(
-    _RIVER_OTTERS_CENSUS,
-    (("Count: 46 otters", "Count: 39 otters"),),
-)
+# Already crisp: a labelled line carrying a bare number.  Verified rather than sharpened.
+_RIVER_OTTERS_QUIET = _RIVER_OTTERS_CENSUS
+_RIVER_OTTERS_FEWER = _datum(_RIVER_OTTERS_QUIET, "Count: 46 otters", "Count: 39 otters")
 
-_NEW_BAKERY_TOMORROW = _moved(
-    _NEW_BAKERY_SPECIALS,
-    (("Today's special: apricot and almond galette", "Today's special: fig and hazelnut tart"),),
+# The special is the DISH NAME alone — the ambient prose about how the board works stays
+# on the page, outside the line the datum sits on.
+_NEW_BAKERY_QUIET = _NEW_BAKERY_SPECIALS
+_NEW_BAKERY_TOMORROW = _datum(
+    _NEW_BAKERY_QUIET,
+    "Today's special: apricot and almond galette",
+    "Today's special: fig and hazelnut tart",
 )
 
 
@@ -363,9 +380,9 @@ _TIMETABLE = _EnactmentCase(
         schedule="FREQ=DAILY;BYHOUR=6",
         expires_in=None,
     ),
-    quiet=_NORTH_PIER_DEPARTURES,
+    quiet=_NORTH_PIER_QUIET,
     altered=_NORTH_PIER_WITH_THE_DAWN,
-    fact=_WatchedFact(quiet="not on the board", changed="05:20"),
+    fact=_WatchedFact(quiet="not scheduled", changed="05:20"),
     confirmation=(
         "Got it! I just set up a routine that watches the North Pier departures page "
         "(<https://northpier.example/departures>) for “Dawn Sailing.” It runs once a day at "
@@ -385,7 +402,7 @@ _LISTING = _EnactmentCase(
         schedule="FREQ=HOURLY;INTERVAL=2",
         expires_in=timedelta(days=3),
     ),
-    quiet=_KEEL_LANTERN_LISTING,
+    quiet=_KEEL_LANTERN_QUIET,
     altered=_KEEL_LANTERN_REPRICED,
     fact=_WatchedFact(quiet="$128", changed="$112"),
     confirmation=(
@@ -414,7 +431,7 @@ _COUNT = _EnactmentCase(
         schedule="FREQ=WEEKLY",
         expires_in=None,
     ),
-    quiet=_RIVER_OTTERS_CENSUS,
+    quiet=_RIVER_OTTERS_QUIET,
     altered=_RIVER_OTTERS_FEWER,
     fact=_WatchedFact(quiet="46", changed="39"),
     confirmation=(
@@ -437,7 +454,7 @@ _DIGEST = _EnactmentCase(
         schedule="FREQ=DAILY",
         expires_in=timedelta(days=14),
     ),
-    quiet=_NEW_BAKERY_SPECIALS,
+    quiet=_NEW_BAKERY_QUIET,
     altered=_NEW_BAKERY_TOMORROW,
     fact=_WatchedFact(quiet="apricot and almond galette", changed="fig and hazelnut tart"),
     confirmation=(
@@ -461,9 +478,9 @@ _HELD_BINDING = _EnactmentCase(
         schedule="FREQ=DAILY;BYHOUR=8",
         expires_in=None,
     ),
-    quiet=_NORTH_PIER_DEPARTURES,
+    quiet=_NORTH_PIER_QUIET,
     altered=_NORTH_PIER_WITH_THE_DAWN,
-    fact=_WatchedFact(quiet="not on the board", changed="05:20"),
+    fact=_WatchedFact(quiet="not scheduled", changed="05:20"),
     confirmation=(
         "Got it! I’m now watching the North Pier departures page at "
         "https://northpier.example/departures for a line that says “the dawn sailing.” The "
@@ -1200,8 +1217,8 @@ async def _run_enactment_case(
 async def test_the_timetable_watch_runs_its_cycles(
     collector_cycles_eval: CollectorCyclesEval,
 ) -> None:
-    """The ferry timetable job: the dawn sailing is not on the board when the job is set
-    up, stays off it on the quiet cycle, and is there on the third."""
+    """The ferry timetable job: the board reads "not scheduled" when the job is set up,
+    reads it again unchanged on the quiet cycle, and carries a time on the third."""
     await _run_enactment_case(collector_cycles_eval, _TIMETABLE)
 
 
