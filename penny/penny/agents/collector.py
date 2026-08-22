@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -48,7 +49,6 @@ from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
 from penny.constants import (
-    COLLECTOR_COVERED_REASON,
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
     MutationActor,
@@ -64,12 +64,13 @@ from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.notification import NOTIFICATION_NOTES, CollectorNotifier, NotificationOutcome
-from penny.program import ProgramCall, is_covered, program_calls
+from penny.program import ProgramCall, program_calls
+from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import skill_params
-from penny.tools.memory_tools import format_entries
+from penny.tools.memory_tools import DoneTool, format_entries
 
 if TYPE_CHECKING:
     pass
@@ -343,23 +344,23 @@ class Collector(BackgroundAgent):
     ) -> NotificationOutcome | None:
         """Tell the user about this cycle, when this cycle is one that should (#1911).
 
-        The trigger is exactly three structural facts, and none of them is a tool's
-        identity: the collection carries ``notify``, no step raised a STOP, and the run
-        COVERED its program.  A routine with no write at all passes it the same way a
-        watch does — "some skills won't have writes at all" — because coverage is of
-        the program's own calls.
+        The trigger is exactly three structural facts: the collection carries
+        ``notify``, no step raised a STOP, and the cycle CLOSED with ``done()`` (#1916,
+        where it used to read program coverage).  A routine with no write at all passes
+        it the same way a watch does — "some skills won't have writes at all" — because
+        what is read is the close, not what the cycle called to get there.
 
         The STOP clause is what keeps no-news silent: a watch's unchanged
-        re-observation carries its STOP on the very call that completes the program, so
-        coverage alone would read that cycle as a finished job and tell the user
-        nothing happened.  A STOP means the cycle deliberately ended early, whatever
-        else it had got through.
+        re-observation carries its STOP at the write chokepoint and the loop ends
+        there, so the close alone would read that cycle as a finished job and tell the
+        user nothing happened.  A STOP means the cycle deliberately ended early,
+        whatever else it had got through.
 
         ``None`` when the cycle is not one that notifies, which is the ordinary case.
         """
         if not collection.notify or self._stop_reason(response) is not None:
             return None
-        if not is_covered(self._program, response.tool_calls):
+        if not self._has_done_call(response):
             return None
         return await self._notifier.notify(collection, run_id, response.tool_calls)
 
@@ -411,34 +412,23 @@ class Collector(BackgroundAgent):
         return any(record.mutated for record in response.tool_calls)
 
     def should_stop_loop(self, records: list[ToolCallRecord]) -> bool:
-        """A collector cycle ends when its PROGRAM is covered, on a write-gate STOP, or
-        on a successful ``done()``.
+        """A collector cycle ends on a successful ``done()`` OR a write-gate STOP.
 
-        COVERAGE is the ordinary end, and it is a read rather than a move: the calls
-        the stored program makes are known before the cycle starts, so once every one
-        of them has executed in order the framework closes the loop and the model is
-        never asked to announce it.  That is what removed the four-step notify tail the
-        cycles were dying in.
+        The base terminator is ``done()`` (#1569, restored #1916); a collector
+        additionally honors a STOP carried by a tool result (``collection_write`` →
+        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) — a deliberate close at the
+        write chokepoint, so no trailing ``done()`` is required (a ``done()`` after a
+        STOP would just be a no-op the loop never reaches).  STOP is honored only here
+        (must-act cadence); the chat loop uses the base and never stops on a write
+        outcome.
 
-        A STOP carried by a tool result (``collection_write`` →
-        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) aborts EARLY, before
-        coverage — a no-change cycle has nothing left worth doing.
-
-        Those two are the ONLY closes.  There is no terminator tool on the surface, so
-        a cycle that cannot finish its program runs out its step budget and records why
-        (#1909) rather than being handed a way to declare itself done.
-
-        ``records`` is the run's whole ordered history — coverage is a question about
-        the run, not about the step that just finished."""
-        return is_covered(self._program, records) or any(
+        What this replaced is the coverage read (#1911): the calls the program makes
+        were settled before the cycle began, so a cycle that departed from them for a
+        good reason had no close available to it at all.  ``records`` stays the run's
+        whole ordered history — a terminator called at any point closes the run."""
+        return super().should_stop_loop(records) or any(
             record.stop_reason is not None for record in records
         )
-
-    def _closed_cleanly(self, response: ControllerResponse) -> bool:
-        """A covered program is a clean close, alongside the base's terminator/STOP —
-        so a cycle that ran its whole routine commits its read cursors like any other
-        deliberate close, rather than looking like a run that trailed off."""
-        return super()._closed_cleanly(response) or is_covered(self._program, response.tool_calls)
 
     def _cycle_result(
         self, response: ControllerResponse | None, notified: NotificationOutcome | None
@@ -452,15 +442,15 @@ class Collector(BackgroundAgent):
         - **stopped** — a write-gate STOP (#1587) closed the cycle at the chokepoint;
           the reason is the declared stop reason, the outcome ``worked``/``no_work`` by
           whether durable state changed.  A stopped cycle never notifies.
-        - **completed** — every call the program makes executed, in order.  The reason
-          says so, and carries what the notification did when the collection notifies:
-          queued, or the honest note that nothing was sent and why.  A queued
-          notification is also WORK (#1914) — it is the only terminal shape where the
-          cycle did something no tool call records.
+        - **done** — the model closed the cycle with the argless sentinel (#1569,
+          restored #1916).  The outcome is ``worked``/``no_work`` the same way, and the
+          reason carries what telling the user came to when the collection notifies —
+          empty otherwise, so the run record's header falls back to the outcome enum.
+          A queued notification is also WORK (#1914): it is the one thing a cycle does
+          that no tool call records.
         - **aborted** — no close at all: durable state changed → ``incomplete``,
-          nothing changed → a ``failed`` bail, both naming what ended the run.  With no
-          terminator to reach for, a cycle that gave up lands here honestly instead of
-          declaring a clean close it did not earn.
+          nothing changed → a ``failed`` bail, both naming what ended the run (#1909's
+          abort causes are kept whole).
 
         (``cancelled`` is handled separately — a preempted cycle never reaches here.)
         """
@@ -469,19 +459,30 @@ class Collector(BackgroundAgent):
         stop = self._stop_reason(response)
         if stop is not None:
             return clean, WRITE_GATE_STOP_REASONS[stop]
-        if response is not None and is_covered(self._program, response.tool_calls):
-            return clean, self._completed_reason(notified)
+        if self._has_done_call(response):
+            return clean, self._closed_reason(notified)
         reason = self._unfinished_reason(response)
         return (RunOutcome.INCOMPLETE if produced else RunOutcome.FAILED), reason
 
     @staticmethod
-    def _completed_reason(notified: NotificationOutcome | None) -> str:
-        """What a completed cycle's record says — that the program ran through, plus
-        what telling the user came to when the collection notifies.  A collection that
-        does not notify reads as the bare completion it is."""
+    def _has_done_call(response: ControllerResponse | None) -> bool:
+        """Did the cycle close with a successful ``done()``?  Read off the ledger's own
+        records, so a done whose args failed validation is not a close."""
+        if response is None:
+            return False
+        return any(
+            record.tool == PennyConstants.DONE_TOOL_NAME and not record.failed
+            for record in response.tool_calls
+        )
+
+    @staticmethod
+    def _closed_reason(notified: NotificationOutcome | None) -> str:
+        """What a cleanly-closed cycle's record says: what telling the user came to
+        when the collection notifies, and nothing at all otherwise — a bare close needs
+        no reason, and the run record's header falls back to the outcome enum."""
         if notified is None:
-            return COLLECTOR_COVERED_REASON
-        return f"{COLLECTOR_COVERED_REASON}; {NOTIFICATION_NOTES[notified]}"
+            return ""
+        return NOTIFICATION_NOTES[notified]
 
     @staticmethod
     def _stop_reason(response: ControllerResponse | None) -> WriteGateOutcome | None:
@@ -771,9 +772,30 @@ class Collector(BackgroundAgent):
             f"Description: {target.description}\n"
             f"{cls._routine_section(target, skill)}"
             "\n"
-            f"{target.extraction_prompt}\n\n"
+            f"{target.extraction_prompt}\n"
+            f"{cls._injected_steps(target)}\n\n"
             f"{cls._runtime_rules(surface)}"
         ).rstrip("\n")
+
+    @classmethod
+    def _injected_steps(cls, target: MemoryRow) -> str:
+        """The assembly-owned step tail: the terminal ``done()``, numbered continuing
+        from the stored prompt's highest step, so the whole prompt reads as one
+        continuous program (#1557, restored #1916).
+
+        ONE step, not the old tail: telling the user left the cycle for good (#1911) and
+        stays out, so what is injected is only the close.  A write-gate STOP on a
+        no-change cycle ends the run at the chokepoint before this step is reached, so
+        no-news never needs it."""
+        base = cls._max_step_number(target.extraction_prompt or "")
+        return f"{base + 1}. {Prompt.COLLECTOR_DONE_STEP}"
+
+    @staticmethod
+    def _max_step_number(prompt: str) -> int:
+        """``A`` — the highest leading step number in the stored prompt (a ``^\\d+.``
+        scan), 0 for an unnumbered prompt so the injected step starts at 1."""
+        numbers = re.findall(r"^(\d+)\.", prompt, re.MULTILINE)
+        return max((int(number) for number in numbers), default=0)
 
     @classmethod
     def _runtime_rules(cls, surface: frozenset[str]) -> str:
@@ -851,19 +873,21 @@ class Collector(BackgroundAgent):
         The scope is the program's own calls CLOSED over :attr:`Tool.advises`, so a
         sibling a result message points at (``collection_write``'s duplicate rejection
         naming ``update_entry``) is present to be called: a rendered instruction always
-        resolves in one call.  There is no terminator among them — coverage and a
-        write-gate STOP are the cycle's only closes, and a genuinely stuck one ends on
-        the max-steps/abort path with its own honest cause rather than on a
-        model-declared clean close.
+        resolves in one call.  ``done`` joins every scoped surface unconditionally
+        (#1916): assembly injects the terminal step into every composed prompt, so the
+        close has to be callable whatever the program contains — and a cycle that
+        departs from its program for a good reason still needs a way to say it has
+        finished, which is the whole reason the terminator came back.
 
-        A collection whose prompt is NOT a readable program gets an EMPTY surface: it
-        has no job this framework can run, so there is nothing to hand it and nothing
-        it could do.  That is a config defect the run record names (#1911's soft
-        reboot removed the seeded prose rows that used to make it a second mode), not a
-        fallback that quietly runs the collection some other way."""
+        A collection whose prompt is NOT a readable program gets a surface of the
+        terminator ALONE: it has no job this framework can run, so there is nothing to
+        hand it but the ability to close honestly.  That is a config defect the run
+        record names (#1911's soft reboot removed the seeded prose rows that used to
+        make it a second mode), not a fallback that quietly runs the collection some
+        other way."""
         available = super().get_tools(run_id)
         scoped = close_over_advice({call.tool for call in self._program}, available)
-        return [tool for tool in available if tool.name in scoped]
+        return [tool for tool in available if tool.name in scoped or tool.name == DoneTool.name]
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""

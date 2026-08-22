@@ -46,7 +46,6 @@ from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import (
-    COLLECTOR_COVERED_REASON,
     WRITE_GATE_MUTATING_OUTCOMES,
     WRITE_GATE_STOP_REASONS,
     PennyConstants,
@@ -939,17 +938,6 @@ def _ended_via_write_gate_stop(prompts: list[PromptLog]) -> bool:
     return reason in set(WRITE_GATE_STOP_REASONS.values())
 
 
-def _completed_its_program(prompts: list[PromptLog]) -> bool:
-    """True when the run closed by COVERING its program (#1911) — the collector's
-    ordinary end, read off the stamped reason the collector wrote.
-
-    A completed cycle's reason opens with the declared completion phrase and may carry
-    what telling the user came to after it, so the test is a prefix rather than
-    equality: the notification note is part of the same one reason."""
-    _, reason, _ = _run_outcome(prompts)
-    return reason is not None and reason.startswith(COLLECTOR_COVERED_REASON)
-
-
 def _run_tool_failures(prompts: list[PromptLog]) -> int:
     """The persisted failed-tool-call count, off the run's outcome-bearing row.
 
@@ -1309,19 +1297,22 @@ def _run_origin(prompts: list[PromptLog]) -> str:
 
 
 def _run_conclusion(prompts: list[PromptLog]) -> str:
-    """How the run ended, STRUCTURALLY (#1569/#1911): ``penny: <reply>`` (chat — the
+    """How the run ended, STRUCTURALLY (#1569/#1916): ``penny: <reply>`` (chat — the
     user-facing reply stays model-authored), ``stopped: <reason>`` (a write-gate STOP
-    at the chokepoint, #1587), ``completed: <reason>`` (a collector whose program's
-    calls all ran — the ordinary end, carrying what telling the user came to when the
-    collection notifies), ``done: <outcome>`` (a collector that closed EARLY via the
-    argless ``done()``), or ``ended: <reason>`` (a collector that never closed at all —
-    its structural no-close reason).  Chat vs. collector is read off ``run_target``
-    (collectors stamp it, chat doesn't)."""
+    at the chokepoint, #1587), ``done: <outcome>`` (a collector that closed with the
+    argless ``done()`` — the ordinary end), or ``ended: <reason>`` (a collector that
+    never closed at all — its structural no-close reason).  Chat vs. collector is read
+    off ``run_target`` (collectors stamp it, chat doesn't).
+
+    A clean close renders its OUTCOME, never its stamped reason: the reason on a legacy
+    row is a model-authored summary, and #1569's whole point is that a conclusion is
+    generated from the ledger rather than claimed.  What a notifying cycle stamps —
+    what telling the user came to — reaches the model through the collector's own
+    run-history block (``recent_run_outcomes``), which is where a cycle reads what its
+    previous invocations did."""
     outcome, reason, target = _run_outcome(prompts)
     if _ended_via_write_gate_stop(prompts):
         return f"stopped: {reason}"
-    if _completed_its_program(prompts):
-        return f"completed: {reason}"
     if target is not None:  # a collector run
         if any(name == "done" for name, _ in _run_tool_calls(prompts)):
             return f"done: {outcome}" if outcome else ""

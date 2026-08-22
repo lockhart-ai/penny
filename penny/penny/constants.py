@@ -100,19 +100,17 @@ WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
 }
 
 
-# The reason a cycle that ran its whole PROGRAM is stamped with (#1911) — declared
-# here, beside the STOP table, because both are the closed set of structural reasons a
-# collector run record carries, and both are read by the collector that stamps them AND
-# by the render that has to tell one terminal shape from another.  A record whose
-# reason STARTS with this is a completed cycle; the render reads that rather than
-# inferring completion from the absence of a ``done()`` call, which used to be the only
-# available signal and now means something else entirely.
-COLLECTOR_COVERED_REASON = "program complete — every step ran"
+# ``COLLECTOR_COVERED_REASON`` is RETIRED (#1916, with the coverage exit it named).  A
+# cycle closes on ``done()`` again, and the render tells a clean close from an abandoned
+# one by the ledger's own ``done`` record rather than by a stamped phrase — so a clean
+# close carries no reason of its own, and the record's header falls back to the outcome
+# enum exactly as it did before #1911.  What a clean close DOES carry, when the
+# collection notifies, is what telling the user came to (``NOTIFICATION_NOTES``).
 
 # The reason a cycle gets when its stored program names no call the collector could run
-# — a purely prose prompt.  There is no coverage to read, so the structural close was
-# never available to it, and the record says so rather than leaving the state to be
-# diagnosed by exclusion (visible degradation).
+# — a purely prose prompt.  Its surface is the terminator alone, so there is nothing it
+# could carry out, and the record says so rather than leaving the state to be diagnosed
+# by exclusion (visible degradation).
 COLLECTOR_UNREADABLE_PROGRAM_REASON = (
     "cycle ended without a done() call, and its program names no runnable call to read "
     "completion from"

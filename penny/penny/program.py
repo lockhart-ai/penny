@@ -34,11 +34,8 @@ skill is an arbitrary sequence of calls, and a plugin can add one tomorrow):
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 
 from pydantic import BaseModel
-
-from penny.agents.models import ToolCallRecord
 
 # A numbered step opens a line: ``4. collection_write(...)``.  The same ``^\d+.`` scan
 # the prompt assembler used to number its injected steps with, so "what is a step" is
@@ -92,35 +89,3 @@ def _step_call(step: str, surface: frozenset[str]) -> str | None:
     if match is None or match.group(1) not in surface:
         return None
     return match.group(1)
-
-
-def covered_calls(program: Sequence[ProgramCall], records: Sequence[ToolCallRecord]) -> int:
-    """How many of the program's calls this run has executed, in order.
-
-    The forward-only cursor: walk the executed records once, and advance one place
-    whenever a SUCCEEDED record names the tool the cursor stands on.  Everything else
-    is passed over — a failed call (the retry that follows is the same step trying
-    again, so a failure must not consume it), and a call the program never asked for
-    (a read the model interjected to orient itself).
-
-    A tool the program names twice is covered by two successful executions of it, in
-    order, which the cursor gets right without knowing that repeats are possible.
-
-    Deliberately ORDERED, per the design: a run that executed step 2 before step 1 has
-    not carried out the routine it was given, and the honest consequence is that the
-    cycle does not close structurally and the run record says so — rather than a
-    lenient set comparison quietly calling a scrambled run complete."""
-    cursor = 0
-    for record in records:
-        if cursor >= len(program):
-            break
-        if not record.failed and record.tool == program[cursor].tool:
-            cursor += 1
-    return cursor
-
-
-def is_covered(program: Sequence[ProgramCall], records: Sequence[ToolCallRecord]) -> bool:
-    """Whether every call the program makes has executed, in order — the cycle's
-    deterministic end.  An EMPTY program is never covered: there is nothing to read,
-    so the read cannot be what ends the cycle."""
-    return bool(program) and covered_calls(program, records) == len(program)

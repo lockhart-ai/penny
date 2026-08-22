@@ -111,7 +111,7 @@ from penny.tools.memory_args import (
     ReadSimilarArgs,
     UpdateEntryArgs,
 )
-from penny.tools.models import ToolResult
+from penny.tools.models import NoArgs, ToolResult
 from penny.tools.skill_tools import SkillReadTool
 
 if TYPE_CHECKING:
@@ -3347,6 +3347,41 @@ class ExistsTool(MemoryTool):
         return ToolResult(message="no")
 
 
+class DoneTool(Tool):
+    """Signal the cycle is finished — an argless sentinel (#1569, restored #1916).
+
+    ``done()`` takes no arguments: it just marks the cycle finished.  The run
+    record is GENERATED from the run's canonical ledger rows (its tool calls +
+    write-gate outcomes + structural counts), so there is no model-authored
+    ``success``/``summary`` to confabulate — what is generated cannot lie.
+
+    It came back because the alternative was worse.  Deriving the close from PROGRAM
+    COVERAGE (#1911) fixed the path in advance, and a cycle that departed from it for
+    a good reason — taking the store's own advice to ``update_entry`` where the program
+    said ``collection_write`` — could then never close: no coverage to reach, and no
+    tool to say so with.  Measured, those cycles died rerolling on an attempt to state
+    in prose what they no longer had a call for.  A model that has finished can always
+    make one more call; it cannot always walk a route decided before it started."""
+
+    name = PennyConstants.DONE_TOOL_NAME
+    description = (
+        "Call this — with NO arguments — when the cycle is finished.  It just marks "
+        "the cycle done; the run record is generated automatically from the tool "
+        "calls you actually made, so there is nothing to summarise."
+    )
+    parameters = {"type": "object", "properties": {}}
+    args_model = NoArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        return "You wrapped up the cycle:"
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        # The done call itself always succeeds and never mutates state; the run's
+        # outcome is derived structurally from the ledger, not from this call.
+        return ToolResult(message="Cycle complete.")
+
+
 # ── On-demand collector trigger ─────────────────────────────────────────────
 
 
@@ -3375,13 +3410,14 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     archive / merge is rejected at authoring time rather than persisted into a prompt
     the collector could never run.
 
-    ``send_message`` and ``done`` are both GONE from it (#1911).  Telling the user is
-    no longer something a cycle does, and neither is closing one: a cycle ends when its
-    program's calls are covered.  So a stored program naming either is refused at
-    authoring time exactly like a hallucinated tool — which is the structural version of
-    the standing rule that the chat agent maps "keep me posted" onto the ``notify`` flag
-    and never onto a step.  ``BrowseTool`` is imported lazily to keep this module's
-    import surface flat.
+    ``send_message`` stays GONE from it (#1911): telling the user is no longer
+    something a cycle does, so a stored program naming it is refused at authoring time
+    exactly like a hallucinated tool — the structural version of the standing rule that
+    the chat agent maps "keep me posted" onto the ``notify`` flag and never onto a step.
+    ``done`` is back (#1916) and belongs here for the opposite reason: assembly injects
+    the terminal step, so it IS a call every collector program ends on and a prompt
+    naming it must not be refused.  ``BrowseTool`` is imported lazily to keep this
+    module's import surface flat.
     """
     from penny.tools.browse import BrowseTool
     from penny.tools.choose import ChooseTool
@@ -3390,7 +3426,7 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
         tool.name
         for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT, include_lifecycle=False)
     }
-    return frozenset(memory_names | {BrowseTool.name, ChooseTool.name})
+    return frozenset(memory_names | {BrowseTool.name, ChooseTool.name, DoneTool.name})
 
 
 def _reject_unknown_extraction_tools(

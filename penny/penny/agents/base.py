@@ -40,7 +40,7 @@ from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
 from penny.tools.choose import ChooseTool
-from penny.tools.memory_tools import CursorReadTool, build_memory_tools
+from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -364,14 +364,17 @@ class Agent:
     def _closed_cleanly(self, response: ControllerResponse) -> bool:
         """Did this cycle reach a clean, deliberate close?
 
-        The base answer is a write-gate STOP (#1587) — a deliberate close at the
-        chokepoint, so the cursor commits and the tick isn't re-run.  There is no
-        terminator TOOL to close with any more (#1911); the ``Collector`` adds the
-        close its run type actually has, a read of its program's coverage.  A model
-        that signals completion as prose is not accommodated (no text-form parsing):
-        the cycle is not successful, its cursor doesn't commit, and it re-runs.
+        Two ways, both deliberate and both a call the model made: a successful
+        ``done()`` (#1569, restored #1916) and a write-gate STOP (#1587) at the
+        chokepoint.  Either commits the cursor and leaves the tick alone.  A model that
+        signals completion as PROSE is not accommodated (no text-form parsing): the
+        cycle is not successful, its cursor doesn't commit, and it re-runs, guided
+        toward a structured close by the in-loop tool-call nudge.
         """
-        return any(record.stop_reason is not None for record in response.tool_calls)
+        return any(
+            (record.tool == DoneTool.name and not record.failed) or record.stop_reason is not None
+            for record in response.tool_calls
+        )
 
     @staticmethod
     def _consumed_input(success: bool, response: ControllerResponse) -> bool:
@@ -756,14 +759,15 @@ class Agent:
         """Check if the loop should stop early.
 
         ``records`` is the run's WHOLE ordered tool-call history including the step
-        that just ran — not that step alone, because what reads it is a question about
-        the RUN: the ``Collector``'s "has every call the program makes executed, in
-        order" (#1911).
+        that just ran, so a terminator called at any point in the run closes it.
 
-        Default: never.  A chat turn ends by replying and there is no terminator tool
-        on any surface, so nothing stops this loop early but the step budget.
+        Default: any *successful* call to the ``done`` tool is a graceful terminator
+        (#1569, restored #1916).  A done call whose args failed validation keeps the
+        loop going so the model sees the error and can retry, rather than exiting on a
+        recorded-but-empty done.  Chat has no ``done`` on its surface, so for a chat
+        turn this is never true and the turn ends by replying.
         """
-        return False
+        return any(record.tool == DoneTool.name and not record.failed for record in records)
 
     async def _call_model_validated(
         self,
@@ -1695,12 +1699,13 @@ class BackgroundAgent(Agent):
     (read inputs → process → write outputs → done) and need more loop
     iterations than a single chat turn.
 
-    It adds NOTHING to the chat-style tool surface (#1911).  A background cycle used
-    to carry ``done`` to close with and ``send_message`` to deliver with; the framework
-    owns both now — a cycle ends when its program's calls are covered, and the message
-    is written and queued after that, by a scoped micro-context with no tool channel at
-    all.  So there is no loop-control call and no send call left on any surface for a
-    decayed tool-call envelope to fail on.
+    It adds exactly ONE thing to the chat-style tool surface: ``done``, the terminator
+    a background cycle closes with (#1569, restored #1916).  ``send_message`` is NOT
+    back — the message is written and queued after the cycle by a scoped micro-context
+    with no tool channel at all (#1911), so the long chat-flavoured tail the cycles
+    were dying in stays gone.  What came back is only the close, because deriving it
+    from program coverage left a cycle that departed from its program for a good reason
+    with no way to finish at all.
     """
 
     # A collector acts ONLY through tool calls, so a draw carrying none is invalid
@@ -1720,11 +1725,19 @@ class BackgroundAgent(Agent):
         (ConditionKey.TEXT_INSTEAD_OF_TOOL, _any_text),
     )
 
-    # The premature-``done()`` guard retired with the tool it guarded (#1911): a
-    # first-move close is unavailable rather than refused.
+    # The premature-``done()`` guard stays retired (#1911).  The tool came back (#1916)
+    # but the guard did not: a first-move close is a rare, cheap mistake next to the
+    # cycles the guard's absence costs nothing to allow, and the run record says what
+    # a cycle actually did.
     run_shape_validators: list[ResponseValidator] = []
 
     channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
+
+    def get_tools(self, run_id: str | None = None) -> list[Tool]:
+        """The chat-style surface plus the terminator every background cycle closes
+        with (#1916).  ``Collector`` narrows this to its program's own calls and keeps
+        ``done`` through that narrowing, since assembly injects a step for it."""
+        return [*super().get_tools(run_id), DoneTool()]
