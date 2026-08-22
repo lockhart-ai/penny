@@ -10,8 +10,9 @@ read-only) via a base no-op.
     Memory (base)            memory_entry row primitives + shared similarity /
     │                        cursor reads; every shape op is a no-op that
     │                        raises WrongShapeError (overridden where it applies)
-    ├─ Collection            keyed: get / keys / read_latest / read_random /
-    │                        write / update / move / delete  (log ops refuse)
+    ├─ Collection            keyed: get / keys / entry_count / read_latest /
+    │                        read_random / write / update / move / delete
+    │                        (log ops refuse)
     └─ Log                   stream: read_batch (cursored) / read_window /
         │                    append  (keyed ops refuse)
         ├─ MessageLogMemory  row primitives → ``messagelog`` (user-/penny-
@@ -40,11 +41,11 @@ from typing import Any, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, computed_field
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import (
-    COLLECTOR_COVERED_REASON,
     WRITE_GATE_MUTATING_OUTCOMES,
     WRITE_GATE_STOP_REASONS,
     PennyConstants,
@@ -139,6 +140,10 @@ class Memory:
     def keys(self) -> list[str]:
         self._refuse_collection_op()
         return []
+
+    def entry_count(self) -> int:
+        self._refuse_collection_op()
+        return 0
 
     def read_latest(
         self, k: int | None = None, offset: int = 0, search: str | None = None
@@ -339,6 +344,23 @@ class Collection(Memory):
     def get(self, key: str) -> list[MemoryEntry]:
         with self._session() as session:
             return self._rows_by_key(session, self.name, key)
+
+    def entry_count(self) -> int:
+        """How many entries this collection holds — a COUNT in SQL, never the length
+        of a read.
+
+        What a caller rendering a BOUNDED window needs to say honestly how much it
+        left out (the collector's holdings block, #1914): reading the whole partition
+        just to subtract is the materialize-then-paginate shape, and this collection
+        is the partition the write path already scans on every write.  Collection-only
+        like every other keyed read — a log's entries are counted through its own
+        cursored reads."""
+        with self._session() as session:
+            return session.exec(
+                select(func.count(MemoryEntry.id)).where(  # ty: ignore[invalid-argument-type]
+                    MemoryEntry.memory_name == self.name
+                )
+            ).one()
 
     def keys(self) -> list[str]:
         with self._session() as session:
@@ -663,7 +685,7 @@ class MessageLogMemory(Log):
     """
 
     # The inline provenance marker, rendered between the timestamp stamp (added by
-    # the tool layer's ``_format_entries``) and the message content:
+    # the tool layer's ``format_entries``) and the message content:
     # ``3. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: …``.
     SENT_BY_MARKER = "(sent by {mechanism}) "
 
@@ -914,17 +936,6 @@ def _ended_via_write_gate_stop(prompts: list[PromptLog]) -> bool:
     if outcome not in (RunOutcome.NO_WORK.value, RunOutcome.WORKED.value):
         return False
     return reason in set(WRITE_GATE_STOP_REASONS.values())
-
-
-def _completed_its_program(prompts: list[PromptLog]) -> bool:
-    """True when the run closed by COVERING its program (#1911) — the collector's
-    ordinary end, read off the stamped reason the collector wrote.
-
-    A completed cycle's reason opens with the declared completion phrase and may carry
-    what telling the user came to after it, so the test is a prefix rather than
-    equality: the notification note is part of the same one reason."""
-    _, reason, _ = _run_outcome(prompts)
-    return reason is not None and reason.startswith(COLLECTOR_COVERED_REASON)
 
 
 def _run_tool_failures(prompts: list[PromptLog]) -> int:
@@ -1286,19 +1297,22 @@ def _run_origin(prompts: list[PromptLog]) -> str:
 
 
 def _run_conclusion(prompts: list[PromptLog]) -> str:
-    """How the run ended, STRUCTURALLY (#1569/#1911): ``penny: <reply>`` (chat — the
+    """How the run ended, STRUCTURALLY (#1569/#1916): ``penny: <reply>`` (chat — the
     user-facing reply stays model-authored), ``stopped: <reason>`` (a write-gate STOP
-    at the chokepoint, #1587), ``completed: <reason>`` (a collector whose program's
-    calls all ran — the ordinary end, carrying what telling the user came to when the
-    collection notifies), ``done: <outcome>`` (a collector that closed EARLY via the
-    argless ``done()``), or ``ended: <reason>`` (a collector that never closed at all —
-    its structural no-close reason).  Chat vs. collector is read off ``run_target``
-    (collectors stamp it, chat doesn't)."""
+    at the chokepoint, #1587), ``done: <outcome>`` (a collector that closed with the
+    argless ``done()`` — the ordinary end), or ``ended: <reason>`` (a collector that
+    never closed at all — its structural no-close reason).  Chat vs. collector is read
+    off ``run_target`` (collectors stamp it, chat doesn't).
+
+    A clean close renders its OUTCOME, never its stamped reason: the reason on a legacy
+    row is a model-authored summary, and #1569's whole point is that a conclusion is
+    generated from the ledger rather than claimed.  What a notifying cycle stamps —
+    what telling the user came to — reaches the model through the collector's own
+    run-history block (``recent_run_outcomes``), which is where a cycle reads what its
+    previous invocations did."""
     outcome, reason, target = _run_outcome(prompts)
     if _ended_via_write_gate_stop(prompts):
         return f"stopped: {reason}"
-    if _completed_its_program(prompts):
-        return f"completed: {reason}"
     if target is not None:  # a collector run
         if any(name == "done" for name, _ in _run_tool_calls(prompts)):
             return f"done: {outcome}" if outcome else ""

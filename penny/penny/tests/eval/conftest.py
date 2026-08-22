@@ -38,7 +38,7 @@ from penny.conversation_machine import (
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import MessageStore, PromptPerf
-from penny.database.models import MemoryRow, PromptLog
+from penny.database.models import MemoryRow, PromptLog, SendQueueItem
 from penny.database.skills import (
     DistillInput,
     SkillDraft,
@@ -2034,6 +2034,340 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
                     _stamp_cause(penny.db, result)
                     _write_sample_report(penny.db, case_id, sample_index, result=result)
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+                    perf.add(live_prompt_perf(penny.db))
+            finally:
+                await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+            min_pass_rate=min_pass_rate,
+        )
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+class CycleCall(NamedTuple):
+    """One tool call a collector cycle made — its name and the arguments it carried.
+
+    The arguments travel as the mapping the ledger stores, because a scorer asks things of
+    them a typed shape could not answer: WHICH page a browse went to is a question about a
+    tool nobody enumerated, and a skill is an arbitrary sequence of them."""
+
+    tool: str
+    arguments: dict
+
+
+@dataclass
+class CycleObservation:
+    """What ONE collector cycle did, read off persisted state after it closed (#1905).
+
+    A watch is only a watch across cycles — "it changed" and "it already told me" are
+    claims about the SECOND run, not the first — so a case that drives more than one cycle
+    needs each cycle's footprint kept apart rather than a single end-state snapshot in
+    which the two have already merged.
+
+    ``before``/``after`` are the collection's entries as the cycle found and left them,
+    ``sent`` what it put on the SEND QUEUE (read explicitly — see ``queued_sends``),
+    ``calls`` what it called in order, ``served`` the page text the browse tool actually
+    returned, and ``outcome``/``reason`` the run record it closed with (a write-gate STOP
+    names itself in the reason).
+
+    ``served`` exists because a multi-cycle case installs a DIFFERENT browse register per
+    cycle, and every claim the case makes rests on each cycle having been shown its own.
+    A register that failed to swap is invisible in every other reading — the model would
+    behave correctly for the page it saw, and the whole case would report as the model
+    getting it wrong."""
+
+    index: int
+    before: dict[str, str]
+    after: dict[str, str]
+    sent: list[str]
+    calls: list[CycleCall]
+    served: list[str]
+    outcome: str | None
+    reason: str | None
+
+    @property
+    def changed(self) -> bool:
+        """Whether the cycle moved the collection's durable state."""
+        return self.after != self.before
+
+    @property
+    def tools(self) -> list[str]:
+        """The names of the calls it made, in order."""
+        return [call.tool for call in self.calls]
+
+
+def queued_sends(db: Database, collection: str) -> list[str]:
+    """Every message a collection has put on the send queue, oldest first — pending and
+    already-delivered alike.
+
+    Read EXPLICITLY here rather than through ``pending_items`` because the queue is the
+    harness's known blind spot: a collector cycle ENQUEUES, and the drainer that delivers
+    is a separate schedule that may or may not have run by the time a scorer looks.  A
+    pending-only read therefore reports a delivered notification as silence, which is the
+    one thing a notify contract must never get wrong."""
+    return [row.content for row in _send_queue_rows(db) if row.collection == collection]
+
+
+def send_queue_mechanisms(db: Database) -> list[str]:
+    """The mechanism behind every message on the send queue, oldest first — what a
+    "nothing else spoke" claim is read from."""
+    return [row.collection for row in _send_queue_rows(db)]
+
+
+def _send_queue_rows(db: Database) -> list[SendQueueItem]:
+    """Every send-queue row that IS or WILL BE a message to the user, oldest first.
+
+    Cancelled rows are excluded structurally, as the store's own readers exclude them
+    (#1634): a cancelled row was never sent, so counting one as a notification would
+    report a message the user never got."""
+    with Session(db.engine) as session:
+        return list(
+            session.exec(
+                select(SendQueueItem)
+                .where(col(SendQueueItem.cancelled_at).is_(None))
+                .order_by(col(SendQueueItem.created_at).asc())
+            ).all()
+        )
+
+
+def pages_served(db: Database) -> list[str]:
+    """Every page the browse tool has returned this sample, oldest first — read off the
+    browse-results log, which is where the tool journals what it actually fetched.
+
+    The harness's own integrity read: a case that installs a different register per cycle
+    is claiming each cycle saw a different world, and this is the only place that claim
+    can be checked against what the tool really returned."""
+    memory = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
+    entries = memory.read_all() if memory is not None else []
+    return [entry.content for entry in entries]
+
+
+def _live_run_ids(db: Database) -> set[str]:
+    """Every run id this sample has written — read through ``live_prompts``, so the seeded
+    ledger is excluded by the one chokepoint rather than by remembering to."""
+    return {row.run_id for row in live_prompts(db, _PERF_WINDOW) if row.run_id}
+
+
+def _observe_cycle(
+    db: Database,
+    collection: str,
+    *,
+    index: int,
+    before: dict[str, str],
+    sent_before: int,
+    served_before: int,
+    runs_before: set[str],
+) -> CycleObservation:
+    """One cycle's footprint, composed from the state it left: what it wrote, what it
+    queued, what it called, what it was SERVED, and the run record it closed with."""
+    runs = _live_run_ids(db) - runs_before
+    rows = [row for row in live_prompts(db, _PERF_WINDOW) if row.run_id in runs]
+    closed = next((row for row in rows if row.run_outcome is not None), None)
+    return CycleObservation(
+        index=index,
+        before=before,
+        after=collection_entries(db, collection),
+        sent=queued_sends(db, collection)[sent_before:],
+        calls=_ordered_calls(rows),
+        served=pages_served(db)[served_before:],
+        outcome=closed.run_outcome if closed is not None else None,
+        reason=closed.run_reason if closed is not None else None,
+    )
+
+
+def _ordered_calls(rows: list[PromptLog]) -> list[CycleCall]:
+    """The calls one run's rows carry, oldest first — each with the arguments it was made
+    with, decoded from the JSON string the wire stores them as."""
+    return [
+        CycleCall(
+            tool=call.get("function", {}).get("name", ""),
+            arguments=_decoded_arguments(call.get("function", {}).get("arguments")),
+        )
+        for row in sorted(rows, key=lambda row: row.timestamp)
+        for call in _response_tool_calls(row)
+    ]
+
+
+def _decoded_arguments(raw: object) -> dict:
+    """One logged call's arguments as a mapping — an unparseable payload reads as no
+    arguments rather than raising, since a scorer asking WHICH page was fetched wants the
+    calls that do carry one."""
+    if not isinstance(raw, str):
+        return raw if isinstance(raw, dict) else {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+# A cycles scorer reads the whole DB plus each cycle's own footprint, in order.  Graded
+# only — every claim about a multi-cycle watch is per-cycle, so binary all-or-nothing would
+# collapse "it fetched but never spoke" and "it did nothing at all" into one number.
+CyclesScorer = Callable[[Database, "list[CycleObservation]"], "list[Check]"]
+CollectorCyclesEval = Callable[..., Awaitable[None]]
+
+
+class _DrivenCycles(NamedTuple):
+    """What driving a case's cycles produced: each cycle's footprint, and whether the
+    dispatcher actually RAN every one of them.
+
+    ``ran`` is the harness half.  ``run_for`` refuses WITHOUT running a cycle at all when
+    the collection is missing, archived, or carries no usable program — and a refusal
+    leaves every check failing on a world the model never saw, which the failure-cause
+    partition would then tag behavioral.  So the refusal travels as its own guard rather
+    than as a puzzling zero.
+
+    A refusal is read STRUCTURALLY — the cycle produced no run of its own — rather than
+    from the returned flag, which is also false for a cycle that really ran and failed."""
+
+    observed: list[CycleObservation]
+    ran: bool
+    refusal: str | None
+
+
+async def _drive_cycles(
+    penny: Penny,
+    collection: str,
+    cycles: Sequence[list[CannedPage]],
+) -> _DrivenCycles:
+    """Run the real collector cycle once per entry in ``cycles``, each against that
+    entry's own browse register, observing what each one left behind.
+
+    The register is re-installed between cycles because that is the whole point: the
+    world MOVED between two runs of the same watch, and what the second cycle does about
+    it is the contract."""
+    observed: list[CycleObservation] = []
+    refusal: str | None = None
+    for index, pages in enumerate(cycles):
+        install_browse(penny, pages)
+        before = collection_entries(penny.db, collection)
+        sent_before = len(queued_sends(penny.db, collection))
+        served_before = len(pages_served(penny.db))
+        runs_before = _live_run_ids(penny.db)
+        _, message = await penny.collector.run_for(collection)
+        if _live_run_ids(penny.db) == runs_before and refusal is None:
+            refusal = message
+        observed.append(
+            _observe_cycle(
+                penny.db,
+                collection,
+                index=index,
+                before=before,
+                sent_before=sent_before,
+                served_before=served_before,
+                runs_before=runs_before,
+            )
+        )
+    return _DrivenCycles(observed=observed, ran=refusal is None, refusal=refusal)
+
+
+def _cycles_ran_check(driven: _DrivenCycles) -> Check:
+    """The 'the dispatcher actually ran every cycle' guard as a scored ``Check`` — the
+    multi-cycle twin of the recovery runners' ``forced bail fired`` guard, so a case whose
+    collection the dispatcher refused can never read as the model doing nothing."""
+    return Check(
+        "every cycle ran",
+        driven.ran,
+        kind="guard",
+        rationale=None
+        if driven.ran
+        else f"the dispatcher refused the collection: {driven.refusal}",
+    )
+
+
+@pytest.fixture
+def collector_cycles_eval(
+    make_config: Callable[..., Config], tmp_path, request
+) -> CollectorCyclesEval:
+    """Drive SEVERAL real collector cycles (``run_for``) N times for one collection, each
+    cycle against its own browse register, and score them together (#1905).
+
+    ``collector_eval``'s multi-cycle sibling, kept beside it rather than folded into it:
+    a one-cycle case scores an end state, while a watch's contract is what the SECOND
+    cycle does about a world that moved — no notification when nothing changed, exactly
+    one when something did — which needs each cycle's footprint kept apart.
+
+    Each sample is hermetic (its own mock Signal server, DB and real-model Penny).  Seeds
+    run first, then embeddings backfill, then ``prepare`` gets the constructed Penny — a
+    loud world probe, so a drifted seed fails in the seed rather than after GPU time."""
+
+    async def _sample(
+        penny: Penny,
+        *,
+        case_id: str,
+        sample_index: int,
+        collection: str,
+        seed: Seeder,
+        cycles: Sequence[list[CannedPage]],
+        score: CyclesScorer,
+        seed_skills: Sequence[SkillDraft] | None,
+        prepare: Preparer | None,
+    ) -> SampleResult:
+        """ONE sample against a constructed Penny: lay its world down, probe it, drive its
+        cycles, score them with the ran-guard folded in, and write its report block."""
+        seed_user(penny.db)
+        seed(penny.db)
+        await _embed_seeds(penny)
+        if seed_skills:
+            await _seed_eval_skills(penny, seed_skills)
+        if prepare is not None:
+            prepare(penny)
+        driven = await _drive_cycles(penny, collection, cycles)
+        result = _guarded_graded(
+            list(score(penny.db, driven.observed)), [_cycles_ran_check(driven)]
+        )
+        _stamp_cause(penny.db, result)
+        _write_sample_report(penny.db, case_id, sample_index, result=result)
+        _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+        return result
+
+    async def _run(
+        *,
+        case_id: str,
+        collection: str,
+        seed: Seeder,
+        cycles: Sequence[list[CannedPage]],
+        score: CyclesScorer,
+        seed_skills: Sequence[SkillDraft] | None = None,
+        prepare: Preparer | None = None,
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = None,
+        family: str | None = None,
+    ) -> None:
+        eval_artifacts.begin_case(case_id)
+        results: list[SampleResult] = []
+        perf = _Perf()
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                )
+                async with eval_penny(config, server) as penny:
+                    results.append(
+                        await _sample(
+                            penny,
+                            case_id=case_id,
+                            sample_index=sample_index,
+                            collection=collection,
+                            seed=seed,
+                            cycles=cycles,
+                            score=score,
+                            seed_skills=seed_skills,
+                            prepare=prepare,
+                        )
+                    )
                     perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()

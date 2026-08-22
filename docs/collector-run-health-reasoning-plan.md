@@ -260,7 +260,7 @@ decide if it's a consistent pattern", instead of judging a single cycle.
 - New tool e.g. `CollectorRunHistoryTool` (in `memory_tools.py`): args
   `{collector: str}` (Pydantic args model), resolves the `collector-runs` constant
   internally, calls `db.messages.target_run_records(collector, <const>)`, formats
-  via the shared `_format_entries(...)` (newest-first ordering). Add it to the
+  via the shared `format_entries(...)` (newest-first ordering). Add it to the
   collector read surface in `Collector.get_tools` / `build_memory_tools`. Tool
   surface stays **uniform** across collections (every read tool is; only the
   prompt decides who calls it) — do NOT gate it to quality-only (that

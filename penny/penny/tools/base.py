@@ -259,7 +259,7 @@ class Tool(ABC):
         live-model probe showed pure-prose narration with no tag RAISED the
         call-as-text bail rate (5/6 vs. 3/6 tagged), so the tag stays even though the
         header now reads naturally.  Read tools additionally lead their body with a
-        count + source line (see ``_format_entries``).
+        count + source line (see ``format_entries``).
         """
         narration = cls._resolve_narration(tool_name, arguments, result)
         tag = RESULT_TAG.format(tool_name=tool_name)

@@ -37,7 +37,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from penny.tests.eval import report
+from penny.tests.eval import comment_split, report
 from penny.tests.eval.artifacts import (
     MANIFEST_FILENAME,
     RESULTS_FILENAME,
@@ -59,6 +59,12 @@ FAMILIES_LABEL = "families:"
 CAUSES_LABEL = "causes —"
 NO_TRANSCRIPT = "_(no transcript recorded)_"
 SECTION_SEPARATOR = "\n\n"
+
+# The most a single sample fold may render to before it is given internal seams (#1917).  The
+# splitter's own per-part budget, read from it rather than restated: a fold larger than one part
+# can never be packed into a postable comment however the document is cut, because a fold is
+# the finest seam the splitter has.
+SAMPLE_FOLD_BUDGET = comment_split.PART_BUDGET
 GATING_GLYPH = "⚖"
 FLIP_GLYPH = "✅→❌"
 UNKNOWN_COMMIT = "unknown"
@@ -273,11 +279,16 @@ def _folded_transcript(transcript: str) -> str:
     """Re-normalize a case's per-sample blocks for the comment: EVERY block folds whole under its
     banner — the one and only rendering (#1753/#1759). Re-folds an old unfolded ``#### `` block on
     the way, so a re-assembled prior run is uniform too. Collapsed by default, the full body always
-    a click away — there is no banner-only form."""
+    a click away — there is no banner-only form.
+
+    A sample too big to POST as one fold renders as several instead (#1917), each opening on the
+    same seam so the splitter can cut between them. Done here rather than at write time so the
+    per-sample artifact on disk stays one fold — the seams belong to the comment, which is the only
+    place a size cap exists."""
     blocks = []
     for block in report.split_sample_blocks(transcript):
         number, banner, body = report.parse_sample_block(block)
-        blocks.append(report.fold_sample(number, banner, body))
+        blocks.append(report.fold_sample_parts(number, banner, body, SAMPLE_FOLD_BUDGET))
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
 
 

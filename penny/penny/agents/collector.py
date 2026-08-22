@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -48,26 +49,28 @@ from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
 from penny.constants import (
-    COLLECTOR_COVERED_REASON,
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
     MutationActor,
+    PennyConstants,
     RunOutcome,
     WriteGateOutcome,
 )
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
-from penny.database.models import MemoryRow, Skill
+from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.notification import NOTIFICATION_NOTES, CollectorNotifier, NotificationOutcome
-from penny.program import ProgramCall, is_covered, program_calls
+from penny.program import ProgramCall, program_calls
+from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import skill_params
+from penny.tools.memory_tools import DoneTool, format_entries
 
 if TYPE_CHECKING:
     pass
@@ -84,6 +87,27 @@ _ROUTINE_GONE = f"{_ROUTINE_HEAD} {{name}} — it is no longer in the routine re
 _VALUES_HEAD = "The values it is pointed at:"
 _VALUES_NONE = f"{_VALUES_HEAD} none — this routine takes none."
 _NO_VALUE = "nothing was supplied for this"
+
+# The composed prompt's holdings block (#1914) — WHAT THE COLLECTION HOLDS at the moment
+# the cycle starts, rendered beside its recent runs.  A cycle can only act on what it is
+# presented, and until now nothing on the surface said what was already stored: a routine
+# re-observing the same thing each cycle had no way to see the key it wrote under last
+# time, so it invented a fresh one and the write gate read NEW_KEY where the value was
+# in fact unchanged (measured: 15 of 25 quiet cycles).  Presentation only — nothing here
+# constrains what a routine may be or which keys it may use; a genuinely many-keyed
+# routine (a dated digest) reads its own past keys and carries on.
+#
+# The entries render through the SAME ``format_entries`` the read tools use, so a key
+# read ambiently is in the invocation form a ``key=`` argument takes — copied, never
+# guessed (n≤1).
+_HOLDINGS_HEAD = "## What this collection holds (newest first)"
+_HOLDINGS_LEAD = "The entries it holds right now, and the key each one is stored under."
+_HOLDINGS_EMPTY = "It holds nothing yet."
+_HOLDINGS_MORE = "{count} older {noun} not shown."
+_HOLDINGS_GONE = (
+    "Collection '%s' vanished between binding the cycle and composing its prompt — the "
+    "cycle runs without the block stating what it holds."
+)
 
 
 class Collector(BackgroundAgent):
@@ -320,23 +344,23 @@ class Collector(BackgroundAgent):
     ) -> NotificationOutcome | None:
         """Tell the user about this cycle, when this cycle is one that should (#1911).
 
-        The trigger is exactly three structural facts, and none of them is a tool's
-        identity: the collection carries ``notify``, no step raised a STOP, and the run
-        COVERED its program.  A routine with no write at all passes it the same way a
-        watch does — "some skills won't have writes at all" — because coverage is of
-        the program's own calls.
+        The trigger is exactly three structural facts: the collection carries
+        ``notify``, no step raised a STOP, and the cycle CLOSED with ``done()`` (#1916,
+        where it used to read program coverage).  A routine with no write at all passes
+        it the same way a watch does — "some skills won't have writes at all" — because
+        what is read is the close, not what the cycle called to get there.
 
         The STOP clause is what keeps no-news silent: a watch's unchanged
-        re-observation carries its STOP on the very call that completes the program, so
-        coverage alone would read that cycle as a finished job and tell the user
-        nothing happened.  A STOP means the cycle deliberately ended early, whatever
-        else it had got through.
+        re-observation carries its STOP at the write chokepoint and the loop ends
+        there, so the close alone would read that cycle as a finished job and tell the
+        user nothing happened.  A STOP means the cycle deliberately ended early,
+        whatever else it had got through.
 
         ``None`` when the cycle is not one that notifies, which is the ordinary case.
         """
         if not collection.notify or self._stop_reason(response) is not None:
             return None
-        if not is_covered(self._program, response.tool_calls):
+        if not self._has_done_call(response):
             return None
         return await self._notifier.notify(collection, run_id, response.tool_calls)
 
@@ -360,49 +384,51 @@ class Collector(BackgroundAgent):
         return rendered if len(rendered) <= 50 else rendered[:47] + "..."
 
     @staticmethod
-    def _produced_work(response: ControllerResponse | None) -> bool:
-        """Did this cycle change a collection or message the user?
+    def _produced_work(
+        response: ControllerResponse | None, notified: NotificationOutcome | None
+    ) -> bool:
+        """Did this cycle change a collection or reach the user?
 
-        Reads the per-call ``ToolCallRecord.mutated`` flag — set from each tool's
-        own structured ``ToolResult`` (a row actually written, an entry
-        moved/deleted, a message actually sent).  A *successful no-op* (a
-        duplicate-rejected write, an update/delete/move on a missing key, a
-        muted/cooled-down send) carries ``mutated=False``, so it correctly reads
-        as idle.  This is what splits the run's ``worked`` / ``no_work`` outcome.
+        TWO sources, because since #1911 a cycle has two ways of doing something and
+        only one of them is a tool call.  The per-call ``ToolCallRecord.mutated`` flag —
+        set from each tool's own structured ``ToolResult`` (a row actually written, an
+        entry moved/deleted) — is what the MODEL did.  A *successful no-op* (a
+        duplicate-rejected write, an update/delete/move on a missing key) carries
+        ``mutated=False``, so it correctly reads as idle.
+
+        The other is the notification the FRAMEWORK queued after the cycle (#1914).
+        Telling the user is the whole point of a collection that notifies, and no tool
+        call carries it any more — so a cycle that ran its routine and told the user
+        recorded ``no_work``, the outcome saying nothing happened on the cycle that did
+        the one thing it exists for.  Only ``QUEUED`` counts: the two failure outcomes
+        put nothing in front of the user, exactly like a muted send's ``mutated=False``.
+
+        This is what splits the run's ``worked`` / ``no_work`` outcome.
         """
+        if notified is NotificationOutcome.QUEUED:
+            return True
         if response is None:
             return False
         return any(record.mutated for record in response.tool_calls)
 
     def should_stop_loop(self, records: list[ToolCallRecord]) -> bool:
-        """A collector cycle ends when its PROGRAM is covered, on a write-gate STOP, or
-        on a successful ``done()``.
+        """A collector cycle ends on a successful ``done()`` OR a write-gate STOP.
 
-        COVERAGE is the ordinary end, and it is a read rather than a move: the calls
-        the stored program makes are known before the cycle starts, so once every one
-        of them has executed in order the framework closes the loop and the model is
-        never asked to announce it.  That is what removed the four-step notify tail the
-        cycles were dying in.
+        The base terminator is ``done()`` (#1569, restored #1916); a collector
+        additionally honors a STOP carried by a tool result (``collection_write`` →
+        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) — a deliberate close at the
+        write chokepoint, so no trailing ``done()`` is required (a ``done()`` after a
+        STOP would just be a no-op the loop never reaches).  STOP is honored only here
+        (must-act cadence); the chat loop uses the base and never stops on a write
+        outcome.
 
-        A STOP carried by a tool result (``collection_write`` →
-        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) aborts EARLY, before
-        coverage — a no-change cycle has nothing left worth doing.
-
-        Those two are the ONLY closes.  There is no terminator tool on the surface, so
-        a cycle that cannot finish its program runs out its step budget and records why
-        (#1909) rather than being handed a way to declare itself done.
-
-        ``records`` is the run's whole ordered history — coverage is a question about
-        the run, not about the step that just finished."""
-        return is_covered(self._program, records) or any(
+        What this replaced is the coverage read (#1911): the calls the program makes
+        were settled before the cycle began, so a cycle that departed from them for a
+        good reason had no close available to it at all.  ``records`` stays the run's
+        whole ordered history — a terminator called at any point closes the run."""
+        return super().should_stop_loop(records) or any(
             record.stop_reason is not None for record in records
         )
-
-    def _closed_cleanly(self, response: ControllerResponse) -> bool:
-        """A covered program is a clean close, alongside the base's terminator/STOP —
-        so a cycle that ran its whole routine commits its read cursors like any other
-        deliberate close, rather than looking like a run that trailed off."""
-        return super()._closed_cleanly(response) or is_covered(self._program, response.tool_calls)
 
     def _cycle_result(
         self, response: ControllerResponse | None, notified: NotificationOutcome | None
@@ -416,34 +442,47 @@ class Collector(BackgroundAgent):
         - **stopped** — a write-gate STOP (#1587) closed the cycle at the chokepoint;
           the reason is the declared stop reason, the outcome ``worked``/``no_work`` by
           whether durable state changed.  A stopped cycle never notifies.
-        - **completed** — every call the program makes executed, in order.  The reason
-          says so, and carries what the notification did when the collection notifies:
-          queued, or the honest note that nothing was sent and why.
+        - **done** — the model closed the cycle with the argless sentinel (#1569,
+          restored #1916).  The outcome is ``worked``/``no_work`` the same way, and the
+          reason carries what telling the user came to when the collection notifies —
+          empty otherwise, so the run record's header falls back to the outcome enum.
+          A queued notification is also WORK (#1914): it is the one thing a cycle does
+          that no tool call records.
         - **aborted** — no close at all: durable state changed → ``incomplete``,
-          nothing changed → a ``failed`` bail, both naming what ended the run.  With no
-          terminator to reach for, a cycle that gave up lands here honestly instead of
-          declaring a clean close it did not earn.
+          nothing changed → a ``failed`` bail, both naming what ended the run (#1909's
+          abort causes are kept whole).
 
         (``cancelled`` is handled separately — a preempted cycle never reaches here.)
         """
-        produced = self._produced_work(response)
+        produced = self._produced_work(response, notified)
         clean = RunOutcome.WORKED if produced else RunOutcome.NO_WORK
         stop = self._stop_reason(response)
         if stop is not None:
             return clean, WRITE_GATE_STOP_REASONS[stop]
-        if response is not None and is_covered(self._program, response.tool_calls):
-            return clean, self._completed_reason(notified)
+        if self._has_done_call(response):
+            return clean, self._closed_reason(notified)
         reason = self._unfinished_reason(response)
         return (RunOutcome.INCOMPLETE if produced else RunOutcome.FAILED), reason
 
     @staticmethod
-    def _completed_reason(notified: NotificationOutcome | None) -> str:
-        """What a completed cycle's record says — that the program ran through, plus
-        what telling the user came to when the collection notifies.  A collection that
-        does not notify reads as the bare completion it is."""
+    def _has_done_call(response: ControllerResponse | None) -> bool:
+        """Did the cycle close with a successful ``done()``?  Read off the ledger's own
+        records, so a done whose args failed validation is not a close."""
+        if response is None:
+            return False
+        return any(
+            record.tool == PennyConstants.DONE_TOOL_NAME and not record.failed
+            for record in response.tool_calls
+        )
+
+    @staticmethod
+    def _closed_reason(notified: NotificationOutcome | None) -> str:
+        """What a cleanly-closed cycle's record says: what telling the user came to
+        when the collection notifies, and nothing at all otherwise — a bare close needs
+        no reason, and the run record's header falls back to the outcome enum."""
         if notified is None:
-            return COLLECTOR_COVERED_REASON
-        return f"{COLLECTOR_COVERED_REASON}; {NOTIFICATION_NOTES[notified]}"
+            return ""
+        return NOTIFICATION_NOTES[notified]
 
     @staticmethod
     def _stop_reason(response: ControllerResponse | None) -> WriteGateOutcome | None:
@@ -602,12 +641,19 @@ class Collector(BackgroundAgent):
         collection is running and what it declares it needs are the collector's to
         state (#1907), and reading them each cycle means a re-taught routine's current
         description and parameter set are what the cycle sees.
+
+        The two trailing blocks are the cycle's own STATE, read the same way: what the
+        collection holds now (#1914) and what this collector's recent runs did (#1569).
+        Holdings first — the entries are what the program acts ON, so they sit next to
+        it, and the run outcomes close the prompt as they always have.
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
         surface = frozenset(tool.name for tool in self._tool_registry.get_all())
-        return self._compose_prompt(fresh, self._routine(fresh), surface) + (
-            self._run_history_section(fresh.name)
+        return (
+            self._compose_prompt(fresh, self._routine(fresh), surface)
+            + self._holdings_section(fresh.name)
+            + self._run_history_section(fresh.name)
         )
 
     def _routine(self, target: MemoryRow) -> Skill | None:
@@ -618,6 +664,47 @@ class Collector(BackgroundAgent):
         if target.skill_name is None:
             return None
         return self.db.skills.get(target.skill_name)
+
+    def _holdings_section(self, target_name: str) -> str:
+        """A trailing block of what the bound collection HOLDS right now — its entries,
+        newest first, each with the key it is stored under (#1914).
+
+        Presentation, not policy: the block states what is there and nothing about what
+        to do with it, so a routine that re-observes one thing sees the key it wrote
+        under last time and a routine that files a fresh entry each run sees the ones it
+        already filed.  Neither is prescribed; both are now reading their own state
+        instead of guessing at it.
+
+        The window is bounded in the QUERY and the remainder is a COUNT, so a deep
+        collection is never materialized to render twenty lines of it.  A collection
+        that vanished between binding and composing has nothing to state: the block is
+        absent and the prompt is byte-identical to what it was, said out loud rather
+        than swallowed.
+        """
+        memory = self.db.memory(target_name)
+        if memory is None:
+            logger.warning(_HOLDINGS_GONE, target_name)
+            return ""
+        limit = PennyConstants.COLLECTOR_HOLDINGS_LIMIT
+        body = self._holdings_body(memory.read_latest(limit), memory.entry_count())
+        return f"\n\n{_HOLDINGS_HEAD}\n{body}"
+
+    @staticmethod
+    def _holdings_body(newest: list[MemoryEntry], total: int) -> str:
+        """The holdings block's body: the plain empty line, or the newest entries plus
+        an honest count of the ones the budget left out.
+
+        The overflow is a stated number rather than a silent cut — a collection deep
+        enough to overflow is one whose older entries the cycle can still reason about
+        the existence of."""
+        if not newest:
+            return _HOLDINGS_EMPTY
+        shown = f"{_HOLDINGS_LEAD}\n{format_entries(newest)}"
+        rest = total - len(newest)
+        if rest <= 0:
+            return shown
+        noun = "entry" if rest == 1 else "entries"
+        return f"{shown}\n{_HOLDINGS_MORE.format(count=rest, noun=noun)}"
 
     def _run_history_section(self, target_name: str) -> str:
         """A trailing block of this collector's own recent run outcomes (newest
@@ -685,9 +772,30 @@ class Collector(BackgroundAgent):
             f"Description: {target.description}\n"
             f"{cls._routine_section(target, skill)}"
             "\n"
-            f"{target.extraction_prompt}\n\n"
+            f"{target.extraction_prompt}\n"
+            f"{cls._injected_steps(target)}\n\n"
             f"{cls._runtime_rules(surface)}"
         ).rstrip("\n")
+
+    @classmethod
+    def _injected_steps(cls, target: MemoryRow) -> str:
+        """The assembly-owned step tail: the terminal ``done()``, numbered continuing
+        from the stored prompt's highest step, so the whole prompt reads as one
+        continuous program (#1557, restored #1916).
+
+        ONE step, not the old tail: telling the user left the cycle for good (#1911) and
+        stays out, so what is injected is only the close.  A write-gate STOP on a
+        no-change cycle ends the run at the chokepoint before this step is reached, so
+        no-news never needs it."""
+        base = cls._max_step_number(target.extraction_prompt or "")
+        return f"{base + 1}. {Prompt.COLLECTOR_DONE_STEP}"
+
+    @staticmethod
+    def _max_step_number(prompt: str) -> int:
+        """``A`` — the highest leading step number in the stored prompt (a ``^\\d+.``
+        scan), 0 for an unnumbered prompt so the injected step starts at 1."""
+        numbers = re.findall(r"^(\d+)\.", prompt, re.MULTILINE)
+        return max((int(number) for number in numbers), default=0)
 
     @classmethod
     def _runtime_rules(cls, surface: frozenset[str]) -> str:
@@ -765,19 +873,21 @@ class Collector(BackgroundAgent):
         The scope is the program's own calls CLOSED over :attr:`Tool.advises`, so a
         sibling a result message points at (``collection_write``'s duplicate rejection
         naming ``update_entry``) is present to be called: a rendered instruction always
-        resolves in one call.  There is no terminator among them — coverage and a
-        write-gate STOP are the cycle's only closes, and a genuinely stuck one ends on
-        the max-steps/abort path with its own honest cause rather than on a
-        model-declared clean close.
+        resolves in one call.  ``done`` joins every scoped surface unconditionally
+        (#1916): assembly injects the terminal step into every composed prompt, so the
+        close has to be callable whatever the program contains — and a cycle that
+        departs from its program for a good reason still needs a way to say it has
+        finished, which is the whole reason the terminator came back.
 
-        A collection whose prompt is NOT a readable program gets an EMPTY surface: it
-        has no job this framework can run, so there is nothing to hand it and nothing
-        it could do.  That is a config defect the run record names (#1911's soft
-        reboot removed the seeded prose rows that used to make it a second mode), not a
-        fallback that quietly runs the collection some other way."""
+        A collection whose prompt is NOT a readable program gets a surface of the
+        terminator ALONE: it has no job this framework can run, so there is nothing to
+        hand it but the ability to close honestly.  That is a config defect the run
+        record names (#1911's soft reboot removed the seeded prose rows that used to
+        make it a second mode), not a fallback that quietly runs the collection some
+        other way."""
         available = super().get_tools(run_id)
         scoped = close_over_advice({call.tool for call in self._program}, available)
-        return [tool for tool in available if tool.name in scoped]
+        return [tool for tool in available if tool.name in scoped or tool.name == DoneTool.name]
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""

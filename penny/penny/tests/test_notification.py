@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import pytest
 
-from penny.agents.models import ToolCallRecord
 from penny.notification import (
     CollectorNotifier,
     CycleCall,
@@ -28,19 +27,12 @@ from penny.notification import (
     WrittenEntry,
     render_notification,
 )
-from penny.program import ProgramCall, covered_calls, is_covered, program_calls
+from penny.program import ProgramCall, program_calls
 
 pytestmark = pytest.mark.bare_db
 
 
 _SURFACE = frozenset({"browse", "collection_write", "collection_read_latest", "log_read", "done"})
-
-
-def _ran(*calls: tuple[str, bool]) -> list[ToolCallRecord]:
-    """Executed records: ``(tool, succeeded)`` pairs, in the order they ran."""
-    return [
-        ToolCallRecord(tool=tool, arguments={}, failed=not succeeded) for tool, succeeded in calls
-    ]
 
 
 # ── The program's calls (#1911) ───────────────────────────────────────────────
@@ -77,55 +69,6 @@ def test_program_calls_read_the_rendered_dialect_only():
     # Prose alone names no call; a verb off this cycle's surface is not one either.
     assert program_calls("Watch the page and write down what changed.", _SURFACE) == ()
     assert program_calls("1. send_message(content=<the message>)", _SURFACE) == ()
-
-
-def test_coverage_advances_in_order_over_the_programs_own_calls():
-    """The forward cursor across the program shapes a routine can have.
-
-    A retry does not consume its step (the failed attempt is the same step trying
-    again), a read the model interjected of its own accord does not count against
-    coverage, a tool the program names twice needs two successful executions, and a run
-    that took the steps out of order has not carried out the routine it was given."""
-    program = program_calls(
-        "1. browse(queries=['a'])\n2. collection_write(memory='m', entries=[])", _SURFACE
-    )
-
-    # Straight through.
-    assert is_covered(program, _ran(("browse", True), ("collection_write", True)))
-    # A failed call, then the retry: the failure passes over, the retry covers.
-    assert is_covered(
-        program, _ran(("browse", False), ("browse", True), ("collection_write", True))
-    )
-    # An interjected read between the steps costs nothing.
-    assert is_covered(
-        program,
-        _ran(("browse", True), ("collection_read_latest", True), ("collection_write", True)),
-    )
-    # Half-run, and out of order, are both uncovered — and the cursor says how far.
-    assert not is_covered(program, _ran(("browse", True)))
-    assert covered_calls(program, _ran(("browse", True))) == 1
-    assert not is_covered(program, _ran(("collection_write", True), ("browse", True)))
-
-    # A tool the program names twice needs two successful executions of it.
-    twice = program_calls("1. browse(queries=['a'])\n2. browse(queries=['b'])", _SURFACE)
-    assert not is_covered(twice, _ran(("browse", True)))
-    assert is_covered(twice, _ran(("browse", True), ("browse", True)))
-
-
-def test_a_program_with_no_calls_is_never_covered():
-    """An EMPTY program is not instantly complete — there is nothing to read, so the
-    read cannot be what ends the cycle.  That is what keeps a purely prose prompt on
-    its ``done()`` terminator instead of closing before it has done anything."""
-    assert is_covered((), _ran(("browse", True))) is False
-    assert is_covered((), []) is False
-
-
-def test_a_program_with_no_write_at_all_is_covered_like_any_other():
-    """Coverage is of the program's OWN calls, never of a tool identity: a routine that
-    only reads completes exactly the way a routine that writes does.  (The code owner's
-    correction: some skills will not have writes at all.)"""
-    read_only = program_calls('1. log_read(memory="user-messages")', _SURFACE)
-    assert is_covered(read_only, _ran(("log_read", True)))
 
 
 # ── The notify document (#1911) ───────────────────────────────────────────────

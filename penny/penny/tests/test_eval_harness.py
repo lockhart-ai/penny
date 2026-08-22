@@ -16,9 +16,12 @@ check`` rather than only on the ``eval``-marked run the marker deselects.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from datetime import datetime
+from difflib import SequenceMatcher
+from pathlib import Path
 
 import pytest
 
@@ -26,9 +29,12 @@ import pytest
 # ``Tool.format_result`` dispatches their real ``to_result_narration`` — the rejection-probe
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
-from penny.constants import PennyConstants
+from penny.agents.collector import Collector
+from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
+from penny.database.memory import MemoryType
+from penny.database.models import MemoryRow, Skill
 from penny.database.skills import (
     SkillParameter,
     build_binding_content,
@@ -36,8 +42,10 @@ from penny.database.skills import (
     slug_skill_name,
 )
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
+from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.prompts import Prompt
 from penny.skill_extraction import build_framing_content
+from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
@@ -51,6 +59,8 @@ from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
     BoundExpectation,
     Check,
+    CycleCall,
+    CycleObservation,
     ParameterFamily,
     SampleResult,
     _assert_threshold,
@@ -80,6 +90,22 @@ from penny.tests.eval.conftest import (
     tool_call_rejected,
     tool_not_called,
     tool_was_called,
+)
+from penny.tests.eval.test_collector_enactment import (
+    _STOP_REASON as _STOP,
+)
+from penny.tests.eval.test_collector_enactment import (
+    DIRECTION_CHECK_LABEL,
+    ENACTMENT_CASES,
+    GATE_CASES,
+    _assert_the_baseline_is_stored,
+    _EnactmentCase,
+    _score_enactment,
+    assert_applied_world,
+    configured_terms,
+    rendered_program,
+    seed_applied_job,
+    seed_gate_world,
 )
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
@@ -274,6 +300,43 @@ def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path) -> None:
     assert logging.getLogger("penny").handlers == handlers_before
 
 
+def test_every_runner_stands_its_sample_up_through_the_logging_seam() -> None:
+    """``eval_penny`` is the ONLY caller of ``run_penny_with_server`` in the eval harness
+    (#1909), so every runner's samples get their penny log written beside their DB.
+
+    The seam's whole claim is that it "covers the runners that exist and the ones added
+    later", and nothing held it: a runner that stands its sample up directly is
+    byte-identical in every other respect, its samples pass exactly as before, and the
+    only symptom is a log file that is silently never written — for the runner whose
+    samples the log was needed on.  Measured: the multi-cycle collector runner was added
+    before the seam existed and the rebase left it bypassing it, which is the case this
+    reads.  Structural, off the module's own AST, so a runner added tomorrow is covered
+    without anybody remembering this rule.
+
+    Read as a FILE rather than through an import: a ``conftest.py`` imported as an
+    ordinary module is a second copy of every fixture it defines, which is a pytest
+    collection error in ~700 tests, not a readable failure."""
+    tree = ast.parse(_EVAL_CONFTEST.read_text())
+    callers = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Name) and inner.id == _SAMPLE_SEAM
+    }
+    assert callers == {"eval_penny"}, (
+        f"only eval_penny may stand a sample up — {sorted(callers - {'eval_penny'})} "
+        f"call {_SAMPLE_SEAM} directly, so their samples write no per-sample log"
+    )
+
+
+# The construction helper every eval sample must reach THROUGH ``eval_penny`` rather than
+# directly, named once since the pin above reads it by name, and the harness file the pin
+# parses — located off the package the runners live in, never off a string path.
+_SAMPLE_SEAM = "run_penny_with_server"
+_EVAL_CONFTEST = Path(str(eval_package.__file__)).parent / "conftest.py"
+
+
 def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
     """The learn → apply cases score the CADENCE the acceptance asked for, never the rule
     spelling that says so (#1857) — so every rule that fires at the asked-for interval
@@ -423,6 +486,298 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
             f"{case.case_id}: the ask fell short of {sorted(case.parked.missing)}, "
             f"the supply answers {sorted(case.supplies)}"
         )
+
+
+def test_every_applied_job_seeds_and_reads_back_as_the_apply_turn_left_it(tmp_path) -> None:
+    """Each collector-enactment case's world — the parked round its supply answered, then
+    the turn that stood the job up — seeds cleanly and reads back as the exit state it
+    claims: the container derived from the routine and the values, the routine's steps
+    rendered into it, the turn's schedule, notify on, nothing stored yet, and the machine
+    landed in apply carrying the completed framing.
+
+    Driven here against a real migrated database for the reason its sibling beats' pins
+    are: the seeder is CODE, and its loud probe otherwise runs only under ``make eval``,
+    where each sample costs TWO live cycles.  Its own database per case, because that is
+    what the sample gets, and because the held-binding world seeds fewer journeys than the
+    module's five — where a leftover ``_JOURNEYS`` reference would show.
+
+    The case's own premise rides along in the same loop, and both ways of getting it wrong
+    are silent on a run.  Values that did not cover the routine's declared parameters would
+    leave the job pointed at nothing while every cycle check read as the collector's miss;
+    values that disagreed with what the two turns settled would name a container for a job
+    nobody asked for.  The measured binding is a SPAN of what the case declares (the
+    held-binding turn bound the whole spoken phrase), so containment is the reading.
+
+    The RUNTIME JOIN (#1907) is asserted by the probe against each case's declared
+    ``joins`` — so a job whose program stopped carrying the page it fetches, or one whose
+    recorded reason for not carrying it went stale, fails here rather than after three live
+    cycles per sample.  The declared set must name only parameters the job actually binds:
+    a name outside that is a claim about a leaf nothing could fill."""
+    for index, case in enumerate(ENACTMENT_CASES):
+        db = migrated_db(str(tmp_path / f"applied-{index}.db"))
+        seed_applied_job(case)(db)
+        assert_applied_world(db, case)
+        declared = sorted(parameter.name for parameter in case.skill.parameters)
+        assert declared == sorted(case.values), (
+            f"{case.case_id}: the routine declares {declared}, the job binds {sorted(case.values)}"
+        )
+        for name, settled in case.parked.bound.items():
+            assert settled in case.values[name], (
+                f"{case.case_id}: the job's {name!r} is {case.values[name]!r}, the two turns "
+                f"settled {settled!r}"
+            )
+        assert set(case.joins) <= set(case.values), (
+            f"{case.case_id}: the join can only fill parameters the job binds, got "
+            f"{sorted(set(case.joins) - set(case.values))}"
+        )
+
+
+def test_every_gate_case_seeds_the_baseline_its_direction_rests_on(tmp_path) -> None:
+    """Each notification-gate case's world seeds cleanly and leaves the collection holding
+    exactly the observation a prior cycle would have: one entry, under the measured modal
+    key, carrying the quiet value.
+
+    The KEY is what the negative direction rests on, and getting it wrong is silent. A
+    cycle that writes under a different key makes a NEW_KEY entry — a change, which
+    notifies — so the case would report the gate broken when what broke was the fixture.
+    The probe's second claim is the one that keeps it honest: the key is rendered in the
+    HOLDINGS block the cycle reads (#1914), which is the surface that makes reusing it the
+    presented path rather than a guess. Driven here against a real migrated database
+    because the probe otherwise runs only under ``make eval``.
+
+    Its own database per case, because that is what the sample gets — and because the two
+    directions of a pair share a seeding, so a defect in one is a defect in both."""
+    for index, case in enumerate(GATE_CASES):
+        db = migrated_db(str(tmp_path / f"gate-{index}.db"))
+        seed_gate_world(case)(db)
+        assert_applied_world(db, case.applied, holding={case.key_now: case.stored})
+        _assert_the_baseline_is_stored(db, case)
+
+
+def test_every_gate_pair_keeps_its_two_values_distinguishable() -> None:
+    """The value a gate case stores and the value its positive twin's page carries are
+    different values — in the bare form and in the instruction-labelled pair (#1918).
+
+    The pair is the whole design: one direction needs the served datum to EQUAL what is
+    stored (so the write gate stops), the other needs it to DIFFER (so the write lands and
+    notifies). A stored value that contained the changed one, or the other way round,
+    would make one of the two unreachable however well the cycle behaved."""
+    for case in GATE_CASES:
+        stored, changed = case.stored.casefold(), case.applied.fact.changed.casefold()
+        assert stored != changed, f"{case.case_id}: the two directions need two values"
+        label = case.container.casefold()
+        for form in (changed, f"{label}: {changed}"):
+            assert stored not in form, (
+                f"{case.case_id}: the stored value {case.stored!r} must not live inside the "
+                f"changed one's stored form {form!r}"
+            )
+        assert changed not in stored, (
+            f"{case.case_id}: the changed value must not live inside the stored one"
+        )
+        expected = case.applied.fact.changed if case.notifies else case.stored
+        assert case.datum == expected, (
+            f"{case.case_id}: the served datum must be the one its direction measures"
+        )
+
+
+def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> None:
+    """Each enactment case's two pages differ, and differ on the ONE fact the case says
+    they do: the quiet page carries what the job was set up around and not what comes
+    next, the altered page the other way round.
+
+    Pinned without a GPU because both ways of getting it wrong are silent on a run and each
+    makes the change cycle measure nothing.  A variant that matched no replacement is
+    byte-identical to the page before it, so the "the collection holds what the page says"
+    check would read the SAME value twice and score the change cycle a miss on every
+    sample; a variant carrying both facts would score it green without the value ever
+    moving.
+
+    The ONE-SPAN claim is the code owner's ruling made checkable: "change the datum the
+    skill is looking for, not the structure".  A pair that also moved a date, a wording or
+    an ordering gives a cycle a second thing to notice, and then what the change cycle
+    measured is no longer the datum."""
+    for case in ENACTMENT_CASES:
+        assert case.quiet.text != case.altered.text, f"{case.case_id}: the pages must differ"
+        _assert_one_span_moved(case)
+        _assert_the_halves_exclude_each_other(case)
+        assert case.fact.quiet in case.quiet.text, f"{case.case_id}: the quiet fact must be there"
+        assert case.fact.changed not in case.quiet.text, (
+            f"{case.case_id}: the quiet page must not already carry {case.fact.changed!r}"
+        )
+        assert case.fact.changed in case.altered.text, (
+            f"{case.case_id}: the altered page must carry {case.fact.changed!r}"
+        )
+        assert case.fact.quiet not in case.altered.text, (
+            f"{case.case_id}: the altered page must no longer carry {case.fact.quiet!r}"
+        )
+
+
+def _assert_the_halves_exclude_each_other(case: _EnactmentCase) -> None:
+    """A case's two expected values are MUTUALLY EXCLUSIVE — neither contained in the
+    other, in the bare form or in the instruction-labelled pair a cycle may store (#1918).
+
+    The change cycle asserts one value is present and the other gone, so a quiet half that
+    lived inside the changed half's stored form would make that check unsatisfiable: the
+    cycle would do exactly the right thing and score a miss.  Cheap to state, silent to
+    get wrong — "not scheduled" inside "scheduled 05:20" was the shape that motivated it."""
+    quiet, changed = case.fact.quiet.casefold(), case.fact.changed.casefold()
+    # The labelled form a cycle may store: the extract INSTRUCTION, then the value.  The
+    # instruction is whatever leaf the routine points at, so the label is stood in for by
+    # the job's own terms — what matters is that a prefix cannot make one half contain the
+    # other, and any prefix would do.
+    label = case.container.casefold()
+    for form in (changed, f"{label}: {changed}"):
+        assert quiet not in form, (
+            f"{case.case_id}: the quiet value {case.fact.quiet!r} must not live inside the "
+            f"changed one's stored form {form!r}"
+        )
+    for form in (quiet, f"{label}: {quiet}"):
+        assert changed not in form, (
+            f"{case.case_id}: the changed value {case.fact.changed!r} must not live inside "
+            f"the quiet one's stored form {form!r}"
+        )
+
+
+def _assert_one_span_moved(case: _EnactmentCase) -> None:
+    """The two pages differ in EXACTLY one contiguous span — the datum and nothing else.
+
+    Read line by line through ``difflib`` rather than trusted to the derivation: the
+    helper that builds a variant enforces a single replacement, but the QUIET page is
+    itself derived, and two independently-derived texts can diverge anywhere.  This is
+    the claim that makes the change cycle a measurement of the datum."""
+    moves = [
+        block
+        for block in SequenceMatcher(
+            None, case.quiet.text.splitlines(), case.altered.text.splitlines()
+        ).get_opcodes()
+        if block[0] != "equal"
+    ]
+    assert len(moves) == 1, (
+        f"{case.case_id}: the change page must move the datum and nothing else — "
+        f"{len(moves)} spans differ"
+    )
+
+
+def test_the_enactment_scorer_passes_three_cycles_that_did_the_job(tmp_path) -> None:
+    """A baseline cycle, then a quiet one that re-read the same value and stopped at the
+    write chokepoint in silence, then a change cycle that said so once — every check the
+    beat gates on scores green.
+
+    The same tripwire the reply beats carry (the "check the scorer before you blame the
+    model" rule, applied before the run rather than after it): a scorer that cannot pass
+    the behaviour the case itself calls correct scores every sample a miss, and this suite
+    has shipped that bug once already.  THREE cycles per sample makes it the most expensive
+    place in the suite to find it, so it is found here.
+
+    The direction check is the one row that legitimately varies — it reads the CONFIGURED
+    terms rather than the cycles — so it is read as a report and excluded from the claim."""
+    db = migrated_db(str(tmp_path / "enactment-scorer.db"))
+    for case in ENACTMENT_CASES:
+        for check in _score_enactment(db, _three_good_cycles(case), case=case):
+            if check.label == DIRECTION_CHECK_LABEL:
+                continue
+            assert check.ok, f"{case.case_id}: {check.label} — {check.rationale}"
+
+
+# The key an ideal cycle stores its reading under — a fixture stand-in for whatever the
+# routine's own program names, since the scorer reads keys and contents alike.
+_ENACTMENT_KEY = "current"
+
+# The surface a configured collection's cycle runs with — its program's own two calls
+# (#1911) plus the terminator assembly injects a step for (#1916), which is what the
+# runtime-rules block renders against.
+_ENACTMENT_SURFACE = ("browse", "collection_write", PennyConstants.DONE_TOOL_NAME)
+
+
+def _three_good_cycles(case: _EnactmentCase) -> list[CycleObservation]:
+    """The three cycles the beat's contract describes, each doing exactly what is asked of
+    it: the baseline write, the silent re-read that stops at the chokepoint, and the change
+    that queues one message naming what moved."""
+    quiet = {_ENACTMENT_KEY: case.fact.quiet}
+    return [
+        _did_the_job(case, index=0, before={}, after=quiet),
+        _did_the_job(
+            case, index=1, before=quiet, after=quiet, outcome=RunOutcome.NO_WORK, reason=_STOP
+        ),
+        _did_the_job(
+            case,
+            index=2,
+            before=quiet,
+            after={_ENACTMENT_KEY: case.fact.changed},
+            sent=[f"heads up — it now says {case.fact.changed}"],
+            reason=NOTIFICATION_NOTES[NotificationOutcome.QUEUED],
+        ),
+    ]
+
+
+def _did_the_job(
+    case: _EnactmentCase,
+    *,
+    index: int,
+    before: dict[str, str],
+    after: dict[str, str],
+    sent: list[str] | None = None,
+    outcome: RunOutcome = RunOutcome.WORKED,
+    reason: str | None = None,
+) -> CycleObservation:
+    """One cycle that did exactly what the watch contract asks of it: fetched the page the
+    job is pointed at, wrote what it said, queued whatever the change warranted, and closed
+    with a run record stating it — and closed with ``done()``, which #1916 restored as
+    how a cycle says it has finished.  A cycle that STOPPED at the chokepoint never
+    reaches the terminator, so it carries no ``done`` record."""
+    calls = [
+        CycleCall(tool="browse", arguments={"queries": [case.values["url"]]}),
+        CycleCall(tool="collection_write", arguments={"memory": case.container}),
+    ]
+    if reason != _STOP:
+        calls.append(CycleCall(tool=PennyConstants.DONE_TOOL_NAME, arguments={}))
+    return CycleObservation(
+        index=index,
+        before=before,
+        after=after,
+        sent=sent or [],
+        calls=calls,
+        served=[f"## browse: {case.values['url']}\n{next(iter(after.values()))}"],
+        outcome=outcome.value,
+        reason=reason,
+    )
+
+
+def test_every_configured_term_reads_off_the_prompt_the_collector_composes() -> None:
+    """Every surface the directionality check reads is text the collector really composes
+    for that collection (#1907) — the instructions, the routine and what it is for, the
+    values by name, and the collection's own name and description.
+
+    The check answers WHERE a term survived configuration, so its surfaces have to be the
+    collector's own rather than a plausible restatement of them; a surface that drifted out
+    of the composed prompt would report a condition as reachable when nothing the cycle
+    reads carries it.  Driven against the SHIPPED composer with the job's row and its
+    routine, so the claim is a read rather than a second copy of the composition."""
+    for case in ENACTMENT_CASES:
+        routine = slug_skill_name(case.skill.name)
+        row = MemoryRow(
+            name=case.container,
+            type=MemoryType.COLLECTION.value,
+            description=case.job.description,
+            extraction_prompt=rendered_program(case),
+            skill_name=routine,
+            skill_params=json.dumps(case.values),
+            notify=True,
+        )
+        skill = Skill(
+            name=routine,
+            intent=case.skill.description,
+            description=case.skill.description,
+            steps="[]",
+            parameters=json.dumps([{"name": name} for name in case.values]),
+            author=PennyConstants.CHAT_AGENT_NAME,
+        )
+        composed = Collector._compose_prompt(row, skill, frozenset(_ENACTMENT_SURFACE))
+        for surface, text in configured_terms(case).items():
+            assert text in composed, (
+                f"{case.case_id}: the {surface!r} surface must be text the collector reads — "
+                f"{text!r} is not in the composed prompt"
+            )
 
 
 def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> None:
