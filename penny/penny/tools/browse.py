@@ -77,14 +77,30 @@ NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
 # (the extractor never produced a usable tagged line).
 _EXTRACT_HANDLE_CLAUSE = "Full page content saved to {handles} — read it there for anything more."
 _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
-# A SUCCESSFUL extraction renders the value alone — no handle clause.  The
-# "saved to browse-results#N" phrasing, read at the moment a chat teach round
-# holds the extracted value, answered the wrong question: it claimed a save
-# had happened (true of the raw page) in words the model read as the
-# remembering being done (false — the value is ephemeral), and the planned
-# collection_write never fired (2026-07-19 beat-1b transcripts).  The failure
-# renders below KEEP the clause: there the handle is the remedy.
-_EXTRACT_SUCCESS = "{value}"
+# A SUCCESSFUL extraction renders the value WITH THE QUESTION IT ANSWERS, and no
+# handle clause.
+#
+# The pairing is the code owner's ruling (#1918): "extract 'the price of blah' →
+# response 'the price of blah is $123'".  Composed HERE, mechanically, from the tool's
+# own ``extract`` argument and the value the micro-context returned — python-space, not
+# model-space.  The extractor's contract is untouched: it still just finds the value,
+# and nothing anywhere composes new wording.  The label is the instruction VERBATIM,
+# because a rephrasing would be this render inventing a question the caller did not ask.
+#
+# What it fixes: the extract is handed the instruction and returns the value WITHOUT it,
+# so a bare answer arrived with nothing saying what it answered.  Measured — a watch
+# whose page read "The dawn sailing: scheduled 05:20." got back "05:20", and the cycle
+# recorded the previous value instead, its own reasoning saying "the extracted value for
+# 'dawn sailing' was empty".  A value that happens to describe itself ("not scheduled")
+# survived; a bare number did not, and which is which was luck.
+#
+# The handle clause stays off a success.  The "saved to browse-results#N" phrasing, read
+# at the moment a chat teach round holds the extracted value, answered the wrong
+# question: it claimed a save had happened (true of the raw page) in words the model read
+# as the remembering being done (false — the value is ephemeral), and the planned
+# collection_write never fired (2026-07-19 beat-1b transcripts).  The failure renders
+# below KEEP the clause: there the handle is the remedy.
+_EXTRACT_SUCCESS = "{instruction}: {value}"
 _EXTRACT_NOT_PRESENT = "The page doesn't contain {instruction!r} — {reason} {handle_clause}"
 _EXTRACT_FAILED = (
     "Couldn't extract {instruction!r} from the page — the extractor returned nothing "
@@ -375,12 +391,12 @@ class BrowseTool(Tool):
     def _render_micro_result(
         self, micro: MicroContextResult, instruction: str, stored: list[MemoryEntry]
     ) -> str:
-        """The main-loop body for one micro-context outcome — the extracted value
-        alone on success (no handle clause — see _EXTRACT_SUCCESS), or the
-        not-present reason / an honest enumerated failure, each carrying the
-        fetch handle to the stored full content as its remedy."""
+        """The main-loop body for one micro-context outcome — on success the extracted
+        value LABELLED with the instruction it answers (#1918; no handle clause — see
+        _EXTRACT_SUCCESS), or the not-present reason / an honest enumerated failure, each
+        carrying the fetch handle to the stored full content as its remedy."""
         if micro.outcome == MicroExtractOutcome.EXTRACTED:
-            return _EXTRACT_SUCCESS.format(value=micro.value)
+            return _EXTRACT_SUCCESS.format(instruction=instruction, value=micro.value)
         handle_clause = self._handle_clause(stored)
         if micro.outcome == MicroExtractOutcome.NOT_PRESENT:
             return _EXTRACT_NOT_PRESENT.format(
