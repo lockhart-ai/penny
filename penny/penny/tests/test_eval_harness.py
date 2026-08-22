@@ -548,6 +548,7 @@ def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> No
     for case in ENACTMENT_CASES:
         assert case.quiet.text != case.altered.text, f"{case.case_id}: the pages must differ"
         _assert_one_span_moved(case)
+        _assert_the_halves_exclude_each_other(case)
         assert case.fact.quiet in case.quiet.text, f"{case.case_id}: the quiet fact must be there"
         assert case.fact.changed not in case.quiet.text, (
             f"{case.case_id}: the quiet page must not already carry {case.fact.changed!r}"
@@ -557,6 +558,32 @@ def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> No
         )
         assert case.fact.quiet not in case.altered.text, (
             f"{case.case_id}: the altered page must no longer carry {case.fact.quiet!r}"
+        )
+
+
+def _assert_the_halves_exclude_each_other(case: _EnactmentCase) -> None:
+    """A case's two expected values are MUTUALLY EXCLUSIVE — neither contained in the
+    other, in the bare form or in the instruction-labelled pair a cycle may store (#1918).
+
+    The change cycle asserts one value is present and the other gone, so a quiet half that
+    lived inside the changed half's stored form would make that check unsatisfiable: the
+    cycle would do exactly the right thing and score a miss.  Cheap to state, silent to
+    get wrong — "not scheduled" inside "scheduled 05:20" was the shape that motivated it."""
+    quiet, changed = case.fact.quiet.casefold(), case.fact.changed.casefold()
+    # The labelled form a cycle may store: the extract INSTRUCTION, then the value.  The
+    # instruction is whatever leaf the routine points at, so the label is stood in for by
+    # the job's own terms — what matters is that a prefix cannot make one half contain the
+    # other, and any prefix would do.
+    label = case.container.casefold()
+    for form in (changed, f"{label}: {changed}"):
+        assert quiet not in form, (
+            f"{case.case_id}: the quiet value {case.fact.quiet!r} must not live inside the "
+            f"changed one's stored form {form!r}"
+        )
+    for form in (quiet, f"{label}: {quiet}"):
+        assert changed not in form, (
+            f"{case.case_id}: the changed value {case.fact.changed!r} must not live inside "
+            f"the quiet one's stored form {form!r}"
         )
 
 

@@ -310,10 +310,20 @@ class _WatchedFact(NamedTuple):
     """The ONE controllable fact the two pages differ on — what a cycle that really read
     the page has to come back holding.
 
-    ``quiet`` is what the page said when the job was set up and ``changed`` what it says
-    on the later cycles.  Both are matched as substrings of the entry the cycle wrote
-    (key or content — where in the entry a fact lands is deliberately open), so a cycle
-    that stored the value with its units or its label still reads as having stored it.
+    Each is the MINIMAL DISTINCTIVE VALUE the extract returns — not the page line it came
+    off.  The extract is handed an instruction and answers it, so a page reading "The dawn
+    sailing: scheduled 05:20." comes back as "05:20", and an expectation written against
+    the page's own words would score a correct find a miss.  Transcribed from measured
+    draws like every other fixture here.
+
+    The two halves must be MUTUALLY EXCLUSIVE — neither a substring of the other, in the
+    bare form OR in the instruction-labelled pair a cycle may store since #1918 — because
+    the change cycle asserts one is present and the other gone.  "not scheduled" and
+    "05:20" satisfy that; "not scheduled" and "scheduled 05:20" would not have.
+
+    Both are matched as substrings of the entry the cycle wrote (key or content — where in
+    the entry a fact lands is deliberately open), so a cycle that stored the value with its
+    units or its label still reads as having stored it.
 
     That substring shape is what makes these survive #1918 unchanged.  The browse result
     now hands back the extracted value LABELLED with the instruction it answers ("the dawn
@@ -404,7 +414,7 @@ _TIMETABLE = _EnactmentCase(
     ),
     quiet=_NORTH_PIER_QUIET,
     altered=_NORTH_PIER_WITH_THE_DAWN,
-    fact=_WatchedFact(quiet="not scheduled", changed="scheduled 05:20"),
+    fact=_WatchedFact(quiet="not scheduled", changed="05:20"),
     confirmation=(
         "Got it! I just set up a routine that watches the North Pier departures page "
         "(<https://northpier.example/departures>) for “Dawn Sailing.” It runs once a day at "
@@ -502,7 +512,7 @@ _HELD_BINDING = _EnactmentCase(
     ),
     quiet=_NORTH_PIER_QUIET,
     altered=_NORTH_PIER_WITH_THE_DAWN,
-    fact=_WatchedFact(quiet="not scheduled", changed="scheduled 05:20"),
+    fact=_WatchedFact(quiet="not scheduled", changed="05:20"),
     confirmation=(
         "Got it! I’m now watching the North Pier departures page at "
         "https://northpier.example/departures for a line that says “the dawn sailing.” The "
