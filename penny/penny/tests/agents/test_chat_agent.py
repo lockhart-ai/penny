@@ -1735,6 +1735,7 @@ _BASIC_FLOW_EXPECTED = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
