@@ -58,6 +58,7 @@ from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.skills import DistillInput
+from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     REPLY_ANCHOR,
@@ -67,6 +68,7 @@ from penny.tests.eval.conftest import (
     collection_entries,
     seeded_run_id,
     tool_call_arg_values,
+    tool_call_sequence,
     tool_was_called,
 )
 from penny.tests.eval.fixtures import SynthCollection
@@ -105,6 +107,14 @@ _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
 # Every read/mutation tool a no-fire guard must see stay quiet.
 _READ_TOOLS = (_LOG_READ, _READ_RUN_CALLS)
 _ACTION_TOOLS = (_BROWSE, _WRITE, _UPDATE, _DELETE)
+
+# The argument every store-addressing tool names its target with — what a read is keyed to
+# here, since the store is the claim and the verb is the model's choice.
+_MEMORY_ARG = "memory"
+
+# Wide enough that a world seeding a conversation window is read WHOLE: the probe's answer
+# has to be "none of them", not "none of the first few".
+_VECTOR_PROBE_LIMIT = 500
 
 # Directions/authors for seeding the conversation logs.
 _INCOMING = PennyConstants.MessageDirection.INCOMING
@@ -171,6 +181,39 @@ def _dispatched(db: Database, tool: str, field: str, expected: str) -> bool:
     harness spy."""
     values = [_normalize(value) for value in tool_call_arg_values(db, tool, field)]
     return _normalize(expected) in values
+
+
+def _read_the_store(db: Database, store: str) -> bool:
+    """Did ANY call this run read that store?
+
+    Keyed to the STORE, never to a verb: several tools take a ``memory`` argument and more
+    than one of them is a legitimate way to look something up in a log — a cursored
+    ``log_read`` walks it, ``read_similar`` ranks it against an anchor, and a plugin could
+    add a third tomorrow.  Which one a recall-shaped ask reaches for is the model's call to
+    make; what the case is about is whether it went to the right place.
+
+    The verb set is READ from what the run actually called rather than enumerated here, so
+    a tool nobody listed participates for free — the alternative is a name-set that
+    silently fails to fire for the one shape nobody thought of."""
+    return any(_dispatched(db, tool, _MEMORY_ARG, store) for tool in set(tool_call_sequence(db)))
+
+
+def _assert_the_seeded_turns_are_recallable(penny: Penny) -> None:
+    """Every seeded message carries a vector — asserted BEFORE the turn is driven.
+
+    A seeded message with no embedding cannot rank in any similarity read, so a case whose
+    answer lives in that message is UNREACHABLE: the model aims its read correctly, finds
+    nothing, and the case scores 0.00 with nothing in the transcript to say why.  That is
+    exactly what happened here, and it is the third vector-less seed of this fleet — so the
+    class fails at prepare, naming the row, rather than after a GPU run.
+
+    Read through the production backfill's OWN query, so "did the seeds get vectors" is the
+    same question the runner answered rather than a second opinion about it."""
+    unvectored = penny.db.messages.messages_without_embeddings(limit=_VECTOR_PROBE_LIMIT)
+    assert not unvectored, (
+        "every seeded message must carry an embedding before the turn runs — "
+        f"{len(unvectored)} without one, first: {unvectored[0].content!r}"
+    )
 
 
 # ── Conversation seeding (out-of-window) ─────────────────────────────────────
@@ -455,14 +498,21 @@ def _score_user_messages_act(db: Database, _before: set[str], reply: str) -> lis
 
 
 def _score_penny_messages_recall(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """Asked what SHE said, she reads the penny-messages log and relays the out-of-window
-    recommendation."""
-    read = _dispatched(db, _LOG_READ, "memory", _PENNY_MESSAGES)
+    """Asked what SHE said, she goes to the penny-messages log and relays the out-of-window
+    recommendation.
+
+    The spine is the STORE, not the verb: walking the log and ranking it against the topic
+    are both legitimate ways to look back at what she said, and the measured samples chose
+    the second.  What stays exact is the reply check — ``silverleaf`` is an invented word
+    that exists in this world only in the seeded turn, so a reply carrying it can only have
+    read it."""
+    read = _read_the_store(db, _PENNY_MESSAGES)
     return [
         Check(
-            f"spine: she read the {_PENNY_MESSAGES} log",
+            f"spine: she went to the {_PENNY_MESSAGES} log",
             read,
-            anchor=f"{_LOG_READ}(",
+            anchor=f"{_MEMORY_ARG}=",
+            rationale=None if read else f"no call this run named {_PENNY_MESSAGES}",
             kind="spine",
         ),
         *_reply_reflects(reply, [_SUGGESTION_TOKEN]),
@@ -541,24 +591,29 @@ async def test_user_messages_act(chat_eval: ChatEval) -> None:
             "hobbies list"
         ),
         seed=_seed_hobby,
+        prepare=_assert_the_seeded_turns_are_recallable,
         score=_score_user_messages_act,
         min_pass_rate=None,
     )
 
 
 async def test_penny_messages_recall(chat_eval: ChatEval) -> None:
-    """Report-only — a #1524 vocabulary gap, and the standing measurement of it.  Asked to
-    recall a past *Penny* suggestion, gpt-oss reaches for a fresh lookup (a browse, or a
-    read over stored knowledge) instead of ``log_read("penny-messages")``: its instinct is
-    to answer the topic, not to look back at what it said (baseline 0/3, all three browsing
-    a browseable topic).  Hammering the conversation framing ("dig back through our old
-    messages") does not overcome it."""
+    """Report-only — the standing measurement of the #1524 recall-vocabulary gap.
+
+    Its earlier baseline (0/3, every sample browsing the topic instead of looking back at
+    what she said) is NOT what the last run showed: the samples went to
+    ``penny-messages`` — by ``read_similar``, anchored on the topic — and found nothing,
+    because the seeded turn carried no embedding and could not rank.  So the two things
+    that scored 0.00 were a scorer keyed to one verb and a world the answer was
+    unreachable in; both are fixed, and what the case measures now is whether she looks
+    back at all and whether what she says came from what she read."""
     await chat_eval(
         case_id="speak-logread-penny-messages-recall",
         family=_FAMILY,
         message="dig back through our old messages — what exactly did you tell me "
         "to use for my moss terrarium?",
         seed=_seed_suggestion,
+        prepare=_assert_the_seeded_turns_are_recallable,
         score=_score_penny_messages_recall,
         min_pass_rate=None,
     )
