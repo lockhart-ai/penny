@@ -1037,6 +1037,35 @@ class TestMinimalSurfaceCensus:
         assert shrapnel.isdisjoint(CollectionCreateArgs.model_fields)
         assert shrapnel.isdisjoint(CollectionUpdateArgs.model_fields)
 
+    @pytest.mark.asyncio
+    async def test_an_extraction_prompt_argument_is_refused_actionably(self, db):
+        """The registered front door REFUSES an ``extraction_prompt`` argument, and says
+        what to pass instead (#1919, replacing the retired live contract).
+
+        This is the one live claim `tests/eval/test_extraction_tool_recovery.py` still
+        made, and it turned out to be about a surface that no longer exists: that case
+        forced a `collection_set` carrying a hallucinated tool inside an
+        `extraction_prompt`, expecting the write-time tool gate to teach the model a
+        rewrite.  Since #1658/#1631 the argument is not on the model surface at all, so
+        `ToolArgs`' ``extra="forbid"`` refuses the call at ARG VALIDATION and the gate
+        never sees it — a routine is only ever a render of a demonstrated skill, and the
+        surviving gate call runs inside `render_skill_prompt` over that render, which the
+        model cannot author and so cannot hallucinate into.
+
+        Driven through ``run`` rather than ``execute`` because the actionable envelope is
+        what the model reads: the refusal has to NAME the unknown parameter and list the
+        ones that exist, or it is a dead end rather than a correction."""
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
+            name="board-games",
+            extraction_prompt="1. extract_text(url)\n2. done()",
+        )
+        assert result.success is False
+        assert "unknown parameter 'extraction_prompt'" in result.message
+        # The valid parameters are listed, so the retry is a correction and not a guess.
+        assert "skill" in result.message and "schedule" in result.message
+        # And nothing was created off a refused call.
+        assert db.memories.get("board-games") is None
+
 
 class TestScheduleGrammar:
     """The ``schedule`` grammar as a table (#1857): what ``parse_schedule`` accepts, what
@@ -2587,21 +2616,34 @@ class TestCollectionWritesAndReads:
         assert "entries.0.contnt" in result.message
         assert "did you mean 'content'" in result.message
 
-    def test_format_duplicate_binds_key_when_present_and_is_honest_when_keyless(self):
-        """The keyed arm binds an ``update_entry(key=...)`` call to the matched key;
-        the keyless arm (no key to update) is honest about it and points at the real
-        move (skip / write distinct content) — not a dangling refresh imperative."""
+    def test_format_duplicate_states_the_situation_and_the_one_call(self):
+        """The keyed arm states three facts and offers nothing (#1919): the collection
+        already holds this subject under a key it NAMES, any other key collides with that
+        same entry, and here is the call that lands the new value.
+
+        The wording it replaced ("…to refresh it if you have richer info") read as advice
+        to weigh — measured, 4 of 5 samples filed the new value under a fresh key instead
+        — so what is pinned here is that the render presents a SITUATION rather than an
+        option.  The keyless arm has no key to address, so it names no call at all rather
+        than dangling an imperative the model cannot act on."""
         keyed = _format_duplicate(
             WriteResult(
-                key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key="cold brew"
+                key="cold brew coffee",
+                outcome=WriteGateOutcome.DUPLICATE,
+                matched_key="cold brew",
             )
         )
-        assert "update_entry(key='cold brew'" in keyed
+        assert "'cold brew coffee' was not written" in keyed
+        assert "stored under the key 'cold brew'" in keyed
+        assert "collides with that same entry again" in keyed
+        assert "update_entry(key='cold brew', content=<the new value>)" in keyed
+        # No hedge: nothing here makes landing the value conditional on anything.
+        assert "if you have" not in keyed
         keyless = _format_duplicate(
             WriteResult(key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key=None)
         )
-        assert "no key to update" in keyless
-        assert "update_entry(" not in keyless
+        assert "no update_entry call can reach it" in keyless
+        assert "update_entry(key=" not in keyless
 
     @pytest.mark.asyncio
     async def test_write_reports_duplicate_via_tcr(self, db, mock_llm):
@@ -2620,23 +2662,22 @@ class TestCollectionWritesAndReads:
             memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        assert "Rejected as duplicates" in result.message
-        # A fully duplicate-rejected batch wrote nothing — it must read as a
-        # no-op so the collector's work/no-work split (and auto-throttle) sees
-        # the truth rather than counting the rejected write as "work".
+        # A fully rejected batch wrote nothing — it must read as a no-op so the
+        # collector's work/no-work split sees the truth rather than counting the
+        # rejected write as "work".
         assert result.mutated is False
         # The candidate's own key is named, the existing key it collided with is
         # named, *and* the matched key is BOUND straight into the update_entry call
-        # (not a <existing key> placeholder) — so the model refreshes 'dark roast'
-        # rather than re-using its own rejected 'dark roast coffee' key and
-        # ping-ponging on key-not-found (#1405).
-        assert "dark roast coffee" in result.message
-        assert "duplicates existing 'dark roast'" in result.message
-        assert "update_entry(key='dark roast', content=<richer info>)" in result.message
-        # Whole batch was duplicates → the "nothing new" hint fires.  This is a
-        # chat-scope write (scope=None), which has no ``done`` tool, so the hint
-        # must NOT name it — chat and collector share this tool surface.
-        assert "Nothing new to add this time" in result.message
+        # (not a <existing key> placeholder) — so the model lands the value on
+        # 'dark roast' rather than re-using its own rejected 'dark roast coffee' key
+        # and ping-ponging on key-not-found (#1405).
+        assert "'dark roast coffee' was not written" in result.message
+        assert "stored under the key 'dark roast'" in result.message
+        assert "update_entry(key='dark roast', content=<the new value>)" in result.message
+        # Whole batch collided → the nothing-landed close fires.  This is a chat-scope
+        # write (scope=None), which has no ``done`` tool, so the close must NOT name it
+        # — chat and collector share this tool surface.
+        assert "Nothing in this batch landed" in result.message
         assert "done()" not in result.message
 
     @pytest.mark.asyncio
@@ -2657,13 +2698,13 @@ class TestCollectionWritesAndReads:
             memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        # THE WATCHED DELETION (#1911): the whole batch was duplicates, and the close
-        # names NO call to make — no surface carries a terminator any more, so telling
-        # the model to close would be an instruction it could not follow.  The per-entry
-        # rejection still binds the matched key into update_entry, which it DOES have.
-        assert "Nothing new to add" in all_duplicates.message
+        # THE WATCHED DELETION (#1911): the whole batch collided, and the close names NO
+        # call to make — no surface carries a terminator any more, so telling the model
+        # to close would be an instruction it could not follow.  The per-entry rejection
+        # still binds the matched key into update_entry, which it DOES have.
+        assert "Nothing in this batch landed" in all_duplicates.message
         assert "done" not in all_duplicates.message
-        assert "update_entry(key='dark roast', content=<richer info>)" in all_duplicates.message
+        assert "update_entry(key='dark roast', content=<the new value>)" in all_duplicates.message
         # A re-write under the SAME key with the SAME value is the change-gate's
         # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
         # such (not a generic "duplicate") AND carrying a STOP the collector loop
@@ -2674,35 +2715,80 @@ class TestCollectionWritesAndReads:
         assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
         assert same_key.mutated is False
         assert same_key.stop == WriteGateOutcome.KEY_EXISTS_UNCHANGED
-        # A batch with a genuinely new entry alongside a duplicate gets the
-        # per-entry bound refresh + the refresh-or-skip close, never "nothing new".
+        # A batch with a genuinely new entry alongside a collision gets the per-entry
+        # bound call + the some-of-the-batch close, never the nothing-landed one.
+        # The colliding half carries a DIFFERENT value (#1919) — a same-value collision
+        # is the no-news branch below and prescribes no call at all.
         partial = await write.execute(
             memory="likes",
             entries=[
                 {"key": "cold brew", "content": "a brand new distinct entry"},
-                {"key": "dark roast blend", "content": "first body"},
+                {"key": "dark roast blend", "content": "roasted longer this season"},
             ],
         )
         assert "Wrote 1 entry" in partial.message
-        assert "Rejected as duplicates" in partial.message
-        assert "update_entry(key='dark roast', content=<richer info>)" in partial.message
-        assert "or skip these" in partial.message
-        assert "Nothing new to add" not in partial.message
+        assert "update_entry(key='dark roast', content=<the new value>)" in partial.message
+        assert "The rest of the batch landed" in partial.message
+        assert "Nothing in this batch landed" not in partial.message
         assert partial.mutated is True
         # A batch whose entries each duplicate a DIFFERENT existing key must bind
         # EVERY matched key into its own update_entry call — not just the first
         # (#1405: resolve a match for every rejected key in the batch).  'cold brew'
-        # now exists (written above), so both entries collide on distinct keys.
+        # now exists (written above), so both entries collide on distinct keys — each
+        # with its own fresher value, so both take the recoverable branch.
         multi = await write.execute(
             memory="likes",
             entries=[
-                {"key": "dark roast blend", "content": "first body"},
-                {"key": "cold brew coffee", "content": "a brand new distinct entry"},
+                {"key": "dark roast blend", "content": "roasted longer this season"},
+                {"key": "cold brew coffee", "content": "steeped overnight now"},
             ],
         )
-        assert "update_entry(key='dark roast', content=<richer info>)" in multi.message
-        assert "update_entry(key='cold brew', content=<richer info>)" in multi.message
+        assert "update_entry(key='dark roast', content=<the new value>)" in multi.message
+        assert "update_entry(key='cold brew', content=<the new value>)" in multi.message
         assert multi.mutated is False
+        # A collision on the VALUE under a DIFFERENT key is the other branch (#1919):
+        # the same no-news the exact key reads, so it carries the STOP and its own
+        # render, and it prescribes NO call — there is nothing to do about a value that
+        # is already stored.  The mock embeds bag-of-words, so re-writing 'first body'
+        # verbatim under a fresh key matches on content while the key does not.
+        same_value = await write.execute(
+            memory="likes",
+            entries=[{"key": "morning roast selection", "content": "first body"}],
+        )
+        assert same_value.stop == WriteGateOutcome.DUPLICATE_UNCHANGED
+        assert same_value.mutated is False
+        assert (
+            "Already recorded: 'morning roast selection' is already stored as 'dark roast'"
+            in same_value.message
+        )
+        assert "update_entry(" not in same_value.message
+        assert "was not written" not in same_value.message
+        # …and the divergent-value collision above never stops, so a change arriving
+        # under a reworded key is never silenced as no-news.
+        assert multi.stop is None
+
+    @pytest.mark.asyncio
+    async def test_chat_scope_already_recorded_write_has_no_stop(self, db, mock_llm):
+        """A same-value collision under a different key reports the same text on the chat
+        surface and NEVER a loop-stop — STOP applies to must-act cadence contexts only
+        (#1587/#1919), exactly as for the exact-key UNCHANGED case below."""
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+        )
+        already = await write.execute(
+            memory="likes",
+            entries=[{"key": "morning roast selection", "content": "first body"}],
+        )
+        assert "Already recorded: 'morning roast selection'" in already.message
+        assert already.stop is None
 
     @pytest.mark.asyncio
     async def test_chat_scope_unchanged_write_has_no_stop(self, db, mock_llm):

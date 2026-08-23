@@ -14,7 +14,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlmodel import Session, select
 
-from penny.constants import MutationAction, MutationActor, PennyConstants, WriteGateOutcome
+from penny.constants import (
+    WRITE_GATE_STOP_REASONS,
+    MutationAction,
+    MutationActor,
+    PennyConstants,
+    WriteGateOutcome,
+)
 from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
@@ -346,6 +352,11 @@ class TestCollectionWrites:
         assert len(db.memories.memory("likes").read_all()) == 1
 
     def test_write_dedups_on_content_embedding(self, db):
+        """A collision on the VALUE is DUPLICATE_UNCHANGED (#1919) — the stored entry
+        already says what this write says, however either is worded, so the cycle
+        observed nothing new.  It is ``KEY_EXISTS_UNCHANGED``'s twin for the
+        reworded-key path and STOP-worthy for the same reason, which is what keeps a
+        re-observation from reading as a rejection the model should recover from."""
         db.memories.create_collection("likes", "positive prefs")
         shared_content = _unit_vec(4)
 
@@ -371,7 +382,48 @@ class TestCollectionWrites:
             ],
             author="preference-extractor",
         )
+        assert results[0].outcome == WriteGateOutcome.DUPLICATE_UNCHANGED
+        assert results[0].outcome in WRITE_GATE_STOP_REASONS
+        # The entry that HOLDS the value is named, not the key this write proposed.
+        assert results[0].matched_key == "first key"
+        assert len(db.memories.memory("likes").read_all()) == 1
+
+    def test_write_on_a_near_key_with_a_different_value_stays_recoverable(self, db):
+        """The other side of the #1919 split: the key collides but the CONTENT signal
+        does not fire strictly, so this write carries a DIFFERENT value for something
+        already stored — news about that entry, not an absence of news.
+
+        It must stay ``DUPLICATE`` (recoverable, never STOP-worthy): "the release moved
+        to June" arriving under a reworded key is exactly this shape, and stopping the
+        cycle on it would silence the change it carries."""
+        db.memories.create_collection("watch", "a page watch")
+        shared_key_vec = _unit_vec(2)
+
+        db.memories.memory("watch").write(
+            [
+                EntryInput(
+                    key="mistforge release",
+                    content="Mistforge ships in March",
+                    key_embedding=shared_key_vec,
+                    content_embedding=_unit_vec(1),
+                )
+            ],
+            author="collector",
+        )
+        results = db.memories.memory("watch").write(
+            [
+                EntryInput(
+                    key="mistforge release date",
+                    content="Mistforge delayed to June",
+                    key_embedding=shared_key_vec,
+                    content_embedding=_unit_vec(5),
+                )
+            ],
+            author="collector",
+        )
         assert results[0].outcome == WriteGateOutcome.DUPLICATE
+        assert results[0].outcome not in WRITE_GATE_STOP_REASONS
+        assert results[0].matched_key == "mistforge release"
 
     def test_write_without_embeddings_always_accepts(self, db):
         db.memories.create_collection("likes", "positive prefs")

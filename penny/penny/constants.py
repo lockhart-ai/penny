@@ -64,8 +64,15 @@ class WriteGateOutcome(StrEnum):
     ``KEY_EXISTS_UNCHANGED`` — the exact key existed with *identical* content: the
     value has not changed, so there is nothing further to do — the watch's "no
     change" signal, which carries STOP semantics (see ``WRITE_GATE_STOP_REASONS``) ·
+    ``DUPLICATE_UNCHANGED`` — the dedup disjunction matched a *different* existing key
+    AND the strict CONTENT signal fired: the stored entry already says what this write
+    says, however either is worded, so the cycle observed nothing new.  The same no-news
+    as ``KEY_EXISTS_UNCHANGED``, reached under a different key, and STOP-worthy for the
+    same reason (#1919) ·
     ``DUPLICATE`` — the content (or a near key) collided with a *different* existing
-    key via the similarity dedup disjunction ·
+    key WITHOUT the content signal firing strictly: the write carries a DIFFERENT value
+    for something already stored, which is news, so it keeps the recoverable rejection
+    that binds the matched key into an ``update_entry`` call and never stops the run ·
     ``DEGENERATE`` — the content was rejected as degenerate (blank, punctuation
     collapse, bare URL, bail-out phrase).
 
@@ -79,6 +86,7 @@ class WriteGateOutcome(StrEnum):
     NEW_KEY = "new_key"
     KEY_EXISTS_CHANGED = "key_exists_changed"
     KEY_EXISTS_UNCHANGED = "key_exists_unchanged"
+    DUPLICATE_UNCHANGED = "duplicate_unchanged"
     DUPLICATE = "duplicate"
     DEGENERATE = "degenerate"
     UNEXPECTED = "unexpected"
@@ -87,16 +95,29 @@ class WriteGateOutcome(StrEnum):
 # The declared STOP table (#1587): which write-gate outcomes end a must-act
 # (collector) run at the write chokepoint, mapped to the run's stamped stop reason.
 #
-# STAGE ① (the conservative core): only the unambiguous "value unchanged" case
-# stops — the watch that looked and found nothing changed.  ``NEW_KEY`` /
-# ``KEY_EXISTS_CHANGED`` never stop (an accumulator keeps going mid-script), and
-# ``DUPLICATE`` / ``DEGENERATE`` are surfaced-but-recoverable, not clean stops.
-# Later stages add per-collection gate shape as DATA that extends THIS table (e.g.
-# an accumulator that stops when its whole batch is unchanged), never new loop
-# code; a collection whose gate shape isn't declared yet falls back to this
-# conservative default.  Membership here is what makes an outcome STOP-worthy.
+# The rule is the unambiguous "value unchanged" case, under EITHER of the two ways a
+# write can arrive at an entry that already holds its value: the exact key
+# (``KEY_EXISTS_UNCHANGED``) or the dedup disjunction's strict CONTENT match under a
+# different key (``DUPLICATE_UNCHANGED``, #1919).  Both are a watch that looked and found
+# nothing changed, so both close the cycle at the chokepoint.
+#
+# The second one is here because reaching the same entry under a reworded key made the
+# same no-news read as a recoverable rejection instead: the cycle carried on, and every
+# measured sample "recovered" by writing a DIFFERENT entry — rational, since the surface
+# it was answering asked it to try something else.  Splitting the outcome is what makes
+# no-news structural rather than something the model is asked not to do.
+#
+# ``NEW_KEY`` / ``KEY_EXISTS_CHANGED`` never stop (an accumulator keeps going
+# mid-script), and ``DUPLICATE`` / ``DEGENERATE`` stay surfaced-but-recoverable — a
+# divergent-value collision is NEWS about a stored entry, so stopping on it would
+# silence the change it carries.  Later stages add per-collection gate shape as DATA that
+# extends THIS table (e.g. an accumulator that stops when its whole batch is unchanged),
+# never new loop code.  Membership here is what makes an outcome STOP-worthy.
 WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
     WriteGateOutcome.KEY_EXISTS_UNCHANGED: "the value was unchanged since the last observation",
+    WriteGateOutcome.DUPLICATE_UNCHANGED: (
+        "the value was already recorded, under a different key, since the last observation"
+    ),
 }
 
 

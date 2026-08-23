@@ -48,7 +48,7 @@ from penny.program import ProgramCall
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
-from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tests.mocks.llm_patches import MockLlmClient, deterministic_embed
 from penny.tests.schema_template import schema_only_db
 from penny.tests.tools.test_memory_tools import (
     _TAUGHT_LINE,
@@ -1372,6 +1372,13 @@ def _seed_notify_collection(
     """A collection running the two-call program above, holding one existing entry,
     plus a primary user so a queued notification has a recipient.
 
+    The seeded entry carries its VECTORS, as every production entry does (the write path
+    embeds, and the startup backfill fills any gap).  Without them the dedup
+    disjunction's content signal cannot be scored at all, so a re-observation collides on
+    the key alone and the write gate reads it as a DIFFERENT value under a similar key —
+    the conservative answer to no evidence (#1919), and not the state this family means
+    to be in.
+
     ``extraction_prompt`` is a parameter so a test can run the same collection on a
     READ-ONLY routine — the shape that has nothing to mutate, so the only thing its
     cycle does is tell the user (#1914)."""
@@ -1390,7 +1397,15 @@ def _seed_notify_collection(
         notify=notify,
     )
     require_memory(db, "indie-metroidvanias").write(
-        [EntryInput(key=_NOTIFY_SEED_KEY, content=_NOTIFY_SEED_CONTENT)], author="producer"
+        [
+            EntryInput(
+                key=_NOTIFY_SEED_KEY,
+                content=_NOTIFY_SEED_CONTENT,
+                key_embedding=deterministic_embed(_NOTIFY_SEED_KEY),
+                content_embedding=deterministic_embed(_NOTIFY_SEED_CONTENT),
+            )
+        ],
+        author="producer",
     )
 
 
@@ -1648,6 +1663,42 @@ async def test_notify_cycle_sends_nothing_on_a_no_change_write(mock_llm, test_co
     assert len(mock_llm.requests) == 2
     assert db.send_queue.next_pending() is None
     assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+
+
+@pytest.mark.asyncio
+async def test_notify_cycle_sends_nothing_when_the_value_is_stored_under_another_key(
+    mock_llm, test_config, tmp_path
+):
+    """The SAME no-news through the other door (#1919): the cycle re-observes what it
+    already holds but words the key differently, so the exact-key comparison never runs
+    and the dedup disjunction answers instead — a strict CONTENT match, which is
+    DUPLICATE_UNCHANGED and STOPs exactly as the exact key does.  Nothing is queued.
+
+    The run record is the point of the pin.  The STOP lands on the cycle's SECOND call,
+    after a real read has already been persisted, so there IS a promptlog row for
+    ``set_run_outcome`` to stamp and the declared stop reason reaches it.  A STOP on a
+    cycle's very first call leaves no row at all — the run record reads empty and every
+    cycle-shaped assertion silently scores against an absent ledger, which is the blind
+    spot this pin exists to keep closed."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            key="hollow verge",  # the same release, worded differently — not the exact key
+            content=_NOTIFY_SEED_CONTENT,
+            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
+        )
+    )
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert len(mock_llm.requests) == 2
+    assert db.send_queue.next_pending() is None
+    assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED]
+    # The value stays filed under the key it already had — a re-observation adds nothing.
+    entries = require_memory(db, "indie-metroidvanias").read_all()
+    assert [entry.key for entry in entries] == [_NOTIFY_SEED_KEY]
 
 
 @pytest.mark.asyncio
@@ -2037,6 +2088,24 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     )
     assert collector._cycle_result(stop_after_work, None) == (RunOutcome.WORKED, reason)
 
+    # The reworded-key door onto the SAME no-news (#1919) closes the cycle identically
+    # and stamps its OWN declared reason, so a run record says which door it came
+    # through rather than collapsing both onto one phrase.
+    already_reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED]
+    assert already_reason != reason
+    already_stop = ControllerResponse(
+        answer="",
+        tool_calls=[
+            ToolCallRecord(
+                tool="collection_write",
+                arguments={},
+                mutated=False,
+                stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED,
+            )
+        ],
+    )
+    assert collector._cycle_result(already_stop, None) == (RunOutcome.NO_WORK, already_reason)
+
 
 def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_config, tmp_path):
     """The collector loop exits on a successful ``done`` record (#1569, restored #1916)
@@ -2052,8 +2121,14 @@ def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_con
     stop = ToolCallRecord(
         tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
     )
+    # Every member of the declared STOP table closes the loop — the hook reads the
+    # record's stop_reason, so #1919's second member needed no loop change.
+    already = ToolCallRecord(
+        tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED
+    )
     whole_program = ToolCallRecord(tool="collection_write", arguments={}, mutated=True)
     assert collector.should_stop_loop([stop]) is True
+    assert collector.should_stop_loop([already]) is True
     assert collector.should_stop_loop([ToolCallRecord(tool=DoneTool.name, arguments={})]) is True
     assert collector.should_stop_loop([whole_program]) is False
     assert (

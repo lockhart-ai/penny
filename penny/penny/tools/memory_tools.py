@@ -1270,46 +1270,49 @@ def _is_name_variant(asked: str, existing: str) -> bool:
     )
 
 
-# A duplicate rejection binds the matched existing key straight into an
-# ``update_entry`` call PER ENTRY (see ``_format_duplicate``), not as a placeholder —
-# so the model refreshes the row that already exists instead of re-using its OWN
-# rejected key and ping-ponging on key-not-found.  Merely naming the matched key in
-# parentheses left the embedding-match arm recovering at only 47% (#1405).  These
-# trailing closes only frame how the cycle may END; the actionable call lives per
-# entry.
-_DUPLICATE_CLOSE_SOME = "Refresh with richer info, or skip these."
-# All proposed entries were duplicates — nothing new landed.  It names NO call to
-# close with (#1911): no surface carries a terminator, so there is nothing to instruct
-# and nothing that could name a tool the model does not have.
-_DUPLICATE_CLOSE_ALL = (
-    "Nothing new to add this time — refresh one of the above only if you have richer info."
+# The DIVERGENT-VALUE rejection (#1405, restated by #1919).  Every ``DUPLICATE`` is a
+# collision whose CONTENT differs now — the same-value case has its own outcome and its
+# own STOP — so what this write carries is NEWS about an entry that already exists, and
+# there is exactly one call that lands it.
+#
+# It states three facts and offers nothing: the collection already holds this subject
+# under a key it NAMES, any other key collides with that same entry again, and here is
+# the call.  What it replaced ended "…to refresh it if you have richer info", which reads
+# as advice to weigh rather than as the situation — measured, 4 of 5 samples filed the
+# new value under a fresh key instead of landing it on the matched one.  The matched key
+# is rendered VERBATIM inside the call, so the recovery is a copy rather than a guess.
+_DUPLICATE_REJECTION = (
+    "'{key}' was not written — this collection already holds an entry about that, stored "
+    "under the key '{matched}', and what you wrote is a different value from what that "
+    "entry holds. Any other key you write it under collides with that same entry again. "
+    "To land the new value: update_entry(key='{matched}', content=<the new value>)"
 )
+# The matched entry has no key, so no ``update_entry`` call can address it — named as
+# such rather than dangling an imperative the model cannot act on.
+_DUPLICATE_REJECTION_KEYLESS = (
+    "'{key}' was not written — it collides with an existing entry that has no key, so no "
+    "update_entry call can reach it. Leave it out, or write content that does not collide"
+)
+
+# The trailing framing after the per-entry rejections.  Each one already names its own
+# call, so the close says only how much of the batch is in that position — and neither
+# line hedges, because since #1919 there is no "only if you have richer info" case left
+# for a DUPLICATE to be in.
+_DUPLICATE_CLOSE_ALL = "Nothing in this batch landed — each one belongs on the entry named above."
+_DUPLICATE_CLOSE_SOME = "The rest of the batch landed; these belong on the entries named above."
 
 
 def _format_duplicate(result: WriteResult) -> str:
-    """Bind the matched existing key into an ``update_entry`` imperative for this
-    rejected candidate — name the collision AND the exact next call to make, so the
-    model refreshes the existing row instead of re-using its own rejected key and
-    ping-ponging on key-not-found (the 47%-recovery embedding-match arm, #1405).
+    """One self-contained rejection for a rejected candidate: what this collection already
+    holds it under, that no other key escapes the collision, and the exact call that lands
+    the new value.
 
-    When the matched entry is keyless (``matched_key`` missing) there is no key
-    to bind an ``update_entry`` call to, so the honest next move is to skip it or
-    write distinct content — named as such rather than dangling an imperative the
-    model can't act on."""
+    Self-contained because the recovery has to be readable without the lines around it —
+    the failure this addresses was the model treating the matched key as one option among
+    several and filing its value somewhere new."""
     if result.matched_key:
-        collision = (
-            f"'{result.key}' already exists"
-            if result.matched_key == result.key
-            else f"'{result.key}' duplicates existing '{result.matched_key}'"
-        )
-        return (
-            f"{collision} — call update_entry(key='{result.matched_key}', "
-            f"content=<richer info>) to refresh it"
-        )
-    return (
-        f"'{result.key}' duplicates an existing keyless entry — no key to update; "
-        f"skip it or write distinct content"
-    )
+        return _DUPLICATE_REJECTION.format(key=result.key, matched=result.matched_key)
+    return _DUPLICATE_REJECTION_KEYLESS.format(key=result.key)
 
 
 def _format_changed(results: list[WriteResult]) -> str:
@@ -1333,6 +1336,21 @@ def _format_unchanged(results: list[WriteResult]) -> str:
     return (
         f"Unchanged: {keys} already holds the same value — no change since the last write ({noun})."
     )
+
+
+def _format_duplicate_unchanged(results: list[WriteResult]) -> str:
+    """The DUPLICATE_UNCHANGED part (#1919): the value is already recorded under a
+    DIFFERENT key, so there is nothing new — ``KEY_EXISTS_UNCHANGED``'s twin for the
+    reworded-key path, and STOP-worthy for the same reason.
+
+    It names the key the value is filed under rather than the one this write proposed,
+    because that is the entry that holds it now; and, unlike the divergent-value
+    rejection beside it, it prescribes NO call — there is nothing to do about a value
+    that is already stored, and a bound ``update_entry`` here would be an instruction to
+    rewrite an entry with what it already says."""
+    labelled = ", ".join(f"'{r.key}' is already stored as '{r.matched_key}'" for r in results)
+    noun = "entry" if len(results) == 1 else "entries"
+    return f"Already recorded: {labelled} — no change since the last write ({noun})."
 
 
 def _format_written(memory: str, keys: list[str]) -> str:
@@ -1589,16 +1607,19 @@ class CollectionWriteTool(MemoryTool):
         written = [r.key for r in by[WriteGateOutcome.NEW_KEY]]
         changed = by[WriteGateOutcome.KEY_EXISTS_CHANGED]
         unchanged = by[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+        already = by[WriteGateOutcome.DUPLICATE_UNCHANGED]
         duplicates = by[WriteGateOutcome.DUPLICATE]
         degenerate = by[WriteGateOutcome.DEGENERATE]
-        # "Nothing landed" = the batch was ONLY duplicates: the close then names the
-        # cycle-ending move (done() for a collector), not just per-entry refreshes.
+        # "Nothing landed" = the batch was ONLY divergent-value duplicates: the close then
+        # names there is nothing new, not just per-entry refreshes.  An already-recorded
+        # entry landed nothing either, so it does not count as something having happened.
         nothing_landed = not (written or changed or unchanged or degenerate)
         unexpected = by[WriteGateOutcome.UNEXPECTED]
         parts = [
             _format_written(memory, written) if written else None,
             _format_changed(changed) if changed else None,
             _format_unchanged(unchanged) if unchanged else None,
+            _format_duplicate_unchanged(already) if already else None,
             self._duplicate_part(duplicates, all_duplicates=nothing_landed) if duplicates else None,
             _format_degenerate(degenerate) if degenerate else None,
             _format_unexpected(unexpected) if unexpected else None,
@@ -1606,19 +1627,26 @@ class CollectionWriteTool(MemoryTool):
         return [part for part in parts if part]
 
     def _duplicate_part(self, duplicates: list[WriteResult], *, all_duplicates: bool) -> str:
-        """The DUPLICATE part: per-entry ``update_entry`` binds + the trailing close."""
-        labelled = "; ".join(_format_duplicate(r) for r in duplicates)
-        close = self._duplicate_close(all_duplicates=all_duplicates)
-        return f"Rejected as duplicates: {labelled}.  {close}"
+        """The DUPLICATE part: one self-contained rejection per entry + the trailing close.
+
+        One per LINE rather than joined into a sentence: each rejection names a key, a call
+        and an argument, and running several of them together is what makes a matched key
+        hard to pick out and copy.  There is no "rejected as duplicates" lead-in any more
+        (#1919) — these are not duplicates, they are different values for entries that
+        exist, and calling them duplicates is the framing that had the model write them
+        somewhere else."""
+        rejections = "\n".join(_format_duplicate(result) for result in duplicates)
+        return f"{rejections}\n{self._duplicate_close(all_duplicates=all_duplicates)}"
 
     def _stop_outcome(self, results: list[WriteResult]) -> WriteGateOutcome | None:
         """The write-gate STOP for this call — honored only in a collector (must-act)
         context, so chat gets the enumerated text but never a loop-stop (#1587).
 
         Fires when the whole write resolved to a single STOP-worthy outcome (nothing
-        new landed): a watch's unchanged re-observation.  Which outcomes are
-        STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS`` table (data), so
-        later stages extend the table, not this code."""
+        new landed): a watch's unchanged re-observation, reached by the exact key or —
+        since #1919 — by the dedup disjunction's strict content match under a reworded
+        one.  Which outcomes are STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS``
+        table (data), so later stages extend the table, not this code."""
         if self._scope is None or not results:
             return None
         outcomes = {r.outcome for r in results}
@@ -1630,10 +1658,10 @@ class CollectionWriteTool(MemoryTool):
 
     @staticmethod
     def _duplicate_close(*, all_duplicates: bool) -> str:
-        """The trailing framing after the per-entry rejections (each already binds its
-        own ``update_entry`` call).  When the whole batch was duplicates, it says there
-        is nothing new and names no call at all — no surface carries a terminator any
-        more (#1911), so a close is never something to instruct."""
+        """The trailing framing after the per-entry rejections (each already names its own
+        ``update_entry`` call).  It says how much of the batch is in that position and
+        names no call of its own — the actionable one is per entry, where the key it needs
+        is."""
         if all_duplicates:
             return _DUPLICATE_CLOSE_ALL
         return _DUPLICATE_CLOSE_SOME
@@ -3197,8 +3225,24 @@ class FindTool(MemoryTool):
     """
 
     name = "find"
+    # The ADDRESSING it renders (#1919).  A find hit's whole second line is "and here is
+    # the exact call that operates on it", chosen deterministically from the hit's kind
+    # and archived state (`_object_addressing` / `_entry_addressing`) — so every verb
+    # those renders can name is a sibling this tool points the model at, and a
+    # program-scoped surface carrying `find` has to carry them too or the line resolves
+    # in nothing.  The gap was invisible until the coherence scanner learned to follow a
+    # helper's own constants; declaring it is the fix that test's docstring prescribes.
     # Nothing matched: the wider net is the catalog.
-    advises = ("collection_catalog",)
+    advises = (
+        "collection_catalog",
+        "collection_read_latest",
+        "collection_get",
+        "collection_set",
+        "collection_archive",
+        "collection_unarchive",
+        "log_read",
+        "skill_read",
+    )
     description = (
         "Find anything of your own by meaning, when you don't know its exact name — "
         "a collection, a log, a taught skill, or a single stored entry (a fact you "

@@ -88,6 +88,23 @@ class SelfStateHeader:
     SKILLS_HEADER = "### Skills and rules"
     DURABLE_HEADER = "### About the user"
 
+    # Whether proactive notifications are going out, rendered in BOTH directions and
+    # ALWAYS present (#1919).  Nothing said whether the user was muted, so the mute
+    # tools' descriptions were the only thing that could carry the state — and they
+    # conditioned every trigger on "an earlier pause" the model had no way to verify,
+    # so it correctly declined to assume one.  A visible "on" is as load-bearing as a
+    # visible "muted": with no line at all there is a hidden state to imagine, and the
+    # guard against acting on an imagined one is that the real one is always stated.
+    #
+    # Both lines name WHAT is paused, because the two channels are different things —
+    # a mute silences the jobs, never the replies — and a line that said only
+    # "notifications are paused" would read as Penny having been told to stop talking.
+    NOTIFICATIONS_MUTED = (
+        "notifications: muted — proactive task notifications are paused; replies to "
+        "the user's own messages are unaffected"
+    )
+    NOTIFICATIONS_ON = "notifications: on — proactive task notifications are delivered"
+
     EMPTY_MECHANISMS = "(no mechanisms yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
     EMPTY_MAP = "(no stores yet)"
@@ -153,7 +170,7 @@ class SelfStateHeader:
         rows = self._mechanism_rows()
         outcomes = self.db.messages.latest_run_outcomes()
         shown = rows[: PennyConstants.SELF_STATE_MECHANISMS_LIMIT]
-        lines = [self.MECHANISMS_HEADER]
+        lines = [self.MECHANISMS_HEADER, self._notifications_line()]
         lines.extend(self._mechanism_line(row, outcomes.get(row.name)) for row in shown)
         if not shown:
             lines.append(self.EMPTY_MECHANISMS)
@@ -161,6 +178,18 @@ class SelfStateHeader:
         if overflow > 0:
             lines.append(self.MORE_MECHANISMS.format(count=overflow))
         return "\n".join(lines)
+
+    def _notifications_line(self) -> str:
+        """Whether proactive notifications are going out right now — the state every
+        mechanism line below it is subject to, which is why it opens the section.
+
+        Read off the SAME key the notifier gates on (the primary sender, falling back to
+        the turn's own user), so what this says and what actually happens at delivery
+        cannot disagree.  With no user registered at all there is no mute row to hold,
+        which reads as unmuted; whether anyone is reachable is the preflight's to say."""
+        recipient = self.db.users.get_primary_sender() or self.user
+        muted = self.db.users.is_muted(recipient) if recipient else False
+        return self.NOTIFICATIONS_MUTED if muted else self.NOTIFICATIONS_ON
 
     def _mechanism_rows(self) -> list[MemoryRow]:
         """Every collector (a ``memory`` row with an ``extraction_prompt``), active

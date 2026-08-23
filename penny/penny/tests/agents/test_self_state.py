@@ -510,6 +510,34 @@ def test_self_state_empty_render(db):
     assert actual == _EMPTY
 
 
+def test_self_state_renders_the_mute_state_in_both_directions(db):
+    """Whether proactive notifications are going out is ALWAYS stated, either way (#1919).
+
+    Both directions matter for the same reason: the mute tools' descriptions used to be
+    the only thing carrying this state, and they conditioned every trigger on "an earlier
+    pause" nothing rendered — so the model correctly declined to assume one. A visible
+    "on" is as load-bearing as a visible "muted": with no line at all there is a hidden
+    state to imagine, and what stops it being imagined is that the real one is always
+    there.  Read off the SAME key the notifier gates on, so the render and the delivery
+    decision cannot disagree."""
+    sender = "+15550000001"
+
+    assert SelfStateHeader.NOTIFICATIONS_ON in SelfStateHeader(db, sender).render()
+    assert SelfStateHeader.NOTIFICATIONS_MUTED not in SelfStateHeader(db, sender).render()
+
+    db.users.set_muted(sender)
+    muted = SelfStateHeader(db, sender).render()
+    assert SelfStateHeader.NOTIFICATIONS_MUTED in muted
+    assert SelfStateHeader.NOTIFICATIONS_ON not in muted
+    # It says WHICH channel is paused — a mute silences the jobs, never the replies, and
+    # a line reading only "notifications are paused" would say Penny had been told to
+    # stop talking.
+    assert "replies to the user's own messages are unaffected" in muted
+
+    db.users.set_unmuted(sender)
+    assert SelfStateHeader.NOTIFICATIONS_ON in SelfStateHeader(db, sender).render()
+
+
 # ── 3. Budget overflow — the cap line is visible ──────────────────────────
 
 
@@ -968,6 +996,7 @@ _KITCHEN_SINK = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "- news-digest — active · FREQ=HOURLY · last run FAILED 2026-07-11 08:00 UTC\n"
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
     "- price-watch — active · FREQ=HOURLY;INTERVAL=6 · expires 2026-07-20 00:00 UTC · "
@@ -1016,6 +1045,7 @@ _SCHEDULE_MECH = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "- one-off — active · DTSTART:20260711T090000Z\\nFREQ=DAILY;COUNT=1 · one-shot · "
     "no runs yet\n"
     "- twice-daily — active · FREQ=DAILY;BYHOUR=8,20 · no runs yet\n"
@@ -1048,6 +1078,7 @@ _EMPTY = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1075,6 +1106,7 @@ _OVERFLOW = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "- watcher — active · FREQ=HOURLY · last run WORKED 2026-07-11 09:08 UTC\n"
     "\n"
     "### Recent activity\n"
@@ -1110,6 +1142,7 @@ _ARCHIVED_HEAVY = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "- live-watch — active · FREQ=HOURLY · no runs yet\n"
     "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
     "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
@@ -1140,6 +1173,7 @@ _TAUGHT_SKILLS_ONLY = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1174,6 +1208,7 @@ _RUN_OUTCOME_MATRIX = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1205,6 +1240,7 @@ _RUN_WRITES = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1241,6 +1277,7 @@ _RUN_WRITES_MULTI_COLLECTION = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1270,6 +1307,7 @@ _EXCLUSION_RENDER = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1297,6 +1335,7 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1339,6 +1378,7 @@ _MUTATION_NOTE_MATRIX = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1381,6 +1421,7 @@ _EMISSION_MATRIX = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"
@@ -1411,6 +1452,7 @@ _MUTATION_BARE_MATRIX = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
+    "notifications: on — proactive task notifications are delivered\n"
     "(no mechanisms yet)\n"
     "\n"
     "### Recent activity\n"

@@ -103,11 +103,23 @@ class NotificationsUnmuteTool(_NotificationsTool):
     """Resume Penny's proactive notifications for the user."""
 
     name = "notifications_unmute"
+    # Two shapes reach this tool, and only one of them is a request (#1919).  The user
+    # can ASK for updates back, or they can GRANT PERMISSION for them to resume — and a
+    # permission granted over a mute IS the ask, since nothing else was waiting on it.
+    # Naming only the request shape left the permission shape reading as ordinary
+    # agreement (measured: 0.33 against 1.00 on the sibling that asks outright).  The
+    # STATE is named rather than any phrasing, so a wording nobody enumerated lands too.
     description = (
         "Unmute Penny's proactive notifications after they were muted — resume "
         "thought discoveries, news and collection updates, and other autonomous "
-        "pings.  Use this when the user asks to be messaged again, turn updates "
-        "back on, or resume notifications.  Takes no arguments."
+        "pings.  Use this when the user asks for updates to resume, turns them back "
+        "on, or lifts an earlier pause.  Lifting the pause is often phrased as "
+        "PERMISSION rather than as a request — the user saying it is fine to message "
+        "them again, or that they are free now, is asking for exactly this, because "
+        "proactive messages are the only thing that permission releases.  A remark "
+        "about how quiet or busy things have been is NOT that: it describes their "
+        "day, grants nothing, and leaves the mute exactly where it is.  Takes no "
+        "arguments."
     )
 
     _UNMUTED = "Notifications are back on — proactive updates will resume."

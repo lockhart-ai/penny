@@ -24,8 +24,17 @@ wording:
   PASS = the reply carries NO raw Harmony tokens (the envelope never reached the
          user) and it's substantive prose — the model re-drew cleanly and answered.
 
-The deterministic mechanism (detect the leaked envelope on the raw output, discard,
-re-roll on unchanged context, abort if it persists) is pinned in
+The mechanism is current, and is checked on EVERY draw rather than only on a
+call-less one: ``Agent._unusable_output_condition`` treats ``TOOL_CALL_LEAK`` as a
+transport artifact (alongside ``DEGENERATE_OUTPUT``), so it does not ride an
+agent's declared ``invalid_draw_conditions`` and applies to a collector cycle
+exactly as it does to a chat turn.  This scorer reads the reply through the SAME
+``has_leaked_harmony_envelope`` predicate the guard rejects it with.
+
+Report-only (``min_pass_rate=None``), the canonical convention — stated rather
+than inherited from ``chat_eval``'s 0.75 default.  The deterministic mechanism
+(detect the leaked envelope on the raw output, discard, re-roll on unchanged
+context, abort if it persists) is pinned in
 ``tests/agents/test_agentic_loop.py``; this owns the live model-behaviour contract.
 """
 
@@ -34,11 +43,23 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval, Check, _InjectTextBail
+from penny.tests.eval.conftest import (
+    ChatEval,
+    Check,
+    _InjectTextBail,
+    gave_up_mid_run,
+    outgoing_replies,
+    tool_call_sequence,
+)
 from penny.tests.eval.fixtures import TOPIC_PAGES
 from penny.text_validity import has_leaked_harmony_envelope
 
 pytestmark = pytest.mark.eval
+
+# Enough letters that the reply is something a person could have received, rather than a
+# fragment the loop finalized.  A floor, not a quality bar — what the case is about is
+# the envelope never arriving, and a bare "ok" would leave that unanswered either way.
+_SUBSTANTIVE_LETTERS = 15
 
 # A whole Harmony tool-call envelope the injector emits as plain text after the
 # model's first real tool call — the exact leak shape seen on non-Ollama gpt-oss
@@ -47,31 +68,54 @@ _HARMONY_LEAK = "<|start|>assistant<|channel|>analysis to=functions.browse code<
 
 
 def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
-    """Graded: the forced Harmony-envelope leak did NOT reach the user as raw control-token text
-    and the reply is substantive prose (the model re-drew into a real answer rather than the loop
-    finalizing the leaked envelope).
+    """Graded: the forced Harmony-envelope leak reached NO delivered message, and the reply
+    the user got is substantive prose — the model re-drew into a real answer rather than the
+    loop finalizing the leaked envelope.
 
-    The 'forced bail fired — contract exercised' guard is PREPENDED by ``chat_eval``'s graded path
-    (#1697) — so a run that never triggered the leak can't pass on a normal answer — and this
-    scorer owns only the recovery outcome."""
-    alpha = sum(1 for character in reply if character.isalpha())
-    leaked = has_leaked_harmony_envelope(reply)
+    The first check reads the DELIVERED messages off the messagelog rather than the last
+    reply the runner happened to hold: what the contract forbids is raw control tokens
+    reaching the user at all, and a turn that delivers two messages would otherwise be
+    scored on one of them.  The 'forced bail fired — contract exercised' guard is PREPENDED
+    by ``chat_eval``'s graded path (#1697) — so a run that never triggered the leak can't
+    pass on a normal answer — and this scorer owns only the recovery outcome."""
+    delivered = outgoing_replies(db)
+    leaked = [message for message in delivered if has_leaked_harmony_envelope(message)]
+    letters = sum(1 for character in reply if character.isalpha())
+    gave_up = gave_up_mid_run(db)
     return [
         Check(
-            "reply carries no raw Harmony envelope",
+            "nothing delivered to the user carried a raw Harmony envelope",
             not leaked,
+            kind="reply",
             rationale=None
             if not leaked
-            else f"reply carries a raw Harmony envelope — leak reached the user: {reply[:120]!r}",
-            kind="reply",
+            else (
+                f"{len(leaked)} of {len(delivered)} delivered message(s) carried raw control "
+                f"tokens — the leak reached the user: {leaked[0][:120]!r}"
+            ),
         ),
         Check(
-            "reply is substantive prose",
-            alpha >= 15,
-            rationale=None
-            if alpha >= 15
-            else f"reply is not substantive prose ({alpha} chars): {reply[:120]!r}",
+            "the reply reads as something a person would receive",
+            letters >= _SUBSTANTIVE_LETTERS,
             kind="reply",
+            rationale=None
+            if letters >= _SUBSTANTIVE_LETTERS
+            else (
+                f"the reply carries {letters} letters, under the {_SUBSTANTIVE_LETTERS} a "
+                f"real answer would: {reply[:120]!r}"
+            ),
+        ),
+        Check(
+            "answered rather than apologising its way out",
+            not gave_up,
+            scored=False,
+            kind="proc",
+            rationale=(
+                "the reply is a defeatist give-up — the re-roll runs on the unchanged "
+                "context and a clean draw was available"
+            )
+            if gave_up
+            else f"calls made: {tool_call_sequence(db) or 'none'}",
         ),
     ]
 
@@ -84,5 +128,5 @@ async def test_harmony_envelope_leak_is_caught_and_recovers(chat_eval: ChatEval)
         browse=list(TOPIC_PAGES),
         wrap_client=lambda real: _InjectTextBail(real, _HARMONY_LEAK),
         score=_score_recovered,
-        min_pass_rate=0.75,
+        min_pass_rate=None,
     )
