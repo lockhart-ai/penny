@@ -24,10 +24,23 @@ had no way to say so, so the fix is to give it one rather than to tell the model
 not to invent (the rational-actor doctrine — fix the state, not the imperative).
 
 The slip is a model DECISION on a visible tool result, but a natural cycle only rarely
-writes either shape on demand, so each case FORCES one ``collection_write``
-(``_InjectDuplicateWrite``) and lets the REAL model drive what follows.  Both collections
-NOTIFY, because "was the user told?" is half of what the split decides and a silent
-collection cannot answer it.  The contract is STRUCTURAL, never wording.
+writes either shape on demand, so each case FORCES one ``collection_write`` and lets the
+REAL model drive what follows.  Both collections NOTIFY, because "was the user told?" is
+half of what the split decides and a silent collection cannot answer it.  The contract is
+STRUCTURAL, never wording.
+
+**WHEN the write is forced is part of the design, not a detail.**  An injector's response
+is synthetic and bypasses the persisting client (#1695), so a forced call that ENDS the
+cycle leaves the run with no promptlog row at all — nothing for ``set_run_outcome`` to
+stamp, an empty run record, and every cycle-shaped check reading an absent ledger as
+though the model had done nothing.  That is precisely what happened on the same-fact
+case's first measured run: the STOP fired correctly on the injected first call, and five
+samples reported it as behavioural failure.  So the same-fact write is staged AFTER the
+model's first real step (``_InjectDuplicateWriteAfterAStep``) and its scorer opens on a
+RAN-GUARD, which fails loudly rather than silently when a run leaves nothing behind.  The
+divergent-value case is deliberately untouched: its write does not stop the cycle, so the
+run persists rows of its own, and its red is a real model-space gap being measured
+correctly (the news filed under a fresh key instead of onto the matched one).
 
 **The world is the post-#1911 one, and that is what re-arms these cases.**  The program
 parser is STRICT (a step's call must OPEN the step, in the rendered ``N. tool(args)``
@@ -66,14 +79,17 @@ from penny.database.skills import (
     retarget_writes,
     slug_skill_name,
 )
+from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.program import program_calls
 from penny.prompts import Prompt
 from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     Check,
+    _InjectAfterToolCall,
     _InjectDuplicateWrite,
     _iter_prompt_messages,
     collection_entries,
+    live_prompts,
     queued_sends,
     tool_call_sequence,
     tool_was_called,
@@ -304,7 +320,12 @@ def _assert_the_recovery_verb_is_reachable() -> None:
 def _assert_the_box_holds_its_recipes(db: Database) -> None:
     """The box holds exactly the two seeded recipes, with the fajitas one at the content
     both cases measure against — the value the same-fact write repeats verbatim, and the
-    one the divergent write changes."""
+    one the divergent write changes.
+
+    The entries' VECTORS are not asserted here and cannot be: the runner backfills them
+    right after this seed runs, which is what makes the same-value signal scorable at all.
+    A world that reached the cycle without them would answer every collision with the
+    divergent rejection, and the first scored check names that."""
     held = collection_entries(db, RECIPE_BOX.name)
     assert set(held) == set(RECIPE_BOX_SEED_KEYS), (
         f"the box must hold {sorted(RECIPE_BOX_SEED_KEYS)} when the cycle starts, got "
@@ -321,6 +342,57 @@ def _assert_the_box_holds_its_recipes(db: Database) -> None:
         "the divergent case's forced write must carry a DIFFERENT value, else it is the "
         "same no-news the other case scores"
     )
+
+
+# ── The staged injector ───────────────────────────────────────────────────────
+
+
+class _InjectDuplicateWriteAfterAStep(_InjectAfterToolCall):
+    """``_InjectDuplicateWrite``'s staged twin: the same forced duplicate write, but held
+    back until the model's first REAL tool call has landed.
+
+    The difference is not about what the write gate does — it is about whether the run
+    leaves a LEDGER to read.  Every injector returns a synthetic ``LlmResponse`` that
+    bypasses the persisting client (the #1695 design: the raw response is persisted
+    inside the real client before the wrapper can touch it, which is why
+    ``bail_injected`` is the only proof the sabotage fired).  When the forced call is the
+    cycle's FIRST and the write gate STOPs on it, the cycle ends having persisted NOTHING:
+    ``set_run_outcome`` has no row to stamp, the run record reads empty, and every
+    cycle-shaped check scores against an absent ledger — which is exactly how a working
+    STOP measured as five 'behavioural' failures.
+
+    Staging the injection after one real step fixes it at the source: the program opens
+    with ``collection_read_latest``, that call and its result persist, the forced write
+    then STOPs on the second turn, and the stop's terminal tool result rides
+    ``trailing_messages`` (#1778) on the row the read already wrote.  The MECHANISM under
+    test is untouched — the same write, the same gate, the same STOP."""
+
+    def __init__(self, real, memory: str, entries: list[tuple[str, str]]) -> None:
+        super().__init__(real)
+        self._memory = memory
+        self._entries = entries
+
+    def _bail_response(self) -> LlmResponse:
+        return LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                tool_calls=[
+                    LlmToolCall(
+                        id="bail-dup-write-staged",
+                        function=LlmToolCallFunction(
+                            name="collection_write",
+                            arguments={
+                                "memory": self._memory,
+                                "entries": [
+                                    {"key": key, "content": content}
+                                    for key, content in self._entries
+                                ],
+                            },
+                        ),
+                    )
+                ],
+            )
+        )
 
 
 # ── Reading what the gate and the cycle did ───────────────────────────────────
@@ -353,6 +425,29 @@ def _run_reason(db: Database) -> str:
     return outcomes[0][1] if outcomes else ""
 
 
+def _cycle_ran_check(db: Database) -> Check:
+    """The RAN-GUARD: the cycle made at least one model call this run left behind.
+
+    ``guard_recovery_eval``'s own guard says the INJECTOR fired, which is a fact about the
+    wrapper and not about the run; this says the run exists at all.  Without it a cycle
+    that persisted nothing scores every later check against an empty ledger and reports
+    the absence as model behaviour — five samples read that way before this guard, on a
+    mechanism that was working perfectly.  The multi-cycle runner carries the same floor
+    (``_cycles_ran_check``); a single-cycle recovery case needs it for the same reason."""
+    rows = live_prompts(db)
+    return Check(
+        "the cycle left a run behind to read",
+        bool(rows),
+        kind="guard",
+        rationale=None
+        if rows
+        else (
+            "no model call persisted, so there is no ledger and no run record — every "
+            "check below is reading an absent cycle, not a model that did nothing"
+        ),
+    )
+
+
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 
@@ -369,6 +464,7 @@ def _score_stopped_on_the_same_fact(db: Database, sent: list[str]) -> list[Check
     keys_unchanged = keys == set(RECIPE_BOX_SEED_KEYS)
     queued = queued_sends(db, RECIPE_BOX.name)
     return [
+        _cycle_ran_check(db),
         Check(
             "the write gate answered that the value was already recorded",
             answered,
@@ -378,8 +474,10 @@ def _score_stopped_on_the_same_fact(db: Database, sent: list[str]) -> list[Check
             if answered
             else (
                 "the gate did not read the re-observation as no-news — with the recoverable "
-                "rejection instead, the cycle is invited to try something else.  Calls made: "
-                f"{tool_call_sequence(db) or 'none'}"
+                "rejection instead, the cycle is invited to try something else.  The one "
+                "non-behavioural way to land here is a stored entry with no CONTENT VECTOR: "
+                "the signal that decides same-value cannot be scored, so the collision reads "
+                f"divergent.  Calls made: {tool_call_sequence(db) or 'none'}"
             ),
         ),
         Check(
@@ -500,13 +598,18 @@ def _score_landed_the_change(db: Database, sent: list[str]) -> list[Check]:
 async def test_same_fact_write_stops_the_cycle(guard_recovery_eval) -> None:
     """A forced ``collection_write`` repeating a stored value VERBATIM under a reworded
     key is the same no-news the exact key reads: the gate says so, the cycle stops at the
-    chokepoint, nothing is written and the user hears nothing."""
+    chokepoint, nothing is written and the user hears nothing.
+
+    The write is injected AFTER the model's first real step (the program's own
+    ``collection_read_latest``), so the STOP lands on a cycle that has already persisted a
+    row — see ``_InjectDuplicateWriteAfterAStep``.  Injecting it first left the run with no
+    ledger at all, and the scorer read that absence as the model failing."""
     await guard_recovery_eval(
         case_id="duplicate-write-same-fact-stops",
         family="collector-guard-recovery",
         collection=RECIPE_BOX.name,
         seed=_seed_recipe_box,
-        wrap_client=lambda real: _InjectDuplicateWrite(
+        wrap_client=lambda real: _InjectDuplicateWriteAfterAStep(
             real, RECIPE_BOX.name, [(RECIPE_BOX_DUP_KEY, RECIPE_BOX_DUP_CONTENT)]
         ),
         score=_score_stopped_on_the_same_fact,
