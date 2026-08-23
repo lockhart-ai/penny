@@ -98,6 +98,11 @@ from penny.tests.eval.test_bracket_key_recovery import (
     _seed_board_games,
     assert_board_games_world,
 )
+from penny.tests.eval.test_chat_reply import (
+    _STORED_TITLES,
+    _carries,
+    _honest_about_the_duplicate,
+)
 from penny.tests.eval.test_choose_dispatch import (
     _OPTIONS as _CHOOSE_OPTIONS,
 )
@@ -2903,3 +2908,52 @@ def test_score_labelling_reads_the_two_structural_claims() -> None:
         False,
         "the shared spot drew no single line",
     )
+
+
+# ── The chat-reply scorer's two reply reads (#1919) ──────────────────────────
+#
+# Both are pure functions over a reply string, and both were tuned against MEASURED
+# replies — so they belong inside `make check`, where the `eval` marker cannot deselect
+# them, rather than only under the GPU run they score.  Each is pinned in BOTH directions:
+# the reply that must now pass, and the one that must still fail.
+
+
+def test_a_title_typed_with_any_space_still_reads_as_that_title() -> None:
+    """A stored title the model typed with a NARROW NO-BREAK space is that title.
+
+    Two measured from-store samples named a seeded title and were scored as naming
+    nothing, because the model put U+202F between the words where the token has a plain
+    space.  The fold is by whitespace CATEGORY, so the widths it has not met yet are
+    covered too — while a reply that genuinely names nothing stored still fails, which is
+    the half that keeps the check worth having."""
+    title = _STORED_TITLES[1]
+    assert title == "quarry hollow"
+
+    for space in (" ", " ", " ", " ", "　", "  ", "\n"):
+        typed = f"you had **Quarry{space}Hollow** on your shortlist 🎲"
+        assert _carries(typed, title), f"U+{ord(space[0]):04X} broke the title read"
+
+    assert not _carries("you're into board games and trail running 🎲", title)
+
+
+def test_the_duplicate_reply_read_fails_a_fresh_claim_not_a_neutral_one() -> None:
+    """A no-op save is honest as long as the reply does not claim it just happened.
+
+    Measured, a sample that had SEEN the write gate's already-there result confirmed the
+    present state neutrally ("it's logged in your interests") and was scored a miss for
+    reaching for the wrong words — a false negative, since it claimed nothing untrue.  So
+    the read now fails only a claim that THIS turn recorded it, and the genuine
+    fresh-claim replies must keep failing, which is real product signal."""
+    for honest in (
+        "already had that one — sea kayaking is on your list 🛶",
+        "got it — sea kayaking is logged in your interests 🛶",
+        "yep, sea kayaking 🛶",
+        "i just looked and it's already logged 🛶",
+    ):
+        assert _honest_about_the_duplicate(honest) == (True, None), honest
+
+    fresh, claimed = _honest_about_the_duplicate("nice — sea kayaking is now safely logged 🛶")
+    assert (fresh, claimed) == (False, "claimed 'now safely logged'")
+
+    fresh, claimed = _honest_about_the_duplicate("sea kayaking is officially on the radar 🛶")
+    assert (fresh, claimed) == (False, "claimed 'officially on the radar'")

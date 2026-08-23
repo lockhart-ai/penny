@@ -139,14 +139,20 @@ class TestBrowseResultNarration:
             {"queries": ["deepest lake"]},
             ToolResult(message="## browse error: ...", success=False),
         )
-        assert narration == 'You searched for "deepest lake" but couldn\'t read anything'
+        assert narration == (
+            'You searched for "deepest lake" but couldn\'t read anything — no page was '
+            "read, so there's nothing current to quote"
+        )
 
     def test_url_read_failure_narrates_honestly(self):
         narration = BrowseTool.to_result_narration(
             {"queries": ["https://example.com/a"]},
             ToolResult(message="## browse error: ...", success=False),
         )
-        assert narration == "You opened https://example.com/a but couldn't read anything"
+        assert narration == (
+            "You opened https://example.com/a but couldn't read anything — no page was "
+            "read, so there's nothing current to quote"
+        )
 
     def test_missing_queries_falls_back(self):
         # No queries in the args (an arg-validation failure still flows the raw dict
@@ -154,9 +160,9 @@ class TestBrowseResultNarration:
         assert (
             BrowseTool.to_result_narration({}, ToolResult(message="ok")) == "You looked things up"
         )
-        assert (
-            BrowseTool.to_result_narration({}, ToolResult(message="e", success=False))
-            == "You looked things up but couldn't read anything"
+        assert BrowseTool.to_result_narration({}, ToolResult(message="e", success=False)) == (
+            "You looked things up but couldn't read anything — no page was read, so "
+            "there's nothing current to quote"
         )
 
     def test_format_result_wraps_narration_with_tag_and_body(self):

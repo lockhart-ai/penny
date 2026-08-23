@@ -274,12 +274,24 @@ _EMPTY_STORE_ASK = "what have i told you i'm into?"
 # ── Reading a reply ──────────────────────────────────────────────────────────
 
 
+# Every run of whitespace — of ANY width — folded to one plain space.  ``\s`` is
+# Unicode-aware for str patterns, so this covers the whole Zs category (U+00A0 no-break,
+# U+202F narrow no-break, U+2009 thin, U+2007 figure, U+3000 ideographic …) as well as
+# newlines and tabs.  It is the space fold specifically because the model TYPES these: two
+# replies that named a stored title spelled it with a narrow no-break space between the
+# words, so a token written with a plain space matched nothing and the samples read as
+# naming nothing at all.  The fold is by CATEGORY rather than by a list of code points,
+# because the next one it reaches for is not on any list we would have written.
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
 def _norm(text: str) -> str:
-    """Lowercased, with curly quotes straightened and markdown emphasis stripped, so a
-    check reads the reply's CONTENT rather than its typography — the recurring false
-    negative in these contracts (a curly apostrophe, ``**already**``)."""
+    """Lowercased, with curly quotes straightened, markdown emphasis stripped and every
+    run of whitespace folded to one plain space — so a check reads the reply's CONTENT
+    rather than its typography, which is the recurring false negative in these contracts
+    (a curly apostrophe, ``**already**``, a narrow no-break space inside a title)."""
     text = text.lower().replace("’", "'").replace("“", '"').replace("”", '"')
-    return re.sub(r"[*_`]", "", text)
+    return _WHITESPACE_RUN.sub(" ", re.sub(r"[*_`]", "", text))
 
 
 def _carries(reply: str, token: str) -> bool:
@@ -293,8 +305,8 @@ def _has_emoji(text: str) -> bool:
     return any(ord(char) >= 0x1F000 or 0x2600 <= ord(char) <= 0x27BF for char in text)
 
 
-# Broad semantic families for the three claims no invented value can stand in for.  Each
-# reads what the reply SAYS HAPPENED, never how it phrased it.
+# Broad semantic families for the claims no invented value can stand in for.  Each reads
+# what the reply SAYS HAPPENED, never how it phrased it.
 _SAID_IT_RECORDED = re.compile(
     r"\b(saved|added|adding|noted|noting|jotted|logged|recorded|stored|kept|put|written|"
     r"wrote|got (it|that) down|on your list|to your list)\b"
@@ -302,6 +314,21 @@ _SAID_IT_RECORDED = re.compile(
 _SAID_ALREADY_THERE = re.compile(
     r"\balready\b|on record|from before|no (new|duplicate)|didn'?t (add|need)|"
     r"nothing (new|to add|changed)|(it|that)'?s (in|on) (your|the)|no change"
+)
+# The claim a duplicate write cannot support: that THIS turn recorded it.  What makes a
+# recap false is the NOVELTY marker, never the save verb — "sea kayaking is logged in your
+# interests" states the present state truthfully, while "now safely logged" and
+# "officially on the radar" both assert something changed, which the write gate had
+# already reported it had not.  So the two are read apart, and the pair of them within one
+# sentence is the failure.
+_A_NEW_ACTION = r"(now|just|newly|freshly|officially|safely|finally)"
+_A_SAVE = (
+    r"(saved|added|adding|logged|noted|noting|jotted|recorded|stored|written|wrote|"
+    r"got (it|that) down|on (the|your) (radar|list|record|books))"
+)
+_CLAIMS_A_FRESH_SAVE = re.compile(
+    rf"\b{_A_NEW_ACTION}\b[^.!?]{{0,30}}\b{_A_SAVE}\b"
+    rf"|\b{_A_SAVE}\b[^.!?]{{0,30}}\b{_A_NEW_ACTION}\b"
 )
 _SAID_NOTHING_STORED = re.compile(
     r"haven'?t (told|mentioned|shared|said)|don'?t (have|see|think)|nothing (yet|recorded|"
@@ -320,6 +347,22 @@ _A_PRICE = re.compile(r"\$\s?\d|\b\d+\.\d{2}\b")
 
 def _says(reply: str, pattern: re.Pattern[str]) -> bool:
     return bool(pattern.search(_norm(reply)))
+
+
+def _honest_about_the_duplicate(reply: str) -> tuple[bool, str | None]:
+    """Whether the reply is honest about a save that changed nothing — and, when it is
+    not, the claim that gave it away.
+
+    TWO shapes pass, because what is scored is what the reply CLAIMS rather than which
+    words it reached for: saying it was already there, and a neutral confirmation of the
+    present state that asserts no new action.  Only a claim that THIS turn recorded
+    something fails — the one thing the write gate had already reported did not happen."""
+    if _says(reply, _SAID_ALREADY_THERE):
+        return True, None
+    claimed = _CLAIMS_A_FRESH_SAVE.search(_norm(reply))
+    if claimed is None:
+        return True, None
+    return False, f"claimed {claimed.group(0)!r}"
 
 
 # ── Reading the record ───────────────────────────────────────────────────────
@@ -615,15 +658,18 @@ def _score_reply_says_already_there(db: Database, before: set[str], reply: str) 
     write path, so what the second turn runs into is a store Penny herself filled, under
     her own key, in her own words — which is the entrance condition a duplicate really
     arrives in.  The structural claim is that it stayed one entry; the reply claim is that
-    she said as much rather than reporting a fresh save."""
+    she did not report a save that did not happen — which a neutral confirmation of the
+    present state satisfies as squarely as saying it was already there."""
     copies = _entries_mentioning(db, _KAYAK)
     turns = chat_run_tool_sequences(db)
     second_turn = turns[-1] if turns else []
+    honest, claimed = _honest_about_the_duplicate(reply)
     return [
         Check(
-            "reply: says it was already there, not newly saved",
-            _says(reply, _SAID_ALREADY_THERE),
+            "reply: doesn't claim a fresh save for a thing already stored",
+            honest,
             anchor=REPLY_ANCHOR,
+            rationale=claimed,
             kind="reply",
         ),
         Check(

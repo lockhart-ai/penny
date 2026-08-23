@@ -68,8 +68,9 @@ _WRITE_OK = (
     "Wrote 1 entry to 'elevations': Zephyr Ridge elevation."
 )
 _BROWSE_FAILED = (
-    "You searched for 'Zephyr Ridge elevation' but couldn't read anything "
-    "(browse result)\n## browse error: unreachable"
+    "You searched for 'Zephyr Ridge elevation' but couldn't read anything — no page was "
+    "read, so there's nothing current to quote (browse result)\n"
+    "## browse error: unreachable"
 )
 
 
