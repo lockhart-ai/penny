@@ -180,7 +180,7 @@ correct next call from what came back). The suite spans that matrix:
 
 | axis | answer from memory/context | reach for the web (browse → reason) |
 |---|---|---|
-| **chat** (`test_chat_response.py`) | chitchat; recall-grounded answer | browse→answer; multi-hop browse chain |
+| **chat** (`test_chat_reply.py`) | answered out of the user's own collections; the honesty branches (already-there, empty store) | browse→answer; the fact one link deep; every call reflected; a failed read admitted |
 | **chat authoring** (`test_collection_lifecycle.py`) | create / update / archive / abstain | — |
 | **collector** (`test_collector_enactment.py`, `test_collector_honesty.py`) | quiet cycle / change cycle over a configured collection | read-failure + browser-outage honesty |
 | **meta-collector** | *retired* — the `skills` reconcile collector (#1624) and the `quality` reviewer (#1569) both retired: skills are now structural (taught/instantiated/re-rendered) | — |

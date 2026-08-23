@@ -564,7 +564,18 @@ gated behind the `eval` marker (excluded from `make check`/`make pytest`; run vi
 `make eval`, default 5 samples/case, `EVAL_SAMPLES=N` to override). Cases drive the
 real chat/collector loops and score persisted DB state + sends at a `pass_rate`
 threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
-agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py`,
+agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`
+(#1919 — the chat REPLY: answered out of the user's own collections with no browse,
+answered from a page, answered one link deep, and the four honesty branches that say
+what actually happened — every call reflected, a duplicate save reported as already
+there, an empty store left empty, a failed read admitted. Every watched value is
+INVENTED — a posted admission, a maker's name, a shortlist of games that don't exist —
+so a reply carrying one can only have read it; report-only throughout. It replaces
+`test_chat_response.py` + `test_narration_survival.py`, whose `likes`-collection seed
+migration 0097 had left crashing at seed time and whose chitchat case the canonical
+`transition-idle-to-idle` already covers on a stronger world — the one thing that case
+carried alone, the emoji voice check, rides every case here as an advisory rather than
+retiring with it),
 `test_collection_lifecycle.py`,
 `test_collector_honesty.py`, `test_retrieval.py`,
 `test_notifications.py` (NL-dispatch of the mute/unmute
