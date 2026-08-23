@@ -576,7 +576,11 @@ migration 0097 had left crashing at seed time and whose chitchat case the canoni
 `transition-idle-to-idle` already covers on a stronger world — the one thing that case
 carried alone, the emoji voice check, rides every case here as an advisory rather than
 retiring with it),
-`test_collection_lifecycle.py`,
+`test_standing_collection.py` (operating a job that is already running — broaden what
+it collects, silence it, wake it, retire it — plus reading back what its routine does;
+its seeded world is a taught routine stood up through the production instantiation seam,
+which `test_speakable_log_reads.py` reuses for the jobs its collector-runs case reads
+about),
 `test_collector_honesty.py`, `test_retrieval.py`,
 `test_notifications.py` (the muting contracts that retired `/mute` +
 `/unmute` — TWO dispatch cases (an explicit mute request against an unmuted world, an

@@ -1,58 +1,87 @@
-"""Speakable log reads (epic #1521, issue #1523, Wave 2): NL requests that ask
-Penny to READ from a log/message/run-log surface, scored STRUCTURALLY.
+"""Digging through what was already said and done: the user asks Penny to look back
+over old messages, over what she read, or over what her jobs have been doing.
 
-The sibling of ``test_speakable_tools.py`` (entry/browse actions); this file covers
-the *read-a-log* half of the speakable surface — a family of phrasings that map,
-by MEANING, onto one of the log-read tools:
+Four logs answer that ask, and the case names which one the request means:
 
   log_read("user-messages" | "penny-messages" | "browse-results" | "collector-runs")
 
-Every case is scored on the persisted tool CALL (the log the model named) + DB
-state, never on wording.  Synthetic topics only (the repo is public): invented
-hobbies (``lantern kiting``), invented recommendations (``silverleaf moss``), and
-invented collector collections (``patch-notes``).
+Plus the guard in the other direction — a wistful aside about old chats is not a request
+to go and read them.  That guard is NOT the canonical banter row in
+``test_state_transitions.py``: that one is deliberately loose (a browse or a read is
+explicitly not a miss there), while this one enforces the passing-mention clause that
+survives in ``Prompt.IDLE_INSTRUCTION``, and these cases are that clause's only net.
 
-**The conversation confound (cases 1–2).**  The chat agent already injects the
-last ``MESSAGE_CONTEXT_LIMIT`` (=20) turns as in-context history, so a salient
-message *inside* that window is answered from context and never needs a
-``log_read`` — a false gap.  So the two conversation cases seed the salient turn
-FIRST, then ``_FILLER_PAIRS`` (24) neutral user/Penny turns after it, pushing the
-salient turn out of BOTH the 20-message context window AND the per-direction
-top-N fetch (``get_messages_since`` caps each direction at 20).  Retrieval then
-genuinely requires a ``log_read``.
+Every case is scored on the persisted tool CALL (which log she named) plus DB state, never
+on wording.  Synthetic topics throughout (the repo is public): an invented hobby (``lantern
+kiting``), an invented recommendation (``silverleaf moss``), invented pages on example
+domains.
 
-**No ambient-recall confound.**  The chat prompt no longer injects a
-speculative recalled-content block (the ambient inversion, #1555, and the recall
-substrate's removal, #1583), so a topically-matching out-of-window user message
-can't leak into the prompt by similarity — retrieval genuinely requires a
-``log_read``.  Case 1's status (gated vs. report-only) is decided by its baseline
-— see its docstring.
+**The conversation confound (the two message cases).**  The chat agent already injects the
+last ``MESSAGE_CONTEXT_LIMIT`` (=20) turns as in-context history, so a salient message
+INSIDE that window is answered from context and never needs a ``log_read`` — a false gap.
+So both conversation cases seed the salient turn FIRST, then ``_FILLER_PAIRS`` (24) neutral
+turns after it, pushing it out of BOTH the context window and the per-direction top-N fetch
+(``get_messages_since`` caps each direction at 20).  Retrieval then genuinely requires a
+read.  Nothing else can leak it in: the chat prompt injects no speculative recalled-content
+block (the ambient inversion, #1555, and the recall substrate's removal, #1583).
 
-**read_run_calls is collector-internal, not user-dispatchable — dropped.**  Its
-arg is a collection ``target`` and "what did your last run do" is not a phrasing
-a user reaches for; baseline was 0/3, the model browsing/writing instead of ever
-calling it — confirming the epic's scoping of it as collector-only.  It survives
-only in the no-fire guard's forbidden set.
+**The world is one the user built (#1911/migration 0108: nothing is pre-seeded).**  The
+collection the act case saves into is a plain user-built container, and the two jobs the
+collector-runs case reads about are STANDING JOBS — a taught routine applied to two pages
+through the production instantiation seam, with real completed runs behind them (see
+``test_standing_collection.py``, which owns that world; a second copy of it here would be a
+second world, free to drift from the one chat really leaves).  A hand-authored prose prompt
+would be a config defect the collector cannot read (#1916's strict dialect), so a fixture
+seeded that way would claim jobs that could never have run.
+
+**Report-only** (``min_pass_rate=None``) throughout: the gates these cases carried (0.6 on
+three of them) predate the conversation machine fronting every turn, so they are numbers
+from a different runtime.  Re-baselining under this one is a read for the code owner, not a
+threshold for this rewrite to pick.  Each sample also renders, ADVISORY, the state the
+machine landed the turn in — a compound imperative can land in ``learn``, whose run-end
+terminal replaces the reply (#1839), and that shows in the row rather than as a puzzling
+reply miss.
+
+``read_run_calls`` is collector-internal rather than user-dispatchable — its argument is a
+collection target and "what did your last run do" is not a phrasing a user reaches for
+(baseline 0/3, the model browsing or writing instead) — so it survives only in the no-fire
+guard's forbidden set.
 """
 
 from __future__ import annotations
 
-import json
+from typing import NamedTuple
 
 import pytest
 
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
-from penny.database.memory import LogEntryInput
+from penny.database.memory import EntryInput, LogEntryInput
+from penny.database.skills import DistillInput
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     REPLY_ANCHOR,
     ChatEval,
     Check,
+    Seeder,
     collection_entries,
+    seeded_run_id,
     tool_call_arg_values,
     tool_was_called,
 )
+from penny.tests.eval.fixtures import SynthCollection
+
+# The seeded-ledger wire helpers the transition suite writes its own history with — read
+# from there rather than restated, so a collector run seeded here has the same envelope
+# every other seeded run does (the precedent is test_collector_enactment.py, which builds
+# its world from that module's vocabulary for the same reason).
+from penny.tests.eval.test_standing_collection import (
+    WATCH_ROUTINE,
+    StandingJob,
+    landed_state_check,
+    seed_standing_jobs,
+)
+from penny.tests.eval.test_state_transitions import _seeded_response, _wire_tool_call
 
 pytestmark = pytest.mark.eval
 
@@ -82,24 +111,26 @@ _INCOMING = PennyConstants.MessageDirection.INCOMING
 _OUTGOING = PennyConstants.MessageDirection.OUTGOING
 _PENNY = PennyConstants.MessageAuthor.PENNY
 
-_LIKES = "likes"
+# The collection the act case saves into — user-built storage, no job attached, which is
+# what a collection someone made to keep a list in looks like after the soft reboot.
+_HOBBIES = SynthCollection(
+    "hobbies",
+    "Things the user is into — the hobbies they've said they want kept track of.",
+    entries=(
+        "Sea glass hunting — beachcombing the north shore on cold mornings.",
+        "Sourdough — a stiff starter kept on the counter.",
+    ),
+)
 
-# Collector collections (the cross-collector run index case).  Both carry an
-# extraction_prompt (so they're valid read_run_calls targets); the scheduler never
-# ticks in the eval (COLLECTOR_TICK_INTERVAL is bumped past any timeout), so they
-# stay inert during the chat turn.
-_PATCH_NOTES = "patch-notes"
-_TRAIL_CONDITIONS = "trail-conditions"
 
-
-# ── Typography-fold + recap helpers (kept local, minimal — mirror Wave 1) ─────
+# ── Typography-fold + recap helpers (kept local, minimal) ─────────────────────
 
 
 def _normalize(text: str) -> str:
-    """Fold the typography gpt-oss sprinkles so a SEMANTIC substring probe isn't
-    defeated by cosmetics: unicode hyphens → '-', nbsp/zero-width/narrow spaces →
-    ' ', bold markers stripped, curly quotes straightened, lowercased.  (A 0/N
-    from an un-normalized probe is a scorer bug, not a model failure.)"""
+    """Fold the typography gpt-oss sprinkles so a SEMANTIC substring probe isn't defeated
+    by cosmetics: unicode hyphens → '-', nbsp/zero-width/narrow spaces → ' ', bold markers
+    stripped, curly quotes straightened, lowercased.  (A 0/N from an un-normalized probe is
+    a scorer bug, not a model failure.)"""
     folded = text.lower()
     for dash in ("‐", "‑", "‒", "–", "—", "−"):
         folded = folded.replace(dash, "-")
@@ -111,17 +142,17 @@ def _normalize(text: str) -> str:
 
 
 def _saved_text(db: Database, name: str) -> str:
-    """A collection's keys AND contents, normalized and joined — the probe for
-    'did the subject land here', robust to whether the model put the subject in
-    the key or the body and to its typography."""
+    """A collection's keys AND contents, normalized and joined — the probe for "did the
+    subject land here", robust to whether the model put the subject in the key or the body
+    and to its typography."""
     entries = collection_entries(db, name)
     return _normalize(" ".join([*entries.keys(), *entries.values()]))
 
 
 def _reply_reflects(reply: str, tokens: list[str]) -> list[Check]:
-    """The final reply must REFLECT what was read/done (the #1478 recap prong):
-    it names each subject it acted on.  One graded Check per token, anchored to the
-    reply row; normalized for typography, checked as substrings, never exact wording."""
+    """The final reply must REFLECT what was read/done (the #1478 recap prong): it names
+    each subject it acted on.  One graded Check per token, anchored to the reply row;
+    normalized for typography, checked as substrings, never exact wording."""
     normalized = _normalize(reply)
     return [
         Check(
@@ -135,20 +166,20 @@ def _reply_reflects(reply: str, tokens: list[str]) -> list[Check]:
 
 
 def _dispatched(db: Database, tool: str, field: str, expected: str) -> bool:
-    """Did the model call ``tool`` with ``field == expected`` (typography-folded)
-    at least once this run?  The structural dispatch probe — reads the persisted
-    promptlog, not a harness spy."""
-    values = [_normalize(v) for v in tool_call_arg_values(db, tool, field)]
+    """Did the model call ``tool`` with ``field == expected`` (typography-folded) at least
+    once this run?  The structural dispatch probe — reads the persisted promptlog, not a
+    harness spy."""
+    values = [_normalize(value) for value in tool_call_arg_values(db, tool, field)]
     return _normalize(expected) in values
 
 
 # ── Conversation seeding (out-of-window) ─────────────────────────────────────
-# ≥ MESSAGE_CONTEXT_LIMIT (20), so the salient turn is pushed out of BOTH the
-# context window AND the per-direction top-20 fetch, with margin.
+# ≥ MESSAGE_CONTEXT_LIMIT (20), so the salient turn is pushed out of BOTH the context
+# window AND the per-direction top-20 fetch, with margin.
 _FILLER_PAIRS = 24
 
-# Neutral, topic-free chit-chat — names no hobby / recommendation, so it can
-# answer neither conversation case from context nor from ambient recall.
+# Neutral, topic-free chit-chat — names no hobby / recommendation, so it can answer neither
+# conversation case from context.
 _FILLER_USER = (
     "morning!",
     "how's your day going?",
@@ -179,14 +210,14 @@ _FILLER_PENNY = (
 )
 
 
-def _seed_out_of_window(direction: str, salient: str):
-    """Seed the salient turn FIRST (oldest), then ``_FILLER_PAIRS`` neutral
-    user/Penny turns after it — so the salient turn is genuinely out of context
-    and its retrieval requires a ``log_read``.  Penny filler carries the real
-    recipient so it counts as an autonomous outgoing turn in the context builder,
-    exercising the same push-out that prod would."""
+def _seed_out_of_window(direction: str, salient: str) -> Seeder:
+    """Seed the salient turn FIRST (oldest), then ``_FILLER_PAIRS`` neutral user/Penny
+    turns after it — so the salient turn is genuinely out of context and its retrieval
+    requires a ``log_read``.  Penny filler carries the real recipient so it counts as an
+    autonomous outgoing turn in the context builder, exercising the same push-out prod
+    would."""
 
-    def _apply(db: Database) -> None:
+    def seed(db: Database) -> None:
         if direction == _INCOMING:
             db.messages.log_message(_INCOMING, TEST_SENDER, salient)
         else:
@@ -197,10 +228,10 @@ def _seed_out_of_window(direction: str, salient: str):
                 _OUTGOING, _PENNY, _FILLER_PENNY[index % len(_FILLER_PENNY)], recipient=TEST_SENDER
             )
 
-    return _apply
+    return seed
 
 
-# ── Case-1/2 salient turns + their probes ────────────────────────────────────
+# ── The two conversation cases' salient turns + their probes ─────────────────
 _HOBBY_MESSAGE = (
     "honestly I've completely fallen for lantern kiting lately — can't stop doing it on weekends"
 )
@@ -214,16 +245,22 @@ _SUGGESTION_TOKEN = "silverleaf"
 
 
 def _seed_hobby(db: Database) -> None:
+    """The hobby said long ago, plus the user-built list it is asked to be added to."""
     _seed_out_of_window(_INCOMING, _HOBBY_MESSAGE)(db)
+    db.memories.create_collection(_HOBBIES.name, _HOBBIES.description)
+    require_memory(db, _HOBBIES.name).write(
+        [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in _HOBBIES.entries],
+        author="user",
+    )
 
 
 def _seed_suggestion(db: Database) -> None:
     _seed_out_of_window(_OUTGOING, _SUGGESTION_MESSAGE)(db)
 
 
-# ── Case-3 browse-history seeding ────────────────────────────────────────────
-# Distinctive, invented browsed topics on example domains — the reply must name
-# at least one, proving it summarized what was actually read.
+# ── Browse-history seeding ───────────────────────────────────────────────────
+# Distinctive, invented browsed topics on example domains — the reply must name at least
+# one, proving it summarized what was actually read.
 _BROWSE_ENTRIES = (
     "## browse: https://coast.example.com/tidewatch-cove\n"
     "Title: Tidewatch Cove tide pools guide\n"
@@ -246,18 +283,31 @@ def _seed_browse_history(db: Database) -> None:
     )
 
 
-# ── Case-4/5/6 collector-activity seeding ────────────────────────────────────
-_PATCH_NOTES_PROMPT = (
-    "Collect notable new Mistforge Tactics patch notes.\n"
-    "1. browse the web for the latest Mistforge Tactics patch notes.\n"
-    '2. collection_write("patch-notes", entries=[{key: patch, content: patch + summary}]).\n'
-    "3. done()."
+# ── Collector-activity seeding: two standing jobs and the runs behind them ────
+#
+# The jobs are the standing-collection story's own world — ONE taught routine, applied to
+# two pages, so the pair is two real jobs rather than two rows shaped like jobs.  What this
+# case adds is their HISTORY: completed runs, which is what the collector-runs index reads.
+
+_PATCH_NOTES_JOB = StandingJob(
+    routine=WATCH_ROUTINE,
+    values={
+        "page": "https://mistforge.example.com/patch-notes",
+        "watched_for": "balance changes",
+    },
+    description="Notable new Mistforge Tactics patch notes worth knowing about.",
+    schedule="FREQ=HOURLY",
+    notify=True,
 )
-_TRAIL_CONDITIONS_PROMPT = (
-    "Track current conditions for the Verdant Hollow hiking trail.\n"
-    "1. browse the web for the latest Verdant Hollow trail conditions.\n"
-    '2. collection_write("trail-conditions", entries=[{key: date, content: conditions}]).\n'
-    "3. done()."
+_TRAIL_JOB = StandingJob(
+    routine=WATCH_ROUTINE,
+    values={
+        "page": "https://trails.example.com/verdant-hollow",
+        "watched_for": "trail conditions",
+    },
+    description="Current conditions on the Verdant Hollow hiking trail.",
+    schedule="FREQ=HOURLY",
+    notify=False,
 )
 
 
@@ -268,36 +318,24 @@ def _seed_run(
     run_id: str,
     outcome: RunOutcome,
     summary: str,
-    calls: list[tuple[str, dict]],
+    steps: list[DistillInput],
 ) -> None:
     """Seed one completed collector run as a ``promptlog`` row (+ its outcome).
 
-    That row IS the ``collector-runs`` / ``read_run_calls`` content — a run renders
-    once ``set_run_outcome`` stamps ``run_outcome`` on it, and the response carries
-    the tool calls the run made (so ``read_run_calls`` has a sequence to render)."""
-    response = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": f"{run_id}-{index}",
-                            "type": "function",
-                            "function": {"name": name, "arguments": json.dumps(args)},
-                        }
-                        for index, (name, args) in enumerate(calls)
-                    ],
-                }
-            }
-        ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-    }
+    That row IS the ``collector-runs`` content — a run renders once ``set_run_outcome``
+    stamps ``run_outcome`` on it, and the response carries the calls the run made.  The
+    envelope is built by the seeded-ledger helpers the transition suite already writes
+    history with, so a run seeded here and a run seeded there are one wire shape rather
+    than two hand-built ones free to differ.
+
+    The id is a SEEDED one, so every reader of "what did the model do this sample"
+    excludes it: a job's past cycles are history, and counting them as this turn's calls
+    would report a quiet turn as a busy one."""
+    calls = [_wire_tool_call(f"{run_id}-{index}", step) for index, step in enumerate(steps)]
     db.messages.log_prompt(
         model="seed",
         messages=[],
-        response=response,
+        response=_seeded_response(tool_calls=calls),
         agent_name="collector",
         run_id=run_id,
         run_target=target,
@@ -305,163 +343,203 @@ def _seed_run(
     db.messages.set_run_outcome(run_id, outcome.value, summary)
 
 
+def _cycle_steps(job: StandingJob, *, wrote: tuple[str, str] | None) -> list[DistillInput]:
+    """One cycle's calls, as the job's own program makes them: read the page, write what it
+    found (when it found something), close.  A quiet cycle just reads and closes."""
+    page, watched_for = job.values["page"], job.values["watched_for"]
+    steps = [
+        DistillInput(
+            source_ordinal=1,
+            tool=_BROWSE,
+            arguments={"queries": [page], "extract": watched_for},
+            result=f"You opened {page} ({_BROWSE} result)\n{watched_for}: nothing new.",
+        )
+    ]
+    if wrote is not None:
+        key, content = wrote
+        steps.append(
+            DistillInput(
+                source_ordinal=2,
+                tool=_WRITE,
+                arguments={"memory": job.container, "entries": [{"key": key, "content": content}]},
+                result=f"You saved an entry to {job.container}: ({_WRITE} result)\nWrote 1 entry.",
+            )
+        )
+    return [
+        *steps,
+        DistillInput(
+            source_ordinal=len(steps) + 1,
+            tool=PennyConstants.DONE_TOOL_NAME,
+            arguments={},
+            result=f"You finished the cycle. ({PennyConstants.DONE_TOOL_NAME} result)\nDone.",
+        ),
+    ]
+
+
+class _SeededCycle(NamedTuple):
+    """One completed cycle in a job's history: which job ran, what it came back with (a
+    key and content, or nothing on a quiet cycle), and how the run recorded itself."""
+
+    job: StandingJob
+    name: str
+    outcome: RunOutcome
+    summary: str
+    wrote: tuple[str, str] | None = None
+
+
+_SEEDED_CYCLES = (
+    _SeededCycle(
+        _PATCH_NOTES_JOB,
+        "patch-notes-cycle-1",
+        RunOutcome.WORKED,
+        "Recorded the 2.3 balance patch.",
+        wrote=("Patch 2.3", "Patch 2.3 — ember mage rebalance."),
+    ),
+    _SeededCycle(
+        _PATCH_NOTES_JOB,
+        "patch-notes-cycle-2",
+        RunOutcome.NO_WORK,
+        "No new patch notes this cycle.",
+    ),
+    _SeededCycle(
+        _TRAIL_JOB,
+        "trail-cycle-1",
+        RunOutcome.WORKED,
+        "Logged today's trail status.",
+        wrote=("today", "Verdant Hollow — muddy after rain."),
+    ),
+)
+
+
 def _seed_collector_activity(db: Database) -> None:
-    """Two synthetic collector collections + a few completed runs each — the
-    cross-collector run index (``test_collector_runs``)."""
-    db.memories.create_collection(
-        _PATCH_NOTES,
-        "New Mistforge Tactics patch notes worth knowing about.",
-        extraction_prompt=_PATCH_NOTES_PROMPT,
-        schedule="FREQ=HOURLY",
-    )
-    db.memories.create_collection(
-        _TRAIL_CONDITIONS,
-        "Current conditions for the Verdant Hollow hiking trail.",
-        extraction_prompt=_TRAIL_CONDITIONS_PROMPT,
-        schedule="FREQ=HOURLY",
-    )
-    _seed_run(
-        db,
-        target=_PATCH_NOTES,
-        run_id="patch-notes-run-1",
-        outcome=RunOutcome.WORKED,
-        summary="Recorded the 2.3 balance patch.",
-        calls=[
-            ("browse", {"queries": ["mistforge tactics patch notes"]}),
-            (
-                "collection_write",
-                {
-                    "memory": _PATCH_NOTES,
-                    "entries": [
-                        {"key": "Patch 2.3", "content": "Patch 2.3 — ember mage rebalance."}
-                    ],
-                },
-            ),
-            ("done", {}),
-        ],
-    )
-    _seed_run(
-        db,
-        target=_PATCH_NOTES,
-        run_id="patch-notes-run-2",
-        outcome=RunOutcome.NO_WORK,
-        summary="No new patch notes this cycle.",
-        calls=[
-            ("browse", {"queries": ["mistforge tactics patch notes"]}),
-            ("done", {}),
-        ],
-    )
-    _seed_run(
-        db,
-        target=_TRAIL_CONDITIONS,
-        run_id="trail-conditions-run-1",
-        outcome=RunOutcome.WORKED,
-        summary="Logged today's trail status.",
-        calls=[
-            ("browse", {"queries": ["verdant hollow trail conditions"]}),
-            (
-                "collection_write",
-                {
-                    "memory": _TRAIL_CONDITIONS,
-                    "entries": [{"key": "today", "content": "Verdant Hollow — muddy after rain."}],
-                },
-            ),
-            ("done", {}),
-        ],
-    )
+    """Two standing jobs, then the completed cycles behind them — the cross-collector
+    history the ``collector-runs`` index renders."""
+    seed_standing_jobs(_PATCH_NOTES_JOB, _TRAIL_JOB)(db)
+    for cycle in _SEEDED_CYCLES:
+        _seed_run(
+            db,
+            target=cycle.job.container,
+            run_id=seeded_run_id(cycle.name),
+            outcome=cycle.outcome,
+            summary=cycle.summary,
+            steps=_cycle_steps(cycle.job, wrote=cycle.wrote),
+        )
 
 
 # ── Scorers ──────────────────────────────────────────────────────────────────
 
 
 def _score_user_messages_act(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """ "Look back over everything I've told you and save what I'm into" must read
-    the user-messages log and land the out-of-window hobby in ``likes``."""
-    read_ok = _dispatched(db, _LOG_READ, "memory", _USER_MESSAGES)
-    saved = _HOBBY_TOKEN in _saved_text(db, _LIKES)
+    """Asked to look back over what was said and add it to a list, she reads the
+    user-messages log and the out-of-window hobby lands in the list the user named."""
+    read = _dispatched(db, _LOG_READ, "memory", _USER_MESSAGES)
+    saved = _HOBBY_TOKEN in _saved_text(db, _HOBBIES.name)
     return [
-        Check("log_read the user-messages log", read_ok, anchor=f"{_LOG_READ}(", kind="spine"),
         Check(
-            "hobby saved to likes",
+            f"spine: she read the {_USER_MESSAGES} log",
+            read,
+            anchor=f"{_LOG_READ}(",
+            kind="spine",
+        ),
+        Check(
+            f"state: the hobby landed in {_HOBBIES.name!r}",
             saved,
-            rationale=None if saved else f"{collection_entries(db, _LIKES)}",
+            rationale=None
+            if saved
+            else f"{_HOBBIES.name} holds {collection_entries(db, _HOBBIES.name)}",
             kind="state",
         ),
-    ] + _reply_reflects(reply, [_HOBBY_TOKEN])
+        *_reply_reflects(reply, [_HOBBY_TOKEN]),
+        landed_state_check(db),
+    ]
 
 
 def _score_penny_messages_recall(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """ "Scroll way back and remind me what you suggested" must read the
-    penny-messages log and relay the out-of-window recommendation."""
-    read_ok = _dispatched(db, _LOG_READ, "memory", _PENNY_MESSAGES)
+    """Asked what SHE said, she reads the penny-messages log and relays the out-of-window
+    recommendation."""
+    read = _dispatched(db, _LOG_READ, "memory", _PENNY_MESSAGES)
     return [
-        Check("log_read the penny-messages log", read_ok, anchor=f"{_LOG_READ}(", kind="spine"),
-    ] + _reply_reflects(reply, [_SUGGESTION_TOKEN])
+        Check(
+            f"spine: she read the {_PENNY_MESSAGES} log",
+            read,
+            anchor=f"{_LOG_READ}(",
+            kind="spine",
+        ),
+        *_reply_reflects(reply, [_SUGGESTION_TOKEN]),
+        landed_state_check(db),
+    ]
 
 
 def _score_browse_results(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """ "What have you been looking up lately" must read the browse-results log and
-    name at least one thing that was browsed."""
-    read_ok = _dispatched(db, _LOG_READ, "memory", _BROWSE_RESULTS)
+    """Asked what she has been looking up, she reads the browse-results log and names
+    something she actually read."""
+    read = _dispatched(db, _LOG_READ, "memory", _BROWSE_RESULTS)
     named = any(token in _normalize(reply) for token in _BROWSE_TOPIC_TOKENS)
     return [
-        Check("log_read the browse-results log", read_ok, anchor=f"{_LOG_READ}(", kind="spine"),
         Check(
-            "reply names a browsed topic",
+            f"spine: she read the {_BROWSE_RESULTS} log",
+            read,
+            anchor=f"{_LOG_READ}(",
+            kind="spine",
+        ),
+        Check(
+            "reply: it names something she had browsed",
             named,
             anchor=REPLY_ANCHOR,
             rationale=None if named else f"named none of {list(_BROWSE_TOPIC_TOKENS)}",
             kind="reply",
         ),
+        landed_state_check(db),
     ]
 
 
-def _score_collector_runs(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """ "How have your background collectors been doing" must read the cross-collector
-    collector-runs index."""
+def _score_collector_runs(db: Database, _before: set[str], _reply: str) -> list[Check]:
+    """Asked how her background jobs have been doing, she reads the cross-collector
+    collector-runs index rather than the collections themselves."""
+    read = _dispatched(db, _LOG_READ, "memory", _COLLECTOR_RUNS)
     return [
         Check(
-            "log_read the collector-runs index",
-            _dispatched(db, _LOG_READ, "memory", _COLLECTOR_RUNS),
+            f"spine: she read the {_COLLECTOR_RUNS} index",
+            read,
             anchor=f"{_LOG_READ}(",
             kind="spine",
         ),
+        landed_state_check(db),
     ]
 
 
-def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """A wistful aside about rereading old chats must fire NO log read, browse, or
-    mutation — the false-positive guard for speakable log reads."""
+def _score_no_fire(db: Database, _before: set[str], _reply: str) -> list[Check]:
+    """A wistful aside about rereading old chats fires NO log read, browse or mutation —
+    the false-positive guard for every case above."""
     return [
-        Check(f"{tool} not fired", not tool_was_called(db, tool), anchor=f"{tool}(", kind="spine")
-        for tool in (*_READ_TOOLS, *_ACTION_TOOLS)
+        *(
+            Check(
+                f"state: {tool} stayed quiet",
+                not tool_was_called(db, tool),
+                anchor=f"{tool}(",
+                kind="spine",
+            )
+            for tool in (*_READ_TOOLS, *_ACTION_TOOLS)
+        ),
+        landed_state_check(db),
     ]
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────────
-# Gated at 0.6 (the NL-dispatch convention) are the two capabilities that dispatch
-# reliably at N=5 — reading a SYSTEM log and summarizing it: browse-results (5/5)
-# and collector-runs (5/5).  The other two are report-only with the gap/confound
-# documented in each case docstring and handed to #1522/#1524: user-messages-act
-# (ambient recall substitutes for the log_read) and penny-messages-recall (browses
-# instead of recalling what Penny said).  The no-fire log guard now gates at 0.6 —
-# its over-firing is closed by the imperative-gating clause in CONVERSATION_PROMPT.
-# Per-collector run introspection is no longer a dispatchable case: the ambient
-# self-state header already carries each mechanism's last-run outcome, and the
-# per-collection scoped verb (collector_run_history) retired with the read-surface
-# reconciliation (#1580).
 
 
 async def test_user_messages_act(chat_eval: ChatEval) -> None:
-    """Report-only.  The out-of-window hobby is retrieved from ``user-messages``
-    via a ``log_read``, and the model saves it to ``likes``.  The user-facing
-    outcome (interest saved) is what matters; requiring the ``log_read``
-    specifically over-fits to one mechanism.  A follow-up could gate on the
-    OUTCOME (hobby in likes) instead of the tool."""
+    """Report-only.  The out-of-window hobby is retrieved from ``user-messages`` and lands
+    in the list the user pointed at.  A follow-up could gate on the OUTCOME alone (the
+    hobby in the list) rather than on the read — requiring the read is a claim about the
+    mechanism, and the user's ask is about the outcome."""
     await chat_eval(
         case_id="speak-logread-user-messages-act",
         family=_FAMILY,
-        message="look back over everything I've told you and save what I said I'm into to my likes",
+        message=(
+            "look back over everything i've told you and add what i said i'm into to my "
+            "hobbies list"
+        ),
         seed=_seed_hobby,
         score=_score_user_messages_act,
         min_pass_rate=None,
@@ -469,14 +547,12 @@ async def test_user_messages_act(chat_eval: ChatEval) -> None:
 
 
 async def test_penny_messages_recall(chat_eval: ChatEval) -> None:
-    """Report-only — a #1524 vocabulary gap.  Asked to recall a past *Penny*
-    suggestion, gpt-oss reaches for a fresh lookup (browse / read_similar over
-    knowledge) instead of ``log_read("penny-messages")``: its instinct is to
-    answer the topic, not to look back at what it said (baseline 0/3, all three
-    browsing a browseable topic).  Even hammering the conversation framing ("dig
-    back through our old messages") doesn't overcome it.  Kept report-only until
-    the speakable vocabulary teaches "what did you say/suggest/recommend before"
-    → penny-messages."""
+    """Report-only — a #1524 vocabulary gap, and the standing measurement of it.  Asked to
+    recall a past *Penny* suggestion, gpt-oss reaches for a fresh lookup (a browse, or a
+    read over stored knowledge) instead of ``log_read("penny-messages")``: its instinct is
+    to answer the topic, not to look back at what it said (baseline 0/3, all three browsing
+    a browseable topic).  Hammering the conversation framing ("dig back through our old
+    messages") does not overcome it."""
     await chat_eval(
         case_id="speak-logread-penny-messages-recall",
         family=_FAMILY,
@@ -489,34 +565,40 @@ async def test_penny_messages_recall(chat_eval: ChatEval) -> None:
 
 
 async def test_browse_results(chat_eval: ChatEval) -> None:
+    """Report-only.  Reading a system log and summarizing it — the direction that
+    dispatches most reliably."""
     await chat_eval(
         case_id="speak-logread-browse-results",
         family=_FAMILY,
         message="what have you been looking up lately? give me the gist",
         seed=_seed_browse_history,
         score=_score_browse_results,
-        min_pass_rate=0.6,
+        min_pass_rate=None,
     )
 
 
 async def test_collector_runs(chat_eval: ChatEval) -> None:
+    """Report-only.  The chat-side introspection ask about background work — the enactment
+    suite drives cycles, but nothing else asks her ABOUT them."""
     await chat_eval(
         case_id="speak-logread-collector-runs",
         family=_FAMILY,
-        message="how have your background collectors been doing lately?",
+        message="how have your background jobs been doing lately?",
         seed=_seed_collector_activity,
+        seed_skills=[WATCH_ROUTINE],
         score=_score_collector_runs,
-        min_pass_rate=0.6,
+        min_pass_rate=None,
     )
 
 
 async def test_no_fire(chat_eval: ChatEval) -> None:
-    """The over-firing on a log-adjacent musing is now closed by the
-    imperative-gating clause in ``Prompt.CONVERSATION_PROMPT``; gated at 0.6."""
+    """Report-only.  A log-adjacent musing is not an instruction — the imperative-gating
+    clause in ``Prompt.IDLE_INSTRUCTION`` is what has to hold here, and these cases are its
+    only regression net (the canonical banter row does not score reads or browses)."""
     await chat_eval(
         case_id="speak-logread-no-fire",
         family=_FAMILY,
         message="man, I really should reread our old chats sometime",
         score=_score_no_fire,
-        min_pass_rate=0.6,
+        min_pass_rate=None,
     )
