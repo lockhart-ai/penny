@@ -357,9 +357,11 @@ class CollectionUpdateArgs(ToolArgs):
     #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its parameters.
     Omitting both leaves the prompt untouched (a plain metadata edit).  ``params`` is
     ``None`` (reuse the collection's current bindings) vs. a dict (rebind to these).
-    ``extraction_prompt`` is the raw-edit escape hatch — a FULL replacement body when
-    editing the prompt directly rather than re-rendering from a skill (mutually
-    exclusive with ``skill`` / ``params``).
+    There is NO ``extraction_prompt`` argument: the #1529 raw-edit escape hatch went with
+    the authoring channel (#1658/#1631), so re-teaching the skill is the only way a
+    routine changes.  (This paragraph described that argument long after it was removed,
+    and the #1919 audit read the description rather than the fields — a stale docstring on
+    an arg model is a claim about the model surface, so it is corrected here.)
 
     The **schedule** is the apply-time job axis — the SAME one-arg RRULE
     ``collection_set`` accepts (``parse_schedule``, #1857).  Present → the schedule is

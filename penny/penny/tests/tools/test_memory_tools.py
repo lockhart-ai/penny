@@ -1037,6 +1037,35 @@ class TestMinimalSurfaceCensus:
         assert shrapnel.isdisjoint(CollectionCreateArgs.model_fields)
         assert shrapnel.isdisjoint(CollectionUpdateArgs.model_fields)
 
+    @pytest.mark.asyncio
+    async def test_an_extraction_prompt_argument_is_refused_actionably(self, db):
+        """The registered front door REFUSES an ``extraction_prompt`` argument, and says
+        what to pass instead (#1919, replacing the retired live contract).
+
+        This is the one live claim `tests/eval/test_extraction_tool_recovery.py` still
+        made, and it turned out to be about a surface that no longer exists: that case
+        forced a `collection_set` carrying a hallucinated tool inside an
+        `extraction_prompt`, expecting the write-time tool gate to teach the model a
+        rewrite.  Since #1658/#1631 the argument is not on the model surface at all, so
+        `ToolArgs`' ``extra="forbid"`` refuses the call at ARG VALIDATION and the gate
+        never sees it — a routine is only ever a render of a demonstrated skill, and the
+        surviving gate call runs inside `render_skill_prompt` over that render, which the
+        model cannot author and so cannot hallucinate into.
+
+        Driven through ``run`` rather than ``execute`` because the actionable envelope is
+        what the model reads: the refusal has to NAME the unknown parameter and list the
+        ones that exist, or it is a dead end rather than a correction."""
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
+            name="board-games",
+            extraction_prompt="1. extract_text(url)\n2. done()",
+        )
+        assert result.success is False
+        assert "unknown parameter 'extraction_prompt'" in result.message
+        # The valid parameters are listed, so the retry is a correction and not a guess.
+        assert "skill" in result.message and "schedule" in result.message
+        # And nothing was created off a refused call.
+        assert db.memories.get("board-games") is None
+
 
 class TestScheduleGrammar:
     """The ``schedule`` grammar as a table (#1857): what ``parse_schedule`` accepts, what
