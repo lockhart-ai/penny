@@ -65,7 +65,15 @@ _NARRATION_SEARCHED = "You searched for {queries}"
 _NARRATION_OPENED = "You opened {urls}"
 _NARRATION_ALSO_OPENED = "and opened {urls}"
 _NARRATION_LOOKED_UP = "You looked things up"
-NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
+# A total failure states the failure AND its CONSEQUENCE.  "but couldn't read anything"
+# says what happened to the call and stops there, leaving what follows from it — that
+# there is now no source for the value the call went after — to be worked out; measured,
+# 3 of 5 replies to an all-sources-failed lookup volunteered an invented figure anyway.
+# This is presentation of the state the run is actually in, not an instruction: nothing
+# here tells the model what to say, it says what is now true.
+NARRATION_FAILURE_SUFFIX = (
+    "but couldn't read anything — no page was read, so there's nothing current to quote"
+)
 
 # ── Micro-context (extract) render forms ──────────────────────────────────────
 # When a browse call carries an ``extract`` instruction, the page body never
