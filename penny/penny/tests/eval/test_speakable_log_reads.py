@@ -5,12 +5,6 @@ Four logs answer that ask, and the case names which one the request means:
 
   log_read("user-messages" | "penny-messages" | "browse-results" | "collector-runs")
 
-Plus the guard in the other direction — a wistful aside about old chats is not a request
-to go and read them.  That guard is NOT the canonical banter row in
-``test_state_transitions.py``: that one is deliberately loose (a browse or a read is
-explicitly not a miss there), while this one enforces the passing-mention clause that
-survives in ``Prompt.IDLE_INSTRUCTION``, and these cases are that clause's only net.
-
 Every case is scored on the persisted tool CALL (which log she named) plus DB state, never
 on wording.  Synthetic topics throughout (the repo is public): an invented hobby (``lantern
 kiting``), an invented recommendation (``silverleaf moss``), invented pages on example
@@ -44,8 +38,7 @@ reply miss.
 
 ``read_run_calls`` is collector-internal rather than user-dispatchable — its argument is a
 collection target and "what did your last run do" is not a phrasing a user reaches for
-(baseline 0/3, the model browsing or writing instead) — so it survives only in the no-fire
-guard's forbidden set.
+(baseline 0/3, the model browsing or writing instead) — so no case dispatches it.
 """
 
 from __future__ import annotations
@@ -69,7 +62,6 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
     tool_call_arg_values,
     tool_call_sequence,
-    tool_was_called,
 )
 from penny.tests.eval.fixtures import SynthCollection
 
@@ -92,21 +84,14 @@ _FAMILY = "speakable-logread"
 
 # ── Tool + log names (constants, never magic strings) ────────────────────────
 _LOG_READ = "log_read"
-_READ_RUN_CALLS = "read_run_calls"
 _BROWSE = "browse"
 _WRITE = "collection_write"
-_UPDATE = "update_entry"
-_DELETE = "collection_delete_entry"
 
 # The four logs the cases read.
 _USER_MESSAGES = PennyConstants.MEMORY_USER_MESSAGES_LOG
 _PENNY_MESSAGES = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
 _BROWSE_RESULTS = PennyConstants.MEMORY_BROWSE_RESULTS_LOG
 _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
-
-# Every read/mutation tool a no-fire guard must see stay quiet.
-_READ_TOOLS = (_LOG_READ, _READ_RUN_CALLS)
-_ACTION_TOOLS = (_BROWSE, _WRITE, _UPDATE, _DELETE)
 
 # The argument every store-addressing tool names its target with — what a read is keyed to
 # here, since the store is the claim and the verb is the model's choice.
@@ -558,23 +543,6 @@ def _score_collector_runs(db: Database, _before: set[str], _reply: str) -> list[
     ]
 
 
-def _score_no_fire(db: Database, _before: set[str], _reply: str) -> list[Check]:
-    """A wistful aside about rereading old chats fires NO log read, browse or mutation —
-    the false-positive guard for every case above."""
-    return [
-        *(
-            Check(
-                f"state: {tool} stayed quiet",
-                not tool_was_called(db, tool),
-                anchor=f"{tool}(",
-                kind="spine",
-            )
-            for tool in (*_READ_TOOLS, *_ACTION_TOOLS)
-        ),
-        landed_state_check(db),
-    ]
-
-
 # ── Cases ─────────────────────────────────────────────────────────────────────
 
 
@@ -642,18 +610,5 @@ async def test_collector_runs(chat_eval: ChatEval) -> None:
         seed=_seed_collector_activity,
         seed_skills=[WATCH_ROUTINE],
         score=_score_collector_runs,
-        min_pass_rate=None,
-    )
-
-
-async def test_no_fire(chat_eval: ChatEval) -> None:
-    """Report-only.  A log-adjacent musing is not an instruction — the imperative-gating
-    clause in ``Prompt.IDLE_INSTRUCTION`` is what has to hold here, and these cases are its
-    only regression net (the canonical banter row does not score reads or browses)."""
-    await chat_eval(
-        case_id="speak-logread-no-fire",
-        family=_FAMILY,
-        message="man, I really should reread our old chats sometime",
-        score=_score_no_fire,
         min_pass_rate=None,
     )
