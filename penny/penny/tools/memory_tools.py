@@ -1335,6 +1335,21 @@ def _format_unchanged(results: list[WriteResult]) -> str:
     )
 
 
+def _format_duplicate_unchanged(results: list[WriteResult]) -> str:
+    """The DUPLICATE_UNCHANGED part (#1919): the value is already recorded under a
+    DIFFERENT key, so there is nothing new — ``KEY_EXISTS_UNCHANGED``'s twin for the
+    reworded-key path, and STOP-worthy for the same reason.
+
+    It names the key the value is filed under rather than the one this write proposed,
+    because that is the entry that holds it now; and, unlike the divergent-value
+    rejection beside it, it prescribes NO call — there is nothing to do about a value
+    that is already stored, and a bound ``update_entry`` here would be an instruction to
+    rewrite an entry with what it already says."""
+    labelled = ", ".join(f"'{r.key}' is already stored as '{r.matched_key}'" for r in results)
+    noun = "entry" if len(results) == 1 else "entries"
+    return f"Already recorded: {labelled} — no change since the last write ({noun})."
+
+
 def _format_written(memory: str, keys: list[str]) -> str:
     """The NEW_KEY part: the entries that actually landed (new keys)."""
     noun = "entry" if len(keys) == 1 else "entries"
@@ -1589,16 +1604,19 @@ class CollectionWriteTool(MemoryTool):
         written = [r.key for r in by[WriteGateOutcome.NEW_KEY]]
         changed = by[WriteGateOutcome.KEY_EXISTS_CHANGED]
         unchanged = by[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+        already = by[WriteGateOutcome.DUPLICATE_UNCHANGED]
         duplicates = by[WriteGateOutcome.DUPLICATE]
         degenerate = by[WriteGateOutcome.DEGENERATE]
-        # "Nothing landed" = the batch was ONLY duplicates: the close then names the
-        # cycle-ending move (done() for a collector), not just per-entry refreshes.
+        # "Nothing landed" = the batch was ONLY divergent-value duplicates: the close then
+        # names there is nothing new, not just per-entry refreshes.  An already-recorded
+        # entry landed nothing either, so it does not count as something having happened.
         nothing_landed = not (written or changed or unchanged or degenerate)
         unexpected = by[WriteGateOutcome.UNEXPECTED]
         parts = [
             _format_written(memory, written) if written else None,
             _format_changed(changed) if changed else None,
             _format_unchanged(unchanged) if unchanged else None,
+            _format_duplicate_unchanged(already) if already else None,
             self._duplicate_part(duplicates, all_duplicates=nothing_landed) if duplicates else None,
             _format_degenerate(degenerate) if degenerate else None,
             _format_unexpected(unexpected) if unexpected else None,
@@ -1616,9 +1634,10 @@ class CollectionWriteTool(MemoryTool):
         context, so chat gets the enumerated text but never a loop-stop (#1587).
 
         Fires when the whole write resolved to a single STOP-worthy outcome (nothing
-        new landed): a watch's unchanged re-observation.  Which outcomes are
-        STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS`` table (data), so
-        later stages extend the table, not this code."""
+        new landed): a watch's unchanged re-observation, reached by the exact key or —
+        since #1919 — by the dedup disjunction's strict content match under a reworded
+        one.  Which outcomes are STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS``
+        table (data), so later stages extend the table, not this code."""
         if self._scope is None or not results:
             return None
         outcomes = {r.outcome for r in results}

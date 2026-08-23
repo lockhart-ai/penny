@@ -2037,6 +2037,24 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     )
     assert collector._cycle_result(stop_after_work, None) == (RunOutcome.WORKED, reason)
 
+    # The reworded-key door onto the SAME no-news (#1919) closes the cycle identically
+    # and stamps its OWN declared reason, so a run record says which door it came
+    # through rather than collapsing both onto one phrase.
+    already_reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED]
+    assert already_reason != reason
+    already_stop = ControllerResponse(
+        answer="",
+        tool_calls=[
+            ToolCallRecord(
+                tool="collection_write",
+                arguments={},
+                mutated=False,
+                stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED,
+            )
+        ],
+    )
+    assert collector._cycle_result(already_stop, None) == (RunOutcome.NO_WORK, already_reason)
+
 
 def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_config, tmp_path):
     """The collector loop exits on a successful ``done`` record (#1569, restored #1916)
@@ -2052,8 +2070,14 @@ def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_con
     stop = ToolCallRecord(
         tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
     )
+    # Every member of the declared STOP table closes the loop — the hook reads the
+    # record's stop_reason, so #1919's second member needed no loop change.
+    already = ToolCallRecord(
+        tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED
+    )
     whole_program = ToolCallRecord(tool="collection_write", arguments={}, mutated=True)
     assert collector.should_stop_loop([stop]) is True
+    assert collector.should_stop_loop([already]) is True
     assert collector.should_stop_loop([ToolCallRecord(tool=DoneTool.name, arguments={})]) is True
     assert collector.should_stop_loop([whole_program]) is False
     assert (

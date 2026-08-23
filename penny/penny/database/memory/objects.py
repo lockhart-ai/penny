@@ -316,6 +316,20 @@ def _content_unchanged(stored: str, incoming: str) -> bool:
     return stored.strip() == incoming.strip()
 
 
+def _collision_outcome(matched: sim.DuplicateMatch) -> WriteGateOutcome:
+    """Which of the two collision outcomes a dedup match is (#1919).
+
+    The dedup disjunction fires on the key as readily as on the value, so a match alone
+    says only that this write lands on an entry that already exists — the question the
+    gate has to answer is whether it says anything NEW about it.  A strict CONTENT match
+    says it does not, and that is the same no-news the exact-key path reads, reached
+    under a different key.  Anything else is a stored entry this write has a different
+    value for, which is news and keeps the recoverable rejection."""
+    if matched.same_value:
+        return WriteGateOutcome.DUPLICATE_UNCHANGED
+    return WriteGateOutcome.DUPLICATE
+
+
 class Collection(Memory):
     """A keyed collection — similarity-deduped writes, exact-key lookup.
 
@@ -560,7 +574,9 @@ class Collection(Memory):
         matched = sim.is_duplicate(candidate, existing, thresholds)
         if matched is not None:
             return WriteResult(
-                key=entry.key, outcome=WriteGateOutcome.DUPLICATE, matched_key=matched.key
+                key=entry.key,
+                outcome=_collision_outcome(matched),
+                matched_key=matched.side.key,
             )
         return None
 

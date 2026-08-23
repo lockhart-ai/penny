@@ -2676,11 +2676,13 @@ class TestCollectionWritesAndReads:
         assert same_key.stop == WriteGateOutcome.KEY_EXISTS_UNCHANGED
         # A batch with a genuinely new entry alongside a duplicate gets the
         # per-entry bound refresh + the refresh-or-skip close, never "nothing new".
+        # The duplicate half carries a DIFFERENT value (#1919) — a same-value collision
+        # is the no-news branch below and prescribes no call at all.
         partial = await write.execute(
             memory="likes",
             entries=[
                 {"key": "cold brew", "content": "a brand new distinct entry"},
-                {"key": "dark roast blend", "content": "first body"},
+                {"key": "dark roast blend", "content": "roasted longer this season"},
             ],
         )
         assert "Wrote 1 entry" in partial.message
@@ -2692,17 +2694,61 @@ class TestCollectionWritesAndReads:
         # A batch whose entries each duplicate a DIFFERENT existing key must bind
         # EVERY matched key into its own update_entry call — not just the first
         # (#1405: resolve a match for every rejected key in the batch).  'cold brew'
-        # now exists (written above), so both entries collide on distinct keys.
+        # now exists (written above), so both entries collide on distinct keys — each
+        # with its own fresher value, so both take the recoverable branch.
         multi = await write.execute(
             memory="likes",
             entries=[
-                {"key": "dark roast blend", "content": "first body"},
-                {"key": "cold brew coffee", "content": "a brand new distinct entry"},
+                {"key": "dark roast blend", "content": "roasted longer this season"},
+                {"key": "cold brew coffee", "content": "steeped overnight now"},
             ],
         )
         assert "update_entry(key='dark roast', content=<richer info>)" in multi.message
         assert "update_entry(key='cold brew', content=<richer info>)" in multi.message
         assert multi.mutated is False
+        # A collision on the VALUE under a DIFFERENT key is the other branch (#1919):
+        # the same no-news the exact key reads, so it carries the STOP and its own
+        # render, and it prescribes NO call — there is nothing to do about a value that
+        # is already stored.  The mock embeds bag-of-words, so re-writing 'first body'
+        # verbatim under a fresh key matches on content while the key does not.
+        same_value = await write.execute(
+            memory="likes",
+            entries=[{"key": "morning roast selection", "content": "first body"}],
+        )
+        assert same_value.stop == WriteGateOutcome.DUPLICATE_UNCHANGED
+        assert same_value.mutated is False
+        assert (
+            "Already recorded: 'morning roast selection' is already stored as 'dark roast'"
+            in same_value.message
+        )
+        assert "update_entry(" not in same_value.message
+        assert "Rejected as duplicates" not in same_value.message
+        # …and the divergent-value collision above never stops, so a change arriving
+        # under a reworded key is never silenced as no-news.
+        assert multi.stop is None
+
+    @pytest.mark.asyncio
+    async def test_chat_scope_already_recorded_write_has_no_stop(self, db, mock_llm):
+        """A same-value collision under a different key reports the same text on the chat
+        surface and NEVER a loop-stop — STOP applies to must-act cadence contexts only
+        (#1587/#1919), exactly as for the exact-key UNCHANGED case below."""
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+        )
+        already = await write.execute(
+            memory="likes",
+            entries=[{"key": "morning roast selection", "content": "first body"}],
+        )
+        assert "Already recorded: 'morning roast selection'" in already.message
+        assert already.stop is None
 
     @pytest.mark.asyncio
     async def test_chat_scope_unchanged_write_has_no_stop(self, db, mock_llm):

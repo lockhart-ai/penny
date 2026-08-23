@@ -416,7 +416,8 @@ class Collector(BackgroundAgent):
 
         The base terminator is ``done()`` (#1569, restored #1916); a collector
         additionally honors a STOP carried by a tool result (``collection_write`` →
-        ``KEY_EXISTS_UNCHANGED`` on a scoped write, #1587) — a deliberate close at the
+        any member of ``WRITE_GATE_STOP_REASONS`` on a scoped write — the value was
+        already recorded, under this key or another, #1587/#1919) — a deliberate close at the
         write chokepoint, so no trailing ``done()`` is required (a ``done()`` after a
         STOP would just be a no-op the loop never reaches).  STOP is honored only here
         (must-act cadence); the chat loop uses the base and never stops on a write
