@@ -24,12 +24,16 @@ Seven cases, both directions of the contract:
 * ``bind-missing-keyword`` — the shortfall beside a successful bind: the page is there,
   what to look for on it is not.
 
-The asks are the shapes the idle→apply beat measures — a cold second ask pointing a
-routine Penny already knows at a new space — because that is where the binder runs.  Each
-one carries its job's TERMS as well (every hour until sunday, each day, every two hours
-until friday), which is the second thing every case checks: terms are settled where the
-job is set running, so a term inside a bound value is the draw reading them as part of the
-thing to point at.
+Since #1894 the binder is the ONE door for every entry against a routine the registry
+already holds — a cold apply and a request the classifier drew directly both come through
+it — and a round coming back for a missing detail hands over what it already SETTLED, so
+only the still-open parameters are drawn.  These cases drive the COLD shape: the whole
+declared set, nothing settled, which is the ask the idle→apply and idle→request beats
+measure — a second ask pointing a routine Penny already knows at a new space.  Each one
+carries its job's TERMS as well (every hour until sunday, each day, every two hours until
+friday), which is the second thing every case checks: terms are settled where the job is
+set running, so a term inside a bound value is the draw reading them as part of the thing
+to point at.
 
 Each case's input is rendered by the shipped ``render_spoken_turns`` +
 ``build_binding_content`` — never hand-written — so the draw reads exactly what production
@@ -357,7 +361,8 @@ async def test_an_ask_that_names_no_page_reports_the_page_missing(binder_eval: B
     The temptation is a value that is right there in the sentence and is not a page —
     "that brass lantern" reads like an answer, and a routine bound to it would go and
     watch nothing.  Naming the parameter missing is the answer the contract asks for, and
-    it is what the request state will act on."""
+    since #1885 it is what ROUTES the turn into request — an enumerated outcome the
+    machine acts on, never a failed draw."""
     await _run_case(binder_eval, _MISSING_PAGE)
 
 
@@ -408,7 +413,9 @@ async def test_one_parameter_binds_while_the_other_is_reported_missing(
     This is the shape the request state exists for — enough of the ask has landed to be
     worth keeping, and one named thing is outstanding — so the answer has to carry both
     halves: the missing parameter named, and the bound one not thrown away on the way to
-    reporting it."""
+    reporting it.  Since #1894 that surviving half becomes the round's own state, handed
+    back to the next draw as its settled values, so a page given now is never asked for
+    again."""
     await _run_case(binder_eval, _MISSING_KEYWORD)
 
 

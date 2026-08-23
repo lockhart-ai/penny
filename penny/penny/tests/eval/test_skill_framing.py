@@ -1,4 +1,4 @@
-"""Live-model contract for the run-end skill FRAMER (#1830, the #1824 inversion).
+"""Live-model contract for the skill FRAMER (#1830, the #1824 inversion).
 
 The framer has ONE job: given the user's own turns of the round and nothing else, write
 the routine's public interface — a generic name, a one-line description, and the
@@ -35,13 +35,18 @@ parameter the reference calls ``url`` may come back as ``page_to_watch`` and pas
 drawn name, description and parameter rides ADVISORY so a reader sees what the model
 committed to.
 
-Since #1868 the draw also gives each parameter the VALUE the round demonstrated it with,
-and those values are what a job's container is NAMED from — so each parameter's advisory
-carries its drawn value and the run closes with the container name the shipped derivation
-makes of them.  That a value is a literal span of the user's own words is the production
-validator's job (an accepted draw cannot carry a value nobody said); WHICH span was the
-right one is the same kind of judgment as a name, so it is rendered for review rather than
-matched by a fixture.
+Since #1868 the draw happens when the machine ENTERS learn rather than at run end: the
+round's identity is settled before the round runs, and run-end extraction READS that
+framing instead of drawing again — a run-end draw survives only for a round nothing
+framed.  Both entries render their document through the same shipped
+``build_framing_content``, so the draw this case drives is the one either path makes.  The
+draw also gives each parameter the VALUE the round demonstrated it with, and those values
+are what a job's container is NAMED from — so each parameter's advisory carries its drawn
+value and the run closes with the container name the shipped derivation makes of them.
+That a value is a literal span of the user's own words is the production validator's job
+(an accepted draw cannot carry a value nobody said); WHICH span was the right one is the
+same kind of judgment as a name, so it is rendered for review rather than matched by a
+fixture.
 
 All content is synthetic.
 """
