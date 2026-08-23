@@ -8,6 +8,18 @@ the ``prepare`` hook — the full five-tool Zoho surface is installed so the cas
 also exercise the tool-count budget — so no real IMAP/JMAP is needed.  Scoring is
 STRUCTURAL (the persisted tool call + its arguments), never wording.  Senders and
 topics are synthetic (the repo is public).
+
+**Dispatch stands on the tool descriptions alone.**  Migration 0078 seeded a "Look
+up email" skill that taught this routing; 0092 deleted its entries, 0097 deleted the
+collection carrying them, and since 0108 nothing is pre-seeded at all.  These cases
+seed no skills, so the world they measure is exactly a fresh deployment's: the model
+reads ``search_emails``'s own description and decides.
+
+**The conversation state machine fronts every driven turn** (#1706) — it classifies
+before the chat agent runs, and an email question lands in whatever state it lands
+in.  What is scored here is the chat turn's dispatch, not the state, which is why
+these cases are REPORT-ONLY (``min_pass_rate=None``): a live-model dispatch rate is a
+number to read, the same posture the sibling dispatch modules carry.
 """
 
 from __future__ import annotations
@@ -141,6 +153,7 @@ async def test_email_from_sender_dispatches(chat_eval: ChatEval) -> None:
         message="did I get an email from Priya Nakamura about the lease?",
         prepare=_mock_email_client,
         score=_score_searched("nakamura"),
+        min_pass_rate=None,  # report-only: a live-model dispatch rate
     )
 
 
@@ -151,6 +164,7 @@ async def test_check_email_for_topic_dispatches(chat_eval: ChatEval) -> None:
         message="check my email for the rooftop solar quote",
         prepare=_mock_email_client,
         score=_score_searched("solar"),
+        min_pass_rate=None,  # report-only: a live-model dispatch rate
     )
 
 
@@ -161,4 +175,5 @@ async def test_casual_email_grumble_does_not_dispatch(chat_eval: ChatEval) -> No
         message="honestly i get way too much email these days, my inbox is out of control",
         prepare=_mock_email_client,
         score=_score_no_email,
+        min_pass_rate=None,  # report-only: a live-model dispatch rate
     )

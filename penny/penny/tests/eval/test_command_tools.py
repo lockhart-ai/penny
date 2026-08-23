@@ -6,9 +6,21 @@ plus a no-fire guard that a casual mention of the same topic must NOT trigger it
 Scoring is STRUCTURAL (the persisted tool call + its arguments), never wording.
 
 `generate_image` (retired `/draw`): the image client is mocked at the system
-boundary via the ``prepare`` hook, so no real image model is needed — the
-contract is purely "did the utterance dispatch to generate_image with a faithful
-description, and does an unrelated mention stay quiet?".
+boundary via the ``prepare`` hook — which is also what REGISTERS the tool, since
+``ChatAgent`` gates it on an image client being present — so no real image model is
+needed and the contract is purely "did the utterance dispatch to generate_image with
+a faithful description, and does an unrelated mention stay quiet?".
+
+**Dispatch stands on the tool description alone.**  No skill teaches this routing
+(nothing is pre-seeded since migration 0108), so these cases seed none: the world
+they measure is a fresh deployment's, where the model reads ``generate_image``'s own
+description and decides.
+
+**The conversation state machine fronts every driven turn** (#1706) — it classifies
+before the chat agent runs, and a draw request lands in whatever state it lands in.
+What is scored here is the chat turn's dispatch, not the state, which is why these
+cases are REPORT-ONLY (``min_pass_rate=None``): a live-model dispatch rate is a
+number to read, the same posture the sibling dispatch modules carry.
 """
 
 from __future__ import annotations
@@ -104,6 +116,7 @@ async def test_draw_request_dispatches(chat_eval: ChatEval) -> None:
         message="can you draw me a teal origami dragon perched on a coffee mug?",
         prepare=_mock_image_client,
         score=_score_drew("dragon"),
+        min_pass_rate=None,  # report-only: a live-model dispatch rate
     )
 
 
@@ -114,6 +127,7 @@ async def test_make_a_picture_dispatches(chat_eval: ChatEval) -> None:
         message="make a picture of a neon cactus wearing tiny sunglasses",
         prepare=_mock_image_client,
         score=_score_drew("cactus"),
+        min_pass_rate=None,  # report-only: a live-model dispatch rate
     )
 
 
@@ -124,4 +138,5 @@ async def test_casual_art_mention_does_not_dispatch(chat_eval: ChatEval) -> None
         message="i saw a really nice watercolor painting at the gallery today, it was lovely",
         prepare=_mock_image_client,
         score=_score_no_draw,
+        min_pass_rate=None,  # report-only: a live-model dispatch rate
     )

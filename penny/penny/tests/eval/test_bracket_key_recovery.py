@@ -19,6 +19,11 @@ model pasted verbatim into ``key="[key]"`` args — 225 observed leaks, #1404).
     bracket-wrapped key, so the memory-tool teaching rejection fires on every
     sample; the live model must recover to the bare key and land the mutation.
     This validates the "did you mean" teaching rejection is actually load-bearing.
+
+Both cases are MECHANISM guards — they pin a render form and its teaching rejection,
+not a user-facing story — so this module sits beside the other chat-recovery guards
+(``test_chat_call_recovery`` · ``test_key_not_found_recovery`` ·
+``test_harmony_leak_recovery`` · …) rather than with the NL-dispatch stories.
 """
 
 from __future__ import annotations
