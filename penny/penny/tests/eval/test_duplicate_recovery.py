@@ -35,12 +35,20 @@ cycle leaves the run with no promptlog row at all — nothing for ``set_run_outc
 stamp, an empty run record, and every cycle-shaped check reading an absent ledger as
 though the model had done nothing.  That is precisely what happened on the same-fact
 case's first measured run: the STOP fired correctly on the injected first call, and five
-samples reported it as behavioural failure.  So the same-fact write is staged AFTER the
-model's first real step (``_InjectDuplicateWriteAfterAStep``) and its scorer opens on a
-RAN-GUARD, which fails loudly rather than silently when a run leaves nothing behind.  The
-divergent-value case is deliberately untouched: its write does not stop the cycle, so the
-run persists rows of its own, and its red is a real model-space gap being measured
-correctly (the news filed under a fresh key instead of onto the matched one).
+samples reported it as behavioural failure.  So BOTH writes are staged AFTER the model's
+first real step (``_InjectDuplicateWriteAfterAStep``) and both scorers open on a RAN-GUARD,
+which fails loudly rather than silently when a run leaves nothing behind.
+
+**Each case's ROUTINE is what makes its outcome the routine's own job (#1919).**  The
+divergent case first ran on the recipe box, and its thinking showed the model serving that
+routine faithfully: *"We must submit a new recipe… not already saved."*  A routine whose
+job is to FILE SOMETHING NEW is answered correctly by writing something new, and no
+rejection wording outranks the program the cycle was given — so the case was measuring a
+generative mandate rather than the decision it meant to.  It runs on a WATCH now: a page is
+read and the current value about ONE tracked subject is recorded, so landing a changed value
+on the entry that already holds it is not a recovery the model has to be talked into, it is
+the routine carrying out its own job.  The same-fact case stays on the recipe box, where
+finding nothing new is exactly the tension its STOP resolves.
 
 **The world is the post-#1911 one, and that is what re-arms these cases.**  The program
 parser is STRICT (a step's call must OPEN the step, in the rendered ``N. tool(args)``
@@ -71,6 +79,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.skills import (
     SkillDraft,
+    SkillParameter,
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
@@ -86,7 +95,6 @@ from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     Check,
     _InjectAfterToolCall,
-    _InjectDuplicateWrite,
     _iter_prompt_messages,
     collection_entries,
     live_prompts,
@@ -101,6 +109,7 @@ from penny.tests.eval.fixtures import (
     RECIPE_BOX_FAJITAS_KEY,
     RECIPE_BOX_FAJITAS_SEED_CONTENT,
     RECIPE_BOX_SEED_KEYS,
+    CannedPage,
 )
 from penny.tools.memory_tools import CollectionWriteTool
 
@@ -130,16 +139,9 @@ _BOUND_KEY = re.compile(rf"{_RECOVERY_VERB}\(key='([^']*)'")
 # ``tests/tools/test_memory_tools.py``.
 _ALREADY_RECORDED = "Already recorded"
 
-# The DIVERGENT write: the same dish the box already holds, filed under a key worded
-# differently this time, carrying a CHANGED cook time and temperature — a value swap
-# rather than an appended clause, because an append is the same value said at greater
-# length and this case is about the cycle finding something DIFFERENT.
-RECIPE_BOX_REWORDED_KEY = "sheet pan chicken fajitas"
-RECIPE_BOX_CHANGED_CONTENT = "Sheet-pan chicken fajitas — peppers, onion, chicken, 40 min at 375F."
-# What any honest message about that change carries.  A small set rather than one
-# spelling, because the message is model-authored and "40 minutes" and "375F" are the
-# same fact said two ways; the CHECK is that the change reached the user at all.
-RECIPE_BOX_CHANGE_TOKENS = ("40", "375")
+# How ``render_skill`` writes a leaf that takes a prior step's result — the watch's
+# recorded value, which is what makes it a watch: it stores what the page said.
+_BINDING_RENDER = "the value from step 1"
 
 # The routine the user taught the box, in the shape run-end extraction leaves behind:
 # every leaf a labelled PLACEHOLDER, the destination and the read of the routine's own
@@ -338,10 +340,6 @@ def _assert_the_box_holds_its_recipes(db: Database) -> None:
         "the same-fact case's forced write must repeat the stored value VERBATIM — that "
         "is what makes it trivially the same value rather than a judgment call"
     )
-    assert RECIPE_BOX_CHANGED_CONTENT != RECIPE_BOX_FAJITAS_SEED_CONTENT, (
-        "the divergent case's forced write must carry a DIFFERENT value, else it is the "
-        "same no-news the other case scores"
-    )
 
 
 # ── The staged injector ───────────────────────────────────────────────────────
@@ -518,83 +516,6 @@ def _score_stopped_on_the_same_fact(db: Database, sent: list[str]) -> list[Check
     ]
 
 
-def _score_landed_the_change(db: Database, sent: list[str]) -> list[Check]:
-    """The cycle found something DIFFERENT about a recipe the box already held: the
-    rejection bound the matched key, the change landed on that entry, the cycle closed
-    clean, and the user was told once."""
-    entries = collection_entries(db, RECIPE_BOX.name)
-    keys = set(entries)
-    keys_unchanged = keys == set(RECIPE_BOX_SEED_KEYS)
-    bound = _bound_matched_keys(db)
-    landed = entries.get(RECIPE_BOX_FAJITAS_KEY, "") != RECIPE_BOX_FAJITAS_SEED_CONTENT
-    closed = tool_was_called(db, "done")
-    queued = queued_sends(db, RECIPE_BOX.name)
-    named = [item for item in queued if any(t in item for t in RECIPE_BOX_CHANGE_TOKENS)]
-    return [
-        Check(
-            "the rejection bound the matched key into an update_entry call",
-            RECIPE_BOX_FAJITAS_KEY in bound,
-            anchor="collection_write(",
-            kind="guard",
-            rationale=None
-            if RECIPE_BOX_FAJITAS_KEY in bound
-            else (
-                f"the rejection bound {sorted(bound) or 'nothing'} — a divergent value must "
-                f"name {RECIPE_BOX_FAJITAS_KEY!r}, or the model has to guess which row it "
-                "collided with"
-            ),
-        ),
-        Check(
-            "the change landed on the entry the box already had",
-            landed,
-            anchor=f"{_RECOVERY_VERB}(",
-            kind="state",
-            rationale=None
-            if landed
-            else (
-                f"{RECIPE_BOX_FAJITAS_KEY!r} still holds its seeded value — the news the "
-                f"cycle found was rejected and then dropped.  Calls made: "
-                f"{tool_call_sequence(db) or 'none'}"
-            ),
-        ),
-        Check(
-            "the box still holds exactly the recipes it started with",
-            keys_unchanged,
-            kind="state",
-            rationale=None
-            if keys_unchanged
-            else (
-                "the box's keys changed — the change was filed under a fresh key instead of "
-                f"landing on the entry it is about: {sorted(keys)} against the seeded "
-                f"{sorted(RECIPE_BOX_SEED_KEYS)}"
-            ),
-        ),
-        Check(
-            "the cycle closed with done() rather than stopping",
-            closed,
-            anchor="done(",
-            kind="proc",
-            rationale=None
-            if closed
-            else (
-                "no done() — a divergent value is news and must never stop the cycle at the "
-                f"chokepoint.  Calls made: {tool_call_sequence(db) or 'none'}"
-            ),
-        ),
-        Check(
-            "the user was told once, and told what changed",
-            len(queued) == 1 and len(named) == 1,
-            kind="state",
-            rationale=None
-            if len(queued) == 1 and len(named) == 1
-            else (
-                f"{len(queued)} message(s) queued, {len(named)} naming the new value "
-                f"{RECIPE_BOX_CHANGE_TOKENS}: {queued}"
-            ),
-        ),
-    ]
-
-
 async def test_same_fact_write_stops_the_cycle(guard_recovery_eval) -> None:
     """A forced ``collection_write`` repeating a stored value VERBATIM under a reworded
     key is the same no-news the exact key reads: the gate says so, the cycle stops at the
@@ -617,18 +538,304 @@ async def test_same_fact_write_stops_the_cycle(guard_recovery_eval) -> None:
     )
 
 
+# ── The watch world: a page read, one tracked value recorded ──────────────────
+#
+# The divergent case's own world, and a different ROUTINE on purpose.  A recipe box's
+# job is to file something not already saved, so a cycle told its write collided is
+# answered correctly by writing a different recipe — which is what the first measured
+# run did, faithfully ("We must submit a new recipe… not already saved").  A WATCH's job
+# is to record the current value about ONE subject it already tracks, so landing a
+# changed value on the entry that holds it is the routine's own job rather than a
+# recovery the rejection has to argue the model into.
+
+# The page the watch is pointed at, and the value it tracks.  Invented — no real
+# listing, no real price.
+LANTERN_PAGE = "https://faux-market.example/keel-lantern"
+LANTERN_CONTAINER = "keel-lantern-watch"
+LANTERN_DESCRIPTION = "What the Keel Lantern listing is posted at right now."
+
+# The key the watch already files its subject under, and the value it holds.
+LANTERN_KEY = "Keel Lantern"
+LANTERN_STORED_VALUE = "Keel Lantern — posted at $128."
+
+# The DIVERGENT write: the same subject, filed under a key worded differently this time,
+# carrying the value the page has MOVED to — a value swap rather than an appended
+# clause, because an append is the same value said at greater length.
+LANTERN_REWORDED_KEY = "keel lantern"
+LANTERN_CHANGED_VALUE = "Keel Lantern — posted at $96."
+# What any honest message about that change carries.  A small set rather than one
+# spelling, because the message is model-authored; the CHECK is that the new value
+# reached the user at all.
+LANTERN_CHANGE_TOKENS = ("96", "$96")
+
+# The calls the watch makes, in order.
+LANTERN_PROGRAM_CALLS = ("browse", "collection_write")
+
+LANTERN_SCHEDULE = "FREQ=HOURLY"
+
+# The page the cycle actually reads, carrying the moved value — so the browse the model
+# really makes and the write the injector forces tell the same story.
+LANTERN_PAGE_CONTENT = CannedPage(
+    match="keel-lantern",
+    text=(
+        "Title: Keel Lantern — faux market listing\n"
+        "A small brass lantern, sold by a single maker.\n"
+        f"Source: {LANTERN_PAGE}\n"
+        "Posted at $96 — reduced from $128 earlier this season.\n"
+    ),
+)
+
+# The routine, in the shape run-end extraction leaves behind: the page a PARAMETER site
+# (its demonstrated value is what the runtime join fills), the extract instruction and
+# the entry key labelled PLACEHOLDERs, the destination attachment-marked, and the
+# recorded value BOUND to the browse's own result — which is what makes this a watch
+# rather than a generator: what it writes is what the page said.
+LANTERN_SKILL = SkillDraft(
+    name="track_posted_value",
+    intent="Keep an eye on what the Keel Lantern listing is posted at.",
+    description="Read a listing and record what it is posted at right now.",
+    steps=[
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": [LANTERN_PAGE], "extract": "what it is posted at"},
+            substitutions=[
+                SkillSubstitution(
+                    path=["queries", 0],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the listing to read",
+                ),
+                SkillSubstitution(
+                    path=["extract"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the value to read off the page",
+                ),
+            ],
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": LANTERN_CONTAINER,
+                "entries": [{"key": LANTERN_KEY, "content": LANTERN_STORED_VALUE}],
+            },
+            substitutions=[
+                SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the collection this is set up on",
+                    attachment=True,
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "key"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the thing being tracked",
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "content"],
+                    kind=SkillSubKind.BINDING,
+                    step=1,
+                ),
+            ],
+        ),
+    ],
+    parameters=[
+        SkillParameter(
+            name="listing",
+            description="the listing page to read each run",
+            value=LANTERN_PAGE,
+        )
+    ],
+    source_run_id="eval-seed",
+)
+
+LANTERN_VALUES = {"listing": LANTERN_PAGE}
+
+
+def rendered_watch_program() -> str:
+    """The watch's program, through the production instantiation seam's own three steps."""
+    attached = retarget_writes(LANTERN_SKILL.steps, LANTERN_CONTAINER)
+    joined = bind_parameters(attached, LANTERN_SKILL.parameters, LANTERN_VALUES)
+    return render_skill(joined, LANTERN_VALUES)
+
+
+def _seed_lantern_watch(db: Database) -> None:
+    """The world an apply turn leaves: the taught watch in the registry, the container
+    already holding the value it recorded last time, and the job configured from that
+    routine — NOTIFYING, because being told once is half of what this case scores."""
+    db.skills.upsert(LANTERN_SKILL, author=_SEED_AUTHOR)
+    db.memories.create_collection(
+        LANTERN_CONTAINER,
+        LANTERN_DESCRIPTION,
+        extraction_prompt=rendered_watch_program(),
+        schedule=LANTERN_SCHEDULE,
+        notify=True,
+        skill_name=slug_skill_name(LANTERN_SKILL.name),
+        skill_params=LANTERN_VALUES,
+    )
+    require_memory(db, LANTERN_CONTAINER).write(
+        [EntryInput(key=LANTERN_KEY, content=LANTERN_STORED_VALUE)], author="collector"
+    )
+    _assert_the_watch_world(db)
+
+
+def _assert_the_watch_world(db: Database) -> None:
+    """Everything the watch seeder is responsible for, asserted out loud — the same
+    silent-failure surface the box's probe covers, on this world's own claims."""
+    name = slug_skill_name(LANTERN_SKILL.name)
+    assert db.skills.get(name) is not None, f"the job's routine {name!r} must be registered"
+    row = db.memories.get(LANTERN_CONTAINER)
+    assert row is not None, f"the job's container {LANTERN_CONTAINER!r} must exist"
+    assert row.skill_name == name, (
+        f"the job must run the routine the fixture taught, not {row.skill_name!r}"
+    )
+    assert row.notify and not row.archived, (
+        "the watch must be live and NOTIFYING — this case scores being told exactly once"
+    )
+    _assert_the_watch_program_parses(db)
+    _assert_the_recovery_verb_is_reachable()
+    held = collection_entries(db, LANTERN_CONTAINER)
+    assert held == {LANTERN_KEY: LANTERN_STORED_VALUE}, (
+        f"the watch must hold exactly its last reading when the cycle starts, got {held}"
+    )
+    assert LANTERN_CHANGED_VALUE != LANTERN_STORED_VALUE, (
+        "the forced write must carry a value the watch does NOT already hold, else it is "
+        "the same no-news the other case scores"
+    )
+    assert LANTERN_REWORDED_KEY != LANTERN_KEY, (
+        "the forced write must arrive under a DIFFERENT key, or the exact-key path answers "
+        "it and the dedup disjunction — which this case is about — never runs"
+    )
+
+
+def _assert_the_watch_program_parses(db: Database) -> None:
+    """The stored program reads back as the calls it makes, carries the page the runtime
+    join filled, names the container it writes to, and stores no terminal ``done()``.
+
+    The recorded value is a BINDING (``the value from step 1``) rather than a placeholder,
+    which is the whole difference between a watch and a generator: what this routine
+    writes is what the page said, so a changed reading belongs on the entry that holds the
+    last one."""
+    row = db.memories.get(LANTERN_CONTAINER)
+    program = (row.extraction_prompt or "") if row is not None else ""
+    parsed = tuple(call.tool for call in program_calls(program, frozenset(LANTERN_PROGRAM_CALLS)))
+    assert parsed == LANTERN_PROGRAM_CALLS, (
+        f"the stored program must read back as {list(LANTERN_PROGRAM_CALLS)} under the "
+        f"rendered dialect, got {list(parsed)} — program: {program!r}"
+    )
+    assert LANTERN_PAGE in program, (
+        f"the runtime join must fill the browse leaf with {LANTERN_PAGE!r} — program: {program!r}"
+    )
+    assert f"'{LANTERN_CONTAINER}'" in program, (
+        f"the attachment must be bound to {LANTERN_CONTAINER!r} — program: {program!r}"
+    )
+    assert _BINDING_RENDER in program, (
+        "the recorded value must render as the browse's own result — a watch writes what "
+        f"the page said, not a fresh phrase.  Program: {program!r}"
+    )
+    assert Prompt.COLLECTOR_DONE_STEP not in program, (
+        "the terminal step is assembly's to inject (#1916) — a STORED program carrying "
+        "one is a render a chat ledger cannot produce"
+    )
+
+
+def _score_landed_the_change(db: Database, sent: list[str]) -> list[Check]:
+    """The cycle read a value DIFFERENT from the one it holds: the rejection bound the
+    matched key, the change landed on that entry, the cycle closed clean, and the user was
+    told once — which is the watch's own job, not a recovery it had to be argued into."""
+    entries = collection_entries(db, LANTERN_CONTAINER)
+    keys = set(entries)
+    keys_unchanged = keys == {LANTERN_KEY}
+    bound = _bound_matched_keys(db)
+    landed = entries.get(LANTERN_KEY, "") != LANTERN_STORED_VALUE
+    closed = tool_was_called(db, "done")
+    queued = queued_sends(db, LANTERN_CONTAINER)
+    named = [item for item in queued if any(token in item for token in LANTERN_CHANGE_TOKENS)]
+    return [
+        _cycle_ran_check(db),
+        Check(
+            "the rejection bound the matched key into an update_entry call",
+            LANTERN_KEY in bound,
+            anchor="collection_write(",
+            kind="guard",
+            rationale=None
+            if LANTERN_KEY in bound
+            else (
+                f"the rejection bound {sorted(bound) or 'nothing'} — a divergent value must "
+                f"name {LANTERN_KEY!r}, or the model has to guess which row it collided "
+                "with.  The one non-behavioural way to land here is the strict CONTENT "
+                "signal reading the moved value as the SAME value, which would classify "
+                "this collision as no-news and stop the cycle instead"
+            ),
+        ),
+        Check(
+            "the new reading landed on the entry the watch already had",
+            landed,
+            anchor=f"{_RECOVERY_VERB}(",
+            kind="state",
+            rationale=None
+            if landed
+            else (
+                f"{LANTERN_KEY!r} still holds its previous reading — the change the cycle "
+                f"found was rejected and then dropped.  Calls made: "
+                f"{tool_call_sequence(db) or 'none'}"
+            ),
+        ),
+        Check(
+            "the watch still tracks exactly the one subject it started with",
+            keys_unchanged,
+            kind="state",
+            rationale=None
+            if keys_unchanged
+            else (
+                "the watch's keys changed — the new reading was filed as a second entry "
+                f"instead of landing on the one it is about: {sorted(keys)}"
+            ),
+        ),
+        Check(
+            "the cycle closed with done() rather than stopping",
+            closed,
+            anchor="done(",
+            kind="proc",
+            rationale=None
+            if closed
+            else (
+                "no done() — a changed reading is news and must never stop the cycle at "
+                f"the chokepoint.  Calls made: {tool_call_sequence(db) or 'none'}"
+            ),
+        ),
+        Check(
+            "the user was told once, and told the new value",
+            len(queued) == 1 and len(named) == 1,
+            kind="state",
+            rationale=None
+            if len(queued) == 1 and len(named) == 1
+            else (
+                f"{len(queued)} message(s) queued, {len(named)} naming the new value "
+                f"{LANTERN_CHANGE_TOKENS}: {queued}"
+            ),
+        ),
+    ]
+
+
 async def test_divergent_value_write_updates_and_notifies(guard_recovery_eval) -> None:
-    """A forced ``collection_write`` carrying a CHANGED value for a recipe the box
-    already holds, under a reworded key, is news: the rejection binds the matched key,
-    the live model lands the change on that entry, the cycle closes, and the one
-    notification names what moved."""
+    """A watch reads its page, finds the tracked value has MOVED, and its write arrives
+    under a key worded differently from the one the reading is already filed under: the
+    rejection binds that key, the live model lands the new reading on it, the cycle closes,
+    and the one notification names what it moved to.
+
+    Staged after the model's real browse, so the cycle has read the page before the forced
+    write — the watch doing its own job, with only the collision forced."""
     await guard_recovery_eval(
         case_id="duplicate-write-divergent-value-updates",
         family="collector-guard-recovery",
-        collection=RECIPE_BOX.name,
-        seed=_seed_recipe_box,
-        wrap_client=lambda real: _InjectDuplicateWrite(
-            real, RECIPE_BOX.name, [(RECIPE_BOX_REWORDED_KEY, RECIPE_BOX_CHANGED_CONTENT)]
+        collection=LANTERN_CONTAINER,
+        seed=_seed_lantern_watch,
+        browse=[LANTERN_PAGE_CONTENT],
+        wrap_client=lambda real: _InjectDuplicateWriteAfterAStep(
+            real, LANTERN_CONTAINER, [(LANTERN_REWORDED_KEY, LANTERN_CHANGED_VALUE)]
         ),
         score=_score_landed_the_change,
         min_pass_rate=None,
