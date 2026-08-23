@@ -94,7 +94,7 @@ from penny.prompts import Prompt
 from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     Check,
-    _InjectAfterToolCall,
+    _InjectingClient,
     _iter_prompt_messages,
     collection_entries,
     live_prompts,
@@ -138,6 +138,11 @@ _BOUND_KEY = re.compile(rf"{_RECOVERY_VERB}\(key='([^']*)'")
 # answer, which names no call at all.  The full wording is pinned in
 # ``tests/tools/test_memory_tools.py``.
 _ALREADY_RECORDED = "Already recorded"
+
+# A substring of the DIVERGENT-value rejection (``_DUPLICATE_REJECTION``) — read to tell
+# "the rejection fired and did not name the right entry" from "no rejection fired at all",
+# which are a miss and a not-applicable rather than one outcome.
+_DIVERGENT_REJECTION = "was not written"
 
 # How ``render_skill`` writes a leaf that takes a prior step's result — the watch's
 # recorded value, which is what makes it a watch: it stores what the page said.
@@ -345,30 +350,45 @@ def _assert_the_box_holds_its_recipes(db: Database) -> None:
 # ── The staged injector ───────────────────────────────────────────────────────
 
 
-class _InjectDuplicateWriteAfterAStep(_InjectAfterToolCall):
-    """``_InjectDuplicateWrite``'s staged twin: the same forced duplicate write, but held
-    back until the model's first REAL tool call has landed.
+class _InjectDuplicateWriteAfterAStep(_InjectingClient):
+    """``_InjectDuplicateWrite``'s staged twin: the same forced duplicate write, held back
+    until the model's first real tool call has landed **on the main loop**.
 
-    The difference is not about what the write gate does — it is about whether the run
-    leaves a LEDGER to read.  Every injector returns a synthetic ``LlmResponse`` that
-    bypasses the persisting client (the #1695 design: the raw response is persisted
-    inside the real client before the wrapper can touch it, which is why
-    ``bail_injected`` is the only proof the sabotage fired).  When the forced call is the
-    cycle's FIRST and the write gate STOPs on it, the cycle ends having persisted NOTHING:
-    ``set_run_outcome`` has no row to stamp, the run record reads empty, and every
-    cycle-shaped check scores against an absent ledger — which is exactly how a working
-    STOP measured as five 'behavioural' failures.
+    Staging exists because of the LEDGER, not the gate.  Every injector returns a synthetic
+    ``LlmResponse`` that bypasses the persisting client (the #1695 design), so a forced call
+    that ENDS the cycle leaves the run with no promptlog row at all: ``set_run_outcome`` has
+    nothing to stamp, the run record reads empty, and every cycle-shaped check scores against
+    an absent ledger — which is exactly how a working STOP measured as five 'behavioural'
+    failures.  With one real step ahead of it, that step and its result persist, and the
+    forced write's terminal tool result rides ``trailing_messages`` (#1778) on the row the
+    real step already wrote.
 
-    Staging the injection after one real step fixes it at the source: the program opens
-    with ``collection_read_latest``, that call and its result persist, the forced write
-    then STOPs on the second turn, and the stop's terminal tool result rides
-    ``trailing_messages`` (#1778) on the row the read already wrote.  The MECHANISM under
-    test is untouched — the same write, the same gate, the same STOP."""
+    **The trigger skips a call carrying no TOOL SURFACE, and that is the whole difference
+    between this and the shared ``_InjectAfterToolCall``.**  A micro-context calls the same
+    client with no tools at all (``MicroContext._draw_clean``), so on a browse-shaped program
+    the first call after the model's browse is the browse's own EXTRACT draw — the shared
+    trigger fired into it, the main loop never saw the forced write, and the case re-ran its
+    program untouched while ``bail_injected`` reported the sabotage as fired.  Reading the
+    tool surface is the structural way to tell the two apart: the loop always passes one, a
+    micro-context never does."""
 
     def __init__(self, real, memory: str, entries: list[tuple[str, str]]) -> None:
         super().__init__(real)
         self._memory = memory
         self._entries = entries
+        self._saw_tool = False
+
+    async def chat(self, messages, tools=None, *args, **kwargs):
+        if tools is None:
+            # A micro-context (no tool channel by construction) — never the injection site.
+            return await self._real.chat(messages, *args, tools=tools, **kwargs)
+        if self._saw_tool and not self.bail_injected:
+            self.bail_injected = True
+            return self._bail_response()
+        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
+        if response.has_tool_calls:
+            self._saw_tool = True
+        return response
 
     def _bail_response(self) -> LlmResponse:
         return LlmResponse(
@@ -561,7 +581,13 @@ LANTERN_STORED_VALUE = "Keel Lantern — posted at $128."
 # The DIVERGENT write: the same subject, filed under a key worded differently this time,
 # carrying the value the page has MOVED to — a value swap rather than an appended
 # clause, because an append is the same value said at greater length.
-LANTERN_REWORDED_KEY = "keel lantern"
+#
+# The key is TOKEN-different, not a case variant.  The similarity door folds case when it
+# tokenizes, so 'keel lantern' and 'Keel Lantern' are the same key to it, and the exact-key
+# door may resolve them together too — either way the write would never reach the rejection
+# this case is about.  An extra token still collides on containment (what makes it the same
+# subject) while being a genuinely different string (what makes it a new key).
+LANTERN_REWORDED_KEY = "keel lantern price"
 LANTERN_CHANGED_VALUE = "Keel Lantern — posted at $96."
 # What any honest message about that change carries.  A small set rather than one
 # spelling, because the message is model-authored; the CHECK is that the new value
@@ -609,7 +635,7 @@ LANTERN_SKILL = SkillDraft(
                 SkillSubstitution(
                     path=["extract"],
                     kind=SkillSubKind.PLACEHOLDER,
-                    description="the value to read off the page",
+                    description="what the listing is currently posted at",
                 ),
             ],
         ),
@@ -704,9 +730,10 @@ def _assert_the_watch_world(db: Database) -> None:
         "the forced write must carry a value the watch does NOT already hold, else it is "
         "the same no-news the other case scores"
     )
-    assert LANTERN_REWORDED_KEY != LANTERN_KEY, (
-        "the forced write must arrive under a DIFFERENT key, or the exact-key path answers "
-        "it and the dedup disjunction — which this case is about — never runs"
+    assert LANTERN_REWORDED_KEY.casefold() != LANTERN_KEY.casefold(), (
+        "the forced write's key must differ by a TOKEN, not by case — the similarity door "
+        "folds case when it tokenizes and the exact-key door may resolve the two together, "
+        "so a case-only variant never reaches the rejection this case is about"
     )
 
 
@@ -741,69 +768,80 @@ def _assert_the_watch_program_parses(db: Database) -> None:
     )
 
 
+def _rejection_bound_check(db: Database, bound: set[str]) -> Check:
+    """ADVISORY: did the divergent-value rejection name the entry this write collides with?
+
+    Advisory, and ``Check.na`` when no rejection happened at all, because reaching the right
+    END STATE through the exact-key door is a pass rather than a miss — the contract is what
+    the watch ends up holding and what the user was told, and which door the write went
+    through is mechanism.  Scoring it would fail a cycle that landed the change correctly for
+    the sole reason that its key happened to match exactly."""
+    if not _tool_results_naming(db, _DIVERGENT_REJECTION):
+        return Check.na(
+            "the divergent-value rejection bound the matched key",
+            anchor="collection_write(",
+            kind="proc",
+            rationale=(
+                "no rejection came back — the write reached its entry by another door "
+                "(an exact-key match refreshes in place), so there was none to bind"
+            ),
+        )
+    return Check(
+        "the divergent-value rejection bound the matched key",
+        LANTERN_KEY in bound,
+        anchor="collection_write(",
+        scored=False,
+        kind="proc",
+        rationale=None
+        if LANTERN_KEY in bound
+        else (
+            f"the rejection bound {sorted(bound) or 'nothing'} rather than {LANTERN_KEY!r} — "
+            "the model had to work out which row it collided with"
+        ),
+    )
+
+
 def _score_landed_the_change(db: Database, sent: list[str]) -> list[Check]:
-    """The cycle read a value DIFFERENT from the one it holds: the rejection bound the
-    matched key, the change landed on that entry, the cycle closed clean, and the user was
-    told once — which is the watch's own job, not a recovery it had to be argued into."""
+    """The BEHAVIOUR contract, and only that: one entry for the subject, carrying the value
+    the page moved to, and one notification naming it.
+
+    What is deliberately NOT scored is HOW the cycle got there — which door the write went
+    through, and whether it closed with ``done()`` — because a watch that ends up holding the
+    right value and told the user once has done its job, whatever route it took.  Those read
+    as advisory rows instead, so a run that is right for an unexpected reason reports as
+    right.
+
+    (``guard_recovery_eval`` prepends its own "forced bail fired" guard, which says the
+    injector ran.)"""
     entries = collection_entries(db, LANTERN_CONTAINER)
     keys = set(entries)
-    keys_unchanged = keys == {LANTERN_KEY}
-    bound = _bound_matched_keys(db)
+    tracks_one_subject = keys == {LANTERN_KEY}
     landed = entries.get(LANTERN_KEY, "") != LANTERN_STORED_VALUE
-    closed = tool_was_called(db, "done")
     queued = queued_sends(db, LANTERN_CONTAINER)
     named = [item for item in queued if any(token in item for token in LANTERN_CHANGE_TOKENS)]
     return [
         _cycle_ran_check(db),
         Check(
-            "the rejection bound the matched key into an update_entry call",
-            LANTERN_KEY in bound,
-            anchor="collection_write(",
-            kind="guard",
+            "the watch still tracks exactly the one subject it started with",
+            tracks_one_subject,
+            anchor=f"{_RECOVERY_VERB}(",
+            kind="state",
             rationale=None
-            if LANTERN_KEY in bound
+            if tracks_one_subject
             else (
-                f"the rejection bound {sorted(bound) or 'nothing'} — a divergent value must "
-                f"name {LANTERN_KEY!r}, or the model has to guess which row it collided "
-                "with.  The one non-behavioural way to land here is the strict CONTENT "
-                "signal reading the moved value as the SAME value, which would classify "
-                "this collision as no-news and stop the cycle instead"
+                "the new reading was filed as a second entry instead of landing on the one "
+                f"it is about — the watch now tracks {sorted(keys)}"
             ),
         ),
         Check(
-            "the new reading landed on the entry the watch already had",
+            "that entry carries the value the page moved to",
             landed,
-            anchor=f"{_RECOVERY_VERB}(",
             kind="state",
             rationale=None
             if landed
             else (
                 f"{LANTERN_KEY!r} still holds its previous reading — the change the cycle "
-                f"found was rejected and then dropped.  Calls made: "
-                f"{tool_call_sequence(db) or 'none'}"
-            ),
-        ),
-        Check(
-            "the watch still tracks exactly the one subject it started with",
-            keys_unchanged,
-            kind="state",
-            rationale=None
-            if keys_unchanged
-            else (
-                "the watch's keys changed — the new reading was filed as a second entry "
-                f"instead of landing on the one it is about: {sorted(keys)}"
-            ),
-        ),
-        Check(
-            "the cycle closed with done() rather than stopping",
-            closed,
-            anchor="done(",
-            kind="proc",
-            rationale=None
-            if closed
-            else (
-                "no done() — a changed reading is news and must never stop the cycle at "
-                f"the chokepoint.  Calls made: {tool_call_sequence(db) or 'none'}"
+                f"found never landed.  Calls made: {tool_call_sequence(db) or 'none'}"
             ),
         ),
         Check(
@@ -817,14 +855,44 @@ def _score_landed_the_change(db: Database, sent: list[str]) -> list[Check]:
                 f"{LANTERN_CHANGE_TOKENS}: {queued}"
             ),
         ),
+        _rejection_bound_check(db, _bound_matched_keys(db)),
+        Check(
+            "closed with done() rather than stopping at the chokepoint",
+            tool_was_called(db, "done"),
+            anchor="done(",
+            scored=False,
+            kind="proc",
+            rationale=(
+                "no done() — worth reading beside the state rows: a STOP here would mean the "
+                "changed value was classified as no-news, which is what this case guards"
+            )
+            if not tool_was_called(db, "done")
+            else f"calls made: {tool_call_sequence(db) or 'none'}",
+        ),
     ]
 
 
 async def test_divergent_value_write_updates_and_notifies(guard_recovery_eval) -> None:
     """A watch reads its page, finds the tracked value has MOVED, and its write arrives
-    under a key worded differently from the one the reading is already filed under: the
-    rejection binds that key, the live model lands the new reading on it, the cycle closes,
-    and the one notification names what it moved to.
+    under a key worded differently from the one the reading is already filed under: the new
+    reading lands on that entry, the watch still tracks one subject, and the user is told
+    once, naming what it moved to.
+
+    **What this case is FOR, and how it differs from the enactment change-pair.**
+    ``test_collector_enactment.py``'s cycle-3 change case drives the same shape — a watch
+    whose page moved, one notification owed — and this case differs from it by ONE thing:
+    the NAMING SLIP.  The write arrives under a key worded differently from the one the
+    reading is filed under, so it goes through the dedup disjunction rather than the exact
+    key.  Without that slip forced, this case IS that pair, re-run.
+
+    That one difference is the whole point, because it makes this the COUNTERWEIGHT to
+    ``DUPLICATE_UNCHANGED``'s STOP.  The same similarity machinery that lets a re-observation
+    be recognised as no-news and silence the cycle is the machinery a CHANGED value now
+    passes through — so this is the standing proof that a change can never be silenced by it.
+    Concretely it is the regression net for ``content_sim_strict``: if a real value change
+    ever reads as the same value, the strict content signal fires, the collision classifies
+    as no-news, the cycle STOPs, and this case goes red first — before a user stops being
+    told their watch moved.
 
     Staged after the model's real browse, so the cycle has read the page before the forced
     write — the watch doing its own job, with only the collision forced."""
