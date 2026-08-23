@@ -182,10 +182,10 @@ correct next call from what came back). The suite spans that matrix:
 |---|---|---|
 | **chat** (`test_chat_response.py`) | chitchat; recall-grounded answer | browse→answer; multi-hop browse chain |
 | **chat authoring** (`test_collection_lifecycle.py`) | create / update / archive / abstain | — |
-| **collector** (`test_extractors.py`) | likes / dislikes / knowledge / notify send+move | research-watcher; inner-monologue |
+| **collector** (`test_collector_enactment.py`, `test_collector_honesty.py`) | quiet cycle / change cycle over a configured collection | read-failure + browser-outage honesty |
 | **meta-collector** | *retired* — the `skills` reconcile collector (#1624) and the `quality` reviewer (#1569) both retired: skills are now structural (taught/instantiated/re-rendered) | — |
 | **routing** (`test_retrieval.py`) | two-stage recall | — |
-| **peripheral** (`test_peripheral.py`) | startup announcement | schedule NL→cron dispatch (`test_schedule_dispatch.py`) |
+| **peripheral** | *retired* — the startup-announcement case was cut in the #1919 eval-test audit | — |
 
 The built-in collectors (`likes`, `dislikes`, `knowledge`, `thoughts`) already
 exist with their **canonical migration-seeded extraction prompts** in a fresh eval

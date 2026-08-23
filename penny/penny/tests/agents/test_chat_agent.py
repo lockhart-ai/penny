@@ -11,7 +11,9 @@ Test organization:
 
 import base64
 import re
+from datetime import datetime
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlmodel import select
@@ -145,7 +147,19 @@ async def test_basic_message_flow(
             m.get("content", "") for m in first_request["messages"] if m.get("role") == "system"
         ][0]
         lines = system_text.split("\n")
+        # The date/time anchor opens the prompt, and it is rendered in the user's
+        # PROFILE timezone, never a bare UTC — otherwise the model reasons from a UTC
+        # clock under a non-UTC profile and, for the hours around local midnight, from
+        # the wrong calendar day.  The zone is read off the profile row rather than
+        # restated here, so the fixture's timezone and the expectation cannot drift
+        # apart.  The collector side of the same shared renderer
+        # (``datetime_utils.current_datetime_line``) is pinned in test_collector.py.
+        profile = penny.db.users.get_info(TEST_SENDER)
+        assert profile is not None, "The test user profile should exist"
+        local_abbrev = datetime.now(ZoneInfo(profile.timezone)).strftime("%Z")
         assert lines[0].startswith("Current date and time: ")
+        assert lines[0].endswith(f" {local_abbrev}"), lines[0]
+        assert "UTC" not in lines[0], lines[0]
         rest = "\n".join(lines[1:])
         rest = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", rest)
         expected = _BASIC_FLOW_EXPECTED
