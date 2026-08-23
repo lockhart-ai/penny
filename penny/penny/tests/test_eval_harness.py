@@ -91,6 +91,8 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.dispatch_world import assert_no_collections, collection_names
+from penny.tests.eval.fixtures import BOARD_GAMES
 from penny.tests.eval.test_bracket_key_recovery import (
     BRACKET_KEY_CASES,
     _seed_board_games,
@@ -103,6 +105,7 @@ from penny.tests.eval.test_choose_dispatch import (
     CHOOSE_CASES,
     _gave_an_opinion_check,
     _reply_reports,
+    assert_choose_world,
 )
 from penny.tests.eval.test_collector_enactment import (
     _STOP_REASON as _STOP,
@@ -120,8 +123,18 @@ from penny.tests.eval.test_collector_enactment import (
     seed_applied_job,
     seed_gate_world,
 )
-from penny.tests.eval.test_command_tools import IMAGE_CASES, _claims_no_picture_check
-from penny.tests.eval.test_email_dispatch import EMAIL_CASES, _claims_no_search_check
+from penny.tests.eval.test_command_tools import (
+    IMAGE_CASES,
+    _claims_no_picture_check,
+    assert_image_world,
+    install_image_client,
+)
+from penny.tests.eval.test_email_dispatch import (
+    EMAIL_CASES,
+    _claims_no_search_check,
+    assert_mailbox_world,
+    install_mailbox,
+)
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
@@ -949,6 +962,55 @@ def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> 
     _seed_board_games(db)
     for case in BRACKET_KEY_CASES:
         assert_board_games_world(db, case)
+
+
+def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> None:
+    """The dispatch stories' registry claim is about COLLECTIONS, and a fresh migrated
+    database satisfies it.
+
+    The regression pin for the defect that failed all eight dispatch cases at the probe on
+    their first live run, before a single sample was driven: the claim was read through a
+    helper that returns every ``memory`` row, and migration 0026 seeds four system LOG
+    markers into every database that has ever migrated — so the probe was asserting
+    something no Penny has ever been true of.  Both directions, since a read that filtered
+    everything out would pass this as vacuously as the correct one: the four markers are
+    invisible to it, and a real collection is not."""
+    assert sorted(row.name for row in db.memories.list_all()) == [
+        "browse-results",
+        "collector-runs",
+        "penny-messages",
+        "user-messages",
+    ]
+    assert collection_names(db) == []
+    assert_no_collections(db, "a fresh migrated database")
+
+    _seed_board_games(db)
+    assert collection_names(db) == [BOARD_GAMES.name]
+    with pytest.raises(AssertionError, match=BOARD_GAMES.name):
+        assert_no_collections(db, "a database holding a collection")
+
+
+async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
+    mock_llm, running_penny, test_config
+) -> None:
+    """Every dispatch story's loud probe passes against a REAL migrated database and a REAL
+    chat surface — both halves of all three, inside ``make check``.
+
+    The probes run at eval time only, so the ``eval`` marker is exactly what let a probe
+    that could never pass reach a live run through green CI.  Driving them here against the
+    same construction path a sample uses closes that: the config-gated hooks really do
+    register their tools on ``get_tools``, and the registry claim really is satisfiable in
+    the world a sample is seeded into.  No model call is made — the probes only read the
+    surface and the store."""
+    async with running_penny(test_config) as penny:
+        install_mailbox(penny)
+        install_image_client(penny)
+        for email_case in EMAIL_CASES:
+            assert_mailbox_world(penny, email_case)
+        for image_case in IMAGE_CASES:
+            assert_image_world(penny, image_case)
+        for choose_case in CHOOSE_CASES:
+            assert_choose_world(penny, choose_case)
 
 
 def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> None:

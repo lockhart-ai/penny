@@ -47,13 +47,13 @@ from penny.tests.eval.conftest import (
     Check,
     Preparer,
     Scorer,
-    collection_names,
     last_tool_args,
     new_collections,
     routing_clean,
     tool_call_sequence,
     tool_not_called,
 )
+from penny.tests.eval.dispatch_world import assert_dispatch_world
 
 pytestmark = pytest.mark.eval
 
@@ -68,7 +68,7 @@ _GENERATE_IMAGE = "generate_image"
 _DESCRIPTION = "description"
 
 
-def _install_image_client(penny: Penny) -> None:
+def install_image_client(penny: Penny) -> None:
     """Wire a mocked image client so ``generate_image`` REGISTERS and its boundary call is
     a no-op returning a canned PNG.
 
@@ -159,26 +159,20 @@ IMAGE_CASES = (_DRAW_REQUEST, _MAKE_A_PICTURE, _GALLERY_MENTION)
 
 
 def assert_image_world(penny: Penny, case: _ImageCase) -> None:
-    """Everything this case's world is responsible for, asserted out loud.
+    """Everything this case's world is responsible for, asserted out loud: ``generate_image``
+    is registered, and the registry holds no collection.
 
-    Two claims, and a drift in either would be read as the model failing: ``generate_image``
-    is REGISTERED (a case whose whole subject is dispatch, run against a surface that
-    carries no image tool, reports a dispatch miss the model was never offered), and the
-    registry is EMPTY (nothing pre-seeded since migration 0108 — which is what makes
-    "nothing was created" a total reading of what this turn touched)."""
-    surface = {tool.name for tool in penny.chat_agent.get_tools()}
-    assert _GENERATE_IMAGE in surface, (
-        f"{case.case_id}: the surface must carry {_GENERATE_IMAGE}, it carries {sorted(surface)}"
-    )
-    held = sorted(collection_names(penny.db))
-    assert not held, f"{case.case_id}: the world must hold no collection, it holds {held}"
+    Both claims are the shared dispatch-world probe (``dispatch_world``) — the registry half
+    reads COLLECTION-shaped memories only, since the four migration-0026 system log markers
+    are in every database and a probe that counted them could never pass."""
+    assert_dispatch_world(penny, case.case_id, [_GENERATE_IMAGE])
 
 
 def _probe_image_world(case: _ImageCase) -> Preparer:
     """Install the mocked image client, then assert the world it stood up."""
 
     def prepare(penny: Penny) -> None:
-        _install_image_client(penny)
+        install_image_client(penny)
         assert_image_world(penny, case)
 
     return prepare

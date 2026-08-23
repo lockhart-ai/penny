@@ -49,12 +49,12 @@ from penny.tests.eval.conftest import (
     ChatEval,
     Check,
     Preparer,
-    collection_names,
     live_prompts,
     new_collections,
     routing_clean,
     tool_call_sequence,
 )
+from penny.tests.eval.dispatch_world import assert_dispatch_world
 
 pytestmark = pytest.mark.eval
 
@@ -172,19 +172,13 @@ def _tool_picks(db: Database) -> list[str]:
 
 
 def assert_choose_world(penny: Penny, case: _ChooseCase) -> None:
-    """Everything this case's world is responsible for, asserted out loud.
+    """Everything this case's world is responsible for, asserted out loud: ``choose`` is
+    registered, and the registry holds no collection.
 
-    Two claims, and a drift in either would be read as the model failing: ``choose`` is
-    REGISTERED (a case whose whole subject is dispatch, run against a surface that carries
-    no chooser, reports a dispatch miss the model was never offered), and the registry is
-    EMPTY (nothing pre-seeded since migration 0108 — which is what makes "nothing was
-    created" a total reading of what this turn touched)."""
-    surface = {tool.name for tool in penny.chat_agent.get_tools()}
-    assert _CHOOSE_TOOL in surface, (
-        f"{case.case_id}: the surface must carry {_CHOOSE_TOOL}, it carries {sorted(surface)}"
-    )
-    held = sorted(collection_names(penny.db))
-    assert not held, f"{case.case_id}: the world must hold no collection, it holds {held}"
+    Both claims are the shared dispatch-world probe (``dispatch_world``) — the registry half
+    reads COLLECTION-shaped memories only, since the four migration-0026 system log markers
+    are in every database and a probe that counted them could never pass."""
+    assert_dispatch_world(penny, case.case_id, [_CHOOSE_TOOL])
 
 
 def _probe_choose_world(case: _ChooseCase) -> Preparer:

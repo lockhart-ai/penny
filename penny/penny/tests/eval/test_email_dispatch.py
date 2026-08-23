@@ -53,7 +53,6 @@ from penny.tests.eval.conftest import (
     Check,
     Preparer,
     Scorer,
-    collection_names,
     last_tool_args,
     new_collections,
     routing_clean,
@@ -61,6 +60,7 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.dispatch_world import assert_dispatch_world
 from penny.tools.draft_email import DraftEmailTool
 from penny.tools.list_emails import ListEmailsTool
 from penny.tools.list_folders import ListFoldersTool
@@ -108,7 +108,7 @@ _DETAIL = EmailDetail(
 )
 
 
-def _install_mailbox(penny: Penny) -> None:
+def install_mailbox(penny: Penny) -> None:
     """Wire a mocked mailbox so the email tools REGISTER and their boundary calls are
     no-ops returning the canned message.
 
@@ -219,25 +219,20 @@ EMAIL_CASES = (_FROM_SENDER, _FOR_TOPIC, _GRUMBLE)
 
 
 def assert_mailbox_world(penny: Penny, case: _EmailCase) -> None:
-    """Everything this case's world is responsible for, asserted out loud.
+    """Everything this case's world is responsible for, asserted out loud: the five email
+    tools are registered, and the registry holds no collection.
 
-    Two claims, and a drift in either would be read as the model failing: the five email
-    tools are REGISTERED (a case whose whole subject is dispatch, run against a surface
-    that carries no mailbox, reports a dispatch miss the model was never offered), and the
-    registry is EMPTY (nothing pre-seeded since migration 0108 — which is what makes
-    "nothing was created" a total reading of what this turn touched)."""
-    surface = {tool.name for tool in penny.chat_agent.get_tools()}
-    missing = sorted(set(_EMAIL_TOOLS) - surface)
-    assert not missing, f"{case.case_id}: the mailbox surface must carry {missing}"
-    held = sorted(collection_names(penny.db))
-    assert not held, f"{case.case_id}: the world must hold no collection, it holds {held}"
+    Both claims are the shared dispatch-world probe (``dispatch_world``) — the registry
+    half reads COLLECTION-shaped memories only, since the four migration-0026 system log
+    markers are in every database and a probe that counted them could never pass."""
+    assert_dispatch_world(penny, case.case_id, _EMAIL_TOOLS)
 
 
 def _probe_mailbox_world(case: _EmailCase) -> Preparer:
     """Install the mocked mailbox, then assert the world it stood up."""
 
     def prepare(penny: Penny) -> None:
-        _install_mailbox(penny)
+        install_mailbox(penny)
         assert_mailbox_world(penny, case)
 
     return prepare
