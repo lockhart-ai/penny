@@ -35,23 +35,43 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
+from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
+    Preparer,
     collection_names,
     tool_call_sequence,
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.dispatch_world import assert_dispatch_world
 
 pytestmark = pytest.mark.eval
 
-# Family tag (explicit, meaningful grouping) for every case in this module.
+# Family tag (explicit, meaningful grouping) for every case in this module — shared with
+# the sibling dispatch stories (email, generate_image, choose) so the report's families
+# rollup reads chat-surface tool dispatch as one group.
 _FAMILY = "nl-dispatch"
 
 _MUTE = "notifications_mute"
 _UNMUTE = "notifications_unmute"
+
+
+def _probe_dispatch_world(case_id: str) -> Preparer:
+    """Assert the world each case is answered in, once the runner has built it.
+
+    Both claims are the shared dispatch-world probe: the chat surface really carries the
+    two tools (they are registered unconditionally, but a scored dispatch miss against a
+    model that was never offered the tool is the failure this forecloses), and the
+    registry holds no COLLECTION — which is what makes the no-fire case's "built nothing"
+    row a total reading rather than a sample of one."""
+
+    def prepare(penny: Penny) -> None:
+        assert_dispatch_world(penny, case_id, [_MUTE, _UNMUTE])
+
+    return prepare
 
 
 def _seed_muted(db: Database) -> None:
@@ -217,6 +237,7 @@ async def test_mute_stop_messaging(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="mute-stop-messaging",
         family=_FAMILY,
+        prepare=_probe_dispatch_world("mute-stop-messaging"),
         message="hey, can you stop messaging me for a while? need some quiet",
         score=_score_mute,
         min_pass_rate=None,
@@ -227,6 +248,7 @@ async def test_mute_quiet_down(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="mute-quiet-down",
         family=_FAMILY,
+        prepare=_probe_dispatch_world("mute-quiet-down"),
         message="quiet down please — no proactive updates for now",
         score=_score_mute,
         min_pass_rate=None,
@@ -237,6 +259,7 @@ async def test_unmute_message_again(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="unmute-message-again",
         family=_FAMILY,
+        prepare=_probe_dispatch_world("unmute-message-again"),
         message="ok, you can start messaging me again",
         seed=_seed_muted,
         score=_score_unmute,
@@ -248,6 +271,7 @@ async def test_unmute_turn_back_on(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="unmute-turn-back-on",
         family=_FAMILY,
+        prepare=_probe_dispatch_world("unmute-turn-back-on"),
         message="go ahead and turn your updates back on",
         seed=_seed_muted,
         score=_score_unmute,
@@ -259,6 +283,7 @@ async def test_no_fire_casual_mention(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="notifications-no-fire",
         family=_FAMILY,
+        prepare=_probe_dispatch_world("notifications-no-fire"),
         message="it's been a quiet day today, not much going on honestly",
         score=_score_no_fire,
         min_pass_rate=None,
