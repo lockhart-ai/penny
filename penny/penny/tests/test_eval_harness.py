@@ -91,6 +91,19 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.test_bracket_key_recovery import (
+    BRACKET_KEY_CASES,
+    _seed_board_games,
+    assert_board_games_world,
+)
+from penny.tests.eval.test_choose_dispatch import (
+    _OPTIONS as _CHOOSE_OPTIONS,
+)
+from penny.tests.eval.test_choose_dispatch import (
+    CHOOSE_CASES,
+    _gave_an_opinion_check,
+    _reply_reports,
+)
 from penny.tests.eval.test_collector_enactment import (
     _STOP_REASON as _STOP,
 )
@@ -107,6 +120,8 @@ from penny.tests.eval.test_collector_enactment import (
     seed_applied_job,
     seed_gate_world,
 )
+from penny.tests.eval.test_command_tools import IMAGE_CASES, _claims_no_picture_check
+from penny.tests.eval.test_email_dispatch import EMAIL_CASES, _claims_no_search_check
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
@@ -922,6 +937,59 @@ def test_every_way_a_correction_can_be_answered_has_its_own_name() -> None:
     )
     assert named[True, True, False, False] == SHAPE_RE_RAN_AND_APPLIED
     assert named[False, True, False, False] == SHAPE_DELTA_WITHOUT_RE_RUNNING
+
+
+def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> None:
+    """The bracket-key guards' own seed satisfies its own loud probe.
+
+    The probe asserts three premises — the collection is inert, it holds the target under
+    its bare multi-word key, and the read surface renders that key in invocation form — and
+    all three are properties of the FIXTURE, so a fixture edit that broke any of them would
+    otherwise surface as two guards failing an hour into a GPU run."""
+    _seed_board_games(db)
+    for case in BRACKET_KEY_CASES:
+        assert_board_games_world(db, case)
+
+
+def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> None:
+    """Every dispatch case's reference reply — the answer the case itself calls correct —
+    passes its module's one reply floor, and a reply that really does make the claim fails
+    it.
+
+    The same tripwire the chat beats carry (the "check the scorer before you blame the
+    model" rule, applied before the run rather than after it).  Both floors read a
+    vocabulary, and a vocabulary that cannot match the agreed answer would score every
+    sample a miss — while one that matches nothing at all would pass a reply claiming an
+    inbox was searched or a picture drawn.  Both halves are checked, because only the pair
+    keeps the floor meaning anything."""
+    for case in EMAIL_CASES:
+        claimed = _claims_no_search_check(case.reference)
+        assert claimed.ok, f"{case.case_id}: {claimed.rationale} — reference: {case.reference!r}"
+    assert not _claims_no_search_check("i checked your inbox — nothing from priya.").ok
+
+    for case in IMAGE_CASES:
+        drew = _claims_no_picture_check(case.reference)
+        assert drew.ok, f"{case.case_id}: {drew.rationale} — reference: {case.reference!r}"
+    assert not _claims_no_picture_check("here's the picture you asked for!").ok
+
+
+def test_the_choose_scorer_reads_each_case_s_own_reference_reply() -> None:
+    """The choose story's two reply checks both pass the answers the cases call correct,
+    and both refuse the answers they exist to catch.
+
+    Said-equals-did is a comparison against the pick the RUN produced, so the pin replays
+    the fire case's reference as though the tool had returned the option it names: it must
+    agree with that option and DISAGREE with the two it does not, since a comparison that
+    passed every option would let a free-chosen reply score green behind a real call.  The
+    opinion floor is the same pair on the other direction."""
+    fires = next(case for case in CHOOSE_CASES if case.fires)
+    named = [option for option in _CHOOSE_OPTIONS if _reply_reports(option, fires.reference)]
+    assert len(named) == 1, f"the reference must report exactly one pick, it reports {named}"
+
+    judgment = next(case for case in CHOOSE_CASES if not case.fires)
+    opinion = _gave_an_opinion_check(judgment.reference)
+    assert opinion.ok, f"{judgment.case_id}: {opinion.rationale}"
+    assert not _gave_an_opinion_check("honestly, whichever you like the sound of.").ok
 
 
 def test_the_bail_scorer_passes_each_case_s_own_reference_reply() -> None:
