@@ -6,13 +6,18 @@ container the round derived, the program rendered into it, an RRULE schedule, no
 the routine and its bound values stamped as provenance — and then the user comes back
 later and speaks about it the way people do:
 
-  * **operate it** — broaden what it collects, silence it, wake it back up, retire it
-    (the four things that are done to a job that is already running, and the four the
-    canonical suites never touch: ``test_state_transitions.py`` measures the edges that
-    BUILD a job, ``test_collector_enactment.py`` measures the cycles it then runs);
+  * **operate it** — turn its notifications off, turn them back on, retire it: the things
+    done to a job that is already running, and ones the canonical suites never touch
+    (``test_state_transitions.py`` measures the edges that BUILD a job,
+    ``test_collector_enactment.py`` measures the cycles it then runs);
   * **read it** — "what does that thing actually do?", answered from the routine rather
     than from what the ambient header happens to say about it (#1804 took the recipe off
     that header, so the recipe is a read now, not a recall).
+
+Broadening a job's SCOPE is deliberately not here: a routine's steps are a render of what
+was demonstrated, so widening what it collects is a re-teach of the routine rather than an
+edit to the job (code-owner ruling), and the state machine's learn arc is where that
+belongs.
 
 **The world is built the way production builds one (#1911/migration 0108: nothing is
 pre-seeded).**  Every collection here is one the user built: the container is created
@@ -42,6 +47,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from penny.agents.self_state import SelfStateHeader
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
@@ -57,26 +63,31 @@ from penny.database.skills import (
     retarget_writes,
     slug_skill_name,
 )
+from penny.penny import Penny
 from penny.program import program_calls
 from penny.skill_extraction import _apply_leaf_labels, _interface_parameters
-from penny.tests.conftest import require_memory
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     REPLY_ANCHOR,
     ChatEval,
     Check,
+    Preparer,
     Seeder,
     collection_entries,
     new_collections,
     seeded_run_id,
     tool_was_called,
 )
-from penny.tools.collection_instantiation import skill_params
 from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
 
 pytestmark = pytest.mark.eval
 
 _OPERATIONS_FAMILY = "standing-collection-operations"
 _LEGIBILITY_FAMILY = "standing-collection-legibility"
+
+# The one call that reconfigures a standing job — named once, since a check reads it
+# and an anchor renders it.
+_COLLECTION_SET = "collection_set"
 
 # The run that stood the jobs up — a seeded prior turn, so every reader of "what did the
 # model do this sample" excludes it (a job's own creation is history, not this turn's work).
@@ -383,10 +394,36 @@ _assert_the_job_can_run(_FINDS)
 # It also lends NO word to any scorer below: the legibility patterns credit a reply for
 # describing the routine's two moves, so an ask carrying one of those words would let a
 # reply that merely echoes the question score as a faithful description.
-_THEIR_WORDS = "the typewriter watch you run for me"
+_THEIR_WORDS = "the typewriter watch"
 
 
 # ── Reading a job's row ───────────────────────────────────────────────────────
+
+
+def switch_is_visible(job: StandingJob) -> Preparer:
+    """The job's own self-state row states its notify parameter — asserted BEFORE the turn.
+
+    A flip case measures whether she reaches for the per-collection switch, and the model
+    can only reach for a lever the state presents: with nothing on the row, a measured
+    sample asked to stop one watch's pings enumerated what it could see — archive the
+    collection, or mute notifications globally — read that as no granularity, and retired
+    the whole job.  So the case's world has to carry the switch, and a world that stopped
+    carrying it fails here, naming the row, rather than after the GPU is spent on it.
+
+    Read through the header's own constants, so the probe and the render cannot drift into
+    asserting different words for one state."""
+
+    def probe(penny: Penny) -> None:
+        chip = SelfStateHeader.MECHANISM_NOTIFIES if job.notify else SelfStateHeader.MECHANISM_QUIET
+        rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+        row = next(
+            (line for line in rendered.splitlines() if line.startswith(f"- {job.container} ")),
+            None,
+        )
+        assert row is not None, f"{job.container} must render as a mechanism:\n{rendered}"
+        assert chip in row, f"{job.container} must render {chip!r} — it renders {row!r}"
+
+    return probe
 
 
 def _job(db: Database) -> MemoryRow | None:
@@ -453,101 +490,60 @@ def landed_state_check(db: Database) -> Check:
     return Check(f"the machine landed the turn in {landed}", True, scored=False, kind="state")
 
 
-# ── Story: the four things done to a job that is already running ──────────────
-
-# What the user asks to be collected as well.  A token the seeded world carries NOWHERE —
-# not in the description, not in the program, not in an entry — so a check that finds it
-# found something this turn put there.
-_ADDED = "ribbon spools"
-_ADDED_TOKENS = ("ribbon spool", "spools")
+# ── Story: operating a job that is already running ──────────────────────────
 
 
-def _terms(row: MemoryRow) -> dict[str, str]:
-    """Every surface the standing job carries its terms on, named — so a check can report
-    WHERE something landed rather than only that it did.
+def _score_notify_flip(db: Database, before: set[str], *, expected: bool) -> list[Check]:
+    """One flip of ONE job's notify switch, in either direction.
 
-    The rendered program and the bound values are what a cycle actually reads (#1907
-    composes the program, the routine and the values); the description is what the user,
-    the catalog and the ambient mechanisms line read.  A term that survives only in the
-    description is a real answer to "did she record it" and a different answer to "will
-    the job act on it", which is exactly why the check names the place.
-
-    A surface the row does not carry is left OUT of the map rather than folded to a blank:
-    "the term is not in the program" and "there is no program" are different findings, and
-    the second is the still-live check's to report."""
-    surfaces: dict[str, str | None] = {
-        "description": row.description,
-        "program": row.extraction_prompt,
-        "values": " ".join(skill_params(row).values()),
-    }
-    return {where: text for where, text in surfaces.items() if text}
-
-
-def _score_broaden(db: Database, before: set[str], _reply: str) -> list[Check]:
-    """Broadening what a standing job collects: the added subject lands on the job's own
-    terms, and it is the SAME job that broadened."""
+    Four claims, and the last three are why this is not just a flag read: she used the
+    per-collection switch (rather than the global mute, which silences everything), the
+    flag now says what was asked, the JOB is still running (the measured failure was
+    archiving the whole thing to stop its pings), and nothing else in the registry moved."""
     row = _job(db)
     if row is None:
         return [_job_still_there_check(row), landed_state_check(db)]
+    flipped = row.notify == expected
     return [
-        _job_still_there_check(row),
-        _added_subject_check(row),
-        _no_sibling_job_check(db, before),
+        Check(
+            "spine: she reconfigured the collection",
+            tool_was_called(db, _COLLECTION_SET),
+            anchor=f"{_COLLECTION_SET}(",
+            rationale=None
+            if tool_was_called(db, _COLLECTION_SET)
+            else "collection_set never called",
+            kind="spine",
+        ),
+        Check(
+            f"state: the job's notify is {_flag(expected)}",
+            flipped,
+            rationale=None if flipped else f"notify is still {_flag(row.notify)}",
+            kind="state",
+        ),
         *_still_live_checks(row),
+        *_nothing_else_touched_checks(db, before),
         landed_state_check(db),
     ]
 
 
-def _added_subject_check(row: MemoryRow) -> Check:
-    """The subject the user asked for is carried by the job's own terms — and the rationale
-    NAMES which surface carries it, since a term that reached only the description is a
-    different outcome from one that reached the program the cycle runs."""
-    carried = sorted(where for where, text in _terms(row).items() if _mentions(text, _ADDED_TOKENS))
-    return Check(
-        "state: the added subject is carried by the job's terms",
-        bool(carried),
-        rationale=f"carried on {carried}"
-        if carried
-        else f"none of {list(_ADDED_TOKENS)} in {sorted(_terms(row))}",
-        kind="state",
-    )
+def _flag(on: bool) -> str:
+    """A notify state in the words the row itself renders — so a check label and the state
+    the model read say the same thing."""
+    return SelfStateHeader.MECHANISM_NOTIFIES if on else SelfStateHeader.MECHANISM_QUIET
 
 
-def _no_sibling_job_check(db: Database, before: set[str]) -> Check:
-    """One job, one collection is the identity contract (#1775 tier 1: the same routine
-    bound to the same values IS the same job).  A broadened watch that stood a SIBLING up
-    beside itself has forked the user's job in two — which the terms check alone, reading
-    only the original row, would happily call a pass."""
+def _nothing_else_touched_checks(db: Database, before: set[str]) -> list[Check]:
+    """The turn changed the one thing it was asked to and nothing else: no collection was
+    spawned beside the job, and what the job already gathered is still there."""
     spawned = new_collections(db, before)
-    return Check(
-        "state: it broadened the job it already had, rather than starting another",
-        not spawned,
-        rationale=None if not spawned else f"also created {[row.name for row in spawned]}",
-        kind="state",
-    )
-
-
-def _mentions(text: str, tokens: tuple[str, ...]) -> bool:
-    lowered = text.casefold()
-    return any(token in lowered for token in tokens)
-
-
-def _score_silence(db: Database, _before: set[str], _reply: str) -> list[Check]:
-    """Silencing a job stops the MESSAGES, not the job."""
-    row = _job(db)
-    if row is None:
-        return [_job_still_there_check(row), landed_state_check(db)]
     return [
-        _job_still_there_check(row),
         Check(
-            "state: it stopped notifying",
-            not row.notify,
-            rationale=None if not row.notify else "notify is still on",
+            "state: nothing else was created",
+            not spawned,
+            rationale=None if not spawned else f"also created {[row.name for row in spawned]}",
             kind="state",
         ),
-        *_still_live_checks(row),
         _holdings_kept_check(db),
-        landed_state_check(db),
     ]
 
 
@@ -566,24 +562,6 @@ def _holdings_kept_check(db: Database) -> Check:
         rationale=None if kept else f"holds {sorted(held)}, expected to keep {sorted(expected)}",
         kind="state",
     )
-
-
-def _score_wake(db: Database, _before: set[str], _reply: str) -> list[Check]:
-    """Waking a silent job turns the messages back on, and changes nothing else."""
-    row = _job(db)
-    if row is None:
-        return [_job_still_there_check(row), landed_state_check(db)]
-    return [
-        _job_still_there_check(row),
-        Check(
-            "state: it notifies again",
-            row.notify,
-            rationale=None if row.notify else "notify is still off",
-            kind="state",
-        ),
-        *_still_live_checks(row),
-        landed_state_check(db),
-    ]
 
 
 def _score_archive(db: Database, _before: set[str], _reply: str) -> list[Check]:
@@ -608,43 +586,37 @@ def _score_archive(db: Database, _before: set[str], _reply: str) -> list[Check]:
     ]
 
 
-async def test_broadening_the_scope_changes_the_job_she_already_has(chat_eval: ChatEval) -> None:
-    """Report-only.  "Also collect X" on a standing job: the added subject joins that
-    job's terms rather than starting a second one beside it."""
+async def test_turning_notifications_off_silences_the_job_without_retiring_it(
+    chat_eval: ChatEval,
+) -> None:
+    """Report-only.  Asked in as many words to turn one job's notifications off: the
+    per-collection switch flips, and the job itself keeps running.
+
+    The ask is explicit on purpose — the vocabulary the mute contracts settled on, where
+    what is wanted is said rather than implied — because what this measures is whether the
+    per-collection switch is REACHABLE, not whether an oblique phrasing can be decoded."""
     await chat_eval(
-        case_id="standing-broaden-scope",
-        message=f"can {_THEIR_WORDS} pick up {_ADDED} too, not just the machines?",
+        case_id="standing-notify-off",
+        message=f"turn off notifications for {_THEIR_WORDS}",
         seed=seed_standing_jobs(_FINDS),
         seed_skills=[WATCH_ROUTINE],
-        score=_score_broaden,
+        prepare=switch_is_visible(_FINDS),
+        score=lambda db, before, _reply: _score_notify_flip(db, before, expected=False),
         min_pass_rate=None,
         family=_OPERATIONS_FAMILY,
     )
 
 
-async def test_silencing_it_stops_the_messages_and_not_the_job(chat_eval: ChatEval) -> None:
-    """Report-only.  "Stop pinging me about it" is the notify flag, and only that: the
-    job keeps running, keeps its schedule and keeps its collection."""
+async def test_turning_notifications_on_wakes_a_silent_job(chat_eval: ChatEval) -> None:
+    """Report-only.  The same switch, the other way, on a job that is already silent —
+    the direction that needs a visible ``notify: off`` to have something to flip."""
     await chat_eval(
-        case_id="standing-silence",
-        message=f"stop pinging me about {_THEIR_WORDS} — i'll check the list myself",
-        seed=seed_standing_jobs(_FINDS),
-        seed_skills=[WATCH_ROUTINE],
-        score=_score_silence,
-        min_pass_rate=None,
-        family=_OPERATIONS_FAMILY,
-    )
-
-
-async def test_waking_it_turns_the_messages_back_on(chat_eval: ChatEval) -> None:
-    """Report-only.  The opposite direction on a job that is already silent — neither
-    canonical suite flips a flag on a standing job, in either direction."""
-    await chat_eval(
-        case_id="standing-wake",
-        message=f"actually, start telling me again when {_THEIR_WORDS} turns something up",
+        case_id="standing-notify-on",
+        message=f"turn on notifications for {_THEIR_WORDS}",
         seed=seed_standing_jobs(_SILENT_FINDS),
         seed_skills=[WATCH_ROUTINE],
-        score=_score_wake,
+        prepare=switch_is_visible(_SILENT_FINDS),
+        score=lambda db, before, _reply: _score_notify_flip(db, before, expected=True),
         min_pass_rate=None,
         family=_OPERATIONS_FAMILY,
     )

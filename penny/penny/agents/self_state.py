@@ -105,6 +105,24 @@ class SelfStateHeader:
     )
     NOTIFICATIONS_ON = "notifications: on — proactive task notifications are delivered"
 
+    # Whether ONE mechanism tells the user what it finds — a clause on its own row, in the
+    # same both-directions-always shape as the global line above (#1919).
+    #
+    # Named by its PARAMETER: `notify` is the exact `collection_set` argument that flips
+    # this row, so display form == invocation form and the anchor is copied rather than
+    # translated.  Human wording was measured and is worse HERE — "tells you" read as the
+    # `notifications_*` tool family, and a sample asked to silence ONE watch reached for
+    # the global mute — while the global line one row up keeps human wording for the
+    # mirror-image reason: its lever really IS that tool pair.
+    #
+    # This clause is HALF of a mechanism; on its own it moved nothing (measured: silence
+    # 0.92 → 0.80 → 0.68 across two wordings, restored here with the other half — the
+    # `collection_set` description that says the argument turns a collection's
+    # notifications on or off).  A state that shows a switch and a tool that never
+    # mentions it are two ways of saying the same thing badly.
+    MECHANISM_NOTIFIES = "notify: on"
+    MECHANISM_QUIET = "notify: off"
+
     EMPTY_MECHANISMS = "(no mechanisms yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
     EMPTY_MAP = "(no stores yet)"
@@ -205,14 +223,32 @@ class SelfStateHeader:
         return rows
 
     def _mechanism_line(self, row: MemoryRow, stamp: RunOutcomeStamp | None) -> str:
-        """``- <name> — <status> · <cadence> · <end> · <last run>`` — a retired
-        mechanism drops the cadence/end clauses (it isn't running)."""
+        """``- <name> — <status> · <cadence> · <notify> · <end> · <last run>`` — a retired
+        mechanism drops the running clauses (it isn't running)."""
         if row.archived:
             parts = [f"archived {format_log_timestamp(row.updated_at)}", self._last_run(stamp)]
         else:
-            parts = ["active", self._cadence(row), self._end_condition(row), self._last_run(stamp)]
+            parts = [
+                "active",
+                self._cadence(row),
+                self._telling(row),
+                self._end_condition(row),
+                self._last_run(stamp),
+            ]
         clauses = " · ".join(part for part in parts if part)
         return f"- {row.name} — {clauses}"
+
+    def _telling(self, row: MemoryRow) -> str:
+        """Whether THIS mechanism tells the user what it finds — both directions, always,
+        on a live row, exactly like the section's global notifications line.
+
+        The line above says whether proactive messages go out AT ALL; this says whether
+        this particular job is one of the things that would send one, which is the question
+        a "turn off notifications for X" ask turns on.  A visible ``notify: off`` is as
+        load-bearing as a visible ``notify: on`` — it is what a "turn them back on" ask has
+        to flip, and with nothing rendered either way both directions are a hidden state to
+        be guessed at."""
+        return self.MECHANISM_NOTIFIES if row.notify else self.MECHANISM_QUIET
 
     @staticmethod
     def _cadence(row: MemoryRow) -> str:
