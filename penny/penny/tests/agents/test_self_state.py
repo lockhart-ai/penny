@@ -341,10 +341,10 @@ def _seed_kitchen_sink(db: Database) -> None:
             extraction_prompt="1. browse the page",
             schedule="FREQ=HOURLY;INTERVAL=6",
             expires_at=_t(0, 0, day=20),
-            # The one mechanism here that TELLS the user — which is what makes the
-            # activity block's `sent · … · price-watch` line a world that can happen,
-            # and what renders the notify chip's other direction beside three quiet
-            # rows (#1919: both states, always, on every live row).
+            # The one mechanism here with `notify` ON — which is what makes the activity
+            # block's `sent · … · price-watch` line a world that can happen, and what
+            # renders the chip's other direction beside three `notify: off` rows
+            # (#1919: both states, always, on every live row).
             notify=True,
             created_at=_t(6),
             updated_at=_t(9, 20),
@@ -1004,12 +1004,12 @@ _KITCHEN_SINK = (
     "\n"
     "### Active mechanisms\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- news-digest — active · FREQ=HOURLY · doesn't tell you · last run FAILED "
+    "- news-digest — active · FREQ=HOURLY · notify: off · last run FAILED "
     "2026-07-11 08:00 UTC\n"
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
-    "- price-watch — active · FREQ=HOURLY;INTERVAL=6 · tells you · "
+    "- price-watch — active · FREQ=HOURLY;INTERVAL=6 · notify: on · "
     "expires 2026-07-20 00:00 UTC · last run WORKED 2026-07-11 09:14 UTC\n"
-    "- reminder — active · DTSTART:20260711T120000Z\\nFREQ=DAILY;COUNT=1 · doesn't tell you · "
+    "- reminder — active · DTSTART:20260711T120000Z\\nFREQ=DAILY;COUNT=1 · notify: off · "
     "one-shot · no runs yet\n"
     "\n"
     "### Recent activity\n"
@@ -1055,9 +1055,9 @@ _SCHEDULE_MECH = (
     "\n"
     "### Active mechanisms\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- one-off — active · DTSTART:20260711T090000Z\\nFREQ=DAILY;COUNT=1 · doesn't tell you · "
+    "- one-off — active · DTSTART:20260711T090000Z\\nFREQ=DAILY;COUNT=1 · notify: off · "
     "one-shot · no runs yet\n"
-    "- twice-daily — active · FREQ=DAILY;BYHOUR=8,20 · doesn't tell you · no runs yet\n"
+    "- twice-daily — active · FREQ=DAILY;BYHOUR=8,20 · notify: off · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "(no recent activity)\n"
@@ -1116,7 +1116,7 @@ _OVERFLOW = (
     "\n"
     "### Active mechanisms\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- watcher — active · FREQ=HOURLY · doesn't tell you · last run WORKED "
+    "- watcher — active · FREQ=HOURLY · notify: off · last run WORKED "
     "2026-07-11 09:08 UTC\n"
     "\n"
     "### Recent activity\n"
@@ -1153,7 +1153,7 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Active mechanisms\n"
     "notifications: on — proactive task notifications are delivered\n"
-    "- live-watch — active · FREQ=HOURLY · doesn't tell you · no runs yet\n"
+    "- live-watch — active · FREQ=HOURLY · notify: off · no runs yet\n"
     "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
     "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
     "- retired-2 — archived 2026-07-11 08:02 UTC · no runs yet\n"

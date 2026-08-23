@@ -107,10 +107,18 @@ class SelfStateHeader:
 
     # Whether ONE mechanism tells the user what it finds — a clause on its own row, in
     # the same both-directions-always shape as the section's global line above (#1919).
-    # Plain words rather than the flag's name: what the row states is the thing a "stop
-    # telling me about that one" ask is about, and `notify: false` is a field name.
-    MECHANISM_NOTIFIES = "tells you"
-    MECHANISM_QUIET = "doesn't tell you"
+    #
+    # Named by its PARAMETER, because display form == invocation form: `notify` is the
+    # exact `collection_set` argument that flips this row, so the state names the key
+    # that changes it and the anchor is copyable (n≤1, no guess).  Human wording was
+    # measured and is worse HERE: "tells you" / "doesn't tell you" pattern-matched the
+    # `notifications_*` tool family — one sample reasoned "we could set
+    # notifications_mute? But we only mute all notifications" and then muted globally
+    # rather than reach for the per-job argument it could not see named.  The global
+    # line one row up keeps its human wording for the mirror-image reason: its lever
+    # really IS that tool pair.
+    MECHANISM_NOTIFIES = "notify: on"
+    MECHANISM_QUIET = "notify: off"
 
     EMPTY_MECHANISMS = "(no mechanisms yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
@@ -241,9 +249,15 @@ class SelfStateHeader:
         granularity, and RETIRED the whole job.  That is correct reasoning over a state
         that hid the switch, so the switch is stated.
 
-        A visible ``doesn't tell you`` is as load-bearing as a visible ``tells you``: it is
+        A visible ``notify: off`` is as load-bearing as a visible ``notify: on``: it is
         what tells a "start telling me again" ask what there is to flip, and with nothing
-        rendered either way both directions are a hidden state to be guessed at."""
+        rendered either way both directions are a hidden state to be guessed at.
+
+        It is stated as the PARAMETER, not in human words, because the flip is a
+        ``collection_set`` argument and the row is where its name is reachable from —
+        display form == invocation form.  Human wording was tried and measured worse: it
+        read as the ``notifications_*`` tools, and a sample asked to silence ONE watch
+        reasoned its way to the global mute instead."""
         return self.MECHANISM_NOTIFIES if row.notify else self.MECHANISM_QUIET
 
     @staticmethod
