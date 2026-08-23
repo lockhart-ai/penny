@@ -112,27 +112,40 @@ def _model_facing_strings(parsed: ast.Module) -> list[str]:
 
 def _rendered_text(tool: type[Tool]) -> str:
     """Everything this tool can render: its own body, plus the module-level constants
-    and helper functions its body composes results from.
+    and helper functions its body composes results from — followed TRANSITIVELY.
 
     The helpers matter as much as the class — ``collection_write``'s duplicate rejection
     is built by a module-level ``_format_duplicate``, which is exactly where it names
     ``update_entry``, so a scan of the class alone would miss the reference that started
-    all this."""
+    all this.  And a helper usually names a CONSTANT rather than carrying the text
+    inline, because that is the house style — so a scan that stopped at the helper would
+    read it as having nothing to say and the invariant would quietly enforce nothing on
+    exactly the messages it exists for (#1919: this went from passing to empty the moment
+    that rejection moved into a constant, caught only by the guard-on-the-guard below)."""
     parsed = _parse(tool)
     if parsed is None:  # pragma: no cover
         return ""
-    module = inspect.getmodule(tool)
-    strings = _model_facing_strings(parsed)
-    referenced = {node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)}
-    for name in referenced:
+    strings: list[str] = []
+    _collect_rendered(parsed, inspect.getmodule(tool), strings, set())
+    return " ".join(strings)
+
+
+def _collect_rendered(parsed: ast.Module, module, strings: list[str], seen: set[str]) -> None:
+    """This node's own model-facing strings, then every module-level name it references:
+    a constant contributes its text, a helper contributes its strings AND whatever it
+    references in turn.  ``seen`` bounds the walk, so a cycle terminates."""
+    strings.extend(_model_facing_strings(parsed))
+    for name in {node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)}:
+        if name in seen:
+            continue
+        seen.add(name)
         value = getattr(module, name, None)
         if isinstance(value, str):
             strings.append(value)
         elif inspect.isfunction(value) and inspect.getmodule(value) is module:
             helper = _parse(value)
             if helper is not None:
-                strings.extend(_model_facing_strings(helper))
-    return " ".join(strings)
+                _collect_rendered(helper, module, strings, seen)
 
 
 def _referenced_tools(tool: type[Tool], vocabulary: dict[str, type[Tool]]) -> set[str]:

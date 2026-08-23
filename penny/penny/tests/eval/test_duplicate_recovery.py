@@ -120,10 +120,10 @@ RECIPE_BOX_SCHEDULE = "FREQ=HOURLY"
 # The verb the divergent-value rejection binds the matched key into.
 _RECOVERY_VERB = "update_entry"
 
-# The matched key as that rejection renders it: ``call update_entry(key='<matched>',
-# content=<richer info>) to refresh it``.  Matched rather than reproduced, so the probe
-# reads the SAME text the model read.
-_BOUND_KEY = re.compile(rf"call {_RECOVERY_VERB}\(key='([^']*)'")
+# The matched key as that rejection renders it: ``To land the new value:
+# update_entry(key='<matched>', content=<the new value>)``.  Matched rather than
+# reproduced, so the probe reads the SAME text the model read.
+_BOUND_KEY = re.compile(rf"{_RECOVERY_VERB}\(key='([^']*)'")
 
 # A substring of the SAME-VALUE render (``_format_duplicate_unchanged``) — the no-news
 # answer, which names no call at all.  The full wording is pinned in
