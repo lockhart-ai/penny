@@ -1,8 +1,13 @@
-"""Synthetic, privacy-safe seeds for the eval suite.
+"""Synthetic, privacy-safe seeds for the eval suite, and the vocabulary its cases
+share.
 
 NOTHING here is real user data — the repo is public.  These are contrived
 collections shaped like real traffic but on deliberately generic topics (board
 games, espresso gear, houseplants) so the suite is reproducible and privacy-safe.
+
+A page or a policy read by MORE THAN ONE case file lives here rather than in
+whichever file happened to declare it first: two copies of "what counts as acting"
+or of the listing a journey is built on would be two contracts free to drift.
 """
 
 from __future__ import annotations
@@ -77,6 +82,41 @@ ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 # outage once and bind the terminal move (no URL-variant flailing).  Catch-all so
 # every query the collector issues hits the outage.
 BROWSER_DISCONNECTED = CannedPage(match="", text="", channel_outage=True)
+
+
+# The tools that MEAN she acted: a fetch, a write, an edit, a deletion, a job stood
+# up.  ONE definition, because two case files ask the same question of a turn — the
+# state machine's elicitation edge, which must not act before it has been taught, and
+# the passing-mention guard, which must not act on something nobody asked for — and a
+# second copy would let the two drift into two policies.
+ENACTING_TOOLS = (
+    "browse",
+    "collection_write",
+    "collection_set",
+    "update_entry",
+    "collection_delete_entry",
+    "log_append",
+)
+
+
+# ── The listing journey (the auction script's own page) ──────────────────────
+# A fictional marketplace listing with ONE controllable field — its price — so a
+# stored "$499" says the page was really read and a later variant can move it.
+
+LISTING_URL = "https://faux-market.example/aurora-deck-2"
+
+AURORA_LISTING_499 = CannedPage(
+    match="aurora-deck-2",
+    text=(
+        "Title: Aurora Deck 2 — handheld console | faux-market\n"
+        f"{LISTING_URL}\n"
+        "\n"
+        "Aurora Deck 2 (open box, tested). Ships from a fictional warehouse.\n"
+        "Price: $499\n"
+        f"[Aurora Deck 2 listing]({LISTING_URL})\n"
+        "Seller: nebula_resale (4.9 stars). Listing updated daily.\n"
+    ),
+)
 
 
 BOARD_GAMES = SynthCollection(

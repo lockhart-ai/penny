@@ -172,12 +172,14 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
 # carries instructions; idle owns everything deferred.
 STATE_DEFINITIONS: dict[ConversationState, str] = {
     ConversationState.IDLE: (
-        "ordinary conversation — chat, questions, passing mentions, or "
-        "anything put off for later; no task is being given or taught right now"
+        "ordinary conversation — chat, questions, passing mentions, anything put off "
+        "for later, and requests the assistant handles right now in the conversation "
+        "(looking something up, answering, saving or recalling something); nothing new "
+        "is set up to keep running afterward"
     ),
     ConversationState.ELICIT: (
-        "the user wants a task done that no known skill covers, and the "
-        "assistant is asking to be taught the steps"
+        "the user wants something set up to keep running on its own, no known skill "
+        "covers it, and the assistant is asking to be taught the steps"
     ),
     ConversationState.LEARN: (
         "the user's message gives instructions to follow — what to read, look "
@@ -257,7 +259,11 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
-        "they are asking to set up an ongoing task or routine and no known skill covers it"
+        "they are asking to set up something that keeps running on its own after this "
+        "conversation — a job that watches, repeats, or fires again later without being "
+        "asked — and no known skill covers it. A request to do something once, right "
+        "now, is not this, however many steps it takes — and saving or remembering the "
+        "result does not make it ongoing"
     ),
     (ConversationState.IDLE, ConversationState.LEARN): (
         "the user is teaching a new routine: they say so ('let me teach you', "

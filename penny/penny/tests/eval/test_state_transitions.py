@@ -133,22 +133,19 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
-from penny.tests.eval.fixtures import CannedPage
+
+# The listing this script is built on, and the enacting-tool set the elicitation
+# contract IS — the calls that would mean she acted before being taught.  Both are read
+# from the suite's shared fixtures rather than restated here: the passing-mention guard
+# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
+# one policy are two contracts free to drift.
+from penny.tests.eval.fixtures import AURORA_LISTING_499, ENACTING_TOOLS, LISTING_URL, CannedPage
 
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
 # suite declares it rather than restated here: what a page parameter may reasonably be
 # called is one code-owner-agreed vocabulary, and two copies would drift into two
-# contracts (the same rule ``_ENACTING_TOOLS`` is imported under).
+# contracts (the same rule ``ENACTING_TOOLS`` is read under).
 from penny.tests.eval.test_skill_framing import _PLACE_TOKENS
-
-# The enacting-tool set is the elicitation contract itself — the calls that would mean
-# she acted before being taught — so it is READ from where beat 1a already declares it
-# rather than restated here: one policy, one definition.
-from penny.tests.eval.test_watch_journey import (
-    _ENACTING_TOOLS,
-    AURORA_LISTING_499,
-    LISTING_URL,
-)
 from penny.text_validity import is_blank
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
@@ -802,7 +799,7 @@ def _score_idle_to_elicit(db: Database, before: set[str], reply: str) -> list[Ch
     written = _written_texts(_entries_written_by_this_run(db))
     fetched = _pages_fetched(db)
     enacted = [
-        tool for run in chat_run_tool_sequences(db) for tool in run if tool in _ENACTING_TOOLS
+        tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS
     ]
     return [
         Check(
