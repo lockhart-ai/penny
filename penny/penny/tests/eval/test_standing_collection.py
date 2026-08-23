@@ -42,6 +42,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from penny.agents.self_state import SelfStateHeader
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
@@ -57,13 +58,15 @@ from penny.database.skills import (
     retarget_writes,
     slug_skill_name,
 )
+from penny.penny import Penny
 from penny.program import program_calls
 from penny.skill_extraction import _apply_leaf_labels, _interface_parameters
-from penny.tests.conftest import require_memory
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     REPLY_ANCHOR,
     ChatEval,
     Check,
+    Preparer,
     Seeder,
     collection_entries,
     new_collections,
@@ -389,6 +392,31 @@ _THEIR_WORDS = "the typewriter watch you run for me"
 # ── Reading a job's row ───────────────────────────────────────────────────────
 
 
+def switch_is_visible(job: StandingJob) -> Preparer:
+    """The job's own self-state row states whether it tells the user — asserted BEFORE
+    the turn is driven.
+
+    A flip case measures whether she reaches for the per-mechanism switch, and the model
+    can only reach for a lever the state presents: with no notify chip on the row, a
+    measured sample asked to stop the pings enumerated what it could see — archive the
+    collection, or mute notifications globally — read that as no granularity, and retired
+    the whole job.  So the case's world has to carry the switch, and a world that stopped
+    carrying it must fail here, naming the row, rather than as a puzzling miss after the
+    GPU has been spent on it."""
+
+    def probe(penny: Penny) -> None:
+        chip = SelfStateHeader.MECHANISM_NOTIFIES if job.notify else SelfStateHeader.MECHANISM_QUIET
+        rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+        row = next(
+            (line for line in rendered.splitlines() if line.startswith(f"- {job.container} ")),
+            None,
+        )
+        assert row is not None, f"{job.container} must render as a mechanism:\n{rendered}"
+        assert chip in row, f"{job.container} must render {chip!r} — it renders {row!r}"
+
+    return probe
+
+
 def _job(db: Database) -> MemoryRow | None:
     return db.memories.get(_FINDS.container)
 
@@ -630,6 +658,7 @@ async def test_silencing_it_stops_the_messages_and_not_the_job(chat_eval: ChatEv
         message=f"stop pinging me about {_THEIR_WORDS} — i'll check the list myself",
         seed=seed_standing_jobs(_FINDS),
         seed_skills=[WATCH_ROUTINE],
+        prepare=switch_is_visible(_FINDS),
         score=_score_silence,
         min_pass_rate=None,
         family=_OPERATIONS_FAMILY,
@@ -644,6 +673,7 @@ async def test_waking_it_turns_the_messages_back_on(chat_eval: ChatEval) -> None
         message=f"actually, start telling me again when {_THEIR_WORDS} turns something up",
         seed=seed_standing_jobs(_SILENT_FINDS),
         seed_skills=[WATCH_ROUTINE],
+        prepare=switch_is_visible(_SILENT_FINDS),
         score=_score_wake,
         min_pass_rate=None,
         family=_OPERATIONS_FAMILY,
