@@ -1,29 +1,37 @@
-"""NL-dispatch contracts for the notification mute/unmute tools — the chat agent
-routing a naive-register utterance to ``notifications_mute`` /
-``notifications_unmute``, driven against the REAL model and scored on the
-PERSISTED ``MuteState`` row + the tool the model actually called.
+"""The muting contracts — an explicit request to mute or unmute, dispatched onto the
+tool that does it, driven against the REAL model and scored on the PERSISTED
+``MuteState`` row + the tool the model actually called.
 
 This is the retirement contract for the ``/mute`` + ``/unmute`` commands (epic
-#1445, issue #1447): the slash commands are gone, so the intent must now dispatch
-from natural language.  Every case asserts STRUCTURALLY — which tool fired (from
-the persisted promptlog) and whether the mute row is present/absent afterward —
-never on the reply's wording, which is stochastic.
+#1445, issue #1447): the slash commands are gone, so the intent must dispatch from
+natural language.  THREE cases, and each asserts STRUCTURALLY — which tool fired
+(from the persisted promptlog) and what the mute row says afterward — never on the
+reply's wording, which is stochastic.
 
-  mute      — "stop messaging me for a while", "quiet down" → notifications_mute
-              called + MuteState present.
-  unmute    — "you can message me again", "turn updates back on" (seeded muted)
-              → notifications_unmute called + MuteState absent.
-  no-fire   — a casual mention ("it's been a quiet day") must NOT call either
-              tool and must leave the mute state untouched.
+  mute     — an unmuted world, "please mute notifications" → notifications_mute
+             fired, the MuteState row is there, nothing else touched.
+  unmute   — a muted world, "okay you can unmute notifications" →
+             notifications_unmute fired, the row is gone, nothing else touched.
+  no-fire  — a casual mention ("it's been a quiet day") must call neither tool and
+             leave the mute state exactly where it found it.
 
-**Dispatch now stands on the tool descriptions ALONE.**  Migration 0076 seeded a
+**Each case also verifies the state was IN FRONT OF THE MODEL.**  Whether
+notifications are muted is rendered ambiently by ``SelfStateHeader`` (#1919), and
+that is half of what a muting turn stands on: before it, nothing in the context
+said which way the switch was set, so the tool descriptions were the only carrier
+of a state the model could not verify.  The check reads the sample's own persisted
+chat SYSTEM PROMPT for the header's line — asserted per sample rather than assumed
+from the deterministic pins, because a header that stopped rendering would leave
+every case here scoring a turn that never saw the state.
+
+**Dispatch stands on the tool descriptions ALONE.**  Migration 0076 seeded a
 "Mute or unmute notifications" skill whose numbered steps taught this routing;
 0092 deleted every seeded rule entry and 0097 the collection itself, and 0108
 leaves nothing pre-seeded at all — so these cases seed no skill, the registry the
 turn runs against is empty, and what they measure is whether
 ``NotificationsMuteTool`` / ``NotificationsUnmuteTool`` (live on the chat surface,
-``ChatAgent.get_tools``) are reachable from a naive utterance with no recipe
-pointing at them.  The seeded world is already the production cold start.
+``ChatAgent.get_tools``) are reachable from an explicit ask with no recipe pointing
+at them.  The seeded world is already the production cold start.
 
 Report-only (``min_pass_rate=None``), the canonical convention — stated per case
 rather than inherited from ``chat_eval``'s 0.75 default, so the threshold is a
@@ -34,6 +42,7 @@ from __future__ import annotations
 
 import pytest
 
+from penny.agents.self_state import SelfStateHeader
 from penny.database import Database
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER
@@ -41,6 +50,7 @@ from penny.tests.eval.conftest import (
     ChatEval,
     Check,
     Preparer,
+    _iter_prompt_messages,
     collection_names,
     tool_call_sequence,
     tool_not_called,
@@ -105,13 +115,61 @@ def _landed_state_check(db: Database) -> Check:
     )
 
 
+def _state_in_context_check(db: Database, line: str) -> Check:
+    """The mute state was IN the chat system prompt this sample ran on.
+
+    Half of what a muting turn stands on, and the half that used to be missing: with
+    nothing rendering the switch, the tool descriptions were its only carrier and they
+    could only describe a state the model had no way to check.  Read off the sample's
+    own persisted prompt rather than trusted from the deterministic render pins, because
+    a header that stopped rendering would leave every case here scoring a turn that never
+    saw the state — green for the wrong reason.
+
+    The expected text comes from ``SelfStateHeader``'s own constant, so the check cannot
+    drift from what the header writes."""
+    present = any(
+        message.get("role") == "system" and line in (message.get("content") or "")
+        for message in _iter_prompt_messages(db)
+    )
+    return Check(
+        "the mute state was in the prompt the model answered on",
+        present,
+        kind="guard",
+        rationale=None
+        if present
+        else (
+            f"no system prompt carried {line!r} — the turn was answered with nothing "
+            "saying which way notifications were set"
+        ),
+    )
+
+
+def _nothing_else_touched_check(db: Database, sibling: str, before: set[str]) -> Check:
+    """The turn did the one thing it was asked and no more: the opposite tool stayed
+    quiet and no collection was built off the request."""
+    quiet = tool_not_called(db, sibling)
+    built = sorted(collection_names(db) - before)
+    return Check(
+        "nothing else was touched",
+        quiet and not built,
+        anchor=f"{sibling}(",
+        kind="spine",
+        rationale=None
+        if quiet and not built
+        else (
+            f"{'called ' + sibling + ' as well; ' if not quiet else ''}"
+            f"{'created ' + str(built) if built else ''}".strip("; ")
+        ),
+    )
+
+
 def _score_mute(db: Database, before: set[str], reply: str) -> list[Check]:
-    """A naive "stop messaging me" utterance routed onto the mute tool, scored on the tool
-    that fired and the MuteState row it left — never on the reply's wording."""
+    """An explicit "mute notifications" request, answered on a prompt that says they are
+    ON, routed onto the tool that mutes them."""
     fired = tool_was_called(db, _MUTE)
-    unmuted = tool_not_called(db, _UNMUTE)
     muted = db.users.is_muted(TEST_SENDER)
     return [
+        _state_in_context_check(db, SelfStateHeader.NOTIFICATIONS_ON),
         Check(
             "routed the request onto notifications_mute",
             fired,
@@ -126,13 +184,6 @@ def _score_mute(db: Database, before: set[str], reply: str) -> list[Check]:
             ),
         ),
         Check(
-            "left notifications_unmute alone",
-            unmuted,
-            anchor=f"{_UNMUTE}(",
-            kind="spine",
-            rationale=None if unmuted else "called the opposite tool as well as the right one",
-        ),
-        Check(
             "the user is muted afterwards (the MuteState row is there)",
             muted,
             kind="state",
@@ -140,17 +191,18 @@ def _score_mute(db: Database, before: set[str], reply: str) -> list[Check]:
             if muted
             else "no MuteState row — whatever the reply said, nothing was actually muted",
         ),
+        _nothing_else_touched_check(db, _UNMUTE, before),
         _landed_state_check(db),
     ]
 
 
 def _score_unmute(db: Database, before: set[str], reply: str) -> list[Check]:
-    """A naive "you can message me again" utterance routed onto the unmute tool, from a
-    world that starts muted — scored on the tool that fired and the row it removed."""
+    """An explicit "unmute notifications" request, answered on a prompt that says they
+    are MUTED, routed onto the tool that lifts it."""
     fired = tool_was_called(db, _UNMUTE)
-    left_alone = tool_not_called(db, _MUTE)
     unmuted = not db.users.is_muted(TEST_SENDER)
     return [
+        _state_in_context_check(db, SelfStateHeader.NOTIFICATIONS_MUTED),
         Check(
             "routed the request onto notifications_unmute",
             fired,
@@ -159,19 +211,10 @@ def _score_unmute(db: Database, before: set[str], reply: str) -> list[Check]:
             rationale=None
             if fired
             else (
-                "the unmute tool never fired — with nothing in the registry pointing at it, "
-                "the dispatch stands on the tool description alone.  Calls made: "
+                "the unmute tool never fired — with nothing in the registry pointing at "
+                "it, the dispatch stands on the tool description alone.  Calls made: "
                 f"{tool_call_sequence(db) or 'none'}"
             ),
-        ),
-        Check(
-            "left notifications_mute alone",
-            left_alone,
-            anchor=f"{_MUTE}(",
-            kind="spine",
-            rationale=None
-            if left_alone
-            else "re-muted as well as unmuting — the seeded world was already muted",
         ),
         Check(
             "the user is no longer muted (the MuteState row is gone)",
@@ -181,6 +224,7 @@ def _score_unmute(db: Database, before: set[str], reply: str) -> list[Check]:
             if unmuted
             else "the MuteState row is still there — whatever the reply said, nothing changed",
         ),
+        _nothing_else_touched_check(db, _MUTE, before),
         _landed_state_check(db),
     ]
 
@@ -233,46 +277,27 @@ def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
 # ── Cases ─────────────────────────────────────────────────────────────────────
 
 
-async def test_mute_stop_messaging(chat_eval: ChatEval) -> None:
+async def test_an_explicit_mute_request_mutes(chat_eval: ChatEval) -> None:
+    """An unmuted world and a request in the tool's own terms: the turn fires the mute
+    tool, the MuteState row is there afterwards, and nothing else moved."""
     await chat_eval(
-        case_id="mute-stop-messaging",
+        case_id="explicit-mute-request-mutes",
         family=_FAMILY,
-        prepare=_probe_dispatch_world("mute-stop-messaging"),
-        message="hey, can you stop messaging me for a while? need some quiet",
+        prepare=_probe_dispatch_world("explicit-mute-request-mutes"),
+        message="please mute notifications",
         score=_score_mute,
         min_pass_rate=None,
     )
 
 
-async def test_mute_quiet_down(chat_eval: ChatEval) -> None:
+async def test_an_explicit_unmute_request_unmutes(chat_eval: ChatEval) -> None:
+    """A muted world and a request in the tool's own terms: the turn fires the unmute
+    tool, the MuteState row is gone afterwards, and nothing else moved."""
     await chat_eval(
-        case_id="mute-quiet-down",
+        case_id="explicit-unmute-request-unmutes",
         family=_FAMILY,
-        prepare=_probe_dispatch_world("mute-quiet-down"),
-        message="quiet down please — no proactive updates for now",
-        score=_score_mute,
-        min_pass_rate=None,
-    )
-
-
-async def test_unmute_message_again(chat_eval: ChatEval) -> None:
-    await chat_eval(
-        case_id="unmute-message-again",
-        family=_FAMILY,
-        prepare=_probe_dispatch_world("unmute-message-again"),
-        message="ok, you can start messaging me again",
-        seed=_seed_muted,
-        score=_score_unmute,
-        min_pass_rate=None,
-    )
-
-
-async def test_unmute_turn_back_on(chat_eval: ChatEval) -> None:
-    await chat_eval(
-        case_id="unmute-turn-back-on",
-        family=_FAMILY,
-        prepare=_probe_dispatch_world("unmute-turn-back-on"),
-        message="go ahead and turn your updates back on",
+        prepare=_probe_dispatch_world("explicit-unmute-request-unmutes"),
+        message="okay you can unmute notifications",
         seed=_seed_muted,
         score=_score_unmute,
         min_pass_rate=None,

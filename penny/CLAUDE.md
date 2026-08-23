@@ -578,11 +578,13 @@ carried alone, the emoji voice check, rides every case here as an advisory rathe
 retiring with it),
 `test_collection_lifecycle.py`,
 `test_collector_honesty.py`, `test_retrieval.py`,
-`test_notifications.py` (NL-dispatch of the mute/unmute
-tools that retired `/mute` + `/unmute`; the unmute tool's description names the
-PERMISSION shape as a trigger beside the request shapes — "it's fine to message me
-again" grants what nothing else was waiting on — with the boundary case named so a
-remark about how quiet things have been still fires nothing, #1919), `test_command_tools.py` (NL-dispatch
+`test_notifications.py` (the muting contracts that retired `/mute` +
+`/unmute` — TWO dispatch cases (an explicit mute request against an unmuted world, an
+explicit unmute request against a muted one: the tool fired · the MuteState row after ·
+nothing else touched) plus the no-fire guard, each additionally verifying the mute state
+was IN the sample's own persisted chat system prompt, since the header rendering it
+(#1919) is half of what a muting turn stands on; the four naive-register phrasings they
+replace are recorded in the measurement history on PR #1925), `test_command_tools.py` (NL-dispatch
 contracts for the command-retirement tools), `test_email_dispatch.py`
 (NL-dispatch of the email tools that retired `/email` + `/zoho`),
 `test_skill_labelling.py` (#1828 — the run-end LEAF
