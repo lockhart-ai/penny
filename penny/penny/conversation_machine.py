@@ -221,52 +221,64 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 #
 # The two SKILL-GATED conditions are keyed to STARTING a task (#1927, code-owner ruling:
 # "request is only about starting a new task; changes to existing collections don't
-# count").  Each is ONE statement rather than a rule with exceptions bolted on, and the
-# two are textually parallel: something NEW is being asked for and a known skill does
-# exactly that — apply when the message also gives that skill everything it needs,
-# request when something is missing.  The boundary is not a separate clause arguing
-# against the door; it closes the same sentence the door opens, so "not starting anything
-# new" is read against the "something new" the condition begins with.
+# count").  Both ask whether the message asks to SET A KNOWN SKILL RUNNING — apply when it
+# also supplies everything that skill needs, request when something is missing — and both
+# carry the same boundary sentence, word for word: changing how something ALREADY SET UP
+# behaves is not asking to start it.  Carrying it twice is not one edge describing
+# another; it is one fact about what these two doors are FOR, and a reader who rules apply
+# out for missing information reads request next.
 #
-# Both carry it word for word.  That is not one edge describing another: it is one fact
-# about what these two doors are FOR, and a reader who rules apply out for missing
-# information reads request next — measured, as the fall an apply-only boundary leaves
-# open.
+# THIS IS THE BEST MEASURED WORDING, AND IT IS NOT A FIX.  Three rounds tried to close the
+# gap it leaves and every one cost more than it bought, so the text stands where round 1
+# left it and the residual is recorded rather than papered over:
 #
-# THE SENTENCE THAT SURPRISED US is the middle one — "the jobs already running are not
-# listed here".  This slice renders the skill REGISTRY and no standing jobs, so a message
-# naming one ("that spotting scope price job") refers to something the reader cannot see,
-# and the reader treated the absence as evidence.  Verbatim, from the draw that leaked:
+#   R1  this text          target 0.60 · every guard 1.00
+#   R2  + "starting to hear about a job is not starting the job"
+#                          target 0.40 · idle → elicit cross-domain 1.00 → 0.60
+#   R3  wholesale restatement, + "jobs already running are not listed here"
+#                          target 0.40 · idle → elicit uncovered 1.00 → 0.60
+#   R4  reverted to R1
+#
+# The target is an ask to turn one RUNNING job's notifications on, which this wording
+# holds 3 times in 5; its off-direction holds 5 of 5, and that asymmetry is the finding.
+# Only the ON direction can be phrased as starting something, and the two leaks do not
+# argue with the boundary — they never reach it.  Both stop at a gap this text cannot
+# fill: whether the job the message names EXISTS.  Verbatim, from the draw that leaked:
 # "they say 'the modular listing watch' probably already set up?  But there's no known
-# skill currently running." — a correct inference from a slice that never says what it
-# omits.  Stating the omission is what lets the words be taken at face value; it is a
-# schema fact the reader was left to guess, not an instruction.  The honest fix is a
-# snapshot that renders the standing jobs, and this sentence is the text standing in for
-# it (recorded on #1927).
+# skill currently running." — the reader looked, and the slice renders the skill REGISTRY
+# and no standing jobs, so absence was the only evidence available and it read as decisive.
+# THAT is why no condition text closes this: the reader must VERIFY a job exists, and a
+# sentence cannot substitute for the lookup.  The recorded next step is a snapshot that
+# renders the standing jobs, which turns the read into exactly that lookup (#1927; the
+# code owner rules on it separately).
 #
-# LENGTH IS LOAD-BEARING HERE, which is the other thing measurement taught.  These two
-# render FIRST, and a reader that spends itself on them stops enumerating: when the pair
-# grew to ~450 characters each, two cross-domain draws ruled out apply and request and
-# jumped straight to the default — "this is a request to perform some action that does
-# not match a skill, so should default to idle" — never reaching the elicit bullet that
-# was right there and had been matching at 5 of 5 the round before.  Elicit's own wording
-# never changed.  So a clause added here is paid for by an edge further down the list, and
-# every restatement since is measured in characters as well as in words: 442/462 at the
-# accreted worst, 392/398 here, against elicit's 341.  Shrinking them while they gained a
-# fact was the point of restating them whole; if cross-domain still sags at this length,
-# the next lever is structural (render order, or a shorter door) rather than more words.
+# WATCHED DELETIONS — three formulations, each with what it measured:
 #
-# WATCHED DELETIONS, from two rounds of this: (1) the once-covers-repeatedly sentences
-# ("A skill does the task once.  The schedule and notifications are added when it is set
-# up…"), which earned their place under the old COVERAGE keying by making a one-shot
-# routine description comparable to an ongoing ask, but under the START keying assert the
-# thing the boundary must deny — that notifications are what setting a job up settles;
-# and (2) "starting to hear about a job is not starting the job", a third boundary clause
-# that measured NET NEGATIVE (the direction it targeted fell 0.60 → 0.40 while cross-
-# domain fell 1.00 → 0.60): it treated a start-VERB in the message as the thing to
-# correct, when the reader's actual gap was not knowing the job existed.  What both
-# guarded is the idle → apply / idle → request / idle → elicit cases' to gate, and they
-# are its gate now.
+# (1) The once-covers-repeatedly sentences ("A skill does the task once.  The schedule and
+#     notifications are added when it is set up…").  They earned their place under the old
+#     COVERAGE keying, making a one-shot routine description comparable to an ongoing ask,
+#     but under the START keying their second sentence asserts the thing the boundary must
+#     deny — that notifications are what setting a job up settles.  Cost measured: none.
+#     Every guard case held at 1.00 without them.
+#
+# (2) "That holds even when the change itself is phrased as starting something: starting to
+#     hear about a job is not starting the job."  It treated a start-VERB as the thing to
+#     correct, when the leaks' actual gap was not knowing the job existed.  Cost: the target
+#     fell 0.60 → 0.40 AND cross-domain fell 1.00 → 0.60 — two cross-domain draws ruled out
+#     apply and request and jumped straight to the default ("this is a request to perform
+#     some action that does not match a skill, so should default to idle"), never reaching
+#     the elicit bullet, whose own wording never changed.  These two render FIRST, so a
+#     clause added here is paid for by an edge further down the list.
+#
+# (3) "Jobs already running are not listed here, so believe them when they speak of one as
+#     going."  The schema statement — true, and aimed at the real gap.  Cost: the target did
+#     not move (0.40) and it broke the OTHER neighbour, idle → elicit uncovered 1.00 → 0.60,
+#     which is its own inverse: an uncovered SETUP ask read as a reference to a job already
+#     running.  Licensing the assumption in prose cannot distinguish the two, because the
+#     distinction is a fact about the world and not about the words.
+#
+# What all three guarded is the idle → apply / idle → request / idle → elicit cases' to
+# gate, and they are its gate now.
 #
 # The IDLE → LEARN condition is the ONE edge whose wording differs from its elicit-parked
 # twin, and the one that names a sibling outright (code-owner authored, after the #1898
@@ -283,20 +295,18 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # a task being worked on, and the correction shape is what that edge is about.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "they are asking for something new that one of the known skills does, and their "
-        "message gives that skill everything it needs. Jobs already running are not "
-        "listed here, so believe them when they speak of one as going: adjusting what it "
-        "covers, when it runs, or whether it tells them is not something new. Add a "
-        f"second line naming that skill: {SKILL_TAG} <its name, exactly as quoted in "
-        "Known skills>"
-    ),
-    (ConversationState.IDLE, ConversationState.REQUEST): (
-        "they are asking for something new that one of the known skills does, but "
-        "something that skill needs is missing from their message. Jobs already running "
-        "are not listed here, so believe them when they speak of one as going: adjusting "
-        "what it covers, when it runs, or whether it tells them is not something new. "
+        "their message asks to set one of the known skills running, and supplies "
+        "everything that skill needs. Changing how something already set up behaves — "
+        "its notifications, when it runs, what it covers — is not asking to start it. "
         f"Add a second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
         "in Known skills>"
+    ),
+    (ConversationState.IDLE, ConversationState.REQUEST): (
+        "their message asks to set one of the known skills running, but something that "
+        "skill needs is missing from their message. Changing how something already set "
+        "up behaves — its notifications, when it runs, what it covers — is not asking "
+        f"to start it. Add a second line naming that skill: {SKILL_TAG} <its name, "
+        "exactly as quoted in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up something that keeps running on its own after this "

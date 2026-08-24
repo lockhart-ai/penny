@@ -380,19 +380,23 @@ def test_render_idle_with_candidates_whole():
     renders without the needs tail, byte-identical.
 
     Both skill-gated conditions are keyed to STARTING a task (#1927, code-owner ruling),
-    each ONE statement rather than a rule with exceptions bolted on: something NEW is
-    asked for and a known skill does it, and the boundary closes the same sentence the
-    door opens — "not something new" read against the "something new" it began with.
-    Carrying it word for word in both is what the render makes legible: a reader who
-    rules apply out for missing information reads request next, and the measured failure
-    was exactly that fall.
+    and both carry the same boundary word for word: changing how something already set up
+    behaves — its notifications, when it runs, what it covers — is not asking to start it.
+    Carrying it twice is what the render makes legible: a reader who rules apply out for
+    missing information reads request next, and the measured failure was exactly that
+    fall.
 
-    The middle sentence is the one this render exists to show.  This slice lists the
-    skill REGISTRY and no standing jobs, so a message naming one refers to something the
-    reader cannot see — and the reader treated that absence as evidence, verbatim: "they
-    say 'the modular listing watch' probably already set up?  But there's no known skill
-    currently running."  Saying what the slice omits is what lets the words be taken at
-    face value.  It stands in for the snapshot section that would carry the jobs (#1927).
+    This is the BEST MEASURED wording rather than a fix, and the render is where that is
+    visible.  Three rounds tried to close the gap it leaves — an ask to turn one running
+    job's notifications on holds 3 of 5 here — and each cost more than it bought: a
+    fourth boundary clause took the target to 0.40 and cross-domain to 0.60; a schema
+    statement ("jobs already running are not listed here") left the target at 0.40 and
+    took the uncovered-elicit guard to 0.60.  Both rejections are recorded above
+    ``TRANSITIONS`` with their numbers.  The residual is EVIDENTIAL, not verbal: the
+    leaking draws never reach the boundary, they stop at whether the job exists — "there's
+    no known skill currently running" — and this slice renders the registry and no
+    standing jobs, so the answer is not in it to be read.  A snapshot section carrying the
+    jobs is the recorded next step (#1927).
 
     A WATCHED DELETION rides with it: the once-covers-repeatedly sentences ("A skill does
     the task once.  The schedule and notifications are added when it is set up…") are gone
@@ -429,18 +433,16 @@ def test_render_idle_with_candidates_whole():
         "is set up to keep running afterward\n"
         "\n"
         "## Transitions\n"
-        "- apply — they are asking for something new that one of the known skills does, "
-        "and their message gives that skill everything it needs. Jobs already running "
-        "are not listed here, so believe them when they speak of one as going: adjusting "
-        "what it covers, when it runs, or whether it tells them is not something new. "
-        "Add a second line naming that skill: SKILL: <its name, exactly as quoted in "
-        "Known skills>\n"
-        "- request — they are asking for something new that one of the known skills "
-        "does, but something that skill needs is missing from their message. Jobs "
-        "already running are not listed here, so believe them when they speak of one as "
-        "going: adjusting what it covers, when it runs, or whether it tells them is not "
-        "something new. Add a second line naming that skill: SKILL: <its name, exactly "
-        "as quoted in Known skills>\n"
+        "- apply — their message asks to set one of the known skills running, and "
+        "supplies everything that skill needs. Changing how something already set up "
+        "behaves — its notifications, when it runs, what it covers — is not asking to "
+        "start it. Add a second line naming that skill: SKILL: <its name, exactly as "
+        "quoted in Known skills>\n"
+        "- request — their message asks to set one of the known skills running, but "
+        "something that skill needs is missing from their message. Changing how "
+        "something already set up behaves — its notifications, when it runs, what it "
+        "covers — is not asking to start it. Add a second line naming that skill: "
+        "SKILL: <its name, exactly as quoted in Known skills>\n"
         "- learn — the user is teaching a new routine: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
