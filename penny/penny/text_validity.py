@@ -19,11 +19,13 @@ share these:
 
 It is also where the agent loop's **invalid-draw** detectors live — the
 call-shaped-text family (:func:`is_call_as_text_bail`, :func:`is_done_json_bail`,
-:func:`is_call_fragment_reply`) beside the transport artifacts
-(:func:`is_degenerate_run`, :func:`has_leaked_harmony_envelope`,
-:func:`is_degenerate_tool_name`).  Since #1839 all of them feed ONE mechanism —
-``Agent._unusable_output_condition``'s discard-and-reroll — so they belong in one
-leaf rather than split between here and the validator chain.
+:func:`is_call_fragment_reply`) and the say-nothing draw (:func:`is_empty_draw`,
+#1937), beside the transport artifacts (:func:`is_degenerate_run`,
+:func:`has_leaked_harmony_envelope`, :func:`is_degenerate_tool_name`).  Since #1839
+all of them feed ONE mechanism — ``Agent._unusable_output_condition``'s
+discard-and-reroll — so they belong in one leaf rather than split between here and
+the validator chain.  :func:`strip_think_tags` sits with them because every reader
+that asks "what did this draw actually SAY?" must normalise it the same way.
 
 Living here (rather than inside ``database/memory/_similarity``) is what lets
 ``tools/models.py`` import :func:`half_formed_send_reason` without triggering the
@@ -277,6 +279,51 @@ def has_leaked_harmony_envelope(content: str) -> bool:
     See :data:`_HARMONY_ENVELOPE_RE`.
     """
     return bool(_HARMONY_ENVELOPE_RE.search(content))
+
+
+# Matches <think>...</think> blocks emitted inline by some models (e.g. DeepSeek-R1,
+# Qwen3) instead of on the response's own thinking field.
+_THINK_TAG_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think_tags(content: str) -> tuple[str, str | None]:
+    """Strip ``<think>…</think>`` blocks from content.
+
+    Returns ``(cleaned_content, extracted_thinking)`` where ``extracted_thinking``
+    is the concatenated text of every stripped block.  It lives beside the
+    invalid-draw predicates because it is the shared NORMALISATION every reader of a
+    draw's substance applies first — the empty-draw guard, the refusal and
+    hallucinated-URL validators, and the loop's final-answer build — so a draw that is
+    nothing but reasoning reads the same way at all four.
+    """
+    thinking_parts: list[str] = []
+
+    def _collect(match: re.Match) -> str:
+        thinking_parts.append(match.group(1).strip())
+        return ""
+
+    cleaned = _THINK_TAG_PATTERN.sub(_collect, content).strip()
+    extracted = "\n\n".join(thinking_parts) if thinking_parts else None
+    return cleaned, extracted
+
+
+def is_empty_draw(content: str) -> bool:
+    """True when a call-less draw says nothing — blank, separators-only, or a bare
+    ``<think>`` block with no body (#1937).
+
+    The say-nothing member of the invalid-draw family: chat's valid terminal state is
+    a reply, and a draw carrying fewer than ``MIN_RESPONSE_LETTERS`` letters is not one
+    — a bare ``\\n\\n---`` or a lone emoji would otherwise be finalized as Penny's
+    answer.  Counting LETTERS (not word tokens) is what keeps a markdown separator and
+    a punctuation run in the same class as the empty string.
+
+    Ordered LAST in chat's conditions: the bare ``{}`` tail of a forced call attempt has
+    no letters either, and ``CALL_FRAGMENT_REPLY`` is the honest name for that shape
+    (#1732), so it is tried first and this one names what is left.
+    """
+    effective, _ = strip_think_tags(content.strip())
+    letters = sum(1 for character in effective if character.isalpha())
+    return letters < PennyConstants.MIN_RESPONSE_LETTERS
 
 
 # The collapse fingerprint scoped to a tool-call NAME — any `?` / `!` / `…`

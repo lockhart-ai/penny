@@ -737,7 +737,10 @@ _LEGACY_BAIL_NUDGE_MARKERS = (
     "could not be parsed as a tool call",  # the retired Prompt.TOOL_FORMAT_NUDGE
     "wrote a tool call as plain text",  # the retired Prompt.CHAT_CALL_AS_TEXT_NUDGE
 )
-_CONTINUE_NUDGE_MARKER = "Please provide your response"  # Prompt.CONTINUE_NUDGE
+# The empty-response continue nudge, retired the same way in #1937 — an empty chat draw
+# is discarded and re-rolled now, so this too reads HISTORICAL rows only.  Kept for the
+# same reason as the markers above: a sample recorded before that change still reports it.
+_CONTINUE_NUDGE_MARKER = "Please provide your response"  # the retired Prompt.CONTINUE_NUDGE
 
 
 def _legacy_bail_nudge_fired(db: Database) -> bool:
@@ -790,7 +793,8 @@ def draw_rerolled(db: Database) -> bool:
 
 
 def continue_nudge_fired(db: Database) -> bool:
-    """True when any prompt's message array carries the empty-response retry nudge."""
+    """True when any prompt's message array carries the empty-response retry nudge — the
+    legacy leg for it, since #1937 rerolls that draw instead of nudging about it."""
     return any(row.messages and _CONTINUE_NUDGE_MARKER in row.messages for row in live_prompts(db))
 
 
@@ -1387,7 +1391,7 @@ MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
 }
 
 _NUDGE_FRAMES = (
-    "Please provide your response",  # Prompt.CONTINUE_NUDGE
+    "Please provide your response",  # the retired Prompt.CONTINUE_NUDGE (#1937)
     "could not be parsed as a tool call",  # the parse-failure recovery nudge
     "you MUST respond with a valid tool call",
     "make the real, argless",  # COLLECTOR_DONE_JSON_NUDGE

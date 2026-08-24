@@ -47,6 +47,7 @@ from penny.text_validity import (
     is_call_fragment_reply,
     is_degenerate_run,
     is_done_json_bail,
+    is_empty_draw,
 )
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
@@ -61,13 +62,11 @@ from penny.validation import (
 )
 from penny.validation.response_validators import (
     AppliedConfigurationValidator,
-    EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
     RefusalValidator,
     SkillNarrationValidator,
     XmlTagValidator,
-    build_strong_nudge,
 )
 
 
@@ -280,52 +279,38 @@ class TestLastStepToolRemoval:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_hallucinated_tool_call_gets_nudged_and_recovers(self, test_db, mock_llm):
-        """If model hallucinates tool calls on final step, it gets nudged and can recover."""
+    async def test_hallucinated_tool_call_is_stripped_and_the_run_closes_honestly(
+        self, test_db, mock_llm
+    ):
+        """A final-step tool call, offered no tools, is stripped and the run REPORTS that
+        it ended with nothing to say.
+
+        The strong nudge that used to answer this retired with the empty-content
+        validator (#1937): a draw with tool calls survives the reroll guard by
+        construction, the repair strips them, and nothing left in the chain speaks to
+        what remains — so the loop's own close states the outcome (FALLBACK_RESPONSE,
+        since the run did call a tool first) instead of appending a user turn ordering
+        the model to answer.  One model call per step, no extra round trip."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
 
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            if count == 2:
-                # Final step: model hallucinates a tool call despite no tools offered
-                return mock_llm._make_tool_call_response(request, "search", {"query": "more"})
-            # Nudge retry: model produces text
-            return mock_llm._make_text_response(request, "here is the answer after nudge")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test query", max_steps=max_steps)
-        assert response.answer == "here is the answer after nudge"
-
-        # Hallucinated tool calls should have been stripped — retry called without tools
-        assert mock_llm.requests[2]["tools"] is None
-
-        # The nudge message should include the forceful prefix and original question
-        nudge_messages = mock_llm.requests[2]["messages"]
-        last_user_message = [m for m in nudge_messages if m["role"] == "user"][-1]
-        assert "STOP" in last_user_message["content"]
-        assert "Tools are no longer available" in last_user_message["content"]
-        assert "test query" in last_user_message["content"]
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_hallucinated_tool_call_fallback_when_nudge_fails(self, test_db, mock_llm):
-        """If model keeps hallucinating after nudge, falls back gracefully."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            # All subsequent calls: model keeps hallucinating tool calls
+            # Final step: model hallucinates a tool call despite no tools offered
             return mock_llm._make_tool_call_response(request, "search", {"query": "more"})
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
-        # Fallback when nudge cannot recover
+        response = await agent.run("test query", max_steps=max_steps)
         assert response.answer == PennyResponse.FALLBACK_RESPONSE
+        assert len(mock_llm.requests) == 2
+        # The final step was offered no tools, and no nudge turn was appended for it.
+        assert mock_llm.requests[1]["tools"] is None
+        assert [m["content"] for m in mock_llm.requests[1]["messages"] if m["role"] == "user"] == [
+            "test query"
+        ]
+        # The run's own work still travels with the close (#1776).
+        assert [record.tool for record in response.tool_calls] == ["search"]
 
         await agent.close()
 
@@ -958,6 +943,7 @@ class TestDegenerateOutputGuard:
         assert ChatAgent.invalid_draw_conditions == (
             (ConditionKey.CALL_AS_TEXT, is_call_as_text_bail),
             (ConditionKey.CALL_FRAGMENT_REPLY, is_call_fragment_reply),
+            (ConditionKey.EMPTY, is_empty_draw),
         )
         assert Agent.invalid_draw_conditions == ()
         # Predicate edges: a bare fragment and a bare `{}` empty-object reply (the #1732
@@ -1158,11 +1144,19 @@ class TestHarmonyEnvelopeLeakGuard:
 
 
 class TestEmptyContentFallback:
-    """Test that an empty model response falls back to AGENT_EMPTY_RESPONSE."""
+    """A final answer carrying no usable content closes HONESTLY (#1776).
+
+    This is the base agent's shape: it declares no invalid draws, so an empty draw is
+    not re-rolled and reaches the close.  Chat's empty draw never gets here — since
+    #1937 it is discarded and re-rolled upstream (``TestChatEmptyDrawReroll``); what
+    still lands here on the chat path is a tools-stripped final step whose hallucinated
+    tool call the repair validator strips away, leaving nothing to say."""
 
     @pytest.mark.asyncio
     async def test_empty_response_returns_agent_empty_response(self, test_db, mock_llm):
-        """When the model returns empty content, AGENT_EMPTY_RESPONSE is returned."""
+        """When the model returns empty content, AGENT_EMPTY_RESPONSE is returned.
+
+        One model call, not two: nothing asks the model to try again any more (#1937)."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
         def handler(request, count):
@@ -1172,23 +1166,55 @@ class TestEmptyContentFallback:
 
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_EMPTY_RESPONSE
+        assert len(mock_llm.requests) == 1
 
         await agent.close()
 
     @pytest.mark.asyncio
     async def test_empty_response_after_tool_call(self, test_db, mock_llm):
-        """FALLBACK_RESPONSE is returned when model returns empty after preceding tool calls."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        """FALLBACK_RESPONSE is returned when model returns empty after preceding tool calls.
+
+        The distinction matters: FALLBACK_RESPONSE signals "worked but couldn't
+        synthesise", AGENT_EMPTY_RESPONSE "never tried to answer".  The records travel
+        with it (#1776) — a run that called tools and then said nothing must not record
+        as a callless one, since everything reading a finished run reads ``tool_calls``.
+        """
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
 
         def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+            if count <= 3:
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": f"query {count}"}
+                )
             return mock_llm._make_text_response(request, "")
 
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.FALLBACK_RESPONSE
+        assert [record.tool for record in response.tool_calls] == ["search"] * 3
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_stripped_hallucinated_call_closes_honestly(self, test_db, mock_llm):
+        """A final-step tool call (tools stripped) is repaired away, and what is left is
+        an empty answer the run REPORTS rather than nudges about.
+
+        ``HallucinatedToolCallRepair`` strips the calls and the content falls through a
+        chain that no longer has anything to say about emptiness (#1937), so the close
+        states that the run said nothing instead of appending a strong-nudge user turn."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_tool_call_response(
+                request, "search", {"query": "x"}
+            )
+        )
+
+        response = await agent.run("test prompt", max_steps=max_steps)
+        assert response.answer == PennyResponse.AGENT_EMPTY_RESPONSE
+        assert len(mock_llm.requests) == 1
 
         await agent.close()
 
@@ -1317,112 +1343,6 @@ class TestAfterStepHook:
             "You used `search` and here's the result: (search result)\nresult_B",
             "You used `search` and here's the result: (search result)\nresult_C",
         ]
-
-        await agent.close()
-
-
-class TestEmptyContentRetry:
-    """Test that empty content responses trigger a retry with a follow-up prompt."""
-
-    @pytest.mark.asyncio
-    async def test_empty_content_on_nonfinal_step_retries_with_followup(self, test_db, mock_llm):
-        """When model returns empty (or garbage) content mid-loop, agent retries with follow-up.
-
-        Garbage shapes — bare separators, lone punctuation, single emoji — must be
-        treated the same as a literally empty string. Otherwise a model that emits
-        `\n\n---` after a tool call will silently overwrite a real prior answer.
-        """
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            if count == 2:
-                # Garbage response: just a markdown separator. No "real words".
-                return mock_llm._make_text_response(request, "\n\n---")
-            # After follow-up injection, model returns actual text
-            return mock_llm._make_text_response(request, "here's the answer")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "here's the answer"
-        # Three model calls: tool call, empty response, final answer
-        assert len(mock_llm.requests) == 3
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_empty_content_on_final_step_retries_and_succeeds(self, test_db, mock_llm):
-        """When model returns empty content on the final step, agent retries once and succeeds."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
-
-        def handler(request, count):
-            if count == 1:
-                # Final step returns empty content
-                return mock_llm._make_text_response(request, "")
-            # Retry (extra step) returns real content
-            return mock_llm._make_text_response(request, "here's the answer")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "here's the answer"
-        # Two model calls: empty final step + retry
-        assert len(mock_llm.requests) == 2
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_empty_content_twice_returns_fallback(self, test_db, mock_llm):
-        """When model returns empty content on both the final step and retry, returns fallback."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
-
-        def handler(request, count):
-            return mock_llm._make_text_response(request, "")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_EMPTY_RESPONSE
-        # Two model calls: empty final step + one retry that also returns empty
-        assert len(mock_llm.requests) == 2
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_empty_content_after_tool_calls_returns_fallback_response(
-        self, test_db, mock_llm
-    ):
-        """After tool calls, double empty returns FALLBACK_RESPONSE not AGENT_EMPTY_RESPONSE.
-
-        Reproduces the production scenario where the model makes several searches then
-        fails to synthesize on the final step (preceding_tool_calls > 0).  The distinction
-        matters: FALLBACK_RESPONSE signals "searched but couldn't synthesise" while
-        AGENT_EMPTY_RESPONSE signals "never tried to answer".
-        """
-        # 4 steps: 3 tool calls + 1 final step where model must synthesise but fails
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
-
-        def handler(request, count):
-            if count <= 3:
-                return mock_llm._make_tool_call_response(
-                    request, "search", {"query": f"query {count}"}
-                )
-            # Final step and its retry both return empty — model can't synthesise
-            return mock_llm._make_text_response(request, "")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == PennyResponse.FALLBACK_RESPONSE
-        # 3 tool calls + empty final step + empty retry = 5 model calls
-        assert len(mock_llm.requests) == 5
-        # The fallback carries the run's records like any other close (#1776) — a run
-        # that called tools and then said nothing must not record as a callless one.
-        # Everything that reads a finished run (its terminal outcome, the collector's
-        # tool trace, its work/failure counts) reads ``tool_calls``.
-        assert [record.tool for record in response.tool_calls] == ["search"] * 3
 
         await agent.close()
 
@@ -1843,120 +1763,9 @@ class TestSearchResultTrimming:
         assert result.startswith("These are search results")
 
 
-class TestEmptyContentAfterToolCalls:
-    """Tests for combined empty-content fixes: nudge prompts, think tag stripping,
-    retry counter reset, and fallback response."""
-
-    @pytest.mark.asyncio
-    async def test_final_step_empty_content_gets_strong_nudge(self, test_db, mock_llm):
-        """When model returns empty on final step, retry uses strong nudge."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            if count == 2:
-                return mock_llm._make_text_response(request, "")
-            return mock_llm._make_text_response(request, "Here's what I found!")
-
-        mock_llm.set_response_handler(handler)
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "Here's what I found!"
-
-        retry_messages = mock_llm.requests[2]["messages"]
-        last_user = next(m for m in reversed(retry_messages) if m["role"] == "user")
-        assert "STOP" in last_user["content"]
-        assert "test question" in last_user["content"]
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_mid_loop_empty_content_gets_continue_nudge(self, test_db, mock_llm):
-        """When model returns empty mid-loop (tools still available), uses continue nudge."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-
-        def handler(request, count):
-            if count == 1:
-                # Mid-loop: model returns empty (tools still available, not final step)
-                return mock_llm._make_text_response(request, "")
-            if count == 2:
-                # Retry after continue nudge — model responds
-                return mock_llm._make_text_response(request, "here's my answer")
-            return mock_llm._make_text_response(request, "fallback")
-
-        mock_llm.set_response_handler(handler)
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "here's my answer"
-
-        retry_messages = mock_llm.requests[1]["messages"]
-        last_user = next(m for m in reversed(retry_messages) if m["role"] == "user")
-        assert last_user["content"] == "Please provide your response."
-        # Should NOT have the strong nudge — model still has tools available
-        assert "STOP" not in last_user["content"]
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_think_only_response_triggers_retry(self, test_db, mock_llm):
-        """Model returning only <think> tags with no body triggers retry."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            if count == 2:
-                return mock_llm._make_text_response(
-                    request, "<think>Let me reason about this...</think>"
-                )
-            return mock_llm._make_text_response(request, "here's the answer")
-
-        mock_llm.set_response_handler(handler)
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "here's the answer"
-        assert len(mock_llm.requests) == 3
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_retry_counter_resets_after_tool_calls(self, test_db, mock_llm):
-        """After nudge fires, tools are stripped so model must synthesize."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
-        # Mock tool executor so tool calls don't fail
-        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="search result"))
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "first"})
-            if count == 2:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "second"})
-            if count == 3:
-                # Empty content triggers nudge — tools stripped on next call
-                return mock_llm._make_text_response(request, "")
-            # count 4: tools stripped, model must produce text
-            return mock_llm._make_text_response(request, "synthesized answer")
-
-        mock_llm.set_response_handler(handler)
-        agent.allow_repeat_tools = True
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "synthesized answer"
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_fallback_response_after_tool_calls(self, test_db, mock_llm):
-        """FALLBACK_RESPONSE (not AGENT_EMPTY_RESPONSE) when empty after tool calls."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            return mock_llm._make_text_response(request, "")
-
-        mock_llm.set_response_handler(handler)
-        response = await agent.run("test prompt", max_steps=max_steps)
-        assert response.answer == PennyResponse.FALLBACK_RESPONSE
-
-        await agent.close()
+class TestLargeToolResults:
+    """A tool result is fed back whole — the client enforces per-page limits, the loop
+    truncates nothing."""
 
     @pytest.mark.asyncio
     async def test_large_tool_results_pass_through_untruncated(self, test_db, mock_llm):
@@ -1984,74 +1793,6 @@ class TestEmptyContentAfterToolCalls:
             response = await agent.run("test", max_steps=max_steps)
 
         assert response.answer == "done"
-        await agent.close()
-
-
-class TestStrongNudgeUsesLastQuestion:
-    """Test that the strong nudge references the current question, not prior history."""
-
-    @pytest.mark.asyncio
-    async def test_nudge_references_current_question_not_history(
-        self,
-        test_db,
-        mock_llm,
-    ):
-        """When the agentic loop exhausts tool calls and fires a strong nudge,
-        the nudge must reference the latest user question — not an earlier one
-        from conversation history.
-
-        Regression: _build_strong_nudge used next() (first user message) instead
-        of the last, so with conversation history it would reference a prior question.
-        """
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
-
-        history = [
-            ("user", "what are some good 40k novels?"),
-            ("assistant", "Here are some novels..."),
-            ("user", "who were the dark mechanicum leaders?"),
-            ("assistant", "Here are the leaders..."),
-            ("user", "who starred in judge dredd 1995?"),
-            ("assistant", "Here is the cast..."),
-        ]
-
-        current_question = "what else was joan chen in?"
-        nudge_content = None
-
-        def handler(request, count):
-            nonlocal nudge_content
-            messages = request["messages"]
-            user_msgs = [m for m in messages if m.get("role") == "user"]
-            last_user = user_msgs[-1]["content"] if user_msgs else ""
-
-            if "STOP" in last_user:
-                nudge_content = last_user
-                return mock_llm._make_text_response(request, "Joan Chen was in Twin Peaks")
-
-            # After 4 tool calls, return empty to trigger strong nudge
-            if count >= 5:
-                return mock_llm._make_text_response(request, "")
-
-            return mock_llm._make_tool_call_response(
-                request, "search", {"query": f"joan chen filmography {count}"}
-            )
-
-        mock_llm.set_response_handler(handler)
-        agent.allow_repeat_tools = True
-        response = await agent.run(
-            current_question,
-            max_steps=max_steps,
-            history=history,
-        )
-
-        assert nudge_content is not None, "Strong nudge should have fired"
-        assert "joan chen" in nudge_content.lower(), (
-            f"Nudge should reference 'joan chen' but got: {nudge_content}"
-        )
-        assert "dark mechanicum" not in nudge_content.lower(), (
-            f"Nudge should NOT reference prior question but got: {nudge_content}"
-        )
-        assert response.answer == "Joan Chen was in Twin Peaks"
-
         await agent.close()
 
 
@@ -2815,10 +2556,10 @@ class TestCollectorInvalidDrawReroll:
 
 
 class TestChatCallShapedTextReroll:
-    """Chat's invalid case is CALL-SHAPED TEXT ONLY (#1839).  A reply that is really a
-    serialized tool call would be delivered to the user as raw machinery, so the loop
-    discards it and re-rolls the unchanged context; an ordinary prose reply is chat's
-    valid terminal state and is finalized untouched."""
+    """Chat's invalid draws are the ones that are not a REPLY (#1839/#1937).  A reply
+    that is really a serialized tool call would be delivered to the user as raw
+    machinery, so the loop discards it and re-rolls the unchanged context; an ordinary
+    prose reply is chat's valid terminal state and is finalized untouched."""
 
     @pytest.mark.asyncio
     async def test_call_as_text_is_discarded_and_rerolled(self, test_db, mock_llm):
@@ -2890,10 +2631,14 @@ class TestChatCallShapedTextReroll:
 
         await agent.close()
 
-    def test_the_two_chat_shapes_and_their_edges(self, test_db, mock_llm):
-        """Both Harmony fallback shapes are invalid draws; a genuine reply is not.  The
-        full envelope reads as ``CALL_AS_TEXT`` and the mangled remainder as
-        ``CALL_FRAGMENT_REPLY``, so the discarded draw is logged honestly."""
+    def test_the_three_chat_shapes_and_their_edges(self, test_db, mock_llm):
+        """Both Harmony fallback shapes and the say-nothing draw are invalid; a genuine
+        reply is not.  The full envelope reads as ``CALL_AS_TEXT``, the mangled remainder
+        as ``CALL_FRAGMENT_REPLY`` and a draw with nothing in it as ``EMPTY``, so the
+        discarded draw is logged honestly.
+
+        ORDER is the claim on the shared edge: a bare ``{}`` carries no letters either,
+        so ``EMPTY`` is tried last and the ``{}`` tail keeps the truer name (#1732)."""
         agent, _db, _max_steps = _make_agent(test_db, mock_llm)
         agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
@@ -2916,10 +2661,135 @@ class TestChatCallShapedTextReroll:
         assert agent._unusable_output_condition(envelope) == ConditionKey.CALL_AS_TEXT
         fragment = _text_response('{"memory": "rip? wait we need"}')
         assert agent._unusable_output_condition(fragment) == ConditionKey.CALL_FRAGMENT_REPLY
-        # An ordinary reply and an empty one are both VALID for chat — the empty one is
-        # the response chain's business (a retry with a nudge), never a discarded draw.
+        # The say-nothing family (#1937) — blank, separators, a lone emoji, a bare
+        # ``<think>`` block — all read as EMPTY.
+        for nothing in ("", "   \n ", "\n\n---", "🙂", "<think>reasoning only</think>"):
+            assert is_empty_draw(nothing), nothing
+            assert agent._unusable_output_condition(_text_response(nothing)) == ConditionKey.EMPTY
+        # The shared edge: `{}` has no letters, but CALL_FRAGMENT_REPLY names it first.
+        assert is_empty_draw("{}")
+        assert (
+            agent._unusable_output_condition(_text_response("{}"))
+            == ConditionKey.CALL_FRAGMENT_REPLY
+        )
+        # An ordinary reply is VALID for chat, and so is a short one carrying real words.
+        assert not is_empty_draw("Yes.")
         assert agent._unusable_output_condition(_text_response("Lake Baikal!")) is None
-        assert agent._unusable_output_condition(_text_response("")) is None
+        assert agent._unusable_output_condition(_text_response("Yes.")) is None
+
+
+class TestChatEmptyDrawReroll:
+    """Chat's EMPTY draw is discarded and re-rolled like the rest of the family (#1937).
+
+    It was the last invalid-output class handled on the VISIBLE path: the empty
+    assistant turn plus a nudge user turn went into the conversation, taking the
+    model's in-flight intent with them and leaving residue in the context every later
+    reader of the run sees.  Now nothing about it enters the run."""
+
+    @pytest.mark.asyncio
+    async def test_the_production_sequence_never_grows_the_conversation(self, test_db, mock_llm):
+        """The observed sequence, recreated: a tool call whose arguments collapsed is
+        discarded (a true positive for the punctuation guard), the re-roll on the
+        unchanged context comes back EMPTY, and the third draw is a clean call.
+
+        All three draws are served on the SAME context — the two bad ones leave no
+        assistant turn and no nudge user turn behind — and the clean call executes, so
+        the write the model was in the middle of is not lost."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": "the new Air‑...??…?..?????"}
+                )
+            if count == 2:
+                return mock_llm._make_text_response(request, "")
+            if count == 3:
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": "harbour lantern price"}
+                )
+            return mock_llm._make_text_response(request, "It is nine credits.")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what does the lantern cost?", max_steps=max_steps)
+
+        # Two re-rolls on one budget, all three draws against a context that never grew.
+        assert len(mock_llm.requests) == 4
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[0]["messages"]
+        # Nothing from either bad draw reached the context: no collapse, no empty
+        # assistant turn, no nudge user turn.
+        redrawn = mock_llm.requests[2]["messages"]
+        assert "?????" not in str(redrawn)
+        assert [message["role"] for message in redrawn].count(MessageRole.USER) == 1
+        assert not any(message.get("role") == MessageRole.ASSISTANT for message in redrawn)
+        # The clean draw's call ran, and the turn ends on the model's own reply.
+        assert [record.tool for record in response.tool_calls] == ["search"]
+        assert response.tool_calls[0].arguments["query"] == "harbour lantern price"
+        assert response.answer == "It is nine credits."
+        # The re-roll's only durable trace: two persisted draws on one context (#1841).
+        assert draw_rerolled(db)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_three_unusable_draws_abort_the_run(self, test_db, mock_llm):
+        """The accepted trade-off: a re-roll on the unchanged context cannot unstick a
+        deterministically-empty draw, so the budget burns and the run fails honestly via
+        the #1909 abort path — never an empty reply and never a nudge."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": "lantern ...??…?..?????"}
+                )
+            return mock_llm._make_text_response(request, "")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what does the lantern cost?", max_steps=max_steps)
+
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        assert response.tool_calls == []
+        # The abort names every discarded draw in ORDER, so a run killed by three empties
+        # and one killed by three collapses read as the different problems they are.
+        assert response.abort is not None
+        assert response.abort.error == ModelCallError(
+            error_class=REROLL_EXHAUSTED,
+            message="3 unusable draws: degenerate_output, empty, empty",
+        )
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_garbage_shaped_draw_after_a_tool_call_is_rerolled(self, test_db, mock_llm):
+        """A draw that carries no real words — a bare markdown separator — is the same
+        empty draw, so it is re-rolled rather than finalized over a real prior answer."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "lantern"})
+            if count == 2:
+                return mock_llm._make_text_response(request, "\n\n---")
+            return mock_llm._make_text_response(request, "It is nine credits.")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what does the lantern cost?", max_steps=max_steps)
+
+        assert response.answer == "It is nine credits."
+        assert len(mock_llm.requests) == 3
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert "---" not in str(mock_llm.requests[2]["messages"])
+
+        await agent.close()
 
 
 def _text_response(content: str) -> LlmResponse:
@@ -2966,31 +2836,18 @@ class TestResponseValidators:
         resp = _text_response("<function=search>x</function>")
         outcome = XmlTagValidator().check(resp, _ctx())
         assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.XML
-        # No extra nudge — XML just re-appends the bad response.
-        assert outcome.nudge == ""
         # Already retried → proceeds (retry-once-per-condition).
         assert isinstance(XmlTagValidator().check(resp, _ctx(retried={ConditionKey.XML})), Proceed)
 
-    def test_empty_validator_nudge_depends_on_tools(self):
-        empty = _text_response("\n\n---")
-        mid = EmptyResponseValidator().check(empty, _ctx(tools_available=True))
-        assert isinstance(mid, Retry) and mid.condition == ConditionKey.EMPTY
-        assert mid.nudge == "Please provide your response."
-        # Final step (tools stripped): empty nudge sentinel → loop builds strong nudge.
-        final = EmptyResponseValidator().check(empty, _ctx(tools_available=False))
-        assert isinstance(final, Retry) and final.nudge == ""
-        # Real content proceeds.
-        assert isinstance(
-            EmptyResponseValidator().check(_text_response("a real answer"), _ctx()), Proceed
-        )
-        # The mid-loop nudge stays composable per-agent, even though only chat/base
-        # reach the chain now (a collector's empty draw is rerolled upstream, #1839).
-        composed = EmptyResponseValidator(continue_nudge="say more")
-        composed_mid = composed.check(empty, _ctx(tools_available=True))
-        assert isinstance(composed_mid, Retry) and composed_mid.nudge == "say more"
-        # Final-step behaviour is unchanged by the swap (still the strong-nudge sentinel).
-        composed_final = composed.check(empty, _ctx(tools_available=False))
-        assert isinstance(composed_final, Retry) and composed_final.nudge == ""
+    def test_retry_says_nothing_back_to_the_model(self):
+        """A ``Retry`` carries the condition and nothing else (#1937).
+
+        Its teaching user-turn retired with the last two families that used one — the
+        call-shaped-text draws (#1839) and the empty draw — both of which are discarded
+        and re-rolled before this chain runs.  The three conditions left correct by
+        SHOWING the model its own bad draw, so a nudge field with no producer would be
+        a dead parameter the loop still had to apply."""
+        assert "nudge" not in Retry.model_fields
 
     def test_refusal_validator(self):
         resp = _text_response("I'm sorry, but I can't help with that.")
@@ -3038,9 +2895,11 @@ class TestResponseValidators:
         its own run-shape guards and its own invalid-draw family.  A new guard = one
         more list entry, never a new branch in the loop."""
         assert Agent.response_validators[0].__class__ is HallucinatedToolCallRepair
+        # What is left are the three draws that SAY something wrong.  The ones that say
+        # nothing usable — call-shaped text (#1839) and the empty draw (#1937) — are
+        # discarded and re-rolled upstream, so ``EmptyResponseValidator`` is GONE.
         chat_conditions = {
             XmlTagValidator,
-            EmptyResponseValidator,
             RefusalValidator,
             HallucinatedUrlValidator,
             HallucinatedToolCallRepair,
@@ -3059,8 +2918,8 @@ class TestResponseValidators:
         assert Agent.run_shape_validators == []
         assert Agent.invalid_draw_conditions == ()
         # Chat's run-shape chain is the two narrate-from-the-RECORD nudges — what the run
-        # LEARNED (#1658) and what it SET RUNNING (#1869) — and its invalid draws are
-        # call-shaped text only, so a plain conversational reply stays valid.
+        # LEARNED (#1658) and what it SET RUNNING (#1869) — and its invalid draws are the
+        # ones that are not a reply, so a plain conversational reply stays valid.
         assert [v.__class__ for v in ChatAgent.run_shape_validators] == [
             SkillNarrationValidator,
             AppliedConfigurationValidator,
@@ -3068,20 +2927,24 @@ class TestResponseValidators:
         assert [condition for condition, _ in ChatAgent.invalid_draw_conditions] == [
             ConditionKey.CALL_AS_TEXT,
             ConditionKey.CALL_FRAGMENT_REPLY,
+            ConditionKey.EMPTY,
         ]
         assert [condition for condition, _ in BackgroundAgent.invalid_draw_conditions] == [
             ConditionKey.DONE_JSON_BAIL,
             ConditionKey.TEXT_INSTEAD_OF_TOOL,
         ]
-        # The family carries NO nudge any more (#1839) — an invalid draw is rejected,
-        # not taught — so the constants that used to be appended are gone with the
-        # validators that appended them.
+        # An invalid draw carries NO nudge (#1839/#1937) — it is rejected, not taught —
+        # so the constants that used to be appended are gone with the validators that
+        # appended them.  The last two are the empty draw's mid-loop and final-step
+        # appends, retired with ``EmptyResponseValidator``.
         for retired in (
             "TOOL_FORMAT_NUDGE",
             "COLLECTOR_TOOL_CALL_NUDGE",
             "COLLECTOR_DONE_JSON_NUDGE",
             "CHAT_CALL_AS_TEXT_NUDGE",
             "COLLECTOR_CONTINUE_NUDGE",
+            "CONTINUE_NUDGE",
+            "FINAL_STEP_NUDGE",
         ):
             assert not hasattr(Prompt, retired), retired
 
@@ -3089,16 +2952,16 @@ class TestResponseValidators:
         """A Repair threads its transformed response into the rest of the chain;
         the first non-proceed short-circuits and is returned."""
         resp = _tool_response("search", {"query": "x"})
-        # Tools unavailable → repair strips tool calls, then empty content retries.
+        resp.message.content = "<function=search>x</function>"
+        # Tools unavailable → repair strips the tool calls, then the XML content retries.
         outcome = run_validators(Agent.response_validators, resp, _ctx(tools_available=False))
-        assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.EMPTY
-
-    def test_build_strong_nudge_uses_last_non_stop_question(self):
-        messages = [
-            {"role": "user", "content": "first question"},
-            {"role": "user", "content": "STOP. tools gone."},
-            {"role": "user", "content": "the real last question"},
-        ]
-        nudge = build_strong_nudge(messages)
-        assert "the real last question" in nudge
-        assert "STOP" in nudge  # the FINAL_STEP_NUDGE template leads with STOP
+        assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.XML
+        # Nothing left in the chain answers an EMPTY draw (#1937): the repaired,
+        # contentless response simply proceeds, and the loop's own close reports it.
+        stripped = run_validators(
+            Agent.response_validators,
+            _tool_response("search", {"query": "x"}),
+            _ctx(tools_available=False),
+        )
+        assert isinstance(stripped, Proceed)
+        assert stripped.response is not None and stripped.response.message.tool_calls is None

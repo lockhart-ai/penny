@@ -28,8 +28,9 @@ A condition can be both `live` and `run_flag`. That overlap is the point:
 
 | Condition | live | run_flag | where it's enforced |
 |---|---|---|---|
-| `xml`, `empty`, `refusal`, `hallucinated_urls`, `tool_parse_error` | ✓ | | response-validator chain |
-| `text_instead_of_tool` | ✓ | | response-validator chain (collector) |
+| `xml`, `refusal`, `hallucinated_urls` | ✓ | | response-validator chain |
+| `call_as_text`, `call_fragment_reply`, `empty`, `tool_parse_error` | ✓ | | discard-and-reroll (chat's invalid draws, #1839/#1937) |
+| `done_json_bail`, `text_instead_of_tool` | ✓ | | discard-and-reroll (the collector's invalid draws, #1839) |
 | `no_work_done` | ✓ | ✓ | live: premature-`done()` reject · post-hoc: bail flag |
 | `half_formed_send` | ✓ | ✓ | live: `send_message` arg gate · post-hoc: degenerate-send flag |
 | `incomplete`, `tool_failures` | | ✓ | post-hoc classifier only |
@@ -50,7 +51,10 @@ concern and is untouched.
 should do*, not just "reject":
 
 - `Proceed` — response is fine (carries the post-repair value).
-- `Retry(condition, nudge)` — re-call the model with a nudge, once per condition.
+- `Retry(condition)` — re-append the bad response and re-call, once per condition.
+  It says nothing back: the teaching user-turn it used to carry retired with its
+  last customers (#1839's call-shaped-text family, #1937's empty draw), which the
+  loop now discards and re-rolls before the chain sees them.
 - `Repair(response)` — silently transform and continue the chain.
 - `RejectToolCall(message)` — error tool-result for the call(s), continue loop.
 - `NudgeContinue(message)` — append response + a user-turn nudge, continue loop.
@@ -71,7 +75,7 @@ Live (today in `agents/base.py`, moving into validators):
 | Today | Condition | Disposition |
 |---|---|---|
 | `_check_response` XML branch | `xml` | `Retry` |
-| `_check_response` empty branch | `empty` | `Retry` (final-step vs mid-loop nudge) |
+| `_check_response` empty branch | `empty` | discard-and-reroll (#1937; was `Retry` with a final-step / mid-loop nudge) |
 | `_check_response` refusal branch | `refusal` | `Retry` |
 | `_check_response` hallucinated-URL branch | `hallucinated_urls` | `Retry` |
 | `LlmToolParseError` handling | `tool_parse_error` | `Retry` |
