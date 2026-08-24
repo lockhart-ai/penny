@@ -234,6 +234,20 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # carried would leave request taking the identical fall the once-covers-repeatedly fact
 # once took (below).
 #
+# The boundary's THIRD sentence — starting to hear about a job is not starting the job —
+# is what makes it survive the ON direction.  Measured: the boundary's first two sentences
+# alone took the isolate's off-direction to 5 of 5 and its on-direction to only 3 of 5, and
+# the two leaks were one shape.  Both read the ask to be TOLD as the ask to START: "you can
+# start pinging me about the cafe specials again" drew request on "they are asking to start
+# this skill … they haven't provided a URL", and "notify me when the modular listing watch
+# finds something, from now on" drew request on "so yes it's setting that skill running, but
+# missing url".  Neither draw engaged the boundary at all — an asymmetry the semantics
+# predict, since only the ON direction can be phrased as starting anything.  The three
+# holds, by contrast, all quoted it and reasoned "adjusting notifications for an existing
+# watch, not starting a new routine".  So the sentence names the STATE the leaks could not
+# see — the work was already being done, and what begins is the telling — rather than
+# forbidding the words that misled them.
+#
 # WATCHED DELETION, riding with it: the once-covers-repeatedly sentences ("A skill does
 # the task once.  The schedule and notifications are added when it is set up, so a skill
 # that does the task once covers an ask to do it repeatedly.") are GONE from both.  They
@@ -262,15 +276,18 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "their message asks to set one of the known skills running, and supplies "
         "everything that skill needs. Changing how something already set up behaves — "
         "its notifications, when it runs, what it covers — is not asking to start it. "
-        f"Add a second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
-        "in Known skills>"
+        "That holds even when the change itself is phrased as starting something: "
+        "starting to hear about a job is not starting the job. Add a second line naming "
+        f"that skill: {SKILL_TAG} <its name, exactly as quoted in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.REQUEST): (
         "their message asks to set one of the known skills running, but something that "
         "skill needs is missing from their message. Changing how something already set "
         "up behaves — its notifications, when it runs, what it covers — is not asking "
-        f"to start it. Add a second line naming that skill: {SKILL_TAG} <its name, "
-        "exactly as quoted in Known skills>"
+        "to start it. That holds even when the change itself is phrased as starting "
+        "something: starting to hear about a job is not starting the job. Add a second "
+        f"line naming that skill: {SKILL_TAG} <its name, exactly as quoted in Known "
+        "skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up something that keeps running on its own after this "
