@@ -28,7 +28,11 @@ USER's own habit, topic twins of real asks — must not be chased into a teach
 loop, and must not be chased into a false apply once the registry has something
 to offer.  The UNCOVERED and CROSS-DOMAIN asks under a POPULATED registry: the
 false-apply guard, which every canonical idle → elicit world misses by
-construction because each asserts an EMPTY registry.  The MIXED message that
+construction because each asserts an EMPTY registry.  The ADJUSTMENT boundary,
+both directions: the skill-gated doors are about STARTING a task (#1927), so an
+ask that changes how something already set up behaves — turning one running job's
+notifications on, or off — holds idle while a watch-shaped routine sits in Known
+skills looking like it covers the subject.  The MIXED message that
 carries chat and a covered ask together, where the routine half wins.  Mid-
 teaching STEPS arriving with watch-adjacent candidates rendered, so existing
 skills cannot demote teaching something new.  And the post-failure LEARN park,
@@ -230,6 +234,102 @@ async def test_mixed_chat_plus_covered_ask_applies(
         expected_skill=_PRICE_SKILL,
         seed_skills=_SEEDED_SKILLS,
         min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── The adjustment boundary: a job that is ALREADY running ───────────────────
+#
+# The skill-gated doors are about STARTING a task (#1927), so an ask that changes
+# how something already set up behaves has to stay idle — even, and especially,
+# while a watch-shaped routine sits in Known skills looking like it covers the
+# subject.  That resemblance is where the measured failure pivoted: asked to turn
+# one running job's notifications on, the draw reasoned "this is presumably
+# setting up some monitoring… skill covers, page missing → request" in 5 of 5
+# samples across two rounds, while the same pair's off-direction held idle 5 of 5.
+#
+# Both pools run against the SEEDED registry rather than an empty one, because an
+# empty registry proves nothing here: apply and request are withheld structurally
+# when there are no candidates (``presented_edges``), so a hold measured there is
+# a hold with no door to decline.  What these cases claim is that the request door
+# was OFFERED and correctly declined.
+#
+# Every phrasing names its job with a definite reference ("the camera kit price
+# watch", "that spotting scope price job"), and most carry a resumption word — the
+# message is the only evidence the classifier has that anything is already running,
+# since the snapshot renders the skill registry and never the standing collections.
+#
+# And every SUBJECT is one a seeded skill plainly covers — a listing page's price,
+# or a cafe or bakery menu.  That is load-bearing rather than decorative: a subject
+# no seeded skill covers can hold idle by the pre-existing no-coverage route (and
+# would be ruled out of elicit by that edge's own "no known skill covers it"
+# clause), so the sample would score green while proving nothing about the boundary.
+# With coverage granted, the ONLY thing left that can hold these samples idle is
+# that the ask changes a job rather than starting one.
+
+# On-direction — the measured miss.
+_NOTIFY_ON_POOL = [
+    "turn notifications on for the camera kit price watch",
+    "you can start pinging me about the cafe specials again",
+    "switch the alerts back on for the kayak rental price watch",
+    "notify me when the modular listing watch finds something, from now on",
+    "turn the notifications back on for that spotting scope price job",
+    "go ahead and message me when the bakery specials list updates",
+    "yeah, tell me about the grinder price watch from now on",
+    "put notifications back on for the pinball listing watch",
+    "start letting me know what the cafe menu job turns up",
+    "turn the pings back on for the vintage synth price watch",
+]
+
+# Off-direction — the same switch, the other way.
+_NOTIFY_OFF_POOL = [
+    "turn notifications off for the camera kit price watch",
+    "stop pinging me about the cafe specials",
+    "switch the alerts off on the kayak rental price watch",
+    "quiet the modular listing watch down — keep it running though",
+    "you don't need to message me about the bakery specials any more",
+    "turn the notifications off for that spotting scope price job",
+    "stop telling me every time the grinder price watch runs",
+    "mute the pinball listing watch, but keep collecting",
+    "no more pings from the cafe menu job please",
+    "turn the alerts off on the vintage synth price watch",
+]
+
+
+async def test_switching_a_running_jobs_notifications_on_holds_idle(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Report-only.  Turning a running job's notifications ON is an adjustment to
+    something already set up, not an ask to start a skill — so the machine holds
+    idle with the request door on offer."""
+    await classifier_eval(
+        case_id="idle-hold-notify-on",
+        state=ConversationState.IDLE,
+        pool=_NOTIFY_ON_POOL,
+        expected=ConversationState.IDLE,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_switching_a_running_jobs_notifications_off_holds_idle(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Report-only.  The same switch, the other way: silencing a running job is
+    still an adjustment, so it holds idle with the request door on offer.
+
+    Both directions are measured because they are not one claim: the pair's
+    off-direction already held 5 of 5 while the on-direction fell, so scoring only
+    the miss would leave the direction a boundary rewrite is most likely to break
+    unmeasured."""
+    await classifier_eval(
+        case_id="idle-hold-notify-off",
+        state=ConversationState.IDLE,
+        pool=_NOTIFY_OFF_POOL,
+        expected=ConversationState.IDLE,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=None,
         family=_FAMILY,
     )
 

@@ -219,15 +219,30 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # says which messages carry no correction, which is still a statement about what IT
 # is, and it is there because a nearby shape was measured landing here wrongly.
 #
-# The two SKILL-GATED conditions carry the same once-covers-repeatedly sentences, word
-# for word, and that is not one edge describing another: it is one fact about what a
-# SKILL is — it does the task once, and the schedule is added when it is set up — which
-# both conditions have to be read against, since both ask whether a known skill covers
-# the ask.  It was measured twice.  Added to apply, it cured the miss where an ongoing
-# ask read as uncovered; request then took the identical fall (the draw ruled apply out
-# for missing information, read the request bullet, and reasoned "neither skill sets up
-# repeats, so no skill covers it" — into elicit).  A reader who rules out one skill-gated
-# option and moves to the next must not lose the fact that made the first one legible.
+# The two SKILL-GATED conditions are keyed to STARTING a task (#1927, code-owner ruling:
+# "request is only about starting a new task; changes to existing collections don't
+# count").  Both ask whether the message asks to SET A KNOWN SKILL RUNNING — apply when
+# the message also supplies everything that skill needs, request when something is
+# missing — and both carry the same boundary sentence, word for word: changing how
+# something ALREADY SET UP behaves is not asking to start it.  Carrying it twice is not
+# one edge describing another; it is one fact about what these two doors are FOR, and a
+# reader who rules out apply for missing information reads request next.  That is the
+# measured failure this replaces: an ask to turn one running job's notifications on drew
+# request in 5 of 5 samples across two rounds, the draw pivoting on coverage-resemblance
+# ("this is presumably setting up some monitoring… skill covers, page missing → request"),
+# while the off-direction of the same pair held idle 5 of 5.  A boundary only apply
+# carried would leave request taking the identical fall the once-covers-repeatedly fact
+# once took (below).
+#
+# WATCHED DELETION, riding with it: the once-covers-repeatedly sentences ("A skill does
+# the task once.  The schedule and notifications are added when it is set up, so a skill
+# that does the task once covers an ask to do it repeatedly.") are GONE from both.  They
+# were measured twice and earned their place under the old COVERAGE keying, where a
+# routine's one-shot description had to be made comparable to an ongoing ask — but under
+# the START keying their second sentence says the thing this edge now has to deny, that
+# notifications are what setting a job up settles.  What they guarded — an ongoing ask
+# read as uncovered — is the idle → apply / idle → request cases' to gate, and they are
+# its gate now.
 #
 # The IDLE → LEARN condition is the ONE edge whose wording differs from its elicit-parked
 # twin, and the one that names a sibling outright (code-owner authored, after the #1898
@@ -244,19 +259,18 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # a task being worked on, and the correction shape is what that edge is about.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "one of the known skills does what they are asking for, and their message "
-        "contains all the information for the skill's parameters. A skill does the "
-        "task once. The schedule and notifications are added when it is set up, so a "
-        "skill that does the task once covers an ask to do it repeatedly. Add a second "
-        f"line naming that skill: {SKILL_TAG} <its name, exactly as quoted in Known skills>"
+        "their message asks to set one of the known skills running, and supplies "
+        "everything that skill needs. Changing how something already set up behaves — "
+        "its notifications, when it runs, what it covers — is not asking to start it. "
+        f"Add a second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
+        "in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.REQUEST): (
-        "a known skill looks like it covers what they are asking for, but "
-        "something that skill needs is missing from their message. A skill does "
-        "the task once. The schedule and notifications are added when it is set up, "
-        "so a skill that does the task once covers an ask to do it repeatedly. Add a "
-        f"second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
-        "in Known skills>"
+        "their message asks to set one of the known skills running, but something that "
+        "skill needs is missing from their message. Changing how something already set "
+        "up behaves — its notifications, when it runs, what it covers — is not asking "
+        f"to start it. Add a second line naming that skill: {SKILL_TAG} <its name, "
+        "exactly as quoted in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up something that keeps running on its own after this "

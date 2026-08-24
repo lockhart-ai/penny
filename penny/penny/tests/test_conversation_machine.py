@@ -379,19 +379,22 @@ def test_render_idle_with_candidates_whole():
     its coverage condition + the SKILL: directive.  A parameterless candidate
     renders without the needs tail, byte-identical.
 
-    The apply condition states the SKILL-DOES-ONCE fact (code-owner authored): a skill
-    carries out its task a single time, and a schedule and notifications are added when
-    it is set up — so a routine described as doing the job once covers an ask to do it
-    repeatedly.  The measured class it answers is a cold ask for a recurring watch drawn
-    as elicit or request because the covering routine's own description reads as a
-    one-shot; stating where cadence LIVES is what makes the two comparable.
+    Both skill-gated conditions are keyed to STARTING a task (#1927, code-owner ruling),
+    and both carry the same boundary sentence word for word: changing how something
+    already set up behaves — its notifications, when it runs, what it covers — is not
+    asking to start it.  Carrying it twice is what the render makes legible: a reader who
+    rules apply out for missing information reads request next, and the measured failure
+    was exactly that fall (an ask to turn one running job's notifications on drew request
+    5 of 5 across two rounds).
 
-    A WATCHED DELETION rides with it: the old "mere resemblance to a skill is not
-    coverage" clause is gone.  It argued against a sibling condition from inside this
-    one, which the choice-menu discipline above ``TRANSITIONS`` forbids — request is
-    right there in the same list saying what it is.  What it guarded (a skill that
-    merely looks related being applied) is the classifier suite's idle-apply-hold cases'
-    to gate, and they are its gate now.
+    A WATCHED DELETION rides with it: the once-covers-repeatedly sentences ("A skill does
+    the task once.  The schedule and notifications are added when it is set up…") are gone
+    from both conditions.  They made a one-shot routine description comparable to an
+    ongoing ask under the old COVERAGE keying, but under the START keying their second
+    sentence asserts the very thing this boundary denies — that notifications are settled
+    by setting a job up.  What they guarded (an ongoing ask read as uncovered) is the
+    classifier suite's idle → apply / idle → request cases' to gate, and they are its gate
+    now.
 
     This render is also the ONE place the learn condition's sibling clause is legible —
     apply, request and learn in one list — which is why it is worded the way it is
@@ -419,18 +422,16 @@ def test_render_idle_with_candidates_whole():
         "is set up to keep running afterward\n"
         "\n"
         "## Transitions\n"
-        "- apply — one of the known skills does what they are asking for, and their "
-        "message contains all the information for the skill's parameters. A skill does "
-        "the task once. The schedule and notifications are added when it is set up, so "
-        "a skill that does the task once covers an ask to do it repeatedly. Add a "
-        "second line naming that skill: SKILL: <its name, exactly as quoted in Known "
-        "skills>\n"
-        "- request — a known skill looks like it covers what they are asking "
-        "for, but something that skill needs is missing from their message. A skill "
-        "does the task once. The schedule and notifications are added when it is set "
-        "up, so a skill that does the task once covers an ask to do it repeatedly. Add "
-        "a second line naming that skill: SKILL: <its name, exactly as quoted in Known "
-        "skills>\n"
+        "- apply — their message asks to set one of the known skills running, and "
+        "supplies everything that skill needs. Changing how something already set up "
+        "behaves — its notifications, when it runs, what it covers — is not asking to "
+        "start it. Add a second line naming that skill: SKILL: <its name, exactly as "
+        "quoted in Known skills>\n"
+        "- request — their message asks to set one of the known skills running, but "
+        "something that skill needs is missing from their message. Changing how "
+        "something already set up behaves — its notifications, when it runs, what it "
+        "covers — is not asking to start it. Add a second line naming that skill: "
+        "SKILL: <its name, exactly as quoted in Known skills>\n"
         "- learn — the user is teaching a new routine: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
