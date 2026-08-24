@@ -255,9 +255,9 @@ async def test_mixed_chat_plus_covered_ask_applies(
 # was OFFERED and correctly declined.
 #
 # Every phrasing names its job with a definite reference ("the camera kit price
-# watch", "that spotting scope price job"), and most carry a resumption word — the
-# message is the only evidence the classifier has that anything is already running,
-# since the snapshot renders the skill registry and never the standing collections.
+# watch", "that spotting scope price job") — the message is the only evidence the
+# classifier has that anything is already running, since the snapshot renders the
+# skill registry and never the standing collections.
 #
 # And every SUBJECT is one a seeded skill plainly covers — a listing page's price,
 # or a cafe or bakery menu.  That is load-bearing rather than decorative: a subject
@@ -266,33 +266,45 @@ async def test_mixed_chat_plus_covered_ask_applies(
 # clause), so the sample would score green while proving nothing about the boundary.
 # With coverage granted, the ONLY thing left that can hold these samples idle is
 # that the ask changes a job rather than starting one.
+#
+# THE VOCABULARY IS DELIBERATELY EXPLICIT (code-owner ruling): every phrasing says
+# NOTIFICATIONS, and none is built on a bare start/begin/ping-me verb.  The loose
+# register these replaced — "you can start pinging me about the cafe specials
+# again", "notify me when the modular listing watch finds something, from now on" —
+# is exactly what the leaking draws seized on, reading the start-verb as the ask
+# ("they are asking to start this skill … they haven't provided a URL").  The
+# ruling: "make the fixtures just talk about 'notifications' — if we have to be
+# strict in the terminology to make it work we can do that, we don't need to fight
+# ourselves here."  So the register is settled product vocabulary, not a hedge, and
+# the variation that remains is in the VERB around it (turn on/off · switch ·
+# enable/disable · put back on) rather than in what the ask is called.
 
 # On-direction — the measured miss.
 _NOTIFY_ON_POOL = [
     "turn notifications on for the camera kit price watch",
-    "you can start pinging me about the cafe specials again",
-    "switch the alerts back on for the kayak rental price watch",
-    "notify me when the modular listing watch finds something, from now on",
+    "turn on notifications for the cafe specials",
+    "switch notifications back on for the kayak rental price watch",
+    "turn the modular listing watch's notifications on",
     "turn the notifications back on for that spotting scope price job",
-    "go ahead and message me when the bakery specials list updates",
-    "yeah, tell me about the grinder price watch from now on",
+    "can you enable notifications on the bakery specials watch",
+    "notifications on for the grinder price watch, please",
     "put notifications back on for the pinball listing watch",
-    "start letting me know what the cafe menu job turns up",
-    "turn the pings back on for the vintage synth price watch",
+    "enable notifications for the cafe menu job",
+    "switch the vintage synth price watch's notifications on",
 ]
 
 # Off-direction — the same switch, the other way.
 _NOTIFY_OFF_POOL = [
     "turn notifications off for the camera kit price watch",
-    "stop pinging me about the cafe specials",
-    "switch the alerts off on the kayak rental price watch",
-    "quiet the modular listing watch down — keep it running though",
-    "you don't need to message me about the bakery specials any more",
+    "turn off notifications for the cafe specials",
+    "switch notifications off for the kayak rental price watch",
+    "turn the modular listing watch's notifications off",
     "turn the notifications off for that spotting scope price job",
-    "stop telling me every time the grinder price watch runs",
-    "mute the pinball listing watch, but keep collecting",
-    "no more pings from the cafe menu job please",
-    "turn the alerts off on the vintage synth price watch",
+    "can you disable notifications on the bakery specials watch",
+    "notifications off for the grinder price watch, please",
+    "shut the notifications off for the pinball listing watch",
+    "disable notifications for the cafe menu job",
+    "switch the vintage synth price watch's notifications off",
 ]
 
 
