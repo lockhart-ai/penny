@@ -170,12 +170,21 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
 # four stable strings replace nine drifting ones).  Load-bearing qualifiers
 # live in the definitions themselves: learn exists ONLY when the message
 # carries instructions; idle owns everything deferred.
+#
+# IDLE's definition carries the TASK-LIFETIME boundary too, which is why it says
+# what it says.  Each door out of idle states the boundary in its own terms — the
+# three below are keyed to STARTING a task, and each names changing-what-exists as
+# not that — but a condition is only read while its own bullet is being weighed,
+# and a draw that ruled a door out early never reaches the rest.  On the DEFINITION
+# it is read once, on every from-idle draw, before any edge is considered: what the
+# state IS rather than the same clause repeated at each door.
 STATE_DEFINITIONS: dict[ConversationState, str] = {
     ConversationState.IDLE: (
-        "ordinary conversation — chat, questions, passing mentions, anything put off "
-        "for later, and requests the assistant handles right now in the conversation "
-        "(looking something up, answering, saving or recalling something); nothing new "
-        "is set up to keep running afterward"
+        "ordinary conversation: chat, questions, passing mentions, anything put off for "
+        "later, and every request handled right now in the conversation — including "
+        "commands about things that already exist. A message with no standing or "
+        "scheduling component stays here, whatever it resembles: skills exist only for "
+        "tasks that keep running on their own"
     ),
     ConversationState.ELICIT: (
         "the user wants something set up to keep running on its own, no known skill "

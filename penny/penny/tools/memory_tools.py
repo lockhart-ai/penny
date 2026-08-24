@@ -1808,10 +1808,13 @@ class CollectionSetTool(MemoryTool):
         "time). `skill` (+ `params`) attaches a learned skill — its steps become "
         "the collection's routine. `schedule` says when it runs, as one recurrence "
         'rule: "FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
-        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify`=true tells the '
-        "user about new/changed entries. Plain storage needs no call at all — "
-        "collection_write creates storage automatically; use collection_set for "
-        "jobs and config."
+        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify` turns THIS '
+        "collection's notifications on or off — true tells the user about "
+        "new/changed entries, false stops telling them while the job keeps "
+        "running. It is the per-collection switch: turning it off silences this "
+        "one collection and nothing else, and leaves the collection itself in "
+        "place. Plain storage needs no call at all — collection_write creates "
+        "storage automatically; use collection_set for jobs and config."
     )
     parameters = {
         "type": "object",

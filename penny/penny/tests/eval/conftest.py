@@ -1024,11 +1024,20 @@ async def _embed_seeds(penny: Penny) -> None:
     """Vectorize seeded memory so similarity reads behave like prod.
 
     Penny's startup backfill ran on the empty DB before we seeded; re-run it so
-    seeded descriptions/entries get embeddings that ``read_similar`` /
+    seeded entries, descriptions and MESSAGES get embeddings that ``read_similar`` /
     resolve-by-meaning can match.
+
+    All THREE of production's startup backfills, because a seed can lay down any of the
+    three embedding-bearing shapes and this is the one place they are vectorized.  The
+    messagelog leg was missing, so a case that seeded a conversation turn and then asked
+    the model to recall it was UNREACHABLE: the read was aimed correctly, the vectorless
+    row could not rank, and the case scored 0.00 with nothing in the transcript to say
+    why (the eval-audit fleet hit this class three times).  A seed's world must be the
+    world production would have.
     """
     await penny._backfill_memory_embeddings(_EMBED_BATCH)
     await penny._backfill_description_embeddings(_EMBED_BATCH)
+    await penny._backfill_message_embeddings(_EMBED_BATCH)
 
 
 def _assert_threshold(
