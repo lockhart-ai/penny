@@ -28,7 +28,16 @@ USER's own habit, topic twins of real asks — must not be chased into a teach
 loop, and must not be chased into a false apply once the registry has something
 to offer.  The UNCOVERED and CROSS-DOMAIN asks under a POPULATED registry: the
 false-apply guard, which every canonical idle → elicit world misses by
-construction because each asserts an EMPTY registry.  The MIXED message that
+construction because each asserts an EMPTY registry.  The ADJUSTMENT boundary,
+both directions: the skill-gated doors are about STARTING a task (#1927), so an
+ask that changes how something already set up behaves — turning one running job's
+notifications on, or off — holds idle while a watch-shaped routine sits in Known
+skills looking like it covers the subject.  Those two cases are the only ones here
+whose world stands a JOB up, and both directions of the guard are read off the same
+`## Jobs already running` section: the notify pair's subjects ARE listed there, while
+the two elicit cases seed none — so their section says `(none)`, and elicit is still
+drawn for a genuine setup ask.  A section that over-claimed would show up there, as an
+uncovered ask reading like a reference to something already running.  The MIXED message that
 carries chat and a covered ask together, where the routine half wins.  Mid-
 teaching STEPS arriving with watch-adjacent candidates rendered, so existing
 skills cannot demote teaching something new.  And the post-failure LEARN park,
@@ -44,7 +53,15 @@ from __future__ import annotations
 import pytest
 
 from penny.conversation_machine import ConversationState
-from penny.tests.eval.conftest import ClassifierEval, eval_skill
+from penny.database import Database
+from penny.database.skills import (
+    SkillStep,
+    SkillSubKind,
+    SkillSubstitution,
+    derive_collection_name,
+    render_skill,
+)
+from penny.tests.eval.conftest import ClassifierEval, Seeder, eval_skill
 
 pytestmark = pytest.mark.eval
 
@@ -88,6 +105,7 @@ async def test_idle_holds_on_chat_and_passing_mentions(
 # ── A populated registry (price-watch + a distractor skill) ──────────────────
 
 _PRICE_SKILL = "watch a listing price for changes"
+_CAFE_SKILL = "collect daily cafe specials"
 _SEEDED_SKILLS = [
     eval_skill(
         _PRICE_SKILL,
@@ -95,10 +113,26 @@ _SEEDED_SKILLS = [
         {"url": "the product or listing page whose price to watch"},
     ),
     eval_skill(
-        "collect daily cafe specials",
+        _CAFE_SKILL,
         "read a cafe or bakery menu page and save the day's specials each morning",
         {"url": "the cafe's menu page"},
     ),
+]
+
+# The program a seeded JOB stores — one browse step whose page is the routine's own `url`
+# parameter, so `render_skill` writes the bound page into the recipe the way the
+# instantiation seam does.  Both seeded routines declare the same one parameter, so one
+# shape serves either.
+_SEED_STEPS = [
+    SkillStep(
+        ordinal=1,
+        source_ordinal=1,
+        tool="browse",
+        arguments={"queries": ["https://example.test"], "extract": "the value"},
+        substitutions=[
+            SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="url")
+        ],
+    )
 ]
 
 # Uncovered direction — routine setups CLEARLY outside both seeded skills
@@ -230,6 +264,179 @@ async def test_mixed_chat_plus_covered_ask_applies(
         expected_skill=_PRICE_SKILL,
         seed_skills=_SEEDED_SKILLS,
         min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── The adjustment boundary: a job that is ALREADY running ───────────────────
+#
+# The skill-gated doors are about STARTING a task (#1927), so an ask that changes
+# how something already set up behaves has to stay idle — even, and especially,
+# while a watch-shaped routine sits in Known skills looking like it covers the
+# subject.  That resemblance is where the measured failure pivoted: asked to turn
+# one running job's notifications on, the draw reasoned "this is presumably
+# setting up some monitoring… skill covers, page missing → request" in 5 of 5
+# samples across two rounds, while the same pair's off-direction held idle 5 of 5.
+#
+# Both pools run against the SEEDED registry rather than an empty one, because an
+# empty registry proves nothing here: apply and request are withheld structurally
+# when there are no candidates (``presented_edges``), so a hold measured there is
+# a hold with no door to decline.  What these cases claim is that the request door
+# was OFFERED and correctly declined.
+#
+# Every phrasing names its job with a definite reference ("the camera kit price
+# watch", "that spotting scope price job") — the message is the only evidence the
+# classifier has that anything is already running, since the snapshot renders the
+# skill registry and never the standing collections.
+#
+# And every SUBJECT is one a seeded skill plainly covers — a listing page's price,
+# or a cafe or bakery menu.  That is load-bearing rather than decorative: a subject
+# no seeded skill covers can hold idle by the pre-existing no-coverage route (and
+# would be ruled out of elicit by that edge's own "no known skill covers it"
+# clause), so the sample would score green while proving nothing about the boundary.
+# With coverage granted, the ONLY thing left that can hold these samples idle is
+# that the ask changes a job rather than starting one.
+#
+# THE VOCABULARY IS DELIBERATELY EXPLICIT (code-owner ruling): every phrasing says
+# NOTIFICATIONS, and none is built on a bare start/begin/ping-me verb.  The loose
+# register these replaced — "you can start pinging me about the cafe specials
+# again", "notify me when the modular listing watch finds something, from now on" —
+# is exactly what the leaking draws seized on, reading the start-verb as the ask
+# ("they are asking to start this skill … they haven't provided a URL").  The
+# ruling: "make the fixtures just talk about 'notifications' — if we have to be
+# strict in the terminology to make it work we can do that, we don't need to fight
+# ourselves here."  So the register is settled product vocabulary, not a hedge, and
+# the variation that remains is in the VERB around it (turn on/off · switch ·
+# enable/disable · put back on) rather than in what the ask is called.
+
+# THE SUBJECTS EXIST AS JOBS.  Each phrasing names a job that is really in the seeded
+# world, standing as a CONFIGURED collection so the snapshot's `## Jobs already running`
+# section renders it (#1927) — because a subject the section does NOT list is a subject
+# holding idle would be WRONG about: with nothing running by that name, "turn its
+# notifications on" has no existing thing to adjust.  Before the section existed the
+# reader had to guess, and the leaks are it guessing rationally: "they say 'the modular
+# listing watch' probably already set up?  But there's no known skill currently running."
+#
+# The container names are DERIVED, not written — `derive_collection_name` is the same
+# production function the instantiation seam names a job with, so the rows carry the names
+# a real teach-then-apply round would have produced (and stay correct if its reading budget
+# ever moves).  Resolving "the camera kit price watch" to
+# `watch-a-listing-price-for-changes-foxden-example-camera-kit` is a READ the turn is
+# expected to make, exactly as it is in the end-to-end pair; asking with the container's
+# own name would hand the model half the case.
+_JOB_PAGES = [
+    (_PRICE_SKILL, "foxden.example/camera-kit"),
+    (_CAFE_SKILL, "driftline.example/specials"),
+    (_PRICE_SKILL, "harborkayak.example/rentals"),
+    (_PRICE_SKILL, "brasscat.example/modular"),
+    (_PRICE_SKILL, "optics.example/spotting-scope"),
+    (_CAFE_SKILL, "pinehollow.example/bakery"),
+    (_PRICE_SKILL, "beanhouse.example/grinders"),
+    (_PRICE_SKILL, "brasscat.example/pinball"),
+    (_CAFE_SKILL, "harborlight.example/menu"),
+    (_PRICE_SKILL, "brasscat.example/synths"),
+]
+
+_JOB_SCHEDULE = "FREQ=DAILY;BYHOUR=8"
+
+
+def _standing_jobs(notify: bool) -> Seeder:
+    """The ten jobs both pools speak about, standing in the world as configured
+    collections — one per phrasing, in phrasing order, all notifying the same way.
+
+    ``notify`` is the direction's own world: the ON pool asks to wake jobs that are
+    SILENT, the OFF pool to silence jobs that are TALKING, so each case's rendered row
+    carries the state its ask is about changing (the end-to-end pair's `_SILENT_FINDS`
+    shape).  A job whose notifications already matched the ask would be a different case.
+
+    A DIRECT seed rather than the production instantiation seam: the classifier reads a
+    job's name, routine, notify flag and schedule and never its program, so standing the
+    full seam up here would build machinery no scored check can see.  What is kept faithful
+    is everything the row is selected and rendered BY — the derived name, the routine's
+    registry name, the bound value, an RRULE schedule, and a program rendered by the
+    production `render_skill` (a prose prompt would be a row the collector reads as a
+    config defect, #1916)."""
+
+    def seed(db: Database) -> None:
+        for skill, page in _JOB_PAGES:
+            db.memories.create_collection(
+                derive_collection_name(skill, [page]),
+                f"what {page} says",
+                extraction_prompt=render_skill(_SEED_STEPS, {"url": page}),
+                schedule=_JOB_SCHEDULE,
+                notify=notify,
+                skill_name=skill,
+                skill_params={"url": page},
+            )
+
+    return seed
+
+
+# On-direction — the measured miss.
+_NOTIFY_ON_POOL = [
+    "turn notifications on for the camera kit price watch",
+    "turn on notifications for the cafe specials",
+    "switch notifications back on for the kayak rental price watch",
+    "turn the modular listing watch's notifications on",
+    "turn the notifications back on for that spotting scope price job",
+    "can you enable notifications on the bakery specials watch",
+    "notifications on for the grinder price watch, please",
+    "put notifications back on for the pinball listing watch",
+    "enable notifications for the cafe menu job",
+    "switch the vintage synth price watch's notifications on",
+]
+
+# Off-direction — the same switch, the other way.
+_NOTIFY_OFF_POOL = [
+    "turn notifications off for the camera kit price watch",
+    "turn off notifications for the cafe specials",
+    "switch notifications off for the kayak rental price watch",
+    "turn the modular listing watch's notifications off",
+    "turn the notifications off for that spotting scope price job",
+    "can you disable notifications on the bakery specials watch",
+    "notifications off for the grinder price watch, please",
+    "shut the notifications off for the pinball listing watch",
+    "disable notifications for the cafe menu job",
+    "switch the vintage synth price watch's notifications off",
+]
+
+
+async def test_switching_a_running_jobs_notifications_on_holds_idle(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Report-only.  Turning a running job's notifications ON is an adjustment to
+    something already set up, not an ask to start a skill — so the machine holds
+    idle with the request door on offer."""
+    await classifier_eval(
+        case_id="idle-hold-notify-on",
+        state=ConversationState.IDLE,
+        pool=_NOTIFY_ON_POOL,
+        expected=ConversationState.IDLE,
+        seed=_standing_jobs(notify=False),
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_switching_a_running_jobs_notifications_off_holds_idle(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Report-only.  The same switch, the other way: silencing a running job is
+    still an adjustment, so it holds idle with the request door on offer.
+
+    Both directions are measured because they are not one claim: the pair's
+    off-direction already held 5 of 5 while the on-direction fell, so scoring only
+    the miss would leave the direction a boundary rewrite is most likely to break
+    unmeasured."""
+    await classifier_eval(
+        case_id="idle-hold-notify-off",
+        state=ConversationState.IDLE,
+        pool=_NOTIFY_OFF_POOL,
+        expected=ConversationState.IDLE,
+        seed=_standing_jobs(notify=True),
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=None,
         family=_FAMILY,
     )
 

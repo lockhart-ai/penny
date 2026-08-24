@@ -41,6 +41,7 @@ from penny.conversation_machine import (
     RoundFraming,
     RoundShortfall,
     SkillCandidate,
+    StandingJob,
     StateClassifier,
     build_snapshot,
     conversation_prompt,
@@ -210,6 +211,9 @@ def test_render_idle_slice_whole():
         "## Known skills\n"
         "(none)\n"
         "\n"
+        "## Jobs already running\n"
+        "(none)\n"
+        "\n"
         "## The user's newest message\n"
         "hey can you keep an eye on the harbor ferry timetable for me?\n"
         "\n"
@@ -246,6 +250,9 @@ def test_render_parked_elicit_slice_whole():
         "hey can you keep an eye on the harbor ferry timetable for me?\n"
         "\n"
         "## Known skills\n"
+        "(none)\n"
+        "\n"
+        "## Jobs already running\n"
         "(none)\n"
         "\n"
         "## The user's newest message\n"
@@ -299,6 +306,9 @@ def test_render_parked_learn_slice_whole():
         "## Known skills\n"
         "(none)\n"
         "\n"
+        "## Jobs already running\n"
+        "(none)\n"
+        "\n"
         "## The user's newest message\n"
         "try again — the page should load now\n"
         "\n"
@@ -350,6 +360,9 @@ def test_render_parked_learn_with_candidates_whole():
         '- "watch a listing price for changes" — checks a page and records the current '
         "price (needs: url — the listing page to watch)\n"
         "\n"
+        "## Jobs already running\n"
+        "(none)\n"
+        "\n"
         "## The user's newest message\n"
         "yeah, check it every morning\n"
         "\n"
@@ -379,19 +392,33 @@ def test_render_idle_with_candidates_whole():
     its coverage condition + the SKILL: directive.  A parameterless candidate
     renders without the needs tail, byte-identical.
 
-    The apply condition states the SKILL-DOES-ONCE fact (code-owner authored): a skill
-    carries out its task a single time, and a schedule and notifications are added when
-    it is set up — so a routine described as doing the job once covers an ask to do it
-    repeatedly.  The measured class it answers is a cold ask for a recurring watch drawn
-    as elicit or request because the covering routine's own description reads as a
-    one-shot; stating where cadence LIVES is what makes the two comparable.
+    Both skill-gated conditions are keyed to STARTING a task (#1927, code-owner ruling),
+    and both carry the same boundary word for word: changing how something already set up
+    behaves — its notifications, when it runs, what it covers — is not asking to start it.
+    Carrying it twice is what the render makes legible: a reader who rules apply out for
+    missing information reads request next, and the measured failure was exactly that
+    fall.
 
-    A WATCHED DELETION rides with it: the old "mere resemblance to a skill is not
-    coverage" clause is gone.  It argued against a sibling condition from inside this
-    one, which the choice-menu discipline above ``TRANSITIONS`` forbids — request is
-    right there in the same list saying what it is.  What it guarded (a skill that
-    merely looks related being applied) is the classifier suite's idle-apply-hold cases'
-    to gate, and they are its gate now.
+    This is the BEST MEASURED wording rather than a fix, and the render is where that is
+    visible.  Three rounds tried to close the gap it leaves — an ask to turn one running
+    job's notifications on holds 3 of 5 here — and each cost more than it bought: a
+    fourth boundary clause took the target to 0.40 and cross-domain to 0.60; a schema
+    statement ("jobs already running are not listed here") left the target at 0.40 and
+    took the uncovered-elicit guard to 0.60.  Both rejections are recorded above
+    ``TRANSITIONS`` with their numbers.  The residual is EVIDENTIAL, not verbal: the
+    leaking draws never reach the boundary, they stop at whether the job exists — "there's
+    no known skill currently running" — and this slice renders the registry and no
+    standing jobs, so the answer is not in it to be read.  A snapshot section carrying the
+    jobs is the recorded next step (#1927).
+
+    A WATCHED DELETION rides with it: the once-covers-repeatedly sentences ("A skill does
+    the task once.  The schedule and notifications are added when it is set up…") are gone
+    from both conditions.  They made a one-shot routine description comparable to an
+    ongoing ask under the old COVERAGE keying, but under the START keying their second
+    sentence asserts the very thing this boundary denies — that notifications are settled
+    by setting a job up.  What they guarded (an ongoing ask read as uncovered) is the
+    classifier suite's idle → apply / idle → request cases' to gate, and they are its gate
+    now.
 
     This render is also the ONE place the learn condition's sibling clause is legible —
     apply, request and learn in one list — which is why it is worded the way it is
@@ -409,6 +436,9 @@ def test_render_idle_with_candidates_whole():
         '- "watch a listing price for changes" — checks a page and records the current '
         "price (needs: url — the listing page to watch)\n"
         "\n"
+        "## Jobs already running\n"
+        "(none)\n"
+        "\n"
         "## The user's newest message\n"
         "what's the ferry price at today?\n"
         "\n"
@@ -419,18 +449,16 @@ def test_render_idle_with_candidates_whole():
         "is set up to keep running afterward\n"
         "\n"
         "## Transitions\n"
-        "- apply — one of the known skills does what they are asking for, and their "
-        "message contains all the information for the skill's parameters. A skill does "
-        "the task once. The schedule and notifications are added when it is set up, so "
-        "a skill that does the task once covers an ask to do it repeatedly. Add a "
-        "second line naming that skill: SKILL: <its name, exactly as quoted in Known "
-        "skills>\n"
-        "- request — a known skill looks like it covers what they are asking "
-        "for, but something that skill needs is missing from their message. A skill "
-        "does the task once. The schedule and notifications are added when it is set "
-        "up, so a skill that does the task once covers an ask to do it repeatedly. Add "
-        "a second line naming that skill: SKILL: <its name, exactly as quoted in Known "
-        "skills>\n"
+        "- apply — their message asks to set one of the known skills running, and "
+        "supplies everything that skill needs. Changing how something already set up "
+        "behaves — its notifications, when it runs, what it covers — is not asking to "
+        "start it. Add a second line naming that skill: SKILL: <its name, exactly as "
+        "quoted in Known skills>\n"
+        "- request — their message asks to set one of the known skills running, but "
+        "something that skill needs is missing from their message. Changing how "
+        "something already set up behaves — its notifications, when it runs, what it "
+        "covers — is not asking to start it. Add a second line naming that skill: "
+        "SKILL: <its name, exactly as quoted in Known skills>\n"
         "- learn — the user is teaching a new routine: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
@@ -442,6 +470,89 @@ def test_render_idle_with_candidates_whole():
         "remembering the result does not make it ongoing\n"
         "- idle — in all other cases"
     )
+
+
+def test_render_standing_jobs_section_whole():
+    """The jobs-already-running render, whole (#1927): one row per CONFIGURED collection,
+    carrying the anchor a message's words resolve to, the routine it runs, which way its
+    notifications are set, and its schedule verbatim.
+
+    This section is the answer to a question the slice used to leave unanswered.  Both
+    skill-gated doors turn on whether the ask STARTS something, and a reader shown only
+    the SKILL registry has no way to tell a job that already exists from one being asked
+    for — so it inferred, verbatim: "they say 'the modular listing watch' probably already
+    set up?  But there's no known skill currently running."  Three wording rounds tried to
+    answer that in prose and each broke a neighbouring edge; this renders the fact instead.
+
+    Every clause states BOTH directions — an unattached job says so, notifications say
+    which way they are set, an unscheduled job says that — on the skills section's own
+    rule: a clause that disappears when it is false is a clause the reader has to infer
+    from again, which is the whole defect.  The second render is the empty world, which is
+    the case that had to be stated rather than left as a missing section."""
+    running = MachineSnapshot(
+        state=ConversationState.IDLE,
+        skill_candidates=[_SKILL],
+        standing_jobs=[
+            StandingJob(
+                name="watch-a-listing-price-for-changes-harborkayak-example-rentals",
+                skill_name="watch a listing price for changes",
+                notify=False,
+                schedule="FREQ=DAILY;BYHOUR=8",
+            ),
+            StandingJob(name="a-container-the-user-built"),
+        ],
+    )
+    assert render_classifier_content(running, "turn notifications on for the kayak watch") == (
+        "## The assistant's last message\n"
+        "(none)\n"
+        "\n"
+        "## Known skills\n"
+        '- "watch a listing price for changes" — checks a page and records the current '
+        "price (needs: url — the listing page to watch)\n"
+        "\n"
+        "## Jobs already running\n"
+        '- "watch-a-listing-price-for-changes-harborkayak-example-rentals" — runs "watch '
+        'a listing price for changes" · notifications off · FREQ=DAILY;BYHOUR=8\n'
+        '- "a-container-the-user-built" — no routine attached · notifications off · no '
+        "schedule\n"
+        "\n"
+        "## The user's newest message\n"
+        "turn notifications on for the kayak watch\n"
+        "\n"
+        "## Current state\n"
+        "idle — ordinary conversation — chat, questions, passing mentions, anything put "
+        "off for later, and requests the assistant handles right now in the conversation "
+        "(looking something up, answering, saving or recalling something); nothing new "
+        "is set up to keep running afterward\n"
+        "\n"
+        "## Transitions\n"
+        "- apply — their message asks to set one of the known skills running, and "
+        "supplies everything that skill needs. Changing how something already set up "
+        "behaves — its notifications, when it runs, what it covers — is not asking to "
+        "start it. Add a second line naming that skill: SKILL: <its name, exactly as "
+        "quoted in Known skills>\n"
+        "- request — their message asks to set one of the known skills running, but "
+        "something that skill needs is missing from their message. Changing how "
+        "something already set up behaves — its notifications, when it runs, what it "
+        "covers — is not asking to start it. Add a second line naming that skill: "
+        "SKILL: <its name, exactly as quoted in Known skills>\n"
+        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "'here's how', 'new job for you') and their message carries the steps — what to "
+        "read, what to look for, what to remember. When they are teaching, choose learn "
+        "even if a known skill looks close — their steps are the new way to do it.\n"
+        "- elicit — they are asking to set up something that keeps running on its own "
+        "after this conversation — a job that watches, repeats, or fires again later "
+        "without being asked — and no known skill covers it. A request to do something "
+        "once, right now, is not this, however many steps it takes — and saving or "
+        "remembering the result does not make it ongoing\n"
+        "- idle — in all other cases"
+    )
+    # The notify clause the other way, and the empty world stated rather than absent.
+    assert (
+        StandingJob(name="j", skill_name="s", notify=True, schedule="FREQ=HOURLY").render()
+        == '- "j" — runs "s" · notifications on · FREQ=HOURLY'
+    )
+    assert "## Jobs already running\n(none)\n" in render_classifier_content(_IDLE_SNAPSHOT, _ASK)
 
 
 def test_render_parked_request_slice_whole():
@@ -483,6 +594,9 @@ def test_render_parked_request_slice_whole():
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
         "price (needs: url — the listing page to watch)\n"
+        "\n"
+        "## Jobs already running\n"
+        "(none)\n"
         "\n"
         "## The user's newest message\n"
         "harborkayak.example/rentals\n"
@@ -537,6 +651,9 @@ def test_render_a_binding_that_has_nothing_yet_whole():
         "## Known skills\n"
         '- "watch-a-price" — records a price\n'
         "\n"
+        "## Jobs already running\n"
+        "(none)\n"
+        "\n"
         "## The user's newest message\n"
         "the usual one\n"
         "\n"
@@ -574,6 +691,9 @@ def test_a_round_with_no_binding_renders_no_waiting_section():
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
         "price (needs: url — the listing page to watch)\n"
+        "\n"
+        "## Jobs already running\n"
+        "(none)\n"
         "\n"
         "## The user's newest message\n"
         "the usual one\n"
@@ -777,13 +897,43 @@ def test_build_snapshot_offers_every_skill_with_no_relevance_gate(db):
     ruling): a relevance gate here would hide the covering skill exactly like
     the gates #1471 removed, and this list is strictly smaller than the full
     recipes chat already carries every turn.  A skill with no description vector
-    is offered like any other, since nothing is compared."""
+    is offered like any other, since nothing is compared.
+
+    The STANDING JOBS come off the other registry on the same rule (#1927), and WHICH
+    collections count as running is the dispatcher's own condition rather than a second
+    definition beside it: a configured row (it carries an ``extraction_prompt``) is a job,
+    while an INERT collection is storage the user built with no job attached (#1629) and an
+    ARCHIVED one is a retired tombstone — neither is something an ask could be about
+    changing, so neither renders as running."""
     _seed_skill(db, "watch a listing price for changes", "record a listing's price")
     _seed_skill(db, "collect daily cafe specials", "save a cafe's daily specials")
+    db.memories.create_collection(
+        "watch-a-listing-price-for-changes-harborkayak-example-rentals",
+        "the kayak rental page's price",
+        extraction_prompt="1. browse(queries=['harborkayak.example/rentals'])",
+        schedule="FREQ=DAILY;BYHOUR=8",
+        notify=True,
+        skill_name="watch a listing price for changes",
+    )
+    db.memories.create_collection("a-container-the-user-built", "storage, no job attached")
+    db.memories.create_collection(
+        "a-retired-job",
+        "a job the user is done with",
+        extraction_prompt="1. browse(queries=['pinehollow.example/rates'])",
+    )
+    db.memories.archive("a-retired-job")
     snapshot = build_snapshot(db, state=ConversationState.IDLE, message=_PRICE_ASK)
     assert [candidate.name for candidate in snapshot.skill_candidates] == [
         "collect daily cafe specials",
         "watch a listing price for changes",
+    ]
+    assert snapshot.standing_jobs == [
+        StandingJob(
+            name="watch-a-listing-price-for-changes-harborkayak-example-rentals",
+            skill_name="watch a listing price for changes",
+            notify=True,
+            schedule="FREQ=DAILY;BYHOUR=8",
+        )
     ]
     assert ConversationState.APPLY in presented_edges(snapshot)
 
@@ -791,10 +941,16 @@ def test_build_snapshot_offers_every_skill_with_no_relevance_gate(db):
 def test_build_snapshot_on_an_empty_registry_withholds_the_gated_states(db):
     """An empty registry offers no candidates, so the SKILL-GATED states are
     structurally withheld — the cold-start shape, reached by there being nothing
-    to offer rather than by anything failing."""
+    to offer rather than by anything failing.
+
+    Nothing is running either, and that withholds NOTHING (#1927): a message can refer to
+    a job whether or not one exists, so the empty case is rendered as the stated
+    ``(none)`` rather than expressed by an absent section."""
     snapshot = build_snapshot(db, state=ConversationState.IDLE, message=_PRICE_ASK)
     assert snapshot.skill_candidates == []
+    assert snapshot.standing_jobs == []
     assert ConversationState.APPLY not in presented_edges(snapshot)
+    assert "## Jobs already running\n(none)" in render_classifier_content(snapshot, _PRICE_ASK)
 
 
 # ── The durable half: state held across turns, every move recorded ────────────

@@ -219,15 +219,66 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # says which messages carry no correction, which is still a statement about what IT
 # is, and it is there because a nearby shape was measured landing here wrongly.
 #
-# The two SKILL-GATED conditions carry the same once-covers-repeatedly sentences, word
-# for word, and that is not one edge describing another: it is one fact about what a
-# SKILL is — it does the task once, and the schedule is added when it is set up — which
-# both conditions have to be read against, since both ask whether a known skill covers
-# the ask.  It was measured twice.  Added to apply, it cured the miss where an ongoing
-# ask read as uncovered; request then took the identical fall (the draw ruled apply out
-# for missing information, read the request bullet, and reasoned "neither skill sets up
-# repeats, so no skill covers it" — into elicit).  A reader who rules out one skill-gated
-# option and moves to the next must not lose the fact that made the first one legible.
+# The two SKILL-GATED conditions are keyed to STARTING a task (#1927, code-owner ruling:
+# "request is only about starting a new task; changes to existing collections don't
+# count").  Both ask whether the message asks to SET A KNOWN SKILL RUNNING — apply when it
+# also supplies everything that skill needs, request when something is missing — and both
+# carry the same boundary sentence, word for word: changing how something ALREADY SET UP
+# behaves is not asking to start it.  Carrying it twice is not one edge describing
+# another; it is one fact about what these two doors are FOR, and a reader who rules apply
+# out for missing information reads request next.
+#
+# THIS IS THE BEST MEASURED WORDING, AND IT IS NOT A FIX.  Three rounds tried to close the
+# gap it leaves and every one cost more than it bought, so the text stands where round 1
+# left it and the residual is recorded rather than papered over:
+#
+#   R1  this text          target 0.60 · every guard 1.00
+#   R2  + "starting to hear about a job is not starting the job"
+#                          target 0.40 · idle → elicit cross-domain 1.00 → 0.60
+#   R3  wholesale restatement, + "jobs already running are not listed here"
+#                          target 0.40 · idle → elicit uncovered 1.00 → 0.60
+#   R4  reverted to R1
+#
+# The target is an ask to turn one RUNNING job's notifications on, which this wording
+# holds 3 times in 5; its off-direction holds 5 of 5, and that asymmetry is the finding.
+# Only the ON direction can be phrased as starting something, and the two leaks do not
+# argue with the boundary — they never reach it.  Both stop at a gap this text cannot
+# fill: whether the job the message names EXISTS.  Verbatim, from the draw that leaked:
+# "they say 'the modular listing watch' probably already set up?  But there's no known
+# skill currently running." — the reader looked, and the slice renders the skill REGISTRY
+# and no standing jobs, so absence was the only evidence available and it read as decisive.
+# THAT is why no condition text closes this: the reader must VERIFY a job exists, and a
+# sentence cannot substitute for the lookup.  The recorded next step is a snapshot that
+# renders the standing jobs, which turns the read into exactly that lookup (#1927; the
+# code owner rules on it separately).
+#
+# WATCHED DELETIONS — three formulations, each with what it measured:
+#
+# (1) The once-covers-repeatedly sentences ("A skill does the task once.  The schedule and
+#     notifications are added when it is set up…").  They earned their place under the old
+#     COVERAGE keying, making a one-shot routine description comparable to an ongoing ask,
+#     but under the START keying their second sentence asserts the thing the boundary must
+#     deny — that notifications are what setting a job up settles.  Cost measured: none.
+#     Every guard case held at 1.00 without them.
+#
+# (2) "That holds even when the change itself is phrased as starting something: starting to
+#     hear about a job is not starting the job."  It treated a start-VERB as the thing to
+#     correct, when the leaks' actual gap was not knowing the job existed.  Cost: the target
+#     fell 0.60 → 0.40 AND cross-domain fell 1.00 → 0.60 — two cross-domain draws ruled out
+#     apply and request and jumped straight to the default ("this is a request to perform
+#     some action that does not match a skill, so should default to idle"), never reaching
+#     the elicit bullet, whose own wording never changed.  These two render FIRST, so a
+#     clause added here is paid for by an edge further down the list.
+#
+# (3) "Jobs already running are not listed here, so believe them when they speak of one as
+#     going."  The schema statement — true, and aimed at the real gap.  Cost: the target did
+#     not move (0.40) and it broke the OTHER neighbour, idle → elicit uncovered 1.00 → 0.60,
+#     which is its own inverse: an uncovered SETUP ask read as a reference to a job already
+#     running.  Licensing the assumption in prose cannot distinguish the two, because the
+#     distinction is a fact about the world and not about the words.
+#
+# What all three guarded is the idle → apply / idle → request / idle → elicit cases' to
+# gate, and they are its gate now.
 #
 # The IDLE → LEARN condition is the ONE edge whose wording differs from its elicit-parked
 # twin, and the one that names a sibling outright (code-owner authored, after the #1898
@@ -244,19 +295,18 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # a task being worked on, and the correction shape is what that edge is about.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "one of the known skills does what they are asking for, and their message "
-        "contains all the information for the skill's parameters. A skill does the "
-        "task once. The schedule and notifications are added when it is set up, so a "
-        "skill that does the task once covers an ask to do it repeatedly. Add a second "
-        f"line naming that skill: {SKILL_TAG} <its name, exactly as quoted in Known skills>"
+        "their message asks to set one of the known skills running, and supplies "
+        "everything that skill needs. Changing how something already set up behaves — "
+        "its notifications, when it runs, what it covers — is not asking to start it. "
+        f"Add a second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
+        "in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.REQUEST): (
-        "a known skill looks like it covers what they are asking for, but "
-        "something that skill needs is missing from their message. A skill does "
-        "the task once. The schedule and notifications are added when it is set up, "
-        "so a skill that does the task once covers an ask to do it repeatedly. Add a "
-        f"second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
-        "in Known skills>"
+        "their message asks to set one of the known skills running, but something that "
+        "skill needs is missing from their message. Changing how something already set "
+        "up behaves — its notifications, when it runs, what it covers — is not asking "
+        f"to start it. Add a second line naming that skill: {SKILL_TAG} <its name, "
+        "exactly as quoted in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up something that keeps running on its own after this "
@@ -331,6 +381,7 @@ _LAST_TURN_HEADER = "## The assistant's last message"
 _TASK_HEADER = "## The task being worked on"
 _WAITING_HEADER = "## The details this task is waiting on"
 _SKILLS_HEADER = "## Known skills"
+_JOBS_HEADER = "## Jobs already running"
 _MESSAGE_HEADER = "## The user's newest message"
 _CURRENT_STATE_HEADER = "## Current state"
 _TRANSITIONS_HEADER = "## Transitions"
@@ -350,6 +401,19 @@ _WAITING_NOTHING_GIVEN = "- nothing yet"
 _WAITING_MISSING_HEADER = "still needed:"
 _WAITING_MISSING_ITEM = "- {name} — {description}"
 _WAITING_MISSING_NAME_ONLY = "- {name}"
+
+# One standing job's line (#1927).  Every clause renders in BOTH directions — a job with
+# no routine says so, notifications state which way they are set, an unscheduled job says
+# that — for the reason the skills section renders "(none)": this section exists so an
+# absence is READ rather than inferred, and a clause that vanishes when it is false makes
+# the reader infer again.  The name is QUOTED like a skill candidate's, since it is the
+# anchor a message's words have to be resolved against.
+_JOB_LINE = '- "{name}" — {routine} · {notify} · {schedule}'
+_JOB_ROUTINE = 'runs "{skill}"'
+_JOB_NO_ROUTINE = "no routine attached"
+_JOB_NOTIFY_ON = "notifications on"
+_JOB_NOTIFY_OFF = "notifications off"
+_JOB_NO_SCHEDULE = "no schedule"
 
 
 class CandidateParameter(BaseModel):
@@ -399,6 +463,52 @@ class SkillCandidate(BaseModel):
             for parameter in self.parameters
         )
         return f"{line} (needs: {needs})"
+
+
+class StandingJob(BaseModel):
+    """One job the user ALREADY has running — the light, cycle-free projection of a
+    CONFIGURED collection's row (``SkillCandidate``'s sibling, and a leaf for the same
+    reason; ``build_snapshot`` maps the store rows in).
+
+    It exists because the classifier was asked a question its slice could not answer
+    (#1927).  A message that says "turn notifications on for the camera kit price watch"
+    refers to something the registry of SKILLS says nothing about — a skill is a routine
+    that COULD run, a job is one that IS running — and the reader, finding no such thing
+    in the only registry rendered, concluded the message must be asking to start one.
+    Verbatim, from the draw that leaked: "they say 'the modular listing watch' probably
+    already set up?  But there's no known skill currently running."  It looked, and the
+    slice had nothing to look at.
+
+    What each field is FOR is the question it lets a message be judged against: ``name``
+    is the anchor the user's own words resolve to, ``skill_name`` says which routine it
+    runs (so a job and the skill it came from are one thing, not two), and ``notify`` +
+    ``schedule`` are two of the three axes the doors' boundary names — so an ask to change
+    one of them can be read as a change to something rendered right here."""
+
+    name: str
+    skill_name: str | None = None
+    notify: bool = False
+    schedule: str | None = None
+
+    def render(self) -> str:
+        """The one-line job render: the quoted name, the routine it runs, which way its
+        notifications are set, and its schedule verbatim.
+
+        The schedule renders VERBATIM (display form == invocation form, the rule the
+        stored RRULE already keeps everywhere else it is shown), and the notify clause
+        states BOTH directions — the state this section exists to make readable is
+        exactly the one an "adjust it" message is about."""
+        routine = (
+            _JOB_ROUTINE.format(skill=self.skill_name)
+            if self.skill_name is not None
+            else _JOB_NO_ROUTINE
+        )
+        return _JOB_LINE.format(
+            name=self.name,
+            routine=routine,
+            notify=_JOB_NOTIFY_ON if self.notify else _JOB_NOTIFY_OFF,
+            schedule=self.schedule if self.schedule is not None else _JOB_NO_SCHEDULE,
+        )
 
 
 class RoundFraming(BaseModel):
@@ -572,12 +682,19 @@ class MachineSnapshot(BaseModel):
     none — read off the machine rather than re-derived, so the move out of request is
     judged against a named gap instead of a fresh completeness audit of the conversation.
     Present only while a round is parked that way, which is the only state that carries
-    one."""
+    one.
+
+    ``standing_jobs`` are the jobs the user ALREADY has running (#1927) — the configured
+    collections, whole, the same no-ranking-no-cap rule ``skill_candidates`` keeps.  They
+    are what makes "is this ask about something that already exists?" a READ; unlike the
+    candidates, an empty list withholds no edge, because a message can refer to a job
+    whether or not any exists and the answer to that is what the section carries."""
 
     state: ConversationState
     penny_last_turn: str | None = None
     task_anchor: str | None = None
     skill_candidates: list[SkillCandidate] = []
+    standing_jobs: list[StandingJob] = []
     round_binding: RoundShortfall | None = None
 
 
@@ -682,6 +799,14 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     from a missing section (the rational-actor doctrine).  The task anchor, by
     contrast, renders only when parked: no meaning references an absent task.
 
+    The JOBS ALREADY RUNNING section always renders for the identical reason, and it is
+    the reason it was added (#1927): both skill-gated conditions turn on whether the ask
+    STARTS something, and that cannot be decided without knowing what is already going.
+    Reading nothing there was measured as reading "nothing is running" — which was true of
+    the section that did not exist, not of the world.  It renders BELOW the skills, since
+    a job is what a skill becomes once it is set up, and ABOVE the newest message, so the
+    words that name a job are read after the jobs are.
+
     The parked round's BINDING renders beside the anchor for the same reason and on the
     same rule (#1894): it is what the round is waiting on, so it belongs with the task it
     belongs to, and it is there only while a round is parked waiting for it."""
@@ -695,6 +820,7 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
         sections.append(f"{_SKILLS_HEADER}\n{listing}")
     else:
         sections.append(f"{_SKILLS_HEADER}\n{_NONE_PLACEHOLDER}")
+    sections.append(_jobs_section(snapshot.standing_jobs))
     sections.append(f"{_MESSAGE_HEADER}\n{message}")
     current = f"{snapshot.state.value} — {STATE_DEFINITIONS[snapshot.state]}"
     sections.append(f"{_CURRENT_STATE_HEADER}\n{current}")
@@ -704,6 +830,18 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     )
     sections.append(f"{_TRANSITIONS_HEADER}\n{transitions}")
     return "\n\n".join(sections)
+
+
+def _jobs_section(jobs: list[StandingJob]) -> str:
+    """What is already running, as its own section — ``(none)`` when nothing is (#1927).
+
+    The empty case is the one that had to be stated: a reader asked whether a message
+    refers to an existing job answers from this section either way, and the whole finding
+    behind the section is that a missing answer gets supplied by inference."""
+    if not jobs:
+        return f"{_JOBS_HEADER}\n{_NONE_PLACEHOLDER}"
+    listing = "\n".join(job.render() for job in jobs)
+    return f"{_JOBS_HEADER}\n{listing}"
 
 
 def _waiting_section(binding: RoundShortfall) -> str:
@@ -835,6 +973,7 @@ def build_snapshot(
         penny_last_turn=penny_last_turn,
         task_anchor=task_anchor,
         round_binding=round_binding,
+        standing_jobs=_standing_jobs(db),
         skill_candidates=[
             SkillCandidate(
                 name=skill.name,
@@ -847,6 +986,35 @@ def build_snapshot(
             for skill in db.skills.list_all()
         ],
     )
+
+
+def _standing_jobs(db: Database) -> list[StandingJob]:
+    """The jobs the user has running, as the classifier reads them (#1927).
+
+    A job is a CONFIGURED collection: it carries an ``extraction_prompt``, which is
+    exactly the condition the dispatcher selects on (``Collector._is_ready``) — so what
+    this section calls running and what actually runs are one definition rather than two
+    that can drift.  An INERT collection is storage the user built and no job at all
+    (#1629), and an ARCHIVED one is a retired tombstone; neither is something an ask can
+    be about changing, so neither renders.
+
+    Every one is offered, the ``skill_candidates`` rule applied to the other registry: a
+    relevance gate here could hide the very job a message names, which is the failure the
+    section exists to fix."""
+    from penny.database.memory.types import MemoryType
+
+    return [
+        StandingJob(
+            name=row.name,
+            skill_name=row.skill_name,
+            notify=row.notify,
+            schedule=row.schedule,
+        )
+        for row in db.memories.list_all()
+        if row.type == MemoryType.COLLECTION
+        and not row.archived
+        and row.extraction_prompt is not None
+    ]
 
 
 # The ONE instruction per state the chat prompt carries.  TOTAL over the state
