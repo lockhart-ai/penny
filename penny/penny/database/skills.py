@@ -11,12 +11,19 @@ non-``done`` tool-call ordinals out, never re-emitting them.  Each argument leaf
 a copied call is factored by **provenance** — derived STRUCTURALLY from the ledger,
 never by matching the user's prose (#1659):
 
+* a value ALREADY minted as a parameter by an earlier leaf → that same parameter,
+  decided before provenance is even asked (#1933): identical values collapse to one,
+  so a leaf that will join an existing parameter joins it rather than being explained
+  a second way.  This is what a repeat looks like — the same page fetched twice in one
+  demonstration is the same input given twice, never one step's output;
 * a value that **equals, fills whole tokens of, or wraps** a prior selected step's
   result → a **binding** (rendered "the value from step N"), because in the
   source run it *came from* that step (a wrapped result binds too — the arg
   ``Price: $499`` over a browse that returned ``$499``; a value sliced out of the
   middle of a token does NOT, since a fetched page contains most short strings by
-  accident — #1809);
+  accident — #1809; and a span the step was CALLED with is excluded from its result
+  altogether, since a tool quoting its own arguments back is not producing them —
+  #1933);
 * **every other string leaf** → a **candidate** required parameter (the model binds
   it per instantiation); identical values collapse to ONE shared candidate.  A
   parameter is ``required`` by construction — an unbound one is a loud refusal at
@@ -258,6 +265,13 @@ class _ParameterNamer:
         self._by_value: dict[str, str] = {}
         self._used: set[str] = set()
 
+    def minted(self, value: str) -> bool:
+        """Whether an earlier leaf already minted a parameter for this exact
+        demonstrated value — i.e. whether this leaf would collapse onto it (#1933).
+        The dedup map IS distillation's record of what each parameter was demonstrated
+        with, so this asks the collapse question itself rather than a proxy for it."""
+        return value in self._by_value
+
     def name_for(self, value: str, path: list[str | int]) -> str:
         if value in self._by_value:
             return self._by_value[value]
@@ -310,6 +324,60 @@ def _result_payload(result: str) -> str:
     return body.strip()
 
 
+# A result also quotes the CALL it answers, and that quote is frame for exactly the
+# reason the narration line is (#1933, the same class as #1665's find-echo exclusion): a
+# span the step was CALLED with went INTO it, so it cannot have come OUT of it, and a
+# later leaf carrying that value is repeating the ARGUMENT — the routine's own input —
+# not consuming a result.  The two observed echoes are a browse section header naming the
+# page it fetched and an extract result opening with the instruction it was given, but
+# nothing here is keyed to either: the echoes are the step's OWN argument leaves, so a
+# tool nobody has heard of quoting its arguments is covered without being enumerated.
+#
+# The echo is located, never EXCISED, and the exclusion is per OCCURRENCE: what disproves
+# provenance is a match that lands INSIDE an echo, not the presence of an echo somewhere.
+# Cutting the spans out of the payload would perforate the payload's real content — an
+# argument word occurring inside a value the page genuinely produced ('lantern' inside
+# '$499 for the keel lantern') would take that value's binding down with it, which is the
+# #1770 harm of a required parameter nobody can supply.  So a value that also occurs
+# clear of every echo still binds, on that occurrence.  Only arguments long enough to
+# bind at all are tracked: a shorter one could never produce a binding either way.
+
+
+class _PriorResult(BaseModel):
+    """One selected step's result as the binding test reads it — computed once per step,
+    since it is compared against every later leaf.
+
+    ``payload`` is the framed result stripped to its body (:func:`_result_payload`);
+    ``echoes`` are the ``[start, end)`` spans of it where the step quoted its OWN
+    arguments back (#1933) — the parts of its result it cannot be said to have
+    produced."""
+
+    payload: str
+    echoes: list[tuple[int, int]]
+
+
+def _prior_result(step: DistillInput) -> _PriorResult:
+    """One step's result prepared for comparison: its payload, and where inside it each
+    of the call's own argument values sits."""
+    payload = _result_payload(step.result)
+    echoes: list[tuple[int, int]] = []
+    for _, argument in _leaf_paths(_without_reasoning(step.arguments), []):
+        echo = argument.strip()
+        if len(echo) >= _MIN_BINDING_OVERLAP:
+            echoes.extend(_spans_of(echo, payload))
+    return _PriorResult(payload=payload, echoes=echoes)
+
+
+def _spans_of(needle: str, haystack: str) -> list[tuple[int, int]]:
+    """Every ``[start, end)`` occurrence of ``needle`` in ``haystack``."""
+    spans: list[tuple[int, int]] = []
+    start = haystack.find(needle)
+    while start != -1:
+        spans.append((start, start + len(needle)))
+        start = haystack.find(needle, start + 1)
+    return spans
+
+
 def _enclosing_token(payload: str, start: int, end: int) -> tuple[int, int]:
     """The bounds of the whitespace-delimited run of ``payload`` enclosing the match at
     ``[start, end)`` — the token the match sits in (the two tokens at either end, when
@@ -323,9 +391,30 @@ def _enclosing_token(payload: str, start: int, end: int) -> tuple[int, int]:
     return opens_at, closes_at
 
 
-def _occurs_as_whole_token(value: str, payload: str) -> bool:
-    """Whether ``value`` occupies a WHOLE token of ``payload`` — the copied-out-of-a
-    -result test (#1809), as opposed to a coincidence of characters.
+def _copied_from(value: str, result: _PriorResult) -> bool:
+    """Whether ``value`` was copied OUT of ``result`` — the contained-in direction whole,
+    read per occurrence: at least one place where ``value`` sits in the payload must both
+    occupy WHOLE tokens (#1809) and lie clear of the step's own argument echoes (#1933).
+
+    Both conditions are about the SAME occurrence, which is why they are asked together:
+    a value can appear twice, once as the step's own argument quoted back and once in what
+    the page actually said, and the second occurrence is a copy however the first arose."""
+    return any(
+        not _within_any(span, result.echoes)
+        for span in _whole_token_occurrences(value, result.payload)
+    )
+
+
+def _within_any(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    """Whether ``span`` lies inside any of ``spans`` — a match wholly covered by an echo
+    is that echo, not a copy of the result."""
+    start, end = span
+    return any(opens_at <= start and end <= closes_at for opens_at, closes_at in spans)
+
+
+def _whole_token_occurrences(value: str, payload: str) -> list[tuple[int, int]]:
+    """Every span of ``payload`` where ``value`` occupies a WHOLE token — the
+    copied-out-of-a-result test (#1809), as opposed to a coincidence of characters.
 
     A payload is not always a returned value: a browse without ``extract`` returns a
     PAGE, and a page contains most short strings by accident.  What distinguishes a
@@ -341,25 +430,23 @@ def _occurs_as_whole_token(value: str, payload: str) -> bool:
     the write key the assistant chose to the price the step fetched, and the learned
     routine then wrote every cycle's price under a key that was also the price.
     """
-    start = payload.find(value)
-    while start != -1:
-        end = start + len(value)
+    occurrences: list[tuple[int, int]] = []
+    for start, end in _spans_of(value, payload):
         opens_at, closes_at = _enclosing_token(payload, start, end)
         margins = f"{payload[opens_at:start]}{payload[end:closes_at]}"
         if not any(character.isalnum() for character in margins):
-            return True
-        start = payload.find(value, start + 1)
-    return False
+            occurrences.append((start, end))
+    return occurrences
 
 
-def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int | None:
+def _binding_step(value: str, index: int, priors: list[_PriorResult]) -> int | None:
     """The skill ordinal (1-based) of the latest PRIOR selected step whose result the
     value flowed from, or ``None`` when none produced it (then it is a parameter).
 
     Comparison is against each prior result's PAYLOAD (``_result_payload`` — the frame
     stripped off, #1665), not the framed text.  A value binds when it **equals or fills
     whole tokens of** a prior payload (the model copied the tool output verbatim,
-    ``_occurs_as_whole_token`` — #1809) OR **contains** a prior payload (it wrapped the
+    ``_copied_from`` — #1809) OR **contains** a prior payload (it wrapped the
     output — ``Price: $499`` over a returned ``$499``).  Guarded against degenerate
     matches: a blank payload never binds, and the shared content must be non-trivial
     (``_MIN_BINDING_OVERLAP`` chars) so a one-character coincidence can't manufacture a
@@ -367,21 +454,23 @@ def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int |
     is what lets the wraps direction fire without loosening anything (#1661's LCS
     analysis showed loosening false-binds topic names).
 
-    The two directions are deliberately ASYMMETRIC.  *Wraps* stays plain containment:
-    the whole result sits inside the argument, so there is nothing for a coincidence to
-    exploit.  *Contained-in* is the direction exposed to bulk — the payload may be an
+    The two directions are deliberately ASYMMETRIC.  *Wraps* stays plain containment over
+    the whole payload: the entire result sits inside the argument, so there is nothing for
+    a coincidence to exploit, and narrowing what it compares against could only cost real
+    bindings.  *Contained-in* is the direction exposed to bulk — the payload may be an
     entire fetched page, where a short arg turning up somewhere is worth nothing — so it
-    additionally demands that the arg fill the tokens it lands in."""
+    additionally demands that the arg fill the tokens it lands in, and that it land clear
+    of the step's own argument echoes (#1933), since a value the step was HANDED is not a
+    value it produced.  Where that redirects a binding it redirects it to the truth: a
+    value echoed by step 3 and genuinely produced by step 1 now binds to step 1."""
     stripped_value = value.strip()
     for prior in range(index - 1, -1, -1):
-        payload = _result_payload(selected[prior].result)
-        if not payload:
+        result = priors[prior]
+        if not result.payload:
             continue
-        if len(stripped_value) >= _MIN_BINDING_OVERLAP and _occurs_as_whole_token(
-            stripped_value, payload
-        ):
+        if len(stripped_value) >= _MIN_BINDING_OVERLAP and _copied_from(stripped_value, result):
             return prior + 1
-        if len(payload) >= _MIN_BINDING_OVERLAP and payload in stripped_value:
+        if len(result.payload) >= _MIN_BINDING_OVERLAP and result.payload in stripped_value:
             return prior + 1
     return None
 
@@ -407,10 +496,13 @@ def distill_steps(
     ``reasoning`` think-aloud is stripped from each call's arguments FIRST (#1661) —
     run narration, never routine — so it is neither classified nor stored.  Each
     remaining string leaf is then classified the SAME way regardless of which tool it
-    sits on or which argument it fills (#1783): a value that **equals / fills whole
-    tokens of / wraps** a prior selected step's result is a **binding** (it came from
-    that step); **every other** string leaf is a required **parameter**, with identical
-    values
+    sits on or which argument it fills (#1783): a value an earlier leaf already minted a
+    parameter for joins that parameter (the collapse rule, asked FIRST — #1933); else a
+    value that **equals / fills whole tokens of / wraps** a prior selected step's result
+    is a **binding** (it came from that step — compared against that step's result
+    with the step's own arguments removed, since a tool quoting its inputs back is not
+    producing them); **every other** string leaf is a required **parameter**, with
+    identical values
     collapsing to one shared parameter.  A non-string leaf (a number/bool) is always
     a constant.  That last rule is a DEFAULT, not a determination — it holds only
     when the user supplied the value, which structure cannot decide; the run-end
@@ -428,12 +520,13 @@ def distill_steps(
     is left for an attachment to decide, and marking it would let the render seam
     overwrite a real binding with the collection's name."""
     namer = _ParameterNamer()
+    priors = [_prior_result(step) for step in selected]
     steps: list[SkillStep] = []
     parameters: dict[str, SkillParameter] = {}
     for index, inp in enumerate(selected):
         arguments = _without_reasoning(inp.arguments)
         subs = [
-            _substitution_for(path, value, index, selected, namer, parameters, attachment_names)
+            _substitution_for(path, value, index, priors, namer, parameters, attachment_names)
             for path, value in _leaf_paths(arguments, [])
         ]
         steps.append(
@@ -452,19 +545,26 @@ def _substitution_for(
     path: list[str | int],
     value: str,
     index: int,
-    selected: list[DistillInput],
+    priors: list[_PriorResult],
     namer: _ParameterNamer,
     parameters: dict[str, SkillParameter],
     attachment_names: frozenset[str],
 ) -> SkillSubstitution:
     """Classify ONE string leaf — the whole of :func:`distill_steps`'s per-leaf rule.
 
-    A value a prior selected step produced is a BINDING and nothing else; anything left
-    unexplained is a candidate parameter (registered in ``parameters``, deduped by value
-    through ``namer``), marked for the attachment when its value names a collection."""
-    producer = _binding_step(value, index, selected)
-    if producer is not None:
-        return SkillSubstitution(path=path, kind=SkillSubKind.BINDING, step=producer)
+    A value an earlier leaf already minted a parameter for joins that parameter FIRST
+    (#1933): the collapse rule and the provenance test can both claim such a leaf, and
+    the collapse rule wins, because a value the demonstration supplied once and used
+    again is one input given twice — reading the second occurrence as the first step's
+    OUTPUT produced ``browse(queries=[the value from step 1])``, a program that no longer
+    says which page it fetches.  Otherwise a value a prior selected step produced is a
+    BINDING and nothing else; anything left unexplained is a candidate parameter
+    (registered in ``parameters``, deduped by value through ``namer``), marked for the
+    attachment when its value names a collection."""
+    if not namer.minted(value):
+        producer = _binding_step(value, index, priors)
+        if producer is not None:
+            return SkillSubstitution(path=path, kind=SkillSubKind.BINDING, step=producer)
     name = namer.name_for(value, path)
     parameters.setdefault(name, SkillParameter(name=name, required=True))
     return SkillSubstitution(
