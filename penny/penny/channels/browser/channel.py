@@ -122,11 +122,32 @@ def _attachment_to_src(attachment: str) -> str | None:
 
 @dataclass
 class ConnectionInfo:
-    """Metadata about a connected browser extension."""
+    """Metadata about a connected browser extension.
+
+    ``registered`` records that the addon's BACKGROUND SCRIPT announced itself on
+    this socket — the half of the extension that owns the websocket and services
+    tool requests.  A registry entry can exist without it (the sidebar's own chat
+    message mints one), and such a socket has never claimed it can answer a tool
+    request, so routing ranks it last.
+    """
 
     ws: ServerConnection
     tool_use_enabled: bool = False
+    registered: bool = False
     last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass
+class PendingToolRequest:
+    """A tool request awaiting its answer, and the socket it was sent on.
+
+    The socket is part of the record because a flush must reject only what THIS
+    connection owes.  Rejecting every pending future on any disconnect killed
+    in-flight requests belonging to connections that were still perfectly alive.
+    """
+
+    future: asyncio.Future[tuple[str, str | None]]
+    ws: ServerConnection
 
 
 class BrowserChannel(MessageChannel):
@@ -145,7 +166,8 @@ class BrowserChannel(MessageChannel):
         self._port = port
         self._server: Server | None = None
         self._connections: dict[str, ConnectionInfo] = {}
-        self._pending_requests: dict[str, asyncio.Future[tuple[str, str | None]]] = {}
+        self._pending_requests: dict[str, PendingToolRequest] = {}
+        self._liveness_task: asyncio.Task | None = None
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
         db.messages._on_prompt_logged = self._on_prompt_logged
@@ -221,12 +243,13 @@ class BrowserChannel(MessageChannel):
             max_size=PennyConstants.BROWSER_WS_MAX_FRAME_BYTES,
         )
         logger.info("Browser channel listening on ws://%s:%d", self._host, self._port)
+        self._liveness_task = asyncio.create_task(self._watch_liveness())
         await asyncio.Future()
 
     async def _handle_connection(self, ws: ServerConnection) -> None:
         """Handle a single browser extension connection."""
         logger.info("Browser connected")
-        await self._send_ws(ws, BrowserOutgoing(type=BROWSER_RESP_TYPE_STATUS, connected=True))
+        await self._send_ws(ws, self._liveness_probe())
 
         device_label: str | None = None
         try:
@@ -240,12 +263,12 @@ class BrowserChannel(MessageChannel):
             # handler bug shows up as the cause of a disconnect, not a mystery.
             logger.exception(
                 "Browser connection handler crashed (device=%s) — closing socket",
-                device_label or "unregistered",
+                device_label or PennyConstants.BROWSER_UNREGISTERED_DEVICE,
             )
         finally:
             logger.info(
                 "Browser socket closed (device=%s, code=%s, reason=%r)",
-                device_label or "unregistered",
+                device_label or PennyConstants.BROWSER_UNREGISTERED_DEVICE,
                 ws.close_code,
                 ws.close_reason,
             )
@@ -269,13 +292,122 @@ class BrowserChannel(MessageChannel):
                 logger.info(
                     "Browser %s already reconnected on a newer socket; keeping it", device_label
                 )
-        # Reject any pending tool requests — they were sent on this socket and
-        # can't be answered now it's gone; the browse tool retries on whatever
-        # connection is live.
-        for _request_id, future in list(self._pending_requests.items()):
-            if not future.done():
-                future.set_exception(ConnectionError("Browser disconnected"))
-        logger.info("Browser disconnected: %s", device_label or "unregistered")
+        self._fail_pending_on(ws, device_label)
+        logger.info(
+            "Browser disconnected: %s", device_label or PennyConstants.BROWSER_UNREGISTERED_DEVICE
+        )
+
+    def _fail_pending_on(self, ws: ServerConnection, device_label: str | None) -> None:
+        """Reject every tool request still waiting on this socket, and say how many.
+
+        Scoped to ``ws`` on purpose: the flush this replaces rejected EVERY pending
+        future, so one addon window closing killed browse requests in flight on a
+        connection that was still answering.  The rejection is what re-routes the
+        work — the browse tool catches it and retries on whatever connection is
+        live, rather than waiting out its own timeout against a socket that can
+        never answer.
+        """
+        device = device_label or PennyConstants.BROWSER_UNREGISTERED_DEVICE
+        stranded = [
+            request_id for request_id, pending in self._pending_requests.items() if pending.ws is ws
+        ]
+        for request_id in stranded:
+            pending = self._pending_requests.pop(request_id, None)
+            if pending is not None and not pending.future.done():
+                pending.future.set_exception(ConnectionError(self._stranded_error(device)))
+        if stranded:
+            logger.info("Failed %d tool request(s) stranded on browser %s", len(stranded), device)
+
+    @staticmethod
+    def _stranded_error(device: str) -> str:
+        """What a request sent on a socket that turned out to be gone is told."""
+        return PennyConstants.BROWSER_STRANDED_REQUEST_ERROR.format(device=device)
+
+    # --- Liveness ---
+
+    @staticmethod
+    def _liveness_probe() -> BrowserOutgoing:
+        """The frame a quiet connection is probed with.
+
+        Deliberately the connect-time status frame rather than a new message type:
+        the addon already answers it by re-registering and re-sending its
+        capabilities, so a live-but-quiet socket REPAIRS its registry entry (label,
+        capabilities, heartbeat) instead of merely surviving the probe.
+        """
+        return BrowserOutgoing(type=BROWSER_RESP_TYPE_STATUS, connected=True)
+
+    async def _watch_liveness(self) -> None:
+        """Probe quiet connections on a timer, so a dead socket is found before a
+        tool request is sent into it.
+
+        Dead-socket detection used to be write-driven: nothing noticed a socket was
+        gone until something happened to write to it, so browse requests went into a
+        corpse for ~2.4 minutes — four retry rounds, twelve unanswered requests —
+        until a write finally failed with code 1006.  A timer puts that on a clock,
+        and costs nothing on a healthy addon (which heartbeats every ~15s and is
+        therefore never quiet enough to probe).
+        """
+        while True:
+            await asyncio.sleep(PennyConstants.BROWSER_LIVENESS_SWEEP_SECONDS)
+            try:
+                await self._probe_quiet_connections()
+            except Exception:
+                # Deliberately broad, and the reason is the loop itself: a sweep
+                # that raises would END the task, taking dead-socket detection down
+                # for the whole process and silently restoring the write-driven
+                # behaviour this exists to replace.  Logged, never swallowed — the
+                # same shape (and reason) as ``_handle_connection``'s guard.
+                logger.exception("Browser liveness sweep failed — continuing")
+
+    async def _probe_quiet_connections(self) -> None:
+        """Probe every connection past its heartbeat window; evict what can't take it.
+
+        Probed CONCURRENTLY and each on its own timeout: the probes are independent,
+        and a send awaits flow-control drain, so a half-open peer that has stopped
+        reading never raises — it just never returns.  Serially and unbounded, one
+        probe of exactly the socket this sweep exists to find would wedge the sweep.
+        """
+        quiet = [
+            (label, conn)
+            for label, conn in list(self._connections.items())
+            if not self._has_fresh_heartbeat(conn)
+        ]
+        answered = await asyncio.gather(*(self._probe(conn.ws) for _, conn in quiet))
+        for (label, conn), alive in zip(quiet, answered, strict=True):
+            if alive:
+                continue
+            logger.warning(
+                "Browser %s stopped heartbeating and its socket is unreachable — closing "
+                "it and taking it out of routing",
+                label,
+            )
+            await self._evict_socket(conn.ws)
+
+    async def _probe(self, ws: ServerConnection) -> bool:
+        """Whether this socket took the probe within the probe window."""
+        try:
+            return await asyncio.wait_for(
+                self._deliver_ws(ws, self._liveness_probe()),
+                timeout=PennyConstants.BROWSER_LIVENESS_PROBE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            return False
+
+    async def _evict_socket(self, ws: ServerConnection) -> None:
+        """Take a dead socket out of routing, fail what it owes, and close it."""
+        device_label = self._label_for(ws)
+        if device_label is not None:
+            self._connections.pop(device_label, None)
+        self._fail_pending_on(ws, device_label)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.close()
+
+    def _label_for(self, ws: ServerConnection) -> str | None:
+        """The device label this socket currently holds in the registry."""
+        return next(
+            (label for label, conn in self._connections.items() if conn.ws is ws),
+            None,
+        )
 
     # --- Message dispatch ---
 
@@ -351,7 +483,7 @@ class BrowserChannel(MessageChannel):
 
         if msg_type == BROWSER_MSG_TYPE_COLLECTION_TRIGGER:
             await self._handle_collection_trigger(ws, data)
-            return
+            return device_label
 
         if msg_type == BROWSER_MSG_TYPE_CURSOR_SET:
             self._handle_cursor_set(data)
@@ -419,12 +551,13 @@ class BrowserChannel(MessageChannel):
         existing = self._connections.get(device_label)
         if existing:
             existing.ws = ws
+            existing.registered = True
             # A reconnect re-points the entry at the new socket — refresh
             # liveness so the freshly reconnected addon isn't judged stale by
             # ``_get_tool_connection`` on its old (pre-suspension) timestamp.
             existing.last_heartbeat = datetime.now(UTC)
         else:
-            self._connections[device_label] = ConnectionInfo(ws=ws)
+            self._connections[device_label] = ConnectionInfo(ws=ws, registered=True)
         self._auto_register_device(device_label)
         logger.info("Browser registered: %s", device_label)
         return device_label
@@ -485,8 +618,8 @@ class BrowserChannel(MessageChannel):
             logger.warning("Invalid tool response: %s", str(data)[:200])
             return
 
-        future = self._pending_requests.pop(response.request_id, None)
-        if not future or future.done():
+        pending = self._pending_requests.pop(response.request_id, None)
+        if pending is None or pending.future.done():
             logger.warning("No pending request for id: %s", response.request_id)
             return
 
@@ -496,9 +629,9 @@ class BrowserChannel(MessageChannel):
             f"{len(response.image)} chars" if response.image else "none",
         )
         if response.error:
-            future.set_exception(RuntimeError(response.error))
+            pending.future.set_exception(RuntimeError(response.error))
         else:
-            future.set_result((response.result or "", response.image))
+            pending.future.set_result((response.result or "", response.image))
 
     _PROMPT_LOG_PAGE_SIZE = 50
 
@@ -985,6 +1118,11 @@ class BrowserChannel(MessageChannel):
         device_label = msg.sender or "browser-user"
         existing = self._connections.get(device_label)
         if existing:
+            if existing.ws is not ws:
+                # A different socket now carries this label and has not announced
+                # itself on its own account — until it registers, routing must not
+                # credit it with the previous socket's claim to service tool calls.
+                existing.registered = False
             existing.ws = ws
         else:
             self._connections[device_label] = ConnectionInfo(ws=ws)
@@ -1016,7 +1154,11 @@ class BrowserChannel(MessageChannel):
         *or* cancellation (when the caller's timeout fires).  A second timeout
         here would only ever be the longer, losing one — and a response landing
         in the gap between the two would be discarded as "No pending request".
-        Returns (result_text, image_url).
+
+        A send that FAILS is the one thing not left to the caller's clock: the
+        socket is gone, so no answer is coming, and waiting the timeout out only
+        delays the retry.  The request is failed immediately and the socket is
+        evicted.  Returns (result_text, image_url).
         """
         ws = self._get_tool_connection()
         if ws is None:
@@ -1029,7 +1171,7 @@ class BrowserChannel(MessageChannel):
 
         request_id = str(uuid.uuid4())
         future: asyncio.Future[tuple[str, str | None]] = asyncio.get_event_loop().create_future()
-        self._pending_requests[request_id] = future
+        self._pending_requests[request_id] = PendingToolRequest(future=future, ws=ws)
 
         request = BrowserToolRequest(
             request_id=request_id,
@@ -1037,28 +1179,52 @@ class BrowserChannel(MessageChannel):
             arguments=arguments,
         )
         logger.debug("Sending browser tool request %s (tool=%s)", request_id, tool)
-        await self._send_ws(ws, request)
+        if not await self._deliver_ws(ws, request):
+            raise ConnectionError(await self._abandon_send(ws, request_id))
 
         try:
             return await future
         finally:
             self._pending_requests.pop(request_id, None)
 
+    async def _abandon_send(self, ws: ServerConnection, request_id: str) -> str:
+        """Give up on a request whose send failed, and say why it was given up on.
+
+        The pending entry is dropped BEFORE the eviction flush so that flush doesn't
+        set an exception nobody will ever retrieve — the caller's raise is this
+        request's answer.
+        """
+        self._pending_requests.pop(request_id, None)
+        device = self._label_for(ws) or PennyConstants.BROWSER_UNREGISTERED_DEVICE
+        await self._evict_socket(ws)
+        return self._stranded_error(device)
+
     def _get_tool_connection(self) -> ServerConnection | None:
         """Get the best browser connection for tool execution.
 
-        Among tool-use-enabled connections, prefer those still heartbeating
-        (routing around a suspended socket whose JS has stopped servicing
-        requests) and pick the most recent.  If none are fresh, fall back to the
-        most-recently-seen connection rather than refusing — a lone quiet socket
-        is still worth trying (it may just be an addon without the keepalive).
+        Among tool-use-enabled connections, rank by what each fact says about the
+        socket's ability to answer: REGISTERED first, then still heartbeating, then
+        most recently seen.  Ranking rather than filtering is what keeps a lone
+        quiet socket routable — it is deprioritized whenever a better one exists,
+        and never declared offline on its own (it may just be an addon without the
+        keepalive).
+
+        Registration outranks the heartbeat because they answer different questions.
+        A quiet REGISTERED socket has told us its background script is there and may
+        simply be suspended; an unregistered one has never claimed it can service a
+        tool request at all, so freshness on it is evidence of nothing.  That
+        ordering is only safe because a corpse no longer lingers: the liveness sweep
+        closes and evicts an unreachable socket, where before nothing removed one
+        and recency was the only proxy available for "still there".
         """
         tool_conns = [c for c in self._connections.values() if c.tool_use_enabled]
         if not tool_conns:
             return None
-        fresh = [c for c in tool_conns if self._has_fresh_heartbeat(c)]
-        pool = fresh or tool_conns
-        return max(pool, key=lambda c: c.last_heartbeat).ws
+        return max(tool_conns, key=self._routing_rank).ws
+
+    def _routing_rank(self, conn: ConnectionInfo) -> tuple[bool, bool, datetime]:
+        """How good a tool-request target this connection is — best compares highest."""
+        return (conn.registered, self._has_fresh_heartbeat(conn), conn.last_heartbeat)
 
     # --- Device registration ---
 
@@ -1276,7 +1442,12 @@ class BrowserChannel(MessageChannel):
     # --- Connection management ---
 
     async def close(self) -> None:
-        """Shut down the WebSocket server."""
+        """Shut down the WebSocket server and its liveness sweep."""
+        if self._liveness_task is not None:
+            self._liveness_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._liveness_task
+            self._liveness_task = None
         if self._server:
             self._server.close()
             await self._server.wait_closed()

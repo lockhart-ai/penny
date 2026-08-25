@@ -509,6 +509,33 @@ class PennyConstants:
     # while a suspended background script never processes the tool request, so
     # the protocol-level ping cannot detect it.  ~3 missed beats of slack.
     BROWSER_HEARTBEAT_TIMEOUT_SECONDS = 45.0
+    # How often the liveness sweep probes the connections that have gone quiet
+    # past that window.  Dead-socket detection used to be write-driven — nothing
+    # noticed a socket was gone until something happened to write to it, so browse
+    # requests went into a corpse for ~2.4 minutes (four retry rounds, twelve
+    # unanswered requests) until a write finally failed with code 1006.  Sweeping
+    # puts that on a clock: a half-open socket often absorbs one probe before its
+    # next write raises, so detection costs a sweep or two rather than however long
+    # it happens to be until something writes.  It costs nothing on a healthy
+    # addon, which heartbeats every ~15s and so is never quiet enough to be probed.
+    BROWSER_LIVENESS_SWEEP_SECONDS = 15.0
+    # How long a single liveness probe may take before the socket is judged
+    # unreachable.  A send awaits flow-control drain, so a half-open peer that has
+    # stopped READING never raises — it just never returns, which is the one shape
+    # a write-driven check cannot tell from a slow one.  Without a bound, a probe
+    # of exactly the socket this sweep exists to find would wedge the sweep itself.
+    BROWSER_LIVENESS_PROBE_TIMEOUT_SECONDS = 5.0
+    # How a browser socket renders before it has told us which device it is.
+    BROWSER_UNREGISTERED_DEVICE = "unregistered"
+    # What an in-flight tool request is told when the socket it was sent on turns
+    # out to be gone.  It names the connection AND the remedy, because it is read
+    # in the log by whoever is working out why a browse round did nothing; the
+    # browse tool consumes the ConnectionError itself, and retries onto whatever
+    # connection is live rather than waiting out its own timeout for the same news.
+    BROWSER_STRANDED_REQUEST_ERROR = (
+        "the browser connection '{device}' closed with this request still in flight — "
+        "retry: the next attempt routes to whatever addon connection is live"
+    )
 
     # System log memories (created by migration 0026) that the channel
     # adapter and browse tool side-effect-write to on every turn.
