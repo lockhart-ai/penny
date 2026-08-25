@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
-from penny.constants import PennyConstants
+from penny.constants import PennyConstants, PermissionResolution
 from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
@@ -281,8 +281,15 @@ class MessageChannel(ABC):
         """Handle a permission prompt broadcast. Override in subclasses."""
         return  # no-op default
 
-    async def handle_permission_dismiss(self, request_id: str) -> None:
-        """Handle a permission dismiss broadcast. Override in subclasses."""
+    async def handle_permission_dismiss(
+        self, request_id: str, resolution: PermissionResolution
+    ) -> None:
+        """Handle a resolved permission prompt. Override in subclasses.
+
+        ``resolution`` says how the prompt ended, for channels that acknowledge
+        it (Signal marks its own prompt message with the matching emoji).
+        Channels whose prompt is a dismissable UI element just close it.
+        """
         return  # no-op default
 
     async def handle_domain_permissions_changed(self) -> None:

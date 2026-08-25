@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from penny.config_params import DOMAIN_MODE_ALLOW_ALL
-from penny.constants import DomainPermissionValue, PennyConstants
+from penny.constants import DomainPermissionValue, PennyConstants, PermissionResolution
 
 if TYPE_CHECKING:
     from penny.channels.manager import ChannelManager
@@ -136,6 +136,21 @@ class PermissionManager:
             return None
         finally:
             self._pending.pop(request_id, None)
+            resolution = self._resolution(future)
             if not future.done():
                 future.cancel()
-            await self._channel_manager.broadcast_permission_dismiss(request_id)
+            await self._channel_manager.broadcast_permission_dismiss(request_id, resolution)
+
+    @staticmethod
+    def _resolution(future: asyncio.Future[bool]) -> PermissionResolution:
+        """How the prompt ended, read off the future before it is cancelled.
+
+        An answer landed on the future from whichever channel the user reached;
+        anything else — the wait timing out, the awaiting task being cancelled,
+        a failure set on the future — left the prompt unanswered, which is the
+        same thing to a channel acknowledging it. Each clause guards the next:
+        this runs in a ``finally``, so raising here would replace the caller's
+        own error AND skip the dismiss, leaving every channel's prompt hanging.
+        """
+        answered = future.done() and not future.cancelled() and future.exception() is None
+        return PermissionResolution.from_decision(future.result() if answered else None)

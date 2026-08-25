@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.config import Config
+from penny.constants import PermissionResolution
 from penny.conversation_machine import ConversationMachine
 
 if TYPE_CHECKING:
@@ -178,10 +179,12 @@ class ChannelManager(MessageChannel):
         for channel in self._channels.values():
             await channel.handle_domain_permissions_changed()
 
-    async def broadcast_permission_dismiss(self, request_id: str) -> None:
-        """Broadcast a permission dismiss to all channels."""
+    async def broadcast_permission_dismiss(
+        self, request_id: str, resolution: PermissionResolution
+    ) -> None:
+        """Tell every channel a prompt is resolved, and how it ended."""
         for channel in self._channels.values():
-            await channel.handle_permission_dismiss(request_id)
+            await channel.handle_permission_dismiss(request_id, resolution)
 
     # --- Delegation to all channels ---
 

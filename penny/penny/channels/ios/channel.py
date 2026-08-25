@@ -99,7 +99,7 @@ from penny.channels.ios.models import (
 )
 from penny.channels.permission_manager import PermissionManager
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -776,8 +776,16 @@ class IosChannel(MessageChannel):
         for conn in self._connections.values():
             await self._send_ws(conn.ws, prompt)
 
-    async def handle_permission_dismiss(self, request_id: str) -> None:
-        """Dismiss a permission prompt on connected iOS clients."""
+    async def handle_permission_dismiss(
+        self, request_id: str, resolution: PermissionResolution
+    ) -> None:
+        """Dismiss a permission prompt on connected iOS clients.
+
+        The client's prompt is a UI sheet, so resolving it means closing the
+        sheet — there is no message to mark, and nothing for ``resolution`` to
+        say here (the answer the user gave is already reflected in the domain
+        permissions the client is synced with).
+        """
         dismiss = BrowserPermissionDismiss(request_id=request_id)
         for conn in self._connections.values():
             await self._send_ws(conn.ws, dismiss)

@@ -18,6 +18,12 @@ class MockSignalServer:
         # ``{"op": "send"|"remove", "reaction": ..., "target_author": ...,
         # "timestamp": ...}`` so tests can assert the full progress sequence.
         self.reaction_events: list[dict] = []
+        # Append-only log of every remote-delete the channel sent. The endpoint
+        # exists here so "Penny issued no remote delete" is an assertion about a
+        # request that would have been served, not one indistinguishable from a
+        # 404 — a resolved permission prompt must be acknowledged in place, never
+        # deleted (Signal renders a "This message was deleted" tombstone).
+        self.delete_events: list[dict] = []
         self._websockets: list[web.WebSocketResponse] = []
         self._attachments: dict[str, bytes] = {}  # attachment_id -> binary data
         self._app: web.Application | None = None
@@ -41,6 +47,7 @@ class MockSignalServer:
         self._app.router.add_delete("/v1/typing-indicator/{phone_number}", self._handle_typing_stop)
         self._app.router.add_post("/v1/reactions/{phone_number}", self._handle_reaction_send)
         self._app.router.add_delete("/v1/reactions/{phone_number}", self._handle_reaction_remove)
+        self._app.router.add_delete("/v1/remote-delete/{phone_number}", self._handle_remote_delete)
         self._app.router.add_get(
             "/v1/attachments/{attachment_id}", self._handle_attachment_download
         )
@@ -234,6 +241,15 @@ class MockSignalServer:
         except json.JSONDecodeError:
             data = {}
         self.reaction_events.append({"op": "remove", **data})
+        return web.Response(status=204)
+
+    async def _handle_remote_delete(self, request: web.Request) -> web.Response:
+        """Handle DELETE /v1/remote-delete/{phone_number}."""
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            data = {}
+        self.delete_events.append(data)
         return web.Response(status=204)
 
     async def _handle_attachment_download(self, request: web.Request) -> web.Response:
