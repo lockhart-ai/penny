@@ -135,6 +135,28 @@ def _count_run_tool_calls(prompts: list[PromptLog]) -> int:
     return total
 
 
+# How every ``messagelog`` read orders: by the datetime column, with ``id`` breaking a tie
+# under it.  The house rule is that recency is a datetime column's answer and never an id's
+# (ids are for joins and lookups) \u2014 and it still is: ``timestamp`` decides, and ``id`` is
+# consulted only where ``timestamp`` has no answer to give.  A tie is not hypothetical; a
+# burst of writes lands several rows in one microsecond, and with nothing to separate them
+# the rows come back in whatever order the query plan or a Python merge happened to produce
+# \u2014 a reply and the message that answers it swapping places (#1963).  ``id`` is monotonic in
+# write order, which is exactly the fact the equal timestamps lost.
+#
+# It costs nothing: SQLite carries the rowid as the trailing column of every index, so
+# ``ORDER BY timestamp DESC, id DESC`` still resolves straight off the timestamp index.
+_NEWEST_MESSAGE_FIRST = (col(MessageLog.timestamp).desc(), col(MessageLog.id).desc())
+
+
+def _in_send_order(message: MessageLog) -> tuple[datetime, int]:
+    """One message's place in the conversation \u2014 the Python-side twin of
+    ``_NEWEST_MESSAGE_FIRST``, for a result merged from several queries.
+
+    ``id or 0`` satisfies the type only: a row read back from the database always has one."""
+    return (message.timestamp, message.id or 0)
+
+
 class MessageStore:
     """Manages MessageLog, PromptLog, and CommandLog records."""
 
@@ -354,16 +376,12 @@ class MessageStore:
         The conversation state machine's ``penny_last_turn`` (#1706): the newest
         message is a REPLY, and a reply is only classifiable against what it
         answers ("just the headline" is steps-arrived only against "what should
-        I look for?").  Ordered by ``timestamp`` (never id), with id breaking
-        same-timestamp ties."""
+        I look for?")."""
         with self._session() as session:
             message = session.exec(
                 select(MessageLog)
                 .where(MessageLog.direction == PennyConstants.MessageDirection.OUTGOING)
-                .order_by(
-                    col(MessageLog.timestamp).desc(),
-                    col(MessageLog.id).desc(),
-                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
             ).first()
             return message.content if message is not None else None
 
@@ -399,7 +417,7 @@ class MessageStore:
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
                     col(MessageLog.content).startswith(content),
                 )
-                .order_by(col(MessageLog.timestamp).desc())
+                .order_by(*_NEWEST_MESSAGE_FIRST)
             ).first()
 
     # --- Thread context ---
@@ -459,7 +477,7 @@ class MessageStore:
                         col(MessageLog.id).notin_(has_child),
                         col(MessageLog.parent_id).in_(incoming_ids),
                     )
-                    .order_by(col(MessageLog.timestamp).desc())
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
                 ).all()
             )
 
@@ -473,7 +491,7 @@ class MessageStore:
                         MessageLog.sender == sender,
                         MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     )
-                    .order_by(col(MessageLog.timestamp).desc())
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
                 ).all()
             )
@@ -509,7 +527,7 @@ class MessageStore:
                     MessageLog.recipient == recipient,
                     MessageLog.timestamp >= since,
                 )
-                .order_by(col(MessageLog.timestamp).desc())
+                .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(limit)
             ).all()
         )
@@ -530,6 +548,13 @@ class MessageStore:
         Penny knows what the reply is about.  Without this they'd be
         invisible to the chat turns array (no parent_id linking them to
         anything incoming) and Penny would see only the user's reply.
+
+        The three legs are merged in ``_in_send_order`` — timestamp, then id
+        for a tie.  On timestamp alone the merge is a stable sort over a
+        concatenation, so rows sharing a microsecond come back in the order
+        the legs happen to be joined in — every incoming row ahead of every
+        outgoing one, whatever the write order was.  That is what swapped a
+        reply and the message answering it in a seeded conversation (#1963).
         """
         with self._session() as session:
             incoming = list(
@@ -541,14 +566,14 @@ class MessageStore:
                         MessageLog.is_reaction == False,  # noqa: E712
                         MessageLog.timestamp >= since,
                     )
-                    .order_by(col(MessageLog.timestamp).desc())
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
                 ).all()
             )
             threaded = self._get_threaded_replies(session, incoming)
             autonomous = self._get_autonomous_outgoing(session, sender, since, limit)
             all_messages = incoming + threaded + autonomous
-            all_messages.sort(key=lambda m: m.timestamp)
+            all_messages.sort(key=_in_send_order)
             return all_messages[-limit:]
 
     def ios_history_page(
@@ -695,7 +720,7 @@ class MessageStore:
                         MessageLog.is_reaction == False,  # noqa: E712
                         MessageLog.processed == False,  # noqa: E712
                     )
-                    .order_by(col(MessageLog.timestamp).desc())
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
                 ).all()
             )
@@ -712,7 +737,7 @@ class MessageStore:
                         MessageLog.is_reaction == True,  # noqa: E712
                         MessageLog.processed == False,  # noqa: E712
                     )
-                    .order_by(col(MessageLog.timestamp).desc())
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
                 ).all()
             )
@@ -834,7 +859,7 @@ class MessageStore:
                 session.exec(
                     select(MessageLog)
                     .where(MessageLog.is_reaction == False)  # noqa: E712
-                    .order_by(col(MessageLog.timestamp).desc())
+                    .order_by(*_NEWEST_MESSAGE_FIRST)
                     .limit(limit)
                 ).all()
             )
@@ -1003,9 +1028,8 @@ class MessageStore:
 
         Only outgoing rows carrying a ``mechanism`` (an autonomous send that named
         its cause) qualify; a direct reply stamps NULL and is excluded (it is the
-        conversation, already in context).  ``id`` breaks same-timestamp ties so
-        the render is stable.  The snippet is the whitespace-collapsed head of the
-        content."""
+        conversation, already in context).  The snippet is the whitespace-collapsed
+        head of the content."""
         if limit <= 0:
             return []
         with self._session() as session:
@@ -1015,7 +1039,7 @@ class MessageStore:
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
                     col(MessageLog.mechanism).isnot(None),
                 )
-                .order_by(col(MessageLog.timestamp).desc(), col(MessageLog.id).desc())
+                .order_by(*_NEWEST_MESSAGE_FIRST)
                 .limit(limit)
             ).all()
         return [
