@@ -17,7 +17,7 @@ import pytest
 from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
-from penny.constants import PennyConstants
+from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
 from penny.database.memory import (
@@ -43,6 +43,7 @@ from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.skill_extraction import SkillExtracted, SkillExtractor, _interface_parameters
+from penny.tests.conftest import stamp_run
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
@@ -2766,6 +2767,67 @@ class TestCollectionWritesAndReads:
         # …and the divergent-value collision above never stops, so a change arriving
         # under a reworded key is never silenced as no-news.
         assert multi.stop is None
+
+    @pytest.mark.asyncio
+    async def test_write_reports_a_value_whose_writing_run_never_closed(self, db, mock_llm):
+        """#1936 at the tool boundary: a cycle wrote the changed value and died before
+        it could tell anyone, so the next cycle's identical write must NOT carry the STOP
+        that would end it at the chokepoint and leave the change unreported a second time.
+
+        The result says what the state is and names no call — the value is already right,
+        so there is nothing to write and nothing to fix; all that is left is to finish."""
+        _seed_collection(db, name="watch", description="a page watch")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector", scope="watch", run_id="run-dead"
+        )
+        await write.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
+        stamp_run(db, "run-dead", RunOutcome.INCOMPLETE)
+
+        rescue = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector", scope="watch", run_id="run-rescue"
+        )
+        still_news = await rescue.execute(
+            memory="watch", entries=[{"key": "price", "content": "$40"}]
+        )
+        assert still_news.stop is None
+        # The WHOLE result, not a substring: this batch is one entry, so the render is
+        # the message, and the equality pins the part's wording, its place in the
+        # composed order, and that no other part rode along with it.
+        assert still_news.message == (
+            "Still unreported: 'price' already holds this value, but the run that "
+            "recorded it never finished, so nothing has been said about it yet (entry)."
+        )
+        # The value did not change, so the write is not work — what this cycle does that
+        # counts is the notification, which the run's own outcome records.
+        assert still_news.mutated is False
+
+        # The rescuing run is now the entry's writer and it CLOSED, so the cycle after it
+        # is quiet again and stops at the chokepoint exactly as a watch always has.
+        stamp_run(db, "run-rescue", RunOutcome.WORKED)
+        later = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector", scope="watch", run_id="run-later"
+        )
+        quiet = await later.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
+        assert quiet.stop == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+        assert "Unchanged: 'price' already holds the same value" in quiet.message
+
+    @pytest.mark.asyncio
+    async def test_chat_write_never_asks_whether_the_last_writer_reported(self, db, mock_llm):
+        """A chat write is not must-act (#1936) — it owes the user no report, so the
+        second question is never asked and the same dead writer reads as it always did.
+        ``scope=None`` is what says so, the same flag that already withholds the STOP."""
+        _seed_collection(db, name="watch", description="a page watch")
+        collector = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector", scope="watch", run_id="run-dead"
+        )
+        await collector.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
+        stamp_run(db, "run-dead", RunOutcome.CANCELLED)
+
+        chat = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat", run_id="run-chat")
+        result = await chat.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
+        assert result.stop is None
+        assert "Unchanged: 'price' already holds the same value" in result.message
+        assert "Still unreported" not in result.message
 
     @pytest.mark.asyncio
     async def test_chat_scope_already_recorded_write_has_no_stop(self, db, mock_llm):

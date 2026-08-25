@@ -45,6 +45,23 @@ class RunOutcome(StrEnum):
     CANCELLED = "cancelled"
 
 
+# The declared table of outcomes that mean a cycle NEVER REACHED ITS CLOSE (#1936) —
+# so whatever it observed, it never got as far as telling anyone.
+#
+# It is the complement of the two clean shapes: ``worked`` / ``no_work`` are stamped
+# only by a cycle that closed, either with ``done()`` or on a write-gate STOP.  The
+# three here are the ways a cycle stops short — it aborted having changed something
+# (``incomplete``), it aborted having changed nothing (``failed``), or a foreground
+# message preempted it (``cancelled``).
+#
+# Read by the change-gate: a stored value whose writing run is in this table was
+# recorded but never reported, so re-observing it is still news rather than silence.
+# Data, like ``WRITE_GATE_STOP_REASONS`` — a later shape joins the table, not the code.
+RUN_OUTCOMES_NEVER_CLOSED: frozenset[RunOutcome] = frozenset(
+    {RunOutcome.FAILED, RunOutcome.INCOMPLETE, RunOutcome.CANCELLED}
+)
+
+
 class WriteGateOutcome(StrEnum):
     """The closed, deterministic outcome of one ``collection_write`` entry at the
     write chokepoint — the change-gate (#1587, epic #1554 via mini-epic #1562).
@@ -64,6 +81,12 @@ class WriteGateOutcome(StrEnum):
     ``KEY_EXISTS_UNCHANGED`` — the exact key existed with *identical* content: the
     value has not changed, so there is nothing further to do — the watch's "no
     change" signal, which carries STOP semantics (see ``WRITE_GATE_STOP_REASONS``) ·
+    ``KEY_EXISTS_UNDELIVERED`` — the exact key existed with *identical* content, but
+    the run that recorded that value never reached its close, so nothing ever told
+    the user about it: the change is STILL NEWS and this write is the cycle that
+    delivers it (#1936).  Same comparison as ``KEY_EXISTS_UNCHANGED``, different
+    answer, because "has this value changed?" and "has anyone been told?" are two
+    questions and only the second one decides whether the cycle stays quiet ·
     ``DUPLICATE_UNCHANGED`` — the dedup disjunction matched a *different* existing key
     AND the strict CONTENT signal fired: the stored entry already says what this write
     says, however either is worded, so the cycle observed nothing new.  The same no-news
@@ -86,6 +109,7 @@ class WriteGateOutcome(StrEnum):
     NEW_KEY = "new_key"
     KEY_EXISTS_CHANGED = "key_exists_changed"
     KEY_EXISTS_UNCHANGED = "key_exists_unchanged"
+    KEY_EXISTS_UNDELIVERED = "key_exists_undelivered"
     DUPLICATE_UNCHANGED = "duplicate_unchanged"
     DUPLICATE = "duplicate"
     DEGENERATE = "degenerate"
@@ -106,6 +130,11 @@ class WriteGateOutcome(StrEnum):
 # measured sample "recovered" by writing a DIFFERENT entry — rational, since the surface
 # it was answering asked it to try something else.  Splitting the outcome is what makes
 # no-news structural rather than something the model is asked not to do.
+#
+# ``KEY_EXISTS_UNDELIVERED`` is deliberately ABSENT (#1936), and its absence is the
+# whole mechanism: the value is unchanged, but the run that recorded it died before it
+# could say so, so stopping here would swallow a real change for the second time.  Left
+# out of the table, the cycle carries on to its close and the notify trigger fires.
 #
 # ``NEW_KEY`` / ``KEY_EXISTS_CHANGED`` never stop (an accumulator keeps going
 # mid-script), and ``DUPLICATE`` / ``DEGENERATE`` stay surfaced-but-recoverable — a
@@ -143,6 +172,10 @@ COLLECTOR_UNREADABLE_PROGRAM_REASON = (
 # (``KEY_EXISTS_CHANGED``, #1633).  Read by the write path's change-notify and the
 # tool result's ``mutated`` flag (the throttle's work signal), so "did this write
 # change anything?" is one definition, not two that can drift.
+#
+# ``KEY_EXISTS_UNDELIVERED`` is NOT here (#1936): it advances the entry's writer stamp
+# but stores the same value it already held, and this table is about the VALUE.  What
+# that cycle does that counts is the notification, which the run's own outcome reads.
 WRITE_GATE_MUTATING_OUTCOMES: frozenset[WriteGateOutcome] = frozenset(
     {WriteGateOutcome.NEW_KEY, WriteGateOutcome.KEY_EXISTS_CHANGED}
 )

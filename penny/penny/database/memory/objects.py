@@ -46,6 +46,7 @@ from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import (
+    RUN_OUTCOMES_NEVER_CLOSED,
     WRITE_GATE_MUTATING_OUTCOMES,
     WRITE_GATE_STOP_REASONS,
     PennyConstants,
@@ -161,6 +162,7 @@ class Memory:
         author: str,
         thresholds: DedupThresholds | None = None,
         run_id: str | None = None,
+        must_act: bool = False,
     ) -> list[WriteResult]:
         self._refuse_collection_op()
         return []
@@ -403,6 +405,7 @@ class Collection(Memory):
         author: str,
         thresholds: DedupThresholds | None = None,
         run_id: str | None = None,
+        must_act: bool = False,
     ) -> list[WriteResult]:
         """Write entries with per-entry similarity dedup.  One ``WriteResult``
         per input; dedup runs against the existing corpus using the configured
@@ -413,14 +416,21 @@ class Collection(Memory):
         row, so an entry cites the run that produced it (#1560).  A ``KEY_EXISTS_CHANGED``
         entry auto-refreshes its stored baseline in place through the same update
         path (#1633) — so it too advances ``last_written_by_run_id`` and counts as a
-        change for the notify below."""
+        change for the notify below.
+
+        ``must_act`` says this write happens in a run that is OBLIGED to act on what
+        it observes — a collector cycle, the only writer whose silence the user
+        experiences as "nothing happened" (#1936).  Only there does the gate ask the
+        second question about an unchanged value: was the run that recorded it ever
+        able to report it?  A chat write passes ``False`` and reads exactly as it
+        always did."""
         thresholds = thresholds or DedupThresholds.from_runtime(self._runtime)
         existing = self._entries_with_vectors()
         results: list[WriteResult] = []
         with self._session() as session:
             for entry in entries:
                 results.append(
-                    self._write_one(session, entry, author, existing, thresholds, run_id)
+                    self._write_one(session, entry, author, existing, thresholds, run_id, must_act)
                 )
             session.commit()
         if any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results):
@@ -444,8 +454,9 @@ class Collection(Memory):
         self._notify()
         return "ok"
 
-    @staticmethod
+    @classmethod
     def _apply_content(
+        cls,
         session: Session,
         rows: list[MemoryEntry],
         content: str,
@@ -459,6 +470,27 @@ class Collection(Memory):
         left untouched (this is a rewrite, not a creation)."""
         for row in rows:
             row.content = content
+        cls._stamp_writer(session, rows, author, run_id)
+
+    @staticmethod
+    def _stamp_writer(
+        session: Session, rows: list[MemoryEntry], author: str, run_id: str | None
+    ) -> None:
+        """Advance "who wrote the current value" on each row, leaving the value and
+        ``created_by_run_id`` alone.
+
+        The stamp on its own is the ``KEY_EXISTS_UNDELIVERED`` write (#1936): the value
+        is already right, so there is nothing to rewrite, but the entry has to stop
+        naming the run that died — otherwise every later cycle reads that same dead
+        writer and reports the change again, forever.  Advancing it makes the gate
+        self-correcting: once a cycle closes, the next identical write reads UNCHANGED;
+        if this cycle dies too, the next one reads UNDELIVERED again.
+
+        ``author`` travels with the run because they are one claim — who wrote the value
+        that is there now — and every write path has always set them together, so an
+        entry whose stamp and author name different runs has never been a state this
+        store can be in."""
+        for row in rows:
             row.author = author
             row.last_written_by_run_id = run_id
             session.add(row)
@@ -532,12 +564,13 @@ class Collection(Memory):
         existing: list[EntrySide],
         thresholds: DedupThresholds,
         run_id: str | None = None,
+        must_act: bool = False,
     ) -> WriteResult:
         """Classify one write into the closed ``WriteGateOutcome`` union — the
         change-gate at the write chokepoint (#1587).  The comparison is
         deterministic and total; nothing here is a model judgment.  The gate decides
         the non-write outcomes; only a genuinely new key is persisted."""
-        gated = self._gate_outcome(session, entry, author, existing, thresholds, run_id)
+        gated = self._gate_outcome(session, entry, author, existing, thresholds, run_id, must_act)
         if gated is not None:
             return gated
         return self._insert_new_entry(session, entry, author, existing, run_id)
@@ -550,6 +583,7 @@ class Collection(Memory):
         existing: list[EntrySide],
         thresholds: DedupThresholds,
         run_id: str | None,
+        must_act: bool,
     ) -> WriteResult | None:
         """The change-gate itself: the non-NEW_KEY outcome for an entry that is NOT
         newly inserted — DEGENERATE, KEY_EXISTS_CHANGED/UNCHANGED (an exact-key hit
@@ -569,7 +603,7 @@ class Collection(Memory):
             )
         stored = self._rows_by_key(session, self.name, entry.key)
         if stored:
-            return self._exact_key_outcome(session, stored, entry, author, run_id)
+            return self._exact_key_outcome(session, stored, entry, author, run_id, must_act)
         candidate = EntrySide(entry.key, entry.key_embedding, entry.content_embedding)
         matched = sim.is_duplicate(candidate, existing, thresholds)
         if matched is not None:
@@ -587,22 +621,83 @@ class Collection(Memory):
         entry: EntryInput,
         author: str,
         run_id: str | None,
+        must_act: bool,
     ) -> WriteResult:
         """The exact-key hit — compared by value, not embedding.  Identical value →
-        KEY_EXISTS_UNCHANGED (the watch's "no change" signal, STOP-worthy).  Different
-        value → KEY_EXISTS_CHANGED: the gate **auto-refreshes the stored baseline
-        itself** in place through the shared update path (#1633), so no dangling
-        ``update_entry`` is left for the model to run.  A degenerate new value never
-        reaches here — it classified DEGENERATE upstream — so the refresh only ever
-        stores screened content."""
+        KEY_EXISTS_UNCHANGED (the watch's "no change" signal, STOP-worthy) unless the
+        run that recorded it never got to report it, which is UNDELIVERED (#1936).
+        Different value → KEY_EXISTS_CHANGED: the gate **auto-refreshes the stored
+        baseline itself** in place through the shared update path (#1633), so no
+        dangling ``update_entry`` is left for the model to run.  A degenerate new value
+        never reaches here — it classified DEGENERATE upstream — so the refresh only
+        ever stores screened content."""
         if _content_unchanged(stored[0].content, entry.content):
-            return WriteResult(
-                key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_UNCHANGED, matched_key=entry.key
-            )
+            return self._unchanged_outcome(session, stored, entry, author, run_id, must_act)
         self._apply_content(session, stored, entry.content, author, run_id)
         return WriteResult(
             key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_CHANGED, matched_key=entry.key
         )
+
+    def _unchanged_outcome(
+        self,
+        session: Session,
+        stored: list[MemoryEntry],
+        entry: EntryInput,
+        author: str,
+        run_id: str | None,
+        must_act: bool,
+    ) -> WriteResult:
+        """The identical-value branch, split by whether anyone was ever told (#1936).
+
+        A watch that re-observes what it already holds is normally silence — but a run
+        can record a change and then die before its close, and the next cycle sees only
+        an unchanged value.  Read alone, that says nothing happened; read beside the
+        writing run's outcome, it says the change was recorded by a run that never
+        delivered it, so it is still news.  Only a must-act (collector) write asks the
+        second question, and the answer comes from the ledger, never from a judgment."""
+        if must_act and self._writer_never_closed(session, stored[0], run_id):
+            self._stamp_writer(session, stored, author, run_id)
+            return WriteResult(
+                key=entry.key,
+                outcome=WriteGateOutcome.KEY_EXISTS_UNDELIVERED,
+                matched_key=entry.key,
+            )
+        return WriteResult(
+            key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_UNCHANGED, matched_key=entry.key
+        )
+
+    @staticmethod
+    def _writer_never_closed(session: Session, row: MemoryEntry, run_id: str | None) -> bool:
+        """Did the run that wrote this entry's current value end without reaching its
+        close?  Read off the ledger via the entry's own ``last_written_by_run_id``
+        stamp (#1560) against the declared ``RUN_OUTCOMES_NEVER_CLOSED`` table.  Exactly
+        one row per run carries an outcome (``set_run_outcome`` stamps the run's last
+        prompt), so the first match IS the run's outcome.
+
+        Two runs answer ``False`` by construction.  THIS one — its outcome is stamped
+        when it ends, so a key written twice in one cycle would otherwise read its own
+        unfinished self as a dead writer.  And a run with no recorded outcome at all: a
+        chat turn stamps none, and a process that died mid-cycle never got to, so a
+        missing outcome cannot be told from an ordinary one.
+
+        Two DECLARED LIMITS, both in the safe direction — the read only ever speaks up
+        about a run the ledger says failed.  A hard process crash leaves no outcome, so
+        its observation is still lost.  And "closed" is not "reported": a cycle that
+        closed cleanly but whose notification draw failed or was undeliverable stamps a
+        clean outcome, so this reads it as delivered.  That second one is the same harm
+        through a different door and wants its own fix, not a wider table here — the
+        ledger says whether the cycle closed, and what became of a notification is the
+        run record's, not the outcome enum's."""
+        writer = row.last_written_by_run_id
+        if writer is None or writer == run_id:
+            return False
+        outcome = session.exec(
+            select(PromptLog.run_outcome).where(
+                PromptLog.run_id == writer,
+                col(PromptLog.run_outcome).isnot(None),
+            )
+        ).first()
+        return outcome in RUN_OUTCOMES_NEVER_CLOSED
 
     def _insert_new_entry(
         self,

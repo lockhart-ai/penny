@@ -19,6 +19,7 @@ from penny.constants import (
     MutationAction,
     MutationActor,
     PennyConstants,
+    RunOutcome,
     WriteGateOutcome,
 )
 from penny.database import Database
@@ -37,6 +38,7 @@ from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
+from penny.tests.conftest import stamp_run
 from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import MemoryMetadataTool
 
@@ -448,7 +450,7 @@ class TestCollectionWrites:
         Whitespace around the value doesn't count as a change."""
         db.memories.create_collection("watch", "x")
         db.memories.memory("watch").write(
-            [EntryInput(key="price", content="$42")], author="collector"
+            [EntryInput(key="price", content="$42")], author="collector", run_id="run-baseline"
         )
         again = db.memories.memory("watch").write(
             [EntryInput(key="price", content="  $42 ")], author="collector"
@@ -457,6 +459,130 @@ class TestCollectionWrites:
         assert again[0].entry_id is None
         assert again[0].matched_key == "price"
         assert len(db.memories.memory("watch").get("price")) == 1
+        # A must-act (collector) write whose baseline was left by a run that CLOSED reads
+        # exactly the same (#1936) — the still-news read below is about a writer that
+        # never got to report, and a healthy one keeps today's silence + its STOP.
+        stamp_run(db, "run-baseline", RunOutcome.WORKED)
+        healthy = db.memories.memory("watch").write(
+            [EntryInput(key="price", content="$42")],
+            author="collector",
+            run_id="run-next",
+            must_act=True,
+        )
+        assert healthy[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+        assert healthy[0].outcome in WRITE_GATE_STOP_REASONS
+
+    def test_change_gate_still_news_when_the_writing_run_never_closed(self, db):
+        """#1936 — a cycle can WRITE a changed value and then die before its
+        close/notify, so the next cycle re-observes an identical value nobody was ever
+        told about.  Read alone, that value says nothing happened and the watch goes
+        silent for a change that really occurred.
+
+        Read beside the WRITING RUN's outcome it says the opposite, so the gate consults
+        it: a run in the declared never-closed table classifies KEY_EXISTS_UNDELIVERED,
+        which is deliberately absent from the STOP table so the cycle runs on to its
+        close and the notify trigger fires.  One case per way a cycle stops short."""
+        db.memories.create_collection("watch", "a page watch")
+        watch = db.memories.memory("watch")
+        for outcome in (RunOutcome.FAILED, RunOutcome.INCOMPLETE, RunOutcome.CANCELLED):
+            key, dead = f"price {outcome.value}", f"run-{outcome.value}"
+            watch.write([EntryInput(key=key, content="$40")], author="collector", run_id=dead)
+            stamp_run(db, dead, outcome)
+            again = watch.write(
+                [EntryInput(key=key, content="$40")],
+                author="collector",
+                run_id=f"{dead}-next",
+                must_act=True,
+            )
+            assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_UNDELIVERED
+            assert again[0].matched_key == key
+            assert again[0].outcome not in WRITE_GATE_STOP_REASONS
+
+    def test_still_news_advances_the_writer_stamp_without_touching_the_value(self, db):
+        """The still-news write is a STAMP, not a rewrite (#1936): the value is already
+        right, so only "who wrote the current value" moves — and it MUST move, or every
+        later cycle would read the same dead run and report the change forever.
+
+        That makes the gate self-correcting: this cycle's own run is now the writer, so
+        the next identical write is silent again."""
+        db.memories.create_collection("watch", "a page watch")
+        watch = db.memories.memory("watch")
+        watch.write([EntryInput(key="price", content="$40")], author="collector", run_id="run-dead")
+        stamp_run(db, "run-dead", RunOutcome.INCOMPLETE)
+
+        watch.write(
+            [EntryInput(key="price", content="$40")],
+            author="collector",
+            run_id="run-rescue",
+            must_act=True,
+        )
+        row = watch.get("price")[0]
+        assert row.content == "$40"
+        assert row.created_by_run_id == "run-dead"
+        assert row.last_written_by_run_id == "run-rescue"
+
+        # The rescuing run is now the writer, and it CLOSED — so the next observation is
+        # quiet again: reported once, not on every cycle from here on.  Its outcome has
+        # to be stamped for this to prove the mechanism rather than the unstamped-run
+        # limit below, which reaches the same answer down a different path.
+        stamp_run(db, "run-rescue", RunOutcome.WORKED)
+        after = watch.write(
+            [EntryInput(key="price", content="$40")],
+            author="collector",
+            run_id="run-later",
+            must_act=True,
+        )
+        assert after[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+
+    def test_still_news_is_only_asked_of_a_must_act_write(self, db):
+        """The second question is the COLLECTOR's (#1936).  A chat write is not obliged
+        to report anything, so it never asks whether the last writer got to — the same
+        entry, the same dead writer, reads exactly as it did before this existed.
+
+        A run the ledger records NOTHING for reads as delivered too — a chat turn stamps
+        no outcome, and a process that died mid-cycle never got to, so a missing outcome
+        cannot be told from an ordinary one.  The declared limit, and the safe
+        direction: the gate only ever speaks up about a run the ledger says failed."""
+        db.memories.create_collection("watch", "a page watch")
+        watch = db.memories.memory("watch")
+        watch.write([EntryInput(key="price", content="$40")], author="collector", run_id="run-dead")
+        stamp_run(db, "run-dead", RunOutcome.FAILED)
+
+        chat = watch.write(
+            [EntryInput(key="price", content="$40")], author="chat", run_id="run-chat"
+        )
+        assert chat[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+
+        watch.write([EntryInput(key="quote", content="$7")], author="chat", run_id="run-unstamped")
+        unstamped = watch.write(
+            [EntryInput(key="quote", content="$7")],
+            author="collector",
+            run_id="run-after",
+            must_act=True,
+        )
+        assert unstamped[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+
+    def test_a_key_rewritten_twice_in_one_cycle_is_not_its_own_dead_writer(self, db):
+        """The current run is excluded by construction (#1936): its outcome is stamped
+        only when it ENDS, so a key written twice in one cycle would otherwise read its
+        own unfinished self as a writer that never closed and report a change it just
+        made itself."""
+        db.memories.create_collection("watch", "a page watch")
+        watch = db.memories.memory("watch")
+        first = watch.write(
+            [EntryInput(key="price", content="$40")],
+            author="collector",
+            run_id="run-live",
+            must_act=True,
+        )
+        second = watch.write(
+            [EntryInput(key="price", content="$40")],
+            author="collector",
+            run_id="run-live",
+            must_act=True,
+        )
+        assert first[0].outcome == WriteGateOutcome.NEW_KEY
+        assert second[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
 
     def test_change_gate_changed_auto_refreshes_baseline(self, db):
         """The change-gate auto-refresh (#1633): re-writing an EXACT key with a

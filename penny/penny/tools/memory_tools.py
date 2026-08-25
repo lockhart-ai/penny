@@ -1338,6 +1338,23 @@ def _format_unchanged(results: list[WriteResult]) -> str:
     )
 
 
+def _format_undelivered(results: list[WriteResult]) -> str:
+    """The UNDELIVERED part (#1936): the key already holds this value, but the run that
+    recorded it never finished, so nobody has heard about it yet.
+
+    It says what the state IS rather than what to do about it — there is nothing to
+    write (the value is already right) and nothing to fix, and the only thing left in
+    the cycle is to carry on and finish, which is what any program does anyway.  It
+    names no call: naming one here would be an instruction to redo a write that already
+    landed."""
+    keys = ", ".join(f"'{r.key}'" for r in results)
+    noun = "entry" if len(results) == 1 else "entries"
+    return (
+        f"Still unreported: {keys} already holds this value, but the run that recorded it "
+        f"never finished, so nothing has been said about it yet ({noun})."
+    )
+
+
 def _format_duplicate_unchanged(results: list[WriteResult]) -> str:
     """The DUPLICATE_UNCHANGED part (#1919): the value is already recorded under a
     DIFFERENT key, so there is nothing new — ``KEY_EXISTS_UNCHANGED``'s twin for the
@@ -1469,6 +1486,15 @@ class CollectionWriteTool(MemoryTool):
         # stored value cites the run that produced it (#1560).
         self._run_id = run_id
 
+    @property
+    def _must_act(self) -> bool:
+        """Is this the MUST-ACT (collector) context — a run obliged to act on what it
+        observes, and the only writer whose silence the user experiences as "nothing
+        happened"?  A bound ``scope`` is what says so, and both things keyed to it read
+        it here: the write-gate STOP the loop honours and the still-news read (#1936)
+        that decides whether an unchanged value is one to stay silent about."""
+        return self._scope is not None
+
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         # This tool embeds, so a write to a mistyped collection gets the MEANING
         # leg too (#1674) — the motivating 'aurora-deone' write path.
@@ -1487,7 +1513,9 @@ class CollectionWriteTool(MemoryTool):
         embed_failure = self._embed_failure(target, entries)
         if embed_failure is not None:
             return embed_failure
-        results = memory.write(entries, author=self._author, run_id=self._run_id)
+        results = memory.write(
+            entries, author=self._author, run_id=self._run_id, must_act=self._must_act
+        )
         result = self._format_results(target, results)
         if note:
             return result.model_copy(update={"message": note + result.message})
@@ -1607,18 +1635,21 @@ class CollectionWriteTool(MemoryTool):
         written = [r.key for r in by[WriteGateOutcome.NEW_KEY]]
         changed = by[WriteGateOutcome.KEY_EXISTS_CHANGED]
         unchanged = by[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+        undelivered = by[WriteGateOutcome.KEY_EXISTS_UNDELIVERED]
         already = by[WriteGateOutcome.DUPLICATE_UNCHANGED]
         duplicates = by[WriteGateOutcome.DUPLICATE]
         degenerate = by[WriteGateOutcome.DEGENERATE]
         # "Nothing landed" = the batch was ONLY divergent-value duplicates: the close then
         # names there is nothing new, not just per-entry refreshes.  An already-recorded
-        # entry landed nothing either, so it does not count as something having happened.
-        nothing_landed = not (written or changed or unchanged or degenerate)
+        # entry landed nothing either, so it does not count as something having happened;
+        # an unreported one is the entry the cycle is there to report, so it does.
+        nothing_landed = not (written or changed or unchanged or undelivered or degenerate)
         unexpected = by[WriteGateOutcome.UNEXPECTED]
         parts = [
             _format_written(memory, written) if written else None,
             _format_changed(changed) if changed else None,
             _format_unchanged(unchanged) if unchanged else None,
+            _format_undelivered(undelivered) if undelivered else None,
             _format_duplicate_unchanged(already) if already else None,
             self._duplicate_part(duplicates, all_duplicates=nothing_landed) if duplicates else None,
             _format_degenerate(degenerate) if degenerate else None,
@@ -1647,7 +1678,7 @@ class CollectionWriteTool(MemoryTool):
         since #1919 — by the dedup disjunction's strict content match under a reworded
         one.  Which outcomes are STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS``
         table (data), so later stages extend the table, not this code."""
-        if self._scope is None or not results:
+        if not self._must_act or not results:
             return None
         outcomes = {r.outcome for r in results}
         if len(outcomes) == 1:

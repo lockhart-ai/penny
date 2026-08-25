@@ -12,6 +12,7 @@ import pytest
 
 from penny.config import Config
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
+from penny.constants import RunOutcome
 from penny.penny import Penny
 
 # Re-export LLM mock fixture so it can be used directly in tests
@@ -150,6 +151,27 @@ def require_memory(database: Database, name: str) -> Memory:
     memory = database.memory(name)
     assert memory is not None, f"memory {name!r} does not exist"
     return memory
+
+
+def stamp_run(database: Database, run_id: str, outcome: RunOutcome, target: str = "watch") -> None:
+    """Record ``run_id`` in the ledger with a terminal outcome — the shape a collector
+    cycle leaves behind (one ``log_prompt`` per model call, one ``set_run_outcome`` when
+    it ends).
+
+    What the change-gate's still-news read consults (#1936): a stored entry names the
+    run that wrote its current value, and that run's outcome says whether it ever got as
+    far as reporting it.  Shared here rather than per test module because the store test
+    and the tool test ask the same question of the same two tables.
+    """
+    database.messages.log_prompt(
+        model="test-model",
+        messages=[{"role": "user", "content": "cycle"}],
+        response={"choices": []},
+        agent_name="collector",
+        run_id=run_id,
+        run_target=target,
+    )
+    database.messages.set_run_outcome(run_id, outcome.value, "")
 
 
 @pytest.fixture
