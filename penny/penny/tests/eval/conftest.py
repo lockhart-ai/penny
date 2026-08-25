@@ -837,6 +837,42 @@ def asked_for_page_structure(reply: str) -> str | None:
     return next((term for term in _PAGE_STRUCTURE_TERMS if term in lowered), None)
 
 
+# The two families a reply describes a ROUTINE's moves in — it reads pages, it saves what
+# it finds.  Shared, because two cases now ask the same question of a reply (what a
+# standing job does when read back, and what a just-learned routine will run each time,
+# #1943) and one policy in two copies is two contracts.
+#
+# Both are broad by construction and were widened against captured samples: an earlier
+# verb-only fetch pattern false-negatived "look on the web" and "pulls in … databases",
+# scoring faithful descriptions as misses, and a scorer that reads one phrasing measures
+# wording rather than fidelity.  The ambiguous persist verbs (add/store/keep/log/maintain)
+# must be ANCHORED to an entry/list object, so "keep an eye on it" never reads as a write.
+DESCRIBES_FETCH = (
+    r"\b(search\w*|browse\w*|scours?|scans?|hunts?|crawls?|monitors?|gathers?|pulls?\s+in|"
+    r"look\w*\s+(for|up|on|at|across|through)|finds?\s+new|fetch\w*|opens?|reads?|checks?)\b"
+    r"|\b(the\s+web|online|the\s+internet|the\s+page)\b"
+)
+# The literal ``collection_write`` was an alternative here until #1943: the learn-close
+# frame now hands the model the record's own tool names, so a pattern crediting one read
+# back aloud would score the leak as a description.  A reply naming a tool is measured by
+# the case that cares, as its own negative check.
+DESCRIBES_SAVE = (
+    r"\b(saves?|saving|writes?|writing|records?|recording)\b"
+    r"|\b(adds?|adding|stores?|storing|keeps?|keeping|logs?|logging|maintains?|"
+    r"curates?|compiles?|compiling)\b"
+    r"[\w\s,'-]{0,20}\b(entry|entries|list|record|records|collection|them|it)\b"
+    r"|\bentr(y|ies)\b[^.]{0,30}\b(added|stored|written|saved|created)\b"
+)
+
+
+def describes(reply: str, pattern: str) -> bool:
+    """Whether the reply describes a family, read through the typography the model
+    sprinkles (curly quotes, markdown emphasis) — a false negative from a bold marker
+    would be the scorer measuring formatting."""
+    normalized = reply.casefold().replace("’", "'").replace("“", '"')
+    return re.search(pattern, re.sub(r"[*_`]", "", normalized)) is not None
+
+
 def outgoing_replies(db: Database) -> list[str]:
     """Every message Penny sent this sample (the per-turn replies), oldest first."""
     entries = require_memory(db, "penny-messages").read_recent(window_seconds=3600, cap=None)

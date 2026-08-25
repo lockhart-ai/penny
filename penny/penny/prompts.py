@@ -328,19 +328,38 @@ class Prompt:
     # what it's for, what it needs — so the model narrates from the render, not from
     # memory (SAID==DID).  Deliberately NOT the numbered recipe (#1799): what this
     # frame asks for is a description a person can act on, and a block of tool calls
-    # sitting in front of that request is a block that gets read aloud.  Nothing here
-    # forbids showing tool syntax; there is simply none to show.
+    # sitting in front of that request is a block that gets read aloud.
+    #
+    # ``{shape}`` is the same steps at SHAPE altitude (#1943, ``render_skill_shape``) —
+    # what the routine RUNS, in order — because the brief render alone left a spurious step
+    # invisible until a collector enacted it, and the demonstrator, who is the only one who
+    # knows what the routine was for, is guaranteed to be reading exactly this reply.
+    # Correcting it is walking the routine through again: re-teaching REPLACES it, and
+    # there is no edit surface for the model to offer.
+    #
+    # It carries TOOL NAMES, which is the one thing #1799's "there is simply none to show"
+    # gives up, and the cost is bounded on both sides: no call SHAPE (no parens, no
+    # arguments, no brace placeholders — the recipe is still what it was, one
+    # ``skill_read(name=<name>)`` away), and the instruction below asks for the steps in
+    # PLAIN WORDS, which the eval contract scores as a negative — a reply reading a tool
+    # name back is the leak, and it is measured rather than assumed.
     SKILL_LEARNED_NARRATION = (
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"
         "{skill}\n\n"
+        "The steps it will run each time, in order: {shape}\n\n"
         "You demonstrated it on: {demonstrated_on}\n\n"
         "Reply to the user now. FIRST answer what they actually asked: report the "
         "outcome of this round — the value you found and where you stored it — since "
         "this reply is the only one they receive. THEN tell them, in your own words, "
         "that you've learned this routine: name it by what it does generally (not "
         "just this one instance), say plainly what it does, and name what you'd need "
-        "from them to run it again. Then offer to set it running on a schedule if "
+        "from them to run it again. Give them the steps too — one short line, in "
+        "everyday words rather than the tool names above, in that same order, every "
+        "step it captured and no step it didn't — because they are the only one who "
+        "knows what this routine was for, so a step that doesn't belong is a step only "
+        "they can spot. If one is wrong, they can walk you through the routine again "
+        "and you'll learn it fresh. Then offer to set it running on a schedule if "
         "they'd like."
     )
 

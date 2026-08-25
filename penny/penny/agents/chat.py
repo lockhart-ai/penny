@@ -40,7 +40,7 @@ from penny.tools.collection_instantiation import render_applied_configuration
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import CollectionSetTool, collector_tool_surface
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
-from penny.tools.skill_tools import render_skill_brief
+from penny.tools.skill_tools import render_skill_brief, render_skill_shape
 from penny.validation import ConditionKey
 from penny.validation.outcomes import LoopContext
 from penny.validation.response_validators import (
@@ -300,11 +300,13 @@ class ChatAgent(Agent):
         framing: RoundFraming | None,
     ) -> str | None:
         """Extract a skill from this run and, on success, build the narration frame
-        so the model narrates from the render, not from memory.  The render is the
-        BRIEF one (#1804/#1799): what the routine is and what it needs, in prose —
-        the facts the model is asked to relay, and nothing shaped like a tool call
-        for it to read aloud to the user instead.  ``None`` when the run did not
-        qualify — the gate is logged, never silently swallowed.
+        so the model narrates from the render, not from memory.  Two renders of the
+        same record, both in prose and neither shaped like a tool call for the reply
+        to read aloud (#1799): the BRIEF one (#1804) — what the routine is and what it
+        needs — and its SHAPE (#1943) — what it runs, in order — which is what makes a
+        step the demonstration picked up by accident visible to the one person who
+        knows it does not belong.  ``None`` when the run did not qualify — the gate is
+        logged, never silently swallowed.
 
         ``state`` is the turn's landed machine state, handed to the extractor as a
         parameter (#1850): learning is the one thing that mints a routine, so what a
@@ -327,7 +329,9 @@ class ChatAgent(Agent):
                 # what it did and offering, apply binds it when the user says so —
                 # so the framework no longer folds the two together at run end.
                 return Prompt.SKILL_LEARNED_NARRATION.format(
-                    skill=render_skill_brief(skill), demonstrated_on=origin
+                    skill=render_skill_brief(skill),
+                    shape=render_skill_shape(skill),
+                    demonstrated_on=origin,
                 )
             case NoExtraction(gate=gate):
                 logger.debug("No skill extracted from run %s (%s)", run_id, gate)

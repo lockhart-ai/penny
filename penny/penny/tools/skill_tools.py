@@ -6,29 +6,47 @@ distilled deterministically from a qualifying chat run's own ledger at run end
 parameters.
 The model's only skill actions are resolve (``find``), READ (``skill_read``, here),
 and instantiate/attach (``collection_set(skill=…)`` / ``collection_set(skill=…)``).
-``skill_read`` renders the versionless registry.  Two renders live here, because the
-consumers want different things (#1804): ``render_skill_full`` — name, intent,
+``skill_read`` renders the versionless registry.  Three renders live here, because the
+consumers want different things (#1804/#1943): ``render_skill_full`` — name, intent,
 parameters AND the numbered tool-call recipe — is what an explicit read of ONE skill
 returns, the one place the steps are the answer; ``render_skill_brief`` — what a skill
 IS and what it NEEDS, on one line — is what the surfaces that JUDGE a skill read (the
-ambient ``### Skills and rules`` section every turn, and the run-end narration frame).
+ambient ``### Skills and rules`` section every turn, and the run-end narration frame);
+``render_skill_shape`` — the same steps at SHAPE altitude, one skimmable line — is what
+the learn-close narration adds beside the brief so the person who knows what the routine
+was meant to do can see what it actually captured.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.models import Skill
 from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.database.skills import SkillParameter, render_skill, slug_skill_name
+from penny.database.skills import SkillParameter, SkillStep, render_skill, slug_skill_name
 from penny.tools.base import Tool
 from penny.tools.models import ToolResult
 from penny.tools.skill_args import SkillReadArgs
 
-# ── The two renders: brief (what it is) and full (how it is carried out) ──────
+# ── The three renders: brief (what it is), shape (what it runs), full (how) ───
 
 _STEP_INDENT = "  "
+
+# The step-shape line's own punctuation (#1943).  The arrow is the sequence, the overflow
+# tail is the honest cut — it is deliberately NOT joined by the arrow, so the count can
+# never be misread as one more step, and it states its number the way every other bounded
+# render in the house does.
+_SHAPE_SEPARATOR = " → "
+_SHAPE_OVERFLOW = " … {count} more steps not shown."
+# A step's tool is named in the house's inline-prose dialect — single markdown backticks,
+# no parens.  Both halves are deliberate.  The backticks are what the canonical-call-
+# notation rules permit for a tool named in prose rather than called; and NO parens is the
+# point of this render, because a call shape here would be a call shape the reply reads
+# aloud (#1799, the measured leak this frame exists downstream of).  A parens-less mention
+# reads as "a thing that exists" — which is exactly what a step of a RECORD is.
+_SHAPE_TOOL = "`{tool}`"
 
 
 def _parameters_block(parameters: list[SkillParameter]) -> str:
@@ -89,6 +107,73 @@ def render_skill_brief(skill: Skill) -> str:
     different evidence.  Not single-sourced: ``conversation_machine`` is a leaf that
     must not import the database package this module pulls in.)"""
     return f"{skill.name} — {skill.intent}{_needs_clause(parameters_from_json(skill.parameters))}"
+
+
+def _counted_arguments(arguments: dict[str, Any]) -> str:
+    """The ``<n> <argument name>`` clauses of one step's shape — one per top-level
+    argument holding a LIST of more than one thing, in the order the call declared them.
+
+    The noun is the ARGUMENT'S OWN NAME, read off the call as data: nothing here knows
+    which tools exist, so a plugin verb nobody has heard of counts its own list under its
+    own word for it.  A list of ONE renders nothing at all — one is what a call ordinarily
+    carries, so a count of it says nothing the tool name did not, and the line stays short
+    enough to skim.  A scalar or a dict argument is ONE thing however many fields it has,
+    so neither is counted; what this line is for is the step that did something several
+    times over.
+
+    The lengths are read from the STORED arguments, which is what makes the line stable:
+    every seam that touches a skill's arguments afterwards (a parameter binding, an
+    attachment retarget, the render's own substitutions) replaces a LEAF in place and
+    never changes a list's length, so the shape of a routine at rest and the shape of the
+    job it becomes are the same shape."""
+    return ", ".join(
+        f"{len(value)} {name}"
+        for name, value in arguments.items()
+        if isinstance(value, list) and len(value) > 1
+    )
+
+
+def _step_shape(step: SkillStep) -> str:
+    """One step at shape altitude: its tool, and how many of anything it handles."""
+    named = _SHAPE_TOOL.format(tool=step.tool)
+    counted = _counted_arguments(step.arguments)
+    return f"{named} {counted}" if counted else named
+
+
+def render_skill_shape(skill: Skill) -> str:
+    """What the routine RUNS, in order, on ONE skimmable line (#1943) — for the round
+    that motivated it, a fetch of three pages, a write of four entries, and then two
+    stray fetches, each tool named in the inline-prose backtick dialect.
+
+    The learn-close reply names the routine and what it needs, and until this it said
+    nothing about its SHAPE — so a step the demonstration picked up by accident was
+    invisible until a collector enacted it (the motivating round carried two stray
+    fetches and a placeholder write, all three enacted verbatim afterwards).  The
+    demonstrator is the only party who knows what the routine was FOR, and the learn-close
+    reply is the one moment they are guaranteed to be present, so this is the review
+    moment: the line is read, not judged, and correcting it is re-teaching the routine —
+    there is no edit surface and this adds none.
+
+    Read off the RECORD (the distilled steps), never off what the run remembers doing, for
+    the reason the brief render beside it is: the two must not be able to disagree.  It is
+    the same steps :func:`render_skill_full` numbers out in full — one altitude up, with
+    no argument VALUES and no call shape at all, so there is nothing here for the reply to
+    read aloud as a recipe (the #1799 leak) and the whole recipe stays one
+    ``skill_read(name=<name>)`` away.
+
+    No tool is named in LOGIC: each segment is whatever the step's own call was, so a
+    routine spanning tools this module has never heard of renders exactly like one that
+    does not.  A demonstration longer than ``SKILL_SHAPE_STEPS`` states the count it left
+    off rather than trailing away.  There is no empty form: a skill reaches the registry
+    only from a run that certified at least one call, so a step-less skill is not a state
+    this render can be handed."""
+    steps = steps_from_json(skill.steps)
+    shown = steps[: PennyConstants.SKILL_SHAPE_STEPS]
+    line = _SHAPE_SEPARATOR.join(_step_shape(step) for step in shown)
+    remaining = len(steps) - len(shown)
+    if not remaining:
+        return line
+    return f"{line}{_SHAPE_OVERFLOW.format(count=remaining)}"
 
 
 def render_skill_full(skill: Skill) -> str:
