@@ -28,6 +28,7 @@ from sqlmodel import Session, col, select
 from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.memory import _similarity as sim
+from penny.database.memory.journal import CycleJournal
 from penny.database.memory.objects import Collection, Log, Memory, MessageLogMemory, RunLog
 from penny.database.memory.types import (
     DedupThresholds,
@@ -152,6 +153,7 @@ class MemoryStore:
 
     Summary of the public surface:
         * dispatch: memory, run_log
+        * the bound cycle's undo journal (#1936): begin_cycle, end_cycle
         * metadata: create_collection, create_log, get, list_all, archive,
           unarchive, update_collection_metadata, link_source_message,
           mark_collected
@@ -189,6 +191,51 @@ class MemoryStore:
         # Fired after any mutation so observers (the browser channel) can refresh.
         # The factory injects it into each Memory object it builds.
         self._on_memory_changed: Callable[[str | None], None] | None = None
+        # The bound collector cycle's undo journal (#1936) — ``None`` outside a cycle,
+        # which is when there is nothing to undo.  It lives here rather than being
+        # passed down because the mutations it records happen at this layer's own
+        # chokepoint, several call frames below anything the collector holds.
+        self._journal: CycleJournal | None = None
+
+    # ── The bound cycle's undo journal (#1936) ────────────────────────────────
+
+    def begin_cycle(self, name: str | None) -> None:
+        """Record ``name``'s entry mutations from here until the cycle settles.
+
+        ``None`` records nothing, which is the state every caller but a bound collector
+        cycle is in — chat writes ride straight past.  A fresh journal replaces any
+        previous one, so a cycle that never settled leaves nothing to replay onto the
+        next: dropping is the conservative direction, being exactly the behaviour that
+        stood before this existed.
+        """
+        self._journal = CycleJournal(name) if name is not None else None
+
+    def end_cycle(self, *, revert: bool) -> bool:
+        """Settle the bound cycle's journal, returning whether its writes SURVIVED.
+
+        A healthy end drops the journal — the writes were already durable, so there is
+        nothing to do.  An unhealthy one replays it in ONE short transaction (prior
+        absent → delete the row; else restore the fields), so the retry runs against the
+        genuine pre-run state and the change-gate never reads a value recorded by a run
+        nobody heard from.  Reverting is a real change, so it announces itself like any
+        other (``memory_changed``) — the surfaces showing the collection are showing the
+        dead cycle's writes.
+        """
+        journal = self._journal
+        self._journal = None
+        if journal is None or not revert:
+            return True
+        if journal.touched:
+            with self._session() as session:
+                keys = journal.revert(session)
+                session.commit()
+            logger.info(
+                "Reverted %d key(s) of '%s' — the cycle did not end",
+                keys,
+                journal.collection,
+            )
+            self._notify_changed(journal.collection)
+        return False
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
@@ -222,9 +269,24 @@ class MemoryStore:
             return RunLog(row, self.engine, on_changed=self._on_memory_changed)
         if row.type == MemoryType.COLLECTION:
             return Collection(
-                row, self.engine, runtime=self._runtime, on_changed=self._on_memory_changed
+                row,
+                self.engine,
+                runtime=self._runtime,
+                on_changed=self._on_memory_changed,
+                journal=self._journal_for(row.name),
             )
         return Log(row, self.engine, on_changed=self._on_memory_changed)
+
+    def _journal_for(self, name: str) -> CycleJournal | None:
+        """The bound cycle's journal, iff ``name`` is the collection it is bound to.
+
+        The ONE place that rule is expressed: a cycle's writes are scoped to its bound
+        target (``Collector._memory_scope``), so nothing else it reaches can be undone
+        by its revert.
+        """
+        if self._journal is not None and self._journal.collection == name:
+            return self._journal
+        return None
 
     def _default_thresholds(self) -> DedupThresholds:
         return DedupThresholds.from_runtime(self._runtime)

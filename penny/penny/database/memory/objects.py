@@ -53,6 +53,7 @@ from penny.constants import (
     WriteGateOutcome,
 )
 from penny.database.memory import _similarity as sim
+from penny.database.memory.journal import CycleJournal
 from penny.database.memory.types import (
     DedupThresholds,
     EntryInput,
@@ -337,9 +338,37 @@ class Collection(Memory):
     keyed/write surface; the log ops stay refused via the base no-ops.
     """
 
-    def __init__(self, row: MemoryRow, engine, *, runtime: RuntimeParams, on_changed=None) -> None:
+    def __init__(
+        self,
+        row: MemoryRow,
+        engine,
+        *,
+        runtime: RuntimeParams,
+        on_changed=None,
+        journal: CycleJournal | None = None,
+    ) -> None:
         super().__init__(row, engine, on_changed=on_changed)
         self._runtime = runtime
+        # The bound collector cycle's UNDO journal (#1936), and ``None`` for every
+        # ordinary caller — chat included, whose turn IS its conclusion.  With one, each
+        # mutation first records what the key it touches held, so an unhealthy end can
+        # put the collection back.  The writes themselves are unchanged.  Collection-only
+        # because a journal is keyed by ENTRY KEY, which a log has none of.
+        self._journal = journal
+
+    def _journal_prior(self, key: str, rows: list[MemoryEntry]) -> None:
+        """Record what ``key`` held before the bound cycle first touched it (#1936).
+
+        Called from each mutating path with the rows that path has ALREADY read to do
+        its work, so the record costs no extra query — and it is keyed to the MUTATION
+        rather than to a tool, which is what makes ``collection_write``,
+        ``update_entry``, ``collection_delete_entry`` and the change-gate's own
+        ``KEY_EXISTS_CHANGED`` baseline refresh (#1633) all recorded identically.  That
+        last one is the write nobody makes explicitly, and precisely the one an aborted
+        cycle used to leave behind.
+        """
+        if self._journal is not None:
+            self._journal.capture(key, rows)
 
     def read_latest(
         self, k: int | None = None, offset: int = 0, search: str | None = None
@@ -439,6 +468,7 @@ class Collection(Memory):
             rows = self._rows_by_key(session, self.name, key)
             if not rows:
                 return "not_found"
+            self._journal_prior(key, rows)
             self._apply_content(session, rows, content, author, run_id)
             session.commit()
         self._notify()
@@ -486,6 +516,7 @@ class Collection(Memory):
     def delete(self, key: str) -> int:
         with self._session() as session:
             rows = self._rows_by_key(session, self.name, key)
+            self._journal_prior(key, rows)
             for row in rows:
                 session.delete(row)
             session.commit()
@@ -599,6 +630,7 @@ class Collection(Memory):
             return WriteResult(
                 key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_UNCHANGED, matched_key=entry.key
             )
+        self._journal_prior(entry.key, stored)
         self._apply_content(session, stored, entry.content, author, run_id)
         return WriteResult(
             key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_CHANGED, matched_key=entry.key
@@ -613,7 +645,11 @@ class Collection(Memory):
         run_id: str | None,
     ) -> WriteResult:
         """Persist a genuinely new key (NEW_KEY) and record it for in-batch dedup so
-        a later entry in the same batch dedups against it."""
+        a later entry in the same batch dedups against it.
+
+        Its prior state is the EMPTY one — the gate only reaches here when the key had
+        no rows — so an unhealthy end deletes what this write inserted (#1936)."""
+        self._journal_prior(entry.key, [])
         row = MemoryEntry(
             memory_name=self.name,
             key=entry.key,

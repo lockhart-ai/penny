@@ -32,10 +32,11 @@ class RunOutcome(StrEnum):
     ``no_work`` (completed cleanly, changed nothing) ·
     ``worked`` (completed and changed something — a write / update / move /
     delete / message) ·
-    ``incomplete`` (did real work but never closed with a successful ``done()`` —
-    typically hit max steps mid-cycle; the work is durable so the read cursor
-    still advances and the throttle counts it as productive, but it's flagged
-    distinctly so a too-tight step budget stays visible) ·
+    ``incomplete`` (did real work but never closed with a successful ``done()``).
+    **No collector cycle records this any more (#1936)**: a cycle that never reached
+    a healthy end has its entry writes reverted, so it changed nothing durable and is
+    the ``failed`` bail it now honestly is.  The member stays for the historical rows
+    that carry it and the ``⚠ INCOMPLETE`` flag that renders them ·
     ``cancelled`` (preempted by a foreground message — not a failure, not work;
     the throttle ignores it).
     """
@@ -161,10 +162,74 @@ COLLECTOR_UNREADABLE_PROGRAM_REASON = (
     "completion from"
 )
 
-# Why a preempted cycle leaves its occurrence DUE (#1935).  A foreground message
-# cancels the cycle wherever it happens to be — the timing is the user's, not the
-# collection's — so the same schedule attempted a moment later is a different draw.
-COLLECTOR_CANCELLED_RETRY_REASON = "the cycle was preempted by foreground activity"
+
+class CycleEnd(StrEnum):
+    """How a collector cycle ENDED — the closed set that decides both whether the
+    cycle's entry writes SURVIVE and whether its schedule occurrence is spent (#1936).
+
+    One set read twice, because they are one question: a cycle that reached its
+    conclusion did the job its fire was for, and a cycle that did not must be retried
+    from the state it started in.  Declared as data like ``WRITE_GATE_STOP_REASONS`` —
+    a later shape joins the table, not the code.
+
+    ``STOPPED`` — a write-gate STOP closed the cycle at the chokepoint.  An early
+    clean no-news exit IS an end point, so whatever landed before it stands ·
+    ``CLOSED_QUIET`` — closed with ``done()`` on a collection that does not notify ·
+    ``CLOSED_NOTIFIED`` — closed with ``done()``, and the notification was QUEUED ·
+    ``CLOSED_DECLINED`` — closed with ``done()``, and delivery was deliberately
+    declined (the user is muted, or there is no registered recipient): a retry cannot
+    change either, so the cycle ended and the decline is stamped on the run record ·
+    ``NOTIFICATION_NOT_DRAWN`` — closed, but the compose micro-context exhausted its
+    rerolls, so the cycle never reached the point of reporting anything ·
+    ``ABORTED`` — a model call died mid-run (#1909) ·
+    ``CANCELLED`` — foreground activity preempted the cycle ·
+    ``UNFINISHED`` — every other way of stopping short: the step cap, a model that
+    trailed off, an exception out of the loop.  Not a named cause but the same state,
+    and the ruling covers it in as many words — a cycle that "never reaches its
+    healthy conclusion is retried until it does".
+    """
+
+    STOPPED = "stopped"
+    CLOSED_QUIET = "closed_quiet"
+    CLOSED_NOTIFIED = "closed_notified"
+    CLOSED_DECLINED = "closed_declined"
+    NOTIFICATION_NOT_DRAWN = "notification_not_drawn"
+    ABORTED = "aborted"
+    CANCELLED = "cancelled"
+    UNFINISHED = "unfinished"
+
+
+# The HEALTHY ends (#1936, code-owner ratified).  A cycle that ended one of these four
+# ways reached its conclusion: its entry writes STAND and its schedule occurrence is
+# SPENT.
+#
+# Membership is what makes an end healthy — everything outside this table is REVERTED
+# from the cycle's undo journal and leaves the occurrence due for #1935's bounded retry,
+# so an end nobody enumerated is retried rather than half-persisted.  That default is
+# the ruling's own: a partial run must not persist state later cycles have to reason
+# about.
+HEALTHY_CYCLE_ENDS: frozenset[CycleEnd] = frozenset(
+    {
+        CycleEnd.STOPPED,
+        CycleEnd.CLOSED_QUIET,
+        CycleEnd.CLOSED_NOTIFIED,
+        CycleEnd.CLOSED_DECLINED,
+    }
+)
+
+
+# Why each UNHEALTHY end leaves its occurrence due — the line the retry logs (#1935's
+# ``_retry_reason``, now read off this table).  ``ABORTED`` renders the abort's own
+# cause when the run carries one (#1909) and falls back to this line when it does not.
+# A foreground message cancels the cycle wherever it happens to be — the timing is the
+# user's, not the collection's — so each of these, attempted a moment later, is a
+# different draw.
+CYCLE_END_RETRY_REASONS: dict[CycleEnd, str] = {
+    CycleEnd.NOTIFICATION_NOT_DRAWN: "no message the cycle could send was ever written",
+    CycleEnd.ABORTED: "the cycle's model call died mid-run",
+    CycleEnd.CANCELLED: "the cycle was preempted by foreground activity",
+    CycleEnd.UNFINISHED: "the cycle stopped short of a close",
+}
 
 
 # The write-gate outcomes that changed durable state — either a genuinely new key
