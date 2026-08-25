@@ -1125,6 +1125,96 @@ class TestBrowserSocketLiveness:
         assert channel._liveness_task is None
 
 
+class TestBrowserPushBroadcasts:
+    """A push notification reaches every window that is still open (#1964).
+
+    The three database callbacks — a prompt logged, a run outcome stamped, a memory
+    written — fanned out as one bare ``asyncio.ensure_future(ws.send(...))`` per
+    socket, so an addon window closed a moment earlier raised ``ConnectionClosed``
+    into a task nobody awaited.  Handled nowhere, and surfacing later and out of
+    context as "Task exception was never retrieved".
+    """
+
+    def _channel(self, db) -> BrowserChannel:
+        agent = MagicMock()
+        agent.embed_description = AsyncMock(return_value=None)
+        return BrowserChannel(host="localhost", port=9999, message_agent=agent, db=db)
+
+    def _connect(self, channel: BrowserChannel, label: str, ws) -> None:
+        channel._connections[label] = ConnectionInfo(ws=cast(Any, ws), registered=True)
+
+    @staticmethod
+    async def _settle(before: set[asyncio.Task[Any]]) -> None:
+        """Await every task the callbacks scheduled — the awaiting IS the assertion.
+
+        A fan-out that raises into a detached task fails nothing on its own: asyncio
+        reports it only when the task is collected, as a warning naming no cause.
+        Awaiting it here makes that failure the test's failure, with the real
+        traceback.
+        """
+        for task in [t for t in asyncio.all_tasks() if t not in before]:
+            await asyncio.wait_for(task, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_closed_socket_costs_no_other_addon_its_update(self, db, caplog):
+        """Every push the database raises reaches the window that is still open, and
+        the one whose socket is gone is reported rather than raised into a dropped task.
+
+        The dead socket is registered FIRST on purpose: it is the fan-out's first
+        recipient, so a send that stopped at the failure would starve the live window
+        of all three updates.
+        """
+        channel = self._channel(db)
+        dead, live = _ClosedWs(), _MockWs()
+        self._connect(channel, "firefox-dead", dead)
+        self._connect(channel, "firefox-live", live)
+
+        with caplog.at_level(logging.INFO):
+            before = asyncio.all_tasks()
+            db.messages.log_prompt(
+                model="test-model", messages=[], response={}, agent_name="chat", run_id="run-1"
+            )
+            db.messages.set_run_outcome("run-1", "worked", "wrote 2 entries")
+            db.memories.create_collection("aurora-notes", "notes about the aurora")
+            await self._settle(before)
+
+        assert [m["type"] for m in live.sent] == [
+            "prompt_log_update",
+            "run_outcome_update",
+            "memory_changed",
+        ]
+        assert dead.attempts == 3  # each push was attempted, each failure absorbed
+        assert "firefox-dead" in caplog.text
+        assert "firefox-live" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_push_keeps_its_wire_shape_going_through_the_guard(self, db):
+        """The guarded path serializes nothing of its own — a memory-changed frame
+        for a fan-out event still carries its explicit ``name: null``, which the addon
+        and the iOS client both decode."""
+        channel = self._channel(db)
+        live = _MockWs()
+        self._connect(channel, "firefox-live", live)
+
+        before = asyncio.all_tasks()
+        channel._on_memory_changed(None)
+        await self._settle(before)
+
+        assert live.sent == [{"type": "memory_changed", "name": None}]
+
+    def test_a_push_with_nobody_connected_schedules_nothing(self, db):
+        """With no addon connected there is nothing to deliver — and a callback the
+        database makes outside a running loop (the startup backfill) must not need one
+        in order to do nothing.  Deliberately NOT an async test: scheduling a fan-out
+        here would raise ``RuntimeError: no running event loop``.
+        """
+        channel = self._channel(db)
+
+        channel._on_memory_changed("aurora-notes")
+        channel._on_run_outcome_set("run-1", "worked", "wrote 2 entries")
+        channel._on_prompt_logged({"run_id": "run-1"})
+
+
 class TestBrowserPermissionDelegation:
     """BrowserChannel delegates permission checks to PermissionManager."""
 

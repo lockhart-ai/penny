@@ -45,9 +45,11 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_REGISTER,
     BROWSER_MSG_TYPE_TOOL_RESPONSE,
     BROWSER_RESP_TYPE_CONFIG,
+    BROWSER_RESP_TYPE_MEMORY_CHANGED,
     BROWSER_RESP_TYPE_MESSAGE,
     BROWSER_RESP_TYPE_PROMPT_LOG_UPDATE,
     BROWSER_RESP_TYPE_PROMPT_LOGS,
+    BROWSER_RESP_TYPE_RUN_OUTCOME,
     BROWSER_RESP_TYPE_STATUS,
     BROWSER_RESP_TYPE_TYPING,
     MEMORY_SECTION_COLLECTOR_RUNS,
@@ -177,15 +179,12 @@ class BrowserChannel(MessageChannel):
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Callback fired after each prompt is logged — broadcast to browsers."""
         message = json.dumps({"type": BROWSER_RESP_TYPE_PROMPT_LOG_UPDATE, "prompt": prompt_data})
-        for conn in self._connections.values():
-            asyncio.ensure_future(conn.ws.send(message))
+        self._push(message, BROWSER_RESP_TYPE_PROMPT_LOG_UPDATE)
 
     def _on_run_outcome_set(self, run_id: str, outcome: str, reason: str) -> None:
         """Callback fired when a run outcome is set — broadcast to browsers."""
         payload = BrowserRunOutcomeUpdate(run_id=run_id, outcome=outcome, reason=reason)
-        message = payload.model_dump_json()
-        for conn in self._connections.values():
-            asyncio.ensure_future(conn.ws.send(message))
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_RUN_OUTCOME)
 
     def _on_memory_changed(self, name: str | None) -> None:
         """Callback fired after any memory mutation — broadcast to browsers
@@ -193,8 +192,54 @@ class BrowserChannel(MessageChannel):
         when the change is scoped to one (writes, archives, metadata edits);
         ``None`` for fan-out events."""
         message = BrowserMemoryChanged(name=name).model_dump_json()
-        for conn in self._connections.values():
-            asyncio.ensure_future(conn.ws.send(message))
+        self._push(message, BROWSER_RESP_TYPE_MEMORY_CHANGED)
+
+    def _push(self, payload: str, update: str) -> None:
+        """Schedule a push notification's fan-out to every connected addon.
+
+        These three callbacks are SYNCHRONOUS — the database stores call them from
+        ordinary code the moment a row lands — so the fan-out can only be scheduled,
+        never awaited.  What is scheduled therefore has to handle its own failures:
+        a detached task is the one place an exception has nobody to raise to, and
+        ``asyncio.ensure_future(ws.send(...))`` per socket meant an addon window
+        closed a moment earlier raised ``ConnectionClosed`` into a task nobody
+        awaited — reported later, out of context, as "Task exception was never
+        retrieved", and handled nowhere.
+
+        Nothing is scheduled when nobody is connected: a push with no recipient is
+        not a reason to require a running event loop (these callbacks also fire on
+        the startup backfill path, where there is none).
+        """
+        if not self._connections:
+            return
+        asyncio.ensure_future(self._deliver_push(payload, update))
+
+    async def _deliver_push(self, payload: str, update: str) -> None:
+        """Deliver one push frame to every connection, and name the ones that are gone.
+
+        Fanned out CONCURRENTLY over a snapshot, each send guarded on its own: a push
+        is a notification, so a socket that has closed is one fewer recipient and must
+        never cost the remaining windows their update.  The outer guard is broad for
+        the reason ``_watch_liveness``'s is — this coroutine runs DETACHED, so anything
+        it lets out is the unretrieved-task-exception this whole path exists to stop.
+        """
+        targets = list(self._connections.items())
+        try:
+            delivered = await asyncio.gather(
+                *(self._deliver_text(conn.ws, payload) for _, conn in targets)
+            )
+        except Exception:
+            logger.exception("Broadcasting a %s update to the browser addons failed", update)
+            return
+        gone = [label for (label, _), taken in zip(targets, delivered, strict=True) if not taken]
+        if gone:
+            logger.info(
+                "Browser %s closed before the %s push arrived — dropped for %d of %d connection(s)",
+                ", ".join(gone),
+                update,
+                len(gone),
+                len(targets),
+            )
 
     @property
     def sender_id(self) -> str:
@@ -1469,8 +1514,21 @@ class BrowserChannel(MessageChannel):
         The same send, with the outcome returned instead of discarded — so a caller
         that owes the user an answer can fall back or say so (#1939) rather than
         losing it to a suppressed exception."""
+        return await BrowserChannel._deliver_text(ws, msg.model_dump_json(exclude_none=True))
+
+    @staticmethod
+    async def _deliver_text(ws: ServerConnection, payload: str) -> bool:
+        """Send one already-serialized frame; ``False`` when that socket is closed.
+
+        The single place a send's ``ConnectionClosed`` is caught, so every guarded
+        path answers a dead socket the same way.  It takes TEXT rather than a model
+        because the push broadcasts serialize their own frames — a prompt-log update
+        carries a payload dict the addon renders verbatim, and the two model-shaped
+        ones go out without ``exclude_none`` — and routing a notification through a
+        guard must not reshape it on the wire.
+        """
         try:
-            await ws.send(msg.model_dump_json(exclude_none=True))
+            await ws.send(payload)
         except websockets.ConnectionClosed:
             return False
         return True
