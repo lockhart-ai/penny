@@ -170,9 +170,28 @@ class ChannelManager(MessageChannel):
         domain: str,
         url: str,
     ) -> None:
-        """Broadcast a permission prompt to all channels."""
-        for channel in self._channels.values():
-            await channel.handle_permission_prompt(request_id, domain, url)
+        """Prompt every channel — a channel that fails costs no other its prompt.
+
+        The channels are independent by construction: one prompt goes out to all
+        of them and the user answers on whichever device they reach first. So a
+        raise from one — a dead addon socket, a Signal API wobble — must not
+        abort the loop, which would leave every channel after it with no prompt
+        at all and the answer only reachable from a device already broken.
+        """
+        for channel_type, channel in self._channels.items():
+            try:
+                await channel.handle_permission_prompt(request_id, domain, url)
+            except Exception:
+                # Deliberately broad: a channel is an arbitrary transport and its
+                # failure modes are its own (httpx, websockets, discord.py, APNs),
+                # so there is no type set to enumerate here. Logged with the
+                # traceback, never swallowed — louder than the bail it replaces —
+                # and CancelledError is a BaseException, so cancelling a broadcast
+                # still cancels it. Same shape and reason as the browser channel's
+                # connection/sweep guards.
+                logger.exception(
+                    "Channel %s could not show permission prompt %s", channel_type, request_id
+                )
 
     async def sync_domain_permissions(self) -> None:
         """Notify all channels that domain permissions have changed."""
@@ -182,9 +201,22 @@ class ChannelManager(MessageChannel):
     async def broadcast_permission_dismiss(
         self, request_id: str, resolution: PermissionResolution
     ) -> None:
-        """Tell every channel a prompt is resolved, and how it ended."""
-        for channel in self._channels.values():
-            await channel.handle_permission_dismiss(request_id, resolution)
+        """Tell every channel a prompt is resolved, and how it ended.
+
+        Isolated per channel for the reason the prompt is, plus one of its own:
+        a channel that never hears the prompt is over keeps whatever it set up
+        to watch for an answer — on Signal, a live reaction callback on a
+        message nobody is waiting on — so aborting the loop on the first raise
+        leaves that state behind on every channel after it.
+        """
+        for channel_type, channel in self._channels.items():
+            try:
+                await channel.handle_permission_dismiss(request_id, resolution)
+            except Exception:
+                # Broad for the reason the prompt's guard is broad — see there.
+                logger.exception(
+                    "Channel %s could not resolve permission prompt %s", channel_type, request_id
+                )
 
     # --- Delegation to all channels ---
 

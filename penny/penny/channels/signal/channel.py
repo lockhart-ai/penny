@@ -572,11 +572,15 @@ class SignalChannel(MessageChannel):
         answered prompt, and it reads as the assistant hiding something. A
         reaction on the prompt itself says the same thing inline, with the
         answer visible, and leaves the conversation record intact.
+
+        Resolving the prompt also retires the callback watching its message: the
+        prompt is over, so a reaction arriving on it now is just a reaction.
         """
         entry = self._pending_permission_messages.pop(request_id, None)
         if entry is None:
             return
         recipient, timestamp = entry
+        self.unregister_reaction_callback(str(timestamp))
         marked = await self.send_reaction(
             recipient,
             resolution.emoji,
@@ -672,6 +676,20 @@ class SignalChannel(MessageChannel):
     def register_reaction_callback(self, external_id: str, callback: Callable[[str], None]) -> None:
         """Register a one-shot callback for a reaction to a specific message."""
         self._reaction_callbacks[external_id] = callback
+
+    def unregister_reaction_callback(self, external_id: str) -> None:
+        """Retire a callback nothing is waiting on any more.
+
+        One-shot means FIRING consumes it, which covers only the message whose
+        reaction arrived in time. A permission prompt answered on another device
+        — or answered by nobody at all — leaves its callback watching Penny's
+        prompt message for ever, and a reaction landing there afterwards is
+        routed to a decision that no longer exists: ``handle_decision`` no-ops on
+        an unknown request id and ``_extract_reaction`` returns None, so the
+        reaction is swallowed instead of being logged like any other. Idempotent
+        — the reaction that resolved the prompt already took the callback with it.
+        """
+        self._reaction_callbacks.pop(external_id, None)
 
     def _extract_reaction(self, sender: str, reaction: Reaction) -> IncomingMessage | None:
         """Extract a reaction message, or None if it's a removal."""
