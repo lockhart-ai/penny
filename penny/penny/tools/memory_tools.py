@@ -674,10 +674,12 @@ class CollectionCreateTool(MemoryTool):
         'with FREQ and INTERVAL, and the time of day with BYHOUR: "FREQ=HOURLY" is '
         'every hour, "FREQ=MINUTELY;INTERVAL=90" is every 90 minutes, '
         '"FREQ=DAILY;BYHOUR=8" is 8am daily, '
-        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9" is weekdays at 9. Hours are UTC, '
-        "so convert the user's wall-clock time. To run a set number of times add "
+        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9" is weekdays at 9. BYHOUR is the '
+        "hour on the user's own clock, so write the hour they said and leave the "
+        "converting to me. To run a set number of times add "
         'COUNT — "DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1" runs once at that '
-        "moment and then retires. Put a DTSTART line first whenever the user said when "
+        "moment and then retires; a DTSTART stamp ending in Z is an exact moment in UTC, "
+        "so that one you do convert. Put a DTSTART line first whenever the user said when "
         "to start. A rule I can't read comes back with the grammar and, when I can work "
         "out what you meant, the exact string to send instead.\n"
         "- `expires_at` — OPTIONAL. When the watch ends: a date and time "
@@ -734,8 +736,10 @@ class CollectionCreateTool(MemoryTool):
                     "When it runs, as one recurrence rule: 'FREQ=HOURLY' (every hour), "
                     "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
                     "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
-                    "9). Hours are UTC. Add COUNT= to run a set number of times, and a "
-                    "leading 'DTSTART:<time>' line to say when it starts."
+                    "9). BYHOUR is the hour on the user's own clock — write the hour "
+                    "they said. Add COUNT= to run a set number of times, and a "
+                    "leading 'DTSTART:<time>' line to say when it starts; a DTSTART "
+                    "stamp ending in Z is an exact moment in UTC."
                 ),
             },
             "expires_at": {
@@ -2143,9 +2147,11 @@ class CollectionUpdateTool(MemoryTool):
         "- `schedule` — when the job runs, as ONE recurrence rule (set it to change the "
         'schedule, else omit to leave it): "FREQ=HOURLY" (every hour), '
         '"FREQ=MINUTELY;INTERVAL=90" (every 90 minutes), "FREQ=DAILY;BYHOUR=8" (8am '
-        'daily), "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9" (weekdays at 9). Hours are '
-        "UTC. Add COUNT= to run a set number of times, and a leading DTSTART line to say "
-        "when it starts. Setting it REPLACES the whole schedule. This is how you give an "
+        'daily), "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9" (weekdays at 9). BYHOUR is '
+        "the hour on the user's own clock — write the hour they said. "
+        "Add COUNT= to run a set number of times, and a leading DTSTART line to say "
+        "when it starts; a DTSTART stamp ending in Z is an exact moment in UTC. "
+        "Setting it REPLACES the whole schedule. This is how you give an "
         "INERT collection its schedule when you adopt a skill onto it.\n"
         "- `expires_at` — OPTIONAL end condition: a date and time "
         '("2026-09-01T09:00:00Z") or when it ends in the user\'s own words '
@@ -2203,7 +2209,8 @@ class CollectionUpdateTool(MemoryTool):
                     "whole schedule: 'FREQ=HOURLY' (every hour), "
                     "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
                     "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
-                    "9). Hours are UTC. Omit to leave the schedule unchanged."
+                    "9). BYHOUR is the hour on the user's own clock — write the hour "
+                    "they said. Omit to leave the schedule unchanged."
                 ),
             },
             "expires_at": {

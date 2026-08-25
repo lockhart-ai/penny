@@ -18,6 +18,7 @@ was retired, because nothing here took coverage as its subject.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -413,6 +414,153 @@ _TWICE_DAILY = "FREQ=DAILY;BYHOUR=8,20;BYMINUTE=0;BYSECOND=0"
 
 # How RFC 5545 writes a DTSTART value.
 _RRULE_STAMP = "%Y%m%dT%H%M%SZ"
+
+# The production shape of #1932: a briefing asked for at a morning hour, stated the way
+# the user said it — an hour, with no zone anywhere in the rule.
+_LOCAL_MORNING = "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
+# A zone that is NOT UTC in both directions and observes DST, so a local hour and a UTC
+# hour can never coincide by accident and the fall-back is testable.
+_USER_ZONE = "America/Toronto"
+
+
+def _set_profile_timezone(db: Database, timezone: str) -> None:
+    """Give the deployment a user profile carrying an IANA zone — what turns a schedule's
+    stated hour into an hour on the user's clock (#1932)."""
+    db.users.save_info(
+        sender="test-user",
+        name="Test User",
+        location="Somewhere",
+        timezone=timezone,
+        date_of_birth="1990-01-01",
+    )
+
+
+def _scheduled(
+    name: str, schedule: str, created_at: datetime, last: datetime | None = None
+) -> MemoryRow:
+    """A configured collection row for a readiness assertion — the schedule, when it was
+    created (the rule's anchor) and when it last ran, and nothing else."""
+    return MemoryRow(
+        name=name,
+        type="collection",
+        description="d",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        schedule=schedule,
+        created_at=created_at,
+        last_collected_at=last,
+    )
+
+
+def test_local_morning_schedule_fires_on_the_users_clock(test_config, tmp_path):
+    """The failure this fixes (#1932): a schedule stated as a local morning hour ran in
+    UTC, so a UTC-4 profile's briefing fired FOUR HOURS EARLY while the reply that set it
+    up promised the local time.  An RRULE says an hour and never a zone, so the hour is
+    read on the user's own clock: 09:30 for them, 13:30 UTC."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _set_profile_timezone(db, _USER_ZONE)
+    memory = _scheduled(
+        "morning-briefing",
+        _LOCAL_MORNING,
+        # 10:00 on the user's clock, so the rule's first occurrence is the NEXT morning.
+        created_at=datetime(2026, 7, 20, 14, 0, tzinfo=UTC),
+        last=datetime(2026, 7, 21, 13, 30, tzinfo=UTC),  # 09:30 their time, the 21st
+    )
+    # 09:30 UTC is 05:30 where the user is — the four-hours-early fire, now not due.
+    assert collector._is_ready(memory, datetime(2026, 7, 22, 9, 30, tzinfo=UTC)) is False
+    # 13:30 UTC is 09:30 where the user is — the hour they actually asked for.
+    assert collector._is_ready(memory, datetime(2026, 7, 22, 13, 30, tzinfo=UTC)) is True
+
+
+def test_local_schedule_keeps_its_hour_across_a_dst_boundary(test_config, tmp_path):
+    """A stated hour is a WALL-CLOCK hour, so it survives the clocks changing: the same
+    09:30 local is 13:30 UTC through the summer and 14:30 UTC once the zone falls back
+    (2026-11-01 in this one).  A fixed offset captured at creation would fire an hour
+    early for the rest of the year."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _set_profile_timezone(db, _USER_ZONE)
+    memory = _scheduled(
+        "morning-briefing",
+        _LOCAL_MORNING,
+        created_at=datetime(2026, 10, 30, 12, 0, tzinfo=UTC),  # 08:00 their time
+        last=datetime(2026, 10, 31, 13, 30, tzinfo=UTC),  # 09:30 their time, still UTC-4
+    )
+    # The summer offset, the day AFTER the clocks went back: not their morning any more.
+    assert collector._is_ready(memory, datetime(2026, 11, 1, 13, 30, tzinfo=UTC)) is False
+    # 14:30 UTC is 09:30 on the new offset — the same hour on their clock.
+    assert collector._is_ready(memory, datetime(2026, 11, 1, 14, 30, tzinfo=UTC)) is True
+
+
+def test_schedule_without_a_profile_timezone_stays_on_utc(test_config, tmp_path):
+    """A fresh install has no profile, so there is no clock to read the hour on: UTC —
+    the same fallback the current-time anchor and the ``expires_at`` parse take, so
+    behaviour on a profile-less deployment is exactly what it always was."""
+    collector, _ = _make_collector(test_config, tmp_path)  # no profile saved
+    memory = _scheduled(
+        "morning-briefing",
+        _LOCAL_MORNING,
+        created_at=datetime(2026, 7, 20, 14, 0, tzinfo=UTC),
+        last=datetime(2026, 7, 21, 9, 30, tzinfo=UTC),
+    )
+    assert collector._is_ready(memory, datetime(2026, 7, 22, 9, 29, tzinfo=UTC)) is False
+    assert collector._is_ready(memory, datetime(2026, 7, 22, 9, 30, tzinfo=UTC)) is True
+
+
+def test_unresolvable_profile_timezone_falls_back_to_utc_and_says_so(test_config, tmp_path, caplog):
+    """A profile zone the system can't resolve puts the schedule back on UTC — which is
+    the #1932 failure restored — so it degrades VISIBLY: the fallback names the value it
+    couldn't read, rather than leaving a job firing hours off with nothing to read."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _set_profile_timezone(db, "Nowhere/Fictional")
+    memory = _scheduled(
+        "morning-briefing",
+        _LOCAL_MORNING,
+        created_at=datetime(2026, 7, 20, 14, 0, tzinfo=UTC),
+        last=datetime(2026, 7, 21, 9, 30, tzinfo=UTC),
+    )
+    with caplog.at_level(logging.WARNING, logger="penny.datetime_utils"):
+        assert collector._is_ready(memory, datetime(2026, 7, 22, 9, 30, tzinfo=UTC)) is True
+    assert "Nowhere/Fictional" in caplog.text
+
+
+def test_schedule_occurrences_do_not_inherit_the_anchors_seconds(test_config, tmp_path):
+    """An occurrence takes its seconds from the rule's anchor, so a collection created at
+    :51 past was a job that fired at :51 past for ever (#1932).  The anchor's seconds are
+    zeroed, so an hourly job created at 10:15:51 comes round at 11:15:00 flat."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    created = datetime(2026, 7, 20, 10, 15, 51, 123456, tzinfo=UTC)
+    memory = _scheduled("hourly", "FREQ=HOURLY", created_at=created, last=created)
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 11, 15, tzinfo=UTC)) is True
+
+
+def test_floating_dtstart_is_read_on_the_users_clock(test_config, tmp_path):
+    """A ``DTSTART`` with no ``Z`` states no zone, which RFC 5545 calls local time — so
+    it is read on the user's clock like every other zone-less anchor.  It also has to
+    come back timezone-AWARE: a naive occurrence compared against ``now`` raised, and the
+    readiness scan is shared by every collection, so one such row stopped them all."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _set_profile_timezone(db, _USER_ZONE)
+    memory = _scheduled(
+        "floating",
+        "DTSTART:20260720T090000\nFREQ=DAILY;COUNT=1",
+        created_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    # 09:00 on their clock is 13:00 UTC, so noon UTC is still an hour early.
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 12, 0, tzinfo=UTC)) is False
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 13, 0, tzinfo=UTC)) is True
+
+
+def test_explicit_utc_dtstart_is_an_exact_instant(test_config, tmp_path):
+    """A ``DTSTART:…Z`` states its zone, so the user's profile doesn't move it — an exact
+    instant stays an exact instant, which is what a one-shot at a named moment relies on."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _set_profile_timezone(db, _USER_ZONE)
+    memory = _scheduled(
+        "one-shot",
+        "DTSTART:20260720T090000Z\nFREQ=DAILY;COUNT=1",
+        created_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 8, 59, tzinfo=UTC)) is False
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 9, 0, tzinfo=UTC)) is True
 
 
 def test_dispatcher_skips_collection_before_its_dtstart(test_config, tmp_path):

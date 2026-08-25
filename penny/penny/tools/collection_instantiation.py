@@ -17,7 +17,8 @@ are whole-render tested in isolation:
 * the **schedule** parse (one ``schedule`` arg, one grammar: an RRULE string,
   #1857) and the ``expires_at`` end condition (ISO or natural language), with
   ``render_schedule_clause`` rendering the stored rule back verbatim — it IS the
-  input form;
+  input form — and ``next_occurrence`` reading that stored rule on the USER'S
+  clock (#1932), the seam the collector's readiness gate goes through;
 * the **creation echo** (skill · params · schedule · notify · expiry · the rendered
   prompt), so the chat agent confirms back exactly what landed.
 
@@ -28,9 +29,8 @@ The orchestration (embed, resolve, validate parameters, dedup, create) lives on
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from enum import StrEnum
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import dateparser
 from dateutil.rrule import rrulestr
@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from penny.database.models import MemoryRow, Skill
 from penny.database.skills import SkillParameter
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_log_timestamp, stored_as_utc, zone_or_utc
 
 # ── Skill resolution union ────────────────────────────────────────────────────
 
@@ -183,9 +183,11 @@ class Schedule(BaseModel):
 SCHEDULE_EXAMPLES = (
     "- FREQ=HOURLY — every hour\n"
     "- FREQ=MINUTELY;INTERVAL=90 — every 90 minutes\n"
-    "- FREQ=DAILY;BYHOUR=8 — once a day at 08:00 UTC\n"
-    "- FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9 — weekdays at 09:00 UTC\n"
-    "- DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1 — once, at that moment, then it retires"
+    "- FREQ=DAILY;BYHOUR=8 — once a day at 8 in the morning, the user's own clock\n"
+    "- FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9 — weekdays at 9 in the morning, the "
+    "user's own clock\n"
+    "- DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1 — once, at that exact moment in UTC, "
+    "then it retires"
 )
 
 # The reject-and-teach failure for a schedule ``rrulestr`` won't read.  Names the
@@ -373,6 +375,76 @@ def _lifted_until(parts: dict[str, str], text: str) -> datetime | None:
     )
 
 
+def next_occurrence(
+    schedule: str,
+    created_at: datetime,
+    timezone_name: str | None,
+    after: datetime | None = None,
+) -> datetime | None:
+    """When a stored rule next comes round, read on the USER'S clock (#1932).
+
+    ``after`` is the collection's last run; ``None`` asks for the rule's very FIRST
+    occurrence.  Returns a timezone-aware datetime, or ``None`` when the rule has no
+    occurrence left (a spent ``COUNT=``, a passed ``UNTIL=``).
+
+    An RRULE states a time of day (``BYHOUR=9``) and never a zone, so the zone comes
+    from whoever the rule belongs to: the recurrence is anchored at the collection's
+    creation moment ON THE USER'S WALL CLOCK, which is what makes ``BYHOUR=9`` mean nine
+    in the morning where they are.  Anchoring it in UTC is what fired a briefing asked
+    for at a local morning hour four hours early for a UTC-4 profile, while the reply
+    that set it up promised the local time.  The zone is passed in — ``None`` on a fresh
+    install, which reads as UTC — so this stays DB-free.
+
+    The rule text is NOT rewritten: a stored schedule is still the user's own words, so
+    the render remains the copyable input form and re-passing it cannot convert it a
+    second time.
+
+    The anchor's SECONDS are zeroed.  An occurrence inherits whatever seconds its anchor
+    carries, so a collection created at :51 past used to be a job that fired at :51 past
+    for ever.
+
+    A rule that states its own start keeps it: an explicit ``DTSTART:…Z`` is an exact
+    instant and is honoured as one, while a FLOATING ``DTSTART`` (no ``Z``) states no
+    zone at all — RFC 5545 calls that local time, so it is read on the same user clock
+    as the default anchor and no occurrence can come back naive.
+
+    The first occurrence is read by ITERATING rather than by asking what follows the
+    anchor: ``rrulestr`` truncates its start to whole seconds, so "after the anchor"
+    would exclude the collection's own first occurrence and a daily rule would wait a
+    day to run its first cycle.
+    """
+    zone = zone_or_utc(timezone_name)
+    rule = rrulestr(schedule, dtstart=_schedule_anchor(created_at, zone))
+    first = next(iter(rule), None)
+    if first is None or after is None:
+        return _zoned(first, zone)
+    return _zoned(rule.after(_rule_clock(stored_as_utc(after), first, zone)), zone)
+
+
+def _schedule_anchor(created_at: datetime, zone: tzinfo) -> datetime:
+    """Where a rule with no ``DTSTART`` of its own starts: the collection's creation
+    moment on the user's wall clock, with its seconds zeroed."""
+    return stored_as_utc(created_at).astimezone(zone).replace(second=0, microsecond=0)
+
+
+def _zoned(occurrence: datetime | None, zone: tzinfo) -> datetime | None:
+    """An occurrence as a timezone-aware datetime.  A floating one — from a rule whose
+    own ``DTSTART`` states no zone — is the user's wall clock, per RFC 5545, rather than
+    a naive value the readiness comparison would raise on."""
+    if occurrence is None or occurrence.tzinfo is not None:
+        return occurrence
+    return occurrence.replace(tzinfo=zone)
+
+
+def _rule_clock(when: datetime, first: datetime, zone: tzinfo) -> datetime:
+    """``when`` on the same clock the rule's own occurrences carry, so ``rrule.after``
+    can compare the two: aware against an anchored rule, the user's own naive wall clock
+    against a floating one."""
+    if first.tzinfo is not None:
+        return when
+    return when.astimezone(zone).replace(tzinfo=None)
+
+
 def render_schedule_clause(row: MemoryRow) -> str:
     """The mechanism's schedule rendered back VERBATIM — display form == invocation
     form (#1857): what a surface shows (the self-state mechanisms line,
@@ -467,7 +539,7 @@ def _parse_iso_datetime(value: str) -> datetime | None:
 def _parse_spoken_datetime(value: str, timezone_name: str | None, now: datetime) -> datetime | None:
     """The natural-language reading in the user's timezone, or ``None`` when
     ``dateparser`` finds no time in the words."""
-    zone = _user_zone(timezone_name)
+    zone = zone_or_utc(timezone_name)
     settings = dict(_DATEPARSER_SETTINGS)
     settings["TIMEZONE"] = str(zone)
     # dateparser counts relative words ("in two weeks") from a NAIVE base it reads in
@@ -478,18 +550,6 @@ def _parse_spoken_datetime(value: str, timezone_name: str | None, now: datetime)
     if parsed is None:
         return None
     return parsed.astimezone(UTC)
-
-
-def _user_zone(timezone_name: str | None) -> ZoneInfo:
-    """The user's zone, or UTC when there is no profile / the stored zone is unknown —
-    the same fallback the current-time anchor takes, so the clock the model reads and
-    the clock its words are read against can't disagree."""
-    if timezone_name is None:
-        return ZoneInfo("UTC")
-    try:
-        return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError:
-        return ZoneInfo("UTC")
 
 
 # ── Creation echo ─────────────────────────────────────────────────────────────

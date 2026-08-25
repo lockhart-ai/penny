@@ -850,7 +850,7 @@ class TestCollectionCreateFrontDoor:
         )
         assert result.success
         row = db.memories.get("bounded")
-        # SQLite hands datetimes back naive; they are stored UTC (the `_aware` convention).
+        # SQLite hands datetimes back naive; they are stored UTC (`stored_as_utc`).
         assert row.expires_at.replace(tzinfo=UTC) == datetime(2026, 9, 1, tzinfo=UTC)
 
     @pytest.mark.asyncio
@@ -1160,6 +1160,25 @@ class TestScheduleGrammar:
             parse_schedule(schedule)
         assert str(raised.value).startswith(expected_lead)
 
+    def test_the_taught_examples_say_whose_clock_each_time_is_on(self):
+        """The grammar the model is taught, asserted WHOLE (#1932).
+
+        Every other assertion on a schedule rejection interpolates ``SCHEDULE_EXAMPLES``
+        from the very source it is checking, so the examples are the one model-facing
+        string nothing pinned — and they used to say a stated hour was UTC, which the
+        readiness gate no longer makes true.  The two clocks in the grammar are opposite
+        and both are named: an HOUR is the user's, a ``Z`` stamp is an exact UTC moment,
+        so a rule that mixes them cannot be read as stating one clock throughout."""
+        assert SCHEDULE_EXAMPLES == (
+            "- FREQ=HOURLY — every hour\n"
+            "- FREQ=MINUTELY;INTERVAL=90 — every 90 minutes\n"
+            "- FREQ=DAILY;BYHOUR=8 — once a day at 8 in the morning, the user's own clock\n"
+            "- FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9 — weekdays at 9 in the morning, "
+            "the user's own clock\n"
+            "- DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1 — once, at that exact moment "
+            "in UTC, then it retires"
+        )
+
     def test_did_you_mean_carries_a_string_that_actually_parses(self):
         """The corrected string is a COPY, not a suggestion to re-derive: whatever the
         did-you-mean echoes must itself be accepted, or the retry loops."""
@@ -1232,7 +1251,12 @@ class TestScheduleRoundTrip:
     #1857): the rule a surface shows, passed verbatim back as the ``schedule`` arg,
     parses to the same stored config.  With one grammar the render is the stored string
     itself, so what this pins is that a two-line rule survives the round trip through a
-    one-line surface — the only place the two forms can diverge."""
+    one-line surface — the only place the two forms can diverge.
+
+    It is also what makes anchoring a rule in the user's zone (#1932) safe to do at the
+    READINESS gate rather than at parse: the stored rule is never rewritten, so a local
+    morning hour renders back as the hour the user said, and re-passing a rendered
+    schedule cannot convert it a second time."""
 
     @pytest.mark.parametrize(
         "schedule, clause",
@@ -1244,6 +1268,8 @@ class TestScheduleRoundTrip:
                 "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
                 "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
             ),
+            # The #1932 shape: a morning hour on the user's clock, stored as stated.
+            ("FREQ=DAILY;BYHOUR=9;BYMINUTE=30", "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"),
             (
                 "DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
                 "DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
@@ -1281,6 +1307,34 @@ class TestScheduleRoundTrip:
             stored.max_runs,
             stored.expires_at,
         )
+
+    @pytest.mark.asyncio
+    async def test_a_users_zone_never_rewrites_the_stored_rule(self, db):
+        """A profile with a timezone changes WHEN a rule fires (#1932), never WHAT it
+        says.  Normalising the hour into UTC at store time would have made the render a
+        translation of the ask rather than the ask, and re-passing that render would have
+        converted it a second time — so the zone is applied at the readiness gate and the
+        rule stays the user's own words."""
+        db.users.save_info(
+            sender="test-user",
+            name="Test User",
+            location="Somewhere",
+            timezone="America/Toronto",
+            date_of_birth="1990-01-01",
+        )
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="morning-briefing",
+            description="a morning briefing",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            schedule="FREQ=DAILY;BYHOUR=9;BYMINUTE=30",
+        )
+        assert result.success
+        stored = db.memories.get("morning-briefing")
+        assert stored is not None
+        assert stored.schedule == "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
+        assert render_schedule_clause(stored) == "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
 
 
 class TestCreateAndList:
