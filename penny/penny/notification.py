@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ValidationError
 
 from penny.agents.models import ToolCallRecord
-from penny.constants import CycleTrigger, PennyConstants
+from penny.constants import CycleEnd, CycleTrigger, PennyConstants
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp
@@ -85,6 +85,25 @@ NOTIFICATION_NOTES: dict[NotificationOutcome, str] = {
     NotificationOutcome.QUEUED: "the user was told",
     NotificationOutcome.NOT_DRAWN: "nothing was sent — no usable message could be written",
     NotificationOutcome.NOT_DELIVERABLE: "nothing was sent — the send was declined",
+}
+
+
+# How a done-closed cycle ENDED, per notification outcome (#1936) — the other table
+# every outcome is read through, and the one that decides whether the cycle's entry
+# writes survive.
+#
+# ``QUEUED`` and ``NOT_DELIVERABLE`` are both ENDS: the cycle did its job, and a decline
+# is a decision rather than a failure — the user is muted, or nobody is registered to
+# receive it, and attempting the same cycle again reaches the same answer.  (Two of the
+# gate's own refusals — content that reads as a refusal, or that is not a whole message
+# — are theoretically reachable here and read as declines too; the draw's acceptance
+# rule screens both before the queue ever sees them.)  ``NOT_DRAWN`` is not an end at
+# all: the compose micro-context exhausted its rerolls, so the cycle never reached the
+# point of reporting anything, and the whole run is thrown out and retried.
+NOTIFIED_CYCLE_ENDS: dict[NotificationOutcome, CycleEnd] = {
+    NotificationOutcome.QUEUED: CycleEnd.CLOSED_NOTIFIED,
+    NotificationOutcome.NOT_DELIVERABLE: CycleEnd.CLOSED_DECLINED,
+    NotificationOutcome.NOT_DRAWN: CycleEnd.NOTIFICATION_NOT_DRAWN,
 }
 
 

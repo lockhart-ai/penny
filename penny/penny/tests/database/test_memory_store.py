@@ -37,6 +37,7 @@ from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
+from penny.tests.conftest import require_memory
 from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import MemoryMetadataTool
 
@@ -697,6 +698,184 @@ class TestDegenerateContentRejection:
             author="collector",
         )
         assert not any(r.outcome == WriteGateOutcome.NEW_KEY for r in results)
+
+
+class TestCycleUndoJournal:
+    """A bound cycle's entry writes are UNDONE unless it ends healthily (#1936).
+
+    The writes themselves are unchanged — live, through the existing chokepoint — and
+    what is added is a record of what each touched key held BEFORE the cycle touched it,
+    replayed when the cycle ends any way but healthily.  The failure it exists for: a
+    collector cycle that browsed, wrote the changed value and then died left that value
+    behind, so the retry re-observed it, read UNCHANGED, stopped, and the user was never
+    told about a change that really happened.
+    """
+
+    @staticmethod
+    def _seed(db: Database) -> None:
+        db.memories.create_collection("watch", "a page watch")
+        require_memory(db, "watch").write(
+            [EntryInput(key="price", content="$42")], author="collector", run_id="run-baseline"
+        )
+
+    def test_a_reverted_cycle_leaves_the_baseline_and_its_stamps_untouched(self, db):
+        """THE REPRO, at the store seam: the change-gate's own ``KEY_EXISTS_CHANGED``
+        baseline refresh (#1633) is INSIDE the journal's boundary.
+
+        It is the write nobody makes explicitly — the gate does it — so a cycle that
+        observed a change and then died would otherwise leave the refreshed baseline
+        behind and the next cycle would read its own news as old.  The revert restores
+        the value AND both provenance stamps, so the retry classifies CHANGED again.
+        """
+        self._seed(db)
+        db.memories.begin_cycle("watch")
+        changed = require_memory(db, "watch").write(
+            [EntryInput(key="price", content="$40")], author="cycle", run_id="run-cycle"
+        )
+        assert changed[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
+        assert require_memory(db, "watch").get("price")[0].content == "$40"
+
+        assert db.memories.end_cycle(revert=True) is False
+
+        rows = require_memory(db, "watch").get("price")
+        assert len(rows) == 1
+        assert rows[0].content == "$42"
+        assert rows[0].author == "collector"
+        assert rows[0].created_by_run_id == "run-baseline"
+        assert rows[0].last_written_by_run_id == "run-baseline"
+        # And the retry meets the same world the dead cycle did: still NEWS.
+        db.memories.begin_cycle("watch")
+        again = require_memory(db, "watch").write(
+            [EntryInput(key="price", content="$40")], author="cycle", run_id="run-retry"
+        )
+        assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
+
+    def test_a_key_touched_many_times_reverts_to_the_state_the_cycle_found(self, db):
+        """FIRST TOUCH PER KEY WINS, which is the whole reason the record is of the
+        PRIOR state rather than of the mutation: a cycle that rewrote one key three
+        times must land back on the value it started from, not on its own second-last
+        write."""
+        self._seed(db)
+        db.memories.begin_cycle("watch")
+        watch = require_memory(db, "watch")
+        for value in ("$41", "$40", "$39"):
+            watch.update("price", value, author="cycle", run_id="run-cycle")
+        assert require_memory(db, "watch").get("price")[0].content == "$39"
+
+        db.memories.end_cycle(revert=True)
+
+        assert require_memory(db, "watch").get("price")[0].content == "$42"
+        assert require_memory(db, "watch").entry_count() == 1
+
+    def test_a_delete_then_rewrite_reverts_whole(self, db):
+        """A key the cycle DELETED and then wrote afresh reverts whole — the row the
+        cycle minted goes, and the original comes back under its own id.
+
+        Matched by id in both directions, which is why the re-mint is undone rather than
+        mistaken for the row that was there: reverting an entry must restore its
+        identity, not just its text.
+
+        The second seeded entry is what makes the rewrite land on a genuinely NEW id
+        (SQLite hands the freed rowid straight back when the deleted row was the only
+        one), so the case under test is the one the id matching exists for."""
+        self._seed(db)
+        require_memory(db, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="collector", run_id="run-baseline"
+        )
+        original = require_memory(db, "watch").get("price")[0].id
+        db.memories.begin_cycle("watch")
+        watch = require_memory(db, "watch")
+        assert watch.delete("price") == 1
+        watch.write([EntryInput(key="price", content="$40")], author="cycle", run_id="run-cycle")
+        assert require_memory(db, "watch").get("price")[0].id != original
+
+        db.memories.end_cycle(revert=True)
+
+        rows = require_memory(db, "watch").get("price")
+        assert [(row.id, row.content, row.author) for row in rows] == [
+            (original, "$42", "collector")
+        ]
+        assert require_memory(db, "watch").entry_count() == 2
+
+        # A key the cycle merely ADDED had no prior at all, so reverting deletes it.
+        db.memories.begin_cycle("watch")
+        require_memory(db, "watch").write(
+            [EntryInput(key="mood", content="hopeful")], author="cycle", run_id="run-cycle"
+        )
+        db.memories.end_cycle(revert=True)
+        assert require_memory(db, "watch").get("mood") == []
+        assert require_memory(db, "watch").entry_count() == 2
+
+    def test_a_deleted_keys_freed_id_reused_by_another_key_still_reverts(self, db):
+        """The revert is TWO PASSES because `memory_entry.id` is a plain SQLite rowid.
+
+        A cycle that DELETES the highest-numbered row and then writes a DIFFERENT key
+        gets that freed id handed straight back — so the row to be removed and the row
+        to be re-minted want the same id.  Queueing the insert before the delete had
+        landed raised, the revert was abandoned, and the cycle's writes survived: the
+        partial state this whole mechanism exists to remove, reached by the one shape a
+        per-key walk cannot see.
+        """
+        self._seed(db)
+        original = require_memory(db, "watch").get("price")[0].id
+        db.memories.begin_cycle("watch")
+        watch = require_memory(db, "watch")
+        assert watch.delete("price") == 1
+        watch.write([EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-x")
+        assert require_memory(db, "watch").get("stock")[0].id == original  # the freed id
+
+        db.memories.end_cycle(revert=True)
+
+        rows = require_memory(db, "watch").read_all()
+        assert [(row.id, row.key, row.content) for row in rows] == [(original, "price", "$42")]
+
+    def test_a_healthy_end_keeps_everything_the_cycle_wrote(self, db):
+        """The other half: a healthy end drops the record and the writes stand, stamps
+        and all — a committed cycle is byte-identical to one that never had a journal."""
+        self._seed(db)
+        db.memories.begin_cycle("watch")
+        require_memory(db, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-cycle"
+        )
+
+        assert db.memories.end_cycle(revert=False) is True
+
+        landed = require_memory(db, "watch").get("stock")
+        assert [row.content for row in landed] == ["in stock"]
+        assert landed[0].created_by_run_id == "run-cycle"
+        assert landed[0].last_written_by_run_id == "run-cycle"
+        assert require_memory(db, "watch").entry_count() == 2
+
+    def test_writes_outside_the_bound_collection_are_never_journalled(self, db):
+        """Chat rides straight past (#1936): its turn IS its conclusion, so its writes
+        land as they always have — and a write to a DIFFERENT collection is outside the
+        cycle's scope, so a revert cannot reach it either.
+
+        The waived edge is the remaining one: a chat write to the SAME key of the SAME
+        collection mid-cycle is captured and put back with the rest.
+        """
+        self._seed(db)
+        db.memories.create_collection("notes", "somewhere else")
+        db.memories.begin_cycle("watch")
+        require_memory(db, "notes").write(
+            [EntryInput(key="aside", content="the user asked about this")],
+            author="chat",
+            run_id="run-chat",
+        )
+        require_memory(db, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="cycle", run_id="run-cycle"
+        )
+
+        db.memories.end_cycle(revert=True)
+
+        assert require_memory(db, "notes").get("aside")[0].content == "the user asked about this"
+        assert require_memory(db, "watch").get("stock") == []
+        # With no cycle bound, nothing is recorded at all, so a settle finds nothing.
+        require_memory(db, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="chat", run_id="run-chat"
+        )
+        db.memories.end_cycle(revert=True)
+        assert require_memory(db, "watch").get("stock")[0].content == "in stock"
 
 
 class TestLogAppend:

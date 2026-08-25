@@ -27,13 +27,17 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, ToolCallRecord
 from penny.constants import (
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
+    CYCLE_END_RETRY_REASONS,
+    HEALTHY_CYCLE_ENDS,
     WRITE_GATE_STOP_REASONS,
+    CycleEnd,
     CycleTrigger,
     MutationAction,
     MutationActor,
@@ -47,7 +51,7 @@ from penny.database.models import MemoryRow
 from penny.database.skills import SkillParameter
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmResponse
-from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
+from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
 from penny.program import ProgramCall
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -1760,12 +1764,18 @@ async def test_a_read_only_cycle_that_told_nobody_still_records_no_work(
 
 
 @pytest.mark.asyncio
-async def test_an_undrawable_notification_records_honestly_and_sends_nothing(
+async def test_an_undrawable_notification_records_honestly_and_reverts_the_cycle(
     mock_llm, test_config, tmp_path
 ):
-    """Visible degradation (#1911): when no usable message can be drawn within the
-    reroll budget, the cycle sends NOTHING and its run record says so — never a silent
-    skip, and never a crash that would lose the write the cycle already made.
+    """Visible degradation (#1911) plus the ratified revert (#1936): when no usable
+    message can be drawn within the reroll budget, the cycle sends NOTHING, its run
+    record says so, and the WHOLE run is thrown out.
+
+    A failed notification draw is not a healthy end — the collector never reached the
+    point of reporting anything — so keeping the write would leave the next cycle
+    re-observing a value the user was never told about, which is the same swallowed
+    change an abort mid-browse causes.  The write is undone and the occurrence stays
+    due, so the retry re-observes the change and reports it.
 
     The draw here comes back as prose with no MESSAGE line at all, which is a contract
     violation the micro-context re-rolls and then fails honestly."""
@@ -1782,8 +1792,13 @@ async def test_an_undrawable_notification_records_honestly_and_sends_nothing(
     await collector.run_for("indie-metroidvanias")
 
     assert db.send_queue.next_pending() is None
-    # The find still landed — the failure costs the message, not the work.
-    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift")
+    # The find is GONE: the cycle that made it never got to report it, so the store is
+    # back to the one seeded entry and the retry starts from there.
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift") == []
+    assert [entry.key for entry in require_memory(db, "indie-metroidvanias").read_all()] == [
+        _NOTIFY_SEED_KEY
+    ]
+    assert _get(db, "indie-metroidvanias").last_collected_at is None  # kept for the retry
     # The record carries the note alone (#1916) — a clean close has no phrase of its own
     # to open with — and the note is quoted here because "says so" is this test's whole
     # subject: a reason that named the outcome enum instead would be a silent skip.
@@ -1902,6 +1917,353 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
     # The read, then the write that STOPped — and no notify draw after it.
     assert len(mock_llm.requests) == requests_before_cycle_2 + 2
     assert len(db.send_queue.pending_items()) == 1
+
+
+# ── A cycle's writes survive only its healthy conclusion (#1936) ─────────────
+
+
+def test_the_cycle_end_tables_are_total_and_disjoint():
+    """The healthy-end enumeration is DATA, so its totality is the contract (#1936).
+
+    Two tables partition ``CycleEnd``: an end is healthy (keep the writes + spend the
+    occurrence) or it carries the line the retry logs.  Both are indexed with NO default
+    — a member in neither, or in both, would be a ``KeyError`` raised inside a cycle's
+    ``finally`` or a silent second answer, so the partition is pinned here rather than
+    left to whoever adds the next end.  Same for the notification arm: every outcome a
+    finished cycle can have maps to exactly one end.
+    """
+    assert set(CycleEnd) >= HEALTHY_CYCLE_ENDS
+    assert HEALTHY_CYCLE_ENDS | set(CYCLE_END_RETRY_REASONS) == set(CycleEnd)
+    assert not HEALTHY_CYCLE_ENDS & set(CYCLE_END_RETRY_REASONS)
+    assert set(NOTIFIED_CYCLE_ENDS) == set(NotificationOutcome)
+    assert set(NOTIFIED_CYCLE_ENDS.values()) <= set(CycleEnd)
+
+
+def _writes_then_dies(mock_llm, *, key: str, content: str):
+    """A cycle that WRITES the changed value and is then killed on its next model call.
+
+    The shape the undo journal exists for: everything up to the write went fine, and the
+    run died before it could close or report anything.  It counts its own calls rather
+    than the mock's ordinal so a second cycle in the same test starts over.
+    """
+    calls = 0
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {"memory": "indie-metroidvanias", "entries": [{"key": key, "content": content}]},
+            )
+        raise LlmConnectionError("Connection refused")
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_cycles_write_is_reverted_so_the_retry_still_reports_the_change(
+    mock_llm, test_config, tmp_path
+):
+    """THE PRODUCTION FAILURE, end to end (#1936).
+
+    A watch cycle observes a CHANGED value, writes it, and then dies before it can close
+    or tell anyone.  With the write left behind, the retry re-observed the same page,
+    wrote the identical value, and the change-gate read it as UNCHANGED → STOP → the
+    user was never told about a change that really happened.  The run consumed the
+    change and delivered nothing.
+
+    The journal makes the aborted cycle leave NOTHING: the entry holds the pre-run value
+    again, under the pre-run stamps, with no partial write and no refreshed baseline —
+    so the retry meets the same world the first attempt did, classifies CHANGED, closes,
+    and the notification fires.
+
+    The LEDGER is not part of the deal: the aborted run's promptlog rows are there, with
+    its terminal cause on them, because the forensic record of a dead cycle is exactly
+    what an operator needs.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)  # baseline: _NOTIFY_SEED_KEY = _NOTIFY_SEED_CONTENT
+    new_value = f"{_NOTIFY_SEED_CONTENT} — now with a playable demo!"
+
+    mock_llm.set_response_handler(
+        _writes_then_dies(mock_llm, key=_NOTIFY_SEED_KEY, content=new_value)
+    )
+    success, _ = await collector.run_for("indie-metroidvanias")
+    assert success is False
+
+    # PRE-RUN STATE: the value, the creator and the last-writer stamps are all as the
+    # seeding write left them — no partial write, no refreshed baseline.
+    stored = require_memory(db, "indie-metroidvanias").get(_NOTIFY_SEED_KEY)
+    assert len(stored) == 1
+    assert stored[0].content == _NOTIFY_SEED_CONTENT
+    assert stored[0].author == "producer"
+    assert stored[0].created_by_run_id is None
+    assert stored[0].last_written_by_run_id is None
+    assert db.send_queue.next_pending() is None
+    # The occurrence was not spent, so the very next dispatch is the retry (#1935).
+    assert _get(db, "indie-metroidvanias").last_collected_at is None
+    assert collector._retry_attempts == {("indie-metroidvanias", CycleTrigger.ON_DEMAND): 1}
+
+    # THE LEDGER STAYS: the dead cycle's own rows are on record, naming what killed it.
+    aborted_run = _collector_run(db)
+    assert aborted_run["run_outcome"] == RunOutcome.FAILED.value
+    assert "model call failed" in aborted_run["run_reason"]
+
+    # THE RETRY: the same observation, against the untouched baseline — CHANGED, closed,
+    # and the user is told.
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            key=_NOTIFY_SEED_KEY,
+            content=new_value,
+            drawn=f"MESSAGE: Update on {_NOTIFY_SEED_KEY}!",
+        )
+    )
+    assert (await collector.run_for("indie-metroidvanias"))[0] is True
+
+    refreshed = require_memory(db, "indie-metroidvanias").get(_NOTIFY_SEED_KEY)
+    assert len(refreshed) == 1
+    assert refreshed[0].content == new_value
+    assert refreshed[0].last_written_by_run_id is not None
+    assert [item.content for item in db.send_queue.pending_items()] == [
+        f"Update on {_NOTIFY_SEED_KEY}!"
+    ]
+    assert _get(db, "indie-metroidvanias").last_collected_at is not None
+    assert collector._retry_attempts == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_cut_short_leaves_nothing_behind_either(mock_llm, test_config, tmp_path):
+    """The other two unhealthy ends, on the same claim as the abort (#1936).
+
+    A cycle PREEMPTED by a foreground message and one that RAN OUT OF STEPS both stop
+    short of a conclusion, so both are thrown away whole — and neither is one of the
+    three causes the ruling names, which is the point: what decides the revert is the
+    absence of a healthy end, not a list of ways to fail.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False)
+    calls = 0
+
+    def writes_once(request: dict, count: int) -> LlmResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {
+                    "memory": "indie-metroidvanias",
+                    "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — out now."}],
+                },
+            )
+        raise asyncio.CancelledError
+
+    mock_llm.set_response_handler(writes_once)
+    with pytest.raises(asyncio.CancelledError):
+        await collector.run_for("indie-metroidvanias")
+
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift") == []
+    assert _get(db, "indie-metroidvanias").last_collected_at is None
+
+    # The step cap: one step, spent on the write, so the cycle never reaches a close.
+    collector.get_max_steps = lambda: 1  # ty: ignore[invalid-assignment]
+    calls = 0
+    success, _ = await collector.run_for("indie-metroidvanias")
+
+    assert success is False
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift") == []
+    assert _get(db, "indie-metroidvanias").last_collected_at is None
+    # Both cycles are on the ledger; this one is the FAILED bail — the cap left it
+    # unfinished, and its write is gone, so it changed nothing durable to report.
+    capped = [
+        run
+        for run in db.messages.get_prompt_log_runs()
+        if run["run_outcome"] == RunOutcome.FAILED.value
+    ]
+    assert len(capped) == 1
+    assert capped[0]["run_reason"] == "max steps exceeded — the program was left unfinished"
+
+
+_TWO_WRITE_PROGRAM = (
+    "Watch for new indie metroidvania releases.\n"
+    '1. collection_write("indie-metroidvanias", entries=[{key: <the game>, '
+    "content: <what is new>}])\n"
+    '2. collection_write("indie-metroidvanias", entries=[{key: <the game>, '
+    "content: <what is new>}])"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_write_gate_stop_keeps_what_the_cycle_wrote_before_it(
+    mock_llm, test_config, tmp_path
+):
+    """A write-gate STOP is a HEALTHY end (#1936): an early clean no-news exit IS the
+    cycle's end point, so whatever landed before it stays.
+
+    The cycle files a genuinely new find, then re-observes the seeded entry unchanged
+    and STOPs at the chokepoint without ever reaching a close.  Treating "no close" as
+    "not finished" would throw the new find away and the collection would never
+    accumulate anything on a quiet cycle.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False, extraction_prompt=_TWO_WRITE_PROGRAM)
+    calls = 0
+
+    def writes_then_stops(request: dict, count: int) -> LlmResponse:
+        nonlocal calls
+        calls += 1
+        entry = (
+            {"key": "Cinder Drift", "content": "Cinder Drift — out next spring."}
+            if calls == 1
+            else {"key": _NOTIFY_SEED_KEY, "content": _NOTIFY_SEED_CONTENT}
+        )
+        return mock_llm._make_tool_call_response(
+            request, "collection_write", {"memory": "indie-metroidvanias", "entries": [entry]}
+        )
+
+    mock_llm.set_response_handler(writes_then_stops)
+    await collector.run_for("indie-metroidvanias")
+
+    assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+    keys = {entry.key for entry in require_memory(db, "indie-metroidvanias").read_all()}
+    assert keys == {_NOTIFY_SEED_KEY, "Cinder Drift"}
+    assert _get(db, "indie-metroidvanias").last_collected_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_muted_delivery_still_keeps_the_cycles_writes(mock_llm, test_config, tmp_path):
+    """A DELIBERATE decline is a healthy end (#1936): the user is muted, so the cycle
+    did everything it could and a retry would reach the same answer.
+
+    Its write therefore stands and its occurrence is spent — the opposite of the
+    undrawable-message case, where the cycle never got as far as having something to
+    decline to send.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    db.users.set_muted("+15551230000")
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            content="Cinder Drift — a new metroidvania. https://ex.example/cd",
+            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
+        )
+    )
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert db.send_queue.next_pending() is None
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift")
+    assert _run_reason(db) == NOTIFICATION_NOTES[NotificationOutcome.NOT_DELIVERABLE]
+    assert _get(db, "indie-metroidvanias").last_collected_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_revert_that_cannot_land_still_settles_the_rest_of_the_cycle(
+    mock_llm, test_config, tmp_path
+):
+    """The revert is a real SQLite write and the writer is single, so it can raise — and
+    it runs in the cycle's ``finally``, where an escaping exception would skip the
+    occurrence settlement and leave the collection due with NO attempt counted against
+    it, re-picked on every tick, unbounded.
+
+    So a failed revert is reported loudly and the cycle's writes are left standing —
+    exactly the behaviour that stood before #1936 — while the occurrence still settles
+    and the run record is still stamped.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False)
+
+    def refuse_to_revert(*, revert: bool) -> bool:
+        raise OperationalError("UPDATE memory_entry", {}, Exception("database is locked"))
+
+    db.memories.end_cycle = refuse_to_revert  # ty: ignore[invalid-assignment]
+    mock_llm.set_response_handler(
+        _writes_then_dies(mock_llm, key="Cinder Drift", content="Cinder Drift — out now.")
+    )
+
+    success, _ = await collector.run_for("indie-metroidvanias")
+
+    assert success is False
+    # The write is still there (nothing was undone), and the cycle settled anyway.
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift")
+    assert _get(db, "indie-metroidvanias").last_collected_at is None  # occurrence kept
+    assert collector._retry_attempts == {("indie-metroidvanias", CycleTrigger.ON_DEMAND): 1}
+    assert _collector_run(db)["run_outcome"] == RunOutcome.FAILED.value
+
+
+_LOG_DRIVEN_PROGRAM = (
+    "Watch the release feed for new indie metroidvanias.\n"
+    '1. log_read(memory="release-feed")\n'
+    '2. collection_write("indie-metroidvanias", entries=[{key: <the game>, '
+    "content: <what is new>}])"
+)
+
+
+def _reads_then_writes(mock_llm, *, close: bool):
+    """A log-driven cycle: read the feed, write what it found, then either CLOSE or die.
+
+    One handler for both halves of the cursor claim, so the two cycles differ in exactly
+    the thing under test — how they ended."""
+    calls = 0
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return mock_llm._make_tool_call_response(
+                request, "log_read", {"memory": "release-feed"}
+            )
+        if calls == 2:
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {
+                    "memory": "indie-metroidvanias",
+                    "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — next spring."}],
+                },
+            )
+        if close:
+            return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+        raise LlmConnectionError("Connection refused")
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_a_reverted_cycles_read_cursor_stays_where_it_was(mock_llm, test_config, tmp_path):
+    """A cursor and a reverted write are ONE claim about how much of the run was real
+    (#1936), so they settle on the same verdict.
+
+    A log-driven collection is dispatched when its input log is ahead of its cursor, so
+    a cursor that advanced over a reverted cycle's input would leave the collection
+    holding neither the write nor the input that produced it — the readiness gate would
+    read the log as caught up and skip the retry outright.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False, extraction_prompt=_LOG_DRIVEN_PROGRAM)
+    db.memories.create_log("release-feed", "release announcements")
+    require_memory(db, "release-feed").append(
+        [LogEntryInput(content="Cinder Drift ships next spring", content_embedding=None)],
+        author="feed",
+    )
+
+    mock_llm.set_response_handler(_reads_then_writes(mock_llm, close=False))
+    await collector.run_for("indie-metroidvanias")
+
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift") == []
+    assert db.cursors.get("indie-metroidvanias", "release-feed") is None
+
+    # The retry reads the SAME batch — its input is still there — and closes, which is
+    # what moves both the write and the cursor.
+    mock_llm.set_response_handler(_reads_then_writes(mock_llm, close=True))
+    assert (await collector.run_for("indie-metroidvanias"))[0] is True
+
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift")
+    assert db.cursors.get("indie-metroidvanias", "release-feed") is not None
 
 
 @pytest.mark.asyncio
@@ -2099,17 +2461,22 @@ def _target() -> MemoryRow:
     )
 
 
-def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, tmp_path):
+def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path):
     """Structural outcome from the tool trace ALONE (#1569/#1911/#1916): whether the
     cycle CLOSED is a read of the ledger for a successful ``done`` record, and what it
     then records is decided by whether durable state changed.
 
     A closed cycle is ``worked``/``no_work`` with an EMPTY reason — a bare clean close
-    has nothing to say the outcome enum doesn't — and an unclosed one is ``incomplete``
-    (work landed) / ``failed`` (a bail), each stamped with the reason it ended for.
+    has nothing to say the outcome enum doesn't — and an unclosed one is a ``failed``
+    bail stamped with the reason it ended for.
 
     A done record that FAILED validation is not a close: the loop keeps going so the
     model can retry, so the run it leaves behind is unfinished like any other.
+
+    ``landed`` is whether the cycle's entry writes survived (#1936).  A cycle that never
+    reached a healthy end has its writes reverted, so whatever its trace holds it
+    changed nothing durable — which is why every unclosed shape below is scored with
+    ``landed=False``, the only combination they occur in.
 
     The collector here is bound to a one-call program, so the unreadable-program arm
     stays out of the way until the case that wants it."""
@@ -2125,31 +2492,33 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, t
             done,
         ],
     )
-    assert collector._cycle_result(wrote_then_closed, None) == (RunOutcome.WORKED, "")
+    assert collector._cycle_result(wrote_then_closed, None, True) == (RunOutcome.WORKED, "")
 
     # Closed having changed nothing → no_work, same empty reason.
     read_then_closed = ControllerResponse(
         answer="",
         tool_calls=[ToolCallRecord(tool="log_read", arguments={}), done],
     )
-    assert collector._cycle_result(read_then_closed, None) == (RunOutcome.NO_WORK, "")
+    assert collector._cycle_result(read_then_closed, None, True) == (RunOutcome.NO_WORK, "")
 
     # The one thing a clean close DOES carry: what telling the user came to.  A queued
     # notification is also work (#1914) — it is the cycle's second way of doing
     # something, and no tool call records it.
-    assert collector._cycle_result(read_then_closed, NotificationOutcome.QUEUED) == (
+    assert collector._cycle_result(read_then_closed, NotificationOutcome.QUEUED, True) == (
         RunOutcome.WORKED,
         NOTIFICATION_NOTES[NotificationOutcome.QUEUED],
     )
 
-    # Wrote durable state but never closed → incomplete (the work is real), stamped
-    # with the structural unfinished reason.
-    incomplete = ControllerResponse(
+    # Wrote and never closed → the write was REVERTED (#1936), so the record says
+    # ``failed`` and not ``incomplete``: nothing durable is left of that write, and a
+    # run record claiming a change that exists nowhere is the dishonest reading the
+    # undo journal removes.
+    unclosed_write = ControllerResponse(
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, mutated=True)],
     )
-    assert collector._cycle_result(incomplete, None) == (
-        RunOutcome.INCOMPLETE,
+    assert collector._cycle_result(unclosed_write, None, False) == (
+        RunOutcome.FAILED,
         "cycle ended with the program unfinished",
     )
 
@@ -2162,8 +2531,8 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, t
             ToolCallRecord(tool=DoneTool.name, arguments={}, failed=True),
         ],
     )
-    assert collector._cycle_result(bad_done, None) == (
-        RunOutcome.INCOMPLETE,
+    assert collector._cycle_result(bad_done, None, False) == (
+        RunOutcome.FAILED,
         "cycle ended with the program unfinished",
     )
 
@@ -2173,7 +2542,7 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, t
         answer=PennyResponse.AGENT_MAX_STEPS,
         tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})],
     )
-    assert collector._cycle_result(maxed, None) == (
+    assert collector._cycle_result(maxed, None, False) == (
         RunOutcome.FAILED,
         "max steps exceeded — the program was left unfinished",
     )
@@ -2190,7 +2559,7 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, t
             error=ModelCallError(error_class="LlmTimeoutError", message="Request timed out."),
         ),
     )
-    assert collector._cycle_result(aborted, None) == (
+    assert collector._cycle_result(aborted, None, False) == (
         RunOutcome.FAILED,
         "model call failed at step 5 after read_similar: LlmTimeoutError: Request timed out.",
     )
@@ -2199,8 +2568,8 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, t
     # terminator alone, so there was never a job it could carry out, and saying so is
     # the difference between a diagnosable state and one found by exclusion.
     collector._program = ()
-    assert collector._cycle_result(incomplete, None) == (
-        RunOutcome.INCOMPLETE,
+    assert collector._cycle_result(unclosed_write, None, False) == (
+        RunOutcome.FAILED,
         COLLECTOR_UNREADABLE_PROGRAM_REASON,
     )
 
@@ -2211,7 +2580,10 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     the outcome is a clean ``no_work`` (nothing changed) stamped with the declared
     stop reason, NOT a ``failed`` bail (the mislabel that would fire if the missing
     done() fell through to the no-``done()`` path).  A STOP that also changed durable
-    state stays ``worked``."""
+    state stays ``worked``.
+
+    A STOP is a HEALTHY end (#1936) — the cycle's writes survive it — so every case here
+    is scored with ``landed=True``, the only state a stopped cycle is ever in."""
     collector, _ = _make_collector(test_config, tmp_path)
     reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
@@ -2226,7 +2598,7 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
             )
         ],
     )
-    assert collector._cycle_result(unchanged_stop, None) == (RunOutcome.NO_WORK, reason)
+    assert collector._cycle_result(unchanged_stop, None, True) == (RunOutcome.NO_WORK, reason)
 
     # A STOP preceded by a real write this cycle stays worked (work landed).
     stop_after_work = ControllerResponse(
@@ -2241,7 +2613,7 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
             ),
         ],
     )
-    assert collector._cycle_result(stop_after_work, None) == (RunOutcome.WORKED, reason)
+    assert collector._cycle_result(stop_after_work, None, True) == (RunOutcome.WORKED, reason)
 
     # The reworded-key door onto the SAME no-news (#1919) closes the cycle identically
     # and stamps its OWN declared reason, so a run record says which door it came
@@ -2259,7 +2631,10 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
             )
         ],
     )
-    assert collector._cycle_result(already_stop, None) == (RunOutcome.NO_WORK, already_reason)
+    assert collector._cycle_result(already_stop, None, True) == (
+        RunOutcome.NO_WORK,
+        already_reason,
+    )
 
 
 def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_config, tmp_path):

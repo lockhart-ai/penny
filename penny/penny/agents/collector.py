@@ -49,13 +49,17 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
 from penny.constants import (
-    COLLECTOR_CANCELLED_RETRY_REASON,
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
+    CYCLE_END_RETRY_REASONS,
+    HEALTHY_CYCLE_ENDS,
     WRITE_GATE_STOP_REASONS,
+    CycleEnd,
     CycleTrigger,
     MutationActor,
     PennyConstants,
@@ -69,14 +73,19 @@ from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp, stored_as_utc, user_timezone_name
 from penny.llm.client import LlmClient
-from penny.notification import NOTIFICATION_NOTES, CollectorNotifier, NotificationOutcome
+from penny.notification import (
+    NOTIFICATION_NOTES,
+    NOTIFIED_CYCLE_ENDS,
+    CollectorNotifier,
+    NotificationOutcome,
+)
 from penny.program import ProgramCall, program_calls
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import next_occurrence, skill_params
-from penny.tools.memory_tools import DoneTool, format_entries
+from penny.tools.memory_tools import CursorReadTool, DoneTool, format_entries
 
 if TYPE_CHECKING:
     pass
@@ -279,9 +288,12 @@ class Collector(BackgroundAgent):
         run record can state which of the four terminal shapes this cycle had —
         aborted, stopped, completed-quiet, completed-notified.
 
-        The cycle's schedule occurrence is settled last (``_settle_occurrence``, #1935):
-        an ordinary cycle consumes it, one that ended on a stochastic cause with nothing
-        to show for it leaves it due for a bounded retry.
+        How the cycle ENDED is then determined once (``_cycle_end``) and read three
+        times (#1936): it decides whether the cycle's entry writes SURVIVE, how far its
+        read cursors advance, and whether its schedule occurrence is spent
+        (``_settle_occurrence``, #1935).  One classification, because they are one
+        question — a cycle that never reached its conclusion is thrown out whole and
+        retried from the state it started in.
 
         ``trigger`` says what set this cycle running — the schedule, or the user — and
         is carried, never inferred: the notification reads it to pick its delivery lane
@@ -290,6 +302,7 @@ class Collector(BackgroundAgent):
         run_id = uuid.uuid4().hex
         success = False
         response: ControllerResponse | None = None
+        reads: tuple[CursorReadTool, ...] = ()
         cancelled = False
         notified: NotificationOutcome | None = None
         # Determined ONCE, inside the lock, while the cycle's program is still bound —
@@ -302,6 +315,7 @@ class Collector(BackgroundAgent):
                 result = await self._run_cycle(run_id)
                 success = result.success
                 response = result.response
+                reads = result.reads
                 notified = await self._notify_if_due(collection, run_id, response, trigger)
             except asyncio.CancelledError:
                 # Foreground activity preempted the cycle — tag clearly rather
@@ -309,18 +323,21 @@ class Collector(BackgroundAgent):
                 cancelled = True
                 raise
             finally:
+                # How the cycle ended, determined once and read by everything that has
+                # to know whether it was real (#1936).
+                end = self._cycle_end(cancelled, response, notified)
+                landed = self._settle_writes(collection.name, end)
+                self.settle_reads(reads, landed)
                 # Settle the occurrence this cycle was dispatched for: consume it, or
                 # leave it due for a bounded retry (#1935).  Runs while the program is
                 # still bound, since the deterministic arm is read off it.
-                deferred = self._settle_occurrence(
-                    collection.name, trigger, cancelled, response, notified
-                )
+                deferred = self._settle_occurrence(collection.name, trigger, end, response)
                 if cancelled:
                     self._tag_promptlog_run_cancelled(run_id)
                 else:
                     # One determination of this cycle's outcome, used for the
                     # audit log and the promptlog tag alike.
-                    outcome, reason = self._cycle_result(response, notified)
+                    outcome, reason = self._cycle_result(response, notified, landed)
                     self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
                     if not deferred:
                         self._retire_if_ended(collection, run_id)
@@ -347,8 +364,13 @@ class Collector(BackgroundAgent):
         collector could possibly run — because that is the vocabulary a stored program
         was authored against.  Reading it against ``self.get_tools()`` would be
         circular: this cycle's surface is derived FROM the program, so an unbound
-        program would offer nothing to recognise a program with."""
+        program would offer nothing to recognise a program with.
+
+        Binding also opens the cycle's UNDO JOURNAL on the target (#1936) — from here
+        until the cycle settles, every entry mutation of that collection first records
+        what the key it touches held — and releasing the target closes it."""
         self._current_target = collection
+        self.db.memories.begin_cycle(collection.name if collection is not None else None)
         if collection is None or collection.extraction_prompt is None:
             self._program = ()
             return
@@ -414,15 +436,69 @@ class Collector(BackgroundAgent):
         if not self._archive_if_run_limit_reached(collection, run_id):
             self._archive_if_expired(collection, run_id)
 
+    # ── How the cycle ended, and what follows from it (#1936) ─────────────
+
+    def _cycle_end(
+        self,
+        cancelled: bool,
+        response: ControllerResponse | None,
+        notified: NotificationOutcome | None,
+    ) -> CycleEnd:
+        """Which of the enumerated ends this cycle had — determined ONCE and read by
+        everything that has to know whether the cycle was real (#1936).
+
+        The order mirrors ``_cycle_result``'s, because they are reading the same run:
+        a STOP is a deliberate early close whatever else the cycle got through, then the
+        ``done()`` close (whose end depends on what telling the user came to), then the
+        aborted and unfinished shapes.  A cycle that never produced a response at all —
+        cancelled, or an exception out of the loop — never reached any of them.
+        """
+        if cancelled:
+            return CycleEnd.CANCELLED
+        if response is None:
+            return CycleEnd.UNFINISHED
+        if self._stop_reason(response) is not None:
+            return CycleEnd.STOPPED
+        if self._has_done_call(response):
+            return CycleEnd.CLOSED_QUIET if notified is None else NOTIFIED_CYCLE_ENDS[notified]
+        if response.abort is not None:
+            return CycleEnd.ABORTED
+        return CycleEnd.UNFINISHED
+
+    def _settle_writes(self, name: str, end: CycleEnd) -> bool:
+        """Keep this cycle's entry writes, or put the collection back — and say which.
+
+        A healthy end drops the undo journal; anything else replays it, so the retry
+        runs against the state the cycle started from and the change-gate never reads a
+        value that was recorded by a run nobody heard from.  The returned fact is what
+        the rest of the settlement means by "this cycle was real": how far its read
+        cursors advance, whether it produced work, and whether it spent its occurrence.
+
+        The revert is a real SQLite write and the writer is single, so lock contention
+        with a chat turn can raise — and this call sits in the cycle's ``finally``, where
+        an escaping exception would skip the occurrence settlement and leave the
+        collection due with no attempt counted against it, re-picked on every tick.  A
+        failed revert is therefore reported loudly and the cycle's writes are left
+        standing, which is exactly the behaviour that stood before this existed.
+        """
+        try:
+            return self.db.memories.end_cycle(revert=end not in HEALTHY_CYCLE_ENDS)
+        except SQLAlchemyError:
+            logger.exception(
+                "Could not revert '%s' cycle's writes — they are left in place and the "
+                "collection is retried like any other unhealthy end",
+                name,
+            )
+            return True
+
     # ── Settling the schedule occurrence (#1935) ──────────────────────────
 
     def _settle_occurrence(
         self,
         name: str,
         trigger: CycleTrigger,
-        cancelled: bool,
+        end: CycleEnd,
         response: ControllerResponse | None,
-        notified: NotificationOutcome | None,
     ) -> bool:
         """Consume this cycle's schedule occurrence, or leave it DUE for a retry.
 
@@ -430,9 +506,8 @@ class Collector(BackgroundAgent):
         strictly after ``last_collected_at`` — so stamping a cycle that did nothing
         SKIPS that fire entirely.  Measured live: a chat message cancelled a daily
         job's cycle seconds in, before any model call had come back, and the day's
-        occurrence was burned.  A cycle that ended on a stochastic cause with nothing
-        durable behind it therefore stays due, and the next tick picks it up again (it
-        is still the most overdue).
+        occurrence was burned.  A cycle that did not reach an end therefore stays due,
+        and the next tick picks it up again (it is still the most overdue).
 
         The bound is the stamp's ORIGINAL job, kept whole: a collection failing this
         way every time would otherwise re-attempt on every tick forever.  After
@@ -443,7 +518,7 @@ class Collector(BackgroundAgent):
         a cycle that did not spend its fire must not spend a run of a bounded schedule
         either (``_retire_if_ended``).
         """
-        reason = self._retry_reason(cancelled, response, notified)
+        reason = self._retry_reason(end, response)
         if reason is not None and self._claim_retry(name, trigger):
             logger.info(
                 "Leaving '%s' due rather than consuming its occurrence — %s, and the "
@@ -494,43 +569,32 @@ class Collector(BackgroundAgent):
         for key in [key for key in self._retry_attempts if key[0] == name]:
             del self._retry_attempts[key]
 
-    def _retry_reason(
-        self,
-        cancelled: bool,
-        response: ControllerResponse | None,
-        notified: NotificationOutcome | None,
-    ) -> str | None:
+    def _retry_reason(self, end: CycleEnd, response: ControllerResponse | None) -> str | None:
         """Why this exit did not spend its occurrence, or ``None`` when it did.
 
-        Three reads, in the order that makes each decisive:
+        Two reads, in the order that makes each decisive:
 
-        - **Work landed** — an entry written or a notification queued.  However the
-          cycle ended, it did the job the occurrence was for.  (A cancelled cycle
-          carries no response at all, so a write it managed before the cancellation is
-          invisible here — which is the idempotent-retry posture cancellation has
-          always had: the work is durable, and the re-run's write gate reads it as the
-          unchanged value it is.)
+        - **The cycle ENDED** — one of the enumerated healthy ends (#1936): a write-gate
+          STOP, or a ``done()`` close that either notified, deliberately declined to, or
+          had nothing to notify about.  It did the job the occurrence was for, and its
+          writes stand.  Everything else stopped short, and since a short cycle's writes
+          are reverted there is nothing left of it to protect — which is exactly why the
+          two mechanisms need no special case between them.
         - **A configuration defect** — the DETERMINISTIC arm, read off the collection's
-          own stored program, so a retry re-fails identically.  It outranks the
-          stochastic causes below: a cancelled cycle of an unrunnable collection is
-          still an unrunnable collection.
-        - **A stochastic cause** — foreground preemption, or a model call that died
-          (#1909's abort, whose causes are transport failures and a spent reroll
-          budget).  Attempted a moment later each of these is a different draw.
+          own stored program, so a retry re-fails identically.  It outranks every
+          unhealthy end below: a cancelled cycle of an unrunnable collection is still an
+          unrunnable collection.
 
-        Anything else — a clean ``done()``, a write-gate STOP, the step cap, a model
-        that trailed off — is an ordinary completed cycle and consumes its occurrence
-        exactly as it always has.
+        What is left is the unhealthy end's own line, off the declared table — except an
+        abort, which names its own terminal cause when the run carries one (#1909).
         """
-        if self._produced_work(response, notified):
+        if end in HEALTHY_CYCLE_ENDS:
             return None
         if self._configuration_defect() is not None:
             return None
-        if cancelled:
-            return COLLECTOR_CANCELLED_RETRY_REASON
-        if response is not None and response.abort is not None:
+        if end is CycleEnd.ABORTED and response is not None and response.abort is not None:
             return response.abort.render()
-        return None
+        return CYCLE_END_RETRY_REASONS[end]
 
     def _configuration_defect(self) -> str | None:
         """The bound collection's own deterministic reason its cycles cannot succeed,
@@ -616,7 +680,10 @@ class Collector(BackgroundAgent):
         )
 
     def _cycle_result(
-        self, response: ControllerResponse | None, notified: NotificationOutcome | None
+        self,
+        response: ControllerResponse | None,
+        notified: NotificationOutcome | None,
+        landed: bool,
     ) -> tuple[RunOutcome, str]:
         """The cycle's outcome + a STRUCTURAL reason — the single determination read
         by the audit log and the promptlog tag (#1569/#1911).
@@ -633,21 +700,28 @@ class Collector(BackgroundAgent):
           empty otherwise, so the run record's header falls back to the outcome enum.
           A queued notification is also WORK (#1914): it is the one thing a cycle does
           that no tool call records.
-        - **aborted** — no close at all: durable state changed → ``incomplete``,
-          nothing changed → a ``failed`` bail, both naming what ended the run (#1909's
-          abort causes are kept whole).
+        - **aborted** — no close at all: a ``failed`` bail naming what ended the run
+          (#1909's abort causes are kept whole).  It is unconditionally ``failed`` since
+          #1936: a cycle that never reached a close had its writes reverted, so
+          ``incomplete`` — "did real work but never closed" — describes a state a
+          collector cycle can no longer be in.
 
         (``cancelled`` is handled separately — a preempted cycle never reaches here.)
+
+        ``landed`` is whether the cycle's entry writes survived (#1936).  It is what a
+        DONE-closed cycle whose notification could not be drawn reads as: that cycle
+        closed, so it takes the clean branch, but its writes were reverted with the rest
+        of the run — so it reports ``no_work`` rather than claiming a change that no
+        longer exists.
         """
-        produced = self._produced_work(response, notified)
+        produced = landed and self._produced_work(response, notified)
         clean = RunOutcome.WORKED if produced else RunOutcome.NO_WORK
         stop = self._stop_reason(response)
         if stop is not None:
             return clean, WRITE_GATE_STOP_REASONS[stop]
         if self._has_done_call(response):
             return clean, self._closed_reason(notified)
-        reason = self._unfinished_reason(response)
-        return (RunOutcome.INCOMPLETE if produced else RunOutcome.FAILED), reason
+        return RunOutcome.FAILED, self._unfinished_reason(response)
 
     @staticmethod
     def _has_done_call(response: ControllerResponse | None) -> bool:
