@@ -634,10 +634,17 @@ NOTIFY_SHAPE = MicroContextShape(lines=(_MESSAGE_LINE,))
 # the two ``read_similar`` steps gone because their results are handed in already, and
 # the ``send_message`` step gone because the framework sends.  Nothing about tools, and
 # nothing about deciding WHETHER to write — both were settled before this draw.
+#
+# The opening sentence NAMES THE DOCUMENT'S SECTIONS IN THE ORDER THEY RENDER (#1934),
+# so the one sentence framing the document cannot describe a different document from
+# the one under it: what the cycle wrote leads, the calls follow, and the earlier
+# messages are named as BACKGROUND — the only part of the document the reported run did
+# not produce, and the part a measured composition took as its template.
 NOTIFY_SYSTEM_PROMPT = (
     "You are writing one message to the user. A routine of theirs just ran on its own "
-    "and found something, and you are given everything about that run: what it did, "
-    "what it wrote down, and the closest things the two of you have said before.\n"
+    "and found something, and you are given everything about that run: what it wrote "
+    "down, how it got there, and — as background — the closest things the two of you "
+    "have said before.\n"
     "\n"
     "Write the message they will actually receive:\n"
     "1. Open with a quick greeting.\n"

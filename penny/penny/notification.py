@@ -21,6 +21,18 @@ So the tail is taken apart along the line of what actually needs a model:
 
 What is left in the model's hands is exactly the sentence the user reads, and every
 fact in it was put in front of it by the framework.
+
+That document is BOUNDED and ORDERED (#1934).  The first live cycle after the reset
+assembled 50,805 characters of it for an ordinary three-page news round — a browse
+result inlined whole, a write call restating its whole payload in its own arguments,
+and the entries holding that text a third time — on a model whose degeneration onset is
+~4K prompt tokens; and the message it composed led with a headline that was not the
+fetched page's top story but WAS the lead of the PREVIOUS notification, which sat in
+the closest prior messages.  So the entries the cycle wrote lead the document, the
+calls follow them, and the earlier conversation comes last under a heading that says
+what it is.  Every section is bounded in the RENDER against a stated budget, and every
+cut states what it left out — a condensed value is something the draw can act on, where
+a silent one is not.
 """
 
 from __future__ import annotations
@@ -78,12 +90,17 @@ NOTIFICATION_NOTES: dict[NotificationOutcome, str] = {
 
 class CycleCall(BaseModel):
     """One executed call of the cycle, as the notify document renders it: the call in
-    the canonical ``tool(args)`` notation and its result verbatim.
+    the canonical ``tool(args)`` notation and its result.
 
-    The result is carried WHOLE and never truncated — the document is a fresh context
-    whose entire job is this one message, so what the run actually saw is what the
-    message can be written from (a truncated result is where an invented detail comes
-    from)."""
+    Both halves are carried WHOLE here and CONDENSED at the render, against a stated
+    budget (#1934).  #1911 carried them whole all the way down, on the reasoning that a
+    truncated result is where an invented detail comes from; the first live cycle after
+    the reset measured what that costs — one browse result inlined at 31,725 characters
+    and one ``collection_write`` whose ARGUMENTS restated the whole payload at 14,923
+    on a single line, on a model that degenerates past ~4K prompt tokens.  A document
+    the model cannot read is not a safer document, so the cut stands but STATES itself:
+    a condensed value ends in the count of what was left out, which is a fact the draw
+    can act on, where a silent cut is not."""
 
     call: str
     result: str = ""
@@ -126,13 +143,27 @@ class NotificationInput(BaseModel):
 _LEAD = "The `{collection}` routine just ran on its own, and it is time to tell the user."
 _ABOUT = "What this collection is for: {description}"
 _ROUTINE = "The routine it runs: {routine}"
-_DID_HEAD = "## What the cycle did"
 _WROTE_HEAD = "## What it wrote this cycle"
 _WROTE_NONE = "It wrote nothing down this cycle."
-_RELATED_HEAD = "## What the two of you have said about this before"
+_DID_HEAD = "## How it got there"
+_DID_NONE = "It made no calls."
+_RELATED_HEAD = "## Background: earlier messages"
+_RELATED_LEAD = (
+    "These messages are from before this cycle ran. What this cycle found is at the "
+    "top of this document."
+)
 _RELATED_NONE = "Nothing in your past messages matched this — there is no callback to make."
 _RESULT_PREFIX = "   → "
 _FAILED_PREFIX = "   → (this call failed) "
+# The two honest-omission markers (#1934).  A bound that cuts says what it cut: the
+# characters a condensed value dropped, and the items a capped section left out.
+_CHARS_OMITTED = "… [{count} characters omitted]"
+_MORE_ITEMS = "{count} more {noun} not shown."
+# What each capped section counts, singular and plural — declared beside the marker
+# they fill rather than passed as bare words at each call site.
+_ENTRY_NOUNS = ("entry", "entries")
+_CALL_NOUNS = ("call", "calls")
+_MESSAGE_NOUNS = ("message", "messages")
 
 
 def render_notification(document: NotificationInput) -> str:
@@ -140,19 +171,30 @@ def render_notification(document: NotificationInput) -> str:
 
     Pure and deterministic — no database, no model — so the exact text the draw reads
     is pinned by a whole-render test rather than by whatever a live run happened to
-    produce.  Sections in the order the message is written from: what ran, what it
-    did, what it found, and what was said before."""
+    produce.
+
+    Sections in the order the message is written FROM (#1934): what ran, then what the
+    cycle WROTE — the payload, at the head — then how it got there, then the earlier
+    conversation, labelled as background and last.  The order is load-bearing: with the
+    closest prior messages sitting nearest the draw, one measured composition took the
+    PREVIOUS notification's lead as its template and re-reported it as today's top
+    story.  Every section is BOUNDED here rather than at the assembly, so the bound
+    holds whatever put the facts in front of it, and every cut states itself."""
     return "\n".join(
         [
             _LEAD.format(collection=document.collection),
-            _ABOUT.format(description=document.description),
+            _ABOUT.format(
+                description=_condensed(
+                    document.description, PennyConstants.NOTIFY_DESCRIPTION_CHARS
+                )
+            ),
             *([_ROUTINE.format(routine=document.routine)] if document.routine else []),
-            "",
-            _DID_HEAD,
-            _render_calls(document.calls),
             "",
             _WROTE_HEAD,
             _render_written(document.written),
+            "",
+            _DID_HEAD,
+            _render_calls(document.calls),
             "",
             _RELATED_HEAD,
             _render_related(document.related),
@@ -160,49 +202,91 @@ def render_notification(document: NotificationInput) -> str:
     )
 
 
+def _condensed(text: str, budget: int) -> str:
+    """``text`` within its budget, or its head plus the count of what was left out.
+
+    Never a silent cut: the marker is the difference between a draw reading a partial
+    value knowingly and one reading it as the whole thing."""
+    if len(text) <= budget:
+        return text
+    return f"{text[:budget]}{_CHARS_OMITTED.format(count=len(text) - budget)}"
+
+
+def _overflow_line(shown: int, total: int, nouns: tuple[str, str]) -> list[str]:
+    """The honest count of the items a section's cap left out, or nothing at all."""
+    rest = total - shown
+    if rest <= 0:
+        return []
+    singular, plural = nouns
+    return [_MORE_ITEMS.format(count=rest, noun=singular if rest == 1 else plural)]
+
+
+def _render_written(written: Sequence[WrittenEntry]) -> str:
+    """The durable outcome, and the document's LEAD: the entries whose current value
+    this cycle wrote, in the order the run wrote them, up to the section's cap.
+
+    Empty is a real answer and says so plainly — a routine with no write at all
+    completes and notifies like any other (the exit is the cycle's own close, never a
+    write), so "nothing written" is an ordinary shape here."""
+    if not written:
+        return _WROTE_NONE
+    shown = written[: PennyConstants.NOTIFY_WRITTEN_ENTRIES]
+    lines = [_written_line(entry) for entry in shown]
+    return "\n".join([*lines, *_overflow_line(len(shown), len(written), _ENTRY_NOUNS)])
+
+
+def _written_line(entry: WrittenEntry) -> str:
+    content = _condensed(entry.content, PennyConstants.NOTIFY_WRITTEN_CONTENT_CHARS)
+    if entry.key is None:
+        return f"- into `{entry.memory}`: {content}"
+    key = _condensed(entry.key, PennyConstants.NOTIFY_ENTRY_KEY_CHARS)
+    return f"- into `{entry.memory}`, under `{key}`: {content}"
+
+
 def _render_calls(calls: Sequence[CycleCall]) -> str:
     """The cycle's calls in order, each with its result under it — the run-record
     register (``tool(args)``, one call per line) with the results the record itself
     leaves out, because a record is read for what a run DID and this document is read
-    for what it FOUND."""
+    for what it FOUND.
+
+    Both halves are condensed: a call's own ARGUMENTS restate whatever payload it
+    carried (a measured ``collection_write`` ran to 14,923 characters on one line), and
+    a browse result carries a whole fetched page."""
     if not calls:
-        return "It made no calls."
+        return _DID_NONE
+    shown = calls[: PennyConstants.NOTIFY_CYCLE_CALLS]
     lines: list[str] = []
-    for index, call in enumerate(calls, start=1):
-        lines.append(f"{index}. {call.call}")
+    for index, call in enumerate(shown, start=1):
+        lines.append(f"{index}. {_condensed(call.call, PennyConstants.NOTIFY_CALL_CHARS)}")
         if call.result:
             prefix = _FAILED_PREFIX if call.failed else _RESULT_PREFIX
-            lines.append(f"{prefix}{call.result}")
-    return "\n".join(lines)
-
-
-def _render_written(written: Sequence[WrittenEntry]) -> str:
-    """The durable outcome: every entry whose current value this cycle wrote.
-
-    Empty is a real answer and says so plainly — a routine with no write at all
-    completes and notifies like any other (the exit is coverage of the program's
-    calls, never a write), so "nothing written" is an ordinary shape here."""
-    if not written:
-        return _WROTE_NONE
-    return "\n".join(_written_line(entry) for entry in written)
-
-
-def _written_line(entry: WrittenEntry) -> str:
-    if entry.key is None:
-        return f"- into `{entry.memory}`: {entry.content}"
-    return f"- into `{entry.memory}`, under `{entry.key}`: {entry.content}"
+            result = _condensed(call.result, PennyConstants.NOTIFY_CALL_RESULT_CHARS)
+            lines.append(f"{prefix}{result}")
+    return "\n".join([*lines, *_overflow_line(len(shown), len(calls), _CALL_NOUNS)])
 
 
 def _render_related(related: Sequence[RelatedMessages]) -> str:
-    """Both message logs' nearest entries, or the one plain nothing-matched line.
+    """Both message logs' nearest entries as BACKGROUND, or the one plain
+    nothing-matched line.
 
     Nothing matching is the ORDINARY case, so it renders as a statement rather than as
     two empty sections: a callback line is worth having when there is something to
-    call back to, and inventing one is the failure this wording exists to prevent."""
+    call back to, and inventing one is the failure this wording exists to prevent.
+    When there IS something, the section says what it is — messages from before this
+    cycle — and where the cycle's own findings are, because these are the only lines in
+    the document that were never produced by the run being reported."""
     populated = [group for group in related if group.lines]
     if not populated:
         return _RELATED_NONE
-    return "\n\n".join("\n".join([f"### {group.source}", *group.lines]) for group in populated)
+    return "\n\n".join([_RELATED_LEAD, *(_related_group(group) for group in populated)])
+
+
+def _related_group(group: RelatedMessages) -> str:
+    """One log's nearest messages, capped and each condensed to its own budget."""
+    shown = group.lines[: PennyConstants.NOTIFY_RELATED_MESSAGES]
+    lines = [_condensed(line, PennyConstants.NOTIFY_RELATED_LINE_CHARS) for line in shown]
+    overflow = _overflow_line(len(shown), len(group.lines), _MESSAGE_NOUNS)
+    return "\n".join([f"### {group.source}", *lines, *overflow])
 
 
 class CollectorNotifier:
