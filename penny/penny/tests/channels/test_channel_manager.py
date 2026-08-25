@@ -1,11 +1,12 @@
 """Tests for ChannelManager routing and delegation."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
 from penny.channels.manager import ChannelManager
-from penny.constants import ChannelType
+from penny.constants import ChannelType, PermissionResolution
 
 
 def _make_mock_channel(channel_type: str) -> MagicMock:
@@ -20,6 +21,8 @@ def _make_mock_channel(channel_type: str) -> MagicMock:
     channel.set_scheduler = MagicMock()
     channel.set_command_context = MagicMock()
     channel.prepare_outgoing = MagicMock(side_effect=lambda t: t)
+    channel.handle_permission_prompt = AsyncMock()
+    channel.handle_permission_dismiss = AsyncMock()
     type(channel).sender_id = PropertyMock(return_value=f"mock-{channel_type}")
     return channel
 
@@ -186,6 +189,73 @@ class TestChannelManagerDelegation:
 
         manager.prepare_outgoing("hello")
         signal_ch.prepare_outgoing.assert_called_once_with("hello")
+
+
+class TestPermissionBroadcast:
+    """One prompt goes to every channel, so no channel's failure may cost another.
+
+    A permission prompt is shown on every device and answered on whichever one
+    the user reaches first, which makes the channels independent by
+    construction: awaiting them in a bare loop meant the first raise — a dead
+    addon socket, a Signal API wobble — took every channel after it down with
+    it, and the answer was then only reachable from the device that had already
+    failed.
+    """
+
+    @staticmethod
+    def _manager_with_two_channels(db) -> tuple[ChannelManager, MagicMock, MagicMock]:
+        """A manager holding two channels, in registration order."""
+        manager = ChannelManager(message_agent=MagicMock(), db=db)
+        signal_ch = _make_mock_channel("signal")
+        browser_ch = _make_mock_channel("browser")
+        manager.register_channel(ChannelType.SIGNAL, signal_ch)
+        manager.register_channel(ChannelType.BROWSER, browser_ch)
+        return manager, signal_ch, browser_ch
+
+    @pytest.mark.asyncio
+    async def test_dismiss_reaches_the_siblings_of_a_failing_channel(self, db, caplog):
+        """A channel that can't be told the prompt is over doesn't silence the rest.
+
+        The dismiss is what retires each channel's prompt — and on Signal, the
+        reaction callback watching its prompt message — so a channel that never
+        hears it keeps waiting for an answer to a question already settled.
+        """
+        manager, failing, sibling = self._manager_with_two_channels(db)
+        failing.handle_permission_dismiss.side_effect = RuntimeError("the transport is unreachable")
+
+        with caplog.at_level(logging.ERROR, logger="penny.channels.manager"):
+            await manager.broadcast_permission_dismiss("request-1", PermissionResolution.ALLOWED)
+
+        sibling.handle_permission_dismiss.assert_awaited_once_with(
+            "request-1", PermissionResolution.ALLOWED
+        )
+        assert "Channel signal could not resolve permission prompt request-1" in caplog.text, (
+            "the failing channel and the prompt it left unresolved are both named"
+        )
+        assert "the transport is unreachable" in caplog.text, (
+            "with the failure itself — logged, never swallowed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_prompt_reaches_the_siblings_of_a_failing_channel(self, db, caplog):
+        """A channel that can't show the prompt doesn't stop the others showing it."""
+        manager, failing, sibling = self._manager_with_two_channels(db)
+        failing.handle_permission_prompt.side_effect = RuntimeError("the transport is unreachable")
+
+        with caplog.at_level(logging.ERROR, logger="penny.channels.manager"):
+            await manager.broadcast_permission_prompt(
+                "request-1", "example.test", "https://example.test/page"
+            )
+
+        sibling.handle_permission_prompt.assert_awaited_once_with(
+            "request-1", "example.test", "https://example.test/page"
+        )
+        assert "Channel signal could not show permission prompt request-1" in caplog.text, (
+            "the failing channel and the prompt it could not show are both named"
+        )
+        assert "the transport is unreachable" in caplog.text, (
+            "with the failure itself — logged, never swallowed"
+        )
 
 
 class TestUserSenderResolution:

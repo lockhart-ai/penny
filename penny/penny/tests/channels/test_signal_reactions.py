@@ -284,8 +284,8 @@ async def _answer_elsewhere(
     permissions.handle_decision(request_id, allowed)
 
 
-def _prompt_external_id(db: Database) -> int:
-    """The Signal timestamp of the prompt message, off its own messagelog row."""
+def _prompt_ids(db: Database) -> tuple[int, int]:
+    """``(message id, Signal timestamp)`` of Penny's own permission-prompt message."""
     with db.get_session() as session:
         row = session.exec(
             select(MessageLog)
@@ -293,8 +293,49 @@ def _prompt_external_id(db: Database) -> int:
             .where(col(MessageLog.content).contains(PROMPT_DOMAIN))
         ).first()
         assert row is not None, "the permission prompt was never sent"
+        assert row.id is not None, "the prompt message was never logged"
         assert row.external_id is not None, "the prompt message was never stamped"
-        return int(row.external_id)
+        return row.id, int(row.external_id)
+
+
+def _prompt_external_id(db: Database) -> int:
+    """The Signal timestamp of the prompt message, off its own messagelog row."""
+    _message_id, external_id = _prompt_ids(db)
+    return external_id
+
+
+def _reaction_envelope(config, target_timestamp: int, emoji: str) -> dict:
+    """A Signal reaction envelope aimed at one of Penny's own messages.
+
+    Built here rather than pushed through the mock server's websocket because
+    this world drives the channel directly — ``handle_message`` is the same
+    entry point the receive loop calls with the parsed envelope.
+    """
+    sent_at = int(time.time() * 1000)
+    return {
+        "account": config.signal_number,
+        "envelope": {
+            "source": TEST_SENDER,
+            "sourceNumber": TEST_SENDER,
+            "sourceUuid": "reaction-uuid",
+            "sourceName": "Test User",
+            "sourceDevice": 1,
+            "timestamp": sent_at,
+            "serverReceivedTimestamp": sent_at,
+            "serverDeliveredTimestamp": sent_at,
+            "dataMessage": {
+                "timestamp": sent_at,
+                "message": None,
+                "reaction": {
+                    "emoji": emoji,
+                    "targetAuthor": config.signal_number,
+                    "targetAuthorNumber": config.signal_number,
+                    "targetSentTimestamp": target_timestamp,
+                    "isRemove": False,
+                },
+            },
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -340,6 +381,9 @@ async def test_answered_permission_prompt_is_marked_with_a_reaction(
     assert any(
         PROMPT_DOMAIN in sent.get("message", "") for sent in signal_server.outgoing_messages
     ), "the prompt itself stays in the conversation"
+    assert channel._reaction_callbacks == {}, (
+        "the prompt is over, so nothing is left watching its message for an answer"
+    )
 
     await channel.close()
 
@@ -372,5 +416,45 @@ async def test_timed_out_permission_prompt_is_marked_distinctly(
         PermissionResolution.BLOCKED.emoji,
     }, "an expired prompt must not read as an answer"
     assert signal_server.delete_events == [], "an expired prompt is never remote-deleted"
+    assert channel._reaction_callbacks == {}, (
+        "an expired prompt is as over as an answered one — nothing waits on it"
+    )
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_reaction_after_resolution_is_logged_as_an_ordinary_reaction(
+    signal_server, mock_llm, test_config, test_user_info
+):
+    """A reaction to an already-resolved prompt is a reaction, not a lost decision.
+
+    The prompt goes out to every device and is answered on whichever one the user
+    reaches first — here, the addon — so the Signal prompt message stands with its
+    answer already given. Reacting to it afterwards used to hit the callback the
+    prompt registered and still nobody had retired: it called
+    ``handle_decision`` for a request the manager had already forgotten (a no-op)
+    and ``_extract_reaction`` consumed the reaction, so it reached the
+    conversation record as nothing at all. It is now an ordinary reaction,
+    parented on the message it was aimed at, exactly like a reaction to any
+    other message Penny sent.
+    """
+    db = Database(test_config.db_path)
+    channel, permissions = _signal_permission_world(test_config, db)
+
+    asyncio.create_task(_answer_elsewhere(channel, permissions, True))
+    await permissions.check_domain(PROMPT_URL)
+
+    prompt_id, prompt_timestamp = _prompt_ids(db)
+    await channel.handle_message(_reaction_envelope(test_config, prompt_timestamp, "👍"))
+
+    with db.get_session() as session:
+        reactions = list(
+            session.exec(select(MessageLog).where(col(MessageLog.is_reaction).is_(True))).all()
+        )
+    assert len(reactions) == 1, "the reaction reached the conversation record"
+    assert reactions[0].content == "👍"
+    assert reactions[0].parent_id == prompt_id, "parented on the prompt it was aimed at"
+    assert reactions[0].direction == PennyConstants.MessageDirection.INCOMING
 
     await channel.close()
