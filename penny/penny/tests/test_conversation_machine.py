@@ -1508,13 +1508,41 @@ def test_the_applied_configuration_narration_whole_render():
     longer supplies the routine or the values it is pointed at.  So its last sentence is
     the honesty clause — say only what is above — since the record is now the only place
     those facts are, and a reply going beyond it would be stating a configuration the turn
-    never made."""
+    never made.
+
+    Since #1946 the record also carries, on any line this turn MOVED, what that line used
+    to say, so the frame names that shape: a turn asked to FIX a running job is asked
+    about two states, and the row it reads holds only the one that won."""
     assert Prompt.CONFIGURATION_APPLIED_NARRATION == (
         "The routine is now set up, and here is exactly what was configured:\n\n"
         "{configuration}\n\n"
         "Reply to the user now. Tell them in your own words what is running: what it "
         "watches, how often it runs, when it stops if it stops, and whether they will "
-        "hear from it. Say only what is above — anything not there was not set."
+        'hear from it. A line reading "was … → now …" is one this turn changed: the '
+        "first part is what it used to be and the second is what it is now, so if you "
+        "tell them what changed, copy both from there. Say only what is above — "
+        "anything not there was not set."
+    )
+
+
+def test_the_writes_landed_narration_whole_render():
+    """The frame a turn that WROTE entries is handed, verbatim (#1946) — the third
+    narrate-from-the-RECORD sibling, pinned like the other two.
+
+    It exists because a run's own account of its writes counts what it ATTEMPTED: a draw
+    the reroll guard discarded and a write the gate refused both feel like writes from
+    inside the turn, and the store holds neither.  So it hands over the ledger's answer and
+    asks for the count, the collection and the keys to come from THERE — with explicit
+    PERMISSION to report a shortfall, because the reply this replaces was not lying, it was
+    counting from the only place it had."""
+    assert Prompt.WRITES_LANDED_NARRATION == (
+        "Here is what this turn actually wrote, read back from the store:\n\n"
+        "{writes}\n\n"
+        "Reply to the user now. Say everything you were going to say, and take what was "
+        "saved — how many entries, which collection, and under which keys — from the "
+        "list above rather than from what you remember doing. That list is the store's "
+        "own answer: an entry you meant to write and cannot find there did not land, "
+        "and telling them that is the right thing to do."
     )
 
 

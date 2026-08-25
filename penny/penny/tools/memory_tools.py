@@ -176,6 +176,44 @@ def format_entries(
     return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
 
 
+# One collection's share of what a run WROTE (#1946) — the count, the collection, and
+# the keys, which together are the whole of what a reply can truthfully claim it saved.
+_WRITES_LANDED_LINE = "{count} {noun} landed in '{collection}': {keys}"
+
+
+def render_writes_landed(entries: list[MemoryEntry]) -> str | None:
+    """What a run actually WROTE, grouped by collection — the record a reply states
+    instead of counting up what it remembers attempting (#1946).
+
+    ``None`` when nothing landed, which is most turns: a run that wrote nothing has no
+    writes to narrate, and the frames this feeds fire only when there is a record.
+
+    KEYLESS entries are left out.  A key is the structural mark of a registry write; an
+    append with no key is a stream append — browse scratch, above all — and it is the same
+    mark the self-state header's own writes clause reads, so the ambient render and this
+    one cannot disagree about what a run wrote.  Nothing here knows a tool name: the
+    entries come from the ledger's own ``last_written_by_run_id`` stamp, so a routine that
+    writes through a plugin's verb lands here exactly like one that uses a built-in.
+    """
+    landed: dict[str, list[str]] = {}
+    for entry in entries:
+        if entry.key is None:
+            continue
+        landed.setdefault(entry.memory_name, []).append(entry.key)
+    if not landed:
+        return None
+    return "\n".join(_writes_landed_line(name, keys) for name, keys in landed.items())
+
+
+def _writes_landed_line(collection: str, keys: list[str]) -> str:
+    return _WRITES_LANDED_LINE.format(
+        count=len(keys),
+        noun="entry" if len(keys) == 1 else "entries",
+        collection=collection,
+        keys=", ".join(f"'{key}'" for key in keys),
+    )
+
+
 def _resolve(db: Database, name: str) -> Memory:
     """The ``Memory`` object for ``name``; raises ``MemoryNotFoundError`` when it
     doesn't exist.

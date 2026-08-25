@@ -46,23 +46,54 @@ class EnumeratedDecision(BaseModel):
     result: str | None = None
 
 
+class FieldPrior(BaseModel):
+    """What ONE field held immediately BEFORE the mutation that changed it (#1946).
+
+    ``changed_fields`` says a field moved; this says what it moved FROM — the half
+    nothing else can answer, because the ``memory`` row is overwritten in place and
+    the run's ``promptlog`` tool call carries only the value the caller asked for.
+    Read at the store chokepoint inside the same transaction that applies the change,
+    so it is a COPY of the row rather than a recollection of it.
+
+    ``value`` is the prior rendered as the display string the field's own surfaces
+    use, and ``None`` means the field held NOTHING — a positive statement, which is
+    why this is a model per field rather than a bare mapping: "the row had no
+    schedule" and "nobody captured the schedule" are different facts, and a mapping
+    can only tell them apart by absence.
+    """
+
+    field: str
+    value: str | None = None
+
+
 class MutationDetail(BaseModel):
     """The ``detail`` payload of a ``mutation_event`` — *what* changed, serialized
     to the row's JSON column.
 
     ``changed_fields`` names the edited fields on an update (the values live
     verbatim in the run's ``promptlog`` tool call, so they're not duplicated
-    here).  ``note`` is a human cause the row can't otherwise carry — most
-    importantly a system archive's policy reason ("max_runs reached (1 of 1)").
-    ``decision`` is the options-presented accommodation (above).
+    here).  ``priors`` is the other half of that (#1946) — what each of those fields
+    held BEFORE, which the ledger is the only place that can hold, since the row
+    itself keeps only the value that won.  ``note`` is a human cause the row can't
+    otherwise carry — most importantly a system archive's policy reason ("max_runs
+    reached (1 of 1)").  ``decision`` is the options-presented accommodation (above).
+
+    ``priors`` is ADDITIVE: an event written before it existed decodes with an empty
+    list and every render of it is byte-identical to what it always was.
     """
 
     changed_fields: list[str] = Field(default_factory=list)
+    priors: list[FieldPrior] = Field(default_factory=list)
     note: str | None = None
     decision: EnumeratedDecision | None = None
 
     def is_empty(self) -> bool:
-        return not self.changed_fields and self.note is None and self.decision is None
+        return (
+            not self.changed_fields
+            and not self.priors
+            and self.note is None
+            and self.decision is None
+        )
 
 
 def cancelled_sends_note(count: int) -> str:
@@ -188,6 +219,42 @@ class MutationStore:
                     query.order_by(col(MutationEvent.created_at).desc()).limit(limit)
                 ).all()
             )
+
+    def priors_for_run(
+        self,
+        entity_name: str,
+        run_id: str,
+        *,
+        entity_type: MutationEntityType | None = None,
+    ) -> dict[str, str | None]:
+        """What the fields ONE run changed on ``entity_name`` held before it ran (#1946)
+        — ``{field: prior value}``, empty when the run changed nothing there.
+
+        The events are folded OLDEST FIRST and the first prior for a field wins, so a
+        run that touched the same field twice reports the value it found when it
+        started rather than the intermediate one it wrote on the way — which is the
+        only "was" a user asking about their own job means.
+
+        Events written before priors existed contribute nothing, so this is empty for
+        them and the surfaces that read it render exactly as they did."""
+        query = select(MutationEvent).where(
+            MutationEvent.entity_name == entity_name,
+            MutationEvent.run_id == run_id,
+        )
+        if entity_type is not None:
+            query = query.where(MutationEvent.entity_type == entity_type.value)
+        with self._session() as session:
+            events = list(
+                session.exec(
+                    query.order_by(col(MutationEvent.created_at).asc(), col(MutationEvent.id).asc())
+                ).all()
+            )
+        priors: dict[str, str | None] = {}
+        for event in events:
+            detail = _parse_detail(event.detail)
+            for prior in detail.priors if detail is not None else []:
+                priors.setdefault(prior.field, prior.value)
+        return priors
 
     def recent(self, limit: int) -> list[MutationEvent]:
         """The most recent mutations across ALL entities, newest first (#1555).

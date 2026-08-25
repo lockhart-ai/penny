@@ -95,6 +95,7 @@ from penny.tools.memory_tools import (
     _format_duplicate,
     build_memory_tools,
     collector_tool_surface,
+    render_writes_landed,
 )
 from penny.tools.micro_context import FramedParameter, SkillSignature
 
@@ -770,6 +771,63 @@ class TestCollectionCreateFrontDoor:
         # would be the honest-failure rule broken from the other side.
         inert = db.memories.create_collection("just-storage", "somewhere to put things")
         assert render_applied_configuration(inert) is None
+
+    @pytest.mark.asyncio
+    async def test_a_fixed_configuration_states_what_each_value_used_to_be(self, db):
+        """A turn that MOVED a value renders both states (#1946): the row holds only the
+        value that won, so a was-state claim would otherwise be the one thing left to
+        remember — and the observed regression was a correct fix reported beside an
+        invented prior.  The priors come off this run's own mutation events, so what the
+        reply states is a copy."""
+        _seed_watch_skill(db)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-peak",
+            description="watch Cinder Peak's elevation",
+            skill=_SKILL_NAME,
+            params={_SKILL_HOLE: "Cinder Peak"},
+            schedule="FREQ=HOURLY",
+            notify=True,
+        )
+        db.memories.update_collection_metadata(
+            "cinder-peak",
+            schedule="FREQ=DAILY;BYHOUR=18",
+            notify=False,
+            run_id="run-fix",
+        )
+        row = db.memories.get("cinder-peak")
+        assert row is not None
+        priors = db.mutations.priors_for_run("cinder-peak", "run-fix")
+
+        assert render_applied_configuration(row, priors) == (
+            "On the schedule FREQ=DAILY;BYHOUR=18 I'll run 'Watch elevation' against "
+            "'cinder-peak' and quietly store what it finds.\n"
+            "  collection: cinder-peak\n"
+            "  skill: Watch elevation\n"
+            "  params: peak=Cinder Peak\n"
+            "  schedule: was FREQ=HOURLY → now FREQ=DAILY;BYHOUR=18\n"
+            "  notify: was True → now False\n"
+            "  expires: never"
+        )
+        # No priors to read → byte-identical to the render that always shipped, which is
+        # every path that has no ledger for this run.
+        assert render_applied_configuration(row) == render_applied_configuration(row, {})
+
+    def test_a_value_that_was_not_set_says_so_and_one_that_stood_still_says_nothing(self, db):
+        """The two boundary shapes of the before→after clause.
+
+        A field that held NOTHING renders ``was not set → now …`` rather than an empty
+        gap — the prior is a positive statement.  A field an update REPORTED changed whose
+        rendered value did not move (a rebind re-stamps the routine under the same name)
+        renders plainly: "was X → now X" is noise a reader has to rule out."""
+        db.memories.create_collection(
+            "kelp-prices", "kelp prices", skill_name="watch-a-price", skill_params={"page": "kelp"}
+        )
+        row = db.memories.get("kelp-prices")
+        assert row is not None
+        rendered = render_applied_configuration(row, {"schedule": None, "skill": "watch-a-price"})
+        assert rendered is not None
+        assert "  schedule: was not set → now none" in rendered
+        assert "  skill: watch-a-price" in rendered
 
     @pytest.mark.asyncio
     async def test_tombstone_near_duplicate_surfaces_the_archived_row(self, db):
@@ -3188,6 +3246,69 @@ class TestCollectionWritesAndReads:
         )
         assert "No entries" not in rendered.message
         assert "morning-briefing" in rendered.message
+
+
+class TestWritesLandedRender:
+    """What a run actually WROTE, rendered from the ledger rows themselves (#1946).
+
+    The frame this feeds exists because a turn's own account of its writes counts what it
+    ATTEMPTED: a draw the reroll guard discarded and a write the change-gate refused both
+    feel like writes from inside the run, and the store holds neither.  So the render is
+    driven straight from entry rows here — the same rows ``entries_written_by_run``
+    returns — and every shape the frame has to survive is one of these fixtures."""
+
+    @staticmethod
+    def _entry(memory_name: str, key: str | None, content: str = "a value") -> MemoryEntry:
+        return MemoryEntry(memory_name=memory_name, key=key, content=content, author="chat")
+
+    def test_multiple_entries_render_grouped_by_collection(self):
+        """Count, collection, keys — the whole of what a reply can truthfully claim it
+        saved, one line per collection."""
+        assert render_writes_landed(
+            [
+                self._entry("lantern-prices", "keel lantern"),
+                self._entry("lantern-prices", "aurora lantern"),
+                self._entry("lantern-notes", "restock window"),
+            ]
+        ) == (
+            "2 entries landed in 'lantern-prices': 'keel lantern', 'aurora lantern'\n"
+            "1 entry landed in 'lantern-notes': 'restock window'"
+        )
+
+    def test_a_run_that_wrote_nothing_has_no_frame(self):
+        """No writes, no record to narrate — which is most turns, and is why the frame
+        cannot simply fire on every chat run."""
+        assert render_writes_landed([]) is None
+
+    def test_a_discarded_write_is_absent_because_it_never_landed(self):
+        """The observed regression's shape: a demonstration whose first write LANDED and
+        whose second draw was discarded by the reroll guard before it ever became a call.
+
+        The run remembers two; the ledger holds one, because a discarded draw writes no
+        entry.  The frame carries only what landed, and that asymmetry is the whole
+        point of reading the store instead of counting the turn's intentions."""
+        assert (
+            render_writes_landed([self._entry("lantern-prices", "keel lantern")])
+            == "1 entry landed in 'lantern-prices': 'keel lantern'"
+        )
+
+    def test_keyless_appends_are_not_writes(self):
+        """A key is the structural mark of a registry write; an append with no key is a
+        stream append — browse scratch above all — and it is the same mark the self-state
+        header's own writes clause reads, so the two renders cannot disagree.
+
+        A run that only appended to a log therefore has no frame at all, which is what
+        keeps an ordinary browsing turn from being nudged into narrating its scratch."""
+        assert render_writes_landed([self._entry("browse-results", None, "a fetched page")]) is None
+        assert (
+            render_writes_landed(
+                [
+                    self._entry("browse-results", None, "a fetched page"),
+                    self._entry("lantern-prices", "keel lantern"),
+                ]
+            )
+            == "1 entry landed in 'lantern-prices': 'keel lantern'"
+        )
 
 
 class TestEmbedFailureRefusesWrite:

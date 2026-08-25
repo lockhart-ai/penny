@@ -373,12 +373,42 @@ class Prompt:
     # construction.  Deliberately not the rendered program, for SKILL_LEARNED_NARRATION's
     # own reason (#1799): a block of tool calls in front of this request is a block that
     # gets read aloud.
+    # ``{configuration}`` also carries, on any line this turn CHANGED, what that line
+    # used to say (#1946): a turn asked to FIX a running job is asked about two states,
+    # and the row it reads holds only the one that won — so the was-state was the one
+    # thing left to remember, and the observed regression was a correct fix reported
+    # beside an invented prior value.  The instruction names the shape rather than the
+    # fields, since which line carries one is decided by what the turn moved.
     CONFIGURATION_APPLIED_NARRATION = (
         "The routine is now set up, and here is exactly what was configured:\n\n"
         "{configuration}\n\n"
         "Reply to the user now. Tell them in your own words what is running: what it "
         "watches, how often it runs, when it stops if it stops, and whether they will "
-        "hear from it. Say only what is above — anything not there was not set."
+        'hear from it. A line reading "was … → now …" is one this turn changed: the '
+        "first part is what it used to be and the second is what it is now, so if you "
+        "tell them what changed, copy both from there. Say only what is above — "
+        "anything not there was not set."
+    )
+
+    # Injected as a user turn after a chat run that WROTE entries (#1946) — the third
+    # narrate-from-the-RECORD frame, and the one that answers what a turn actually left
+    # behind.  A run's own memory of its writes counts the attempts: a draw the reroll
+    # guard discarded, a write the gate refused, a value the model composed and never
+    # sent all feel like writes from inside the turn, and the observed regression was a
+    # demonstration reporting every item pushed while the store held fewer.
+    # ``{writes}`` is the ledger's own answer — read off the entry stamps rather than
+    # off which tools were called, so a routine written with a plugin's verb lands here
+    # like any other.  The instruction gives PERMISSION to report a shortfall as well as
+    # asking for the count, because the reply this replaces was not lying, it was
+    # counting from the wrong place and had nowhere else to count from.
+    WRITES_LANDED_NARRATION = (
+        "Here is what this turn actually wrote, read back from the store:\n\n"
+        "{writes}\n\n"
+        "Reply to the user now. Say everything you were going to say, and take what was "
+        "saved — how many entries, which collection, and under which keys — from the "
+        "list above rather than from what you remember doing. That list is the store's "
+        "own answer: an entry you meant to write and cannot find there did not land, "
+        "and telling them that is the right thing to do."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls

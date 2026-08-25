@@ -15,7 +15,7 @@ from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.models import ControllerResponse
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
-from penny.constants import ChatPromptType, PennyConstants
+from penny.constants import ChatPromptType, MutationEntityType, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
     RoundFraming,
@@ -38,7 +38,11 @@ from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.collection_instantiation import render_applied_configuration
 from penny.tools.generate_image import GenerateImageTool
-from penny.tools.memory_tools import CollectionSetTool, collector_tool_surface
+from penny.tools.memory_tools import (
+    CollectionSetTool,
+    collector_tool_surface,
+    render_writes_landed,
+)
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.tools.skill_tools import render_skill_brief, render_skill_shape
 from penny.validation import ConditionKey
@@ -46,6 +50,7 @@ from penny.validation.outcomes import LoopContext
 from penny.validation.response_validators import (
     AppliedConfigurationValidator,
     SkillNarrationValidator,
+    WritesLandedValidator,
 )
 
 if TYPE_CHECKING:
@@ -84,7 +89,15 @@ class ChatAgent(Agent):
     #  - AppliedConfigurationValidator: on a run that just configured the round's routine
     #    (#1869), the same move for what is now RUNNING — the turn supplied only the terms,
     #    so the routine and what it watches are read off the record rather than recalled.
-    run_shape_validators = [SkillNarrationValidator(), AppliedConfigurationValidator()]
+    #  - WritesLandedValidator: on a run that WROTE entries (#1946), what actually landed —
+    #    the ledger's answer, against which a turn's own count of its writes is a count of
+    #    what it attempted.  Last, because it is the corrective one: the frames above ask
+    #    for an account of the round, this one says which of it the store holds.
+    run_shape_validators = [
+        SkillNarrationValidator(),
+        AppliedConfigurationValidator(),
+        WritesLandedValidator(),
+    ]
 
     # Chat's invalid draws are the ones that are not a REPLY (#1839/#1937): a plain
     # conversational reply IS chat's valid terminal state, so nothing about ordinary
@@ -157,8 +170,15 @@ class ChatAgent(Agent):
         )
         # The run whose extraction was already attempted this turn — the structural
         # once-per-run guard, so the post-narration re-reply never re-extracts or
-        # re-narrates (chat turns are sequential, so one field suffices; no leak).
+        # re-reads the store (chat turns are sequential, so one field suffices; no leak).
         self._extraction_run_id: str | None = None
+        # That run's records still to narrate, as ``(ctx field, rendered frame)`` in the
+        # order they are handed out — one per text draw (#1946).  Computed once with the
+        # extraction above and DRAINED by the prep, so a turn with several records to
+        # narrate (a demonstration both learns a routine and writes entries) narrates each
+        # exactly once instead of the chain short-circuiting on the first and dropping
+        # the rest.
+        self._pending_frames: list[tuple[str, str]] = []
         # What that attempt RETURNED, held for the span of the turn so the run-end
         # learn check reads a recorded outcome rather than re-deciding it (#1839).
         # ``None`` means extraction never ran (no text branch was reached).
@@ -234,33 +254,62 @@ class ChatAgent(Agent):
     async def _prepare_text_shape(
         self, response: LlmResponse, ctx: LoopContext, run_id: str
     ) -> LoopContext:
-        """When the chat run emits final text, run automatic skill extraction over
-        this run's completed ledger (Python-space, the run-end chokepoint) and, on a
-        qualifying run, stamp the learned skill's rendered frame onto the ctx so the
-        ``SkillNarrationValidator`` narrates it in the same turn.
+        """When the chat run emits final text, work out every RECORD this run has to
+        narrate and hand the next one to the chat chain's narration validators.
 
-        The apply turn's sibling (#1869) is stamped in the same place: a run that
-        CONFIGURED the round's routine carries the record of what is now running, since
-        that turn supplied only the job's terms and the rest was filled in for it.
+        The records are computed exactly ONCE per run (``_extraction_run_id``), because
+        one of them — the automatic skill extraction over this run's completed ledger — is
+        real work that must not be repeated, and because re-reading the store after a
+        narration would answer the same question a second time.  They are then handed out
+        ONE PER TEXT DRAW, in ``_run_end_frames``' declared order: each draw stamps the
+        next un-narrated frame, its validator nudges, and the draw after the last one
+        finds nothing left and becomes the real final answer.
 
-        The prep runs at most once per run (``_extraction_run_id``): the first final text
-        stamps its frames; the model's post-narration re-reply finds the run already
-        prepared and falls through to the real final answer.  A run that neither learned
-        nor configured anything stamps nothing (the ctx passes through unchanged) —
-        which, since #1850, is every turn the machine did not call a learn turn and did
-        not stand a framed round up."""
-        if run_id == self._extraction_run_id:
+        One per draw rather than all at once because the chain short-circuits on the first
+        frame it finds — stamping several would narrate one and silently drop the rest,
+        which is what a demonstration turn (a skill learned AND entries written) would
+        have done with the third frame."""
+        if run_id != self._extraction_run_id:
+            self._extraction_run_id = run_id
+            self._pending_frames = await self._run_end_frames(ctx, run_id)
+        if not self._pending_frames:
             return ctx
-        self._extraction_run_id = run_id
-        learned = await self._extract_and_frame_skill(run_id, self._turn_state, self._turn_framing)
-        configured = self._applied_configuration_frame(ctx)
-        if learned is None and configured is None:
-            return ctx
-        return ctx.model_copy(
-            update={"learned_skill_frame": learned, "applied_configuration_frame": configured}
-        )
+        field, frame = self._pending_frames.pop(0)
+        return ctx.model_copy(update={field: frame})
 
-    def _applied_configuration_frame(self, ctx: LoopContext) -> str | None:
+    async def _run_end_frames(self, ctx: LoopContext, run_id: str) -> list[tuple[str, str]]:
+        """Every record this run has to narrate, as ``(ctx field, rendered frame)``, in the
+        order they are narrated — the table of contents for the run-end prep above.
+
+        The order is what the reply is composed against LAST: what the run WROTE comes
+        after what it learned or set up, because the writes record is the corrective one —
+        the earlier frames ask for an account of the round, and this one says which parts
+        of that account the store actually holds."""
+        candidates = [
+            (
+                "learned_skill_frame",
+                await self._extract_and_frame_skill(run_id, self._turn_state, self._turn_framing),
+            ),
+            ("applied_configuration_frame", self._applied_configuration_frame(ctx, run_id)),
+            ("writes_landed_frame", self._writes_landed_frame(run_id)),
+        ]
+        return [(field, frame) for field, frame in candidates if frame is not None]
+
+    def _writes_landed_frame(self, run_id: str) -> str | None:
+        """The record of what this run WROTE, rendered for the narration frame (#1946) —
+        ``None`` when nothing landed.
+
+        Read off the ledger's own entry stamps (``last_written_by_run_id``), so it is a
+        read of the store rather than a tally of the run's tool calls: a write drawn and
+        then discarded by the reroll guard, and one the change-gate refused, are both
+        absent here and present in the run's memory of itself.  Nothing in the path names
+        a tool, so a routine that writes through a plugin's verb is covered for free."""
+        writes = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
+        if writes is None:
+            return None
+        return Prompt.WRITES_LANDED_NARRATION.format(writes=writes)
+
+    def _applied_configuration_frame(self, ctx: LoopContext, run_id: str) -> str | None:
         """The record of what this turn CONFIGURED, rendered for the narration frame
         (#1869) — ``None`` when the turn configured nothing.
 
@@ -273,12 +322,23 @@ class ChatAgent(Agent):
 
         A container with no routine on it renders nothing: an inert collection has no
         configuration to state, and claiming one would be the honest-failure rule broken
-        from the other side."""
+        from the other side.
+
+        The record also carries what this run CHANGED (#1946) — the priors the mutation
+        ledger recorded for this very run, so a line the turn moved renders
+        ``was <old> → now <new>``.  The row alone cannot answer that: the edit overwrote
+        the old value, so a turn asked to FIX a running job had nowhere to read the state
+        it was fixing and reported it from memory."""
         framing = self._configuring_round()
         if framing is None or not self._set_a_collection(ctx):
             return None
         row = self.db.memories.get(framing.container)
-        configuration = render_applied_configuration(row) if row is not None else None
+        if row is None:
+            return None
+        priors = self.db.mutations.priors_for_run(
+            framing.container, run_id, entity_type=MutationEntityType.COLLECTION
+        )
+        configuration = render_applied_configuration(row, priors)
         if configuration is None:
             return None
         return Prompt.CONFIGURATION_APPLIED_NARRATION.format(configuration=configuration)

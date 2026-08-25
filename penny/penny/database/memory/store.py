@@ -46,9 +46,15 @@ from penny.database.memory.types import (
     wrong_shape_message,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, Skill
-from penny.database.mutation_store import MutationDetail, MutationStore, cancelled_sends_note
+from penny.database.mutation_store import (
+    FieldPrior,
+    MutationDetail,
+    MutationStore,
+    cancelled_sends_note,
+)
 from penny.database.send_queue_store import SendQueueStore
 from penny.database.skills import slug_skill_name
+from penny.datetime_utils import format_log_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +152,57 @@ class _MetadataUpdate(BaseModel):
             memory.expires_at = None
             changed.append("expires_at")
         return changed
+
+
+# The label ``_MetadataUpdate.apply_to`` reports a field changed under, mapped to how
+# that field reads OFF THE ROW right now (#1946).  A mutation event says which fields
+# moved; snapshotting these before ``apply_to`` runs is what lets it also say what they
+# moved FROM — the half the row itself cannot keep, since the edit overwrites it.
+#
+# The label set is this module's own vocabulary (``apply_to`` mints it a few lines
+# above), so the table is closed by construction rather than by convention, and a test
+# pins that every label ``apply_to`` can emit has a reader here.  A label that somehow
+# arrives without one is LOGGED and left unrecorded — an unrecorded prior renders as no
+# clause at all, which is the honest shape; an invented one would be the exact defect
+# this exists to remove.
+#
+# Values are rendered as STRINGS here because a prior is read back beside the field's
+# current value on a model-facing surface, and ``None`` means the field held nothing.
+_FIELD_PRIORS: dict[str, Callable[[MemoryRow], str | None]] = {
+    "description": lambda row: row.description,
+    "notify": lambda row: str(row.notify),
+    "extraction_prompt": lambda row: row.extraction_prompt,
+    "schedule": lambda row: row.schedule,
+    "expires_at": lambda row: (
+        format_log_timestamp(row.expires_at) if row.expires_at is not None else None
+    ),
+    "skill": lambda row: row.skill_name,
+}
+
+# The archive flag is not an ``apply_to`` label — archiving is its own action rather
+# than a field edit — so ``_set_archived`` names it here and records its own prior the
+# same way, and every mutation this store writes over an existing row says what that
+# row held before it.
+_ARCHIVED_FIELD = "archived"
+
+
+def _snapshot_fields(memory: MemoryRow) -> dict[str, str | None]:
+    """Every prior-readable field as it stands RIGHT NOW — taken before the update is
+    applied, inside the transaction that applies it, so the recorded before-values are a
+    copy of the row rather than a reconstruction of it (#1946)."""
+    return {name: read(memory) for name, read in _FIELD_PRIORS.items()}
+
+
+def _priors_from(before: dict[str, str | None], changed: list[str]) -> list[FieldPrior]:
+    """The snapshot narrowed to the fields that actually moved, in the order the update
+    reported them."""
+    priors: list[FieldPrior] = []
+    for name in changed:
+        if name not in before:
+            logger.warning("Changed field %r has no prior reader — its before-value is lost", name)
+            continue
+        priors.append(FieldPrior(field=name, value=before[name]))
+    return priors
 
 
 class MemoryStore:
@@ -583,6 +640,7 @@ class MemoryStore:
             memory = session.get(MemoryRow, name)
             if memory is None:
                 raise MemoryNotFoundError(name)
+            was_archived = memory.archived
             memory.archived = archived
             memory.updated_at = datetime.now(UTC)
             session.add(memory)
@@ -601,7 +659,14 @@ class MemoryStore:
             action=action,
             actor=actor,
             run_id=run_id,
-            detail=MutationDetail(note=note) if note else None,
+            # The flip's own before-value (#1946), beside whatever cause the note
+            # carries.  ``changed_fields`` stays empty — archiving is named by its
+            # ACTION, not by a field edit — so every render of this event is
+            # byte-identical to what it was.
+            detail=MutationDetail(
+                note=note,
+                priors=[FieldPrior(field=_ARCHIVED_FIELD, value=str(was_archived))],
+            ),
         )
         self._notify_changed(name)
 
@@ -668,6 +733,9 @@ class MemoryStore:
             memory = session.get(MemoryRow, name)
             if memory is None:
                 raise MemoryNotFoundError(name)
+            # Read the row BEFORE the edit lands, in the same transaction (#1946): once
+            # ``apply_to`` runs, what these fields used to hold exists nowhere.
+            before = _snapshot_fields(memory)
             changed = fields.apply_to(memory)
             memory.updated_at = datetime.now(UTC)
             session.add(memory)
@@ -676,7 +744,9 @@ class MemoryStore:
         # Record the config change as a durable event (#1560).  Only when a field
         # actually moved — a no-op update (every field None) isn't a mutation.
         # The new values live verbatim in the run's promptlog tool call; the event
-        # names which fields changed so the history reads without re-fetching them.
+        # names which fields changed so the history reads without re-fetching them —
+        # and carries what each one held BEFORE (#1946), which is the one fact neither
+        # the row nor the call can still answer once the edit has landed.
         if changed:
             self._mutations.record(
                 entity_type=MutationEntityType.COLLECTION,
@@ -684,7 +754,7 @@ class MemoryStore:
                 action=MutationAction.UPDATED,
                 actor=MutationActor.USER_RUN,
                 run_id=run_id,
-                detail=MutationDetail(changed_fields=changed),
+                detail=MutationDetail(changed_fields=changed, priors=_priors_from(before, changed)),
             )
         self._notify_changed(name)
         return memory

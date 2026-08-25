@@ -126,6 +126,14 @@ class LoopContext(BaseModel):
     # ``None`` on every run that configured nothing, which is every run that is not an
     # apply turn standing a framed round up.
     applied_configuration_frame: str | None = None
+    # The rendered record of what this run WROTE (#1946), stamped onto the text-branch ctx
+    # by ``ChatAgent._prepare_text_shape`` so the chat ``WritesLandedValidator`` can
+    # narrate it.  The third sibling: what a run LEARNED, what it SET RUNNING, and — here
+    # — what it left in the store.  It exists because a run's own account of its writes
+    # counts what it ATTEMPTED (a discarded draw and a refused write both feel like
+    # writes from inside the turn) while the ledger counts what LANDED.  ``None`` on
+    # every run that wrote no keyed entry, which is most turns.
+    writes_landed_frame: str | None = None
 
 
 @runtime_checkable

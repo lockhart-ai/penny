@@ -29,6 +29,7 @@ The orchestration (embed, resolve, validate parameters, dedup, create) lives on
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, tzinfo
 from enum import StrEnum
 
@@ -618,10 +619,20 @@ def _params_line(params: dict[str, str]) -> str:
     return f"  params: {rendered}"
 
 
-def _expires_line(row: MemoryRow) -> str:
+_NO_EXPIRY_CLAUSE = "never"
+
+
+def _expires_value(row: MemoryRow) -> str:
+    """The end condition as it renders — the stamp, or the honest ``never`` an unbounded
+    job carries.  Split out so the labelled echo line and the configured-record line
+    (which may wrap it in a before→after clause, #1946) render the same value."""
     if row.expires_at is None:
-        return "  expires: never"
-    return f"  expires: {format_log_timestamp(row.expires_at)}"
+        return _NO_EXPIRY_CLAUSE
+    return format_log_timestamp(row.expires_at)
+
+
+def _expires_line(row: MemoryRow) -> str:
+    return f"  expires: {_expires_value(row)}"
 
 
 # ── The plain-language lead line (what the collector WILL do, #1658) ───────────
@@ -693,7 +704,42 @@ def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]
     )
 
 
-def render_applied_configuration(row: MemoryRow) -> str | None:
+# The before→after form a configured field takes when THIS turn moved it (#1946), and
+# the word for a field that held nothing.  A was-state is the one thing a reply cannot
+# read off the row — the edit overwrote it — so the ledger's recorded prior renders here
+# beside the value that replaced it, and stating what it used to be becomes a COPY.
+_CHANGED_VALUE = "was {before} → now {after}"
+_NO_PRIOR_VALUE = "not set"
+
+# Which configured line each recorded changed-field label renders on.  ``description``
+# and ``extraction_prompt`` are deliberately absent: this record carries neither (the
+# program is left out by #1799), so their priors have nowhere honest to go and are simply
+# not stated.
+_SKILL_FIELD = "skill"
+_SCHEDULE_FIELD = "schedule"
+_NOTIFY_FIELD = "notify"
+_EXPIRES_FIELD = "expires_at"
+
+
+def _configured_value(value: str, field: str, priors: Mapping[str, str | None]) -> str:
+    """One configured value, rendered as ``was <old> → now <new>`` when this turn moved
+    it and plainly when it did not.
+
+    A prior that reads the SAME as the value renders plainly too: a rebind reports the
+    ``skill`` field changed while the routine's name stands still, and "was X → now X"
+    is noise a reader has to rule out.  A field with no recorded prior renders exactly as
+    it always did, which is what keeps every pre-#1946 event's render byte-identical."""
+    if field not in priors:
+        return value
+    before = priors[field] or _NO_PRIOR_VALUE
+    if before == value:
+        return value
+    return _CHANGED_VALUE.format(before=before, after=value)
+
+
+def render_applied_configuration(
+    row: MemoryRow, priors: Mapping[str, str | None] | None = None
+) -> str | None:
     """What a collection is now CONFIGURED to do, read off the row itself (#1869) — the
     record the run-end narration frame carries.
 
@@ -702,6 +748,14 @@ def render_applied_configuration(row: MemoryRow) -> str | None:
     by the call that configured it.  So a turn that no longer supplies the routine or its
     values has somewhere to READ what it just set up, instead of narrating from a memory
     of arguments the framework filled in for it.
+
+    ``priors`` is what those fields held BEFORE this turn changed them (#1946), read back
+    off the mutation ledger this run wrote — the one fact the row cannot answer, because
+    the edit overwrote it.  A turn asked to FIX a running job is asked about both states,
+    and the observed regression was a reply whose fix was correct while the prior value it
+    quoted was invented; each changed line therefore carries its own before→after, so a
+    was-state claim is a copy.  Omitted (the default) the render is byte-identical to what
+    it always was, which is every path but the one that has a ledger to read.
 
     ``None`` when the collection carries no routine — an inert container has no
     configuration to state, and saying it was set up would be the claim the honest-failure
@@ -712,16 +766,17 @@ def render_applied_configuration(row: MemoryRow) -> str | None:
     request is a block that gets read aloud."""
     if row.skill_name is None:
         return None
+    moved = priors if priors is not None else {}
     params = skill_params(row)
     return "\n".join(
         [
             _lead_line(row, row.skill_name),
             f"  collection: {row.name}",
-            f"  skill: {row.skill_name}",
+            f"  skill: {_configured_value(row.skill_name, _SKILL_FIELD, moved)}",
             _params_line(params),
-            _schedule_line(row),
-            f"  notify: {row.notify}",
-            _expires_line(row),
+            f"  schedule: {_configured_value(render_schedule_field(row), _SCHEDULE_FIELD, moved)}",
+            f"  notify: {_configured_value(str(row.notify), _NOTIFY_FIELD, moved)}",
+            f"  expires: {_configured_value(_expires_value(row), _EXPIRES_FIELD, moved)}",
         ]
     )
 
