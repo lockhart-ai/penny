@@ -10,6 +10,11 @@ same gate ``send_message`` used to apply inline, just relocated so a cooldown
 
 Delivery pops the oldest pending row (FIFO), one per tick, marks it sent, and
 attributes it to the collection that queued it.
+
+There are two delivery lanes (#1939), read off the row's own ``origin``: a cadence
+cycle's message waits out the cooldown above, and a message from a cycle the user
+pressed "run this now" on goes out on the next tick — they are sitting there waiting
+for it.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlmodel import Session, select
 
-from penny.constants import ChannelType, MutationAction, PennyConstants
+from penny.constants import ChannelType, CycleTrigger, MutationAction, PennyConstants
 from penny.database import Database
 from penny.database.models import SendQueueItem
 from penny.database.mutation_store import MutationDetail, render_mutation
@@ -141,6 +146,41 @@ async def test_drain_delivers_when_user_replied_since_last_send(tmp_path):
 
     assert did_work is True
     channel.send_response.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_user_triggered_runs_message_skips_the_cooldown_a_cadence_one_waits(tmp_path):
+    """The two lanes, in one world (#1939).
+
+    The cooldown is anti-spam for messages nobody asked for.  A message from a cycle
+    the user pressed "run this now" on is one they are sitting in front of waiting for,
+    so it goes out on the next tick — while the cadence message queued alongside it,
+    older and otherwise first in line, keeps waiting.  Observed live: an on-demand run
+    finished and its result then waited ~10.5 minutes because an unrelated chat reply
+    seconds earlier had started the cooldown.
+    """
+    db = _make_db(tmp_path)
+    _penny_sent(db, "prior")  # the cooldown is running: no user reply since
+    channel = _make_channel()
+    drainer = _make_drainer(db, channel, cooldown_seconds=3600.0)
+    # The cadence message is OLDER, so strict FIFO would hand it out first — asking by
+    # lane is what stops it holding the user's own result behind it for the window.
+    db.send_queue.enqueue(content="the daily digest", collection=_COLLECTION)
+    db.send_queue.enqueue(
+        content="your run finished",
+        collection=_COLLECTION,
+        origin=CycleTrigger.ON_DEMAND,
+    )
+
+    assert await drainer.execute() is True
+    assert channel.send_response.await_args.kwargs["content"] == "your run finished"
+
+    # The cadence message is delayed, not dropped — and the next tick still holds it.
+    channel.send_response.reset_mock()
+    assert await drainer.execute() is False
+    channel.send_response.assert_not_awaited()
+    pending = db.send_queue.next_pending()
+    assert pending is not None and pending.content == "the daily digest"
 
 
 @pytest.mark.asyncio

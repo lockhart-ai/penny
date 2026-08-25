@@ -34,6 +34,7 @@ from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, To
 from penny.constants import (
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
+    CycleTrigger,
     MutationAction,
     MutationActor,
     PennyConstants,
@@ -1656,6 +1657,10 @@ async def test_a_done_closed_cycle_queues_exactly_one_notification(mock_llm, tes
     pending = db.send_queue.pending_items()
     assert [item.content for item in pending] == [_DRAWN_MESSAGE]
     assert pending[0].collection == "indie-metroidvanias"
+    # This cycle was the USER's own "run this now", and the queued row says so (#1939)
+    # — which is what lets the drainer hand it over without waiting out the
+    # autonomous-send cooldown meant for messages nobody asked for.
+    assert pending[0].origin == CycleTrigger.ON_DEMAND
     assert _run_reason(db) == NOTIFICATION_NOTES[NotificationOutcome.QUEUED]
 
 
@@ -2583,7 +2588,55 @@ async def test_aborted_cycle_that_changed_nothing_keeps_its_occurrence(
     assert _get(db, "morning-briefing").last_collected_at is None
     still_due = collector._next_ready_collection()
     assert still_due is not None and still_due.name == "morning-briefing"
-    assert collector._retry_attempts == {"morning-briefing": 1}
+    # The budget spent is the SCHEDULE's own (#1939) — this was a cadence dispatch.
+    assert collector._retry_attempts == {("morning-briefing", CycleTrigger.CADENCE): 1}
+
+
+@pytest.mark.asyncio
+async def test_on_demand_attempts_do_not_spend_the_schedules_own_retry_budget(
+    mock_llm, test_config, tmp_path
+):
+    """The user pressing "run this now" and the scheduler dispatching the day's fire are
+    two different askers, so they carry two budgets (#1939).
+
+    With one shared count, three failed clicks left the schedule's own attempt with
+    nothing: the next foreground preemption consumed the occurrence on its first try
+    and the job silently skipped its day — which is the exact failure the deferral
+    exists to prevent, reached through the door the user was pressing.  Each budget
+    still bounds one burst of the same size; once ANY cycle settles the fire, both
+    reset, because what a count bounds is attempts at one occurrence.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+
+    def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(die_on_the_model_call)
+    for _ in range(PennyConstants.COLLECTOR_RETRY_ATTEMPTS):
+        success, _ = await collector.run_for("morning-briefing")
+        assert success is False
+
+    # The clicks spent the user's budget, and the day's fire is still due.
+    assert collector._retry_attempts == {
+        ("morning-briefing", CycleTrigger.ON_DEMAND): PennyConstants.COLLECTOR_RETRY_ATTEMPTS
+    }
+    assert _get(db, "morning-briefing").last_collected_at is None
+
+    # The schedule's own attempt arrives with its budget untouched, so a preemption
+    # still keeps the occurrence rather than burning the day.
+    mock_llm.set_response_handler(_cancel_the_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await collector.execute()
+
+    assert _get(db, "morning-briefing").last_collected_at is None
+    assert collector._retry_attempts[("morning-briefing", CycleTrigger.CADENCE)] == 1
+
+    # A cycle that spends the fire clears every asker's count with it.
+    mock_llm.set_response_handler(_writes_then_closes(mock_llm))
+    assert await collector.execute() is True
+    assert _get(db, "morning-briefing").last_collected_at is not None
+    assert collector._retry_attempts == {}
 
 
 @pytest.mark.asyncio

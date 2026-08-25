@@ -3,11 +3,13 @@
 import asyncio
 import base64
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import websockets
 from sqlmodel import Session, select
 
 from penny.channels.base import IncomingMessage
@@ -463,6 +465,21 @@ class _MockWs:
 
     async def send(self, data: str) -> None:
         self.sent.append(json.loads(data))
+
+
+class _ClosedWs:
+    """A socket that has gone away: every send raises, as a real one does.
+
+    What an addon's socket does while a multi-minute on-demand run is in flight —
+    the sidebar is closed, or the background script is suspended and the connection
+    torn down — so the result arrives to nobody."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def send(self, data: str) -> None:
+        self.attempts += 1
+        raise websockets.ConnectionClosed(None, None)
 
 
 class TestBrowserConfigHandlers:
@@ -1662,6 +1679,75 @@ class TestBrowserMemoryHandlers:
         resp = ws.sent[0]
         assert resp["success"] is False
         assert resp["message"] == "Collector is not available."
+
+    @pytest.mark.asyncio
+    async def test_a_closed_requester_falls_back_to_the_registered_addons(self, tmp_path, caplog):
+        """A cycle takes minutes and the socket that asked for it can die inside that
+        window — so the outcome goes to whatever addon connection is still there (#1939).
+
+        The send used to sit under ``contextlib.suppress(ConnectionClosed)``: the result
+        was swallowed whole, the addon's spinner never resolved, and an 18-minute run
+        read as an indefinite hang with nothing logged to say why.  Now the dead
+        requester is reported at WARNING and every registered connection is offered the
+        result — a second window of the same addon shows the same spinner.
+        """
+        channel, _ = self._channel(tmp_path)
+        collector = MagicMock()
+        collector.run_for = AsyncMock(return_value=(True, "Collector cycle complete: worked"))
+        channel.set_collector(collector)
+        dead = _ClosedWs()
+        live = _MockWs()
+        channel._connections["addon-window-2"] = ConnectionInfo(
+            ws=cast(Any, live), tool_use_enabled=True
+        )
+
+        with caplog.at_level(logging.WARNING):
+            await channel._handle_collection_trigger(
+                cast(Any, dead),
+                {"type": "collection_trigger", "name": "board-games"},
+            )
+
+        # The requesting socket was tried, and its closure did not raise out.
+        assert dead.attempts == 1
+        # The same result — not a summary of it — landed on the live connection.
+        assert live.sent[0]["type"] == "collection_trigger_result"
+        assert live.sent[0]["name"] == "board-games"
+        assert live.sent[0]["success"] is True
+        # And it is never silent: the closure and the fallback are both stated.
+        assert "closed before its result arrived" in caplog.text
+        assert "addon-window-2" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_with_no_live_connection_the_outcome_is_logged_not_swallowed(
+        self, tmp_path, caplog
+    ):
+        """The last resort, which is the point of the whole path: when there is nowhere
+        left to deliver the result, it is SAID — the collection, the verdict and the
+        outcome text go to the log at WARNING (#1939).
+
+        The registered connection here is dead too (the addon went away entirely, which
+        is how a requester dies in the first place), so the fallback is offered and
+        comes back with nothing — the branch a no-connections world would not reach.
+        A run that concluded and reported nowhere at all is the failure this replaces.
+        """
+        channel, _ = self._channel(tmp_path)
+        collector = MagicMock()
+        collector.run_for = AsyncMock(return_value=(False, "no browser is connected"))
+        channel.set_collector(collector)
+        dead = _ClosedWs()
+        also_dead = _ClosedWs()
+        channel._connections["addon-window-1"] = ConnectionInfo(ws=cast(Any, also_dead))
+
+        with caplog.at_level(logging.WARNING):
+            await channel._handle_collection_trigger(
+                cast(Any, dead),
+                {"type": "collection_trigger", "name": "board-games"},
+            )
+
+        assert also_dead.attempts == 1  # offered it, and it could not take it
+        assert "No live addon connection could take the 'board-games' run result" in caplog.text
+        assert "success=False" in caplog.text
+        assert "no browser is connected" in caplog.text
 
     # ── Edit handlers ────────────────────────────────────────────────────
 

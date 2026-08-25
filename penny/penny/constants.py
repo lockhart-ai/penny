@@ -47,6 +47,28 @@ class RunOutcome(StrEnum):
     CANCELLED = "cancelled"
 
 
+class CycleTrigger(StrEnum):
+    """What set a collector cycle running (#1939).
+
+    ``cadence`` — the dispatcher picked the collection up because its schedule
+    said so.  Nobody is waiting; a notification it produces rides the full
+    autonomous-send cooldown, and its attempts at one fire share one retry budget.
+
+    ``on_demand`` — the user pressed "run this now" in an addon surface
+    (``Collector.run_for``).  Someone is sitting in front of the result, so what
+    the cycle sends is conversational rather than autonomous, and its attempts are
+    the user's rather than the schedule's.
+
+    Read in three places, which is why it is one word rather than three flags: the
+    collector keys its per-occurrence retry budget on it, the send queue stores it
+    on the row it queues (``send_queue.origin``), and the drainer reads that row to
+    decide which delivery lane the message is in.
+    """
+
+    CADENCE = "cadence"
+    ON_DEMAND = "on_demand"
+
+
 class WriteGateOutcome(StrEnum):
     """The closed, deterministic outcome of one ``collection_write`` entry at the
     write chokepoint — the change-gate (#1587, epic #1554 via mini-epic #1562).

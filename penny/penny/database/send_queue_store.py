@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 from sqlmodel import Session, col, select
 
+from penny.constants import CycleTrigger
 from penny.database.models import SendQueueItem
 
 logger = logging.getLogger(__name__)
@@ -32,12 +33,20 @@ class SendQueueStore:
     def _session(self) -> Session:
         return Session(self.engine)
 
-    def enqueue(self, content: str, collection: str) -> int:
-        """Append a pending message and return its assigned id."""
+    def enqueue(
+        self, content: str, collection: str, origin: CycleTrigger = CycleTrigger.CADENCE
+    ) -> int:
+        """Append a pending message and return its assigned id.
+
+        ``origin`` is the lane the drainer delivers it in (#1939) — what set the
+        queuing cycle running.  It DEFAULTS to the cadence lane, the one that waits
+        out the autonomous-send cooldown, so a caller that says nothing gets the
+        conservative behaviour and skipping the cooldown has to be claimed."""
         with self._session() as session:
             row = SendQueueItem(
                 content=content,
                 collection=collection,
+                origin=origin,
                 created_at=datetime.now(UTC),
             )
             session.add(row)
@@ -48,21 +57,27 @@ class SendQueueStore:
             logger.info("Queued message %d from %s (%d chars)", row.id, collection, len(content))
             return row.id
 
-    def next_pending(self) -> SendQueueItem | None:
+    def next_pending(self, origin: CycleTrigger | None = None) -> SendQueueItem | None:
         """The oldest message still awaiting delivery, or None if the queue is empty.
 
         A cancelled row (``cancelled_at`` stamped) is excluded structurally — in
         the WHERE, never a Python filter downstream — so the drainer can never
-        deliver a message whose collector was archived (#1634)."""
+        deliver a message whose collector was archived (#1634).
+
+        ``origin`` narrows the queue to one delivery lane (#1939), and it is asked
+        in the WHERE for the same reason: reading the head and then discarding it
+        for being in the wrong lane would stall every message behind it, which is
+        exactly the case this exists for — a user waiting on their own run while an
+        older cadence message sits out the cooldown.  ``None`` = every lane."""
         with self._session() as session:
+            query = select(SendQueueItem).where(
+                col(SendQueueItem.sent_at).is_(None),
+                col(SendQueueItem.cancelled_at).is_(None),
+            )
+            if origin is not None:
+                query = query.where(SendQueueItem.origin == origin)
             return session.exec(
-                select(SendQueueItem)
-                .where(
-                    col(SendQueueItem.sent_at).is_(None),
-                    col(SendQueueItem.cancelled_at).is_(None),
-                )
-                .order_by(col(SendQueueItem.created_at).asc())
-                .limit(1)
+                query.order_by(col(SendQueueItem.created_at).asc()).limit(1)
             ).first()
 
     def pending_items(self) -> list[SendQueueItem]:
