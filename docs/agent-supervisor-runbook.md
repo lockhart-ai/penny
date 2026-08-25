@@ -55,7 +55,7 @@ If it's a mixed bag, split it: sequence the small/eval-gated tickets in one sess
 
 ## 5. While children run
 
-**Hands off the prod stack.** Agent sessions (supervisor and children) run only one-off `docker compose run --rm` against the main project (`make token`, `make check` — fine); never compose *lifecycle* commands (`make up`/`make prod`/`make kill`/`docker compose down`) — the production stack belongs to the user. If a compose command you did run gets interrupted, **re-run it to completion**: a half-finished teardown mints orphaned container/network state that breaks the next `make prod` (the `up` targets now self-heal with a preceding `down --remove-orphans`, but don't rely on it).
+**Hands off the prod stack.** Agent sessions (supervisor and children) run only one-off `docker compose run --rm` against the main project (`make token`, `make check` — fine); never compose *lifecycle* commands (`make up`/`make prod`/`make kill`/`docker compose down`) — the production stack belongs to the user. **`make clean-project-images` counts as one**: it is `make kill`'s own recipe, and since worktree builds here reuse the shared `penny:latest` tag, a child has nothing project-scoped to reclaim — SOP §9 now has children verify-then-skip it (`docker images`/`ps -a`/`volume ls` filtered by their compose project). If a compose command you did run gets interrupted, **re-run it to completion**: a half-finished teardown mints orphaned container/network state that breaks the next `make prod` (the `up` targets now self-heal with a preceding `down --remove-orphans`, but don't rely on it).
 
 Standing duties (details in `CLAUDE.md` → Agent Supervision): **heartbeat** every 30–60 min while anything waits on a serialized resource; **stall recovery** ("check your result artifacts FIRST, then relaunch only what's missing"); **resource arbitration** (full-suite evals need explicit user approval; GPU contention is yours to surface); **relay merge/close events** so children run §9; file children's out-of-scope findings as new tickets under the meta.
 
@@ -64,6 +64,6 @@ Standing duties (details in `CLAUDE.md` → Agent Supervision): **heartbeat** ev
 
 ## 6. Fleet end
 
-1. Every child PR terminal → **fleet-end sweep**: inventory `git worktree list` against PR states; remove terminal trees, delete local+remote branches; locked trees belong to live agents — relay, never force.
+1. Every child PR terminal → **fleet-end sweep**: inventory `git worktree list` against PR states; remove terminal trees, delete local+remote branches; locked trees belong to live agents — relay, never force. **Check the remote branch of every CLOSED-unmerged PR explicitly** (`git ls-remote origin <branch>`): GitHub auto-deletes only a *merged* PR's branch, so closed ones leave a live remote branch behind for the sweep to delete. The sweep also owns any `worktree-agent-*` placeholder a child reported the isolation guard blocked it from deleting — it carries no unique commits, so it's a one-command delete from the primary checkout.
 2. Update the meta checklist; close it (or report what remains and why).
 3. Fold process lessons into this runbook / the SOP / CLAUDE.md — that's how this document got every rule it has.
