@@ -9,7 +9,7 @@ from penny.llm import LlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.memory_tools import UpdateEntryTool
-from penny.tools.models import ToolArgs
+from penny.tools.models import ToolArgs, ToolCall
 
 
 class _StubSearchArgs(ToolArgs):
@@ -198,14 +198,49 @@ class StubReadLatestTool(Tool):
         return "entries"
 
 
+class StubMemoryMetadataTool(Tool):
+    """Stub for memory_metadata — the tool the retired ``collection_metadata`` became."""
+
+    name = "memory_metadata"
+    description = "Return the metadata fields for a single memory"
+    parameters = {
+        "type": "object",
+        "properties": {"memory": {"type": "string", "description": "Memory name."}},
+        "required": ["memory"],
+    }
+
+    async def execute(self, **kwargs):
+        return "metadata"
+
+
+class StubCollectionSetTool(Tool):
+    """Stub for collection_set — registered alongside ``memory_metadata`` because it is
+    the character-NEAREST name to the retired ``collection_metadata`` and therefore the
+    wrong answer the string leg gives on its own (#1944)."""
+
+    name = "collection_set"
+    description = "Create or reconfigure a collection"
+    parameters = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "description": "Collection name."}},
+        "required": ["name"],
+    }
+
+    async def execute(self, **kwargs):
+        return "set"
+
+
 class TestToolNotFoundSuggestion:
     """Error message includes a 'did you mean' suggestion for close tool names."""
 
     @pytest.mark.asyncio
     async def test_did_you_mean_for_read_last(self):
-        """'read_last' produces a 'Did you mean read_latest?' suggestion."""
-        from penny.tools.models import ToolCall
+        """'read_last' produces a 'Did you mean read_latest?' suggestion.
 
+        Also the fall-through guard on the rename leg (#1944): ``read_last`` IS a
+        renamed name, but it resolves to ``collection_read_latest``, which this registry
+        does not carry — so the suggestion must come from the string leg and name a tool
+        that actually exists rather than one the table remembers."""
         registry = ToolRegistry()
         registry.register(StubReadLatestTool())
         executor = ToolExecutor(registry, timeout=30.0)
@@ -221,10 +256,54 @@ class TestToolNotFoundSuggestion:
         assert "Did you mean 'read_latest'?" in result.message
 
     @pytest.mark.asyncio
+    async def test_retired_name_suggests_the_tool_it_became(self):
+        """A name this project RENAMED resolves through the rename table, not through
+        character distance (#1944).
+
+        The measured miss: a chat turn guessed ``collection_metadata`` — retired by
+        migration 0059 — and the string leg answered ``collection_set``, which shares the
+        longer prefix but is a different tool entirely, while the one it wanted was
+        ``memory_metadata``.  Both are registered here, so the string leg's wrong answer
+        is available and the assertion is that meaning wins."""
+        registry = ToolRegistry()
+        registry.register(StubMemoryMetadataTool())
+        registry.register(StubCollectionSetTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        result = await executor.execute(ToolCall(tool="collection_metadata", arguments={}))
+
+        assert result.success is False
+        assert result.narration == (
+            "You tried to use `collection_metadata` but there's no such tool."
+        )
+        # Whole render: the suggestion leads the body, and the available list still names
+        # both tools — the wrong answer is present as a choice and was not taken.
+        assert result.message == (
+            "Did you mean 'memory_metadata'? "
+            "Available tools: memory_metadata, collection_set. "
+            "You must ONLY use the tools listed above."
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_but_plausible_name_still_gets_the_string_leg(self):
+        """The rename table is a first leg, not a replacement: a name nobody retired —
+        an ordinary typo — still gets the nearest spelling (#1944)."""
+        registry = ToolRegistry()
+        registry.register(StubMemoryMetadataTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        result = await executor.execute(ToolCall(tool="memory_metadta", arguments={}))
+
+        assert result.success is False
+        assert result.message == (
+            "Did you mean 'memory_metadata'? "
+            "Available tools: memory_metadata. "
+            "You must ONLY use the tools listed above."
+        )
+
+    @pytest.mark.asyncio
     async def test_no_suggestion_for_unrecognisable_tool_name(self):
         """No suggestion is added when no close match exists."""
-        from penny.tools.models import ToolCall
-
         registry = ToolRegistry()
         registry.register(StubReadLatestTool())
         executor = ToolExecutor(registry, timeout=30.0)

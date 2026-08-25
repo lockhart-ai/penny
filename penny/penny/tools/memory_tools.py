@@ -75,6 +75,7 @@ from penny.tools.collection_instantiation import (
     ScheduleError,
     SkillResolution,
     SkillResolutionKind,
+    expiry_was_normalised,
     has_schedule,
     parse_expires_at,
     parse_schedule,
@@ -86,6 +87,7 @@ from penny.tools.collection_instantiation import (
     render_schedule_field,
     render_tombstone_duplicate,
     render_unbound_parameters,
+    sentinel_expiry_note,
     skill_params,
 )
 from penny.tools.memory_args import (
@@ -595,6 +597,10 @@ def resolve_expiry(db: Database, schedule: Schedule, expires_at: str | None) -> 
     stating both is stating the answer twice — refused rather than silently resolved in
     one direction.  Words are read in the user's own timezone, which is why this takes
     the database: the zone is fetched here and passed to the pure parser.
+
+    ``None`` means the collection has no end condition — either none was stated, or the
+    one stated was a far-future sentinel the parser read as "forever" (#1944), which the
+    caller names via ``sentinel_expiry_note``.
     """
     if expires_at is None:
         return schedule.expires_at
@@ -894,7 +900,8 @@ class CollectionCreateTool(MemoryTool):
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
-        return ToolResult(message=f"{echo}{suffix}", mutated=True)
+        expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
+        return ToolResult(message=f"{echo}{suffix}{expiry_note}", mutated=True)
 
 
 class LogCreateTool(MemoryTool):
@@ -2295,7 +2302,8 @@ class CollectionUpdateTool(MemoryTool):
         embedding = await self._description_embedding(args)
         memory = self._apply_update(args, None, None, None, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
-        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
+        expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
+        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}{expiry_note}"
         return ToolResult(message=message, mutated=True)
 
     async def _reinstantiate(
@@ -2323,8 +2331,9 @@ class CollectionUpdateTool(MemoryTool):
         )
         suffix = _description_degraded_suffix(args.description, embedding)
         echo = render_reinstantiation_echo(memory, skill.name, params)
+        expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(
-            message=f"{echo}{suffix}{self._no_schedule_note(memory)}",
+            message=f"{echo}{suffix}{self._no_schedule_note(memory)}{expiry_note}",
             mutated=True,
         )
 
@@ -2370,8 +2379,11 @@ class CollectionUpdateTool(MemoryTool):
         """Thread the update through the store — the metadata fields, the computed
         prompt / skill provenance / anchor, and the apply-time schedule (#1857).  A
         ``schedule`` REPLACES the stored one along with its run quota
-        (``replace_schedule``); ``expires_at`` sets the end condition.  Records the
-        mutation event with the run id + changed fields (schedule / expires_at)."""
+        (``replace_schedule``); ``expires_at`` sets the end condition, and a call that
+        stated an end condition meaning "forever" REMOVES it (#1944) — an invented expiry
+        must be able to come off a collection that already carries one, which is how the
+        sentinel became sticky in the first place.  Records the mutation event with the
+        run id + changed fields (schedule / expires_at)."""
         return self._db.memories.update_collection_metadata(
             args.name,
             description=args.description,
@@ -2383,6 +2395,7 @@ class CollectionUpdateTool(MemoryTool):
             schedule=schedule.rule if schedule else None,
             max_runs=schedule.max_runs if schedule else None,
             expires_at=expires_at,
+            clear_expiry=expiry_was_normalised(args.expires_at, expires_at),
             replace_schedule=schedule is not None,
             run_id=self._run_id,
         )

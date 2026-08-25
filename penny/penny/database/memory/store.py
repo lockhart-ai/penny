@@ -73,11 +73,19 @@ class _MetadataUpdate(BaseModel):
     # The schedule axis (#1857): the apply-time job schedule.  ``replace_schedule`` swaps
     # the whole schedule atomically from the rule plus the ``COUNT=`` quota lifted out of
     # it, so a new rule never leaves the previous rule's quota behind.  ``expires_at`` is
-    # the end condition — an independent optional (set when provided; no clear path),
-    # either stated directly or lifted from the rule's ``UNTIL=``.
+    # the end condition — an independent optional, set when provided, either stated
+    # directly or lifted from the rule's ``UNTIL=``.
     schedule: str | None = None
     max_runs: int | None = None
     expires_at: datetime | None = None
+    # Setting an end condition and REMOVING one are two different asks, and one optional
+    # cannot carry both: ``None`` means "not stated" everywhere else on this model, so an
+    # explicitly unbounded job needs its own signal (#1944).  Without it a sentinel expiry
+    # normalised at the tool boundary could never come off a row that already held one —
+    # exactly the stickiness the normalisation exists to end, since the invented value was
+    # copied back on every later call.  Ignored when ``replace_schedule`` is set: a new
+    # rule already carries both end conditions and overwrites them whole.
+    clear_expiry: bool = False
     replace_schedule: bool = False
     # Skill provenance re-stamp (#1620): on a re-render both move together — the
     # instantiating skill and the params bound into its render.  Applied as one unit
@@ -118,7 +126,9 @@ class _MetadataUpdate(BaseModel):
         already folded any ``expires_at`` argument in, so what lands is what this call
         stated and nothing older.  Without a new rule there is nothing to inherit, so a
         bare ``expires_at`` edit sets the expiry alone and a plain ``schedule`` poke (the
-        iOS / browser memory UIs) sets the rule alone."""
+        iOS / browser memory UIs) sets the rule alone — or, on ``clear_expiry``, takes the
+        end condition off entirely (#1944), reported as a change only when there was one
+        to remove."""
         changed: list[str] = []
         if self.replace_schedule:
             memory.schedule = self.schedule
@@ -130,6 +140,9 @@ class _MetadataUpdate(BaseModel):
             changed.append("schedule")
         if self.expires_at is not None:
             memory.expires_at = self.expires_at
+            changed.append("expires_at")
+        elif self.clear_expiry and memory.expires_at is not None:
+            memory.expires_at = None
             changed.append("expires_at")
         return changed
 
@@ -554,6 +567,7 @@ class MemoryStore:
         skill_params: dict[str, str] | None = None,
         max_runs: int | None = None,
         expires_at: datetime | None = None,
+        clear_expiry: bool = False,
         replace_schedule: bool = False,
         run_id: str | None = None,
     ) -> MemoryRow:
@@ -570,6 +584,8 @@ class MemoryStore:
         re-stamp the collection's skill provenance on a re-render (#1620) — the caller
         renders the new ``extraction_prompt`` from the skill's current steps and passes
         it alongside the pair, so the recorded origin always matches the rendered snapshot.
+        ``clear_expiry`` is how a caller says the job is UNBOUNDED, which a bare
+        ``expires_at=None`` cannot say on a model where ``None`` means "not stated" (#1944).
         """
         name = slug(name)
         self._require_collection(name)
@@ -581,6 +597,7 @@ class MemoryStore:
             schedule=schedule,
             max_runs=max_runs,
             expires_at=expires_at,
+            clear_expiry=clear_expiry,
             replace_schedule=replace_schedule,
             skill_name=skill_name,
             skill_params=skill_params,

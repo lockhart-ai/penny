@@ -29,13 +29,14 @@ The orchestration (embed, resolve, validate parameters, dedup, create) lives on
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from enum import StrEnum
 
 import dateparser
 from dateutil.rrule import rrulestr
 from pydantic import BaseModel
 
+from penny.constants import PennyConstants
 from penny.database.models import MemoryRow, Skill
 from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp, stored_as_utc, zone_or_utc
@@ -504,8 +505,9 @@ _EXPIRES_TEACHING = (
 
 def parse_expires_at(
     value: str, timezone_name: str | None, now: datetime | None = None
-) -> datetime:
-    """Parse the ``expires_at`` end condition into a UTC-aware datetime (#1857).
+) -> datetime | None:
+    """Parse the ``expires_at`` end condition into a UTC-aware datetime (#1857), or
+    ``None`` when the words state no end date at all (#1944).
 
     ISO first — an exact time is an exact time — then ``dateparser`` over the user's
     own words, read IN THE USER'S TIMEZONE.  The timezone is what makes the words mean
@@ -514,16 +516,63 @@ def parse_expires_at(
     the user's IANA zone (``None`` on a fresh install → UTC) and ``now`` the moment
     relative words count from, both passed in rather than read from ambient state.
     Text neither reading answers raises the teaching :class:`ScheduleError`.
+
+    A time past :func:`_is_sentinel_expiry`'s horizon reads as ``None`` — an unbounded
+    job's end condition is the ABSENCE of one, so the sentinel is normalised here, at
+    the boundary, rather than stored and then rendered back as a real end date on every
+    surface that shows one.  The caller states what happened via
+    :func:`sentinel_expiry_note`; it is never silent.
     """
-    iso = _parse_iso_datetime(value)
-    if iso is not None:
-        return iso
     if now is None:
         now = datetime.now(UTC)
-    spoken = _parse_spoken_datetime(value, timezone_name, now)
-    if spoken is not None:
-        return spoken
-    raise ScheduleError(_EXPIRES_TEACHING.format(value=value))
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        parsed = _parse_spoken_datetime(value, timezone_name, now)
+    if parsed is None:
+        raise ScheduleError(_EXPIRES_TEACHING.format(value=value))
+    return None if _is_sentinel_expiry(parsed, now) else parsed
+
+
+def _is_sentinel_expiry(expiry: datetime, now: datetime) -> bool:
+    """True when ``expiry`` is so far ahead of ``now`` that it is a stand-in for
+    "forever" rather than an end date anyone means (#1944).
+
+    The horizon (``PennyConstants.SENTINEL_EXPIRY_HORIZON_DAYS``, with its rationale)
+    is measured FROM ``now``, so nothing here rots as the clock advances past a fixed
+    calendar date."""
+    return expiry - now > timedelta(days=PennyConstants.SENTINEL_EXPIRY_HORIZON_DAYS)
+
+
+def expiry_was_normalised(requested: str | None, resolved: datetime | None) -> bool:
+    """True when this call STATED an end condition that read as no end date (#1944).
+
+    The one structural read of the sentinel outcome, so the two things that follow from
+    it cannot disagree: the row's expiry is CLEARED (an unbounded job must be able to
+    take an invented expiry off a collection that already carries one — the stickiness
+    the normalisation exists to end) and the result NAMES what happened
+    (:func:`sentinel_expiry_note`).  Nothing else produces this pair: unreadable text and
+    a doubly-stated end both raise instead."""
+    return requested is not None and resolved is None
+
+
+# What the result says when a stated end date read as no end date (#1944).  Actionable
+# on both halves the rule owes: what became of the value that was passed, and what to
+# pass instead next time.  It states the RESULTING STATE ("runs until it is stopped")
+# rather than only the normalisation, because the turn goes on to tell the user what is
+# running and a note that only says a value was dropped leaves that sentence unwritten.
+_SENTINEL_EXPIRY_NOTE = (
+    "\n(Note: expires_at='{value}' is further ahead than an end date anyone means, so I "
+    "read it as no end date — the expiry is unset and this runs until it is stopped. "
+    "Leave expires_at off when there is no end date.)"
+)
+
+
+def sentinel_expiry_note(requested: str | None, resolved: datetime | None) -> str:
+    """The visible-degradation note for a normalised sentinel expiry (#1944), or empty
+    when this call stated no end condition or stated a real one."""
+    if not expiry_was_normalised(requested, resolved):
+        return ""
+    return _SENTINEL_EXPIRY_NOTE.format(value=requested)
 
 
 def _parse_iso_datetime(value: str) -> datetime | None:
