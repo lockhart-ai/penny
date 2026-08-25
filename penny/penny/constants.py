@@ -137,6 +137,11 @@ COLLECTOR_UNREADABLE_PROGRAM_REASON = (
     "completion from"
 )
 
+# Why a preempted cycle leaves its occurrence DUE (#1935).  A foreground message
+# cancels the cycle wherever it happens to be — the timing is the user's, not the
+# collection's — so the same schedule attempted a moment later is a different draw.
+COLLECTOR_CANCELLED_RETRY_REASON = "the cycle was preempted by foreground activity"
+
 
 # The write-gate outcomes that changed durable state — either a genuinely new key
 # landed (``NEW_KEY``) or an existing key's baseline was auto-refreshed in place
@@ -627,6 +632,16 @@ class PennyConstants:
     # might not be on it, and an instruction that cannot be followed is worse than the
     # honest number.
     COLLECTOR_HOLDINGS_LIMIT = 20
+    # How many times a collection's occurrence may be re-attempted before the
+    # dispatcher stamps it anyway and waits for the next one (#1935).  A cycle that
+    # ended on a STOCHASTIC cause and changed nothing — preempted by a foreground
+    # message, or aborted on a failed model call — did not spend its occurrence, so
+    # stamping it would silently skip a day of a daily job.  The bound is what keeps
+    # the stamp's original job (a persistently-failing collection must not re-attempt
+    # on every tick) intact: after this many attempts the occurrence is consumed
+    # whatever happened.  3 covers a burst of foreground activity or a transport
+    # wobble without letting a collection that fails every time hold the dispatcher.
+    COLLECTOR_RETRY_ATTEMPTS = 3
     # Keys named before the "…" tail in a multi-write run line's writes clause
     # (#1641): a run that wrote several entries shows the count plus this many
     # sample keys, so the clause stays one line.  Wholesale bound, tunable later.

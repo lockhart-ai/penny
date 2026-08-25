@@ -8,6 +8,12 @@ cover), binds itself to that target, runs the agent loop with the target's
 extraction prompt as instructions and a tool surface scoped to writes
 against that collection only, then stamps ``last_collected_at = now``.
 
+The stamp CONSUMES the occurrence, so it is withheld from a cycle that did
+not spend one (#1935): a cycle preempted by a foreground message, or one
+whose model call died, having changed nothing, leaves the occurrence due and
+is re-attempted on the next tick — bounded, so a collection that fails that
+way every time still stops re-attempting and waits for its next occurrence.
+
 The schedule runs as stated (#1857): there is no interval to widen and no
 auto-throttle to widen it — rate protection lives in the send cooldown,
 where it belongs.
@@ -49,6 +55,7 @@ from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
 from penny.constants import (
+    COLLECTOR_CANCELLED_RETRY_REASON,
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
     MutationActor,
@@ -191,6 +198,13 @@ class Collector(BackgroundAgent):
         self._program: tuple[ProgramCall, ...] = ()
         self._cycle_lock = asyncio.Lock()
         self._notifier = CollectorNotifier(db, embedding_model_client, model_client)
+        # How many times each collection's CURRENT occurrence has been re-attempted
+        # (#1935) — the bound on ``_settle_occurrence``'s deferral, cleared the moment
+        # a cycle settles.  In memory rather than on the row because the exit it
+        # counts leaves nothing durable to count FROM: a cycle cancelled seconds in
+        # writes no ``promptlog`` row, so the ledger cannot see it happened, and the
+        # count exists only to bound one burst — a restart is itself a fresh start.
+        self._retry_attempts: dict[str, int] = {}
 
     async def execute(self) -> bool:
         self._retire_expired()
@@ -255,6 +269,10 @@ class Collector(BackgroundAgent):
         writes.  It runs INSIDE the lock and BEFORE the outcome is determined, so the
         run record can state which of the four terminal shapes this cycle had —
         aborted, stopped, completed-quiet, completed-notified.
+
+        The cycle's schedule occurrence is settled last (``_settle_occurrence``, #1935):
+        an ordinary cycle consumes it, one that ended on a stochastic cause with nothing
+        to show for it leaves it due for a bounded retry.
         """
         run_id = uuid.uuid4().hex
         success = False
@@ -278,10 +296,10 @@ class Collector(BackgroundAgent):
                 cancelled = True
                 raise
             finally:
-                # Stamp regardless of success — cadence is driven by the check
-                # happening, not by success.  A persistently-failing collection
-                # would otherwise be re-attempted on every tick.
-                self.db.memories.mark_collected(collection.name)
+                # Settle the occurrence this cycle was dispatched for: consume it, or
+                # leave it due for a bounded retry (#1935).  Runs while the program is
+                # still bound, since the deterministic arm is read off it.
+                deferred = self._settle_occurrence(collection.name, cancelled, response, notified)
                 if cancelled:
                     self._tag_promptlog_run_cancelled(run_id)
                 else:
@@ -289,17 +307,8 @@ class Collector(BackgroundAgent):
                     # audit log and the promptlog tag alike.
                     outcome, reason = self._cycle_result(response, notified)
                     self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
-                    # Post-cycle retirement — at most one archive.  A bounded
-                    # schedule retires a collection after its allotted runs (a
-                    # ``COUNT=1`` one-shot archives itself, #1857); failing
-                    # that, the ``expires_at`` end condition retires one whose
-                    # expiry passed mid-life (#1562).  Both run after the outcome
-                    # is tagged so this cycle is counted; a cancelled cycle never
-                    # reaches here, so it doesn't burn a run.  ``run_id`` is this
-                    # cycle's run — recorded as the system archive's cause in the
-                    # mutation ledger (#1560).
-                    if not self._archive_if_run_limit_reached(collection, run_id):
-                        self._archive_if_expired(collection, run_id)
+                    if not deferred:
+                        self._retire_if_ended(collection, run_id)
                 self._bind(None)
         # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or its
         # write-gate stop reason) plus the actual tool trace — never a model-authored
@@ -363,6 +372,140 @@ class Collector(BackgroundAgent):
         if not self._has_done_call(response):
             return None
         return await self._notifier.notify(collection, run_id, response.tool_calls)
+
+    def _retire_if_ended(self, collection: MemoryRow, run_id: str) -> None:
+        """Post-cycle retirement — at most one archive.
+
+        A bounded schedule retires a collection after its allotted runs (a ``COUNT=1``
+        one-shot archives itself, #1857); failing that, the ``expires_at`` end condition
+        retires one whose expiry passed mid-life (#1562).  Both run after the outcome is
+        tagged, so this cycle is counted.  ``run_id`` is this cycle's run — recorded as
+        the system archive's cause in the mutation ledger (#1560).
+
+        A cancelled cycle never reaches here, and a cycle that KEPT its occurrence is
+        skipped for the same reason (#1935): neither spent the fire it was dispatched
+        for, so neither may spend a run of a bounded schedule.  Without the skip a
+        ``COUNT=1`` one-shot that aborted on a transport wobble would archive itself
+        while its occurrence sat due, and an archived collection is never dispatched
+        again — the retry could not fire at all.
+        """
+        if not self._archive_if_run_limit_reached(collection, run_id):
+            self._archive_if_expired(collection, run_id)
+
+    # ── Settling the schedule occurrence (#1935) ──────────────────────────
+
+    def _settle_occurrence(
+        self,
+        name: str,
+        cancelled: bool,
+        response: ControllerResponse | None,
+        notified: NotificationOutcome | None,
+    ) -> bool:
+        """Consume this cycle's schedule occurrence, or leave it DUE for a retry.
+
+        The stamp is what makes a schedule advance — readiness reads the occurrence
+        strictly after ``last_collected_at`` — so stamping a cycle that did nothing
+        SKIPS that fire entirely.  Measured live: a chat message cancelled a daily
+        job's cycle seconds in, before any model call had come back, and the day's
+        occurrence was burned.  A cycle that ended on a stochastic cause with nothing
+        durable behind it therefore stays due, and the next tick picks it up again (it
+        is still the most overdue).
+
+        The bound is the stamp's ORIGINAL job, kept whole: a collection failing this
+        way every time would otherwise re-attempt on every tick forever.  After
+        ``COLLECTOR_RETRY_ATTEMPTS`` the occurrence is consumed whatever happened and
+        the collection waits for its next one.
+
+        Returns whether the occurrence was KEPT, which the post-cycle retirement reads:
+        a cycle that did not spend its fire must not spend a run of a bounded schedule
+        either (``_retire_if_ended``).
+        """
+        reason = self._retry_reason(cancelled, response, notified)
+        if reason is not None and self._claim_retry(name):
+            logger.info(
+                "Leaving '%s' due rather than consuming its occurrence — %s, and the "
+                "cycle changed nothing (attempt %d of %d)",
+                name,
+                reason,
+                self._retry_attempts[name],
+                PennyConstants.COLLECTOR_RETRY_ATTEMPTS,
+            )
+            # The stamp is this path's only refresh signal, so a cycle that withholds
+            # it raises the change itself — otherwise an on-demand "run this now" that
+            # died leaves the addon's panel showing nothing at all.
+            self.db.memories.notify_changed(name)
+            return True
+        self._retry_attempts.pop(name, None)
+        self.db.memories.mark_collected(name)
+        return False
+
+    def _claim_retry(self, name: str) -> bool:
+        """Take one of ``name``'s remaining attempts at its current occurrence.
+
+        ``False`` once the bound is spent, which is what ends the burst.  The count is
+        cleared by the settled cycle and by nothing else, so it spans exactly the run of
+        attempts at one occurrence — and the on-demand trigger (``run_for``) draws on
+        the same budget, since it is an attempt at the same collection's same fire.
+        """
+        attempts = self._retry_attempts.get(name, 0)
+        if attempts >= PennyConstants.COLLECTOR_RETRY_ATTEMPTS:
+            return False
+        self._retry_attempts[name] = attempts + 1
+        return True
+
+    def _retry_reason(
+        self,
+        cancelled: bool,
+        response: ControllerResponse | None,
+        notified: NotificationOutcome | None,
+    ) -> str | None:
+        """Why this exit did not spend its occurrence, or ``None`` when it did.
+
+        Three reads, in the order that makes each decisive:
+
+        - **Work landed** — an entry written or a notification queued.  However the
+          cycle ended, it did the job the occurrence was for.  (A cancelled cycle
+          carries no response at all, so a write it managed before the cancellation is
+          invisible here — which is the idempotent-retry posture cancellation has
+          always had: the work is durable, and the re-run's write gate reads it as the
+          unchanged value it is.)
+        - **A configuration defect** — the DETERMINISTIC arm, read off the collection's
+          own stored program, so a retry re-fails identically.  It outranks the
+          stochastic causes below: a cancelled cycle of an unrunnable collection is
+          still an unrunnable collection.
+        - **A stochastic cause** — foreground preemption, or a model call that died
+          (#1909's abort, whose causes are transport failures and a spent reroll
+          budget).  Attempted a moment later each of these is a different draw.
+
+        Anything else — a clean ``done()``, a write-gate STOP, the step cap, a model
+        that trailed off — is an ordinary completed cycle and consumes its occurrence
+        exactly as it always has.
+        """
+        if self._produced_work(response, notified):
+            return None
+        if self._configuration_defect() is not None:
+            return None
+        if cancelled:
+            return COLLECTOR_CANCELLED_RETRY_REASON
+        if response is not None and response.abort is not None:
+            return response.abort.render()
+        return None
+
+    def _configuration_defect(self) -> str | None:
+        """The bound collection's own deterministic reason its cycles cannot succeed,
+        or ``None`` when nothing about how it is set up is wrong.
+
+        Read off the CONFIGURATION — the stored prompt, settled when the target was
+        bound — never off what this particular run did, which is exactly what makes it
+        deterministic: dispatched again it reaches the same answer, so a retry buys
+        nothing and the occurrence is spent immediately.  Today that is a prompt the
+        framework cannot read a program out of; readiness already refuses the other
+        config defects (an unusable prompt, an unreadable rule) before a cycle is
+        dispatched at all.
+        """
+        if not self._program:
+            return COLLECTOR_UNREADABLE_PROGRAM_REASON
+        return None
 
     @staticmethod
     def _format_tool_trace(response: ControllerResponse | None) -> str:
@@ -623,8 +766,8 @@ class Collector(BackgroundAgent):
             return "no response from cycle"
         if response.abort is not None:
             return response.abort.render()
-        if not self._program:
-            return COLLECTOR_UNREADABLE_PROGRAM_REASON
+        if (defect := self._configuration_defect()) is not None:
+            return defect
         if response.answer == PennyResponse.AGENT_MAX_STEPS:
             return "max steps exceeded — the program was left unfinished"
         return "cycle ended with the program unfinished"

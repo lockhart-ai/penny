@@ -620,8 +620,10 @@ class BrowserChannel(MessageChannel):
         """Run a collection's extractor on demand and report the outcome back
         to the requesting addon.  ``run_for`` validates the target and is
         serialized against the background cadence by the collector's cycle
-        lock; its ``mark_collected`` fans out a ``memory_changed`` event that
-        refreshes the detail view's entries + collector activity."""
+        lock; every cycle it runs ends by fanning out a ``memory_changed`` event
+        that refreshes the detail view's entries + collector activity — the stamp
+        when the cycle spent its occurrence, the collector itself when it kept it
+        for a retry (#1935)."""
         try:
             req = BrowserCollectionTrigger(**data)
         except ValidationError:
