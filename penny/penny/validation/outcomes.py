@@ -5,7 +5,7 @@ A ``ResponseValidator`` inspects one model response against a ``LoopContext`` an
 returns a ``ValidationOutcome`` — *what the loop should do*, not just "reject".
 The loop matches on it.  This is the dynamic-disposition analogue of the static
 tool-arg validators: there, the only outcome is "reject the call"; here, a
-malformed response might warrant a retry-with-nudge, a quiet in-place repair, an
+malformed response might warrant a retry on the bad draw, a quiet in-place repair, an
 error tool-result, a continue-with-nudge, or a hard stop.
 
 Returning a typed disposition (rather than raising) is deliberate: the loop
@@ -34,14 +34,18 @@ class Proceed(BaseModel):
 
 
 class Retry(BaseModel):
-    """Re-call the model with a nudge appended.  The loop appends the bad
-    response and ``nudge`` as turns, then re-invokes — once per ``condition`` (a
-    repeat of the same condition exhausts and the loop proceeds with what it
-    has)."""
+    """Re-call the model on the bad response.  The loop appends that response as a
+    turn and re-invokes — once per ``condition`` (a repeat of the same condition
+    exhausts and the loop proceeds with what it has).
+
+    Nothing is said back to the model: the teaching user-turn this used to carry
+    retired with its last two customers (the call-shaped-text family in #1839, the
+    empty draw in #1937), both of which are now discarded and re-rolled before the
+    chain ever sees them.  What is left retries by SHOWING the model its own bad draw
+    — the markup, the refusal, the ungrounded URL — which is the whole correction."""
 
     model_config = ConfigDict(frozen=True)
     condition: ConditionKey
-    nudge: str
 
 
 class Repair(BaseModel):

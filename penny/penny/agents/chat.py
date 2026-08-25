@@ -33,7 +33,7 @@ from penny.skill_extraction import (
     SkillExtractionResult,
     SkillExtractor,
 )
-from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply
+from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply, is_empty_draw
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.collection_instantiation import render_applied_configuration
@@ -86,17 +86,24 @@ class ChatAgent(Agent):
     #    so the routine and what it watches are read off the record rather than recalled.
     run_shape_validators = [SkillNarrationValidator(), AppliedConfigurationValidator()]
 
-    # Chat's invalid draws are CALL-SHAPED TEXT ONLY (#1839): a plain conversational
-    # reply IS chat's valid terminal state, so nothing about ordinary prose is
-    # rejected.  What is rejected is a draw that was meant to be a tool call and
-    # reached the text channel instead — it would be delivered to the user as raw
-    # machinery.  Two shapes, most specific first: the full serialized call
-    # (``{"name": …, "arguments": …}`` or real args carrying the framework's
-    # ``reasoning`` field), then the mangled remainder — a bare argument fragment or
-    # the empty ``{}`` tail of a forced call attempt (#1570/#1732).
+    # Chat's invalid draws are the ones that are not a REPLY (#1839/#1937): a plain
+    # conversational reply IS chat's valid terminal state, so nothing about ordinary
+    # prose is rejected.  Three shapes, most specific first, because the condition the
+    # discarded draw is logged under must name what it actually was:
+    #  - CALL_AS_TEXT: a tool call that reached the text channel — the full serialized
+    #    call (``{"name": …, "arguments": …}``) or real args carrying the framework's
+    #    ``reasoning`` field.  It would be delivered to the user as raw machinery.
+    #  - CALL_FRAGMENT_REPLY: its mangled remainder — a bare argument fragment or the
+    #    empty ``{}`` tail of a forced call attempt (#1570/#1732).
+    #  - EMPTY: a draw that says nothing at all (#1937).  It was the last invalid-output
+    #    class still handled on the VISIBLE path, where the empty turn plus a nudge went
+    #    into the conversation and the model's in-flight intent was lost with them.  It
+    #    is tried LAST because the ``{}`` tail above has no letters either, and that
+    #    shape has a truer name.
     invalid_draw_conditions: tuple[InvalidDraw, ...] = (
         (ConditionKey.CALL_AS_TEXT, is_call_as_text_bail),
         (ConditionKey.CALL_FRAGMENT_REPLY, is_call_fragment_reply),
+        (ConditionKey.EMPTY, is_empty_draw),
     )
     # Stable id linking the synthetic page-context tool-call to its tool-result
     # so the injection rides the standard OpenAI ``tool_call_id`` envelope, not

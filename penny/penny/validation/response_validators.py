@@ -8,28 +8,28 @@ guard is a new validator added to an agent's chain (see ``Agent.response_validat
 
 Validators are PURE: they read ``(response, ctx)`` and return a disposition,
 mutating nothing and reaching into no agent state.  The detection helpers they
-need (XML-tag / think-tag / malformed-URL / truncated-URL predicates and the
-strong-nudge builder) live here as module functions so the chain has no
-dependency back on ``penny.agents`` — keeping this a leaf the loop imports, not
-the other way round.
+need (XML-tag / malformed-URL / truncated-URL predicates) live here as module
+functions so the chain has no dependency back on ``penny.agents`` — keeping this a
+leaf the loop imports, not the other way round.
 
 Mapping from the old inline ``_check_response`` branches:
 
-  XML branch              → ``XmlTagValidator``        (Retry, no extra nudge)
-  empty branch            → ``EmptyResponseValidator`` (Retry, continue/strong nudge)
-  refusal branch          → ``RefusalValidator``       (Retry, no extra nudge)
-  hallucinated-URL branch → ``HallucinatedUrlValidator`` (Retry, no extra nudge)
+  XML branch              → ``XmlTagValidator``        (Retry)
+  refusal branch          → ``RefusalValidator``       (Retry)
+  hallucinated-URL branch → ``HallucinatedUrlValidator`` (Retry)
   strip-tool-calls-no-tools → ``HallucinatedToolCallRepair`` (Repair)
 
-**The call-shaped-text family is NOT here (#1839).** A draw that was meant to be a
-tool call and is not one — a collector's prose or done-as-JSON-text, a chat reply
-that is a serialized call — is an INVALID DRAW, not a recoverable turn: the agent
-loop discards it and re-rolls the unchanged context (``Agent._unusable_output_condition``
-+ ``invalid_draw_conditions``), so it never enters the conversation at all.  The
+**The call-shaped-text family is NOT here (#1839), and neither is the EMPTY draw
+(#1937).** A draw that was meant to be a tool call and is not one — a collector's
+prose or done-as-JSON-text, a chat reply that is a serialized call — and a draw that
+says nothing at all are INVALID DRAWS, not recoverable turns: the agent loop discards
+them and re-rolls the unchanged context (``Agent._unusable_output_condition`` +
+``invalid_draw_conditions``), so they never enter the conversation at all.  The
 validators that used to append those outputs plus a teaching nudge
-(``TextInsteadOfToolValidator`` / ``DoneJsonBailValidator`` / ``CallAsTextValidator``)
-are gone with their nudges; their detectors live in ``penny.text_validity`` beside
-the other invalid-draw predicates.
+(``TextInsteadOfToolValidator`` / ``DoneJsonBailValidator`` / ``CallAsTextValidator`` /
+``EmptyResponseValidator``) are gone with their nudges — and with them the whole
+user-turn append, since no condition left carries one; their detectors live in
+``penny.text_validity`` beside the other invalid-draw predicates.
 """
 
 from __future__ import annotations
@@ -39,11 +39,9 @@ import re
 import urllib.parse
 from abc import ABC, abstractmethod
 
-from penny.agents.models import MessageRole
-from penny.constants import PennyConstants
 from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
-from penny.prompts import Prompt
+from penny.text_validity import strip_think_tags
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
     LoopContext,
@@ -63,9 +61,6 @@ logger = logging.getLogger(__name__)
 # or <tools><search>...</search></tools>
 _XML_TAG_PATTERN = re.compile(r"<[a-zA-Z]\w*[\s=>].*</[a-zA-Z]\w*>", re.DOTALL)
 
-# Matches <think>...</think> blocks emitted inline by some models (e.g. DeepSeek-R1, Qwen3)
-_THINK_TAG_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
-
 # Matches markdown links [text](url) and bare URLs for validation
 _MARKDOWN_LINK_URL_PATTERN = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
 _BARE_URL_PATTERN = re.compile(r"(?<!\()(https?://\S+)")
@@ -74,23 +69,6 @@ _BARE_URL_PATTERN = re.compile(r"(?<!\()(https?://\S+)")
 def has_xml_tags(content: str) -> bool:
     """Return True if content contains XML-like tag pairs."""
     return bool(_XML_TAG_PATTERN.search(content))
-
-
-def strip_think_tags(content: str) -> tuple[str, str | None]:
-    """Strip <think>...</think> blocks from content.
-
-    Returns (cleaned_content, extracted_thinking) where extracted_thinking
-    contains the concatenated text from all stripped blocks.
-    """
-    thinking_parts: list[str] = []
-
-    def _collect(match: re.Match) -> str:
-        thinking_parts.append(match.group(1).strip())
-        return ""
-
-    cleaned = _THINK_TAG_PATTERN.sub(_collect, content).strip()
-    extracted = "\n\n".join(thinking_parts) if thinking_parts else None
-    return cleaned, extracted
 
 
 def is_url_truncated(url: str) -> bool:
@@ -159,79 +137,32 @@ def find_hallucinated_urls(text: str, source_text: str) -> list[str]:
     return [url for url in urls if url not in source_text]
 
 
-def build_strong_nudge(messages: list[dict]) -> str:
-    """Build a context-aware nudge that includes the original user question.
-
-    Called when many preceding tool calls may have saturated the model's context
-    and the model returned empty on the final step (tools stripped).  Using
-    forceful language plus the original question breaks the model out of
-    search-fixation loops and gives it a clear target after heavy tool use.
-    """
-    user_messages = [
-        m["content"]
-        for m in messages
-        if m.get("role") == MessageRole.USER and not m["content"].startswith("STOP")
-    ]
-    original_question = user_messages[-1]
-    return Prompt.FINAL_STEP_NUDGE.format(original_question=original_question)
-
-
 # ── Response-level validators (chat + collector) ─────────────────────────────
 
 
 class XmlTagValidator:
     """The model wrapped its reply in XML/markup instead of plain prose — retry
-    once, re-appending the bad response with no extra nudge (the model usually
-    drops the markup on the second pass)."""
+    once, re-appending the bad response (the model usually drops the markup on the
+    second pass)."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.XML in ctx.retried:
             return Proceed(response=response)
         if has_xml_tags(response.content.strip()):
-            return Retry(condition=ConditionKey.XML, nudge="")
+            return Retry(condition=ConditionKey.XML)
         return Proceed(response=response)
-
-
-class EmptyResponseValidator:
-    """The response carries no substantive content (blank, separators-only, or a
-    bare ``<think>`` block with no body) — retry once.
-
-    The nudge depends on whether tools are still available: mid-loop (tools live)
-    the ``continue_nudge`` this validator was composed with; on the final step
-    (tools stripped) the loop swaps in the forceful ``build_strong_nudge`` carrying
-    the original question.  The empty-string sentinel signals "loop, build the
-    strong nudge from messages" — the strong builder needs the message history a
-    pure validator can't hold.
-
-    ``continue_nudge`` is the mid-loop nudge, kept a constructor argument so an
-    agent shape can compose its own.  Only chat/base reach it now: a collector's
-    empty draw is a non-tool-call draw, so the loop discards and re-rolls it before
-    this chain runs (#1839)."""
-
-    def __init__(self, continue_nudge: str = Prompt.CONTINUE_NUDGE) -> None:
-        self._continue_nudge = continue_nudge
-
-    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
-        if ConditionKey.EMPTY in ctx.retried:
-            return Proceed(response=response)
-        effective_content, _ = strip_think_tags(response.content.strip())
-        letter_count = sum(1 for character in effective_content if character.isalpha())
-        if letter_count >= PennyConstants.MIN_RESPONSE_LETTERS:
-            return Proceed(response=response)
-        nudge = self._continue_nudge if ctx.tools_available else ""
-        return Retry(condition=ConditionKey.EMPTY, nudge=nudge)
 
 
 class RefusalValidator:
     """The response is a model refusal ("I'm sorry, I can't…") rather than a real
-    answer — retry once, re-appending the response with no extra nudge."""
+    answer — retry once, re-appending the response."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.REFUSAL in ctx.retried:
             return Proceed(response=response)
         effective_content, _ = strip_think_tags(response.content.strip())
         if effective_content and is_refusal(effective_content):
-            return Retry(condition=ConditionKey.REFUSAL, nudge="")
+            return Retry(condition=ConditionKey.REFUSAL)
         return Proceed(response=response)
 
 
@@ -252,15 +183,19 @@ class HallucinatedUrlValidator:
                 "Hallucinated URL(s): %s",
                 ", ".join(url[:80] for url in bad_urls),
             )
-            return Retry(condition=ConditionKey.HALLUCINATED_URLS, nudge="")
+            return Retry(condition=ConditionKey.HALLUCINATED_URLS)
         return Proceed(response=response)
 
 
 class HallucinatedToolCallRepair:
     """The model emitted tool calls when no tools are available (final step,
     tools stripped) — strip them in place and let content fall through to the
-    rest of the chain, which triggers the empty-content retry/nudge.  A silent
-    ``Repair``, never a re-call."""
+    rest of the chain.  A silent ``Repair``, never a re-call.
+
+    What is left after the strip is usually nothing, and since #1937 nothing in this
+    chain answers that: the loop's honest empty-content close
+    (``_empty_content_fallback``) states that the run said nothing, rather than a nudge
+    turn asking it to try again."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ctx.tools_available or not response.has_tool_calls:

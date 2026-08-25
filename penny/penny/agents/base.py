@@ -35,6 +35,7 @@ from penny.text_validity import (
     is_degenerate_run,
     is_degenerate_tool_name,
     is_done_json_bail,
+    strip_think_tags,
 )
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
@@ -54,14 +55,11 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
-    EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
     RefusalValidator,
     XmlTagValidator,
-    build_strong_nudge,
     clean_malformed_urls,
-    strip_think_tags,
 )
 
 if TYPE_CHECKING:
@@ -193,11 +191,12 @@ class Agent:
     # set; a collector never reaches it (every call-less draw of its shape is
     # discarded upstream, #1839).  ``HallucinatedToolCallRepair`` runs first so a
     # tools-stripped final-step hallucination is cleaned before the
-    # content-shape validators see it.
+    # content-shape validators see it.  What is left here are the three draws that
+    # SAY something wrong; the ones that say nothing usable at all — call-shaped text
+    # (#1839) and the empty draw (#1937) — are discarded and re-rolled upstream.
     response_validators: list[ResponseValidator] = [
         HallucinatedToolCallRepair(),
         XmlTagValidator(),
-        EmptyResponseValidator(),
         RefusalValidator(),
         HallucinatedUrlValidator(),
     ]
@@ -779,11 +778,11 @@ class Agent:
         """Call the model, driving the response-validation chain on each output.
 
         Builds a ``LoopContext`` and runs ``self.response_validators`` via
-        ``run_validators`` (XML / empty / refusal / hallucinated-URL, with the
-        no-tools tool-call strip as a ``Repair``).  A ``Retry`` appends the bad
-        response + its nudge and re-calls — once per condition (``retried``).  A
-        ``Proceed`` returns the (possibly-repaired) response.  Tool-call responses
-        with tools available short-circuit unvalidated.
+        ``run_validators`` (XML / refusal / hallucinated-URL, with the no-tools
+        tool-call strip as a ``Repair``).  A ``Retry`` appends the bad response and
+        re-calls — once per condition (``retried``).  A ``Proceed`` returns the
+        (possibly-repaired) response.  Tool-call responses with tools available
+        short-circuit unvalidated.
 
         Every draw reaching this chain has already survived ``_invoke_nondegenerate``,
         which discards and re-rolls an UNUSABLE one (a transport artifact, or a draw
@@ -814,14 +813,12 @@ class Agent:
             match run_validators(self.response_validators, response, ctx):
                 case Proceed(response=validated):
                     return validated if validated is not None else response
-                case Retry(condition=condition, nudge=nudge):
+                case Retry(condition=condition):
                     # Append the post-repair response (tool calls stripped when
                     # tools were unavailable) — the chain may have stripped a
                     # hallucinated call before a content validator asked to retry.
                     appended = self._repaired_for_append(response, effective_tools)
-                    self._apply_retry(
-                        messages, appended, condition, nudge, retried, attempt, max_retries
-                    )
+                    self._apply_retry(messages, appended, condition, retried, attempt, max_retries)
                     if attempt + 1 == max_retries:
                         # Retries exhausted — the last response in its appended
                         # (tool-stripped, if no tools) form, so the loop's text/tool
@@ -850,33 +847,28 @@ class Agent:
         repaired.message.tool_calls = None
         return repaired
 
+    @staticmethod
     def _apply_retry(
-        self,
         messages: list[dict],
         response: LlmResponse,
         condition: ConditionKey,
-        nudge: str,
         retried: set[ConditionKey],
         attempt: int,
         max_retries: int,
     ) -> None:
-        """Apply a ``Retry`` disposition: record the condition, append the bad
-        response, then its nudge (if any).
+        """Apply a ``Retry`` disposition: record the condition and append the bad
+        response, which is the whole correction.
 
-        ``EMPTY`` carries the empty validator's mid-loop ``CONTINUE_NUDGE`` and an
-        empty nudge on the final step (tools stripped); the loop substitutes the
-        forceful ``build_strong_nudge`` there, since the strong builder needs the
-        message history a pure validator can't hold.  Other conditions just
-        re-append the response (empty nudge)."""
+        Nothing is said back to the model.  The teaching user-turn this used to append
+        retired with its last two customers — the call-shaped-text family (#1839) and
+        the empty draw (#1937) — both of which are discarded and re-rolled before the
+        chain runs, so a recovery no longer writes anything into the conversation that
+        a later reader could mistake for what the model did."""
         retried.add(condition)
         logger.warning(
             "Invalid response (%s) on attempt %d/%d", condition, attempt + 1, max_retries
         )
         messages.append(response.message.to_input_message())
-        if condition == ConditionKey.EMPTY and not nudge:
-            nudge = build_strong_nudge(messages)
-        if nudge:
-            messages.append({"role": MessageRole.USER, "content": nudge})
 
     async def _invoke_model(
         self,

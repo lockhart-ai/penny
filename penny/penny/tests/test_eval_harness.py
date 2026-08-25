@@ -43,7 +43,6 @@ from penny.database.skills import (
 )
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
-from penny.prompts import Prompt
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
@@ -195,6 +194,14 @@ from penny.tools.micro_context import (
     SkillSignature,
 )
 from penny.tools.models import ToolResult
+
+# The empty-response continue nudge, verbatim.  It is a LITERAL rather than a constant
+# because #1937 deleted ``Prompt.CONTINUE_NUDGE`` with the validator that appended it —
+# an empty draw is discarded and re-rolled now, so no new run can carry this frame.  The
+# harness still has to READ one: these rows are historical promptlog rows, and the
+# fragility / nudge-frame probes must keep recognising them (the same legacy-leg
+# discipline the eval conftest's retired bail markers keep).
+_RETIRED_CONTINUE_NUDGE = "Please provide your response."
 
 
 def _make_db(tmp_path, name: str = "harness") -> Database:
@@ -1318,7 +1325,7 @@ def test_routing_clean_keeps_the_legacy_bail_marker_and_continue_nudge_halves(tm
     # The empty-response retry nudge is still live, and is the verdict's other half — a sample
     # that only continued because it was nudged is not cleanly routed either.
     nudged = _make_db(tmp_path, "nudged")
-    _log_prompt(nudged, messages=[{"role": "user", "content": Prompt.CONTINUE_NUDGE}])
+    _log_prompt(nudged, messages=[{"role": "user", "content": _RETIRED_CONTINUE_NUDGE}])
     assert not draw_rerolled(nudged)
     assert continue_nudge_fired(nudged)
     assert not routing_clean(nudged)
@@ -1702,7 +1709,7 @@ def test_nudge_loop_spiral_classifies_pathology_not_harness(tmp_path) -> None:
     for _ in range(4):
         _log_prompt(
             spiral,
-            messages=[{"role": "user", "content": Prompt.CONTINUE_NUDGE}],
+            messages=[{"role": "user", "content": _RETIRED_CONTINUE_NUDGE}],
             response=_tool_call_response(
                 "browse", '{"queries": ["https://example.test/lake"], "extract": "the depth"}'
             ),
@@ -1726,7 +1733,7 @@ def test_single_nudge_injected_recovery_stays_non_pathology(tmp_path) -> None:
     recovery = _make_db(tmp_path, "recovery")
     _log_prompt(
         recovery,
-        messages=[{"role": "user", "content": Prompt.CONTINUE_NUDGE}],
+        messages=[{"role": "user", "content": _RETIRED_CONTINUE_NUDGE}],
         response=_tool_call_response("browse", '{"queries": ["https://example.test/lake"]}'),
     )
     _log_prompt(recovery, response=_content_response("Lake Baikal is the deepest, at 1,642 m."))

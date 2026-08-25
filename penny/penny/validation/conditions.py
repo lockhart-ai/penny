@@ -119,9 +119,10 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     # ── Response-shape conditions (live only; chat + collector) ──────────────
     # The unusable-DRAW conditions below — TOOL_PARSE_ERROR, TEXT_INSTEAD_OF_TOOL,
     # DONE_JSON_BAIL, CALL_AS_TEXT, DEGENERATE_OUTPUT, TOOL_CALL_LEAK,
-    # CALL_FRAGMENT_REPLY — are enforced by DISCARD-AND-REROLL: the draw never enters
-    # the conversation, so none of them can leave a marker on a completed run
-    # (#1839).  The rest are validator dispositions the model reads and recovers from.
+    # CALL_FRAGMENT_REPLY, EMPTY — are enforced by DISCARD-AND-REROLL: the draw never
+    # enters the conversation, so none of them can leave a marker on a completed run
+    # (#1839; EMPTY joined them in #1937).  The rest are validator dispositions the
+    # model reads and recovers from.
     _condition(
         ConditionKey.XML,
         "Response wrapped in XML/markup instead of plain prose",

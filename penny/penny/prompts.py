@@ -313,13 +313,15 @@ class Prompt:
 
     VISION_IMAGE_ONLY_CONTEXT = "User sent an image of: {caption}"
 
-    # The call-shaped-text family carries NO nudge (#1839).  A draw that was meant
-    # to be a tool call and is not one — a tool-parse failure, a collector's prose or
-    # done-as-JSON-text, a chat reply that is a serialized call — is an invalid draw:
-    # the loop discards it and re-rolls the unchanged context, so there is nothing to
-    # teach and no user turn to append.  The nudges that used to live here
-    # (TOOL_FORMAT_NUDGE / COLLECTOR_TOOL_CALL_NUDGE / COLLECTOR_DONE_JSON_NUDGE /
-    # CHAT_CALL_AS_TEXT_NUDGE) went with the validators that appended them.
+    # An invalid draw carries NO nudge (#1839/#1937).  A draw that was meant to be a
+    # tool call and is not one — a tool-parse failure, a collector's prose or
+    # done-as-JSON-text, a chat reply that is a serialized call — and a chat draw that
+    # says nothing at all are discarded and re-rolled on the unchanged context, so
+    # there is nothing to teach and no user turn to append.  The nudges that used to
+    # live here went with the validators that appended them: TOOL_FORMAT_NUDGE /
+    # COLLECTOR_TOOL_CALL_NUDGE / COLLECTOR_DONE_JSON_NUDGE / CHAT_CALL_AS_TEXT_NUDGE
+    # (#1839), then CONTINUE_NUDGE / FINAL_STEP_NUDGE (#1937) — the last two being the
+    # empty draw's mid-loop and final-step appends.
 
     # Injected as a user turn after a chat run that just AUTO-LEARNED a skill from
     # what it did this turn (#1658).  It carries the BRIEF render (#1804) — name,
@@ -458,16 +460,6 @@ class Prompt:
     REJECTED_CALL_NARRATION = (
         "You tried to call `{tool_name}`, but it was rejected before it could run:"
     )
-
-    # Nudge prompts (injected when model returns empty content)
-    FINAL_STEP_NUDGE = (
-        "STOP. You cannot search anymore. Tools are no longer available. "
-        "Answer the user NOW using ONLY what you already found. "
-        "The user asked: {original_question}"
-    )
-    # Chat-only: a collector's empty draw is a non-tool-call draw, which the loop
-    # discards and re-rolls before any nudge could be appended (#1839).
-    CONTINUE_NUDGE = "Please provide your response."
 
     # ``COLLECTOR_NOTIFY_STEPS`` stays DELETED (#1911).  The composed collector prompt
     # carries the skill and nothing else about telling the user: that moved out of the
