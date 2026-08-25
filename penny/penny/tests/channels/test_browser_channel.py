@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -13,7 +14,7 @@ import websockets
 from sqlmodel import Session, select
 
 from penny.channels.base import IncomingMessage
-from penny.channels.browser.channel import BrowserChannel, ConnectionInfo
+from penny.channels.browser.channel import BrowserChannel, ConnectionInfo, PendingToolRequest
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.database import Database
@@ -462,9 +463,13 @@ class _MockWs:
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.closed = False
 
     async def send(self, data: str) -> None:
         self.sent.append(json.loads(data))
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class _ClosedWs:
@@ -476,10 +481,55 @@ class _ClosedWs:
 
     def __init__(self) -> None:
         self.attempts = 0
+        self.closed = False
 
     async def send(self, data: str) -> None:
         self.attempts += 1
         raise websockets.ConnectionClosed(None, None)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _WedgedWs:
+    """A socket whose peer stopped reading: the send never raises and never returns.
+
+    A websocket send awaits flow-control drain, so a half-open connection is not an
+    error — it is a wait with no end, which is exactly what a write-driven check
+    cannot tell from a slow page.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def send(self, data: str) -> None:
+        await asyncio.Event().wait()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _DyingWs:
+    """A socket that answers a fixed number of writes and then never again.
+
+    The zombie's actual shape: the tool request goes out on a connection the
+    server still believes in, and nothing raises until the NEXT write — which is
+    why detection that waits for a write finds the corpse minutes late.
+    """
+
+    def __init__(self, answers: int = 1) -> None:
+        self.sent: list[dict] = []
+        self.remaining = answers
+        self.closed = False
+
+    async def send(self, data: str) -> None:
+        if self.remaining <= 0:
+            raise websockets.ConnectionClosed(None, None)
+        self.remaining -= 1
+        self.sent.append(json.loads(data))
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class TestBrowserConfigHandlers:
@@ -734,12 +784,12 @@ class TestBrowserRegister:
         # Simulate a tool response arriving after we send the request
         async def fake_tool_response() -> None:
             await wait_until(
-                lambda: any(not f.done() for f in channel._pending_requests.values()),
+                lambda: any(not p.future.done() for p in channel._pending_requests.values()),
                 timeout=2.0,
             )
-            for future in channel._pending_requests.values():
-                if not future.done():
-                    future.set_result(("page content here", None))
+            for pending in channel._pending_requests.values():
+                if not pending.future.done():
+                    pending.future.set_result(("page content here", None))
                     return
 
         asyncio.create_task(fake_tool_response())
@@ -858,6 +908,221 @@ class TestCapabilitiesAndToolRouting:
             seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
         )
         assert channel._get_tool_connection() is ws_live
+
+    @pytest.mark.asyncio
+    async def test_routing_prefers_a_registered_connection(self, db):
+        """A socket that never announced itself is not the routing target while a
+        registered one exists.
+
+        Tool requests are serviced by the addon's BACKGROUND script, and registering
+        is how it says so; an entry minted by the sidebar's own chat message has made
+        no such claim.  Both connections here are fresh and tool-enabled, and the
+        unregistered one is the more recently seen — so recency alone picked exactly
+        the socket that cannot answer.
+        """
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel.handle_message = AsyncMock()
+
+        ws_background = await self._register(channel, "firefox-background")
+        await self._set_capabilities(channel, "firefox-background", ws_background, True)
+
+        ws_sidebar = _MockWs()
+        await channel._process_raw_message(
+            ws_sidebar,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "message", "sender": "firefox-sidebar", "content": "hi"}),
+            None,
+        )
+        await self._set_capabilities(channel, "firefox-sidebar", ws_sidebar, True)
+        channel._connections["firefox-background"].last_heartbeat = datetime.now(UTC) - timedelta(
+            seconds=1
+        )
+
+        assert channel._connections["firefox-background"].registered is True
+        assert channel._connections["firefox-sidebar"].registered is False
+        assert channel._get_tool_connection() is ws_background
+
+        # And it holds in the pair the ordering actually decides: registration
+        # outranks the heartbeat, because the two answer different questions — a
+        # quiet REGISTERED socket said its background script is there and may just
+        # be suspended, while freshness on a socket that never claimed it can
+        # service a tool request is evidence of nothing.
+        channel._connections["firefox-background"].last_heartbeat = datetime.now(UTC) - timedelta(
+            seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
+        )
+        assert channel._get_tool_connection() is ws_background
+
+    @pytest.mark.asyncio
+    async def test_a_new_socket_on_a_known_label_is_unregistered_until_it_says_so(self, db):
+        """A different socket taking over a label does not inherit the previous
+        socket's claim to service tool calls — it has to register on its own."""
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        channel.handle_message = AsyncMock()
+
+        ws_first = await self._register(channel, "firefox-1")
+        assert channel._connections["firefox-1"].registered is True
+
+        ws_second = _MockWs()
+        await channel._process_raw_message(
+            ws_second,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "message", "sender": "firefox-1", "content": "hi"}),
+            None,
+        )
+        assert channel._connections["firefox-1"].ws is ws_second
+        assert channel._connections["firefox-1"].registered is False
+        assert ws_first is not ws_second
+
+        await self._register(channel, "firefox-1", ws=ws_second)
+        assert channel._connections["firefox-1"].registered is True
+
+
+class TestBrowserSocketLiveness:
+    """A dead socket is found by the liveness sweep, not by the next write.
+
+    The incident (#1940): a half-dead websocket stayed the routing target for
+    ~2.4 minutes — four retry rounds, twelve unanswered browse requests — because
+    nothing looked at it until a write finally failed with code 1006.
+    """
+
+    def _channel(self, db, port: int = 9999) -> BrowserChannel:
+        return BrowserChannel(host="localhost", port=port, message_agent=MagicMock(), db=db)
+
+    def _connect(self, channel, label, ws, *, fresh: bool, tool_use: bool = True) -> None:
+        """Put a registered, tool-enabled connection in the registry, live or quiet."""
+        conn = ConnectionInfo(ws=cast(Any, ws), tool_use_enabled=tool_use, registered=True)
+        if not fresh:
+            conn.last_heartbeat = datetime.now(UTC) - timedelta(
+                seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
+            )
+        channel._connections[label] = conn
+
+    @pytest.mark.asyncio
+    async def test_a_socket_that_stops_answering_is_closed_and_taken_out_of_routing(
+        self, db, caplog
+    ):
+        """The sweep probes a connection that stopped heartbeating; one that cannot
+        take the probe is closed and evicted, so the next tool request routes to the
+        connection that is actually there."""
+        channel = self._channel(db)
+        dead = _ClosedWs()
+        live = _MockWs()
+        self._connect(channel, "firefox-dead", dead, fresh=False)
+        self._connect(channel, "firefox-live", live, fresh=True)
+
+        with caplog.at_level(logging.WARNING):
+            await channel._probe_quiet_connections()
+
+        assert dead.attempts == 1  # it was probed rather than waited on
+        assert dead.closed  # and closed here, not at the next browse
+        assert "firefox-dead" not in channel._connections
+        assert channel._get_tool_connection() is live
+        assert "firefox-dead" in caplog.text
+        # A heartbeating connection is never probed — liveness costs no traffic.
+        assert live.sent == []
+
+    @pytest.mark.asyncio
+    async def test_a_quiet_but_live_socket_is_repaired_rather_than_evicted(self, db):
+        """The probe is the connect-time status frame, which the addon answers by
+        re-registering — so a socket that has merely gone quiet keeps its place and
+        gets the chance to restate what it is."""
+        channel = self._channel(db)
+        quiet = _MockWs()
+        self._connect(channel, "firefox-1", quiet, fresh=False)
+
+        await channel._probe_quiet_connections()
+
+        assert "firefox-1" in channel._connections
+        assert quiet.closed is False
+        assert quiet.sent == [{"type": "status", "connected": True}]
+
+    @pytest.mark.asyncio
+    async def test_a_request_pending_on_a_detected_dead_socket_fails_fast(self, db, caplog):
+        """A browse waiting on a corpse is failed the moment the sweep finds it —
+        with an error naming the connection and the retry — instead of burning the
+        caller's whole tool timeout for the same answer.
+
+        The other connection's in-flight request survives: the flush is scoped to
+        the socket that died, where the one it replaced rejected every pending
+        future and took live work down with it.
+        """
+        channel = self._channel(db)
+        dying = _DyingWs(answers=1)
+        self._connect(channel, "firefox-zombie", dying, fresh=True)
+
+        stranded = asyncio.create_task(
+            channel.send_tool_request("browse_url", {"url": "https://example.com"})
+        )
+        await wait_until(lambda: bool(dying.sent), timeout=2.0)
+        assert dying.sent[0]["type"] == "tool_request"
+
+        # The addon's background script is suspended: the socket stops heartbeating
+        # and the connection is torn down, and nothing writes to it again.
+        channel._connections["firefox-zombie"].last_heartbeat = datetime.now(UTC) - timedelta(
+            seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
+        )
+        # A second window is up, with a request of its own in flight.
+        live = _MockWs()
+        self._connect(channel, "firefox-live", live, fresh=True)
+        survivor: asyncio.Future[tuple[str, str | None]] = asyncio.get_event_loop().create_future()
+        channel._pending_requests["survivor"] = PendingToolRequest(
+            future=survivor, ws=cast(Any, live)
+        )
+
+        with caplog.at_level(logging.INFO):
+            await channel._probe_quiet_connections()
+
+        with pytest.raises(ConnectionError, match="firefox-zombie"):
+            await asyncio.wait_for(stranded, timeout=2.0)
+        assert "1 tool request" in caplog.text
+        assert not survivor.done()
+        assert "survivor" in channel._pending_requests
+
+    @pytest.mark.asyncio
+    async def test_a_request_sent_into_a_closed_socket_fails_immediately(self, db):
+        """The send itself failing is not something to wait a timeout out over —
+        no answer is coming, so the request errors and the socket is evicted."""
+        channel = self._channel(db)
+        dead = _ClosedWs()
+        self._connect(channel, "firefox-dead", dead, fresh=True)
+
+        with pytest.raises(ConnectionError, match="firefox-dead"):
+            await channel.send_tool_request("browse_url", {"url": "https://example.com"})
+
+        assert "firefox-dead" not in channel._connections
+        assert channel._pending_requests == {}
+
+    @pytest.mark.asyncio
+    async def test_a_probe_that_never_returns_counts_as_unreachable(self, db, monkeypatch):
+        """A send awaits flow-control drain, so a peer that stopped READING never
+        raises — it just never returns.  That is the one shape a write-driven check
+        cannot tell from a slow one, so the probe is bounded and a socket that
+        blows the window is evicted like one that raised."""
+        monkeypatch.setattr(PennyConstants, "BROWSER_LIVENESS_PROBE_TIMEOUT_SECONDS", 0.05)
+        channel = self._channel(db)
+        wedged = _WedgedWs()
+        self._connect(channel, "firefox-wedged", wedged, fresh=False)
+
+        await channel._probe_quiet_connections()
+
+        assert "firefox-wedged" not in channel._connections
+        assert wedged.closed
+
+    @pytest.mark.asyncio
+    async def test_listen_starts_the_liveness_sweep_and_close_stops_it(self, db):
+        """The sweep is started by ``listen`` and shuts down with the channel — the
+        wiring, not just the loop, since a sweep nobody starts leaves the whole
+        mechanism inert with every unit of it still passing."""
+        channel = self._channel(db, port=0)  # an ephemeral port — never a collision
+        serving = asyncio.create_task(channel.listen())
+        await wait_until(lambda: channel._liveness_task is not None, timeout=2.0)
+        assert channel._liveness_task is not None
+        assert not channel._liveness_task.done()
+
+        await channel.close()
+        serving.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serving
+
+        assert channel._liveness_task is None
 
 
 class TestBrowserPermissionDelegation:
@@ -1666,6 +1931,46 @@ class TestBrowserMemoryHandlers:
         assert resp["name"] == "board-games"
         assert resp["success"] is True
         assert "wrote 2 games" in resp["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_leaves_the_socket_still_labelled(self, tmp_path):
+        """Handling a trigger must not cost the socket its device label (#1940).
+
+        The arm returned bare where every other returns ``device_label``, so the
+        receive loop carried ``None`` for the rest of the connection's life: the
+        heartbeat handler no-oped, so nothing refreshed the entry's liveness, and
+        cleanup could no longer evict it — a zombie left as a routing candidate for
+        every browse that followed.  This is the socket that ate four browse retry
+        rounds in the incident: it was the one that had handled a run trigger, and
+        it closed logged as ``device=unregistered``.
+        """
+        channel, _ = self._channel(tmp_path)
+        collector = MagicMock()
+        collector.run_for = AsyncMock(return_value=(True, "Collector cycle complete."))
+        channel.set_collector(collector)
+
+        ws = _MockWs()
+        label = await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-1"}),
+            None,
+        )
+        after_trigger = await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "collection_trigger", "name": "board-games"}),
+            label,
+        )
+
+        assert after_trigger == "firefox-1"
+
+        # And the label still does its two jobs: heartbeats refresh the entry...
+        channel._connections["firefox-1"].last_heartbeat = datetime.now(UTC) - timedelta(minutes=5)
+        await channel._process_raw_message(ws, '{"type": "heartbeat"}', after_trigger)  # ty: ignore[invalid-argument-type]
+        assert channel._has_fresh_heartbeat(channel._connections["firefox-1"])
+
+        # ...and cleanup can evict it when the socket finally closes.
+        channel._cleanup_connection(ws, after_trigger)  # ty: ignore[invalid-argument-type]
+        assert "firefox-1" not in channel._connections
 
     @pytest.mark.asyncio
     async def test_collection_trigger_without_collector_reports_failure(self, tmp_path):
