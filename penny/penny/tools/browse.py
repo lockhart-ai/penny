@@ -351,27 +351,92 @@ class BrowseTool(Tool):
         extracted value.  Signal sections (read errors, dropped-query notes, channel
         outage) stay verbatim in place; a failed fetch keeps its ``## browse error:``
         section with no micro-context.  Each stored page-read carries its OWN fetch
-        handle (a search section carries none — it was never stored)."""
+        handle (a search section carries none — it was never stored).
+
+        The page batch is drawn CONCURRENTLY (#1941).  The per-page contexts are
+        independent by construction — a fresh single-shot context, its own document,
+        its own ledger row, its own poison/reroll budget — so no draw reads anything
+        the draw before it produced, and running them one after another spent the
+        whole batch's latency serially (a three-page extract, ~45-60s).
+
+        Attribution survives because the batch is PLANNED before it runs: each page's
+        slot in the rendered output and its own fetch handle are bound in section
+        order up front (``_extract_batch``), and every result is written back into
+        that slot (``_merge_extracted``) — so the sections render in page order
+        whatever order the draws finish in.  Nothing else moves: same calls, same
+        renders, same per-draw reroll machinery."""
         micro_context = self._micro_context
         if micro_context is None:
             return self._extract_unavailable_result(instruction, stored)
-        handles = iter(stored)  # aligned 1:1 with the page-read sections, in order
-        rendered: list[str] = []
-        succeeded_any = False
-        for section in sections:
-            if not self._is_content_section(section):
-                rendered.append(section)  # error / dropped / outage — kept verbatim
-                continue
-            page_read = section.startswith(PennyConstants.BROWSE_PAGE_HEADER)
-            entry = next(handles, None) if page_read else None
-            page_section, ok = await self._extract_one_page(
-                micro_context, section, instruction, entry
-            )
-            rendered.append(page_section)
-            succeeded_any = succeeded_any or ok
-        return ToolResult(
-            message=PennyConstants.SECTION_SEPARATOR.join(rendered), success=succeeded_any
+        batch = self._extract_batch(sections, stored)
+        drawn = await asyncio.gather(
+            *[
+                self._extract_one_page(micro_context, section, instruction, entry)
+                for _, section, entry in batch
+            ],
+            return_exceptions=True,
         )
+        extracted = self._drawn_pages(drawn)
+        return ToolResult(
+            message=PennyConstants.SECTION_SEPARATOR.join(
+                self._merge_extracted(sections, batch, extracted)
+            ),
+            success=any(succeeded for _, succeeded in extracted),
+        )
+
+    def _extract_batch(
+        self, sections: list[str], stored: list[MemoryEntry]
+    ) -> list[tuple[int, str, MemoryEntry | None]]:
+        """Plan the concurrent batch — one ``(slot, section, handle)`` per CONTENT
+        section, in page order.
+
+        The fetch handles are consumed HERE, sequentially, aligned 1:1 with the
+        page-read sections in order, so which page owns which handle is settled before
+        a single draw is issued: a search section (readable, never stored) and a read
+        failure (no content section at all) cannot slide a page's handle onto its
+        neighbour, whatever order the concurrent draws complete in."""
+        handles = iter(stored)
+        batch: list[tuple[int, str, MemoryEntry | None]] = []
+        for slot, section in enumerate(sections):
+            if not self._is_content_section(section):
+                continue  # error / dropped / outage — kept verbatim by the merge
+            page_read = section.startswith(PennyConstants.BROWSE_PAGE_HEADER)
+            batch.append((slot, section, next(handles, None) if page_read else None))
+        return batch
+
+    @staticmethod
+    def _drawn_pages(drawn: list[tuple[str, bool] | BaseException]) -> list[tuple[str, bool]]:
+        """Every page the batch drew — or the FIRST failure, re-raised in page order.
+
+        ``return_exceptions=True`` is what makes the concurrent batch faithful to the
+        sequential loop it replaces.  ``asyncio.gather`` does NOT cancel a raising
+        child's siblings, so without it one draw's transport failure (an ``LlmError``
+        the client raises once its retries are spent) would leave the rest of the
+        batch running unawaited — still spending the backend, still writing their own
+        ledger rows, their results dropped on the floor — while the tool had already
+        failed.  Awaiting the whole batch and then re-raising the EARLIEST failing
+        page keeps the observable behaviour exactly what it was (that page ends the
+        call, with its own error) and orphans nothing."""
+        pages: list[tuple[str, bool]] = []
+        for outcome in drawn:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            pages.append(outcome)
+        return pages
+
+    @staticmethod
+    def _merge_extracted(
+        sections: list[str],
+        batch: list[tuple[int, str, MemoryEntry | None]],
+        extracted: list[tuple[str, bool]],
+    ) -> list[str]:
+        """Write each drawn page back into ITS OWN slot, leaving every signal section
+        exactly where it stood — the rendered order is the page order the batch was
+        planned in, never the order the concurrent draws happened to finish in."""
+        rendered = list(sections)
+        for (slot, _, _), (page_section, _succeeded) in zip(batch, extracted, strict=True):
+            rendered[slot] = page_section
+        return rendered
 
     async def _extract_one_page(
         self,

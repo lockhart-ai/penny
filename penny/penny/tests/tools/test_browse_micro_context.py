@@ -14,12 +14,21 @@ The micro-context output contract is ENUMERATED on both sides of the interface
 deterministic tag parse — untagged output is a contract violation that gets one
 reroll and then fails honestly, never a value.
 
+A multi-page batch draws its pages CONCURRENTLY (#1941) while keeping every #1682
+guarantee: per-page attribution, stable page order, one ledger row per context,
+and a poison draw re-rolling only its OWN context.  Overlap is asserted
+STRUCTURALLY — a probe client records how many draws are in flight at once and
+forces the batch to complete in reverse order — never by wall clock.
+
 Fictional pages + deterministic mock model responses throughout.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections import Counter
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -32,7 +41,7 @@ from penny.database import Database
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmMessage, LlmResponse
+from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.base import Tool
@@ -71,6 +80,21 @@ _EXTRACTED_VALUE_2 = "The current bid is 512 zorkmids."
 _TAGGED_VALUE_2 = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE_2}"
 _MARKER_1 = _BODY_PHRASE  # "Antique Zephyr Compass" — page 1's body phrase, survives cleaning
 _MARKER_2 = "Brass Orrery"  # page 2's body phrase
+
+# A third fictional page — the concurrency batch (#1941) is measured at three pages,
+# the size the ticket's serial cost was observed at.
+_PAGE_URL_3 = "https://auctions.example/lot/7"
+_PAGE_BODY_3 = "Lot 7 — Copper Sundial. Current bid: 3 zorkmids. Closes Wednesday at noon."
+_PAGE_TEXT_3 = f"Title: Lot 7\n{_PAGE_BODY_3}"
+_EXTRACTED_VALUE_3 = "The current bid is 3 zorkmids."
+_TAGGED_VALUE_3 = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE_3}"
+_MARKER_3 = "Copper Sundial"  # page 3's body phrase
+
+# The grace window a probe draw waits on its gate before giving up.  It is only ever
+# SPENT on the failure path — in a concurrent batch every gate is already set and
+# nothing waits — so a sequential regression fails on the recorded peak (a readable
+# assertion naming what it saw) instead of hanging the suite.
+_GATE_GRACE_SECONDS = 0.5
 
 
 def _make_db(tmp_path, name: str = "test") -> Database:
@@ -161,6 +185,94 @@ def _multi_extract_tool(db: Database, model: MockLlmClient | LlmClient, provider
     )
     tool.set_browse_provider(provider)
     return tool
+
+
+def _responds_in_sequence(routes: dict[str, list[str]]) -> tuple[MockLlmClient, Counter[str]]:
+    """A mock model whose reply is chosen by page marker AND by how many draws that
+    page has already had (the last reply repeating once its list runs out) — the
+    re-roll-aware twin of ``_responds_routed``.
+
+    It returns the per-page draw counter beside the client, which is what makes "a
+    poisoned draw re-rolls only ITS context" a countable claim rather than an
+    inference from the rendered output."""
+    draws: Counter[str] = Counter()
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        content = request["messages"][-1]["content"]
+        for marker, replies in routes.items():
+            if marker in content:
+                reply = replies[min(draws[marker], len(replies) - 1)]
+                draws[marker] += 1
+                return LlmResponse(message=LlmMessage(role="assistant", content=reply))
+        raise AssertionError(f"no route for micro-context content: {content!r}")
+
+    model = MockLlmClient()
+    model.set_response_handler(handler)
+    return model, draws
+
+
+class _OverlapProbe:
+    """A model client that records how many micro-context draws are IN FLIGHT at once
+    and forces the batch to complete in REVERSE issue order (#1941).
+
+    Both halves are structural, so neither reads a clock.  Each draw parks until
+    every expected draw has arrived — a concurrent batch therefore records a peak of
+    ``len(replies)`` while a sequential caller records 1 — and then waits for its
+    SUCCESSOR to finish before returning, so the LAST page issued is the FIRST to
+    complete and a renderer that appended results as they arrived would emit the
+    sections backwards.  Every wait carries ``_GATE_GRACE_SECONDS`` so a sequential
+    regression fails on the recorded peak instead of deadlocking.
+    """
+
+    def __init__(self, replies: dict[str, str]) -> None:
+        self._replies = replies  # page marker → its tagged reply, in issue order
+        self._markers = list(replies)
+        self._all_in_flight = asyncio.Event()
+        self._finished = {marker: asyncio.Event() for marker in replies}
+        self.in_flight = 0
+        self.peak_in_flight = 0
+        self.completion_order: list[str] = []
+        self.draws: Counter[str] = Counter()
+
+    async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
+        """One micro-context draw: identify whose page it is, join the batch, hold
+        until the whole batch is in flight, then complete in reverse issue order."""
+        marker = self._marker_for(messages)
+        self.draws[marker] += 1
+        self._arrive()
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._all_in_flight.wait(), _GATE_GRACE_SECONDS)
+        await self._wait_for_successor(marker)
+        self.in_flight -= 1
+        self.completion_order.append(marker)
+        self._finished[marker].set()
+        return LlmResponse(message=LlmMessage(role="assistant", content=self._replies[marker]))
+
+    def _arrive(self) -> None:
+        """Join the batch, recording the peak; the last arrival opens the gate."""
+        self.in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        if self.in_flight >= len(self._markers):
+            self._all_in_flight.set()
+
+    async def _wait_for_successor(self, marker: str) -> None:
+        """Park until the NEXT page issued has finished — the reverse-completion
+        forcing.  The last page issued has no successor, so it returns first."""
+        successor = self._markers.index(marker) + 1
+        if successor >= len(self._markers):
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(
+                self._finished[self._markers[successor]].wait(), _GATE_GRACE_SECONDS
+            )
+
+    def _marker_for(self, messages: list[dict]) -> str:
+        """Whose page this draw is reading, by the first page marker in its content."""
+        content = messages[-1].get("content", "")
+        for marker in self._markers:
+            if marker in content:
+                return marker
+        raise AssertionError(f"no route for micro-context content: {content!r}")
 
 
 # ── Integration: bulk content stays out of the main context ───────────────────
@@ -434,6 +546,180 @@ async def test_failed_fetch_section_coexists_with_extracted_section(tmp_path):
     assert _EXTRACTED_VALUE_2 in sections[1]
     assert _HANDLE_RE.search(sections[1]) is None
     assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_failed_fetch_in_the_middle_keeps_its_slot_and_its_siblings_handles(tmp_path):
+    """A read failure sits in ITS OWN slot and consumes no page's handle — the half of
+    the #1682 contract the concurrent batch (#1941) has to keep structurally.
+
+    The failure is in the MIDDLE of three queries, so both claims are testable at
+    once: the error section renders between its siblings (page order, not completion
+    order), and the last page's NOT_PRESENT render carries the handle of ITS OWN
+    stored entry — the second of the two stored, not the first.  The handles are
+    bound in section order before any draw is issued, so the un-stored failed fetch
+    cannot slide page 3's handle onto page 1."""
+    db = _make_db(tmp_path)
+    model = _responds_routed({_MARKER_1: _TAGGED_VALUE, _MARKER_3: _TAGGED_NOT_PRESENT})
+    tool = _multi_extract_tool(
+        db,
+        model,
+        _provider_by_url(
+            {_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2, _PAGE_URL_3: _PAGE_TEXT_3},
+            failing=frozenset({_PAGE_URL_2}),
+        ),
+    )
+
+    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION)
+
+    # Only the two READ pages were stored; the failed fetch stored nothing.
+    browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
+    assert browse_log is not None
+    stored = browse_log.read_all()
+    assert len(stored) == 2
+    handles = {
+        marker: next(entry.id for entry in stored if marker in entry.content)
+        for marker in (_MARKER_1, _MARKER_3)
+    }
+    assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_ERROR_HEADER}{_PAGE_URL_2}\n"
+        "Could not read this page: page unavailable. Try a different source or a "
+        "reworded query; if other queries in this batch succeeded, work from those "
+        "instead of retrying this one.",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n"
+        "The page doesn't contain 'the current bid amount' — the page lists no bid "
+        f"amount. Full page content saved to browse-results#{handles[_MARKER_3]} — "
+        "read it there for anything more.",
+    ]
+    # Page 3's handle is its OWN entry's (interpolated above); page 1's appears
+    # nowhere, so the un-stored failed fetch slid no handle onto its neighbour.
+    assert f"browse-results#{handles[_MARKER_1]}" not in result.message
+    assert result.success is True
+
+
+# ── Concurrent page batch (#1941) ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_page_batch_draws_concurrently_and_renders_in_page_order(tmp_path):
+    """A three-page extract issues all three micro-context draws CONCURRENTLY and
+    still renders them in PAGE order (#1941).
+
+    Both claims are structural, neither is a wall-clock measurement.  Overlap: the
+    probe holds every draw until all three are in flight, so the recorded peak is 3 —
+    a sequential caller would record 1.  Order: the probe then releases them in
+    REVERSE, so the batch COMPLETES backwards and a renderer appending results as
+    they arrived would emit the sections backwards.  N pages still cost exactly N
+    draws — the batch is a fan-out, not a retry."""
+    db = _make_db(tmp_path)
+    probe = _OverlapProbe(
+        {_MARKER_1: _TAGGED_VALUE, _MARKER_2: _TAGGED_VALUE_2, _MARKER_3: _TAGGED_VALUE_3}
+    )
+    tool = _multi_extract_tool(
+        db,
+        cast(Any, probe),
+        _provider_by_url(
+            {_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2, _PAGE_URL_3: _PAGE_TEXT_3}
+        ),
+    )
+
+    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION)
+
+    assert probe.draws == Counter({_MARKER_1: 1, _MARKER_2: 1, _MARKER_3: 1})
+    assert probe.peak_in_flight == 3
+    assert probe.completion_order == [_MARKER_3, _MARKER_2, _MARKER_1]
+    sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
+    assert sections == [
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_3}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_3}",
+    ]
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_single_page_batch_is_one_draw_rendered_unchanged(tmp_path):
+    """A batch of ONE fans out to nothing and renders byte-identically to the
+    pre-#1941 sequential form — the gather is over the planned batch, so the
+    single-page path costs exactly one draw with nothing in flight beside it."""
+    db = _make_db(tmp_path)
+    probe = _OverlapProbe({_MARKER_1: _TAGGED_VALUE})
+    tool = _multi_extract_tool(db, cast(Any, probe), _provider_by_url({_PAGE_URL: _PAGE_TEXT}))
+
+    result = await tool.execute(queries=[_PAGE_URL], extract=_INSTRUCTION)
+
+    assert probe.draws == Counter({_MARKER_1: 1})
+    assert probe.peak_in_flight == 1
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    )
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_poisoned_draw_rerolls_only_its_own_context(tmp_path):
+    """Poison in ONE page's context re-rolls THAT context alone (#1941).
+
+    Each page draws in its own single-shot context with its own reroll budget, so
+    page 1's two discarded draws cost page 1 three draws and its concurrent sibling
+    exactly one — and both pages still render their own value, in page order."""
+    db = _make_db(tmp_path)
+    poison = "...???..."
+    model, draws = _responds_in_sequence(
+        {_MARKER_1: [poison, poison, _TAGGED_VALUE], _MARKER_2: [_TAGGED_VALUE_2]}
+    )
+    tool = _multi_extract_tool(
+        db, model, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
+    )
+
+    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+
+    assert draws[_MARKER_1] == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    assert draws[_MARKER_2] == 1  # the clean sibling was never re-drawn
+    sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
+    assert sections == [
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n{_INSTRUCTION}: {_EXTRACTED_VALUE_2}",
+    ]
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_a_raising_draw_ends_the_call_with_every_sibling_awaited(tmp_path):
+    """A transport failure inside ONE page's draw ends the whole call with THAT error
+    — the behaviour the sequential loop had — and leaves no sibling draw running
+    behind it (#1941).
+
+    ``asyncio.gather`` does not cancel siblings when a child raises, so the batch is
+    collected with ``return_exceptions=True`` and the earliest failing page re-raised.
+    By the time the error leaves the tool every draw has finished, so nothing is still
+    spending the backend (and writing its own ledger row) against a call that already
+    failed.  The sibling's ``asyncio.sleep(0)`` is a cooperative YIELD, not a wait: it
+    gives the loop the chance to resume the failed gather early, which is exactly what
+    would leave it orphaned."""
+    db = _make_db(tmp_path)
+    finished: list[str] = []
+
+    class _RaisesOnTheFirstPage:
+        async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
+            content = messages[-1].get("content", "")
+            if _MARKER_1 in content:
+                raise LlmTimeoutError("model call timed out")
+            await asyncio.sleep(0)
+            finished.append(_MARKER_2)
+            return LlmResponse(message=LlmMessage(role="assistant", content=_TAGGED_VALUE_2))
+
+    tool = _multi_extract_tool(
+        db,
+        cast(Any, _RaisesOnTheFirstPage()),
+        _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2}),
+    )
+
+    with pytest.raises(LlmTimeoutError):
+        await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+
+    assert finished == [_MARKER_2]  # awaited to completion, never orphaned
 
 
 def test_render_tool_call_names_the_micro_context_browse_step():
