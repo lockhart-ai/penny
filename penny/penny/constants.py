@@ -513,8 +513,41 @@ class PennyConstants:
     # How many nearest past messages the notify document carries from each of the two
     # message logs (#1911) — the ``k=5`` the retired notify steps asked for, kept
     # because a handful is what a callback line can be judged from and the document
-    # stays short.
+    # stays short.  Since #1934 it is also the RENDER's own cap on that section, so the
+    # bound holds wherever the lines came from rather than only where they were fetched.
     NOTIFY_RELATED_MESSAGES = 5
+    # The notify document's section budgets (#1934).  The document is assembled whole,
+    # framework-side, and the first live post-reset cycle assembled 50,805 characters of
+    # it for an ordinary three-page news round — on a model whose degeneration onset is
+    # ~4K prompt tokens.  Three things carried the bulk, and each has a budget below: a
+    # browse call's RESULT inlined whole (31,725), the rendered CALL notation restating
+    # the whole write payload in its arguments (14,923 on ONE line), and the entries the
+    # cycle wrote (14,989 — the same content a third time).
+    #
+    # These are prompt-budget bounds with a VISIBLE overflow, not silent truncations:
+    # every cut states the characters or the items it left out, so a draw reading a
+    # condensed result knows it is reading part of one.  Proportions follow what the
+    # message is written FROM — the entries the cycle wrote are the payload and get the
+    # largest share, the calls are how it got there, and the earlier conversation is
+    # background.  Together they hold an ordinary document near ~10K characters (~2.5K
+    # tokens), comfortably under the onset, with the frame on top.  Deliberately
+    # generous within that; sizing is tunable later.
+    #
+    # EVERY free-text field the document repeats is bounded, not just the three that
+    # carried the measured bulk — a ceiling one unbounded field can defeat is not a
+    # ceiling, and an entry KEY is model-authored with no length gate anywhere and
+    # renders once per written entry.  The two fields deliberately left WHOLE are the
+    # collection's name and the routine's: they render once each, they are bounded
+    # upstream where they are derived (``DERIVED_NAME_MAX_LENGTH`` / the framer's mint),
+    # and they are ANCHORS a message may need to copy verbatim.
+    NOTIFY_WRITTEN_ENTRIES = 8
+    NOTIFY_WRITTEN_CONTENT_CHARS = 500
+    NOTIFY_ENTRY_KEY_CHARS = 120
+    NOTIFY_CYCLE_CALLS = 10
+    NOTIFY_CALL_CHARS = 150
+    NOTIFY_CALL_RESULT_CHARS = 300
+    NOTIFY_RELATED_LINE_CHARS = 200
+    NOTIFY_DESCRIPTION_CHARS = 300
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

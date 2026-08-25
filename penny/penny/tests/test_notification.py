@@ -5,7 +5,8 @@ Three layers, tested where each lives:
 - **The program's calls, and when a run has covered them** (``penny.program``) — pure,
   so every program shape a routine can have is a plain case rather than a live run.
 - **The notify document** (``render_notification``) — pure, so the exact text the draw
-  reads is pinned whole, including the nothing-matched form and a no-write program's.
+  reads is pinned whole, including the nothing-matched form, a no-write program's, and
+  (#1934) the bounded shape an oversized cycle assembles to.
 - **The send gate + enqueue** (``CollectorNotifier.queue``) — the three declines that
   need runtime state, and the enqueue that is the successful handoff.
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.notification import (
     CollectorNotifier,
     CycleCall,
@@ -103,24 +105,32 @@ _DOCUMENT = NotificationInput(
 
 def test_notify_document_renders_whole():
     """The whole document, char-for-char — what the draw reads, assembled entirely
-    framework-side: what ran, every call with its result verbatim, what landed in the
-    store, and the past messages Python looked up.  A log that matched nothing renders
-    no section of its own; only a document where NEITHER matched says so."""
+    framework-side: what ran, what landed in the store, how the cycle got there with
+    every call and its result, and the past messages Python looked up.
+
+    The ORDINARY case is unchanged by the #1934 bound: nothing here overflows a section
+    budget, so every value is verbatim and no omission marker appears anywhere.  What
+    #1934 did change is the ORDER — the entries the cycle wrote lead, the earlier
+    conversation is labelled background and comes last.  A log that matched nothing
+    renders no section of its own; only a document where NEITHER matched says so."""
     assert render_notification(_DOCUMENT) == (
         "The `ferry-departures` routine just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the dawn sailing on the north pier timetable\n"
         "The routine it runs: check_timetable\n"
         "\n"
-        "## What the cycle did\n"
+        "## What it wrote this cycle\n"
+        "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
+        "\n"
+        "## How it got there\n"
         "1. browse(queries=['https://northpier.example/departures'])\n"
         "   → EXTRACTED: 06:12\n"
         "2. collection_write(memory='ferry-departures', entries=['06:12'])\n"
         "   → Wrote 1 entry.\n"
         "\n"
-        "## What it wrote this cycle\n"
-        "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
+        "## Background: earlier messages\n"
+        "These messages are from before this cycle ran. What this cycle found is at the "
+        "top of this document.\n"
         "\n"
-        "## What the two of you have said about this before\n"
         "### user-messages\n"
         "1. [2026-08-19 07:03 UTC] when does the dawn one leave?"
     )
@@ -155,18 +165,225 @@ def test_notify_document_states_a_no_write_cycle_and_a_nothing_matched_lookup():
         "The `tide-times` routine just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the tide table for the north pier\n"
         "\n"
-        "## What the cycle did\n"
+        "## What it wrote this cycle\n"
+        "It wrote nothing down this cycle.\n"
+        "\n"
+        "## How it got there\n"
         "1. log_read(memory='user-messages')\n"
         "   → No entries.\n"
         "2. browse(queries=['https://tides.example'])\n"
         "   → (this call failed) ## browse error: unreachable\n"
         "\n"
-        "## What it wrote this cycle\n"
-        "It wrote nothing down this cycle.\n"
-        "\n"
-        "## What the two of you have said about this before\n"
+        "## Background: earlier messages\n"
         "Nothing in your past messages matched this — there is no callback to make."
     )
+
+
+# ── The document's bound and its order (#1934) ────────────────────────────────
+
+
+# The failure shape, recreated with synthetic content: one browse call whose RESULT is
+# a whole fetched page, one write call whose ARGUMENTS restate the payload it carried,
+# entries holding that same text a third time, more calls and entries than a section
+# shows, and a background section of long prior messages.  The measured production
+# document assembled to 50,805 characters this way.
+_PAGE = "## browse: https://harbour.example/\n" + "\n".join(
+    f"{n}. the keel lantern on pier {n} went dark overnight" for n in range(1, 400)
+)
+_DIGEST = " ".join(f"pier {n} dark;" for n in range(1, 900))
+_WRITE_CALL = (
+    "collection_write(memory='harbour-watch', "
+    f"entries=[{{'key': 'lanterns', 'content': '{_DIGEST}'}}])"
+)
+_LONG_MESSAGE = "1. [2026-01-02 07:03 UTC] " + " ".join(
+    f"which pier was it, {n}?" for n in range(1, 60)
+)
+# An entry KEY is model-authored and length-gated nowhere upstream, and it renders once
+# per written entry — so it is bounded here like every other free-text field.
+_LONG_KEY = "lanterns-" + "-".join(str(n) for n in range(1, 60))
+
+_OVERSIZED = NotificationInput(
+    collection="harbour-watch",
+    description="the pier lanterns on the harbour front",
+    routine="watch_lanterns",
+    calls=(
+        CycleCall(call="browse(queries=['https://harbour.example/'])", result=_PAGE),
+        CycleCall(call=_WRITE_CALL, result="Wrote 10 entries to 'harbour-watch'."),
+        *(
+            CycleCall(
+                call=f"collection_read_latest(memory='harbour-watch', k={n})",
+                result="No entries.",
+            )
+            for n in range(3, 12)
+        ),
+    ),
+    written=(
+        WrittenEntry(memory="harbour-watch", key=_LONG_KEY, content=_DIGEST),
+        *(
+            WrittenEntry(memory="harbour-watch", key=f"pier-{n}", content=f"pier {n} is dark")
+            for n in range(2, 11)
+        ),
+    ),
+    related=(
+        RelatedMessages(
+            source="user-messages",
+            lines=(
+                _LONG_MESSAGE,
+                *(f"{n}. [2026-01-0{n} 07:03 UTC] which lantern?" for n in range(2, 8)),
+            ),
+        ),
+        RelatedMessages(
+            source="penny-messages",
+            lines=(
+                "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) "
+                "The pier 1 lantern went dark overnight.",
+            ),
+        ),
+    ),
+)
+
+# The document's declared ceiling: every free-text field's own budget, plus an allowance
+# for the frame those budgets sit in (the headings, the background lead, the per-item
+# prefixes, the memory and routine names, and the omission markers themselves).  Derived
+# from the constants rather than picked, so tightening a budget tightens the claim with
+# it — and a field left OUT of this sum is a field that can defeat the ceiling, which is
+# why the entry key is in it.
+_SECTION_BUDGETS = (
+    PennyConstants.NOTIFY_WRITTEN_ENTRIES
+    * (PennyConstants.NOTIFY_WRITTEN_CONTENT_CHARS + PennyConstants.NOTIFY_ENTRY_KEY_CHARS)
+    + PennyConstants.NOTIFY_CYCLE_CALLS
+    * (PennyConstants.NOTIFY_CALL_CHARS + PennyConstants.NOTIFY_CALL_RESULT_CHARS)
+    + 2 * PennyConstants.NOTIFY_RELATED_MESSAGES * PennyConstants.NOTIFY_RELATED_LINE_CHARS
+    + PennyConstants.NOTIFY_DESCRIPTION_CHARS
+)
+_FRAME_ALLOWANCE = 2_000
+_DECLARED_BOUND = _SECTION_BUDGETS + _FRAME_ALLOWANCE
+
+
+def test_an_oversized_cycle_assembles_under_the_declared_bound():
+    """The whole bounded document, char-for-char.
+
+    Every one of the three bulk carriers is condensed against its own budget and every
+    cut STATES itself — the page-sized browse result, the write call whose arguments
+    restate its payload, and the entry holding that text again — as is the entry KEY
+    nothing upstream length-gates, and each section that holds more items than it shows
+    ends in an honest count of the rest.  The entries the cycle wrote still LEAD, the
+    earlier conversation is still labelled background and still last, and the whole
+    thing lands under the ceiling the constants declare."""
+    rendered = render_notification(_OVERSIZED)
+
+    assert rendered == (
+        "The `harbour-watch` routine just ran on its own, and it is time to tell the user.\n"
+        "What this collection is for: the pier lanterns on the harbour front\n"
+        "The routine it runs: watch_lanterns\n"
+        "\n"
+        "## What it wrote this cycle\n"
+        f"- into `harbour-watch`, under `{_LONG_KEY[:120]}"
+        f"… [{len(_LONG_KEY) - 120} characters omitted]`: {_DIGEST[:500]}"
+        f"… [{len(_DIGEST) - 500} characters omitted]\n"
+        "- into `harbour-watch`, under `pier-2`: pier 2 is dark\n"
+        "- into `harbour-watch`, under `pier-3`: pier 3 is dark\n"
+        "- into `harbour-watch`, under `pier-4`: pier 4 is dark\n"
+        "- into `harbour-watch`, under `pier-5`: pier 5 is dark\n"
+        "- into `harbour-watch`, under `pier-6`: pier 6 is dark\n"
+        "- into `harbour-watch`, under `pier-7`: pier 7 is dark\n"
+        "- into `harbour-watch`, under `pier-8`: pier 8 is dark\n"
+        "2 more entries not shown.\n"
+        "\n"
+        "## How it got there\n"
+        "1. browse(queries=['https://harbour.example/'])\n"
+        f"   → {_PAGE[:300]}… [{len(_PAGE) - 300} characters omitted]\n"
+        f"2. {_WRITE_CALL[:150]}… [{len(_WRITE_CALL) - 150} characters omitted]\n"
+        "   → Wrote 10 entries to 'harbour-watch'.\n"
+        "3. collection_read_latest(memory='harbour-watch', k=3)\n"
+        "   → No entries.\n"
+        "4. collection_read_latest(memory='harbour-watch', k=4)\n"
+        "   → No entries.\n"
+        "5. collection_read_latest(memory='harbour-watch', k=5)\n"
+        "   → No entries.\n"
+        "6. collection_read_latest(memory='harbour-watch', k=6)\n"
+        "   → No entries.\n"
+        "7. collection_read_latest(memory='harbour-watch', k=7)\n"
+        "   → No entries.\n"
+        "8. collection_read_latest(memory='harbour-watch', k=8)\n"
+        "   → No entries.\n"
+        "9. collection_read_latest(memory='harbour-watch', k=9)\n"
+        "   → No entries.\n"
+        "10. collection_read_latest(memory='harbour-watch', k=10)\n"
+        "   → No entries.\n"
+        "1 more call not shown.\n"
+        "\n"
+        "## Background: earlier messages\n"
+        "These messages are from before this cycle ran. What this cycle found is at the "
+        "top of this document.\n"
+        "\n"
+        "### user-messages\n"
+        f"{_LONG_MESSAGE[:200]}… [{len(_LONG_MESSAGE) - 200} characters omitted]\n"
+        "2. [2026-01-02 07:03 UTC] which lantern?\n"
+        "3. [2026-01-03 07:03 UTC] which lantern?\n"
+        "4. [2026-01-04 07:03 UTC] which lantern?\n"
+        "5. [2026-01-05 07:03 UTC] which lantern?\n"
+        "2 more messages not shown.\n"
+        "\n"
+        "### penny-messages\n"
+        "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) "
+        "The pier 1 lantern went dark overnight."
+    )
+
+    # The input carried the production failure's bulk; the render carries the budget.
+    raw = len(_PAGE) + len(_WRITE_CALL) + len(_DIGEST) * 2 + len(_LONG_MESSAGE)
+    assert raw > 50_000
+    assert len(rendered) < _DECLARED_BOUND
+
+
+def test_a_prior_notification_cannot_displace_this_cycles_writes():
+    """The failure this order exists to stop: the previous notification's own lead sat
+    in the closest-prior-messages section, and the composed message re-reported it as
+    today's top story.
+
+    A prior message repeating what an OLDER cycle found now reaches the draw last, in a
+    section that says what it is, and this cycle's own write is the first thing after
+    the header — so the freshest fact is the one nearest the top, whatever a background
+    line happens to say."""
+    document = NotificationInput(
+        collection="harbour-watch",
+        description="the pier lanterns on the harbour front",
+        calls=(CycleCall(call="browse(queries=['https://harbour.example/'])", result="read"),),
+        written=(WrittenEntry(memory="harbour-watch", key="lanterns", content="pier 4 went dark"),),
+        related=(
+            RelatedMessages(source="user-messages", lines=()),
+            RelatedMessages(
+                source="penny-messages",
+                lines=("1. [2026-01-08 09:00 UTC] (sent by harbour-watch) pier 1 went dark",),
+            ),
+        ),
+    )
+
+    rendered = render_notification(document)
+    assert rendered == (
+        "The `harbour-watch` routine just ran on its own, and it is time to tell the user.\n"
+        "What this collection is for: the pier lanterns on the harbour front\n"
+        "\n"
+        "## What it wrote this cycle\n"
+        "- into `harbour-watch`, under `lanterns`: pier 4 went dark\n"
+        "\n"
+        "## How it got there\n"
+        "1. browse(queries=['https://harbour.example/'])\n"
+        "   → read\n"
+        "\n"
+        "## Background: earlier messages\n"
+        "These messages are from before this cycle ran. What this cycle found is at the "
+        "top of this document.\n"
+        "\n"
+        "### penny-messages\n"
+        "1. [2026-01-08 09:00 UTC] (sent by harbour-watch) pier 1 went dark"
+    )
+
+    # This cycle's find leads; the stale one is reachable only inside the labelled
+    # background section, which is the last thing in the document.
+    assert rendered.index("pier 4 went dark") < rendered.index("## Background: earlier messages")
+    assert rendered.index("pier 1 went dark") > rendered.index("## Background: earlier messages")
+    assert rendered.index("## What it wrote this cycle") < rendered.index("## How it got there")
 
 
 # ── The send gate + the enqueue (#1911) ───────────────────────────────────────
