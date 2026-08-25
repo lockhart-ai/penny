@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from penny.constants import PennyConstants
+from penny.constants import CycleTrigger, PennyConstants
 from penny.notification import (
     CollectorNotifier,
     CycleCall,
@@ -413,17 +413,43 @@ def _register_user(db) -> None:
 def test_a_drawn_message_is_queued_under_its_mechanism(db):
     """The handoff: the drawn text goes into the send queue unchanged, attributed to
     the collection whose cycle produced it, and waits there for the drainer to deliver
-    it on the cooldown.  Enqueue IS the success — nothing about WHEN it goes out is
-    decided here."""
+    it.  Enqueue IS the success — nothing about WHEN it goes out is decided here, but
+    the row does carry WHAT SET THE CYCLE RUNNING (#1939), which is what the drainer
+    reads to pick a delivery lane."""
     _register_user(db)
 
-    assert _notifier(db).queue(_MECHANISM, _MESSAGE) is NotificationOutcome.QUEUED
+    assert (
+        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.CADENCE)
+        is NotificationOutcome.QUEUED
+    )
 
     pending = db.send_queue.next_pending()
     assert pending is not None
     assert pending.content == _MESSAGE
     assert pending.collection == _MECHANISM
+    assert pending.origin == CycleTrigger.CADENCE
     assert pending.sent_at is None
+
+
+def test_a_user_triggered_cycles_message_is_queued_in_the_on_demand_lane(db):
+    """The same handoff for a cycle the USER pressed "run this now" on: the queued row
+    says so, so the drainer can deliver it without waiting out the anti-spam cooldown
+    meant for messages nobody asked for (#1939).  The lane is a READ of what set the
+    cycle running — nothing here re-decides it from the content."""
+    _register_user(db)
+
+    assert (
+        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.ON_DEMAND)
+        is NotificationOutcome.QUEUED
+    )
+
+    pending = db.send_queue.next_pending()
+    assert pending is not None
+    assert pending.origin == CycleTrigger.ON_DEMAND
+    # And it is reachable BY lane, which is how the drainer asks for it.
+    on_demand = db.send_queue.next_pending(origin=CycleTrigger.ON_DEMAND)
+    assert on_demand is not None and on_demand.id == pending.id
+    assert db.send_queue.next_pending(origin=CycleTrigger.CADENCE) is None
 
 
 def test_the_three_declines_queue_nothing(db):
@@ -431,16 +457,27 @@ def test_the_three_declines_queue_nothing(db):
     registered recipient, and content that reads as a model refusal.  Each is the same
     enumerated outcome — nothing was sent — and none of them queues anything."""
     # No registered user at all.
-    assert _notifier(db).queue(_MECHANISM, _MESSAGE) is NotificationOutcome.NOT_DELIVERABLE
+    assert (
+        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.CADENCE)
+        is NotificationOutcome.NOT_DELIVERABLE
+    )
     assert db.send_queue.next_pending() is None
 
     _register_user(db)
     refusal = "I'm sorry, I can't help with that as an AI language model."
-    assert _notifier(db).queue(_MECHANISM, refusal) is NotificationOutcome.NOT_DELIVERABLE
+    assert (
+        _notifier(db).queue(_MECHANISM, refusal, CycleTrigger.CADENCE)
+        is NotificationOutcome.NOT_DELIVERABLE
+    )
     assert db.send_queue.next_pending() is None
 
     db.users.set_muted(_RECIPIENT)
-    assert _notifier(db).queue(_MECHANISM, _MESSAGE) is NotificationOutcome.NOT_DELIVERABLE
+    # A user-triggered run is no exception: the lane says WHEN a message goes out, not
+    # WHETHER — a muted user is still muted when they press the button.
+    assert (
+        _notifier(db).queue(_MECHANISM, _MESSAGE, CycleTrigger.ON_DEMAND)
+        is NotificationOutcome.NOT_DELIVERABLE
+    )
     assert db.send_queue.next_pending() is None
 
 
@@ -452,10 +489,16 @@ def test_a_half_formed_message_never_reaches_the_queue(db):
     _register_user(db)
     notifier = _notifier(db)
 
-    assert notifier.queue(_MECHANISM, "Hi there! ......???") is NotificationOutcome.NOT_DELIVERABLE
+    assert (
+        notifier.queue(_MECHANISM, "Hi there! ......???", CycleTrigger.CADENCE)
+        is NotificationOutcome.NOT_DELIVERABLE
+    )
     assert db.send_queue.next_pending() is None
 
-    assert notifier.queue(_MECHANISM, "anyway… that's the gist 🤓") is NotificationOutcome.QUEUED
+    assert (
+        notifier.queue(_MECHANISM, "anyway… that's the gist 🤓", CycleTrigger.CADENCE)
+        is NotificationOutcome.QUEUED
+    )
     pending = db.send_queue.next_pending()
     assert pending is not None and pending.content == "anyway… that's the gist 🤓"
 

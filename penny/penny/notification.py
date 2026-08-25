@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ValidationError
 
 from penny.agents.models import ToolCallRecord
-from penny.constants import PennyConstants
+from penny.constants import CycleTrigger, PennyConstants
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp
@@ -302,9 +302,16 @@ class CollectorNotifier:
         self._micro_context = MicroContext(model_client)
 
     async def notify(
-        self, target: MemoryRow, run_id: str, records: Sequence[ToolCallRecord]
+        self,
+        target: MemoryRow,
+        run_id: str,
+        records: Sequence[ToolCallRecord],
+        trigger: CycleTrigger,
     ) -> NotificationOutcome:
         """Tell the user about this cycle — assemble, draw, queue.
+
+        ``trigger`` is what set the cycle running, carried through to the queued row so
+        the drainer knows whether anyone is waiting on this message (#1939).
 
         Returns the enumerated outcome the collector stamps on the run.  Every branch
         is a recorded fact: a message that could not be written and a send that was
@@ -321,16 +328,19 @@ class CollectorNotifier:
                 run_id,
             )
             return NotificationOutcome.NOT_DRAWN
-        return self.queue(target.name, message)
+        return self.queue(target.name, message, trigger)
 
-    def queue(self, mechanism: str, content: str) -> NotificationOutcome:
+    def queue(self, mechanism: str, content: str, trigger: CycleTrigger) -> NotificationOutcome:
         """The send gate every autonomous message passes, then the enqueue.
 
         The three declines are the ones that need runtime state or are correct no-ops:
         content that reads as a model refusal, no registered recipient, and a muted
         user.  Enqueue IS the successful handoff — the ``SendQueueDrainer`` owns when
-        the message actually goes out, honouring the autonomous-send cooldown, so a
-        cooldown delays a message rather than losing it.
+        the message actually goes out, so a cooldown delays a message rather than
+        losing it.  ``trigger`` is stamped on the row and decides WHICH lane it waits
+        in: a cadence cycle's message rides the full autonomous-send cooldown, while a
+        cycle the user pressed "run this now" on goes out on the next drain tick,
+        because they are sitting there waiting for it (#1939).
 
         Content validity is checked one layer up, in the draw's own acceptance rule
         (a half-formed message is re-drawn rather than queued), and re-validated here
@@ -351,8 +361,8 @@ class CollectorNotifier:
         if self._db.users.is_muted(recipient):
             logger.info("Notification for '%s' withheld — the user is muted", mechanism)
             return NotificationOutcome.NOT_DELIVERABLE
-        self._db.send_queue.enqueue(content=args.content, collection=mechanism)
-        logger.info("Notification queued: %s → %s", mechanism, recipient)
+        self._db.send_queue.enqueue(content=args.content, collection=mechanism, origin=trigger)
+        logger.info("Notification queued (%s): %s → %s", trigger.value, mechanism, recipient)
         return NotificationOutcome.QUEUED
 
     async def _document(

@@ -15,6 +15,15 @@ used to apply inline: bypassed when the user has spoken since Penny's last messa
 send is then conversational, not autonomous), otherwise the message waits
 ``SEND_COOLDOWN_SECONDS`` since Penny's previous outgoing message of any kind
 (chat reply included — the cooldown is per-Penny, not per-collection).
+
+There are TWO delivery lanes, read off the queued row's own ``origin`` (#1939).  The
+cooldown is anti-spam for messages nobody asked for; a message from a cycle the USER
+pressed "run this now" on is one they are sitting in front of waiting for, so it is
+conversational in exactly the sense the user-spoke-since bypass already means, and it
+goes out on the next tick.  Observed live: a user's on-demand run finished and its
+notification then waited ~10.5 minutes, because an unrelated chat reply seconds earlier
+had started the cooldown.  Which lane a row is in is a READ of what set its cycle
+running, never a re-decision here.
 """
 
 from __future__ import annotations
@@ -23,18 +32,19 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, CycleTrigger, PennyConstants
 
 if TYPE_CHECKING:
     from penny.channels.base import MessageChannel
     from penny.config import Config
     from penny.database import Database
+    from penny.database.models import SendQueueItem
 
 logger = logging.getLogger(__name__)
 
 
 class SendQueueDrainer:
-    """Deliver the oldest queued message once the send cooldown has elapsed."""
+    """Deliver the oldest queued message its lane allows out this tick."""
 
     name = "send_queue_drain"
 
@@ -48,18 +58,16 @@ class SendQueueDrainer:
         self._channel = channel
 
     async def execute(self) -> bool:
-        """Deliver one queued message if the cooldown allows; return whether one went out.
+        """Deliver one queued message if its lane allows; return whether one went out.
 
-        Returns False (no work) when the queue is empty, no channel/recipient is
-        wired, or the cooldown hasn't elapsed — the scheduler then moves on to
-        the next schedule this tick.
+        Returns False (no work) when the queue holds nothing deliverable this tick or
+        no channel/recipient is wired — the scheduler then moves on to the next
+        schedule this tick.
         """
         if self._channel is None:
             return False
-        item = self._db.send_queue.next_pending()
+        item = self._next_deliverable()
         if item is None:
-            return False
-        if not self._cooldown_elapsed():
             return False
         recipient = self._resolve_recipient()
         if recipient is None:
@@ -80,6 +88,20 @@ class SendQueueDrainer:
             self._db.send_queue.mark_sent(item.id)
         logger.info("send_queue drained: %s → %s", item.collection, recipient)
         return True
+
+    def _next_deliverable(self) -> SendQueueItem | None:
+        """The oldest queued message this tick is allowed to deliver.
+
+        The head first, so an empty queue costs one indexed read and nothing else —
+        this runs on every idle tick.  With something waiting, the cooldown decides:
+        cleared, the head goes; still running, the only messages that may go out are
+        the ones the user is waiting on, and they are asked for BY LANE rather than
+        read off the head, because an older cadence message sitting out its cooldown
+        would otherwise hold them behind it for the rest of the window."""
+        item = self._db.send_queue.next_pending()
+        if item is None or self._cooldown_elapsed():
+            return item
+        return self._db.send_queue.next_pending(origin=CycleTrigger.ON_DEMAND)
 
     def _resolve_recipient(self) -> str | None:
         """Where a drained message is delivered.

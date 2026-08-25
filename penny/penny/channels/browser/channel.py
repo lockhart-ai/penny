@@ -634,8 +634,58 @@ class BrowserChannel(MessageChannel):
         else:
             success, message = await self._collector.run_for(req.name)
         result = BrowserCollectionTriggerResult(name=req.name, success=success, message=message)
-        with contextlib.suppress(websockets.ConnectionClosed):
-            await ws.send(result.model_dump_json())
+        await self._deliver_trigger_result(ws, result)
+
+    async def _deliver_trigger_result(
+        self, ws: ServerConnection, result: BrowserCollectionTriggerResult
+    ) -> None:
+        """Get an on-demand run's outcome back to the addon, and never silently.
+
+        A cycle takes minutes and the socket that asked for it can die inside that
+        window (a suspended background script, a closed sidebar).  The send used to sit
+        under ``contextlib.suppress(ConnectionClosed)``, so a dead requester swallowed
+        the outcome whole: measured live, the addon's spinner never resolved and an
+        18-minute run read as an indefinite hang, with nothing in the log to say why.
+
+        So the outcome is delivered somewhere or SAID somewhere: the requesting socket
+        first, then every registered addon connection (the same user, another window),
+        and failing that a warning carrying the outcome text itself, so it survives in
+        the run record's own log rather than nowhere.
+        """
+        if await self._deliver_ws(ws, result):
+            return
+        logger.warning(
+            "The socket that asked to run '%s' closed before its result arrived — "
+            "falling back to the registered addon connections",
+            result.name,
+        )
+        delivered = await self._broadcast_trigger_result(result)
+        if delivered:
+            logger.warning(
+                "Delivered the '%s' run result to %s instead", result.name, ", ".join(delivered)
+            )
+            return
+        logger.warning(
+            "No live addon connection could take the '%s' run result — it is recorded "
+            "here only: success=%s, %s",
+            result.name,
+            result.success,
+            result.message,
+        )
+
+    async def _broadcast_trigger_result(self, result: BrowserCollectionTriggerResult) -> list[str]:
+        """The registered connections that took the result, by device label.
+
+        Every one of them, not the first that answers: an addon may be open in more
+        than one window and they all show the same collection's spinner.  Iterated over
+        a snapshot because a closed socket is evicted from the registry by its own
+        handler while this runs.
+        """
+        return [
+            label
+            for label, conn in list(self._connections.items())
+            if await self._deliver_ws(conn.ws, result)
+        ]
 
     def _handle_cursor_set(self, data: dict) -> None:
         """Set a collection's read cursor over one log to a chosen point — a
@@ -1226,9 +1276,25 @@ class BrowserChannel(MessageChannel):
 
     @staticmethod
     async def _send_ws(ws: ServerConnection, msg: BaseModel) -> None:
-        """Send a message to a WebSocket connection, suppressing closed errors."""
-        with contextlib.suppress(websockets.ConnectionClosed):
+        """Send a message to a WebSocket connection, suppressing closed errors.
+
+        The fire-and-forget form, for the broadcasts and responses where a closed
+        socket is simply one fewer recipient.  Where the send is the ONLY carrier of
+        something the user asked for, use ``_deliver_ws`` and act on the answer."""
+        await BrowserChannel._deliver_ws(ws, msg)
+
+    @staticmethod
+    async def _deliver_ws(ws: ServerConnection, msg: BaseModel) -> bool:
+        """Send to one socket; ``False`` when that socket is closed.
+
+        The same send, with the outcome returned instead of discarded — so a caller
+        that owes the user an answer can fall back or say so (#1939) rather than
+        losing it to a suppressed exception."""
+        try:
             await ws.send(msg.model_dump_json(exclude_none=True))
+        except websockets.ConnectionClosed:
+            return False
+        return True
 
 
 # Backward compat alias

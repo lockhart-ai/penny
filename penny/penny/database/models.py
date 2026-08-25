@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel
 
+from penny.constants import CycleTrigger
+
 
 class PromptLog(SQLModel, table=True):
     """Log of every prompt sent to Ollama and its response."""
@@ -454,6 +456,13 @@ class SendQueueItem(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     content: str
     collection: str
+    # What set the cycle that queued this message running (``CycleTrigger``):
+    # the schedule's own cadence, or the user's "run this now" (#1939).  The
+    # drainer reads it to pick the delivery lane — a message the user is sitting
+    # waiting for is conversational and skips the autonomous-send cooldown, where
+    # a cadence message waits it out.  Never NULL: an unstamped row is a cadence
+    # row, which is the conservative direction (the bypass must be claimed).
+    origin: str = Field(default=CycleTrigger.CADENCE)  # CycleTrigger value
     sent_at: datetime | None = None
     # Stamped when the queuing collector is archived before delivery (#1634):
     # a VISIBLE cancellation (the row is kept as an audit trail, not deleted),
@@ -461,6 +470,22 @@ class SendQueueItem(SQLModel, table=True):
     # cancelled row was never sent — so the delivered/cancelled distinction is
     # never ambiguous.
     cancelled_at: datetime | None = None
+
+    __table_args__ = (
+        # Partial index over the PENDING tail, leading with the lane (#1939).  The
+        # drainer asks for the oldest pending row OF ONE ORIGIN while the cooldown is
+        # running, and the sparse case is the one that matters — a single on-demand
+        # row behind a backlog of cadence ones — so an index that serves only the
+        # ORDER BY would walk the whole ordered pending partition before the LIMIT 1
+        # filled.  Leading with the equality-filtered column seeks straight to it;
+        # the 0061 index still serves the unscoped read.
+        Index(
+            "ix_send_queue_pending_lane",
+            "origin",
+            "created_at",
+            sqlite_where=text("sent_at IS NULL AND cancelled_at IS NULL"),
+        ),
+    )
 
 
 class IosOutboxItem(SQLModel, table=True):

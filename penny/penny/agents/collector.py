@@ -56,6 +56,7 @@ from penny.constants import (
     COLLECTOR_CANCELLED_RETRY_REASON,
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
+    CycleTrigger,
     MutationActor,
     PennyConstants,
     RunOutcome,
@@ -202,14 +203,17 @@ class Collector(BackgroundAgent):
         # counts leaves nothing durable to count FROM: a cycle cancelled seconds in
         # writes no ``promptlog`` row, so the ledger cannot see it happened, and the
         # count exists only to bound one burst — a restart is itself a fresh start.
-        self._retry_attempts: dict[str, int] = {}
+        # Keyed by (collection, trigger) since #1939: the scheduler's cadence and the
+        # user's "run this now" are two different things attempting the same fire, and
+        # a user's clicks must not leave the schedule's own attempt with nothing.
+        self._retry_attempts: dict[tuple[str, CycleTrigger], int] = {}
 
     async def execute(self) -> bool:
         self._retire_expired()
         target = self._next_ready_collection()
         if target is None:
             return False
-        success, _ = await self._execute_cycle(target)
+        success, _ = await self._execute_cycle(target, trigger=CycleTrigger.CADENCE)
         return success
 
     def _retire_expired(self) -> None:
@@ -234,6 +238,11 @@ class Collector(BackgroundAgent):
         user asked for and is not how the job will behave afterwards.  Returns
         ``(success, message)`` where ``message`` is either an error description
         or the cycle's ``done()`` summary prefixed with "Collector cycle complete.".
+
+        The cycle runs under the ON_DEMAND trigger (#1939), which is what makes the
+        difference between this and the cadence path READ rather than re-decided: its
+        notification skips the autonomous-send cooldown (someone is waiting for it) and
+        its attempts draw on their own retry budget rather than the schedule's.
         """
         collection = self.db.memories.get(collection_name)
         if collection is None:
@@ -252,9 +261,11 @@ class Collector(BackgroundAgent):
             )
         if error := check_extraction_prompt(collection.extraction_prompt):
             return False, error
-        return await self._execute_cycle(collection)
+        return await self._execute_cycle(collection, trigger=CycleTrigger.ON_DEMAND)
 
-    async def _execute_cycle(self, collection: MemoryRow) -> tuple[bool, str]:
+    async def _execute_cycle(
+        self, collection: MemoryRow, *, trigger: CycleTrigger
+    ) -> tuple[bool, str]:
         """Run one full agent cycle bound to ``collection`` with audit cleanup.
 
         Owns the ``run_id`` so cleanup has the correct UUID even if
@@ -271,6 +282,10 @@ class Collector(BackgroundAgent):
         The cycle's schedule occurrence is settled last (``_settle_occurrence``, #1935):
         an ordinary cycle consumes it, one that ended on a stochastic cause with nothing
         to show for it leaves it due for a bounded retry.
+
+        ``trigger`` says what set this cycle running — the schedule, or the user — and
+        is carried, never inferred: the notification reads it to pick its delivery lane
+        and the retry budget is keyed on it (#1939).
         """
         run_id = uuid.uuid4().hex
         success = False
@@ -287,7 +302,7 @@ class Collector(BackgroundAgent):
                 result = await self._run_cycle(run_id)
                 success = result.success
                 response = result.response
-                notified = await self._notify_if_due(collection, run_id, response)
+                notified = await self._notify_if_due(collection, run_id, response, trigger)
             except asyncio.CancelledError:
                 # Foreground activity preempted the cycle — tag clearly rather
                 # than letting it look like a model crash, then re-raise.
@@ -297,7 +312,9 @@ class Collector(BackgroundAgent):
                 # Settle the occurrence this cycle was dispatched for: consume it, or
                 # leave it due for a bounded retry (#1935).  Runs while the program is
                 # still bound, since the deterministic arm is read off it.
-                deferred = self._settle_occurrence(collection.name, cancelled, response, notified)
+                deferred = self._settle_occurrence(
+                    collection.name, trigger, cancelled, response, notified
+                )
                 if cancelled:
                     self._tag_promptlog_run_cancelled(run_id)
                 else:
@@ -347,7 +364,11 @@ class Collector(BackgroundAgent):
             )
 
     async def _notify_if_due(
-        self, collection: MemoryRow, run_id: str, response: ControllerResponse
+        self,
+        collection: MemoryRow,
+        run_id: str,
+        response: ControllerResponse,
+        trigger: CycleTrigger,
     ) -> NotificationOutcome | None:
         """Tell the user about this cycle, when this cycle is one that should (#1911).
 
@@ -363,13 +384,16 @@ class Collector(BackgroundAgent):
         user nothing happened.  A STOP means the cycle deliberately ended early,
         whatever else it had got through.
 
+        ``trigger`` travels through to the queued row: WHETHER to tell the user is the
+        three facts above, WHEN it reaches them is which lane the message is in (#1939).
+
         ``None`` when the cycle is not one that notifies, which is the ordinary case.
         """
         if not collection.notify or self._stop_reason(response) is not None:
             return None
         if not self._has_done_call(response):
             return None
-        return await self._notifier.notify(collection, run_id, response.tool_calls)
+        return await self._notifier.notify(collection, run_id, response.tool_calls, trigger)
 
     def _retire_if_ended(self, collection: MemoryRow, run_id: str) -> None:
         """Post-cycle retirement — at most one archive.
@@ -395,6 +419,7 @@ class Collector(BackgroundAgent):
     def _settle_occurrence(
         self,
         name: str,
+        trigger: CycleTrigger,
         cancelled: bool,
         response: ControllerResponse | None,
         notified: NotificationOutcome | None,
@@ -419,13 +444,14 @@ class Collector(BackgroundAgent):
         either (``_retire_if_ended``).
         """
         reason = self._retry_reason(cancelled, response, notified)
-        if reason is not None and self._claim_retry(name):
+        if reason is not None and self._claim_retry(name, trigger):
             logger.info(
                 "Leaving '%s' due rather than consuming its occurrence — %s, and the "
-                "cycle changed nothing (attempt %d of %d)",
+                "cycle changed nothing (%s attempt %d of %d)",
                 name,
                 reason,
-                self._retry_attempts[name],
+                trigger.value,
+                self._retry_attempts[(name, trigger)],
                 PennyConstants.COLLECTOR_RETRY_ATTEMPTS,
             )
             # The stamp is this path's only refresh signal, so a cycle that withholds
@@ -433,23 +459,40 @@ class Collector(BackgroundAgent):
             # died leaves the addon's panel showing nothing at all.
             self.db.memories.notify_changed(name)
             return True
-        self._retry_attempts.pop(name, None)
+        self._release_retries(name)
         self.db.memories.mark_collected(name)
         return False
 
-    def _claim_retry(self, name: str) -> bool:
-        """Take one of ``name``'s remaining attempts at its current occurrence.
+    def _claim_retry(self, name: str, trigger: CycleTrigger) -> bool:
+        """Take one of this TRIGGER's remaining attempts at ``name``'s occurrence.
 
-        ``False`` once the bound is spent, which is what ends the burst.  The count is
-        cleared by the settled cycle and by nothing else, so it spans exactly the run of
-        attempts at one occurrence — and the on-demand trigger (``run_for``) draws on
-        the same budget, since it is an attempt at the same collection's same fire.
+        ``False`` once the bound is spent, which is what ends the burst.
+
+        The budgets are PER TRIGGER (#1939).  The scheduler's cadence and the user's
+        "run this now" are two different things attempting the same fire, and one
+        shared count let three failed clicks leave the day's own scheduled attempt with
+        nothing: the next foreground preemption consumed the occurrence on its first
+        try, and the job silently skipped its day — the very failure #1935 exists to
+        prevent, reached through the door the user was pressing.  Each budget still
+        bounds one burst of the same size; there are simply two askers.
         """
-        attempts = self._retry_attempts.get(name, 0)
+        key = (name, trigger)
+        attempts = self._retry_attempts.get(key, 0)
         if attempts >= PennyConstants.COLLECTOR_RETRY_ATTEMPTS:
             return False
-        self._retry_attempts[name] = attempts + 1
+        self._retry_attempts[key] = attempts + 1
         return True
+
+    def _release_retries(self, name: str) -> None:
+        """Drop EVERY trigger's count for ``name`` — the occurrence they bounded is
+        spent, so the next fire starts both askers fresh.
+
+        Cleared wholesale rather than per trigger because what a count bounds is
+        attempts at ONE occurrence: once any cycle consumes it, there is no longer an
+        occurrence for the other trigger's count to be about.
+        """
+        for key in [key for key in self._retry_attempts if key[0] == name]:
+            del self._retry_attempts[key]
 
     def _retry_reason(
         self,
