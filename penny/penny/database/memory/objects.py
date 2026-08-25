@@ -53,6 +53,13 @@ from penny.constants import (
     WriteGateOutcome,
 )
 from penny.database.memory import _similarity as sim
+from penny.database.memory.pending import (
+    EntryWriter,
+    LiveEntryWriter,
+    PendingEntryWrites,
+    StagedEntryWriter,
+)
+from penny.database.memory.pending import sort_key as pending_sort_key
 from penny.database.memory.types import (
     DedupThresholds,
     EntryInput,
@@ -84,12 +91,20 @@ class Memory:
     ``Log``, or a facade.  Holds the metadata ``row`` and exposes it as
     properties; defines every shape op as a no-op that raises ``WrongShapeError``
     so a subclass that doesn't serve that shape refuses with a readable message.
+
+    ``pending`` is the two-phase buffer of the RUN this object was dispatched for
+    (#1936), and ``None`` for every ordinary caller.  With one, mutations are staged
+    rather than landed and every read is served THROUGH the buffer, so the run sees its
+    own uncommitted writes and nobody else sees them at all.
     """
 
-    def __init__(self, row: MemoryRow, engine, *, on_changed=None) -> None:
+    def __init__(
+        self, row: MemoryRow, engine, *, on_changed=None, pending: PendingEntryWrites | None = None
+    ) -> None:
         self.row = row
         self._engine = engine
         self._on_changed = on_changed
+        self._pending = pending
 
     # ── Metadata passthroughs ────────────────────────────────────────────────
 
@@ -120,10 +135,54 @@ class Memory:
     def _session(self) -> Session:
         return Session(self._engine)
 
+    @property
+    def _writer(self) -> EntryWriter:
+        """Where this object's mutations go — the store, or the run's pending buffer."""
+        if self._pending is None:
+            return LiveEntryWriter()
+        return StagedEntryWriter(self._pending)
+
     def _notify(self, name: str | None = None) -> None:
-        """Fire the change callback for ``name`` (default this memory)."""
+        """Fire the change callback for ``name`` (default this memory).
+
+        A STAGED mutation announces nothing: the surfaces this wakes would refresh onto
+        a value no other reader can see, and the run may yet be thrown away.  The
+        landing announces instead (``MemoryStore.commit_pending``).
+        """
+        if self._pending is not None:
+            return
         if self._on_changed is not None:
             self._on_changed(name if name is not None else self.name)
+
+    # ── Reading through this run's staged writes (#1936) ──────────────────────
+    #
+    # Every read of this object's rows goes through these three, and each answers
+    # unstaged with the value that makes the read behave exactly as it did before
+    # two-phase existed — the identity merge, no headroom, no count adjustment.  So a
+    # read primitive is written once, for both worlds, rather than branching on whether
+    # a run is staged; the one read that genuinely cannot (``_newest_rows``, whose PAGE
+    # the buffer changes) says so in its own two named halves.
+
+    def _seen(self, rows: list[MemoryEntry], name: str | None = None) -> list[MemoryEntry]:
+        """``rows`` as this run sees them — identity when nothing is staged."""
+        if self._pending is None:
+            return rows
+        return self._pending.merge(name or self.name, rows)
+
+    def _headroom(self, name: str | None = None) -> int:
+        """How far a BOUNDED query has to over-read for its window to still contain the
+        answer once the buffer is merged in.  Zero when nothing is staged, so the query
+        keeps its exact limit."""
+        if self._pending is None:
+            return 0
+        return self._pending.staged_count(name or self.name)
+
+    def _net_change(self, name: str | None = None) -> int:
+        """How much this run's staging changes the entry count — zero when nothing is
+        staged, so a COUNT in SQL is the whole answer."""
+        if self._pending is None:
+            return 0
+        return self._pending.net_change(name or self.name)
 
     # ── Shape-op refusals (overridden by the shape that serves them) ──────────
 
@@ -242,10 +301,13 @@ class Memory:
         i.e. drop only anti-correlated entries) filters by cosine; ``k=None``
         returns every survivor.  An empty result reflects the corpus and floor —
         not an ambient "nothing relevant enough" suppression."""
+        # The id plays no part in the ranking, so it is not asked for: a row this run has
+        # STAGED has none until its cycle lands (#1936), and excluding it would make the
+        # run blind to its own write on exactly the read a routine uses to check for one.
         scored = [
             (row, row.content_embedding)
             for row in self._embedded_rows()
-            if row.id is not None and row.content_embedding is not None
+            if row.content_embedding is not None
         ]
         if not scored:
             return []
@@ -259,15 +321,42 @@ class Memory:
 
     def _all_rows(self) -> list[MemoryEntry]:
         with self._session() as session:
-            return list(
+            rows = list(
                 session.exec(
                     select(MemoryEntry)
                     .where(MemoryEntry.memory_name == self.name)
                     .order_by(col(MemoryEntry.created_at).asc())
                 ).all()
             )
+        return sorted(self._seen(rows), key=pending_sort_key)
 
     def _newest_rows(self, k: int | None, offset: int, search: str | None) -> list[MemoryEntry]:
+        """The newest-first page — the one read the buffer changes the SHAPE of.
+
+        Every other read hands the query's rows straight to the merge; this one cannot,
+        because the page itself moves: staged rows can join it and removed ones leave,
+        so the query's own ``LIMIT``/``OFFSET`` would cut the wrong window.  Two named
+        halves rather than a flag, so neither world is a special case of the other.
+        """
+        if self._pending is None:
+            return self._newest_page(k, offset, search)
+        return self._newest_staged_page(k, offset, search)
+
+    def _newest_staged_page(
+        self, k: int | None, offset: int, search: str | None
+    ) -> list[MemoryEntry]:
+        """The page cut in PYTHON over an over-read window.
+
+        The window is still BOUNDED — the page, its offset, and what this run has
+        touched — so a deep collection is never materialized to render a few lines, and
+        the search predicate is re-applied because the query never saw the staged rows.
+        """
+        window = None if k is None else k + offset + self._headroom()
+        merged = sorted(self._seen(self._newest_page(window, 0, search)), key=pending_sort_key)
+        merged = [row for row in reversed(merged) if _matches_search(row, search)]
+        return merged[offset:] if k is None else merged[offset : offset + k]
+
+    def _newest_page(self, k: int | None, offset: int, search: str | None) -> list[MemoryEntry]:
         with self._session() as session:
             query = (
                 select(MemoryEntry)
@@ -286,19 +375,26 @@ class Memory:
             return list(session.exec(query).all())
 
     def _rows_since(self, cursor: datetime, cap: int | None) -> list[MemoryEntry]:
+        limit = None if cap is None else cap + self._headroom()
         with self._session() as session:
             query = (
                 select(MemoryEntry)
                 .where(MemoryEntry.memory_name == self.name, MemoryEntry.created_at > cursor)
                 .order_by(col(MemoryEntry.created_at).asc())
             )
-            if cap is not None:
-                query = query.limit(cap)
-            return list(session.exec(query).all())
+            if limit is not None:
+                query = query.limit(limit)
+            rows = list(session.exec(query).all())
+        after = _aware_cursor(cursor)
+        merged = sorted(
+            (row for row in self._seen(rows) if pending_sort_key(row) > after),
+            key=pending_sort_key,
+        )
+        return merged if cap is None else merged[:cap]
 
     def _embedded_rows(self) -> list[MemoryEntry]:
         with self._session() as session:
-            return list(
+            rows = list(
                 session.exec(
                     select(MemoryEntry).where(
                         MemoryEntry.memory_name == self.name,
@@ -306,6 +402,26 @@ class Memory:
                     )
                 ).all()
             )
+        return [row for row in self._seen(rows) if row.content_embedding is not None]
+
+
+def _matches_search(row: MemoryEntry, search: str | None) -> bool:
+    """The Python twin of the newest-first query's ``LIKE`` filter — what a STAGED row
+    has to pass to join a searched page, since the query that ran never saw it.
+
+    Case-folded, because SQLite's ``LIKE`` is: a staged row and a stored one have to
+    answer the same question the same way or the page would depend on where a row
+    happened to be."""
+    if not search:
+        return True
+    needle = search.casefold()
+    return needle in row.content.casefold() or needle in (row.key or "").casefold()
+
+
+def _aware_cursor(cursor: datetime) -> datetime:
+    """A read cursor as a UTC-aware instant, so it can be compared against a staged
+    row's own aware timestamp."""
+    return cursor if cursor.tzinfo is not None else cursor.replace(tzinfo=UTC)
 
 
 def _content_unchanged(stored: str, incoming: str) -> bool:
@@ -337,8 +453,16 @@ class Collection(Memory):
     keyed/write surface; the log ops stay refused via the base no-ops.
     """
 
-    def __init__(self, row: MemoryRow, engine, *, runtime: RuntimeParams, on_changed=None) -> None:
-        super().__init__(row, engine, on_changed=on_changed)
+    def __init__(
+        self,
+        row: MemoryRow,
+        engine,
+        *,
+        runtime: RuntimeParams,
+        on_changed=None,
+        pending: PendingEntryWrites | None = None,
+    ) -> None:
+        super().__init__(row, engine, on_changed=on_changed, pending=pending)
         self._runtime = runtime
 
     def read_latest(
@@ -370,31 +494,27 @@ class Collection(Memory):
         like every other keyed read — a log's entries are counted through its own
         cursored reads."""
         with self._session() as session:
-            return session.exec(
+            stored = session.exec(
                 select(func.count(MemoryEntry.id)).where(  # ty: ignore[invalid-argument-type]
                     MemoryEntry.memory_name == self.name
                 )
             ).one()
+        return stored + self._net_change()
 
     def keys(self) -> list[str]:
-        with self._session() as session:
-            rows = list(
-                session.exec(
-                    select(MemoryEntry.key)
-                    .where(
-                        MemoryEntry.memory_name == self.name,
-                        col(MemoryEntry.key).is_not(None),
-                    )
-                    .order_by(col(MemoryEntry.created_at).asc())
-                ).all()
-            )
+        """Every key this collection holds, oldest first, deduped.
+
+        Read off the ROWS rather than off the key column alone: a key this run staged
+        exists in no column a query could read, and the key list of a collection is
+        already unbounded, so materializing the rows costs it nothing it was not
+        already paying."""
         seen: set[str] = set()
         ordered: list[str] = []
-        for key in rows:
-            if key is None or key in seen:
+        for row in self._all_rows():
+            if row.key is None or row.key in seen:
                 continue
-            seen.add(key)
-            ordered.append(key)
+            seen.add(row.key)
+            ordered.append(row.key)
         return ordered
 
     def write(
@@ -416,13 +536,14 @@ class Collection(Memory):
         change for the notify below."""
         thresholds = thresholds or DedupThresholds.from_runtime(self._runtime)
         existing = self._entries_with_vectors()
+        writer = self._writer
         results: list[WriteResult] = []
         with self._session() as session:
             for entry in entries:
                 results.append(
-                    self._write_one(session, entry, author, existing, thresholds, run_id)
+                    self._write_one(session, writer, entry, author, existing, thresholds, run_id)
                 )
-            session.commit()
+            writer.settle(session)
         if any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results):
             self._notify()
         return results
@@ -435,17 +556,19 @@ class Collection(Memory):
         A rewrite, so ``last_written_by_run_id`` advances to ``run_id`` while
         ``created_by_run_id`` is left untouched — the read-path anchors that keep
         "who wrote the current value?" distinct from "who created it?" (#1560)."""
+        writer = self._writer
         with self._session() as session:
             rows = self._rows_by_key(session, self.name, key)
             if not rows:
                 return "not_found"
-            self._apply_content(session, rows, content, author, run_id)
-            session.commit()
+            self._apply_content(writer, session, rows, content, author, run_id)
+            writer.settle(session)
         self._notify()
         return "ok"
 
     @staticmethod
     def _apply_content(
+        writer: EntryWriter,
         session: Session,
         rows: list[MemoryEntry],
         content: str,
@@ -455,19 +578,21 @@ class Collection(Memory):
         """Rewrite each row's content in place, stamping the writing run — the one
         mutation shared by ``update`` (the model's correction path) and the
         change-gate's ``KEY_EXISTS_CHANGED`` auto-refresh (#1633), so a baseline
-        advances identically whichever path reached it.  ``created_by_run_id`` is
-        left untouched (this is a rewrite, not a creation)."""
+        advances identically whichever path reached it, and a staged run's baseline
+        refresh is held back with the rest of its writes (#1936).
+        ``created_by_run_id`` is left untouched (this is a rewrite, not a creation)."""
         for row in rows:
             row.content = content
             row.author = author
             row.last_written_by_run_id = run_id
-            session.add(row)
+            writer.rewrite(session, row)
 
     def move(self, key: str, to_name: str, author: str) -> MoveOutcome:
         """Move every entry with ``key`` into another collection.  ``collision``
         when the destination already has that key."""
         to_name = slug(to_name)
         self._require_destination_collection(to_name)
+        writer = self._writer
         with self._session() as session:
             src_rows = self._rows_by_key(session, self.name, key)
             if not src_rows:
@@ -477,18 +602,19 @@ class Collection(Memory):
             for row in src_rows:
                 row.memory_name = to_name
                 row.author = author
-                session.add(row)
-            session.commit()
+                writer.rewrite(session, row)
+            writer.settle(session)
         self._notify()
         self._notify(to_name)
         return "ok"
 
     def delete(self, key: str) -> int:
+        writer = self._writer
         with self._session() as session:
             rows = self._rows_by_key(session, self.name, key)
             for row in rows:
-                session.delete(row)
-            session.commit()
+                writer.remove(session, row)
+            writer.settle(session)
         if rows:
             self._notify()
         return len(rows)
@@ -501,20 +627,24 @@ class Collection(Memory):
         if row.type != MemoryType.COLLECTION:
             raise MemoryTypeError(wrong_shape_message(to_name, row.type))
 
-    @staticmethod
-    def _rows_by_key(session: Session, name: str, key: str) -> list[MemoryEntry]:
-        return list(
+    def _rows_by_key(self, session: Session, name: str, key: str) -> list[MemoryEntry]:
+        """Every entry of ``name`` under ``key``, as this run sees it.
+
+        The keyed lookup the write gate compares against and the mutation paths operate
+        on, so a staged run reading a key it has already written this cycle finds its
+        own value there — which is what stops one cycle filing the same key twice."""
+        rows = list(
             session.exec(
                 select(MemoryEntry).where(MemoryEntry.memory_name == name, MemoryEntry.key == key)
             ).all()
         )
+        return [row for row in self._seen(rows, name) if row.key == key]
 
     def _entries_with_vectors(self) -> list[EntrySide]:
-        """Every entry as an ``EntrySide`` (key + key/content vectors) for dedup."""
-        with self._session() as session:
-            rows = list(
-                session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == self.name)).all()
-            )
+        """Every entry as an ``EntrySide`` (key + key/content vectors) for dedup —
+        read through this run's staged writes, so an entry it wrote a moment ago dedups
+        exactly as a stored one would."""
+        rows = self.read_all()
         return [
             EntrySide(
                 row.key,
@@ -527,6 +657,7 @@ class Collection(Memory):
     def _write_one(
         self,
         session: Session,
+        writer: EntryWriter,
         entry: EntryInput,
         author: str,
         existing: list[EntrySide],
@@ -537,14 +668,15 @@ class Collection(Memory):
         change-gate at the write chokepoint (#1587).  The comparison is
         deterministic and total; nothing here is a model judgment.  The gate decides
         the non-write outcomes; only a genuinely new key is persisted."""
-        gated = self._gate_outcome(session, entry, author, existing, thresholds, run_id)
+        gated = self._gate_outcome(session, writer, entry, author, existing, thresholds, run_id)
         if gated is not None:
             return gated
-        return self._insert_new_entry(session, entry, author, existing, run_id)
+        return self._insert_new_entry(session, writer, entry, author, existing, run_id)
 
     def _gate_outcome(
         self,
         session: Session,
+        writer: EntryWriter,
         entry: EntryInput,
         author: str,
         existing: list[EntrySide],
@@ -569,7 +701,7 @@ class Collection(Memory):
             )
         stored = self._rows_by_key(session, self.name, entry.key)
         if stored:
-            return self._exact_key_outcome(session, stored, entry, author, run_id)
+            return self._exact_key_outcome(session, writer, stored, entry, author, run_id)
         candidate = EntrySide(entry.key, entry.key_embedding, entry.content_embedding)
         matched = sim.is_duplicate(candidate, existing, thresholds)
         if matched is not None:
@@ -583,6 +715,7 @@ class Collection(Memory):
     def _exact_key_outcome(
         self,
         session: Session,
+        writer: EntryWriter,
         stored: list[MemoryEntry],
         entry: EntryInput,
         author: str,
@@ -594,12 +727,17 @@ class Collection(Memory):
         itself** in place through the shared update path (#1633), so no dangling
         ``update_entry`` is left for the model to run.  A degenerate new value never
         reaches here — it classified DEGENERATE upstream — so the refresh only ever
-        stores screened content."""
+        stores screened content.
+
+        That refresh goes through the run's own WRITER (#1936), so on a staged cycle the
+        new baseline is held back with everything else: a cycle that refreshed the
+        baseline and then died would otherwise leave the changed value behind for the
+        retry to read as unchanged, which is the exact harm two-phase exists to stop."""
         if _content_unchanged(stored[0].content, entry.content):
             return WriteResult(
                 key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_UNCHANGED, matched_key=entry.key
             )
-        self._apply_content(session, stored, entry.content, author, run_id)
+        self._apply_content(writer, session, stored, entry.content, author, run_id)
         return WriteResult(
             key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_CHANGED, matched_key=entry.key
         )
@@ -607,13 +745,17 @@ class Collection(Memory):
     def _insert_new_entry(
         self,
         session: Session,
+        writer: EntryWriter,
         entry: EntryInput,
         author: str,
         existing: list[EntrySide],
         run_id: str | None,
     ) -> WriteResult:
         """Persist a genuinely new key (NEW_KEY) and record it for in-batch dedup so
-        a later entry in the same batch dedups against it."""
+        a later entry in the same batch dedups against it.
+
+        A STAGED row carries no ``entry_id``: it has no id until the cycle's conclusion
+        lands it, and saying so is the honest answer — nothing can address it yet."""
         row = MemoryEntry(
             memory_name=self.name,
             key=entry.key,
@@ -625,8 +767,7 @@ class Collection(Memory):
             created_by_run_id=run_id,
             last_written_by_run_id=run_id,
         )
-        session.add(row)
-        session.flush()
+        writer.insert(session, row)
         existing.append(EntrySide(entry.key, entry.key_embedding, entry.content_embedding))
         return WriteResult(key=entry.key, outcome=WriteGateOutcome.NEW_KEY, entry_id=row.id)
 
@@ -643,6 +784,7 @@ class Log(Memory):
     def append(
         self, entries: list[LogEntryInput], author: str, run_id: str | None = None
     ) -> list[MemoryEntry]:
+        writer = self._writer
         created: list[MemoryEntry] = []
         with self._session() as session:
             for entry in entries:
@@ -659,11 +801,9 @@ class Log(Memory):
                     created_by_run_id=run_id,
                     last_written_by_run_id=run_id,
                 )
-                session.add(row)
+                writer.insert(session, row)
                 created.append(row)
-            session.commit()
-            for row in created:
-                session.refresh(row)
+            writer.settle(session, created)
         if created:
             self._notify()
         return created

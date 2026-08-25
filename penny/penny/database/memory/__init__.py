@@ -23,6 +23,7 @@ from penny.database.memory.objects import (
     render_run_record,
     render_tool_call,
 )
+from penny.database.memory.pending import PendingEntryWrites
 from penny.database.memory.store import MemoryStore
 from penny.database.memory.types import (
     DedupThresholds,
@@ -77,6 +78,7 @@ __all__ = [
     "MemoryTypeError",
     "MessageLogMemory",
     "MoveOutcome",
+    "PendingEntryWrites",
     "ReadOnlyMemoryError",
     "ResolvedEntry",
     "ResolvedHit",

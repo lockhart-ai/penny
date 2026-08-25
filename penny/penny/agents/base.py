@@ -77,10 +77,17 @@ class CycleResult:
     by the caller and not part of this struct — every promptlog row from
     the cycle already carries it, and the caller passes the same UUID
     back into ``set_run_outcome`` directly.
+
+    ``reads`` are the cycle's cursored reads, each holding a PENDING advance the
+    caller settles (#1936).  They travel out rather than being settled inside the
+    loop because how far a run consumed its input is the same question as whether
+    its writes land, and for a collector cycle that is only decided once the whole
+    cycle — the notification included — has ended.
     """
 
     success: bool
     response: ControllerResponse
+    reads: tuple[CursorReadTool, ...] = ()
 
 
 @dataclass
@@ -304,6 +311,7 @@ class Agent:
             progress, cleanup = self._progress_factory()
         try:
             result = await self._run_cycle(run_id, on_progress=progress)
+            self.settle_reads(result.reads, self._consumed_input(result.success, result.response))
             return result.success
         finally:
             if cleanup is not None:
@@ -312,7 +320,7 @@ class Agent:
     async def _run_cycle(
         self, run_id: str, on_progress: ProgressCallback | None = None
     ) -> CycleResult:
-        """Generic agentic shell: install tools, run the loop, commit cursor.
+        """Generic agentic shell: install tools, run the loop, hand the reads back.
 
         Builds the system prompt via ``_build_system_prompt(user)`` so
         background agents get the full envelope (identity + profile +
@@ -320,8 +328,10 @@ class Agent:
         Penny user so notify can address them by name and the profile
         section reads correctly.  Reads ``self.name`` (class attr — also
         the prompt type identifier in promptlog) to drive the cycle.  Every cursored
-        read in the surface (``CursorReadTool`` — ``log_read``) has its pending cursor
-        committed on success and discarded on failure.
+        read in the surface (``CursorReadTool`` — ``log_read``) leaves a PENDING cursor
+        advance, returned on the result for the CALLER to settle (#1936) — a cursor and
+        a staged write are the same claim about how much of the run was real, so they
+        are settled together at the end rather than one of them here.
 
         ``run_id`` is supplied by the caller — the same UUID stamps every
         promptlog row this cycle produces, threads to the tool surface as the
@@ -331,7 +341,7 @@ class Agent:
         per-cycle state lives on ``self``.
         """
         tools = self.get_tools(run_id=run_id)
-        cursor_tools = [t for t in tools if isinstance(t, CursorReadTool)]
+        cursor_tools = tuple(t for t in tools if isinstance(t, CursorReadTool))
         self._install_tools(tools)
 
         primary_user = self.db.users.get_primary_sender()
@@ -346,19 +356,19 @@ class Agent:
             on_progress=on_progress,
             progress_scope="background",
         )
-        success = self._closed_cleanly(response)
+        return CycleResult(
+            success=self._closed_cleanly(response), response=response, reads=cursor_tools
+        )
 
-        # Commit every cursored read's pending advance on a productive cycle,
-        # discard on a failed one, so a cursor only moves over input actually
-        # processed.
-        committed = self._consumed_input(success, response)
-        for cursor_tool in cursor_tools:
-            if committed:
+    @staticmethod
+    def settle_reads(reads: tuple[CursorReadTool, ...], consumed: bool) -> None:
+        """Commit or discard each cursored read's pending advance, so a cursor only ever
+        moves over input the run actually got the good of."""
+        for cursor_tool in reads:
+            if consumed:
                 cursor_tool.commit_pending()
             else:
                 cursor_tool.discard_pending()
-
-        return CycleResult(success=success, response=response)
 
     def _closed_cleanly(self, response: ControllerResponse) -> bool:
         """Did this cycle reach a clean, deliberate close?
@@ -1120,6 +1130,19 @@ class Agent:
         """
         return None
 
+    def _memory_database(self) -> Database:
+        """The database view this run's memory surface reads and writes through.
+
+        Default: the database itself — a chat turn is not must-act, its turn IS its
+        conclusion, so its writes land as they happen and nothing is held back.
+        ``Collector`` overrides it to return the CYCLE's two-phase view (#1936), so
+        everything the cycle reaches — every tool on its surface, the entries it is
+        shown, the notify document — stages together and lands (or is thrown away)
+        as one.  A template method on the agent, like ``_memory_scope`` beside it:
+        the run type decides, never a branch inside the tool builder.
+        """
+        return self.db
+
     def _configuring_round(self) -> RoundFraming | None:
         """The round whose routine this turn is CONFIGURING (#1869), or ``None``.
 
@@ -1156,7 +1179,7 @@ class Agent:
         # entries and starved the rest.  ``scope`` is the bound collection for
         # collectors and None for chat agents (which keep self.name).
         tools: list[Tool] = build_memory_tools(
-            self.db,
+            self._memory_database(),
             self._embedding_model_client,
             agent_name=scope or self.name,
             scope=scope,
@@ -1193,7 +1216,16 @@ class Agent:
         return True
 
     def _build_browse_tool(self, author: str) -> BrowseTool:
-        """Build a fresh BrowseTool from config, updating self._browse_tool."""
+        """Build a fresh BrowseTool from config, updating self._browse_tool.
+
+        It takes the plain ``self.db``, NOT ``_memory_database()``, and that is the
+        decision on ``browse-results`` (#1936): a fetched page is not corpus state a
+        later cycle reasons about, and the fetch handle it hands back to the model
+        (``browse-results#<id>``) has to resolve mid-run, which a row with no id yet
+        cannot.  Discarding it would also cost the retry a re-fetch it is going to make
+        anyway.  So the fetch cache is written live and an aborted cycle leaves it
+        behind, exactly like its promptlog rows.
+        """
         max_calls = int(self.config.runtime.MAX_QUERIES)
         search_url = str(self.config.runtime.SEARCH_URL)
         tool = BrowseTool(

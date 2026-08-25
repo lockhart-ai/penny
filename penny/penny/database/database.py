@@ -1,5 +1,6 @@
 """Database facade — composes domain-specific stores."""
 
+import copy
 import logging
 import time
 from pathlib import Path
@@ -82,6 +83,24 @@ class Database:
         memory doesn't exist.
         """
         return self.memories.memory(name)
+
+    def staged(self) -> Database:
+        """A VIEW of this database whose entry mutations are STAGED until settled
+        (#1936).
+
+        A shallow copy sharing the engine and every other store, with only the memory
+        registry replaced by its staged twin — so a collector cycle can be handed one
+        object and everything it reaches through it (its whole tool surface, the
+        holdings it is shown, the notify document) reads and writes two-phase, while
+        chat keeps running against ``self``, byte-identically, at the same moment.
+
+        Nothing here is mutated: the view is a parameter the caller passes on, not a
+        swap of this database's state.  Settle it with
+        ``view.memories.commit_pending()`` / ``discard_pending()``.
+        """
+        view = copy.copy(self)
+        view.memories = self.memories.staged()
+        return view
 
     def create_tables(self) -> None:
         """Create all tables if they don't exist."""

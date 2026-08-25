@@ -37,6 +37,7 @@ from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
+from penny.tests.conftest import require_memory
 from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import MemoryMetadataTool
 
@@ -697,6 +698,226 @@ class TestDegenerateContentRejection:
             author="collector",
         )
         assert not any(r.outcome == WriteGateOutcome.NEW_KEY for r in results)
+
+
+class TestTwoPhaseEntryWrites:
+    """A run's entry mutations are PENDING until it ends healthily (#1936).
+
+    The ``AgentCursor`` lifecycle applied to the corpus: a collector cycle that browsed,
+    wrote the changed value and then died used to leave that value behind, so the retry
+    re-observed it, read UNCHANGED, stopped, and the user was never told about a change
+    that really happened.  Staged writes are read through by the run that made them and
+    by nobody else, and they land — or are thrown away — as one.
+    """
+
+    @staticmethod
+    def _seed(db: Database) -> None:
+        db.memories.create_collection("watch", "a page watch")
+        require_memory(db, "watch").write(
+            [EntryInput(key="price", content="$42")], author="collector", run_id="run-baseline"
+        )
+
+    def test_staged_writes_are_invisible_until_the_run_commits(self, db):
+        """Nothing a staged run writes exists for anyone else until it lands — and then
+        it exists exactly as an ordinary write would, stamps included."""
+        self._seed(db)
+        cycle = db.staged()
+        require_memory(cycle, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="collector", run_id="run-cycle"
+        )
+
+        assert require_memory(db, "watch").get("stock") == []
+        assert require_memory(db, "watch").entry_count() == 1
+
+        cycle.memories.commit_pending()
+
+        landed = require_memory(db, "watch").get("stock")
+        assert [row.content for row in landed] == ["in stock"]
+        assert landed[0].created_by_run_id == "run-cycle"
+        assert landed[0].last_written_by_run_id == "run-cycle"
+        assert require_memory(db, "watch").entry_count() == 2
+        assert cycle.memories.has_pending() is False
+
+    def test_a_discarded_run_leaves_the_baseline_and_its_stamps_untouched(self, db):
+        """THE REPRO, at the store seam: the change-gate's own ``KEY_EXISTS_CHANGED``
+        baseline refresh (#1633) is INSIDE the two-phase boundary.
+
+        It is the write nobody makes explicitly — the gate does it — so a cycle that
+        observed a change and then died would otherwise leave the refreshed baseline
+        behind and the next cycle would read its own news as old.  Discarding restores
+        the value AND both provenance stamps.
+        """
+        self._seed(db)
+        cycle = db.staged()
+        changed = require_memory(cycle, "watch").write(
+            [EntryInput(key="price", content="$40")], author="collector", run_id="run-cycle"
+        )
+        assert changed[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
+
+        cycle.memories.discard_pending()
+
+        rows = require_memory(db, "watch").get("price")
+        assert len(rows) == 1
+        assert rows[0].content == "$42"
+        assert rows[0].author == "collector"
+        assert rows[0].created_by_run_id == "run-baseline"
+        assert rows[0].last_written_by_run_id == "run-baseline"
+        # And the retry meets the same world the dead cycle did: still NEWS.
+        retry = db.staged()
+        again = require_memory(retry, "watch").write(
+            [EntryInput(key="price", content="$40")], author="collector", run_id="run-retry"
+        )
+        assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
+
+    def test_a_run_reads_through_its_own_staged_writes(self, db):
+        """The run sees what it has written; the store does not.
+
+        Every read shape is asked, because a routine reaches its own corpus through
+        whichever one its program happens to use — and a write the run cannot see is a
+        write it makes twice.
+        """
+        self._seed(db)
+        cycle = db.staged()
+        watch = require_memory(cycle, "watch")
+        watch.write(
+            [
+                EntryInput(
+                    key="stock",
+                    content="in stock",
+                    key_embedding=_unit_vec(0),
+                    content_embedding=_unit_vec(0),
+                )
+            ],
+            author="collector",
+            run_id="run-cycle",
+        )
+
+        assert [row.content for row in watch.get("stock")] == ["in stock"]
+        assert {row.key for row in watch.read_latest()} == {"price", "stock"}
+        assert {row.key for row in watch.read_all()} == {"price", "stock"}
+        assert watch.keys() == ["price", "stock"]
+        assert watch.entry_count() == 2
+        assert [row.key for row in watch.read_similar(_unit_vec(0), k=1)] == ["stock"]
+        # The same key written twice in one run is ONE entry, not two: the gate compares
+        # against what the run has already staged.
+        again = watch.write(
+            [EntryInput(key="stock", content="in stock")], author="collector", run_id="run-cycle"
+        )
+        assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+
+    def test_staged_updates_deletes_and_appends_settle_with_the_writes(self, db):
+        """Every entry mutation stages, whatever made it — the buffer is keyed to the
+        MUTATION, not to a tool: an ``update_entry``, a ``collection_delete_entry`` and
+        a ``log_append`` hold back and land exactly like a write."""
+        self._seed(db)
+        db.memories.create_log("jotter", "a log")
+        cycle = db.staged()
+        require_memory(cycle, "watch").update("price", "$39", author="collector", run_id="run-x")
+        require_memory(cycle, "jotter").append(
+            [LogEntryInput(content="looked again", content_embedding=None)], author="collector"
+        )
+        assert require_memory(cycle, "watch").get("price")[0].content == "$39"
+
+        assert require_memory(db, "watch").get("price")[0].content == "$42"
+        assert require_memory(db, "jotter").read_all() == []
+
+        cycle.memories.commit_pending()
+        assert require_memory(db, "watch").get("price")[0].content == "$39"
+        assert [row.content for row in require_memory(db, "jotter").read_all()] == ["looked again"]
+
+        # A delete stages the same way, and the run stops seeing the entry immediately.
+        remover = db.staged()
+        assert require_memory(remover, "watch").delete("price") == 1
+        assert require_memory(remover, "watch").get("price") == []
+        assert require_memory(remover, "watch").entry_count() == 0
+        assert require_memory(db, "watch").entry_count() == 1
+        remover.memories.commit_pending()
+        assert require_memory(db, "watch").entry_count() == 0
+
+    def test_a_staged_relocation_leaves_and_arrives_at_once(self, db):
+        """An entry that MOVES changes two memories, and the buffer answers for both.
+
+        Nothing keyed to ``move`` reaches this — the buffer only knows that a staged row
+        now names a different memory than it did when the run first read it — which is
+        what keeps the accounting right for any mutation that relocates an entry,
+        including one no tool exists for yet.
+        """
+        self._seed(db)
+        db.memories.create_collection("archive", "somewhere else")
+        cycle = db.staged()
+
+        assert require_memory(cycle, "watch").move("price", "archive", author="collector") == "ok"
+
+        assert require_memory(cycle, "watch").entry_count() == 0
+        assert require_memory(cycle, "archive").entry_count() == 1
+        assert require_memory(db, "watch").entry_count() == 1
+        assert require_memory(db, "archive").entry_count() == 0
+
+        refreshed: list[str | None] = []
+        db.memories._on_memory_changed = lambda name: refreshed.append(name)
+        cycle.memories._on_memory_changed = db.memories._on_memory_changed
+        cycle.memories.commit_pending()
+
+        assert require_memory(db, "watch").entry_count() == 0
+        assert [row.content for row in require_memory(db, "archive").read_all()] == ["$42"]
+        assert sorted(name for name in refreshed if name) == ["archive", "watch"]
+
+    def test_chat_writes_are_never_staged_and_survive_a_discard(self, db):
+        """Chat is untouched (#1936): its turn IS its conclusion, so its writes land as
+        they always have — including one made while a cycle is mid-flight, which the
+        cycle's discard must not take with it."""
+        self._seed(db)
+        cycle = db.staged()
+        require_memory(cycle, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="collector", run_id="run-cycle"
+        )
+
+        require_memory(db, "watch").write(
+            [EntryInput(key="note", content="the user asked about this")],
+            author="chat",
+            run_id="run-chat",
+        )
+        assert require_memory(db, "watch").get("note")[0].content == "the user asked about this"
+
+        cycle.memories.discard_pending()
+        assert {row.key for row in require_memory(db, "watch").read_all()} == {"price", "note"}
+
+    def test_entries_written_by_run_reads_through_the_pending_buffer(self, db):
+        """What the notify document is built from (#1911) is read off
+        ``last_written_by_run_id`` — and at the moment it is assembled the cycle's
+        writes are still staged, because the commit is what the conclusion does.
+
+        Read against the store alone the document would say the cycle wrote nothing,
+        which is the one fact the message it composes is supposed to be about.
+        """
+        self._seed(db)
+        cycle = db.staged()
+        require_memory(cycle, "watch").write(
+            [EntryInput(key="stock", content="in stock")], author="collector", run_id="run-cycle"
+        )
+        require_memory(cycle, "watch").write(
+            [EntryInput(key="price", content="$40")], author="collector", run_id="run-cycle"
+        )
+
+        assert db.memories.entries_written_by_run("run-cycle") == []
+        staged = cycle.memories.entries_written_by_run("run-cycle")
+        assert [(row.key, row.content) for row in staged] == [
+            ("price", "$40"),
+            ("stock", "in stock"),
+        ]
+
+    def test_a_staged_view_leaves_the_registry_it_was_made_from_alone(self, db):
+        """The view is a parameter, not a swap: the database it came from is the same
+        object with the same registry, and dispatching through it is unchanged."""
+        self._seed(db)
+        cycle = db.staged()
+        assert cycle is not db
+        assert cycle.memories is not db.memories
+        assert cycle.engine is db.engine
+        assert db.memories.has_pending() is False
+        # Committing a view that staged nothing is a no-op, not an error.
+        db.staged().memories.commit_pending()
+        assert require_memory(db, "watch").entry_count() == 1
 
 
 class TestLogAppend:

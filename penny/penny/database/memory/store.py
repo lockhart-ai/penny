@@ -29,6 +29,7 @@ from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.memory import _similarity as sim
 from penny.database.memory.objects import Collection, Log, Memory, MessageLogMemory, RunLog
+from penny.database.memory.pending import PendingEntryWrites
 from penny.database.memory.types import (
     DedupThresholds,
     EntrySide,
@@ -152,6 +153,8 @@ class MemoryStore:
 
     Summary of the public surface:
         * dispatch: memory, run_log
+        * two-phase entry writes (#1936): staged, commit_pending, discard_pending,
+          has_pending
         * metadata: create_collection, create_log, get, list_all, archive,
           unarchive, update_collection_metadata, link_source_message,
           mark_collected
@@ -169,6 +172,7 @@ class MemoryStore:
         runtime: RuntimeParams | None = None,
         mutations: MutationStore | None = None,
         send_queue: SendQueueStore | None = None,
+        pending: PendingEntryWrites | None = None,
     ):
         self.engine = engine
         # /config-tunable dedup thresholds; tests get vanilla defaults.
@@ -186,6 +190,9 @@ class MemoryStore:
         # silent through the send queue for all of them.  Defaults like the
         # ledger so isolated tests still get the cancellation.
         self._send_queue = send_queue if send_queue is not None else SendQueueStore(engine)
+        # The two-phase buffer of the RUN this view serves (#1936) — ``None`` on the
+        # registry everything else uses, and set only by ``staged`` below.
+        self._pending = pending
         # Fired after any mutation so observers (the browser channel) can refresh.
         # The factory injects it into each Memory object it builds.
         self._on_memory_changed: Callable[[str | None], None] | None = None
@@ -199,6 +206,55 @@ class MemoryStore:
         """
         row = self.get(name)
         return self._build(row) if row is not None else None
+
+    # ── Two-phase entry writes (#1936) ────────────────────────────────────────
+
+    def staged(self) -> MemoryStore:
+        """A VIEW of this registry whose entry mutations are STAGED until settled.
+
+        Not a second registry and not a mutation of this one: a new store over the same
+        engine, sharing the ledger and the send queue, carrying its own
+        ``PendingEntryWrites``.  A collector cycle runs against the view while chat runs
+        against ``self`` at the same moment, and neither sees the other's writes until
+        they land.
+
+        The run's own reads go through the view too, so it sees its own pending writes —
+        including the notify document, which is assembled before the commit.
+        """
+        view = MemoryStore(
+            self.engine,
+            runtime=self._runtime,
+            mutations=self._mutations,
+            send_queue=self._send_queue,
+            pending=PendingEntryWrites(),
+        )
+        view._on_memory_changed = self._on_memory_changed
+        return view
+
+    def commit_pending(self) -> None:
+        """Land this view's staged entry mutations — the run reached a healthy end.
+
+        ONE short transaction at the conclusion, never a transaction open for the length
+        of the run: SQLite takes a single writer, so a run-long one would hold every
+        chat turn behind a background poll.  The landing is what announces the change
+        (the staged mutations announced nothing), so the addon surfaces refresh when the
+        value is real rather than while it is still provisional.
+        """
+        if self._pending is None:
+            return
+        for name in self._pending.commit(self.engine):
+            self._notify_changed(name)
+
+    def discard_pending(self) -> None:
+        """Throw this view's staged entry mutations away — the run did not reach a
+        healthy end, so the next cycle runs against the state it started from."""
+        if self._pending is not None:
+            self._pending.discard()
+
+    def has_pending(self) -> bool:
+        """Whether this view is holding anything unlanded — what a caller reports as
+        "the cycle's writes were discarded"."""
+        return bool(self._pending)
 
     def run_log(self) -> RunLog | None:
         """The ``collector-runs`` facade over every collector run.  ``None`` if
@@ -222,9 +278,13 @@ class MemoryStore:
             return RunLog(row, self.engine, on_changed=self._on_memory_changed)
         if row.type == MemoryType.COLLECTION:
             return Collection(
-                row, self.engine, runtime=self._runtime, on_changed=self._on_memory_changed
+                row,
+                self.engine,
+                runtime=self._runtime,
+                on_changed=self._on_memory_changed,
+                pending=self._pending,
             )
-        return Log(row, self.engine, on_changed=self._on_memory_changed)
+        return Log(row, self.engine, on_changed=self._on_memory_changed, pending=self._pending)
 
     def _default_thresholds(self) -> DedupThresholds:
         return DedupThresholds.from_runtime(self._runtime)
@@ -442,15 +502,23 @@ class MemoryStore:
         similarity anchor is built from it.  Reading the stamp rather than a
         ``collection_write`` call's arguments is what keeps it tool-agnostic: a routine
         writes through whatever tools it was taught with, including a plugin's (#1783).
+
+        Read THROUGH the run's staged writes on a two-phase view (#1936): the notify
+        document is assembled at the cycle's conclusion but before the commit, so the
+        entries it renders are still pending — reading only the store would hand the
+        composer a document saying the cycle wrote nothing.
         """
         with self._session() as session:
-            return list(
+            rows = list(
                 session.exec(
                     select(MemoryEntry)
                     .where(MemoryEntry.last_written_by_run_id == run_id)
                     .order_by(col(MemoryEntry.created_at).asc(), col(MemoryEntry.id).asc())
                 ).all()
             )
+        if self._pending is None:
+            return rows
+        return self._pending.written_by_run(run_id, rows)
 
     def names_with_entry_match(self, search: str) -> set[str]:
         """Names of memories holding an entry whose ``key`` or ``content``
@@ -899,7 +967,12 @@ class MemoryStore:
         key surfaces the entry (``resolve_objects`` dedups the two facets by entry
         id, keeping the better-scoring — max-of-facets).  Facades over
         ``messagelog`` / ``promptlog`` have no ``memory_entry`` rows, so they never
-        appear; archived memories are excluded via the containing-row filter."""
+        appear; archived memories are excluded via the containing-row filter.
+
+        A DECLARED LIMIT of two-phase writes (#1936): this query is not read through a
+        staged run's pending buffer, so an entry the current cycle has written but not
+        yet landed is not resolvable here.  It could not be rendered if it were — a hit
+        is addressed BY its entry id, and a staged row has none until it lands."""
         pairs: list[tuple[ResolvedEntry, bytes]] = []
         for entry, container_kind in self._embedded_entry_rows():
             hit = ResolvedEntry(
