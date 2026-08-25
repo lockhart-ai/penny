@@ -9,7 +9,10 @@ import json
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database import Database
+from penny.database.models import Skill
+from penny.database.skill_store import parameters_to_json, steps_to_json
 from penny.database.skills import (
     DERIVED_NAME_MAX_LENGTH,
     WRITE_TARGET_DESCRIPTION,
@@ -28,7 +31,7 @@ from penny.database.skills import (
     retarget_writes,
     unbound_required_parameters,
 )
-from penny.tools.skill_tools import SkillReadTool
+from penny.tools.skill_tools import SkillReadTool, render_skill_shape
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
@@ -742,6 +745,145 @@ async def test_skill_read_renders_one_and_lists_all(db):
 
     missing = await read.execute(name="nope")
     assert not missing.success and "No skill named 'nope'" in missing.message
+
+
+# ── The step-shape line (#1943): what the routine RUNS, on one line ───────────
+#
+# The learn-close reply names the routine and what it needs; this is the third render
+# beside those two, and the one that makes a step the demonstration picked up by accident
+# visible to the person who knows it does not belong.  Every fixture below is fictional,
+# and one of them runs on a tool this codebase has never heard of — the line is derived
+# from each step's OWN call, so a plugin verb renders exactly like a built-in one.
+
+
+def _step(ordinal: int, tool: str, arguments: dict) -> SkillStep:
+    """A distilled step at shape altitude — no substitutions, because the shape line
+    reads the call's own arguments and never their leaves."""
+    return SkillStep(ordinal=ordinal, source_ordinal=ordinal, tool=tool, arguments=arguments)
+
+
+def _skill_of(steps: list[SkillStep], parameters: list[SkillParameter]) -> Skill:
+    """A registry row carrying exactly these steps and parameters."""
+    return Skill(
+        name="morning-briefing",
+        steps=steps_to_json(steps),
+        parameters=parameters_to_json(parameters),
+        intent="Read the news pages and write up what is new.",
+        description="Read the news pages and write up what is new.",
+        author="chat",
+    )
+
+
+# The motivating demonstration (#1931/#1943): three pages read at once, four entries
+# written, and then TWO stray single-page fetches nobody asked for — which the reply
+# said nothing about until this line existed, and which a collector then enacted
+# verbatim.  The stray pair is the whole point of the fixture: they render as their own
+# segments rather than folding into the fetch before them.
+_BRIEFING_STEPS = [
+    _step(
+        1,
+        "browse",
+        {
+            "queries": [
+                "https://news.example-a.test/latest",
+                "https://news.example-b.test/latest",
+                "https://news.example-c.test/latest",
+            ],
+            "extract": "the headlines posted today",
+        },
+    ),
+    _step(
+        2,
+        "collection_write",
+        {
+            "memory": "morning-briefing",
+            "entries": [
+                {"key": "example-a", "content": "a headline"},
+                {"key": "example-b", "content": "another headline"},
+                {"key": "example-c", "content": "a third headline"},
+                {"key": "summary", "content": "what is new today"},
+            ],
+        },
+    ),
+    _step(3, "browse", {"queries": ["https://news.example-a.test/latest"]}),
+    _step(4, "browse", {"queries": ["https://news.example-a.test/latest"]}),
+]
+
+_BRIEFING_SHAPE = "`browse` 3 queries → `collection_write` 4 entries → `browse` → `browse`"
+
+
+def test_the_step_shape_line_names_each_step_and_what_it_handles_more_than_one_of():
+    """The shape line, whole: one segment per step in order, the step's own tool name in
+    the inline-prose backtick dialect, and the count of anything it handles more than one
+    of — under the argument's OWN name, because nothing here knows what a tool calls its
+    inputs.
+
+    A single-item list adds nothing: one is what a call ordinarily carries.  The two
+    stray fetches are two segments, so the shape says four steps happened and not two."""
+    parameters = [SkillParameter(name="pages", required=True, description="the news pages")]
+
+    rendered = render_skill_shape(_skill_of(_BRIEFING_STEPS, parameters))
+
+    assert rendered == _BRIEFING_SHAPE
+    # No argument VALUE and no call shape — the #1799 leak has no source here (a step
+    # names a tool the way prose does, not the way a recipe does), and the whole recipe
+    # stays one skill_read away.
+    assert "example-a" not in rendered and "(" not in rendered
+
+
+def test_the_step_shape_line_is_the_same_for_a_routine_that_needs_nothing():
+    """Parameters are the BRIEF render's business, not this one's: the same steps render
+    byte-identically whether the routine declares parameters or none at all, so a
+    zero-parameter routine still gets its whole shape stated."""
+    assert render_skill_shape(_skill_of(_BRIEFING_STEPS, [])) == _BRIEFING_SHAPE
+
+
+def test_a_one_step_routine_on_an_unheard_of_tool_is_just_that_tool():
+    """One step, one line, no arrow — and the tool is one this codebase has never heard
+    of (a plugin's verb), because a skill is an ARBITRARY tool sequence and the segment
+    is whatever the step's own call was.  Its one-item list renders no count, and its
+    dict-shaped argument is ONE thing however many fields it carries."""
+    step = _step(
+        1,
+        "ledger_sync",
+        {"accounts": ["north-branch"], "window": {"from": "march", "to": "april"}},
+    )
+
+    assert render_skill_shape(_skill_of([step], [])) == "`ledger_sync`"
+
+
+def test_a_routine_longer_than_the_reading_budget_states_what_it_left_off():
+    """A demonstration longer than one skimmable line renders the budget's worth of steps
+    and then says how many it did not show — an honest count, never a trailing away, and
+    never joined by the arrow (a step is a step; the tail is not one)."""
+    over_budget = PennyConstants.SKILL_SHAPE_STEPS + 3
+    steps = [_step(n, "log_append", {"memory": "notes"}) for n in range(1, over_budget + 1)]
+
+    rendered = render_skill_shape(_skill_of(steps, []))
+
+    shown = " → ".join(["`log_append`"] * PennyConstants.SKILL_SHAPE_STEPS)
+    assert rendered == f"{shown} … 3 more steps not shown."
+
+
+def test_the_step_shape_survives_the_instantiation_seam_unchanged():
+    """A routine at rest and the job it becomes have the SAME shape.  Every seam between
+    them replaces a LEAF — the attachment retarget, then the runtime join writing each
+    bound value into the leaf its demonstration filled — and none of them changes how many
+    things a call handles, which is the whole claim the counts stand on."""
+    steps = _elevation_steps()
+    parameters = [
+        SkillParameter(name="queries", required=True, value="Zephyr Ridge elevation"),
+        SkillParameter(name="extract", required=True, value="the elevation above sea level"),
+    ]
+    at_rest = _skill_of(steps, parameters)
+
+    bound = bind_parameters(
+        retarget_writes(steps, "cinder-elevation"),
+        parameters,
+        {"queries": "Cinder Peak elevation", "extract": "the elevation above sea level"},
+    )
+
+    assert render_skill_shape(_skill_of(bound, parameters)) == render_skill_shape(at_rest)
 
 
 # ── The empty registry: honest empty state, no seeds ──────────────────────────

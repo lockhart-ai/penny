@@ -45,7 +45,7 @@ from penny.tools.micro_context import (
 )
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
-from penny.tools.skill_tools import render_skill_brief
+from penny.tools.skill_tools import render_skill_brief, render_skill_shape
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
@@ -447,15 +447,21 @@ async def test_run_end_extracts_and_narrates_a_skill(
         assert skill.description == ask
 
         # The injected narration frame IS the SKILL_LEARNED_NARRATION template filled
-        # with the BRIEF render + the demonstrated-on origin message (#1665/#1804) —
-        # the model narrates from the render, not memory, and what it is handed to
-        # relay is a description rather than a recipe.  The shared mock handler
-        # doesn't speak the NAME:/DESCRIPTION: naming contract, so naming falls back
-        # to the deterministic slug + the ask as the description (extraction never
-        # blocks).
+        # with the BRIEF render, the SHAPE of what the routine runs, and the
+        # demonstrated-on origin message (#1665/#1804/#1943) — the model narrates from
+        # the record, not memory, and what it is handed to relay is a description
+        # rather than a recipe.  The shared mock handler doesn't speak the
+        # NAME:/DESCRIPTION: naming contract, so naming falls back to the deterministic
+        # slug + the ask as the description (extraction never blocks).
         assert captured["frame"] == Prompt.SKILL_LEARNED_NARRATION.format(
-            skill=render_skill_brief(skill), demonstrated_on=ask
+            skill=render_skill_brief(skill),
+            shape=render_skill_shape(skill),
+            demonstrated_on=ask,
         )
+        # The shape it carries is the RECORD's own two steps, in the order the run made
+        # them — so a step this turn picked up that the user never asked for reaches the
+        # reply that is the one moment they are there to see it.
+        assert render_skill_shape(skill) == "`collection_read_latest` → `collection_write`"
 
         # Extraction ran EXACTLY once, on the state the machine landed in — the
         # re-reply found the run already handled.

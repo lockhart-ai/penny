@@ -692,6 +692,16 @@ class PennyConstants:
     # might not be on it, and an instruction that cannot be followed is worse than the
     # honest number.
     COLLECTOR_HOLDINGS_LIMIT = 20
+    # How many of a learned routine's steps the learn-close narration's step-shape line
+    # renders (#1943), in order, before it states the count it left off.  The line exists
+    # to be SKIMMED in one pass by the person who knows what the routine was meant to do,
+    # so the bound is a READING budget like the three above: eight segments is roughly a
+    # line of prose, and a demonstration longer than that is one whose whole shape no
+    # single line was ever going to carry.  The overflow states its own COUNT and names
+    # no fetch tool for the same reason the holdings block does not — the whole recipe is
+    # one `skill_read(name=<name>)` away either way, so the honest number is the whole job
+    # of the overflow.
+    SKILL_SHAPE_STEPS = 8
     # How many times a collection's occurrence may be re-attempted before the
     # dispatcher stamps it anyway and waits for the next one (#1935).  A cycle that
     # ended on a STOCHASTIC cause and changed nothing — preempted by a foreground

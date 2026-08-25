@@ -42,7 +42,6 @@ reader of a surprising sample wants to see where it went before anything else.
 
 from __future__ import annotations
 
-import re
 from typing import Any, NamedTuple
 
 import pytest
@@ -68,12 +67,15 @@ from penny.program import program_calls
 from penny.skill_extraction import _apply_leaf_labels, _interface_parameters
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
+    DESCRIBES_FETCH,
+    DESCRIBES_SAVE,
     REPLY_ANCHOR,
     ChatEval,
     Check,
     Preparer,
     Seeder,
     collection_entries,
+    describes,
     new_collections,
     seeded_run_id,
     tool_was_called,
@@ -651,38 +653,17 @@ async def test_retiring_it_archives_the_job_and_keeps_what_it_gathered(
 # the model would credit a reply for repeating it (the ask is checked against these
 # patterns by construction — see `_THEIR_WORDS`).
 
-_FETCH = (
-    r"\b(search\w*|browse\w*|scours?|scans?|hunts?|crawls?|monitors?|gathers?|pulls?\s+in|"
-    r"look\w*\s+(for|up|on|at|across|through)|finds?\s+new|fetch\w*|opens?|reads?|checks?)\b"
-    r"|\b(the\s+web|online|the\s+internet|the\s+page)\b"
-)
-# Direct persist verbs match bare; the ambiguous ones (add/store/keep/log/maintain) must be
-# ANCHORED to an entry/list object, so "keep an eye on" (about the typewriters, not the
-# write) never reads as the save step.
-_SAVE = (
-    r"\b(saves?|saving|writes?|writing|records?|recording)\b|collection_write"
-    r"|\b(adds?|adding|stores?|storing|keeps?|keeping|logs?|logging|maintains?|"
-    r"curates?|compiles?|compiling)\b"
-    r"[\w\s,'-]{0,20}\b(entry|entries|list|record|records|collection|them|it)\b"
-    r"|\bentr(y|ies)\b[^.]{0,30}\b(added|stored|written|saved|created)\b"
-)
-
-
-def _describes(reply: str, pattern: str) -> bool:
-    """Whether the reply describes a family, read through the typography the model
-    sprinkles (curly quotes, markdown emphasis) — a false negative from a bold marker
-    would be the scorer measuring formatting."""
-    normalized = reply.casefold().replace("’", "'").replace("“", '"')
-    return re.search(pattern, re.sub(r"[*_`]", "", normalized)) is not None
-
+# The patterns themselves are SHARED (``penny.tests.eval.conftest``): the learn-close
+# narration story asks the same question of a reply about a routine it just learned
+# (#1943), and two copies of one policy are two contracts.
 
 # The ask, and the rule that it lends the scorer nothing — ENFORCED rather than trusted,
-# because the leak is invisible once it exists: a question carrying one of the words above
-# would credit a reply for repeating the question back.
+# because the leak is invisible once it exists: a question carrying one of the words the
+# patterns match would credit a reply for repeating the question back.
 _LEGIBILITY_ASK = f"what does {_THEIR_WORDS} actually do? walk me through it."
-assert not _describes(_LEGIBILITY_ASK, _FETCH) and not _describes(_LEGIBILITY_ASK, _SAVE), (
-    f"the ask must lend no word to the patterns that score the reply: {_LEGIBILITY_ASK!r}"
-)
+assert not describes(_LEGIBILITY_ASK, DESCRIBES_FETCH) and not describes(
+    _LEGIBILITY_ASK, DESCRIBES_SAVE
+), f"the ask must lend no word to the patterns that score the reply: {_LEGIBILITY_ASK!r}"
 
 
 def _describes_checks(reply: str) -> list[Check]:
@@ -691,14 +672,14 @@ def _describes_checks(reply: str) -> list[Check]:
     return [
         Check(
             f"reply: it describes {claim}",
-            _describes(reply, pattern),
+            describes(reply, pattern),
             kind="reply",
             anchor=REPLY_ANCHOR,
-            rationale=None if _describes(reply, pattern) else f"no {family} family in the reply",
+            rationale=None if describes(reply, pattern) else f"no {family} family in the reply",
         )
         for claim, family, pattern in (
-            ("the page being read", "fetch/read", _FETCH),
-            ("what it finds being saved", "save/write", _SAVE),
+            ("the page being read", "fetch/read", DESCRIBES_FETCH),
+            ("what it finds being saved", "save/write", DESCRIBES_SAVE),
         )
     ]
 

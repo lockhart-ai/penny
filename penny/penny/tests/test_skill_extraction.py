@@ -83,7 +83,7 @@ from penny.tools.micro_context import (
     SkillSignature,
     slug_parameter_name,
 )
-from penny.tools.skill_tools import render_skill_brief, render_skill_full
+from penny.tools.skill_tools import render_skill_brief, render_skill_full, render_skill_shape
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
 
@@ -601,6 +601,30 @@ _INVENTED_WRITE_ARGS = {
     ],
 }
 _INVENTED_WRITE = ("collection_write", _INVENTED_WRITE_ARGS, _WRITE_OK, True)
+
+# The two-step recipe the narration-frame whole-render literal is pinned on (#1943): the
+# fetch the routine's parameter fills, then the write that recorded two things — so the
+# frame's shape line carries both a plain segment and a counted one, and the arrow between
+# them is in the pinned literal rather than only in the render's own tests.
+_NARRATED_STEPS = steps_to_json(
+    [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["https://shop.test/widget"]},
+            substitutions=[
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="url")
+            ],
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments=json.loads(json.dumps(_INVENTED_WRITE_ARGS)),
+        ),
+    ]
+)
 
 
 def _run_end_model(*, labels: str = "", framing: str = "") -> MockLlmClient:
@@ -1755,17 +1779,19 @@ async def test_lifecycle_call_is_dropped_from_the_recipe(db):
 # ── #1665/#1804: the run-end narration frame (whole-render literal) ────────────
 
 
-def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on():
-    """The narration frame (#1665) renders the GENERIC skill — name · intent · what
-    it needs, via render_skill_brief — AND a line naming the INSTANCE it was
-    demonstrated on: whole-render literal.
+def test_skill_learned_narration_frame_renders_generic_name_shape_and_demonstrated_on():
+    """The narration frame (#1665/#1943) renders the GENERIC skill — name · intent · what
+    it needs, via render_skill_brief — the SHAPE of what it will run, via
+    render_skill_shape, AND a line naming the INSTANCE it was demonstrated on:
+    whole-render literal.
 
-    The frame asks for a description a person can act on, so what it hands the model
-    is a description (#1804/#1799).  Nothing in it is shaped like a call, so the
-    reciting-the-recipe reading the numbered render invited is not available."""
+    The frame asks for a description a person can act on, so what it hands the model is a
+    description (#1804/#1799): the shape line carries the steps at the altitude of what
+    they DO, with no argument values, so there is still nothing in the frame shaped like a
+    runnable call for the reply to recite."""
     skill = Skill(
         name="watch-a-listing-price",
-        steps=_WATCH_STEPS,
+        steps=_NARRATED_STEPS,
         parameters=_WATCH_PARAMS,
         intent="Watch a listing page's price and record it.",
         description="Watch a listing page's price and record it.",
@@ -1773,6 +1799,7 @@ def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on(
     )
     frame = Prompt.SKILL_LEARNED_NARRATION.format(
         skill=render_skill_brief(skill),
+        shape=render_skill_shape(skill),
         demonstrated_on="watch the aurora deck 2 price and remember it",
     )
     assert frame == (
@@ -1780,19 +1807,27 @@ def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on(
         "it's saved automatically, and here is exactly what it captured:\n\n"
         "watch-a-listing-price — Watch a listing page's price and record it. "
         "(needs: url)\n\n"
+        "The steps it will run each time, in order: `browse` → `collection_write` "
+        "2 entries\n\n"
         "You demonstrated it on: watch the aurora deck 2 price and remember it\n\n"
         "Reply to the user now. FIRST answer what they actually asked: report the "
         "outcome of this round — the value you found and where you stored it — since "
         "this reply is the only one they receive. THEN tell them, in your own words, "
         "that you've learned this routine: name it "
         "by what it does generally (not just this one instance), say plainly what it "
-        "does, and name what you'd need from them to run it again. Then offer to set "
-        "it running on a schedule if they'd like."
+        "does, and name what you'd need from them to run it again. Give them the steps "
+        "too — one short line, in everyday words rather than the tool names above, in "
+        "that same order, every step it captured and no step it didn't — because they "
+        "are the only one who knows what this routine was for, so a step that doesn't "
+        "belong is a step only they can spot. If one is wrong, they can walk you "
+        "through the routine again and you'll learn it fresh. Then offer to set it "
+        "running on a schedule if they'd like."
     )
-    # The leak #1799 recorded — `browse(queries=[{url}])` read aloud to the user —
-    # has no source here: the frame carries no step, no tool name, and no brace
-    # placeholder for the model to copy.
-    assert "browse" not in frame and "{" not in frame
+    # The leak #1799 recorded — `browse(queries=[{url}])` read aloud to the user — still
+    # has no source here: the shape names each step's tool the way prose does, and carries
+    # no argument, no call parentheses and no brace placeholder for the model to copy.
+    # (That a tool NAME can still be recited is what the eval contract measures.)
+    assert "browse(" not in frame and "{" not in frame and _PRICE not in frame
 
 
 def test_skill_brief_render_omits_the_needs_tail_when_a_routine_needs_nothing():

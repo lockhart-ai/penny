@@ -17,7 +17,10 @@ stories, in the order a user meets them:
    11. two facts at once  one message carrying a like and a dislike → two writes, each
                           into the collection that fits it
    15. two sources        the fused ask for a routine over TWO pages — the estate's
-                          only two-page routine: decompose, demonstrate, set running
+                          only two-page routine: decompose, demonstrate, set running —
+                          and the learn close, where the reply states what the routine
+                          it just learned will RUN, for the one person who can tell a
+                          captured step from a stray one (#1943)
 
 The worlds are the CURRENT runtime's.  Nothing is pre-seeded any more (migration
 0108), so every collection a case starts with is one this file creates the way the
@@ -60,15 +63,19 @@ from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.models import MemoryEntry, MemoryRow, PromptLog
+from penny.database.skill_store import steps_from_json
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
+    DESCRIBES_FETCH,
+    DESCRIBES_SAVE,
     REPLY_ANCHOR,
     ChatEval,
     Check,
     asked_for_page_structure,
     chat_run_tool_sequences,
     collection_entries,
+    describes,
     is_ordered_subsequence,
     is_seeded_run,
     new_collections,
@@ -89,6 +96,7 @@ from penny.tests.eval.fixtures import (
     CannedPage,
     SynthCollection,
 )
+from penny.tools.skill_tools import render_skill_shape
 
 pytestmark = pytest.mark.eval
 
@@ -1285,4 +1293,156 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
         min_pass_rate=None,
         family=_FAMILY,
         timeout=300.0,  # three turns: decompose, then the round, then standing it up
+    )
+
+
+# ── Story 15, the learn close: what did it actually capture? (#1943) ──────────
+#
+# A demonstrated round is distilled into a routine WHOLE, so a call it picked up along the
+# way — a page fetched twice, a write of something nobody asked to keep — is captured with
+# everything else and enacted verbatim by every later cycle.  Nothing catches that: the
+# framework does not know what the routine was FOR, and by the time a collector runs it the
+# demonstrator is not in the room.  They are in the room at exactly one moment, the
+# learn-close reply, which is why this case scores that reply for the routine's SHAPE
+# rather than only its name (#1658/#1804 established the name and what it needs).
+#
+# One turn, so the LAST reply IS the learn close — the three-turn story above ends on the
+# apply close, where what is running has already been settled.  Correcting a wrong step is
+# re-teaching the routine, so nothing here scores an edit: there is no edit surface.
+#
+# WHAT THE ASK LENDS THE SCORER, stated rather than assumed: a teaching turn is made of
+# the very verbs a reply describing the routine would use ("go to", "keep"), and it names
+# both pages, so unlike the legibility story's question this ask CANNOT be held apart from
+# the fetch/save families or from the sources — a reply merely reporting the outcome would
+# go green on all of them.  They are reported here (``scored=False``) rather than scored,
+# and what IS scored is the pair the ask cannot supply: that the reply says what the
+# routine will do when it RUNS AGAIN, and that it says it in plain words — no tool
+# identifier out of the record read aloud, which is the frame's own instruction and the
+# thing that decides whether handing the model the record helped or leaked.
+
+_LEARN_CLOSE_ASK = (
+    f"go to {_FOXES_URL} and {_SEALS_URL}, pull out the trades and signings from "
+    "each, and keep the headline plus a short blurb in a team news list for me"
+)
+
+# How a reply says a routine RUNS AGAIN rather than merely reporting what just happened.
+# Broad, and deliberately none of it in the ask: the ask is an imperative about now, so a
+# recurring frame in the reply is the model speaking about the routine it just learned.
+#
+# CADENCE words are deliberately absent — no "every morning", no "twice a day", no "on a
+# schedule".  The frame closes by asking her to OFFER a schedule, so a pattern carrying
+# those would go green on the offer alone and measure nothing about the steps.
+_RUNS_AGAIN = (
+    r"\b(each|every)\s+(time|run|cycle|round)\b"
+    r"|\bwhen(ever)?\s+(it|i)\s+runs?\b|\bfrom\s+now\s+on\b|\bgoing\s+forward\b"
+    r"|\bnext\s+time\b|\brun\s+(it|this|that)\s+again\b|\bre-?run\b"
+)
+
+assert not describes(_LEARN_CLOSE_ASK, _RUNS_AGAIN), (
+    f"the ask must lend no word to the recurrence pattern: {_LEARN_CLOSE_ASK!r}"
+)
+
+
+def _learned_shapes(db: Database) -> list[str]:
+    """The shape line the framework rendered from what this sample actually learned —
+    reported beside the reply checks so a reader compares the account against the RECORD
+    rather than against what the case's author expected the round to capture.  A list,
+    because a round that minted more than one routine is itself the finding."""
+    return [render_skill_shape(skill) for skill in db.skills.list_all()]
+
+
+def _tools_read_aloud(db: Database, reply: str) -> list[str]:
+    """The RECORD's own tool identifiers that turned up verbatim in the reply.
+
+    Read off the learned steps rather than from a list written here, so a routine built
+    on a tool nobody has enumerated is covered the same way: what is being checked is
+    that the frame's record came back TRANSLATED, in the plain words it asks for, rather
+    than recited — the leak #1799 measured, which handing the model a step shape at all
+    is what risks re-opening."""
+    normalized = _normalize(reply)
+    return sorted(
+        {
+            step.tool
+            for skill in db.skills.list_all()
+            for step in steps_from_json(skill.steps)
+            if _normalize(step.tool) in normalized
+        }
+    )
+
+
+def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
+    """The routine's two moves as the reply describes them, plus which of the two pages it
+    named — reported, not scored, for the reason given above: the teaching ask carries
+    both families' verbs and both sources, so a green here cannot tell an account of the
+    routine from an echo of the instruction."""
+    sources = [token for token in ("foxes", "seals") if token in _normalize(reply)]
+    return [
+        Check(
+            f"reply: it describes {claim}",
+            describes(reply, pattern) if learned else False,
+            scored=False,
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+        )
+        for claim, pattern in (
+            ("the pages being read", DESCRIBES_FETCH),
+            ("what it finds being kept", DESCRIBES_SAVE),
+        )
+    ] + [
+        Check(
+            "reply: which pages it named",
+            len(sources) == 2,
+            rationale=f"named {sources}",
+            scored=False,
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+        )
+    ]
+
+
+def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check]:
+    learned = bool(db.skills.list_all())
+    shapes = _learned_shapes(db)
+    recited = _tools_read_aloud(db, reply)
+    return [
+        Check("state: the round taught a routine", learned, kind="state"),
+        Check(
+            "reply: it says what the routine will do when it runs again",
+            describes(reply, _RUNS_AGAIN) if learned else False,
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+            rationale=None if learned else "nothing was learned, so there was nothing to state",
+        ),
+        Check(
+            "reply: the steps are given in plain words, not read back as tool names",
+            learned and not recited,
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+            rationale=f"read aloud {recited}" if recited else None,
+        ),
+        *_shape_family_checks(reply, learned),
+        Check(
+            "state: the shape the record holds",
+            len(shapes) == 1,
+            rationale=" | ".join(shapes) or "no routine in the registry",
+            scored=False,
+            kind="state",
+        ),
+        _landing_advisory(db, ConversationState.LEARN),
+        _routing_advisory(db),
+    ]
+
+
+async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval) -> None:
+    """Story 15, the learn close: one demonstrated round, and the reply that closes it
+    tells the user what the routine will RUN — so a step it captured by accident is
+    visible to the only person who can tell that it does not belong."""
+    await chat_eval(
+        case_id="memory-learn-close-shape",
+        message=_LEARN_CLOSE_ASK,
+        browse=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
+        score=_score_learn_close,
+        min_pass_rate=None,
+        family=_FAMILY,
+        timeout=240.0,  # one turn, but it reads two pages before it writes
     )
