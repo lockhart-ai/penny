@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "name": "Penny reading comparison (DO NOT SHIP)",
+  "version": "0.0.1",
+  "description": "Evidence harness for issue #1942 / PR #1961 — reads news front pages both ways and downloads the numbers. Temporary tooling, never part of the Penny extension.",
+
+  "permissions": [
+    "tabs",
+    "downloads",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "scripts": ["build/harness.js"],
+    "persistent": true
+  },
+
+  "browser_action": {
+    "default_title": "Reading comparison — badge shows progress"
+  },
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "compare-readings@penny.localhost",
+      "strict_min_version": "115.0"
+    }
+  }
+}

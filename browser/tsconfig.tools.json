@@ -1,0 +1,24 @@
+{
+  "// why": [
+    "The comparison harness (tools/compare-readings) is bundled by esbuild, not",
+    "compiled by tsc, and it imports both npm packages and the content script's",
+    "page_text.ts — so it typechecks on esbuild's terms, like tsconfig.content",
+    "does, rather than under the emit-oriented main config. noEmit: the build",
+    "output is tools/compare-readings/build.mjs's.",
+    "This config is tooling-only. It is not part of what the extension ships."
+  ],
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["tools/compare-readings"]
+}

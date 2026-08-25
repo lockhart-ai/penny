@@ -3,13 +3,15 @@
   "scripts": {
     "build": "tsc && npm run build:content",
     "build:content": "node build-content.mjs",
-    "build:test": "esbuild src/content/page_text.ts --format=esm --outfile=dist/test/page_text.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.content.json",
-    "test": "npm run build:test && node --test test/*.test.mjs",
+    "build:test": "esbuild src/content/page_text.ts --format=esm --outfile=dist/test/page_text.mjs && esbuild tools/compare-readings/comparator.ts --bundle --packages=external --format=esm --outfile=dist/test/comparator.mjs && esbuild tools/compare-readings/sites.ts --format=esm --outfile=dist/test/sites.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.content.json && tsc --noEmit -p tsconfig.tools.json",
+    "test": "npm run build:test && npm run build:compare && node --test test/*.test.mjs",
     "watch": "concurrently \"tsc --watch\" \"npm:watch:content\"",
     "watch:content": "node build-content.mjs",
     "dev": "npm run build && concurrently \"npm:watch\" \"npm:ext\"",
-    "ext": "web-ext run --firefox=/Applications/Firefox.app/Contents/MacOS/firefox --firefox-profile=penny-release --keep-profile-changes --source-dir=."
+    "ext": "web-ext run --firefox=/Applications/Firefox.app/Contents/MacOS/firefox --firefox-profile=penny-release --keep-profile-changes --source-dir=.",
+    "build:compare": "node tools/compare-readings/build.mjs",
+    "compare": "npm run build:compare && web-ext run --firefox=/Applications/Firefox.app/Contents/MacOS/firefox --source-dir=tools/compare-readings/extension --browser-console"
   },
   "devDependencies": {
     "@types/firefox-webext-browser": "^143.0.0",
