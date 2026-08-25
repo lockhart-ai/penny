@@ -218,9 +218,10 @@ class _RecordNarrationValidator(ABC):
     (``ChatAgent._prepare_text_shape``) and stamps a rendered frame on the ctx; a
     subclass names which frame it reads.  Turning that into a ``NudgeContinue`` — a
     validator in the chat chain, not a branch in the loop — makes the model re-reply
-    against the render.  A frame is stamped at most once per run (the prep runs once per
-    run id), so the re-reply falls through to the real final answer instead of narrating
-    twice.
+    against the render.  The prep stamps ONE frame per text draw and never the same one
+    twice (a run's records are computed once and handed out in a declared order), so a
+    turn that has several records to narrate narrates each of them exactly once and the
+    draw after the last falls through to the real final answer.
 
     On the final step there is no room to continue (tools stripped, the loop would
     exhaust), so it Proceeds — what happened has already happened durably, and it surfaces
@@ -271,6 +272,23 @@ class AppliedConfigurationValidator(_RecordNarrationValidator):
 
     def _narrating(self) -> str:
         return "the configuration this turn applied"
+
+
+class WritesLandedValidator(_RecordNarrationValidator):
+    """A chat run that WROTE entries narrates what actually landed (#1946) — the third
+    sibling of the two frames above, and the plainest of them.
+
+    A turn's own account of its writes is a count of what it ATTEMPTED: a draw the reroll
+    guard discarded never happened, a write the change-gate refused never landed, and
+    both look like writes from inside the run.  The ledger's entry stamps say which ones
+    survived, so the frame carries that and the reply states it rather than adding up its
+    own intentions."""
+
+    def _frame(self, ctx: LoopContext) -> str | None:
+        return ctx.writes_landed_frame
+
+    def _narrating(self) -> str:
+        return "what this turn wrote"
 
 
 # ── Collector-only run-shape validator ───────────────────────────────────────

@@ -42,6 +42,7 @@ reader of a surprising sample wants to see where it went before anything else.
 
 from __future__ import annotations
 
+import re
 from typing import Any, NamedTuple
 
 import pytest
@@ -635,6 +636,175 @@ async def test_retiring_it_archives_the_job_and_keeps_what_it_gathered(
         seed=seed_standing_jobs(_FINDS),
         seed_skills=[WATCH_ROUTINE],
         score=_score_archive,
+        min_pass_rate=None,
+        family=_OPERATIONS_FAMILY,
+    )
+
+
+# ── Story: fixing a running job's schedule — the was-state (#1946) ────────────
+#
+# The user changes WHEN a job runs.  Two states are in play from the first word of the ask
+# ("too early" is a claim about the hour it has now), and after the edit lands the row
+# holds only the hour that won — so the prior is the one fact about this turn that nothing
+# in the world still answers.  The observed regression is exactly that gap: a schedule-fix
+# turn whose thinking read the real stored rule and whose fix was correct, while the reply
+# stated a prior value contradicting both.
+#
+# What is SCORED is that every clock time the reply names is one of the job's own — the
+# hour it had, or the hour it now has.  Any third hour is invented, since the ask supplies
+# only the new one and the seeded world supplies only the old one, and that containment is
+# the structural form of "the stated prior matches the seed".  Whether it states a prior at
+# all is REPORTED: the record frame asks for a copy IF the reply mentions what changed, and
+# a reply that simply confirms the new hour has claimed nothing false.
+#
+# The state the machine lands the turn in is reported too, and a reader wants it first:
+# changing how a running job behaves is idle by the machine's own boundary (#1927), and the
+# applied-configuration record — the surface that carries the before→after — is stamped on
+# an APPLY turn.  So a sample that lands idle is measuring what the ambient header alone
+# supports, and a sample that lands in apply is measuring the record.  Which of those a
+# fix-my-schedule ask reaches is the number this case is here to produce.
+
+_FIXED_HOUR = 18
+_SEEDED_HOUR = 7
+_SCHEDULE_FIX_ASK = f"{_THEIR_WORDS} is checking too early — move it to 6 in the evening"
+
+# The ask must lend the scorer NOTHING about the hour the job has now: a reply naming it
+# can only have read it.  Enforced rather than trusted, the way every other leak guard in
+# this file is.
+assert str(_SEEDED_HOUR) not in _SCHEDULE_FIX_ASK, (
+    f"the ask must not name the seeded hour: {_SCHEDULE_FIX_ASK!r}"
+)
+# And the hour the scorer calls the prior must be the hour the seeded job actually runs at
+# — held at import, so a schedule edited on the fixture above fails here naming both.
+assert f"BYHOUR={_SEEDED_HOUR}" in _FINDS.schedule, (
+    f"the scored prior hour must be the job's own: {_FINDS.schedule!r}"
+)
+
+# Clock times in the three forms a reply writes them.  Each yields a 24-hour hour, so a
+# reply saying "6pm", "18:00" and "6 in the evening" is read the same way whichever it
+# reached for — what is being measured is WHICH hour it named, never how it spelled it.
+_MERIDIEM = re.compile(r"\b(\d{1,2})(?::\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b")
+_TWENTY_FOUR = re.compile(r"\b(\d{1,2}):\d{2}\b")
+_DAYPART = re.compile(r"\b(\d{1,2})\s*(?:o'?clock\s*)?in the (morning|afternoon|evening|night)\b")
+_AFTERNOON_PARTS = ("afternoon", "evening", "night")
+
+
+def _hours_named(reply: str) -> set[int]:
+    """Every hour the reply states, as a 24-hour number."""
+    folded = reply.lower()
+    hours = {
+        _to_24(int(hour), meridiem.startswith("p")) for hour, meridiem in _MERIDIEM.findall(folded)
+    }
+    hours |= {int(hour) for hour in _TWENTY_FOUR.findall(folded)}
+    hours |= {
+        _to_24(int(hour), part in _AFTERNOON_PARTS) for hour, part in _DAYPART.findall(folded)
+    }
+    return {hour for hour in hours if 0 <= hour <= 23}
+
+
+def _to_24(hour: int, afternoon: bool) -> int:
+    return (hour % 12) + 12 if afternoon else hour % 12
+
+
+def schedule_is_visible(job: StandingJob) -> Preparer:
+    """The job's own self-state row states its stored rule — asserted BEFORE the turn.
+
+    The prior is what this case is about, so a world that stopped rendering it would make
+    every sample measure the model's memory rather than its reading, and would do so
+    silently.  Read through the shipped clause render, so the probe and the surface cannot
+    drift into asserting different words for one schedule."""
+
+    def probe(penny: Penny) -> None:
+        rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+        row = next(
+            (line for line in rendered.splitlines() if line.startswith(f"- {job.container} ")),
+            None,
+        )
+        assert row is not None, f"{job.container} must render as a mechanism:\n{rendered}"
+        assert job.schedule in row, (
+            f"{job.container} must render {job.schedule!r} — it renders {row!r}"
+        )
+
+    return probe
+
+
+def _fixed_hour_check(row: MemoryRow) -> Check:
+    moved = f"BYHOUR={_FIXED_HOUR}" in (row.schedule or "")
+    return Check(
+        "state: the job now runs at the hour they asked for",
+        moved,
+        rationale=None if moved else f"schedule is {row.schedule!r}",
+        kind="state",
+    )
+
+
+def _stated_hours_checks(reply: str) -> list[Check]:
+    """The reply's clock times against the job's own two.
+
+    A reply naming no hour has claimed nothing, so the containment is NOT APPLICABLE
+    rather than a free pass; the second row reports whether the prior was stated at all,
+    which is what tells a reader whether a green containment meant anything."""
+    named = _hours_named(reply)
+    theirs = {_SEEDED_HOUR, _FIXED_HOUR}
+    label = "reply: every clock time it names is one the job has had"
+    containment = (
+        Check.na(label, rationale="named no hour", anchor=REPLY_ANCHOR, kind="reply")
+        if not named
+        else Check(
+            label,
+            named <= theirs,
+            rationale=f"named {sorted(named)}, the job has had {sorted(theirs)}",
+            anchor=REPLY_ANCHOR,
+            kind="reply",
+        )
+    )
+    return [
+        containment,
+        Check(
+            "reply: it states the hour the job used to run at",
+            _SEEDED_HOUR in named,
+            rationale=f"named {sorted(named)}",
+            scored=False,
+            anchor=REPLY_ANCHOR,
+            kind="reply",
+        ),
+    ]
+
+
+def _score_schedule_fix(db: Database, before: set[str], reply: str) -> list[Check]:
+    row = _job(db)
+    if row is None:
+        return [_job_still_there_check(row), landed_state_check(db)]
+    return [
+        Check(
+            "spine: she reconfigured the collection",
+            tool_was_called(db, _COLLECTION_SET),
+            anchor=f"{_COLLECTION_SET}(",
+            rationale=None
+            if tool_was_called(db, _COLLECTION_SET)
+            else "collection_set never called",
+            kind="spine",
+        ),
+        _fixed_hour_check(row),
+        *_stated_hours_checks(reply),
+        *_still_live_checks(row),
+        *_nothing_else_touched_checks(db, before),
+        landed_state_check(db),
+    ]
+
+
+async def test_fixing_the_schedule_states_the_hour_it_used_to_run_at(
+    chat_eval: ChatEval,
+) -> None:
+    """Report-only.  The job checks too early, so it is moved — and the reply must not
+    invent the hour it was moved FROM."""
+    await chat_eval(
+        case_id="standing-schedule-fix-prior",
+        message=_SCHEDULE_FIX_ASK,
+        seed=seed_standing_jobs(_FINDS),
+        seed_skills=[WATCH_ROUTINE],
+        prepare=schedule_is_visible(_FINDS),
+        score=_score_schedule_fix,
         min_pass_rate=None,
         family=_OPERATIONS_FAMILY,
     )

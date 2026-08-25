@@ -33,8 +33,9 @@ from penny.database.memory import (
     ResolvedMatch,
     WrongShapeError,
 )
+from penny.database.memory.store import _FIELD_PRIORS, _MetadataUpdate
 from penny.database.models import MemoryRow, MutationEvent, Skill
-from penny.database.mutation_store import MutationDetail, render_mutation
+from penny.database.mutation_store import FieldPrior, MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tests.conftest import require_memory
@@ -116,12 +117,145 @@ class TestMemoryMetadata:
         assert [e.run_id for e in events] == ["run-4", "run-3", "run-2", "run-1"]
         # A chat-driven change is actor=user-run; the run id is the join key.
         assert all(e.actor == MutationActor.USER_RUN.value for e in events)
-        # The update names which field changed (values live in the run's promptlog).
+        # The update names which field changed (values live in the run's promptlog) AND
+        # what that field held BEFORE (#1946) — the half the row cannot keep, since the
+        # edit overwrote it.
         update = next(e for e in events if e.action == MutationAction.UPDATED.value)
         assert update.detail is not None and "notify" in update.detail
+        assert MutationDetail.model_validate_json(update.detail).priors == [
+            FieldPrior(field="notify", value="False")
+        ]
+        # The archive flip records its own before-value the same way, while its
+        # ``changed_fields`` stays empty — archiving is named by its ACTION, so the
+        # render is byte-identical to what it was.
+        archived = next(e for e in events if e.action == MutationAction.ARCHIVED.value)
+        assert archived.detail is not None
+        assert MutationDetail.model_validate_json(archived.detail).priors == [
+            FieldPrior(field="archived", value="False")
+        ]
+        unarchived = next(e for e in events if e.action == MutationAction.UNARCHIVED.value)
+        assert unarchived.detail is not None
+        assert MutationDetail.model_validate_json(unarchived.detail).priors == [
+            FieldPrior(field="archived", value="True")
+        ]
         # A no-op update (nothing supplied) is not a mutation.
         db.memories.update_collection_metadata("watch")
         assert len(db.mutations.history("watch", limit=10)) == 4
+
+    def test_mutation_priors_capture_every_changed_field(self, db):
+        """The before→after capture at the store chokepoint (#1946): every field an
+        update reports changed carries what it held first, read off the row inside the
+        transaction that overwrites it.
+
+        The observed regression this exists for is a turn asked to FIX a running job —
+        the fix landed, and the prior value the reply quoted was invented, because after
+        the edit nothing in the world still held it."""
+        db.memories.create_collection(
+            "kelp-prices",
+            "kelp prices",
+            schedule="FREQ=DAILY;BYHOUR=9",
+            skill_name="watch-a-price",
+            skill_params={"page": "kelp"},
+            expires_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+            created_by_run_id="run-create",
+        )
+        db.memories.update_collection_metadata(
+            "kelp-prices",
+            description="kelp prices, daily",
+            notify=True,
+            schedule="FREQ=DAILY;BYHOUR=18",
+            expires_at=datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
+            skill_name="watch-a-price-closely",
+            skill_params={"page": "kelp"},
+            run_id="run-fix",
+        )
+        priors = db.mutations.priors_for_run("kelp-prices", "run-fix")
+        assert priors == {
+            "description": "kelp prices",
+            "notify": "False",
+            "schedule": "FREQ=DAILY;BYHOUR=9",
+            "expires_at": "2026-06-01 12:00 UTC",
+            "skill": "watch-a-price",
+        }
+        # A field that held NOTHING is a positive statement, not an absence: a second
+        # collection with no schedule reports its schedule prior as None rather than
+        # leaving the field out.
+        db.memories.create_collection("kelp-notes", "kelp notes", created_by_run_id="run-create")
+        db.memories.update_collection_metadata(
+            "kelp-notes", schedule="FREQ=HOURLY", run_id="run-schedule"
+        )
+        assert db.mutations.priors_for_run("kelp-notes", "run-schedule") == {"schedule": None}
+        # The read is scoped to ONE run: another run's changes to the same collection are
+        # not this turn's "was".
+        assert db.mutations.priors_for_run("kelp-prices", "run-create") == {}
+
+    def test_mutation_priors_report_the_value_the_run_found(self, db):
+        """A run that moves the same field twice reports what it found when it STARTED —
+        the only "was" a user asking about their own job means (#1946)."""
+        db.memories.create_collection("tide-times", "tide times", created_by_run_id="run-create")
+        db.memories.update_collection_metadata(
+            "tide-times", schedule="FREQ=HOURLY", run_id="run-fix"
+        )
+        db.memories.update_collection_metadata(
+            "tide-times", schedule="FREQ=DAILY;BYHOUR=6", run_id="run-fix"
+        )
+        assert db.mutations.priors_for_run("tide-times", "run-fix") == {"schedule": None}
+
+    def test_a_mutation_without_priors_renders_exactly_as_before(self):
+        """An event written before priors existed decodes with none and renders
+        byte-identically (#1946) — the whole additive claim, held on the render every
+        surface reads."""
+        legacy = MutationEvent(
+            entity_type="collection",
+            entity_name="tide-times",
+            action=MutationAction.UPDATED.value,
+            actor=MutationActor.USER_RUN.value,
+            run_id="run-old",
+            detail='{"changed_fields": ["schedule"], "note": null, "decision": null}',
+            created_at=datetime(2026, 3, 5, 8, 10, tzinfo=UTC),
+        )
+        assert MutationDetail.model_validate_json(legacy.detail or "").priors == []
+        assert (
+            render_mutation(legacy)
+            == "2026-03-05 08:10 UTC updated by user-run (run run-old) — changed schedule"
+        )
+        # And a NEW event carrying priors renders the same tail — the ledger line names
+        # which fields moved; the before-values are read by the surfaces that show a
+        # value beside them, never folded into this one-line history.
+        current = legacy.model_copy(
+            update={
+                "detail": MutationDetail(
+                    changed_fields=["schedule"],
+                    priors=[FieldPrior(field="schedule", value="FREQ=HOURLY")],
+                ).model_dump_json()
+            }
+        )
+        assert render_mutation(current) == render_mutation(legacy)
+
+    def test_every_changed_field_label_has_a_prior_reader(self, db):
+        """Totality, pinned structurally: every label ``_MetadataUpdate.apply_to`` can
+        report is one ``_FIELD_PRIORS`` can read, so a field added to the update surface
+        cannot silently ship without its before-value (#1946)."""
+        row = db.memories.create_collection("everything", "everything")
+        update = _MetadataUpdate(
+            description="a new description",
+            notify=True,
+            extraction_prompt="1. done().",
+            schedule="FREQ=HOURLY",
+            expires_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+            skill_name="a-skill",
+            skill_params={},
+        )
+        changed = update.apply_to(row)
+        assert set(changed) <= set(_FIELD_PRIORS)
+        # And the labels the schedule axis reports on its OTHER branch (a whole-schedule
+        # replace) are covered too.
+        replaced = _MetadataUpdate(
+            schedule="FREQ=DAILY",
+            expires_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+            replace_schedule=True,
+        ).apply_to(row)
+        assert set(replaced) <= set(_FIELD_PRIORS)
 
     def test_metadata_full_render_with_change_history(self, db):
         """The memory_metadata render contract, whole-output (#1560): one literal
