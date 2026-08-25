@@ -147,6 +147,18 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACTED_LINE, _NOT_PRESENT_LINE))
 # (a digest, a list) — the TAG must open the output; only its shape is fixed, not
 # its length.  The two tagged lines are RENDERED FROM THE SHAPE, so the prompt
 # cannot state a contract the parse doesn't read.
+#
+# WHERE THE BOUNDARY BETWEEN THE TAGS FALLS IS STATED (#1942).  An instruction
+# routinely names several things at once — what each item is called, where it
+# points, what it says — and a real page carries some of them and not others.
+# The contract never said which tag that page takes, so it was decided per draw:
+# one draw over a page holding titles and links but no summaries answered
+# NOT_PRESENT (losing the titles and links with it), and a later draw over the
+# SAME content extracted.  The rule is stated as the STATE the content is in —
+# carries some of it / carries none of it — rather than as a rule about
+# instructions that hedge, because what a page holds is not a property of how the
+# ask was worded, and a rule keyed to the wording would simply not fire for the
+# ask nobody had in front of them.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -155,9 +167,12 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     f"{render_line(_NOT_PRESENT_LINE)}\n"
     f"After {EXTRACTED_TAG}, the extracted value is EVERYTHING that follows — as "
     "long as the instruction requires: a single value, one or more paragraphs, or "
-    "a list (put one item per line). Use "
-    f"{NOT_PRESENT_TAG}, on a single line, when the requested information is not in "
-    "the content. Never invent a value that is not in the content, and write "
+    "a list (put one item per line). An instruction often asks for several things "
+    "at once. Give whatever the content has for each of them and leave out the "
+    "ones it has nothing for: content carrying some of what was asked for is an "
+    f"{EXTRACTED_TAG} read. Use "
+    f"{NOT_PRESENT_TAG}, on a single line, when the content carries none of what "
+    "was asked for. Never invent a value that is not in the content, and write "
     "nothing outside the value itself — no preamble, no explanation, no restating "
     "the instruction."
 )

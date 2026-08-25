@@ -77,13 +77,23 @@ browser/                        — Firefox browser extension
     protocol.ts                 — Typed WebSocket + runtime messaging protocol
     background/                 — WebSocket owner, tool dispatch, tab tracking
     sidebar/                    — Chat UI, page context toggle
-    content/                    — Defuddle-based page extraction (esbuild bundled)
+    content/                    — Page extraction (esbuild bundled)
+      extract_text.ts           — The injected script: readiness, XML, preview image, PageData
+      page_text.ts              — Reading a page: the ARTICLE body Defuddle finds, or the
+                                  page's own LINK INDEX — whichever carries more of the
+                                  page's own words (#1942). An index page (a homepage,
+                                  a section front) has no article, so Defuddle either
+                                  returns one card or strips the headline out of every
+                                  link-only card; both read as a successful extraction
   sidebar/                      — Sidebar HTML + CSS
   icons/                        — Extension icons (rendered from SVG)
+  test/                         — node:test suite over jsdom (`npm test`, run by make check)
+    fixtures/                   — Synthetic pages: a JS-rendered index front and an article
   manifest.json                 — WebExtensions manifest
-  tsconfig.json                 — Strict TypeScript config
+  tsconfig.json                 — Strict TypeScript config (excludes src/content — bundled)
+  tsconfig.content.json         — Typecheck for src/content on esbuild's terms
   build-content.mjs             — esbuild wrapper for content script
-  package.json                  — Dependencies: defuddle, fontawesome, esbuild, web-ext
+  package.json                  — Dependencies: defuddle, fontawesome, esbuild, jsdom, web-ext
 Makefile                        — Dev commands (make up, make check, make prod)
 docker-compose.yml              — signal-api + penny services
 docker-compose.override.yml     — Dev source volume overrides
@@ -143,9 +153,14 @@ make client-check     # Build the iOS client + run PennyClientTests on a simulat
 cd browser
 npm install            # Install dependencies
 npm run build          # Build TypeScript + bundle content script
+npm run typecheck      # Typecheck src/ and src/content/ (both configs)
+npm test               # Page-extraction tests (node:test over jsdom fixtures)
 npm run dev            # Build, watch, and launch Firefox with auto-reload
 npm run ext            # Launch Firefox with web-ext (no build/watch)
 ```
+
+`npm run typecheck` and `npm test` are part of `make check`, so the extension's extraction
+logic is gated the same way the Python side is.
 
 `npm run dev` uses `web-ext` with `--firefox-profile=default-release --keep-profile-changes` to run in the user's real Firefox profile. The background script owns the WebSocket connection; the sidebar communicates via `browser.runtime` messaging.
 

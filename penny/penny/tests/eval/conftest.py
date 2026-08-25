@@ -74,6 +74,8 @@ from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
     FramedParameter,
     MicroContext,
+    MicroContextResult,
+    MicroExtractOutcome,
     MissingParameters,
     SkillBinding,
     SkillLabels,
@@ -4291,6 +4293,192 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Binder
                         result=result,
                         phrasing=turns[-1] if turns else "",
                         agent_names=(PennyConstants.SKILL_BIND_AGENT_NAME,),
+                    )
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+                    perf.add(live_prompt_perf(penny.db))
+            finally:
+                await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+            min_pass_rate=min_pass_rate,
+        )
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+# ── Browse EXTRACTION: what a page half-carries (#1942) ───────────────────────
+
+ExtractorEval = Callable[..., Awaitable[None]]
+
+
+class FieldExpectation(NamedTuple):
+    """One thing an extract instruction asks for, and how the page answers it (#1942).
+
+    ``anchor`` is the span of the page that supplies it, compared through the SHIPPED
+    ``spoken_form`` — so a value passes whether or not the draw kept the punctuation or
+    the article in front of it.  Deliberately not an equality: which words carry a fact
+    has a little play in it, and a scorer demanding one exact string would be answering
+    for the draw.
+
+    An EMPTY anchor is the ABSENT direction: the page supplies nothing for this, so it is
+    named here to say what the instruction asked for and the page did not have."""
+
+    field: str
+    anchor: str = ""
+
+
+def _extract_rerolled(db: Database) -> bool:
+    """Did the extraction draw more than once — the fragile signal, a sample that only
+    got there by recovering.  One customer here, so one row is the clean case."""
+    return len(_micro_context_rows(db, PennyConstants.BROWSE_EXTRACT_AGENT_NAME)) > 1
+
+
+def _extraction_outcome_check(result: MicroContextResult, carries_something: bool) -> Check:
+    """The decisive check: a page carrying SOME of what was asked for is a read, and a
+    page carrying NONE of it is honestly empty.
+
+    Which direction this case is comes from the expectations themselves — whether any of
+    them names a span the page supplies — so the case declares the world and the scorer
+    reads the contract off it, rather than being told the answer twice."""
+    wanted = MicroExtractOutcome.EXTRACTED if carries_something else MicroExtractOutcome.NOT_PRESENT
+    label = (
+        "reads the page rather than reporting it empty"
+        if carries_something
+        else "reports the page carries none of it"
+    )
+    return Check(
+        label,
+        result.outcome == wanted,
+        kind="state",
+        rationale=None if result.outcome == wanted else f"came back {result.outcome}",
+    )
+
+
+def _field_check(result: MicroContextResult, expectation: FieldExpectation) -> Check:
+    """One thing the instruction asked for that the page DOES supply: the extracted value
+    has to carry it.  This is the per-field half — an instruction naming several things
+    degrades one thing at a time, so each is scored on its own."""
+    carried = spoken_form(expectation.anchor) in spoken_form(result.value)
+    return Check(
+        f"carries the {expectation.field}",
+        carried,
+        kind="state",
+        rationale=None if carried else "not in the extracted value",
+    )
+
+
+def _absent_field_note(expectation: FieldExpectation) -> Check:
+    """One thing the instruction asked for that the page does NOT supply — ADVISORY.
+
+    Nothing about a gap is separately measurable: leaving it out and naming it are both
+    honest, and there is no string whose absence proves the draw declined to invent one.
+    What the gap actually costs — or does not — is the OUTCOME, which is already the
+    decisive check, so scoring this too would grade one fact twice and weight it by how
+    many things the page happened to lack.  It renders so a report shows WHICH thing the
+    page was short of, rather than leaving a reader to infer it from the instruction."""
+    return Check(f"the page carries no {expectation.field}", True, kind="state", scored=False)
+
+
+def _extraction_advisories(result: MicroContextResult) -> list[Check]:
+    """What the draw committed to, verbatim and UNSCORED — the value it returned or the
+    absence it reported, so a report shows the answer whichever way it went."""
+    if result.outcome == MicroExtractOutcome.EXTRACTED:
+        return [Check(f"extracted {result.value!r}", True, kind="state", scored=False)]
+    return [Check(f"{result.outcome}: {result.reason!r}", True, kind="state", scored=False)]
+
+
+def _score_extraction(
+    result: MicroContextResult, expectations: Sequence[FieldExpectation]
+) -> list[Check]:
+    """The extraction case's graded checks (#1942), read off the draw's own typed result.
+
+    Two graded kinds: the OUTCOME — a page that half-answers an instruction is a read,
+    not a NOT_PRESENT — and one check per thing the instruction named that the page DOES
+    supply, since an instruction naming several things degrades one thing at a time.  What
+    the page lacks rides ADVISORY (there is no measurable fact in a gap beyond the outcome
+    itself), and so does the value the draw returned: what a well-chosen value looks like
+    is read at joint review, as the framing and binding cases' answers are, not asserted
+    by a scorer."""
+    carries_something = any(one.anchor for one in expectations)
+    return [
+        _extraction_outcome_check(result, carries_something),
+        *(
+            _field_check(result, one) if one.anchor else _absent_field_note(one)
+            for one in expectations
+        ),
+        *_extraction_advisories(result),
+    ]
+
+
+@pytest.fixture
+def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> ExtractorEval:
+    """Drive the browse EXTRACTION micro-context (#1588/#1942) N times, and NOTHING else.
+
+    The extraction's whole input is one fetched page's section and one instruction, so
+    the case is those two things — no browse runs, because what is measured is what the
+    extractor makes of a page rather than whether the page can be fetched.  The section is
+    built the way ``BrowseTool._page_section`` builds it, so the draw reads the document
+    production hands it.
+
+    ``MicroContext.extract`` makes the call, so the case exercises the shipped prompt, the
+    shipped parse and the shipped reroll budget.  Synthetic here means the PAGE and the
+    INSTRUCTION are authored, never the prompt.
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        url: str,
+        page: str,
+        instruction: str,
+        expectations: Sequence[FieldExpectation],
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+        timeout: float = 60.0,
+        family: str | None = None,
+    ) -> None:
+        eval_artifacts.begin_case(case_id)
+        results: list[SampleResult] = []
+        perf = _Perf()
+        content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                )
+                async with eval_penny(config, server) as penny:
+                    micro = MicroContext(penny.model_client)
+                    try:
+                        extracted = await asyncio.wait_for(
+                            micro.extract(content, instruction, run_target=penny.chat_agent.name),
+                            timeout=timeout,
+                        )
+                        scored = _score_extraction(extracted, expectations)
+                        result = _guarded_graded(list(scored), [])
+                        result.fragile = result.passed and _extract_rerolled(penny.db)
+                        results.append(result)
+                        _stamp_cause(penny.db, result)
+                    except TimeoutError:
+                        result = SampleResult.binary(["no extraction draw within timeout"])
+                        _stamp_cause(penny.db, result, timed_out=True)
+                        results.append(result)
+                    _write_classifier_report(
+                        penny.db,
+                        case_id,
+                        sample_index,
+                        result=result,
+                        phrasing=instruction,
+                        agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(live_prompt_perf(penny.db))

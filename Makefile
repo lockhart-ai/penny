@@ -170,7 +170,7 @@ check: $(if $(LOCAL),,build)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
 	$(RUN) python -m penny.database.migrate --validate
 	$(RUN) pytest $(PYTEST_ARGS)
-	cd browser && npm install --silent && npx tsc --noEmit
+	cd browser && npm install --silent && npm run typecheck && npm test
 
 pytest: $(if $(LOCAL),,build)
 	$(RUN) pytest $(PYTEST_ARGS)
