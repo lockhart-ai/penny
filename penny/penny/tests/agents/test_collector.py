@@ -17,7 +17,9 @@ was retired, because nothing here took coverage as its subject.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -2209,6 +2211,289 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
         "model call failed at step 2 after collection_read_latest: "
         "LlmConnectionError: Connection refused"
     )
+
+
+# ── The occurrence is spent by a CYCLE, not by a dispatch (#1935) ────────────
+
+# How far back a stamp has to be pushed for the daily rule below to come round again.
+_A_DAY_AND_AN_HOUR = 25 * 60
+
+_BRIEFING_PROGRAM = (
+    "Write the morning briefing each day.\n"
+    '1. collection_read_latest(memory="morning-briefing")\n'
+    '2. collection_write("morning-briefing", entries=[{key: <the day>, '
+    "content: <the briefing>}])"
+)
+
+
+def _daily_schedule(count: str = "") -> str:
+    """A daily job whose fire came round an hour ago.  The rule's own DTSTART fixes the
+    phase, so the first occurrence is an hour past (due now) and the next is a day out —
+    which is exactly what consuming this one costs."""
+    started = datetime.now(UTC) - timedelta(hours=1)
+    return f"DTSTART:{started.strftime(_RRULE_STAMP)}\nFREQ=DAILY{count}"
+
+
+def _seed_daily_briefing(
+    db: Database,
+    *,
+    extraction_prompt: str = _BRIEFING_PROGRAM,
+    schedule: str | None = None,
+    max_runs: int | None = None,
+) -> None:
+    db.memories.create_collection(
+        "morning-briefing",
+        "The day's briefing",
+        extraction_prompt=extraction_prompt,
+        schedule=schedule or _daily_schedule(),
+        max_runs=max_runs,
+    )
+
+
+def _cancel_the_cycle(request: dict, count: int) -> LlmResponse:
+    """What a foreground message does to a cycle waiting on a model call: the
+    scheduler's ``task.cancel()`` surfaces at the innermost await, which is this one."""
+    raise asyncio.CancelledError
+
+
+def _writes_then_closes(mock_llm) -> Callable[[dict, int], LlmResponse]:
+    """A minimal working cycle — one write, then the close.
+
+    It counts its OWN calls rather than reading the mock's ordinal, because a test that
+    swaps handlers mid-way inherits a request count the earlier phase already advanced.
+    """
+    calls = 0
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {
+                    "memory": "morning-briefing",
+                    "entries": [{"key": "today", "content": "the ferries are running"}],
+                },
+            )
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_cancelled_cycle_leaves_the_days_occurrence_still_due(
+    mock_llm, test_config, tmp_path
+):
+    """OBSERVED LIVE (#1935): a chat message cancelled a daily job's cycle seconds in —
+    before any model call had come back — and the day's occurrence was BURNED.  The
+    stamp advanced the schedule past a fire that never happened, so the briefing
+    silently skipped a day.
+
+    A cycle that did nothing spent nothing, so its occurrence stays due: the very next
+    dispatcher pass picks the same collection up, and the attempt that actually runs is
+    the one that consumes the fire.  The retry budget resets with it, so tomorrow's
+    occurrence starts with its own.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+    mock_llm.set_response_handler(_cancel_the_cycle)
+
+    with pytest.raises(asyncio.CancelledError):
+        await collector.execute()
+
+    assert _get(db, "morning-briefing").last_collected_at is None
+    still_due = collector._next_ready_collection()
+    assert still_due is not None and still_due.name == "morning-briefing"
+
+    # The retry runs the job the day's fire was for — and THAT consumes the occurrence.
+    mock_llm.set_response_handler(_writes_then_closes(mock_llm))
+    assert await collector.execute() is True
+
+    assert _get(db, "morning-briefing").last_collected_at is not None
+    assert collector._next_ready_collection() is None  # waits for tomorrow
+    assert collector._retry_attempts == {}
+    assert require_memory(db, "morning-briefing").read_latest(5)[0].key == "today"
+
+
+@pytest.mark.asyncio
+async def test_retry_bound_consumes_the_occurrence_so_a_cancelled_collection_cant_hot_loop(
+    mock_llm, test_config, tmp_path
+):
+    """The stamp's ORIGINAL job survives the retry (#1935): it exists so a collection
+    that fails every time isn't re-attempted on every tick.
+
+    A collection cancelled on every single attempt is re-dispatched a bounded number of
+    times and then has its occurrence consumed anyway, so it drops out of the running
+    and waits for its next fire.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+    mock_llm.set_response_handler(_cancel_the_cycle)
+
+    for attempt in range(PennyConstants.COLLECTOR_RETRY_ATTEMPTS):
+        with pytest.raises(asyncio.CancelledError):
+            await collector.execute()
+        assert _get(db, "morning-briefing").last_collected_at is None, attempt
+        assert collector._next_ready_collection() is not None, attempt
+
+    # The budget is spent — this attempt consumes the occurrence whatever happened.
+    with pytest.raises(asyncio.CancelledError):
+        await collector.execute()
+
+    assert _get(db, "morning-briefing").last_collected_at is not None
+    assert collector._next_ready_collection() is None
+    assert collector._retry_attempts == {}
+
+
+@pytest.mark.asyncio
+async def test_a_deterministic_defect_consumes_the_occurrence_without_retrying(
+    mock_llm, test_config, tmp_path
+):
+    """A retry is only worth an occurrence when the next attempt could go differently.
+
+    A collection whose stored prompt names no runnable call fails identically every time
+    it is dispatched — a CONFIG DEFECT, not a bad draw — so its occurrence is consumed
+    on the first attempt.  Read off the stored program rather than off what the run did,
+    the defect holds whichever way the cycle ended: on a failed model call (phase A) or
+    preempted by a foreground message (phase B), which is what makes it outrank both
+    stochastic causes.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db, extraction_prompt=_ONE_SHOT_PROMPT)  # prose, no numbered call
+
+    def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(die_on_the_model_call)
+    await collector.run_for("morning-briefing")
+
+    assert _get(db, "morning-briefing").last_collected_at is not None
+    assert collector._next_ready_collection() is None  # waits for tomorrow's fire
+
+    _backdate_collected(db, "morning-briefing", minutes=_A_DAY_AND_AN_HOUR)
+    assert collector._next_ready_collection() is not None  # the fire has come round
+    mock_llm.set_response_handler(_cancel_the_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await collector.execute()
+
+    # Consumed again — a cancellation buys an unrunnable collection nothing.
+    assert collector._next_ready_collection() is None
+    assert collector._retry_attempts == {}
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_completed_cycle_still_consumes_its_occurrence(
+    mock_llm, test_config, tmp_path
+):
+    """The over-correction guard: only a cycle that never got to RUN keeps its
+    occurrence.
+
+    A cycle that ran and found nothing worth writing — it read, then closed with
+    ``done()``, the ordinary quiet cadence — did spend the fire it was dispatched for,
+    so it stamps exactly as it always has and the collection waits for its next
+    occurrence rather than being re-attempted on the next tick.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+
+    def reads_then_closes(request: dict, count: int) -> LlmResponse:
+        if count == 1:
+            return mock_llm._make_tool_call_response(
+                request, "collection_read_latest", {"memory": "morning-briefing"}
+            )
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+
+    mock_llm.set_response_handler(reads_then_closes)
+    assert await collector.execute() is True
+
+    assert _get(db, "morning-briefing").last_collected_at is not None
+    assert collector._next_ready_collection() is None
+    assert collector._retry_attempts == {}
+    runs = db.messages.get_prompt_log_runs()
+    assert runs[0]["run_outcome"] == RunOutcome.NO_WORK.value
+
+
+@pytest.mark.asyncio
+async def test_aborted_cycle_that_changed_nothing_keeps_its_occurrence(
+    mock_llm, test_config, tmp_path
+):
+    """The other stochastic cause (#1909's ``RunAbort``): a model call that died on the
+    transport is a bad draw, not a verdict on the collection — attempted again it may
+    well come back — so a cycle it killed before anything landed keeps its occurrence
+    and the run record still names the terminal cause.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+
+    def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(die_on_the_model_call)
+    assert await collector.execute() is False
+
+    assert _get(db, "morning-briefing").last_collected_at is None
+    still_due = collector._next_ready_collection()
+    assert still_due is not None and still_due.name == "morning-briefing"
+    assert collector._retry_attempts == {"morning-briefing": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_kept_occurrence_does_not_burn_a_bounded_schedules_run(
+    mock_llm, test_config, tmp_path
+):
+    """A cycle that keeps its occurrence must not spend a run of a bounded schedule
+    either — the two are the same fire counted twice.
+
+    An abort is not a cancellation, so it takes the outcome-tagging branch and its
+    ``failed`` run DOES count toward ``max_runs``.  Without the skip a ``COUNT=1``
+    one-shot that died on a transport wobble would archive itself while its occurrence
+    sat due, and an archived collection is never dispatched again — so the retry the
+    occurrence was kept for could never fire.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db, schedule=_daily_schedule(";COUNT=1"), max_runs=1)
+
+    def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(die_on_the_model_call)
+    assert await collector.execute() is False
+
+    assert _get(db, "morning-briefing").archived is False
+    still_due = collector._next_ready_collection()
+    assert still_due is not None and still_due.name == "morning-briefing"
+
+    # And the retry runs the one-shot it was kept for, which then retires it.
+    mock_llm.set_response_handler(_writes_then_closes(mock_llm))
+    assert await collector.execute() is True
+    assert _get(db, "morning-briefing").archived is True
+
+
+@pytest.mark.asyncio
+async def test_a_kept_occurrence_still_raises_the_addon_refresh(mock_llm, test_config, tmp_path):
+    """The stamp is the collector path's ONLY refresh signal — it is what wakes the
+    addon surfaces' detail view — so a cycle that withholds it raises the change itself.
+
+    Otherwise the on-demand trigger the addons expose ("run this now", which reaches
+    ``run_for``) would leave the panel showing nothing when a cycle dies on its model
+    call, with any entries it managed to write before dying invisible until something
+    else touched the row.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_daily_briefing(db)
+    refreshed: list[str | None] = []
+    db.memories._on_memory_changed = lambda name: refreshed.append(name)
+
+    def die_on_the_model_call(request: dict, count: int) -> LlmResponse:
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(die_on_the_model_call)
+    success, _ = await collector.run_for("morning-briefing")
+
+    assert success is False
+    assert _get(db, "morning-briefing").last_collected_at is None  # occurrence kept
+    assert refreshed == ["morning-briefing"]
 
 
 def test_tag_promptlog_run_with_unknown_run_id_is_noop(test_config, tmp_path):

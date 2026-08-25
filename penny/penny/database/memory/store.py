@@ -456,6 +456,18 @@ class MemoryStore:
         if self._on_memory_changed is not None:
             self._on_memory_changed(name)
 
+    def notify_changed(self, name: str) -> None:
+        """Raise the memory-changed refresh signal without writing anything.
+
+        On the collector path ``mark_collected`` used to be the ONLY source of this
+        signal — it is what wakes the addon surfaces' detail view — so a cycle that
+        withholds the stamp to keep its occurrence (#1935) has to raise it itself.
+        Otherwise a "run this now" click whose cycle died on its model call leaves the
+        panel unrefreshed, and any entries the cycle managed to write before dying stay
+        invisible until something else touches the row.
+        """
+        self._notify_changed(slug(name))
+
     def archive(
         self,
         name: str,
@@ -625,8 +637,13 @@ class MemoryStore:
             self._notify_changed(name)
 
     def mark_collected(self, name: str) -> None:
-        """Stamp ``last_collected_at = now`` after a dispatcher cycle (whether it
-        did work or exited via ``done()`` — what matters is the check happened)."""
+        """Stamp ``last_collected_at = now`` — the collection has spent the schedule
+        occurrence it was dispatched for, whether the cycle did work or closed empty.
+
+        Withheld by the dispatcher from a cycle that did NOT spend one (#1935): a
+        preempted or aborted cycle that changed nothing leaves the occurrence due, so
+        the schedule is not advanced past a fire that never happened.
+        """
         name = slug(name)
         with self._session() as session:
             memory = session.get(MemoryRow, name)
