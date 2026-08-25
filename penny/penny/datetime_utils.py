@@ -25,6 +25,18 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def stored_as_utc(when: datetime) -> datetime:
+    """A datetime read back from the database, made timezone-aware.
+
+    SQLite hands back naive values and every column here is written in UTC, so a naive
+    one IS a UTC one.  Public and single-sourced because more than one caller has to
+    agree about it: the collector compares stored stamps against ``now``, and the
+    schedule anchor converts one onto the user's wall clock (#1932) — two copies of the
+    same one-line assumption is one copy too many.
+    """
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
 def format_log_timestamp(when: datetime) -> str:
     """Render a log/entry timestamp for the model — compact, absolute, UTC.
 
@@ -96,6 +108,31 @@ def current_datetime_line(db: Database) -> str:
     return f"{PennyConstants.CURRENT_DATETIME_PREFIX}{stamp}"
 
 
+def zone_or_utc(timezone_name: str | None) -> tzinfo:
+    """An IANA zone name resolved to a timezone — UTC when there is none, or when the
+    system can't resolve the one on file.
+
+    The ONE resolution behind every clock Penny reasons on: the current-date/time anchor
+    the model reads, the zone a user's own words about time are read in
+    (``parse_expires_at``), and the clock a schedule's stated hour runs on
+    (``next_occurrence``, #1932).  Single-sourced because a second copy would be a second
+    answer to "whose clock is this?", and the whole point is that they can't disagree.
+
+    An unresolvable zone degrades VISIBLY — logged, naming the value — rather than
+    quietly: on the schedule gate a silent UTC fallback restores exactly the wrong-hour
+    firing the zone was introduced to fix.  A name that isn't a zone at all raises
+    ``ValueError`` rather than ``ZoneInfoNotFoundError``, so both are answered here and
+    a bad profile can never surface as a complaint about something else.
+    """
+    if timezone_name is None:
+        return UTC
+    try:
+        return ZoneInfo(timezone_name)
+    except ValueError, ZoneInfoNotFoundError:
+        logger.warning("Unknown profile timezone %r — falling back to UTC", timezone_name)
+        return UTC
+
+
 def user_timezone(db: Database) -> tzinfo:
     """The primary user's IANA timezone for the current-date/time anchor.
 
@@ -106,14 +143,7 @@ def user_timezone(db: Database) -> tzinfo:
     is unknown.  Entry/log timestamps stay UTC via ``format_log_timestamp`` —
     those are absolute historical markers, not the current-now anchor.
     """
-    iana = user_timezone_name(db)
-    if iana is None:
-        return UTC
-    try:
-        return ZoneInfo(iana)
-    except ZoneInfoNotFoundError:
-        logger.warning("Unknown profile timezone %r — anchoring in UTC", iana)
-        return UTC
+    return zone_or_utc(user_timezone_name(db))
 
 
 def user_timezone_name(db: Database) -> str | None:

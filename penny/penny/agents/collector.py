@@ -49,8 +49,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from dateutil.rrule import rrulestr
-
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
@@ -68,7 +66,7 @@ from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillParameter
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_log_timestamp, stored_as_utc, user_timezone_name
 from penny.llm.client import LlmClient
 from penny.notification import NOTIFICATION_NOTES, CollectorNotifier, NotificationOutcome
 from penny.program import ProgramCall, program_calls
@@ -76,7 +74,7 @@ from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
-from penny.tools.collection_instantiation import skill_params
+from penny.tools.collection_instantiation import next_occurrence, skill_params
 from penny.tools.memory_tools import DoneTool, format_entries
 
 if TYPE_CHECKING:
@@ -689,7 +687,7 @@ class Collector(BackgroundAgent):
         """
         if collection.expires_at is None or collection.archived:
             return False
-        expiry = _aware(collection.expires_at)
+        expiry = stored_as_utc(collection.expires_at)
         if datetime.now(UTC) < expiry:
             return False
         note = f"reached expiry ({expiry.isoformat()})"
@@ -1090,7 +1088,7 @@ class Collector(BackgroundAgent):
         # readiness side-effect-free; the dispatcher's ``_retire_expired`` sweep
         # turns the skip into a visible system archive (the codebase separates
         # readiness from archival).
-        if memory.expires_at is not None and now >= _aware(memory.expires_at):
+        if memory.expires_at is not None and now >= stored_as_utc(memory.expires_at):
             return False
         if not self._schedule_due(memory, schedule, now):
             return False
@@ -1112,24 +1110,22 @@ class Collector(BackgroundAgent):
         a passed ``UNTIL=``) is never ready again; the post-cycle quota archive retires
         it.
 
-        The first occurrence is read by ITERATING rather than by asking what comes after
-        ``created_at``: ``rrulestr`` truncates its start to whole seconds while
-        ``created_at`` carries microseconds, so "after creation" excludes the collection's
-        own first occurrence and a daily rule would wait a day to run its first cycle.
+        WHERE each occurrence falls on the clock is ``next_occurrence``'s (#1932): a
+        rule states an hour and never a zone, so it is read on the USER'S clock — the
+        hour a schedule states is the hour they said.  The profile zone is fetched here
+        and passed to the pure function, which never reaches into the database.
 
         An unreadable rule is a stored value the parse gate already refused, so it can
         only mean a hand-edited row: it is logged and skipped rather than crashing the
         dispatcher for every other collection (visible degradation over a silent stall).
         """
-        created = _aware(memory.created_at)
         try:
-            # The rule's own DTSTART line wins when it has one; otherwise the
-            # recurrence is anchored at creation, so its phase is fixed for life.
-            rule = rrulestr(schedule, dtstart=created)
-            if memory.last_collected_at is None:
-                next_fire = next(iter(rule), None)
-            else:
-                next_fire = rule.after(_aware(memory.last_collected_at))
+            next_fire = next_occurrence(
+                schedule,
+                memory.created_at,
+                user_timezone_name(self.db),
+                after=memory.last_collected_at,
+            )
         except (ValueError, TypeError) as exc:
             logger.warning(
                 "Skipping collection '%s': schedule %r isn't a readable rule (%s) — "
@@ -1190,12 +1186,7 @@ class Collector(BackgroundAgent):
     def _overdue_sort_key(memory: MemoryRow) -> datetime:
         # Earliest last_collected_at runs first; never-collected sorts to the front.
         return (
-            _aware(memory.last_collected_at)
+            stored_as_utc(memory.last_collected_at)
             if memory.last_collected_at
             else datetime.min.replace(tzinfo=UTC)
         )
-
-
-def _aware(dt: datetime) -> datetime:
-    """SQLite returns naive datetimes; assume UTC and attach tzinfo."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
