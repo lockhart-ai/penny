@@ -44,7 +44,7 @@ _EXTRACTED_VALUE = "1,842 m"
 # The registry the demonstration ran against: the collections a routine could be
 # ATTACHED to.  ``distill_steps`` compares demonstrated VALUES against this set — it
 # never learns which tools exist, let alone which of them write.
-_ATTACHMENT_NAMES = frozenset({"elevations", "knowledge", "prices", "fruits", "notes"})
+_ATTACHMENT_NAMES = frozenset({"elevations", "knowledge", "prices", "fruits", "notes", "headlines"})
 
 # Every real tool call the framework logs carries the universal ``reasoning``
 # think-aloud (``Tool.to_ollama_tool`` injects it) — the model's per-call
@@ -420,6 +420,232 @@ def test_a_write_key_inside_the_pages_url_is_not_a_binding(write_key):
     # The recipe therefore reads the right way round — a named slot for each key, the
     # fetched value for each content — and never names the demonstrated label.
     assert render_skill(steps) == _LISTING_RECIPE
+
+
+# ── #1933: a repeat is one input given twice, never a step's output ───────────
+#
+# A tool result QUOTES the call it answers: a browse section opens with the url it was
+# handed (``## browse: <url>``) and an extract result opens with the instruction it was
+# handed.  So a demonstration that fetches three pages and then re-fetches one of them
+# found that url sitting in the earlier step's result — provenance was asked first,
+# answered "it came from step 1", and the routine came out saying
+# ``browse(queries=[the value from step 1])``: a program that no longer says which page
+# it reads, and whose second fetch would follow whatever the first one happened to
+# return.  The url was ALREADY a parameter, minted by the first fetch, and that is what
+# a repeat is.  All fictional.
+
+_DIGEST_URLS = (
+    "https://news-alpha.example/today",
+    "https://news-beta.example/today",
+    "https://news-gamma.example/today",
+)
+_DIGEST_EXTRACT = "the top headline"
+_DIGEST_HEADLINES = (
+    "Harbour ferries add a night run",
+    "Tram works close the lower loop",
+    "Library extends its winter hours",
+)
+
+
+def _digest_section(url: str, headline: str) -> str:
+    """One page's section of a batched browse-with-``extract`` result: the header naming
+    the url the call was GIVEN, then the instruction it was GIVEN, then the value the
+    page actually produced (``BrowseTool``'s per-page shape — two echoes and one
+    output)."""
+    return f"## browse: {url}\n{_DIGEST_EXTRACT}: {headline}"
+
+
+_DIGEST_RESULT = (
+    "You opened three news pages (browse result)\n"
+    + "\n".join(
+        _digest_section(url, headline)
+        for url, headline in zip(_DIGEST_URLS, _DIGEST_HEADLINES, strict=True)
+    )
+    + "\nFull page content saved to browse-results#41, browse-results#42, "
+    "browse-results#43 — read it there for anything more."
+)
+_DIGEST_WRITE_OK = (
+    "You saved entries to headlines: (collection_write result)\nWrote 3 entries to 'headlines'."
+)
+
+# The recipe the round distils to: each page named by its own slot, each stored value
+# fetched, and the re-read pointed at the SAME page as the first fetch.
+_DIGEST_RECIPE = (
+    "1. browse(queries=[{queries}, {queries-2}, {queries-3}], extract={extract})\n"
+    "2. collection_write(memory={memory}, entries=["
+    "{'key': {key}, 'content': the value from step 1}, "
+    "{'key': {key-2}, 'content': the value from step 1}, "
+    "{'key': {key-3}, 'content': the value from step 1}])\n"
+    "3. browse(queries=[{queries}], extract={extract})"
+)
+
+
+def test_a_repeat_of_an_earlier_argument_joins_its_parameter():
+    """The observed production shape (#1933): three pages fetched with one ``extract``,
+    their headlines written, then ONE of those pages fetched again with the same
+    instruction.
+
+    Both leaves of the repeat carry values the first step was called with, and both of
+    them turn up in that step's result because the tool quotes its own arguments — so
+    plain provenance-first classification bound them to step 1's *output*.  The collapse
+    rule ("identical values collapse to ONE candidate") is asked first now, so the repeat
+    joins the parameter the first fetch minted: one page, one slot, bound once at
+    instantiation.  The values genuinely COPIED out of the payload — the three headlines
+    — still bind, which is what keeps this from being a blanket retreat from binding."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": list(_DIGEST_URLS), "extract": _DIGEST_EXTRACT},
+            result=_DIGEST_RESULT,
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "headlines",
+                "entries": [
+                    {"key": "alpha-top-headline", "content": _DIGEST_HEADLINES[0]},
+                    {"key": "beta-top-headline", "content": _DIGEST_HEADLINES[1]},
+                    {"key": "gamma-top-headline", "content": _DIGEST_HEADLINES[2]},
+                ],
+            },
+            result=_DIGEST_WRITE_OK,
+        ),
+        DistillInput(
+            source_ordinal=3,
+            tool="browse",
+            arguments={"queries": [_DIGEST_URLS[0]], "extract": _DIGEST_EXTRACT},
+            result=_digest_section(_DIGEST_URLS[0], _DIGEST_HEADLINES[0]),
+        ),
+    ]
+    steps, parameters = distill_steps(inputs, _ATTACHMENT_NAMES)
+    first_fetch = {tuple(s.path): s for s in steps[0].substitutions}
+    write = {tuple(s.path): s for s in steps[1].substitutions}
+    repeat = {tuple(s.path): s for s in steps[2].substitutions}
+
+    # The re-read joins the first fetch's own slots — no leaf of it is a binding.
+    for leaf in (("queries", 0), ("extract",)):
+        assert repeat[leaf].kind == SkillSubKind.HOLE
+        assert repeat[leaf].parameter == first_fetch[leaf].parameter
+    assert all(sub.kind == SkillSubKind.HOLE for sub in steps[2].substitutions)
+    # The repeat added no parameter of its own: three pages, one instruction, one
+    # collection, three keys.
+    assert [parameter.name for parameter in parameters] == [
+        "queries",
+        "queries-2",
+        "queries-3",
+        "extract",
+        "memory",
+        "key",
+        "key-2",
+        "key-3",
+    ]
+    # What the pages PRODUCED still binds — one headline per stored entry.
+    for index in range(3):
+        content = write[("entries", index, "content")]
+        assert content.kind == SkillSubKind.BINDING and content.step == 1
+        assert write[("entries", index, "key")].kind == SkillSubKind.HOLE
+    # So the program reads coherently end to end, and never says which pages the
+    # demonstration happened to read.
+    assert render_skill(steps) == _DIGEST_RECIPE
+
+
+_TECH_SECTION_URL = "https://news-alpha.example/tech"
+_TECH_HEADLINE = "Harbour ferries add a night run"
+_TECH_SEARCH_RESULT = (
+    "You searched for 'news-alpha tech section' (browse result)\n"
+    "## browse search: news-alpha tech section\n"
+    "Tech — News Alpha\n"
+    f"{_TECH_SECTION_URL}"
+)
+
+
+def test_an_echoed_argument_binds_to_the_step_that_produced_it():
+    """The other half of #1933, where the collapse rule cannot help: a value a step
+    genuinely PRODUCED, passed straight into the next call — so that leaf BOUND and no
+    parameter was ever minted for it — and used once more afterwards.
+
+    The middle step's result quotes the url it was handed, so the third step's copy of
+    it matched there first and bound to the fetch rather than to the search that found
+    it.  A span the step was CALLED with is excluded from its result, so the binding
+    lands on the step that actually produced the value — the redirect is to the truth,
+    not away from binding."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["news-alpha tech section"]},
+            result=_TECH_SEARCH_RESULT,
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="browse",
+            arguments={"queries": [_TECH_SECTION_URL], "extract": _DIGEST_EXTRACT},
+            result=_digest_section(_TECH_SECTION_URL, _TECH_HEADLINE),
+        ),
+        DistillInput(
+            source_ordinal=3,
+            tool="browse",
+            arguments={"queries": [_TECH_SECTION_URL], "extract": _DIGEST_EXTRACT},
+            result=_digest_section(_TECH_SECTION_URL, _TECH_HEADLINE),
+        ),
+    ]
+    steps, _ = distill_steps(inputs, _ATTACHMENT_NAMES)
+    fetch = {tuple(s.path): s for s in steps[1].substitutions}
+    repeat = {tuple(s.path): s for s in steps[2].substitutions}
+
+    # The search DID produce the url — the fetch binds to it, as it always did.
+    assert fetch[("queries", 0)].kind == SkillSubKind.BINDING
+    assert fetch[("queries", 0)].step == 1
+    # And so does the re-read, rather than to the fetch that merely quoted it back.
+    assert repeat[("queries", 0)].kind == SkillSubKind.BINDING
+    assert repeat[("queries", 0)].step == 1
+    # The instruction was never a result: it is the parameter the first fetch minted.
+    assert repeat[("extract",)].kind == SkillSubKind.HOLE
+    assert repeat[("extract",)].parameter == fetch[("extract",)].parameter
+
+
+_KEEL_LANTERN_PAGE = (
+    "You searched for lantern (browse result)\n"
+    "## browse: lantern\n"
+    "the price: $499 for the keel lantern"
+)
+
+
+def test_an_argument_word_inside_a_fetched_value_keeps_its_binding():
+    """The echo exclusion is per OCCURRENCE, not a redaction of the payload.
+
+    A search term turns up twice in this result: once in the header quoting the query,
+    and once inside the sentence the page produced.  Excluding the ECHO must not cost the
+    sentence — a value copied out of the payload that merely CONTAINS an argument word is
+    still a copy, and demoting it would leave the routine with a required parameter
+    holding a price nobody could supply (the #1770 harm).  The occurrence that lands
+    clear of the echo is what binds."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["lantern"], "extract": "the price"},
+            result=_KEEL_LANTERN_PAGE,
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "prices",
+                "entries": [{"key": "keel lantern price", "content": "$499 for the keel lantern"}],
+            },
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, _ = distill_steps(inputs, _ATTACHMENT_NAMES)
+    write = {tuple(s.path): s for s in steps[1].substitutions}
+
+    content = write[("entries", 0, "content")]
+    assert content.kind == SkillSubKind.BINDING and content.step == 1
+    # And the key the assistant chose still isn't one: it appears nowhere in the page.
+    assert write[("entries", 0, "key")].kind == SkillSubKind.HOLE
 
 
 def test_distill_strips_the_top_level_reasoning_thinkaloud():
