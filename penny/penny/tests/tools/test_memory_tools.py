@@ -854,6 +854,80 @@ class TestCollectionCreateFrontDoor:
         assert row.expires_at.replace(tzinfo=UTC) == datetime(2026, 9, 1, tzinfo=UTC)
 
     @pytest.mark.asyncio
+    async def test_far_future_expiry_lands_unset_and_the_result_says_so(self, db):
+        """A sentinel end date is normalised to NO end condition at the tool boundary and
+        the result NAMES the normalisation (#1944).
+
+        The live failure: the apply turn invented ``expires_at = 2099-12-31`` for a job
+        meant to run indefinitely; the sentinel then rendered as the mechanism's end
+        condition in the self-state header and was copied back on every later
+        ``collection_set``, so invented config became sticky.  Whole render, so both
+        halves are pinned at once — the echo states the resulting end condition
+        (``expires: never``) and the tail note says what became of the value passed and
+        what to pass instead."""
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="forever-watch",
+            description="watch the peak indefinitely",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            schedule="FREQ=HOURLY",
+            expires_at="2099-12-31",
+        )
+        assert result.success
+        assert db.memories.get("forever-watch").expires_at is None
+        assert result.message == (
+            "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'forever-watch' "
+            "and quietly store what it finds.\n"
+            "Created collection 'forever-watch' from skill 'Watch elevation':\n"
+            "  description: watch the peak indefinitely\n"
+            "  skill: Watch elevation\n"
+            "  params: peak=Cinder Peak\n"
+            "  schedule: FREQ=HOURLY\n"
+            "  notify: False\n"
+            "  expires: never\n"
+            "  extraction_prompt: |\n"
+            "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+            "    2. collection_write(memory='forever-watch', "
+            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+            "\n(Note: expires_at='2099-12-31' is further ahead than an end date anyone "
+            "means, so I read it as no end date — the expiry is unset and this runs until "
+            "it is stopped. Leave expires_at off when there is no end date.)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_expiry_is_stored_and_carries_no_note(self, db):
+        """The other direction of the sentinel rule (#1944): a real, near-term end date
+        lands on the row as itself and the result says nothing about normalising it."""
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="season-watch",
+            description="watch the peak until the season ends",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            schedule="FREQ=HOURLY",
+            expires_at="2026-09-01T09:00:00Z",
+        )
+        assert result.success
+        stored = db.memories.get("season-watch").expires_at
+        assert stored.replace(tzinfo=UTC) == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+        assert result.message == (
+            "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'season-watch' "
+            "and quietly store what it finds.\n"
+            "Created collection 'season-watch' from skill 'Watch elevation':\n"
+            "  description: watch the peak until the season ends\n"
+            "  skill: Watch elevation\n"
+            "  params: peak=Cinder Peak\n"
+            "  schedule: FREQ=HOURLY\n"
+            "  notify: False\n"
+            "  expires: 2026-09-01 09:00 UTC\n"
+            "  extraction_prompt: |\n"
+            "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+            "    2. collection_write(memory='season-watch', "
+            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+        )
+
+    @pytest.mark.asyncio
     async def test_stating_the_end_twice_is_refused(self, db):
         """A rule's ``UNTIL=`` and an ``expires_at`` argument are two answers to one
         question — neither is silently taken; the refusal asks for one (#1857)."""
@@ -1243,6 +1317,31 @@ class TestExpiresAtGrammar:
         the same fallback the current-time anchor takes, rather than a refusal."""
         assert parse_expires_at("10pm today", None, self._NOW) == datetime(
             2026, 8, 9, 22, 0, tzinfo=UTC
+        )
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # The measured case: the apply turn's date-shaped way of writing "forever"
+            # for a job meant to run indefinitely.
+            "2099-12-31",
+            "2099-12-31T23:59:59Z",
+            # The other sentinel in circulation — the maximum representable date.
+            "9999-12-31",
+        ],
+    )
+    def test_far_future_sentinels_read_as_no_end_date(self, value):
+        """A time past the horizon is not an end date, it is a stand-in for "forever" —
+        so it reads as NO end condition rather than being stored and then rendered back
+        as a real one on every surface that shows an expiry (#1944)."""
+        assert parse_expires_at(value, self._ZONE, self._NOW) is None
+
+    def test_a_distant_but_meanable_end_date_still_lands(self):
+        """The over-correction guard: the rule is a horizon, not a suspicion of
+        distance.  A decade out is still a date someone can point at, so it is stored as
+        one."""
+        assert parse_expires_at("2036-01-01", self._ZONE, self._NOW) == datetime(
+            2036, 1, 1, tzinfo=UTC
         )
 
 
@@ -2481,6 +2580,44 @@ class TestCollectionUpdateScheduleAtApply:
         assert result.success
         stored = db.memories.get("watch").expires_at
         assert stored.replace(tzinfo=UTC) == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+        # A real end date is stored as itself, so nothing was normalised to report.
+        assert "no end date" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_far_future_expiry_at_apply_takes_a_stored_sentinel_off(self, db):
+        """The apply-time half of the sentinel rule (#1944) — the door the live failure
+        came through, since the invented ``2099-12-31`` rendered as the mechanism's end
+        condition and was copied back on every later ``collection_set``.
+
+        The collection is seeded ALREADY CARRYING the sentinel, so the call has something
+        to remove: normalising the argument alone would leave the stored date exactly
+        where it was while the result claimed the job runs until it is stopped, and the
+        stickiness the rule exists to end would survive it.  The removal is recorded as a
+        change like any other, so the row does not quietly differ from the ledger."""
+        _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
+        db.memories.update_collection_metadata(
+            "watch", expires_at=datetime(2099, 12, 31, tzinfo=UTC)
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient()), run_id="run-x").execute(
+            name="watch", expires_at="2099-12-31T00:00:00Z"
+        )
+        assert result.success
+        assert db.memories.get("watch").expires_at is None
+        event = next(e for e in db.mutations.history("watch", 5) if e.run_id == "run-x")
+        assert "expires_at" in mutation_change_summary(event)
+        # Whole render: this echo carries no expiry line of its own, so the note is the
+        # only thing that tells the turn what became of the value it passed.
+        assert result.message == (
+            "Updated collection 'watch':\n"
+            "  schedule: FREQ=HOURLY\n"
+            "  notify: False\n"
+            "  description: x\n"
+            "  extraction_prompt: |\n"
+            "    test fixture extraction prompt"
+            "\n(Note: expires_at='2099-12-31T00:00:00Z' is further ahead than an end date "
+            "anyone means, so I read it as no end date — the expiry is unset and this runs "
+            "until it is stopped. Leave expires_at off when there is no end date.)"
+        )
 
     @pytest.mark.asyncio
     async def test_adopt_without_schedule_warns_it_wont_run(self, db):

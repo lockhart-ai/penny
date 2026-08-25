@@ -642,6 +642,27 @@ class PennyConstants:
     # whatever happened.  3 covers a burst of foreground activity or a transport
     # wobble without letting a collection that fails every time hold the dispatcher.
     COLLECTOR_RETRY_ATTEMPTS = 3
+    # How far ahead a stated end date stops being a date and starts being a
+    # date-shaped way of writing "forever" (#1944).  An apply turn asked to set up a
+    # job that runs indefinitely wrote ``expires_at = 2099-12-31``; the sentinel then
+    # rendered in the self-state header as the job's end condition and was faithfully
+    # copied back on every later ``collection_set``, so invented config became sticky.
+    # The threshold is a HORIZON measured from now, never a fixed calendar date — a
+    # fixed one is itself a sentinel that rots as the clock passes it.  It is a
+    # WHOLESALE bound, not a calibrated one (there is no corpus of end dates to
+    # calibrate against, and one built from a fresh deployment would be a corpus of
+    # this very defect): twenty years is chosen to sit in the gap between two
+    # populations that do not overlap anywhere near it — a real end condition is
+    # something a person can point at (a contract, a course, a season, a trial) and
+    # lands within a few years, while the dates a model reaches for when it means "no
+    # end date" (2099-12-31, 9999-12-31) land decades or millennia out.  Tunable; the
+    # over-correction it is sized against is a genuine end date read as a sentinel, so
+    # it errs high, and both directions are pinned by tests.
+    # Anything past it is normalised to no expiry, with the result naming what happened
+    # — normalised, never silently, and never rejected: the job the user asked for is
+    # exactly the unbounded one, so refusing the call would cost the turn over a value
+    # the framework can read correctly.
+    SENTINEL_EXPIRY_HORIZON_DAYS = 365 * 20
     # Keys named before the "…" tail in a multi-write run line's writes clause
     # (#1641): a run that wrote several entries shows the count plus this many
     # sample keys, so the clause stays one line.  Wholesale bound, tunable later.

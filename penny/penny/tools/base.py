@@ -9,7 +9,8 @@ from typing import Any, ClassVar
 
 from pydantic import ValidationError
 
-from penny.constants import ProgressEmoji
+from penny.constants import PennyConstants, ProgressEmoji
+from penny.text_validity import suggest_tool_name
 from penny.tools.models import NoArgs, ToolArgs, ToolCall, ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -156,7 +157,9 @@ class Tool(ABC):
         valid = list(parent.get("properties", {}).keys())
         bad = str(loc[-1]) if loc else "(argument)"
         path = Tool._loc_path(loc)
-        close = difflib.get_close_matches(bad, valid, n=1, cutoff=0.6)
+        close = difflib.get_close_matches(
+            bad, valid, n=1, cutoff=PennyConstants.DID_YOU_MEAN_STRING_CUTOFF
+        )
         suggestion = f" — did you mean '{close[0]}'?" if close else ""
         accepted = ", ".join(valid) if valid else "none (this tool takes no parameters)"
         return f"unknown parameter '{path}'{suggestion} (valid parameters: {accepted})"
@@ -409,12 +412,17 @@ class ToolExecutor:
         Framed by ``FRAMEWORK_NARRATION_NOT_FOUND`` (the frame — set on ``narration``
         so ``format_result`` leads with it and doesn't double-frame this
         no-registered-class result via its generic fallback); the did-you-mean +
-        available-tools remedy stays the actionable body."""
+        available-tools remedy stays the actionable body.
+
+        The suggestion goes through ``suggest_tool_name`` (#1944), which reads a
+        retired name through the rename table before falling back to string distance —
+        a guessed ``collection_metadata`` names ``memory_metadata`` rather than the
+        character-nearest ``collection_set``."""
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]
         available_list = ", ".join(available_tools) if available_tools else "none"
-        close = difflib.get_close_matches(tool_call.tool, available_tools, n=1, cutoff=0.6)
-        did_you_mean = f"Did you mean '{close[0]}'? " if close else ""
+        close = suggest_tool_name(tool_call.tool, available_tools)
+        did_you_mean = f"Did you mean '{close}'? " if close else ""
         return ToolResult(
             narration=FRAMEWORK_NARRATION_NOT_FOUND.format(tool_name=tool_call.tool),
             message=(

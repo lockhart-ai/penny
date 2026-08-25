@@ -16,6 +16,7 @@ from penny.text_validity import (
     extract_tool_call_names,
     is_degenerate_run,
     is_degenerate_tool_name,
+    suggest_tool_name,
 )
 
 # Legitimate punctuation that must NEVER be flagged — conversational ellipses,
@@ -200,3 +201,31 @@ def test_check_extraction_prompt_tools_flags_a_call_outside_the_surface():
     assert "collection_write" in error
     # A tool that IS in the surface, though present in the prompt, is NOT reported.
     assert "browse" not in error.split("only these tools:")[0]
+
+
+def test_check_extraction_prompt_tools_resolves_a_retired_tool_name():
+    """A stored prompt naming a tool this project RENAMED is pointed at the tool it
+    became, not at whatever is nearest by spelling (#1944) — the same rename leg the
+    executor's live tool-not-found answers with, since both read
+    :func:`suggest_tool_name`."""
+    surface = frozenset({"memory_metadata", "collection_set", "collection_write"})
+    prompt = (
+        'Collect things.\n1. collection_metadata("things")\n'
+        '2. collection_write("things", entries=[{key: "k", content: "c"}])'
+    )
+    error = check_extraction_prompt_tools(prompt, surface)
+    assert error is not None
+    assert "Did you mean 'memory_metadata'?" in error
+
+
+def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():
+    """The table remembers renames, never what EXISTS: a retired name whose replacement
+    is not on the surface takes the string leg like any other miss, so a suggestion
+    always names something callable (#1944)."""
+    assert suggest_tool_name("collection_metadata", frozenset({"memory_metadata"})) == (
+        "memory_metadata"
+    )
+    assert suggest_tool_name("collection_metadata", frozenset({"browse"})) is None
+    assert suggest_tool_name("collection_writ", frozenset({"collection_write"})) == (
+        "collection_write"
+    )

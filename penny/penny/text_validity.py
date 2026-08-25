@@ -544,6 +544,65 @@ def extract_tool_call_names(prompt: str) -> list[str]:
     return list(seen)
 
 
+# Tool names this project has CORRECTED, each resolved to the name in use today (#1944).
+# Read off the migrations that rewrote stored ``extraction_prompt``s, and resolved
+# TRANSITIVELY — a name corrected twice points at where it ended up, never at an
+# intermediate that is also gone.  Two histories land here, and they are one question at
+# a miss: names that were RENAMED out from under callers —
+#   0059       collection_metadata → memory_metadata
+#   0057       log_read_next → log_read, log_read_recent → log_read
+#   0059       read_latest → collection_read_latest
+#   #1631      collection_update → collection_set  (create + update collapsed onto one
+#              front door; migrations 0037/0041 rewrote this name inside COLLECTOR
+#              prompts to ``update_entry`` instead, which was a surface-scope correction
+#              for a tool a cycle cannot call, not a rename — so it is deliberately not
+#              what this table says)
+# and names that were never tools at all, recurring enough for a migration to sweep them:
+#   0039/0059  read_last → read_latest → collection_read_latest
+#   0040/0057  log_read_log → log_read_next → log_read
+# Why a table rather than more string distance: what a name became is a fact about this
+# project's history, and the two names need not look alike.  ``collection_metadata`` is
+# the measured case — the model guessed the retired name, and the string leg answered
+# with ``collection_set`` (a near neighbour by characters, a different tool entirely)
+# while the tool it wanted, ``memory_metadata``, is the one this table names.  Nothing
+# here is authoritative about what EXISTS: a suggestion is only made when the current
+# name is actually on the surface being suggested from, so an entry whose target that
+# surface lacks falls through to the string leg like any other miss.
+LEGACY_TOOL_RENAMES: dict[str, str] = {
+    "collection_metadata": "memory_metadata",
+    "collection_update": "collection_set",
+    "log_read_log": "log_read",
+    "log_read_next": "log_read",
+    "log_read_recent": "log_read",
+    "read_last": "collection_read_latest",
+    "read_latest": "collection_read_latest",
+}
+
+
+def suggest_tool_name(requested: str, available: Collection[str]) -> str | None:
+    """The tool ``requested`` most likely meant, or ``None`` when nothing is close.
+
+    Two legs, MEANING first then spelling (#1944).  A name this project retired is
+    resolved through :data:`LEGACY_TOOL_RENAMES` to the tool that replaced it — a
+    historical fact no character comparison can recover — and only when that
+    replacement is on ``available``, so the suggestion always names something callable.
+    Everything else falls to the string leg (``difflib`` over the available names,
+    gated on ``PennyConstants.DID_YOU_MEAN_STRING_CUTOFF``), which is what catches an
+    ordinary typo and stays silent on a genuinely unrelated guess.
+
+    Shared by the two surfaces that answer an unknown tool name — the executor's live
+    tool-not-found result and the stored-``extraction_prompt`` check below — so the two
+    cannot drift apart.
+    """
+    renamed = LEGACY_TOOL_RENAMES.get(requested)
+    if renamed is not None and renamed in available:
+        return renamed
+    close = difflib.get_close_matches(
+        requested, available, n=1, cutoff=PennyConstants.DID_YOU_MEAN_STRING_CUTOFF
+    )
+    return close[0] if close else None
+
+
 def check_extraction_prompt_tools(prompt: str, valid_tools: Collection[str]) -> str | None:
     """Return an error naming any tool call outside ``valid_tools``, else None.
 
@@ -555,13 +614,14 @@ def check_extraction_prompt_tools(prompt: str, valid_tools: Collection[str]) -> 
     persisted into a prompt the collector later tries to run and then fail every
     cycle, so it is rejected at write time with an actionable message (the offending
     tool, a did-you-mean, and the tools that DO exist), mirroring the executor's live
-    tool-not-found response.
+    tool-not-found response — through :func:`suggest_tool_name`, the one definition
+    both surfaces read, so the mirroring is structural rather than a resemblance.
     """
     unknown = [name for name in extract_tool_call_names(prompt) if name not in valid_tools]
     if not unknown:
         return None
-    close = difflib.get_close_matches(unknown[0], valid_tools, n=1, cutoff=0.6)
-    did_you_mean = f" Did you mean '{close[0]}'?" if close else ""
+    close = suggest_tool_name(unknown[0], valid_tools)
+    did_you_mean = f" Did you mean '{close}'?" if close else ""
     offending = ", ".join(repr(name) for name in unknown)
     available = ", ".join(sorted(valid_tools))
     return (

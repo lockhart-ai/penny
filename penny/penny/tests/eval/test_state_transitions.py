@@ -125,6 +125,7 @@ from penny.tests.eval.conftest import (
     collection_entries,
     count_tool_calls,
     is_seeded_run,
+    last_tool_args,
     live_prompts,
     new_collections,
     outgoing_replies,
@@ -3267,18 +3268,35 @@ def _schedule_check(row: MemoryRow | None, *, fires_every: int, anchored: bool) 
     )
 
 
-def _expiry_check(row: MemoryRow | None, *, expected: bool) -> Check:
-    """The end condition matches the terms — set when they gave one, ABSENT when they
+def _stated_end_condition(db: Database, row: MemoryRow) -> str | None:
+    """The end condition this turn STATED, in the form it stated it, or ``None``.
+
+    Read off the drawn ``expires_at`` argument first and the stored row second (#1944).
+    The row alone stopped being the whole answer when the tool boundary began normalising
+    a far-future sentinel to no expiry: a model that invented ``2099-12-31`` now leaves a
+    row indistinguishable from one that asked for nothing, which is right for the JOB and
+    wrong for a check about what the model asked for.  The row still answers the other
+    door — an end condition lifted out of the schedule's own ``UNTIL=``, which is stated
+    in no ``expires_at`` argument at all."""
+    drawn = (last_tool_args(db, _SET_TOOL) or {}).get("expires_at")
+    if drawn is not None:
+        return str(drawn)
+    return row.expires_at.isoformat() if row.expires_at is not None else None
+
+
+def _expiry_check(db: Database, row: MemoryRow | None, *, expected: bool) -> Check:
+    """The end condition matches the terms — stated when they gave one, ABSENT when they
     did not.  An invented end condition is a failure in its own right: a job that stops
     on a date nobody asked for goes quiet without anyone noticing."""
     label = "state: the end condition matches the terms (set only when they gave one)"
     if row is None:
         return Check(label, False, rationale="no job carries the routine", kind="state")
-    given = row.expires_at is not None
+    stated = _stated_end_condition(db, row)
+    given = stated is not None
     return Check(
         label,
         given == expected,
-        rationale=None if given == expected else f"expires {row.expires_at}",
+        rationale=None if given == expected else f"stated end condition {stated!r}",
         kind="state",
     )
 
@@ -3341,7 +3359,7 @@ def _decoy_check(db: Database) -> Check:
     )
 
 
-def _drawn_advisories(row: MemoryRow | None) -> list[Check]:
+def _drawn_advisories(db: Database, row: MemoryRow | None) -> list[Check]:
     """What she committed to, verbatim — the trigger clause in its copyable input form,
     the end condition where one was set, and the parameters she bound.
 
@@ -3357,10 +3375,11 @@ def _drawn_advisories(row: MemoryRow | None) -> list[Check]:
                 f"drew schedule {render_schedule_clause(row)!r}", True, scored=False, kind="state"
             )
         )
-    if row.expires_at is not None:
+    stated = _stated_end_condition(db, row)
+    if stated is not None:
         drawn.append(
             Check(
-                f"drew end condition {row.expires_at.isoformat()}",
+                f"drew end condition {stated}",
                 True,
                 scored=False,
                 kind="state",
@@ -3449,7 +3468,7 @@ def _terms_checks(db: Database, row: MemoryRow | None, case: _ApplyCase) -> list
     carries — and she set it running instead of running it again."""
     return [
         _schedule_check(row, fires_every=case.cadence_seconds, anchored=case.anchored),
-        _expiry_check(row, expected=case.expects_expiry),
+        _expiry_check(db, row, expected=case.expects_expiry),
         Check(
             "state: it will tell them when the price moves",
             row is not None and bool(row.notify),
@@ -3502,7 +3521,7 @@ def _job_setup_advisories(
     an accepted offer and about a cold ask, and two copies would drift."""
     sets = count_tool_calls(db, _SET_TOOL)
     return [
-        *_drawn_advisories(row),
+        *_drawn_advisories(db, row),
         Check(
             "calls: one collection_set call",
             sets == 1,
@@ -4923,7 +4942,7 @@ def _job_terms_checks(
     is what lets the two report under the same rows."""
     return [
         _schedule_check(row, fires_every=fires_every, anchored=anchored),
-        _expiry_check(row, expected=expects_expiry),
+        _expiry_check(db, row, expected=expects_expiry),
         Check(
             "state: it will tell them when something changes",
             row is not None and bool(row.notify),
