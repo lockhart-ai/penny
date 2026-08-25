@@ -1,5 +1,7 @@
 """Constants for Penny agent."""
 
+from __future__ import annotations
+
 from enum import StrEnum
 
 
@@ -230,6 +232,42 @@ class ProgressEmoji(StrEnum):
     READING = "\U0001f4d6"  # 📖 — reading a specific URL
     ROLLING = "\U0001f3b2"  # 🎲 — making a fair random choice
     WORKING = "\u2699\ufe0f"  # ⚙️ — generic fallback for other tools
+
+
+class PermissionResolution(StrEnum):
+    """How a domain-permission prompt ended.
+
+    A prompt is broadcast to every channel and answered on whichever one the
+    user reaches first (or not at all), so every other channel has to be told
+    it is over — and *how* it ended is what each channel acknowledges. The
+    third member is a real outcome, not an error: the prompt simply expired.
+    """
+
+    ALLOWED = "allowed"
+    BLOCKED = "blocked"
+    TIMED_OUT = "timed_out"
+
+    @classmethod
+    def from_decision(cls, allowed: bool | None) -> PermissionResolution:
+        """The resolution a prompt's outcome (``None`` = no answer) stands for."""
+        if allowed is None:
+            return cls.TIMED_OUT
+        return cls.ALLOWED if allowed else cls.BLOCKED
+
+    @property
+    def emoji(self) -> str:
+        """The mark a channel acknowledges this resolution with."""
+        return PERMISSION_RESOLUTION_EMOJIS[self]
+
+
+# The acknowledgment mark per resolution. Signal has no silent removal — deleting
+# the prompt leaves a "This message was deleted" tombstone on every client — so a
+# resolved prompt is marked in place with one of these instead.
+PERMISSION_RESOLUTION_EMOJIS: dict[PermissionResolution, str] = {
+    PermissionResolution.ALLOWED: "\u2705",  # ✅
+    PermissionResolution.BLOCKED: "\u274c",  # ❌
+    PermissionResolution.TIMED_OUT: "\u23f3",  # ⏳ — distinct from either answer
+}
 
 
 class ChatPromptType(StrEnum):

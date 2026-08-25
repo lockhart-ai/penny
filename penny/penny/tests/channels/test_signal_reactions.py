@@ -1,12 +1,23 @@
 """Integration tests for Signal reaction handling."""
 
+import asyncio
+import contextlib
 import json
 import time
+from unittest.mock import patch
 
 import pytest
 from sqlmodel import col, select
 
+from penny.agents import ChatAgent
+from penny.channels.manager import ChannelManager
+from penny.channels.permission_manager import PermissionManager
+from penny.channels.signal import SignalChannel
+from penny.constants import ChannelType, PennyConstants, PermissionResolution
+from penny.database import Database
 from penny.database.models import MessageLog
+from penny.llm import LlmClient
+from penny.prompts import Prompt
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 
@@ -26,7 +37,7 @@ async def _wait_for_outgoing_ids(penny, contains: str) -> tuple[int, str]:
     def _row(session):
         return session.exec(
             select(MessageLog)
-            .where(MessageLog.direction == "outgoing")
+            .where(MessageLog.direction == PennyConstants.MessageDirection.OUTGOING)
             .where(col(MessageLog.content).contains(contains))
         ).first()
 
@@ -121,6 +132,10 @@ async def test_signal_reaction_message(
         # (only the initial response should exist)
         assert len(signal_server.outgoing_messages) == 1
 
+        # And nothing Penny sent was withdrawn — the mock serves
+        # /v1/remote-delete, so an empty log means no request was ever issued.
+        assert signal_server.delete_events == []
+
 
 @pytest.mark.asyncio
 async def test_signal_reaction_raw_format(
@@ -211,3 +226,151 @@ async def test_signal_reaction_raw_format(
         assert reaction.content == "👍"
         assert reaction.parent_id == message_id
         assert reaction.is_reaction is True
+
+
+# --- Permission prompts: acknowledged with a reaction, never remote-deleted ---
+
+PROMPT_DOMAIN = "permission-probe.test"
+PROMPT_URL = f"https://{PROMPT_DOMAIN}/article"
+
+
+def _signal_permission_world(config, db: Database) -> tuple[SignalChannel, PermissionManager]:
+    """A real Signal channel behind a real permission manager, on the mock server.
+
+    The production shape end to end: the manager broadcasts through the channel
+    manager, so the resolution the Signal channel acknowledges is the one the
+    prompt actually ended with — not one the test handed it.
+    """
+    client = LlmClient(
+        api_url=config.llm_api_url,
+        model=config.llm_model,
+        db=db,
+        max_retries=config.llm_max_retries,
+        retry_delay=config.llm_retry_delay,
+    )
+    agent = ChatAgent(
+        system_prompt=Prompt.CONVERSATION_PROMPT,
+        model_client=client,
+        embedding_model_client=client,
+        tools=[],
+        db=db,
+        config=config,
+    )
+    assert config.signal_number, "the Signal number is what a reaction targets — it must be set"
+    channel = SignalChannel(
+        api_url=config.signal_api_url,
+        phone_number=config.signal_number,
+        message_agent=agent,
+        db=db,
+    )
+    manager = ChannelManager(message_agent=agent, db=db)
+    manager.register_channel(ChannelType.SIGNAL, channel)
+    permissions = PermissionManager(db=db, channel_manager=manager, config=config)
+    channel.set_permission_manager(permissions)
+    return channel, permissions
+
+
+async def _answer_elsewhere(
+    channel: SignalChannel, permissions: PermissionManager, allowed: bool
+) -> None:
+    """Answer the pending prompt the way another device would (the addon).
+
+    Signal is then a channel that never heard the answer and learns the prompt
+    is over only from the dismiss broadcast — the production shape that was
+    producing tombstones.
+    """
+    await wait_until(lambda: bool(channel._pending_permission_messages), timeout=5.0)
+    request_id = next(iter(channel._pending_permission_messages))
+    permissions.handle_decision(request_id, allowed)
+
+
+def _prompt_external_id(db: Database) -> int:
+    """The Signal timestamp of the prompt message, off its own messagelog row."""
+    with db.get_session() as session:
+        row = session.exec(
+            select(MessageLog)
+            .where(MessageLog.direction == PennyConstants.MessageDirection.OUTGOING)
+            .where(col(MessageLog.content).contains(PROMPT_DOMAIN))
+        ).first()
+        assert row is not None, "the permission prompt was never sent"
+        assert row.external_id is not None, "the prompt message was never stamped"
+        return int(row.external_id)
+
+
+@pytest.mark.parametrize(
+    ("allowed", "resolution", "denial"),
+    [
+        (True, PermissionResolution.ALLOWED, None),
+        (False, PermissionResolution.BLOCKED, "denied"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_answered_permission_prompt_is_marked_with_a_reaction(
+    signal_server,
+    mock_llm,
+    test_config,
+    test_user_info,
+    allowed,
+    resolution,
+    denial,
+):
+    """An answered prompt gets its resolution as a reaction on Penny's own message.
+
+    And no remote delete: the mock serves ``/v1/remote-delete``, so an empty
+    ``delete_events`` means nothing asked for one — not that a request 404'd.
+    """
+    db = Database(test_config.db_path)
+    channel, permissions = _signal_permission_world(test_config, db)
+
+    asyncio.create_task(_answer_elsewhere(channel, permissions, allowed))
+    expected = pytest.raises(RuntimeError, match=denial) if denial else contextlib.nullcontext()
+    with expected:
+        await permissions.check_domain(PROMPT_URL)
+
+    assert signal_server.reaction_events == [
+        {
+            "op": "send",
+            "recipient": TEST_SENDER,
+            "reaction": resolution.emoji,
+            "target_author": test_config.signal_number,
+            "timestamp": _prompt_external_id(db),
+        }
+    ], "the resolution belongs on Penny's own prompt message"
+    assert signal_server.delete_events == [], "a resolved prompt is never remote-deleted"
+    assert any(
+        PROMPT_DOMAIN in sent.get("message", "") for sent in signal_server.outgoing_messages
+    ), "the prompt itself stays in the conversation"
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_timed_out_permission_prompt_is_marked_distinctly(
+    signal_server, mock_llm, test_config, test_user_info
+):
+    """A prompt nobody answered gets its own mark — not an answer's, and not a delete."""
+    db = Database(test_config.db_path)
+    channel, permissions = _signal_permission_world(test_config, db)
+
+    with (
+        patch.object(PennyConstants, "PERMISSION_PROMPT_TIMEOUT", 0.1),
+        pytest.raises(RuntimeError, match="timed out"),
+    ):
+        await permissions.check_domain(PROMPT_URL)
+
+    assert signal_server.reaction_events == [
+        {
+            "op": "send",
+            "recipient": TEST_SENDER,
+            "reaction": PermissionResolution.TIMED_OUT.emoji,
+            "target_author": test_config.signal_number,
+            "timestamp": _prompt_external_id(db),
+        }
+    ]
+    assert PermissionResolution.TIMED_OUT.emoji not in {
+        PermissionResolution.ALLOWED.emoji,
+        PermissionResolution.BLOCKED.emoji,
+    }, "an expired prompt must not read as an answer"
+    assert signal_server.delete_events == [], "an expired prompt is never remote-deleted"
+
+    await channel.close()

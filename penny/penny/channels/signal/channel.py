@@ -27,7 +27,7 @@ from penny.channels.signal.models import (
     SignalEnvelope,
     TypingIndicatorRequest,
 )
-from penny.constants import ChannelType, PennyConstants, ProgressEmoji
+from penny.constants import ChannelType, PennyConstants, PermissionResolution, ProgressEmoji
 from penny.tools.base import Tool
 
 # Error substrings that indicate a transient signal-cli transport failure.
@@ -470,18 +470,6 @@ class SignalChannel(MessageChannel):
 
         return None
 
-    async def delete_message(self, recipient: str, timestamp: int) -> None:
-        """Delete a sent message for everyone (remote delete)."""
-        url = f"{self.api_url}/v1/remote-delete/{self.phone_number}"
-        try:
-            response = await self.http_client.request(
-                "DELETE", url, json={"recipient": recipient, "timestamp": timestamp}
-            )
-            response.raise_for_status()
-            logger.info("Deleted Signal message: recipient=%s, timestamp=%d", recipient, timestamp)
-        except httpx.HTTPError as e:
-            logger.warning("Failed to delete Signal message: %s", e)
-
     async def send_reaction(
         self,
         recipient: str,
@@ -574,12 +562,33 @@ class SignalChannel(MessageChannel):
 
         self.register_reaction_callback(str(external_id), on_reaction)
 
-    async def handle_permission_dismiss(self, request_id: str) -> None:
-        """Delete the Signal permission prompt message."""
+    async def handle_permission_dismiss(
+        self, request_id: str, resolution: PermissionResolution
+    ) -> None:
+        """Mark the prompt resolved by reacting to Penny's own prompt message.
+
+        Signal has no silent removal: remote-deleting the prompt leaves a "This
+        message was deleted" tombstone on every client — louder litter than the
+        answered prompt, and it reads as the assistant hiding something. A
+        reaction on the prompt itself says the same thing inline, with the
+        answer visible, and leaves the conversation record intact.
+        """
         entry = self._pending_permission_messages.pop(request_id, None)
-        if entry:
-            recipient, timestamp = entry
-            await self.delete_message(recipient, timestamp)
+        if entry is None:
+            return
+        recipient, timestamp = entry
+        marked = await self.send_reaction(
+            recipient,
+            resolution.emoji,
+            target_author=self.phone_number,
+            target_timestamp=timestamp,
+        )
+        if not marked:
+            logger.warning(
+                "Could not mark permission prompt %s as %s — it stays unacknowledged",
+                request_id,
+                resolution,
+            )
 
     def _handle_send_response(
         self, response: httpx.Response, recipient: str, message: str

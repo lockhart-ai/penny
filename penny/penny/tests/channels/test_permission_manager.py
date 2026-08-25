@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penny.channels.permission_manager import PermissionManager
+from penny.constants import PermissionResolution
 from penny.tests.conftest import wait_until
+
+
+def _dismissed_resolution(channel_manager: MagicMock) -> PermissionResolution:
+    """The resolution the dismiss broadcast carried to every channel."""
+    return channel_manager.broadcast_permission_dismiss.call_args[0][1]
 
 
 async def _resolve_pending(mgr: PermissionManager, decision: bool) -> None:
@@ -83,17 +89,21 @@ class TestPromptFlow:
         call_args = cm.broadcast_permission_prompt.call_args
         assert call_args[0][1] == "newsite.com"
         assert db.domain_permissions.check_domain("newsite.com") == "allowed"
+        # Every channel is told HOW it ended, so each can acknowledge it in its
+        # own idiom (Signal marks its prompt message with the matching emoji).
+        assert _dismissed_resolution(cm) == PermissionResolution.ALLOWED
 
     @pytest.mark.asyncio
     async def test_denial_stores_blocked(self, db):
         """User denial stores the domain as blocked."""
-        mgr, _cm = _make_manager(db)
+        mgr, cm = _make_manager(db)
 
         asyncio.create_task(_resolve_pending(mgr, False))
         with pytest.raises(RuntimeError, match="denied"):
             await mgr.check_domain("https://denied.com/")
 
         assert db.domain_permissions.check_domain("denied.com") == "blocked"
+        assert _dismissed_resolution(cm) == PermissionResolution.BLOCKED
 
     @pytest.mark.asyncio
     async def test_handle_decision_resolves_future(self, db):
@@ -165,6 +175,9 @@ class TestTimeout:
 
         cm.broadcast_permission_prompt.assert_called_once()
         cm.broadcast_permission_dismiss.assert_called_once()
+        # An unanswered prompt is its own outcome, distinct from either answer —
+        # a channel acknowledging it must not imply the user said something.
+        assert _dismissed_resolution(cm) == PermissionResolution.TIMED_OUT
 
 
 class TestSerialization:

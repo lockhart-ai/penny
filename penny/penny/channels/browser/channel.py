@@ -88,7 +88,7 @@ from penny.channels.browser.models import (
 )
 from penny.channels.permission_manager import PermissionManager
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -459,8 +459,16 @@ class BrowserChannel(MessageChannel):
         for conn in self._connections.values():
             await self._send_ws(conn.ws, prompt)
 
-    async def handle_permission_dismiss(self, request_id: str) -> None:
-        """Dismiss the permission dialog on all connected browser addons."""
+    async def handle_permission_dismiss(
+        self, request_id: str, resolution: PermissionResolution
+    ) -> None:
+        """Dismiss the permission dialog on all connected browser addons.
+
+        The addon's prompt is a UI popup, so resolving it means closing the
+        popup — there is no message to mark, and nothing for ``resolution`` to
+        say here (the answer the user gave is already reflected in the domain
+        permissions the addon is synced with).
+        """
         dismiss = BrowserPermissionDismiss(request_id=request_id)
         for conn in self._connections.values():
             await self._send_ws(conn.ws, dismiss)

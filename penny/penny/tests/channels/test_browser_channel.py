@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from penny.channels.base import IncomingMessage
 from penny.channels.browser.channel import BrowserChannel, ConnectionInfo
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
@@ -899,7 +899,12 @@ class TestBrowserPermissionDelegation:
 
     @pytest.mark.asyncio
     async def test_handle_permission_dismiss_sends_to_all_addons(self, tmp_path):
-        """handle_permission_dismiss sends dismiss to all connected addons."""
+        """handle_permission_dismiss closes the popup on every connected addon.
+
+        The addon's prompt is a UI popup, so its resolution is a plain close —
+        how the prompt ended changes nothing here (Signal is the channel whose
+        prompt is a message and therefore gets marked).
+        """
         channel, db, ws1 = await self._setup_channel(tmp_path)
 
         ws2 = _MockWs()
@@ -909,11 +914,12 @@ class TestBrowserPermissionDelegation:
             None,
         )
 
-        await channel.handle_permission_dismiss("req-1")
+        for resolution in PermissionResolution:
+            await channel.handle_permission_dismiss(f"req-{resolution}", resolution)
 
         for ws in [ws1, ws2]:
             dismissals = [m for m in ws.sent if m.get("type") == "permission_dismiss"]
-            assert len(dismissals) == 1
+            assert len(dismissals) == len(PermissionResolution)
 
 
 class TestFormatToolStatus:
