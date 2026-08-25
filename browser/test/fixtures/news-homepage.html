@@ -1,0 +1,144 @@
+<!doctype html>
+<!--
+  A synthetic JS-rendered news homepage — the page shape #1942 is about.
+
+  Everything here is invented (news-alpha.example, fictional headlines).  What
+  makes it the shape under test, rather than the words:
+
+    * an app-shell root with generated class names, the way a framework renders
+    * a block of inline hydration state, so the prose filter has something to
+      drop before it measures the page's link share
+    * every headline is a heading INSIDE an anchor, which is what Defuddle's
+      trailing-heading cleanup deletes
+    * almost no prose: one standfirst, and otherwise nothing but links
+-->
+<html lang="en">
+  <head>
+    <title>News Alpha — Home</title>
+    <meta property="og:image" content="https://news-alpha.example/static/social.png" />
+  </head>
+  <body>
+    <div id="app">
+      <script type="application/json" id="__hydration__">
+        {"route":"home","rails":["lead","grid","most-read"],"edition":"national","flags":{"liveblog":false,"weather":true},"served":"edge","variant":"control","layout":{"columns":4,"rows":6},"experiments":["headline-size-b","card-density-a"],"prefetch":["/world","/business","/culture","/sport"]}
+      </script>
+      <div class="sc-9f2a1b">
+        <header class="sc-3c8d">
+          <a href="/" class="sc-logo">News Alpha</a>
+          <nav aria-label="Sections">
+            <a href="/world">World</a>
+            <a href="/business">Business</a>
+            <a href="/culture">Culture</a>
+            <a href="/sport">Sport</a>
+            <a href="/opinion">Opinion</a>
+          </nav>
+        </header>
+
+        <main class="sc-7b1e">
+          <section class="sc-lead">
+            <article class="sc-card sc-card--lead">
+              <a href="/world/2036/harbour-bridge-reopens-after-refit">
+                <h2>Harbour bridge reopens after a two-year refit</h2>
+              </a>
+              <p class="sc-standfirst">
+                Traffic crossed the span at dawn for the first time since the deck was lifted.
+              </p>
+            </article>
+          </section>
+
+          <section class="sc-grid" aria-label="Top stories">
+            <article class="sc-card">
+              <a href="/business/2036/dockside-market-changes-hands"><h3>Dockside market changes hands after eighty years</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/world/2036/lantern-festival-draws-record-crowd"><h3>Lantern festival draws a record crowd to the old quarter</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/culture/2036/museum-returns-borrowed-mosaics"><h3>Museum returns the borrowed mosaics a decade early</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/sport/2036/rowing-club-wins-on-a-restart"><h3>Rowing club takes the estuary title on a restart</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/business/2036/ferry-operator-adds-a-night-sailing"><h3>Ferry operator adds a night sailing for the winter</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/world/2036/border-crossing-queues-ease"><h3>Border crossing queues ease after the new lanes open</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/culture/2036/city-orchestra-names-a-conductor"><h3>City orchestra names a conductor from within the ranks</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/opinion/2036/what-the-refit-cost-us"><h3>What the refit really cost us, and who paid it</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/sport/2036/velodrome-hosts-a-junior-series"><h3>Velodrome hosts a junior series for the first time</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/business/2036/warehouse-district-rezoned"><h3>Warehouse district rezoned for housing after long inquiry</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/world/2036/observatory-logs-a-quiet-year"><h3>Observatory logs its quietest year for storms on record</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/culture/2036/bookshop-reopens-in-the-arcade"><h3>Bookshop reopens in the arcade under new owners</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/world/2036/lighthouse-keepers-cottage-listed"><h3>Lighthouse keeper's cottage listed after a public campaign</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/business/2036/co-op-bakery-opens-a-second-site"><h3>Co-op bakery opens a second site on the north shore</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/sport/2036/harriers-take-the-cross-country"><h3>Harriers take the cross country in heavy going</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/culture/2036/film-festival-adds-a-late-strand"><h3>Film festival adds a late strand for local shorts</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/opinion/2036/the-case-for-a-second-crossing"><h3>The case for a second crossing, twenty years on</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/world/2036/salt-marsh-restoration-completes"><h3>Salt marsh restoration completes ahead of schedule</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/business/2036/tram-extension-clears-final-hurdle"><h3>Tram extension clears its final planning hurdle</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/culture/2036/archive-digitises-the-dock-records"><h3>Archive digitises the dock records going back to 1870</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/sport/2036/swimmers-return-to-the-tidal-pool"><h3>Swimmers return to the tidal pool after the repairs</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/world/2036/night-buses-run-hourly-again"><h3>Night buses run hourly again across the eastern routes</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/business/2036/chandlery-marks-a-century"><h3>Chandlery on the quay marks a century in the family</h3></a>
+            </article>
+            <article class="sc-card">
+              <a href="/opinion/2036/who-the-quiet-year-benefited"><h3>Who the quiet year on the water really benefited</h3></a>
+            </article>
+          </section>
+
+          <aside class="sc-rail" aria-label="Most read">
+            <h2>Most read</h2>
+            <ol>
+              <li><a href="/most-read/tide-tables-for-the-week">Tide tables for the week ahead</a></li>
+              <li><a href="/most-read/where-to-watch-the-regatta">Where to watch the regatta</a></li>
+              <li><a href="/most-read/a-walking-route-along-the-quay">A walking route along the quay</a></li>
+              <li><a href="/most-read/five-things-the-refit-changed">Five things the refit changed</a></li>
+            </ol>
+          </aside>
+        </main>
+
+        <footer class="sc-foot">
+          <a href="/about">About us</a>
+          <a href="/contact">Contact</a>
+          <a href="/terms">Terms</a>
+          <a href="#top">Back to top</a>
+        </footer>
+      </div>
+    </div>
+  </body>
+</html>

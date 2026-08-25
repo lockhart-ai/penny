@@ -1,0 +1,24 @@
+{
+  "// why": [
+    "The content scripts are bundled by esbuild, not compiled by tsc, so the",
+    "main tsconfig excludes them — they import npm packages and iterate DOM",
+    "collections, neither of which its emit-oriented settings allow. This one",
+    "typechecks them on the terms esbuild bundles them under: bundler module",
+    "resolution, synthetic default imports, and DOM.Iterable. noEmit — the",
+    "build output is build-content.mjs's."
+  ],
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["src/content"]
+}

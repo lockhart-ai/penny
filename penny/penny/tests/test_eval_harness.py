@@ -60,6 +60,7 @@ from penny.tests.eval.conftest import (
     Check,
     CycleCall,
     CycleObservation,
+    FieldExpectation,
     ParameterFamily,
     SampleResult,
     _assert_threshold,
@@ -69,6 +70,7 @@ from penny.tests.eval.conftest import (
     _guarded_graded,
     _labelling_input,
     _score_binding,
+    _score_extraction,
     _score_framing,
     _score_labelling,
     _scorer_is_graded,
@@ -97,6 +99,7 @@ from penny.tests.eval.test_bracket_key_recovery import (
     _seed_board_games,
     assert_board_games_world,
 )
+from penny.tests.eval.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.test_chat_reply import (
     _STORED_TITLES,
     _carries,
@@ -189,9 +192,12 @@ from penny.tools.micro_context import (
     BoundValues,
     FramedParameter,
     LeafLabel,
+    MicroContextResult,
+    MicroExtractOutcome,
     MissingParameters,
     SkillLabels,
     SkillSignature,
+    spoken_form,
 )
 from penny.tools.models import ToolResult
 
@@ -2385,6 +2391,87 @@ def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> No
     # naming something the routine does not need could never be answered.
     assert [one.parameter for one in fixture.expectations] == [
         parameter.name for parameter in fixture.parameters
+    ]
+
+
+@pytest.mark.parametrize("fixture", EXTRACT_FIELD_FIXTURES, ids=lambda f: f.case_id)
+def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> None:
+    """Per-case coherence probe (#1942): every thing a case says its page supplies really
+    is on that page, and every case declares at least one thing to look for.
+
+    An anchor that is not on the page could never be extracted, so the case would grade
+    the extractor on a fact nobody gave it — and a case declaring nothing at all grades
+    nothing.  Both have to fail here, in ``make check``, rather than after GPU time."""
+    assert fixture.expectations
+    missing = [
+        one.field
+        for one in fixture.expectations
+        if one.anchor and spoken_form(one.anchor) not in spoken_form(fixture.page)
+    ]
+    assert missing == []
+
+
+def test_score_extraction_grades_the_outcome_and_each_named_field() -> None:
+    """The extraction case's scoring over fixture answers (#1942): the outcome check
+    reads the direction off the expectations themselves, each thing the page SUPPLIES is
+    scored on its own, and what the page lacks — along with the value the draw returned —
+    rides ADVISORY, so one fact is never graded twice.
+
+    Both directions here, because the fix and its guard are one contract: a page carrying
+    some of what was asked for is a read that must carry those things, and a page carrying
+    none of it is honestly empty."""
+    partly = _score_extraction(
+        MicroContextResult(
+            outcome=MicroExtractOutcome.EXTRACTED,
+            value="Lantern festival draws a record crowd — https://news-alpha.example/lantern",
+        ),
+        [
+            FieldExpectation("headline", "Lantern festival draws a record crowd"),
+            FieldExpectation("link", "https://news-alpha.example/lantern"),
+            FieldExpectation("summary"),
+        ],
+    )
+    assert [(check.label, check.ok, check.scored) for check in partly] == [
+        ("reads the page rather than reporting it empty", True, True),
+        ("carries the headline", True, True),
+        ("carries the link", True, True),
+        ("the page carries no summary", True, False),
+        (
+            "extracted 'Lantern festival draws a record crowd — "
+            "https://news-alpha.example/lantern'",
+            True,
+            False,
+        ),
+    ]
+
+    # The same page answered as though it were empty — the regression itself: the outcome
+    # check fails, and so does every thing the page did in fact carry.
+    refused = _score_extraction(
+        MicroContextResult(
+            outcome=MicroExtractOutcome.NOT_PRESENT, reason="no summaries are given."
+        ),
+        [
+            FieldExpectation("headline", "Lantern festival draws a record crowd"),
+            FieldExpectation("summary"),
+        ],
+    )
+    assert [(check.label, check.ok) for check in refused if check.scored] == [
+        ("reads the page rather than reporting it empty", False),
+        ("carries the headline", False),
+    ]
+    assert refused[0].rationale == "came back not_present"
+
+    # And a page carrying none of it: the honest absence is the whole contract there, so
+    # the outcome check is the only graded one and both gaps render beside it.
+    absent = _score_extraction(
+        MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason="no prices are listed."),
+        [FieldExpectation("closing price"), FieldExpectation("ticker symbol")],
+    )
+    assert [(check.label, check.ok, check.scored) for check in absent] == [
+        ("reports the page carries none of it", True, True),
+        ("the page carries no closing price", True, False),
+        ("the page carries no ticker symbol", True, False),
+        ("not_present: 'no prices are listed.'", True, False),
     ]
 
 

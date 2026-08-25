@@ -76,7 +76,8 @@ browser/
     feed/
       feed.ts             — Thought card grid, new/archive tabs, reactions, modal
     content/
-      extract_text.ts     — Defuddle-based page extraction (bundled via esbuild)
+      extract_text.ts     — The injected script: readiness, XML, og:image, PageData
+      page_text.ts        — Reading a page: article body or link index (bundled via esbuild)
   sidebar/
     sidebar.html          — Chat UI markup
     sidebar.css           — Light/dark theme via CSS custom properties
@@ -112,11 +113,20 @@ Pure UI layer — no direct WebSocket connection. Communicates with background v
 - Smart scrolling (short messages anchor at bottom, long messages show top first, re-scroll on image load)
 
 ### Content script
-Extracts visible text from web pages using a tiered approach:
-1. **Defuddle** (primary) — smart content extraction that strips nav, sidebars, boilerplate
-2. **CSS heuristics** (fallback) — targets `<article>`, `<main>`, `[role="main"]`
-3. **TreeWalker** (last resort) — all visible text nodes, skipping nav/aside/footer
-Also extracts og:image metadata. Bundled with esbuild as an IIFE (content scripts can't use ES module imports).
+Reads a page **two ways** and returns whichever carries more of the page's own words
+(`page_text.ts`, #1942):
+1. **The article** — Defuddle, which scores the document for the one block holding a story
+   and strips nav, sidebars and boilerplate.
+2. **The link index** — one markdown link per distinct page this one points at, built only
+   for a page whose own text is mostly link text (a homepage, a section front). Defuddle is
+   an *article* extractor, so on an index page it either returns a single card or keeps the
+   grid and deletes each card's headline as a trailing heading — both of which look like a
+   successful extraction downstream.
+
+An article page is unaffected: its index reading is never built, and would lose if it were.
+The script also extracts og:image metadata and serialises XML/RSS documents directly.
+Bundled with esbuild as an IIFE (content scripts can't use ES module imports); the reading
+logic is unit-tested against synthetic fixtures over jsdom (`browser/test/`, `npm test`).
 
 ## Browser Tools
 
@@ -179,13 +189,13 @@ The primary threat: malicious web pages embedding instructions in content that P
 
 **Three-layer defense:**
 
-1. **Pre-sanitization**: Defuddle extracts main content only, stripping nav/sidebar/footer/hidden elements. The TreeWalker fallback skips elements with `display:none`, `visibility:hidden`, `opacity:0`, and `aria-hidden="true"`.
+1. **Pre-sanitization**: on the article reading, Defuddle extracts main content only, stripping nav/sidebar/footer/hidden elements. The **link index** reading (#1942) does not go through Defuddle — it reads the page's own anchors — so it drops `script`/`style`/`noscript`/`template` and anything the page marks `hidden` or `aria-hidden="true"` itself, and it emits link *labels* and hrefs rather than page prose. Stylesheet-hidden text (`display:none`, white-on-white) is not filtered on that path; layer 2 is what stands behind it.
 
 2. **Sandboxed summarization**: raw page content from `browse_url` goes to a constrained model call — system prompt is "Summarize this web page content." No tools, no user profile, no preferences, no history, no browsing context. Even if injected instructions survive extraction, there's nothing to exfiltrate and no tools to act with.
 
 3. **Summary is the only bridge**: Penny's real agent context (with tools, preferences, sensitive data) only sees the clean summary output from the sandboxed step. Untrusted content never shares a context window with sensitive data or tool access.
 
-**Note**: Active tab context (when user includes page content with a message) bypasses the sandboxed summarization since the user explicitly chose to share it. The content still goes through Defuddle extraction which strips hidden/malicious elements.
+**Note**: Active tab context (when user includes page content with a message) bypasses the sandboxed summarization since the user explicitly chose to share it. The content still goes through the extraction above, which strips hidden/malicious elements.
 
 ### Domain Allowlist (implemented)
 
@@ -243,7 +253,7 @@ The feed page realizes the shift from interruption-based notifications to a brow
 ## Technology
 
 - **Extension**: TypeScript (strict), esbuild for content script bundling, web-ext for development
-- **Content extraction**: Defuddle (by Obsidian creator, zero-dep core bundle) with CSS heuristic and TreeWalker fallbacks
+- **Content extraction**: Defuddle (by Obsidian creator, zero-dep core bundle) for the article reading, beside a link-index reading of the page's own anchors; whichever carries more of the page's words wins (#1942)
 - **Communication**: WebSocket between background script and Penny server, `browser.runtime` messaging between sidebar and background
 - **Protocol**: Typed discriminated unions for all messages (TypeScript `type + const` pattern mirrors Python Pydantic models)
 - **Server**: existing Python/Docker architecture with ChannelManager routing proxy

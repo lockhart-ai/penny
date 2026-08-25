@@ -810,9 +810,11 @@ async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_
 
 
 def test_micro_context_system_prompt_declares_multiline_contract():
-    """Whole-render literal of the extraction system prompt (#1682): the first line
-    must OPEN with a tag, an EXTRACTED value may be a multi-line digest / list, and a
-    NOT_PRESENT reason stays a single line."""
+    """Whole-render literal of the extraction system prompt (#1682/#1942): the first line
+    must OPEN with a tag, an EXTRACTED value may be a multi-line digest / list, a
+    NOT_PRESENT reason stays a single line — and the boundary between the two tags is
+    STATED: content carrying some of what was asked for is a read, and NOT_PRESENT is for
+    content carrying none of it."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -821,9 +823,12 @@ def test_micro_context_system_prompt_declares_multiline_contract():
         "NOT_PRESENT: <one short line naming what is missing>\n"
         "After EXTRACTED:, the extracted value is EVERYTHING that follows — as "
         "long as the instruction requires: a single value, one or more paragraphs, or "
-        "a list (put one item per line). Use "
-        "NOT_PRESENT:, on a single line, when the requested information is not in "
-        "the content. Never invent a value that is not in the content, and write "
+        "a list (put one item per line). An instruction often asks for several things "
+        "at once. Give whatever the content has for each of them and leave out the "
+        "ones it has nothing for: content carrying some of what was asked for is an "
+        "EXTRACTED: read. Use "
+        "NOT_PRESENT:, on a single line, when the content carries none of what "
+        "was asked for. Never invent a value that is not in the content, and write "
         "nothing outside the value itself — no preamble, no explanation, no restating "
         "the instruction."
     )
@@ -831,25 +836,31 @@ def test_micro_context_system_prompt_declares_multiline_contract():
 
 def test_extract_parameter_description_whole_render(db: Database):
     """Whole-render literal of the ``extract`` parameter's description — the ONE line
-    of guidance the calling model reads before it writes an instruction (#1838).
+    of guidance the calling model reads before it writes an instruction (#1838/#1942).
 
     It teaches where the instruction comes FROM: the task's own words, broad allowed.
     "Naming exactly what to pull out" read as *be specific* and was measured inflating
     a plain ask into a stricter one than the page could satisfy — the extractor then
     honestly returned NOT_PRESENT and the round died on a fact that was there.  The
     example of a broad ask is deliberately non-fixture phrasing, so no eval pool lends
-    its own words to the surface under test."""
+    its own words to the surface under test.
+
+    What #1942 changed is the CONSEQUENCE it states.  It used to warn that naming an
+    extra detail "makes the read come back empty when the page lacks them" — true when a
+    partly-answered instruction flipped the whole page to NOT_PRESENT, and false now that
+    the read degrades per thing asked for.  A description stating a consequence the
+    system no longer has is worse than one stating none."""
     tool = _extract_tool(db, _responds(_TAGGED_VALUE))
     assert tool.parameters["properties"]["extract"]["description"] == (
         "Optional. One instruction naming what to pull out of the fetched "
         'pages (e.g. "the current bid amount"). Use the task\'s own words '
-        "for it — asking for extra details the task never named (an ID, a "
-        "date, a second field) makes the read come back empty when the page "
-        'lacks them, and a broad ask like "what the notice says" is fine. '
-        "When set, the full page content is read in a separate scoped "
-        "context and only the extracted value is returned here — the page "
-        "body never enters this conversation. Omit to receive the page "
-        "content itself."
+        'for it, and a broad ask like "what the notice says" is fine. An '
+        "instruction naming several things comes back with whatever each "
+        "page has for each of them, so a detail a page lacks costs you "
+        "only that detail. When set, the full page content is read in a "
+        "separate scoped context and only the extracted value is returned "
+        "here — the page body never enters this conversation. Omit to "
+        "receive the page content itself."
     )
 
 

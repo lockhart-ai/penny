@@ -1,0 +1,88 @@
+<!doctype html>
+<!--
+  The over-correction guard for #1942: an ARTICLE on the same synthetic site,
+  carrying the same header, rail and footer links as the homepage.
+
+  A page with a body must still read as its body.  Its link share is what makes
+  that structural — the nav and rail links are here in force, and the article
+  still outweighs them, so the index reading is never even built.
+-->
+<html lang="en">
+  <head>
+    <title>Harbour bridge reopens after a two-year refit — News Alpha</title>
+  </head>
+  <body>
+    <div id="app">
+      <script type="application/json" id="__hydration__">
+        {"route":"article","id":"world/2036/harbour-bridge-reopens-after-refit","edition":"national","served":"edge"}
+      </script>
+      <div class="sc-9f2a1b">
+        <header class="sc-3c8d">
+          <a href="/" class="sc-logo">News Alpha</a>
+          <nav aria-label="Sections">
+            <a href="/world">World</a>
+            <a href="/business">Business</a>
+            <a href="/culture">Culture</a>
+            <a href="/sport">Sport</a>
+            <a href="/opinion">Opinion</a>
+          </nav>
+        </header>
+
+        <main class="sc-7b1e">
+          <article class="sc-article">
+            <h1>Harbour bridge reopens after a two-year refit</h1>
+            <p class="sc-standfirst">
+              Traffic crossed the span at dawn for the first time since the deck was lifted.
+            </p>
+            <p>
+              The first vehicles rolled over the harbour bridge shortly after five, ending a
+              closure that had rerouted the whole eastern side of the city onto the tunnel and
+              the two remaining ferries. Engineers had warned from the start that the deck
+              replacement could not be staged in halves, and so the span came down to bare
+              trusses for most of a winter.
+            </p>
+            <p>
+              The refit replaced every one of the original deck panels, along with the hangers
+              that carry them, and added a separated lane on the seaward side for cyclists and
+              pedestrians who had shared a metre of painted asphalt with freight since the
+              bridge opened.
+            </p>
+            <p>
+              Costs ran over, as the inquiry into the contract had expected them to, and the
+              final figure will not be published until the audit closes in the spring. The
+              operator says the deck should now last forty years without a comparable closure.
+            </p>
+            <p>
+              For the ferry crews who carried the overflow, the reopening is the end of a long
+              run of extra sailings. Two of the three relief boats go back on charter at the end
+              of the month, and the night crossing that was added at the start of the closure
+              will be kept through the winter before it is reviewed.
+            </p>
+            <p>
+              Commuters queuing on the approach before dawn said the difference was immediate.
+              The tunnel, which had absorbed most of the diverted traffic, was clear by seven
+              for the first morning anyone on the ramp could remember.
+            </p>
+          </article>
+        </main>
+
+        <aside class="sc-rail" aria-label="Most read">
+          <h2>Most read</h2>
+          <ol>
+            <li><a href="/most-read/tide-tables-for-the-week">Tide tables for the week ahead</a></li>
+            <li><a href="/most-read/where-to-watch-the-regatta">Where to watch the regatta</a></li>
+            <li><a href="/most-read/a-walking-route-along-the-quay">A walking route along the quay</a></li>
+            <li><a href="/most-read/five-things-the-refit-changed">Five things the refit changed</a></li>
+          </ol>
+        </aside>
+
+        <footer class="sc-foot">
+          <a href="/about">About us</a>
+          <a href="/contact">Contact</a>
+          <a href="/terms">Terms</a>
+          <a href="#top">Back to top</a>
+        </footer>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,15 +1,13 @@
 /**
  * Content script — extracts main content from the current page.
- * Uses Defuddle for article extraction, then Turndown for HTML → Markdown.
+ * Reading the page is `page_text.ts` (article or index, whichever carries more
+ * of the page); this module is the part that touches the live environment —
+ * readiness, the XML case, the preview image, and the returned page data.
  * Bundled with esbuild (not compiled by tsc) since content scripts can't use imports.
  */
 
-import Defuddle from "defuddle";
-import TurndownService from "turndown";
+import { readPage } from "./page_text.js";
 
-const turndown = new TurndownService({ headingStyle: "atx" });
-
-const MIN_CONTENT_LENGTH = 200;
 const MAX_CHARS = 50_000;
 
 interface PageData {
@@ -45,18 +43,6 @@ function extractXml(): string | null {
   return null;
 }
 
-function extractWithDefuddle(): string | null {
-  const clone = document.cloneNode(true) as Document;
-  const result = new Defuddle(clone, { url: location.href }).parse();
-  if (!result.content) return null;
-  const text = turndown.turndown(result.content);
-  if (text && text.length >= MIN_CONTENT_LENGTH) {
-    return text;
-  }
-  return null;
-}
-
-
 function extractMetaImage(): string {
   const selectors = [
     'meta[property="og:image"]',
@@ -90,7 +76,7 @@ function extract(): PageData {
     };
   }
 
-  const text = extractXml() ?? extractWithDefuddle();
+  const text = extractXml() ?? readPage(document, location.href);
 
   return {
     title: document.title,
