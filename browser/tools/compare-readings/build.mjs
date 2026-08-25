@@ -14,11 +14,18 @@
  */
 
 import { build } from "esbuild";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 
 const HERE = new URL(".", import.meta.url).pathname;
 const BROWSER = resolve(HERE, "../..");
+
+/** Which Defuddle read the pages, baked in so a results file can say so. The
+ *  installed version rather than the declared range — the range is a wish. */
+const DEFINE = {
+  __DEFUDDLE_VERSION__: JSON.stringify(json(`${BROWSER}/node_modules/defuddle/package.json`).version),
+  __DEFUDDLE_RANGE__: JSON.stringify(json(`${BROWSER}/package.json`).dependencies.defuddle),
+};
 
 /** The call `content_entry.ts` ends on — turned into the IIFE's return value. */
 const ENTRY_CALL = "compareReadings(document, location.href);";
@@ -34,12 +41,17 @@ async function emit(entry, outfile, wrap) {
     bundle: true,
     format: "esm",
     target: "es2020",
+    define: DEFINE,
     write: false,
   });
   const code = wrap(result.outputFiles[0].text);
   mkdirSync(dirname(outfile), { recursive: true });
   writeFileSync(outfile, code);
   console.log(`  ${relative(BROWSER, outfile)}  ${(code.length / 1024).toFixed(1)}kb`);
+}
+
+function json(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 function iife(code) {

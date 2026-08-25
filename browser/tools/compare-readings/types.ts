@@ -93,6 +93,12 @@ export interface RunReport {
   runStartedAt: string;
   runFinishedAt: string;
   userAgent: string;
+  /** The Defuddle that read the pages. BOTH readings go through it, so two runs
+   *  on different versions are not comparable — 0.14.0 and 0.19.3 disagree about
+   *  this repo's own homepage fixture by an order of magnitude. */
+  defuddleVersion: string;
+  /** What package.json asked for, next to what was installed. */
+  defuddleRange: string;
   listVersion: string;
   siteCount: number;
   settleMs: number;

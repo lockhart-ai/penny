@@ -13,6 +13,7 @@
  * of picking a settle time.
  */
 
+import { DEFUDDLE_RANGE, DEFUDDLE_VERSION } from "./defuddle_version.js";
 import { SITES, LIST_VERSION, type Site } from "./sites.js";
 import type { FailedPage, MeasuredPage, RunReport, VisitContext } from "./types.js";
 
@@ -35,7 +36,9 @@ const RESULT_FILE = "compare-results.json";
 const COMPLETE = "complete";
 
 async function run(): Promise<void> {
-  console.log(`[compare-readings] ${SITES.length} sites, two passes each — starting`);
+  console.log(
+    `[compare-readings] ${SITES.length} sites, two passes each, defuddle ${DEFUDDLE_VERSION} — starting`,
+  );
   const runStartedAt = new Date().toISOString();
   await delay(STARTUP_GRACE_MS);
 
@@ -104,6 +107,8 @@ function report(pages: (MeasuredPage | FailedPage)[], runStartedAt: string): Run
     runStartedAt,
     runFinishedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
+    defuddleVersion: DEFUDDLE_VERSION,
+    defuddleRange: DEFUDDLE_RANGE,
     listVersion: LIST_VERSION,
     siteCount: SITES.length,
     settleMs: SETTLE_MS,

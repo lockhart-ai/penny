@@ -84,6 +84,8 @@ test("the paste-in build prints its JSON where there is no copy", () => {
   const printed = JSON.parse(logged.at(-1)[0]);
   assert.equal(printed.arbiter.picked, "article");
   assert.equal(printed.pr.chars, printed.production.chars);
+  // A spot-check that does not name its Defuddle cannot be set beside a run.
+  assert.equal(printed.defuddleVersion, JSON.parse(artifact("../node_modules/defuddle/package.json")).version);
 });
 
 test("the background bundle parses and drives the file the manifest ships", () => {
@@ -101,4 +103,17 @@ test("the background bundle parses and drives the file the manifest ships", () =
   }
   assert.ok(MANIFEST.browser_action, "the progress badge needs a browser action");
   assert.match(MANIFEST.name, /DO NOT SHIP/);
+});
+
+test("the run header carries the Defuddle that read the pages", () => {
+  const installed = JSON.parse(artifact("../node_modules/defuddle/package.json")).version;
+
+  // Baked in at build time, so a results file can never be version-anonymous —
+  // both readings go through Defuddle, and the versions disagree wildly about
+  // this repo's own fixture, so two runs on different ones are not comparable.
+  assert.ok(HARNESS.includes(`DEFUDDLE_VERSION = "${installed}"`), "bundle lost its Defuddle version");
+  assert.ok(HARNESS.includes("defuddleVersion"), "run header lost the version field");
+  assert.ok(HARNESS.includes("defuddleRange"), "run header lost the declared range");
+  assert.ok(!HARNESS.includes("__DEFUDDLE_VERSION__"), "the build-time define did not substitute");
+  assert.ok(!SNIPPET.includes("__DEFUDDLE_VERSION__"), "the build-time define did not substitute");
 });

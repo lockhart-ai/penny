@@ -10,12 +10,15 @@
  */
 
 import { compareReadings } from "./comparator.js";
+import { DEFUDDLE_VERSION } from "./defuddle_version.js";
 
 /** DevTools' clipboard helper. Not part of the page, so it may not be there —
  *  a content script or a non-DevTools console has no `copy`. */
 declare const copy: unknown;
 
-const comparison = compareReadings(document, location.href);
+/** Which Defuddle is in this paste — a spot-check that does not say so cannot be
+ *  set beside a run, and the two versions disagree wildly. */
+const comparison = { defuddleVersion: DEFUDDLE_VERSION, ...compareReadings(document, location.href) };
 const json = JSON.stringify(comparison, null, 2);
 
 console.log("[compare-readings]", comparison);

@@ -152,6 +152,37 @@ test("a record survives the round trip the harness downloads it through", () => 
   assert.equal(roundTripped.requestedUrl, HOMEPAGE_URL);
 });
 
+/** The Defuddle these numbers were taken on.  Pinned exactly in package.json,
+ *  because Defuddle's reading of this fixture changes by an order of magnitude
+ *  between versions and a calibration that does not name its version is noise. */
+const CALIBRATED_DEFUDDLE = "0.19.3";
+
+test("the fixture numbers this branch is calibrated on have not moved", () => {
+  // If this fails, Defuddle changed under the harness and every number in the
+  // README's calibration table — and in any results file — needs re-taking.
+  assert.equal(
+    JSON.parse(readFileSync(new URL("../node_modules/defuddle/package.json", import.meta.url), "utf8")).version,
+    CALIBRATED_DEFUDDLE,
+  );
+
+  const home = compare(fixture("news-homepage.html"), HOMEPAGE_URL);
+  const article = compare(fixture("news-article.html"), ARTICLE_URL);
+
+  // The homepage on 0.19.3: Defuddle returns the LEAD CARD ALONE — 204 chars,
+  // barely over the 200 floor, one headline of ten. Not the 0.14 shape (2,026
+  // chars of emptied links) but the same loss, and the PR's own docstring names
+  // it as the defect's other shape.
+  assert.deepEqual(
+    [home.production.chars, home.production.words, home.production.headlinesSurvived],
+    [204, 22, 1],
+  );
+  assert.deepEqual([home.pr.chars, home.pr.words, home.pr.headlinesSurvived], [3924, 249, 10]);
+
+  // The article page: both readings identical, as on 0.14.
+  assert.deepEqual([article.production.chars, article.production.words], [1435, 258]);
+  assert.deepEqual([article.pr.chars, article.pr.words], [1435, 258]);
+});
+
 test("the site list is what the results header claims it is", () => {
   assert.equal(SITES.length, 21, "twenty news fronts plus one article control");
   assert.match(LIST_VERSION, /^\d{4}-\d{2}-\d{2}\.\d+$/);
