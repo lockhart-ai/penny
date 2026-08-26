@@ -41,9 +41,12 @@ story: two facts, two fitting places.
 Check labels carry one of three prefixes — ``state:`` (end DB facts), ``reply:``
 (what Penny said, against what she did), ``calls:`` (call provenance).  State and
 reply checks are SCORED; the call spine, the state the machine landed in, and the
-loop-health verdict are ADVISORY (``scored=False``) unless a call IS the story's own
+loop-health verdict are ADVISORY (``scored=False``) unless that row IS the story's own
 claim — a lookup before a write is one, since a write with no browse is a fact that
-came from nowhere.
+came from nowhere, and the learn close's LANDING is the other, since a story about the
+reply that ends a learn round has no subject at all outside that state (#1989).  Where
+a scored claim only exists in a state a sample never reached, it reads ``Check.na(...)``
+rather than ❌: a precondition nobody met is not a contract anybody failed.
 
 Every case is REPORT-ONLY (``min_pass_rate=None``): the thresholds are the code
 owner's to set once the numbers are read.  All content is synthetic — invented games,
@@ -60,7 +63,7 @@ from sqlmodel import Session
 
 from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState
+from penny.conversation_machine import ConversationState, MachineSnapshot
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.models import MemoryEntry, MemoryRow, PromptLog
@@ -96,6 +99,26 @@ from penny.tests.eval.fixtures import (
     MULTIHOP_PAGES,
     CannedPage,
     SynthCollection,
+)
+
+# Standing a ROUND up before the measured turn is the transition suite's idiom, read from
+# where that suite declares it rather than restated here: a seeded machine state, a seeded
+# conversation turn and a seeded ledger row are one shape, and a second copy of it would be
+# a second contract free to drift from the one every edge case is measured against.
+#
+# Its PROBES are deliberately restated instead (``_assert_parked_in_elicit`` below): that
+# suite's are keyed to its own ``_ElicitRound`` case type, which this file has no shape
+# for.  What a probe asserts is the seed it stands beside, so the honest cost of not
+# widening a neighbour's fixture type is one restated probe, named here rather than left
+# for a reader to notice.
+from penny.tests.eval.test_state_transitions import (
+    _drawn_state,
+    _log_ask,
+    _log_chat_step,
+    _log_classifier_draw,
+    _log_reply,
+    _park,
+    _seeded_response,
 )
 from penny.tools.skill_tools import render_skill_shape
 
@@ -293,21 +316,29 @@ def _walked(db: Database) -> str:
     return ", ".join(f"{move.from_state}→{move.to_state}" for move in moves) or "no move"
 
 
-def _landing_advisory(db: Database, expected: ConversationState | None = None) -> Check:
+def _landing_advisory(
+    db: Database, expected: ConversationState | None = None, *, scored: bool = False
+) -> Check:
     """Where the machine ended up, reported beside the story's own checks.
 
     A turn carrying an instruction lands in ``learn`` and mints a routine at run end;
     a question lands in idle.  Which of those a given phrasing is belongs to the state
     definitions rather than to a memory story, so this row REPORTS the landing (and
     the whole walk) and only ``expected`` — set where the story does turn on it —
-    makes it a verdict."""
+    makes it a verdict.
+
+    ``scored`` promotes that verdict into the graded denominator, for the one story whose
+    contract only EXISTS in the state it names (#1989): the learn close is a claim about
+    the reply that ends a learn round, so where the machine landed is that story's
+    precondition, and reporting it unscored beside scored reply checks put the accurate
+    signal out of the score and the misleading one in it."""
     landed = _landed_state(db)
     ok = landed == expected.value if expected is not None else landed is not None
     return Check(
         "calls: where the machine landed",
         ok,
         rationale=f"walked {_walked(db)}",
-        scored=False,
+        scored=scored,
         kind="spine",
     )
 
@@ -1140,17 +1171,22 @@ _SEALS_NEWS_PAGE = CannedPage(
     ),
 )
 
-# Turn 1 = the FUSED ask (sources + filter + schedule, no imperative — the field shape
-# verbatim).  Turn 2 = the user's routine, the answer the decompose ask requests (the
-# URLs referenced, not retyped — a real user doesn't repeat themselves).  Turn 3 = pure
-# schedule intent.
+# The FUSED ask both story-15 cases open on — sources + filter + schedule, no imperative,
+# the field shape verbatim.  Named rather than left as a position in the turns list below,
+# because the learn close reads it as the ask its seeded round is anchored to: a turn
+# inserted at the head of that list would silently re-seed a case two hundred lines away.
+_TWO_SOURCE_SETUP_ASK = (
+    "hey can you set up news alerts for my favourite teams? the ridgeline "
+    f"foxes and the harbor seals — their news pages are {_FOXES_URL} and "
+    f"{_SEALS_URL}. check them twice a day, and alert me about "
+    "notable stuff like trades, signings, and injuries — not game scores."
+)
+
+# Turn 1 = that fused ask.  Turn 2 = the user's routine, the answer the decompose ask
+# requests (the URLs referenced, not retyped — a real user doesn't repeat themselves).
+# Turn 3 = pure schedule intent.
 _TWO_SOURCE_TURNS = [
-    (
-        "hey can you set up news alerts for my favourite teams? the ridgeline "
-        f"foxes and the harbor seals — their news pages are {_FOXES_URL} and "
-        f"{_SEALS_URL}. check them twice a day, and alert me about "
-        "notable stuff like trades, signings, and injuries — not game scores."
-    ),
+    _TWO_SOURCE_SETUP_ASK,
     (
         "sure: 1. go to those two news pages 2. pull out any trades, signings, "
         "or injuries — skip game scores 3. remember the title plus a short "
@@ -1307,9 +1343,18 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 # learn-close reply, which is why this case scores that reply for the routine's SHAPE
 # rather than only its name (#1658/#1804 established the name and what it needs).
 #
-# One turn, so the LAST reply IS the learn close — the three-turn story above ends on the
-# apply close, where what is running has already been settled.  Correcting a wrong step is
-# re-teaching the routine, so nothing here scores an edit: there is no edit surface.
+# One MEASURED turn, so the LAST reply IS the learn close — the three-turn story above ends
+# on the apply close, where what is running has already been settled.  Correcting a wrong
+# step is re-teaching the routine, so nothing here scores an edit: there is no edit surface.
+#
+# The round that turn closes is SEEDED, not hoped for (#1989).  A learn close only exists
+# inside a learn round, and the ask that demonstrates one is an imperative about now —
+# which idle's own definition claims, so left to a cold machine the draw went to idle on
+# every measured sample and every reply check failed for a reply nobody had been asked to
+# write.  So the priors the round really has are laid down: the fused setup ask, Penny's
+# answer to it, that turn's ledger, and the machine parked in ``elicit`` on that ask.  The
+# measured turn is then the elicit → learn move this story is about, taken by the
+# production classifier over a world it could actually be in.
 #
 # WHAT THE ASK LENDS THE SCORER, stated rather than assumed: a teaching turn is made of
 # the very verbs a reply describing the routine would use ("go to", "keep"), and it names
@@ -1320,6 +1365,8 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 # routine will do when it RUNS AGAIN, and that it says it in plain words — no tool
 # identifier out of the record read aloud, which is the frame's own instruction and the
 # thing that decides whether handing the model the record helped or leaked.
+
+_LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 
 _LEARN_CLOSE_ASK = (
     f"go to {_FOXES_URL} and {_SEALS_URL}, pull out the trades and signings from "
@@ -1339,9 +1386,141 @@ _RUNS_AGAIN = (
     r"|\bnext\s+time\b|\brun\s+(it|this|that)\s+again\b|\bre-?run\b"
 )
 
-assert not describes(_LEARN_CLOSE_ASK, _RUNS_AGAIN), (
-    f"the ask must lend no word to the recurrence pattern: {_LEARN_CLOSE_ASK!r}"
+# The two scored reply claims, named once because each is written twice — as the verdict a
+# learn round earns, and as the ➖ a round that never entered learn stands down to.  A label
+# is what a report is read by and what a baseline diff keys on, so the two branches must be
+# the same string rather than two spellings of one intention.
+_RUNS_AGAIN_LABEL = "reply: it says what the routine will do when it runs again"
+_PLAIN_WORDS_LABEL = "reply: the steps are given in plain words, not read back as tool names"
+
+# Why EVERY reply row of this case stands down at once — one reason, so it is one string:
+# each of them reads the reply against a routine, and there is no routine.  Which row it
+# renders on is the row's own label's job to say.
+_NOTHING_LEARNED = "nothing was learned, so there was no routine for the reply to be about"
+
+# The round the measured turn closes, one turn each: the user's fused setup ask — story
+# 15's OWN opening ask, so the two cases open on one ask rather than on two spellings of it
+# — and Penny's answer, the teach question the demonstration replies to.  She splits the
+# fused ask out loud (teaching and setting a job running are two different turns), which
+# is the reply that leaves the machine in ``elicit``.
+_LEARN_CLOSE_SETUP_ASK = _TWO_SOURCE_SETUP_ASK
+_LEARN_CLOSE_TEACH_QUESTION = (
+    "happy to set that up — but i don't have a routine for it yet. can you walk me "
+    "through one pass in a single message? which pages should i read, what counts as "
+    "notable, and what should i keep for each one?"
 )
+
+# Every turn of the seeded round is held to the rule the ask already was: none of them may
+# lend the prompt under test the RECURRENCE words the scored claim looks for.  Penny's own
+# seeded turn is the one the model is most likely to echo, so it is checked here beside the
+# ask rather than left to a reader to notice.  The two ADVISORY families are deliberately
+# out of scope: the ask already carries their verbs by its nature (a teaching turn is made
+# of them), which is exactly why they are reported and not scored.
+_ROUND_TURNS_LENDING_RECURRENCE = [
+    turn
+    for turn in (_LEARN_CLOSE_ASK, _LEARN_CLOSE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
+    if describes(turn, _RUNS_AGAIN)
+]
+assert not _ROUND_TURNS_LENDING_RECURRENCE, (
+    f"the round's turns must lend no word to the recurrence pattern: "
+    f"{_ROUND_TURNS_LENDING_RECURRENCE}"
+)
+
+# The run ids the seeded elicit turn is written under — its classifier draw and its chat
+# call, which production mints separately (the turn's own run reaches the classifier only
+# through the transition row).  Seeded ids, so every "what did THIS sample do" reader
+# excludes them.
+_LEARN_CLOSE_ELICIT_DRAW = seeded_run_id("learn-close-elicit-draw")
+_LEARN_CLOSE_ELICIT_TURN = seeded_run_id("learn-close-elicit-turn")
+
+
+def _seed_learn_close_round(db: Database) -> None:
+    """Lay down the round the measured turn closes — the state an idle → elicit turn
+    leaves behind, item for item:
+
+    * the fused setup ask, logged INCOMING — the message the round is ANCHORED to
+    * Penny's teach question, logged OUTGOING and THREADED to it — her last turn, the one
+      the demonstration answers, and the only way a reply of hers reaches the window
+    * that turn's LEDGER — the draw that chose elicit over a cold machine, and the one
+      chat call that answered.  No tool calls: an elicitation turn enacts nothing
+    * the machine parked in ``elicit``, carrying that ask as its anchor
+
+    Nothing else: an empty registry, no collection, no page read.  What the round is FOR
+    has been said and what it DOES has not, which is exactly the world a demonstration
+    arrives into."""
+    ask_id = _log_ask(db, _LEARN_CLOSE_SETUP_ASK, _LEARN_CLOSE_CASE_ID)
+    _log_reply(db, _LEARN_CLOSE_TEACH_QUESTION, answering=ask_id)
+    _seed_setup_turn_ledger(db)
+    _park(
+        db,
+        ConversationState.ELICIT,
+        anchor_message_id=ask_id,
+        run_id=_LEARN_CLOSE_ELICIT_TURN,
+        message_id=ask_id,
+    )
+    _assert_parked_in_elicit(db, ask_id)
+    _assert_the_round_has_not_started(db)
+
+
+def _seed_setup_turn_ledger(db: Database) -> None:
+    """The setup turn's promptlog: the classifier draw that chose elicit over a COLD
+    machine (no history, no skills), then the one chat call that answered with the teach
+    question.  No tool calls — an elicitation turn enacts nothing, so a seeded call would
+    be seeding a world the preceding beat is measured against not having."""
+    _log_classifier_draw(
+        db,
+        run_id=_LEARN_CLOSE_ELICIT_DRAW,
+        snapshot=MachineSnapshot(state=ConversationState.IDLE),
+        message=_LEARN_CLOSE_SETUP_ASK,
+        drawn=_drawn_state(ConversationState.ELICIT),
+    )
+    _log_chat_step(
+        db,
+        run_id=_LEARN_CLOSE_ELICIT_TURN,
+        messages=[{"role": "user", "content": _LEARN_CLOSE_SETUP_ASK}],
+        response=_seeded_response(_LEARN_CLOSE_TEACH_QUESTION),
+    )
+
+
+def _assert_parked_in_elicit(db: Database, ask_id: int) -> None:
+    """Loud probe: the machine is parked in elicit on THIS ask, and the round reads back
+    as a two-turn CONVERSATION rather than as one user turn (Penny's turn reaches the
+    window only because it is threaded to the ask).
+
+    A seed that has drifted from the state it claims makes this case a turn answered
+    against a world nothing produces, which is precisely what the bare cold machine was —
+    so it fails HERE, in the seed, rather than as a puzzling 0.00 after a paid run."""
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.to_state == ConversationState.ELICIT.value, (
+        f"{_LEARN_CLOSE_CASE_ID}: the machine must be parked in elicit, not {latest}"
+    )
+    assert latest.anchor_message_id == ask_id, (
+        f"{_LEARN_CLOSE_CASE_ID}: the park must be anchored to the ask, "
+        f"not {latest.anchor_message_id}"
+    )
+    expected = [
+        (PennyConstants.MessageDirection.INCOMING, _LEARN_CLOSE_SETUP_ASK),
+        (PennyConstants.MessageDirection.OUTGOING, _LEARN_CLOSE_TEACH_QUESTION),
+    ]
+    window = db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=len(expected))
+    seen = [(row.direction, row.content) for row in window]
+    assert seen == expected, (
+        f"{_LEARN_CLOSE_CASE_ID}: the round must read as a two-turn conversation, got {seen}"
+    )
+
+
+def _assert_the_round_has_not_started(db: Database) -> None:
+    """The other half of that probe — the setup turn enacted NOTHING, which is the whole
+    of what an elicitation turn's contract is: no routine in the registry, nothing written
+    by any run, and no page fetched.  Every one of them is what the measured turn is about
+    to do for the first time."""
+    assert not db.skills.list_all(), (
+        f"{_LEARN_CLOSE_CASE_ID}: the round starts with no routine in the registry"
+    )
+    assert not _entries_this_run_wrote(db), (
+        f"{_LEARN_CLOSE_CASE_ID}: the round starts with nothing written"
+    )
+    assert not _pages_fetched(db), f"{_LEARN_CLOSE_CASE_ID}: the round starts with no page read"
 
 
 def _learned_shapes(db: Database) -> list[str]:
@@ -1371,6 +1550,25 @@ def _tools_read_aloud(db: Database, reply: str) -> list[str]:
     )
 
 
+def _describes_check(claim: str, pattern: str, reply: str, learned: bool) -> Check:
+    """One of the routine's moves as the reply describes it — reported, not scored, for
+    the reason given above: the teaching ask carries both families' verbs, so a green here
+    cannot tell an account of the routine from an echo of the instruction.
+
+    NOT APPLICABLE when nothing was learned (#1989): there is no routine for a reply to
+    describe, so a ❌ here would report a bad account of a routine that does not exist."""
+    label = f"reply: it describes {claim}"
+    if not learned:
+        return Check.na(label, rationale=_NOTHING_LEARNED, kind="reply", anchor=REPLY_ANCHOR)
+    return Check(
+        label,
+        describes(reply, pattern),
+        scored=False,
+        kind="reply",
+        anchor=REPLY_ANCHOR,
+    )
+
+
 def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
     """The routine's two moves as the reply describes them, plus which of the two pages it
     named — reported, not scored, for the reason given above: the teaching ask carries
@@ -1378,13 +1576,7 @@ def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
     routine from an echo of the instruction."""
     sources = [token for token in ("foxes", "seals") if token in _normalize(reply)]
     return [
-        Check(
-            f"reply: it describes {claim}",
-            describes(reply, pattern) if learned else False,
-            scored=False,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        )
+        _describes_check(claim, pattern, reply, learned)
         for claim, pattern in (
             ("the pages being read", DESCRIBES_FETCH),
             ("what it finds being kept", DESCRIBES_SAVE),
@@ -1401,26 +1593,48 @@ def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
     ]
 
 
+def _learn_close_reply_checks(reply: str, learned: bool, recited: list[str]) -> list[Check]:
+    """The pair the ask cannot supply — that the reply says what the routine will do when
+    it RUNS AGAIN, and that it says it in plain words rather than reciting the record's own
+    tool identifiers.
+
+    Both are claims about a LEARN CLOSE, so both are NOT APPLICABLE when the round taught
+    nothing (#1989): the reply that was written closed some other kind of turn, and grading
+    it against this contract reports a failed contract for a contract nobody exercised.
+    What is graded then is the landing, which says the true thing — the round never entered
+    learn."""
+    if not learned:
+        return [
+            Check.na(label, rationale=_NOTHING_LEARNED, kind="reply", anchor=REPLY_ANCHOR)
+            for label in (_RUNS_AGAIN_LABEL, _PLAIN_WORDS_LABEL)
+        ]
+    return [
+        Check(
+            _RUNS_AGAIN_LABEL,
+            describes(reply, _RUNS_AGAIN),
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+        ),
+        Check(
+            _PLAIN_WORDS_LABEL,
+            not recited,
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+            rationale=f"read aloud {recited}" if recited else None,
+        ),
+    ]
+
+
 def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check]:
     learned = bool(db.skills.list_all())
     shapes = _learned_shapes(db)
     recited = _tools_read_aloud(db, reply)
     return [
+        # The landing is this story's PRECONDITION, so it is the scored gate: a round that
+        # never entered learn has no learn close, and every reply check below stands down.
+        _landing_advisory(db, ConversationState.LEARN, scored=True),
         Check("state: the round taught a routine", learned, kind="state"),
-        Check(
-            "reply: it says what the routine will do when it runs again",
-            describes(reply, _RUNS_AGAIN) if learned else False,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-            rationale=None if learned else "nothing was learned, so there was nothing to state",
-        ),
-        Check(
-            "reply: the steps are given in plain words, not read back as tool names",
-            learned and not recited,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-            rationale=f"read aloud {recited}" if recited else None,
-        ),
+        *_learn_close_reply_checks(reply, learned, recited),
         *_shape_family_checks(reply, learned),
         Check(
             "state: the shape the record holds",
@@ -1429,7 +1643,6 @@ def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check
             scored=False,
             kind="state",
         ),
-        _landing_advisory(db, ConversationState.LEARN),
         _routing_advisory(db),
     ]
 
@@ -1437,10 +1650,16 @@ def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check
 async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval) -> None:
     """Story 15, the learn close: one demonstrated round, and the reply that closes it
     tells the user what the routine will RUN — so a step it captured by accident is
-    visible to the only person who can tell that it does not belong."""
+    visible to the only person who can tell that it does not belong.
+
+    The round is standing already (``_seed_learn_close_round``): the user asked for the
+    job, Penny asked to be taught one pass, and the machine is parked in ``elicit`` on that
+    ask — so the measured turn is the demonstration, and the reply it draws is a learn
+    close rather than an answer to a request handled on the spot."""
     await chat_eval(
-        case_id="memory-learn-close-shape",
+        case_id=_LEARN_CLOSE_CASE_ID,
         message=_LEARN_CLOSE_ASK,
+        seed=_seed_learn_close_round,
         browse=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
         score=_score_learn_close,
         min_pass_rate=None,
@@ -1451,10 +1670,16 @@ async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval)
 
 # ── Story 15, half the sources down: what LANDED, not what was attempted (#1946) ──
 #
-# The same two-source demonstration as the learn close above, with ONE source unreachable.
-# It is deliberately the same world minus one page: the pair differ only in what the browse
-# layer answers, so a difference in the reply is attributable to the world rather than to a
-# second ask written a second way.
+# The same two-source demonstration as the learn close above, with ONE source unreachable —
+# the same ASK, deliberately, so a difference in the reply is attributable to what the
+# browse layer answered rather than to a second ask written a second way.
+#
+# It no longer shares that case's WORLD.  The learn close seeds the round it closes, because
+# its every claim is about a learn round (#1989); this case's scored claims are about what
+# the STORE holds against what the reply says, which no state gates — so it stands on the
+# cold machine it always did, and where it lands is reported beside its checks.  Whether it
+# would read differently from inside a learn round is an open question rather than a
+# settled one, recorded here as the reason the two worlds diverged.
 #
 # What it measures is the asymmetry the writes-landed frame exists for.  From inside a run,
 # a source that failed and a source that produced nothing look much like one that was
