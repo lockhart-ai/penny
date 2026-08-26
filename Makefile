@@ -197,6 +197,11 @@ pytest: $(if $(LOCAL),,build)
 # Forwards the model endpoint into the container (defaulting to the docker host,
 # where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
 # the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
+# Before anything is spent, ONE call proves the endpoint serves the model (see
+# penny.tests.eval.endpoint_smoke). Every sample builds its own preflight, so without this
+# an unserveable model is discovered 755 times, concurrently, minutes in — which is how a
+# full-suite run was spent against a model whose provider 404'd every call. The refusal
+# carries the provider's own message, because that message is the whole answer.
 # Test-level parallelism: pass `-n N` through EVAL_PYTEST_ARGS (pytest-xdist) to run N
 # CASES at once, on top of the EVAL_CONCURRENCY samples each case runs at. Every worker
 # is a separate PROCESS resolving the run from its own environment, so EVAL_RUN_ID is
@@ -237,6 +242,12 @@ eval: $(if $(LOCAL),,build)
 			echo "eval: LLM_API_KEY is empty — a remote endpoint will reject every call. Set it in $(EVAL_PRIMARY_ENV) or the shell." >&2; \
 			exit 1; \
 		fi; \
+	fi; \
+	if ! $(EVAL_RUN) env LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
+		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \
+		python -m penny.tests.eval.endpoint_smoke; then \
+		echo "eval: refusing to start — the endpoint above will not serve this model." >&2; \
+		exit 1; \
 	fi; \
 	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
 	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
