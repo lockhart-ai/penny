@@ -67,7 +67,6 @@ from penny.conversation_machine import ConversationState, MachineSnapshot
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.models import MemoryEntry, MemoryRow, PromptLog
-from penny.database.skill_store import steps_from_json
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
@@ -1362,9 +1361,12 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 # the fetch/save families or from the sources — a reply merely reporting the outcome would
 # go green on all of them.  They are reported here (``scored=False``) rather than scored,
 # and what IS scored is the pair the ask cannot supply: that the reply says what the
-# routine will do when it RUNS AGAIN, and that it says it in plain words — no tool
-# identifier out of the record read aloud, which is the frame's own instruction and the
-# thing that decides whether handing the model the record helped or leaked.
+# routine will do when it RUNS AGAIN, and that it DESCRIBES the steps rather than writing
+# the record's calls out in their own syntax — the frame's own instruction, and the thing
+# that decides whether handing the model the record helped or leaked.  The second is a
+# claim about SYNTAX and never about a word (#1989, code-owner ruling): the record's tool
+# names double as ordinary English verbs, so "browse the news page" is the plain words the
+# frame asked for and only ``browse(queries=…)`` is the record read aloud.
 
 _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 
@@ -1391,7 +1393,7 @@ _RUNS_AGAIN = (
 # is what a report is read by and what a baseline diff keys on, so the two branches must be
 # the same string rather than two spellings of one intention.
 _RUNS_AGAIN_LABEL = "reply: it says what the routine will do when it runs again"
-_PLAIN_WORDS_LABEL = "reply: the steps are given in plain words, not read back as tool names"
+_PLAIN_WORDS_LABEL = "reply: the steps are described, not written out as tool-call syntax"
 
 # Why EVERY reply row of this case stands down at once — one reason, so it is one string:
 # each of them reads the reply against a routine, and there is no routine.  Which row it
@@ -1531,23 +1533,93 @@ def _learned_shapes(db: Database) -> list[str]:
     return [render_skill_shape(skill) for skill in db.skills.list_all()]
 
 
-def _tools_read_aloud(db: Database, reply: str) -> list[str]:
-    """The RECORD's own tool identifiers that turned up verbatim in the reply.
+# The three marks a reply gives off when the frame's RECORD came back WRITTEN OUT rather
+# than described.  They are #1799's own contract, which named the leak it recorded —
+#
+#     1. browse(queries=[{url}], extract={search_term})
+#
+# — and scored that the reply carries "no tool syntax: no ``name(``, no ``{param}`` braces,
+# no ``memory=``/``queries=``/``entries=``".  Every mark is keyed to the SHAPE of a written
+# call and none to a set of names, for the reason the rest of this suite is: a routine
+# built on a plugin tool nobody has enumerated recites identically, and a name list could
+# never have covered it.  The shape is also the only thing that separates a leak from a
+# description here — ``browse`` is simultaneously the record's identifier and the ordinary
+# English verb for what that step does, so "browse the news page" IS the plain words the
+# frame asks for, while ``browse(queries=…)`` is the record read aloud.
+_CALL_SYNTAX = re.compile(
+    # A call written out: an identifier FLUSH against its own '(' — prose puts a space
+    # there — carrying a keyword argument, which is what a prose parenthetical never does
+    # ("the news page (foxes_url)", "the URL(s) you provide").
+    r"\b\w+\((?=[^)]*\b\w+\s*=)"
+    # The wire's own braces: a placeholder ({url}, {search_term}) or a payload key
+    # ({'content': value}).
+    r"|\{\s*['\"]?\w+['\"]?\s*[}:]"
+    # An assignment to a LITERAL: memory='my-prices', entries=[, extract={ .  Deliberately
+    # not a bare name=value — a url's own query string ("?page=2") is that shape.
+    r"|\b\w+\s*=\s*['\"\[{]"
+)
 
-    Read off the learned steps rather than from a list written here, so a routine built
-    on a tool nobody has enumerated is covered the same way: what is being checked is
-    that the frame's record came back TRANSLATED, in the plain words it asks for, rather
-    than recited — the leak #1799 measured, which handing the model a step shape at all
-    is what risks re-opening."""
-    normalized = _normalize(reply)
-    return sorted(
-        {
-            step.tool
-            for skill in db.skills.list_all()
-            for step in steps_from_json(skill.steps)
-            if _normalize(step.tool) in normalized
-        }
-    )
+
+def _call_syntax_read_aloud(reply: str) -> list[str]:
+    """The wire-syntax fragments the reply carries — the record written out instead of
+    described.
+
+    What this replaced matched the bare tool IDENTIFIERS off the learned steps, which
+    measures something else entirely (#1989, code-owner ruling on the observed samples).
+    Two things were wrong with it.  It fired on the English collision: a reply that wrote
+    "The steps it follows (in plain words): 1. Browse both URLs" scored as a leak for using
+    the only ordinary word there is for reading a page.  And the suite already credits that
+    same word the other way — ``DESCRIBES_FETCH`` counts ``browse\\w*`` as a plain-language
+    description of fetching — so one reply scored green as description and red as
+    recitation on one token.  It was also near-inert against what it was built for: across
+    a measured run the only identifier ever recited was ``browse``, because
+    ``collection_write`` / ``log_read`` / ``read_similar`` are not English words and no
+    model writing prose emits them."""
+    return sorted({match.group(0) for match in _CALL_SYNTAX.finditer(_normalize(reply))})
+
+
+# PROOF the predicate can still SEE the leak it exists for — #1799's own recorded block as
+# the positive, and the five step lists the code owner read and ruled correct as negatives.
+#
+# Module-level rather than a ``test_`` function, deliberately: everything in this module
+# carries ``pytestmark = pytest.mark.eval``, so a test here is DESELECTED by ``make check``
+# and would prove nothing at the moment it matters.  An import-time assert runs in the gate
+# (which collects this file) AND on every eval run, which is strictly more coverage.
+_RECITED_STEPS = (
+    "Steps:\n"
+    "1. browse(queries=[{url}], extract={search_term})\n"
+    "2. collection_write(memory='my-prices', "
+    "entries=[{'content': value, 'key': item_label}])"
+)
+
+# The step lists as the samples actually wrote them.  The second is the sharp edge: it
+# carries a PARAMETER name in a prose parenthetical, which reads as a call to anything that
+# looks for a name beside a bracket and must not fire a single mark.
+_DESCRIBED_STEPS = (
+    "1. Browse both URLs.  2. Read the recent browse logs.  "
+    "3. Write each headline+blurb into the collection.",
+    "1. Browse the Foxes news page (`foxes_url`).  2. Browse the Seals news page "
+    "(`seals_url`).  3. Extract the trade and signing headlines and blurbs from both.  "
+    "4. Store each headline-blurb pair in `extract-teams-trades-ridgelinefoxes-com-news`.",
+    "1. Visit the two URLs you provide.  2. Look each page for headlines talking about a "
+    "trade or signing.  3. Capture the headline and its short blurb.  4. Save those two "
+    "pieces into the designated collection.",
+    "1. Fetches two team news pages.  2. Looks for trade or signing announcements on "
+    "each.  3. Saves each headline plus a short blurb to the collection.",
+    "1. Grab the first URL and pull any headlines that mention “trade” or “signing.”  "
+    "2. Grab the second URL and do the same extraction.  3. Read what just got logged to "
+    "confirm the data.  4. Save those headlines and blurbs into the collection.",
+)
+
+assert _call_syntax_read_aloud(_RECITED_STEPS), (
+    f"the recitation guard must still fire on the leak #1799 recorded: {_RECITED_STEPS!r}"
+)
+_DESCRIPTIONS_MISREAD_AS_SYNTAX = {
+    steps: found for steps in _DESCRIBED_STEPS if (found := _call_syntax_read_aloud(steps))
+}
+assert not _DESCRIPTIONS_MISREAD_AS_SYNTAX, (
+    f"a described step list is not the record read aloud: {_DESCRIPTIONS_MISREAD_AS_SYNTAX}"
+)
 
 
 def _describes_check(claim: str, pattern: str, reply: str, learned: bool) -> Check:
@@ -1593,10 +1665,10 @@ def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
     ]
 
 
-def _learn_close_reply_checks(reply: str, learned: bool, recited: list[str]) -> list[Check]:
+def _learn_close_reply_checks(reply: str, learned: bool, written_out: list[str]) -> list[Check]:
     """The pair the ask cannot supply — that the reply says what the routine will do when
-    it RUNS AGAIN, and that it says it in plain words rather than reciting the record's own
-    tool identifiers.
+    it RUNS AGAIN, and that it DESCRIBES the steps rather than writing the record's calls
+    out in their own syntax.
 
     Both are claims about a LEARN CLOSE, so both are NOT APPLICABLE when the round taught
     nothing (#1989): the reply that was written closed some other kind of turn, and grading
@@ -1617,10 +1689,10 @@ def _learn_close_reply_checks(reply: str, learned: bool, recited: list[str]) -> 
         ),
         Check(
             _PLAIN_WORDS_LABEL,
-            not recited,
+            not written_out,
             kind="reply",
             anchor=REPLY_ANCHOR,
-            rationale=f"read aloud {recited}" if recited else None,
+            rationale=f"wrote out {written_out}" if written_out else None,
         ),
     ]
 
@@ -1628,13 +1700,13 @@ def _learn_close_reply_checks(reply: str, learned: bool, recited: list[str]) -> 
 def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check]:
     learned = bool(db.skills.list_all())
     shapes = _learned_shapes(db)
-    recited = _tools_read_aloud(db, reply)
+    written_out = _call_syntax_read_aloud(reply)
     return [
         # The landing is this story's PRECONDITION, so it is the scored gate: a round that
         # never entered learn has no learn close, and every reply check below stands down.
         _landing_advisory(db, ConversationState.LEARN, scored=True),
         Check("state: the round taught a routine", learned, kind="state"),
-        *_learn_close_reply_checks(reply, learned, recited),
+        *_learn_close_reply_checks(reply, learned, written_out),
         *_shape_family_checks(reply, learned),
         Check(
             "state: the shape the record holds",
