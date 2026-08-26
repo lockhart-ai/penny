@@ -15,13 +15,18 @@ import httpx
 import openai
 import pytest
 
+from penny.constants import PennyConstants
 from penny.llm.client import (
     LlmClient,
     _extract_model_ids,
     _summarize_httpx_error,
     _summarize_llm_error,
 )
-from penny.llm.models import LlmNotFoundError, LlmResponseError
+from penny.llm.models import (
+    LlmNotFoundError,
+    LlmResponseError,
+    LlmTimeoutError,
+)
 
 _HTML_ERROR_BODY = (
     f"<!DOCTYPE html><html><head><title>404</title></head><body>{'x' * 5000}</body></html>"
@@ -96,6 +101,58 @@ class TestChatPropagatesSummarizedError:
         assert "HTTP 404" in message
         assert "<!DOCTYPE" not in message  # summarized, not the raw HTML body
 
+        await client.close()
+
+
+class TestRetryResilience:
+    """A remote endpoint fails in bursts, and a stall is not a failure at all until a
+    deadline makes it one — so the two things that keep a run alive are pinned here."""
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_request_is_retried_on_a_doubling_backoff(self, monkeypatch) -> None:
+        """A timing-out call is re-attempted, waiting twice as long before each try.
+
+        The measured failure this guards: an endpoint that stops answering mid-run. Without
+        a deadline the SDK waits out its own 600s read and the retry loop never sees a
+        failure to retry — so the request must TIME OUT, and the waits must spread rather
+        than re-attempting three times into the same bad moment.
+        """
+        waits: list[float] = []
+
+        async def record_sleep(seconds: float) -> None:
+            waits.append(seconds)
+
+        async def always_time_out(**kwargs):
+            raise openai.APITimeoutError(request=httpx.Request("POST", "http://localhost/v1"))
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=3, retry_delay=1.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", always_time_out)
+        monkeypatch.setattr("penny.llm.client.asyncio.sleep", record_sleep)
+
+        with pytest.raises(LlmTimeoutError):
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        # Three attempts, so two waits between them — doubling, not flat.
+        assert waits == [1.0, 2.0]
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_configured_timeout_reaches_the_underlying_client(self) -> None:
+        """The deadline is only real if it lands on the HTTP client that makes the call."""
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            timeout=20.0,
+        )
+        timeout = client.client.timeout
+        assert isinstance(timeout, httpx.Timeout)  # a bare float would not bound the read
+        assert timeout.read == 20.0
+        assert timeout.connect == PennyConstants.LLM_CONNECT_TIMEOUT_SECONDS
         await client.close()
 
 

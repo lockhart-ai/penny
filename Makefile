@@ -270,6 +270,7 @@ eval: $(if $(LOCAL),,build)
 		LLM_EMBEDDING_API_URL="$$embed_url" \
 		LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
+		LLM_TIMEOUT="$${LLM_TIMEOUT}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
 		EVAL_CONCURRENCY="$${EVAL_CONCURRENCY:-1}" \
 		EVAL_REPORT_DIR="$$report_dir" \

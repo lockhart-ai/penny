@@ -17,6 +17,7 @@ check`` rather than only on the ``eval``-marked run the marker deselects.
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -56,6 +57,7 @@ from penny.tests.eval.artifacts import (
 )
 from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
+    PENNY_LOGGER,
     BoundExpectation,
     Check,
     CycleCall,
@@ -209,6 +211,30 @@ from penny.tools.models import ToolResult
 # fragility / nudge-frame probes must keep recognising them (the same legacy-leg
 # discipline the eval conftest's retired bail markers keep).
 _RETIRED_CONTINUE_NUDGE = "Please provide your response."
+
+
+async def test_concurrent_samples_keep_their_logs_apart(tmp_path) -> None:
+    """Two samples in flight must not write into each other's log.
+
+    The ``penny`` logger is process-global, so concurrent samples attach concurrent
+    handlers — and before the records carried a sample identity, every open log took
+    every sample's lines. Measured on a 2-worker run, one sample's log held ten agent
+    shutdowns instead of one, which is what made a stalled sample undiagnosable from it.
+    """
+    logger = logging.getLogger(PENNY_LOGGER)
+
+    async def run_sample(name: str) -> Path:
+        with sample_logging(str(tmp_path / f"{name}.db")) as path:
+            logger.info("start %s", name)
+            await asyncio.sleep(0)  # yield, so the two samples interleave for real
+            logger.info("end %s", name)
+            return path
+
+    first, second = await asyncio.gather(run_sample("alpha"), run_sample("beta"))
+    assert first.read_text().count("alpha") == 2
+    assert "beta" not in first.read_text()
+    assert second.read_text().count("beta") == 2
+    assert "alpha" not in second.read_text()
 
 
 def _sample_report_text(directory, case_id: str) -> str:

@@ -152,6 +152,16 @@ class LlmClient:
 
         logger.info("Initialized LLM client: url=%s, model=%s", api_url, model)
 
+    async def _backoff(self, attempt: int) -> None:
+        """Wait before re-attempting a failed call, doubling with each attempt.
+
+        A remote endpoint's failures arrive in bursts — a provider draining a queue, a
+        node cycling — so a flat delay re-attempts three times into the same bad moment
+        and reports the burst as three separate failures.  Doubling spends the same first
+        wait and gives the last attempt a materially later one.
+        """
+        await asyncio.sleep(self.retry_delay * 2**attempt)
+
     # ── Chat ─────────────────────────────────────────────────────────────
 
     async def chat(
@@ -211,14 +221,14 @@ class LlmClient:
                     error,
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
             except openai.APIConnectionError as error:
                 last_error = LlmConnectionError(str(error))
                 logger.warning(
                     "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
             except openai.OpenAIError as error:
                 summary = _summarize_llm_error(error)
                 # 500 "error parsing tool call" means the model produced plain text
@@ -236,7 +246,7 @@ class LlmClient:
                     "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
 
         logger.error("LLM chat failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:
@@ -295,7 +305,7 @@ class LlmClient:
                     "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
             except openai.OpenAIError as error:
                 summary = _summarize_llm_error(error)
                 last_error = LlmResponseError(summary)
@@ -303,7 +313,7 @@ class LlmClient:
                     "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
 
         logger.error("LLM embed failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:

@@ -18,6 +18,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -282,6 +283,16 @@ _ENDPOINT_ENV_VARS = (
 _EVAL_LLM_MAX_RETRIES = 3
 _EVAL_LLM_RETRY_DELAY = 1.0
 
+# The per-request deadline.  Without one the OpenAI SDK's own default applies — a 600s
+# read — so a remote endpoint that simply STOPS ANSWERING is not a failure the retry loop
+# can see: the request never errors, it just sits, and the harness's own turn timeout ends
+# the sample ~2 minutes later with nothing recorded anywhere.  Measured, that is exactly
+# what happened to 3 of 20 samples.  A deadline turns the stall into a timeout the client
+# retries and, failing that, into an aborted run the harness RE-DRIVES from a clean world.
+# The budget is what makes it work: attempts x deadline (plus backoff) must fit inside the
+# runner's turn timeout, or the turn dies first and the retries never run.
+_EVAL_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "20"))
+
 
 def _endpoint_overrides() -> dict[str, str]:
     """The endpoint settings present in the environment, keyed by ``Config`` field.
@@ -312,6 +323,7 @@ def _real_model_config(
         llm_embedding_model=os.environ.get("LLM_EMBEDDING_MODEL", "embeddinggemma"),
         llm_max_retries=_EVAL_LLM_MAX_RETRIES,
         llm_retry_delay=_EVAL_LLM_RETRY_DELAY,
+        llm_timeout=_EVAL_LLM_TIMEOUT,
         db_path=db_path,
         **_endpoint_overrides(),
     )
@@ -1392,6 +1404,63 @@ def sample_log_path(db_path: str) -> Path:
     return Path(db_path).with_suffix(".log")
 
 
+# Which sample a log record belongs to.  Samples may run CONCURRENTLY
+# (``EVAL_CONCURRENCY``) while the ``penny`` logger is process-global, so N samples mean N
+# handlers attached at once and every open file would take every sample's lines — the
+# per-sample log stops being per-sample exactly when a run is hardest to read.  A context
+# variable is what tells them apart: it is set for the span of one sample, and asyncio
+# copies the context into every task that sample starts, so a record carries the identity
+# of the sample that emitted it wherever in Penny it was emitted from.
+_active_sample: ContextVar[str | None] = ContextVar("eval_active_sample", default=None)
+
+
+class _SampleFilter(logging.Filter):
+    """Admits only the records emitted by ONE sample.
+
+    A record from no sample at all (nothing set the variable) is dropped rather than
+    written to every open log: attributing it nowhere is honest, attributing it
+    everywhere is not.
+    """
+
+    def __init__(self, sample: str) -> None:
+        super().__init__()
+        self._sample = sample
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _active_sample.get() == self._sample
+
+
+class _CaptureLevel:
+    """Reference-counts the DEBUG level across concurrently capturing samples.
+
+    The logger's LEVEL is process-global just as its handlers are, so a sample that
+    restored the level on its own way out lowered it under every sample still running —
+    their remaining lines were then dropped before any handler saw them, and the log of a
+    sample that outlived its neighbours simply stopped mid-run.  Raised by the first
+    sample to arrive, restored by the last to leave.  No lock: samples are asyncio tasks
+    in one thread, so a begin/end pair never interleaves with another.
+    """
+
+    def __init__(self) -> None:
+        self._depth = 0
+        self._restore_to: int | None = None
+
+    def begin(self, logger: logging.Logger) -> None:
+        if self._depth == 0:
+            self._restore_to = logger.level
+            logger.setLevel(logging.DEBUG)
+        self._depth += 1
+
+    def end(self, logger: logging.Logger) -> None:
+        self._depth -= 1
+        if self._depth == 0 and self._restore_to is not None:
+            logger.setLevel(self._restore_to)
+            self._restore_to = None
+
+
+_capture_level = _CaptureLevel()
+
+
 @contextmanager
 def sample_logging(db_path: str) -> Iterator[Path]:
     """Capture one sample's penny logger output into ``<sample>.log`` beside its DB.
@@ -1403,25 +1472,28 @@ def sample_logging(db_path: str) -> Iterator[Path]:
     is the same doctrine the sample DB and the transcripts follow: the evidence always
     survives the run (#1909).
 
-    Mechanical and unfiltered — DEBUG level, no content filter — and scoped to ONE
-    sample, so every line is attributable to the sample whose name the file carries.
-    The handler is removed and the logger's level restored on the way out, so nothing
-    leaks into the next sample or into the rest of the suite.
+    Mechanical by CONTENT — DEBUG level, no content filter — and scoped to ONE sample by
+    ORIGIN: the handler admits only records this sample emitted, so every line is
+    attributable to the sample whose name the file carries however many samples are in
+    flight.  The handler is removed and the logger's level restored on the way out, so
+    nothing leaks into the next sample or into the rest of the suite.
     """
     path = sample_log_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(path, mode="w")
     handler.setFormatter(logging.Formatter(SAMPLE_LOG_FORMAT))
     handler.setLevel(logging.DEBUG)
+    handler.addFilter(_SampleFilter(str(path)))
     penny_logger = logging.getLogger(PENNY_LOGGER)
-    previous_level = penny_logger.level
-    penny_logger.setLevel(logging.DEBUG)
+    _capture_level.begin(penny_logger)
     penny_logger.addHandler(handler)
+    token = _active_sample.set(str(path))
     try:
         yield path
     finally:
+        _active_sample.reset(token)
         penny_logger.removeHandler(handler)
-        penny_logger.setLevel(previous_level)
+        _capture_level.end(penny_logger)
         handler.close()
 
 
