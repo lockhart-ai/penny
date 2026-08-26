@@ -246,6 +246,13 @@ pytest: $(if $(LOCAL),,build)
 # an unserveable model is discovered 755 times, concurrently, minutes in — which is how a
 # full-suite run was spent against a model whose provider 404'd every call. The refusal
 # carries the provider's own message, because that message is the whole answer.
+# Run identity is per-INVOCATION, not per-second: the stamp carries the shell's pid, because
+# two runs starting in the same second would otherwise share a report directory AND a run id
+# and quietly write one corrupted run that looks like a valid one — the manifest write-once,
+# both xdist workers named gw0 appending to one results file, per-sample DBs on colliding
+# paths. Agents dispatched together start within milliseconds of each other by construction,
+# so this is the ordinary case for concurrent remote evals rather than a rare race. The
+# stamp still leads the name, so run dirs keep sorting chronologically.
 # Test-level parallelism: pass `-n N` through EVAL_PYTEST_ARGS (pytest-xdist) to run N
 # CASES at once, on top of the EVAL_CONCURRENCY samples each case runs at. Every worker
 # is a separate PROCESS resolving the run from its own environment, so EVAL_RUN_ID is
@@ -342,10 +349,11 @@ eval: $(if $(LOCAL),,build)
 	fi; \
 	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
 	commit="$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
-	run_id="$${EVAL_RUN_ID:-run-$$stamp-$$(printf %.8s "$$commit")}"; \
+	run_key="$$stamp-$$(printf '%05d' $$$$)"; \
+	run_id="$${EVAL_RUN_ID:-run-$$run_key-$$(printf %.8s "$$commit")}"; \
 	report_dir="$${EVAL_REPORT_DIR}"; \
 	if [ -z "$$report_dir" ] && [ -n "$${EVAL_LEVER}" ]; then \
-		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$stamp"; \
+		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$run_key"; \
 		echo "eval: reports → $$report_dir  (durable host dir: $(EVAL_ARTIFACTS_HOST))"; \
 	fi; \
 	$(EVAL_RUN) env \

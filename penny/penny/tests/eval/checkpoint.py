@@ -52,7 +52,8 @@ _BANNER_ACTION = "→ post each: make eval-report PR=<n> [RUN=<run-dir-name>]"
 def run_dirs(home: Path) -> list[Path]:
     """Every immediate subdirectory of ``home`` that holds a ``manifest.json`` — i.e. every
     COMPLETED eval run. A lever-less ephemeral run writes no manifest, so it is not a run dir
-    here (by design). Name-sorted; ``run-<stamp>`` names sort chronologically."""
+    here (by design). Name-sorted; a run dir is ``run-<stamp>-<pid>`` and the stamp leads,
+    so the names still sort chronologically (the pid only orders runs within one second)."""
     if not home.is_dir():
         return []
     return sorted(
