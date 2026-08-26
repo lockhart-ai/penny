@@ -18,8 +18,14 @@ import openai
 
 from penny.constants import PennyConstants
 from penny.llm.models import (
+    FAULT_LOG_FIELD,
+    PROVIDER_LOG_FIELD,
+    PROVIDER_REQUEST_FIELD,
+    PROVIDER_RESPONSE_FIELD,
+    UNREPORTED_PROVIDER,
     LlmConnectionError,
     LlmError,
+    LlmFault,
     LlmMessage,
     LlmNotFoundError,
     LlmResponse,
@@ -28,6 +34,8 @@ from penny.llm.models import (
     LlmToolCall,
     LlmToolCallFunction,
     LlmToolParseError,
+    ProviderPreference,
+    fault_for_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,6 +129,20 @@ def _no_payload_detail(raw: Any, field: str) -> str:
     return f"response carried no {field}{detail}"
 
 
+def _provider_of(raw: Any) -> str | None:
+    """Which upstream served this response, when the endpoint is a gateway that says so.
+
+    A routing gateway puts the serving provider in a top-level field the SDK does not
+    model, so it lands in ``model_extra``.  A direct endpoint sends nothing and gets
+    ``None`` — the honest answer, and the one the tally renders as "unreported".
+    """
+    extra = getattr(raw, "model_extra", None)
+    if not isinstance(extra, dict):
+        return None
+    provider = extra.get(PROVIDER_RESPONSE_FIELD)
+    return provider if isinstance(provider, str) and provider else None
+
+
 def _summarize_httpx_error(response: httpx.Response) -> str:
     """Summarize an httpx response error without dumping provider HTML."""
     try:
@@ -168,6 +190,7 @@ class LlmClient:
         retry_delay: float,
         api_key: str = _DEFAULT_API_KEY,
         timeout: float | None = None,
+        provider_preference: ProviderPreference | None = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.model = model
@@ -175,6 +198,7 @@ class LlmClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.api_key = api_key
+        self.provider_preference = provider_preference
 
         client_kwargs: dict[str, Any] = {
             "base_url": f"{self.api_url}/v1",
@@ -200,6 +224,29 @@ class LlmClient:
         wait and gives the last attempt a materially later one.
         """
         await asyncio.sleep(self.retry_delay * 2**attempt)
+
+    def _log_attempt(
+        self, attempt: int, *, fault: LlmFault | None, provider: str | None, detail: str
+    ) -> None:
+        """Record ONE chat attempt's outcome, with the fault class and provider as VALUES.
+
+        One record per attempt, at one chokepoint, because the alternative is what was
+        there before: a different sentence per failure branch, counted only by a human
+        grepping afterwards.  The message stays human; ``llm_fault`` and ``llm_provider``
+        ride alongside it as structured fields, so a tally reads them off the record and
+        never has to recognise a phrasing.  A success is DEBUG (it is not news), a fault
+        is WARNING (it is).
+        """
+        logger.log(
+            logging.DEBUG if fault is None else logging.WARNING,
+            "LLM chat attempt %d/%d: %s via %s%s",
+            attempt + 1,
+            self.max_retries,
+            fault.value if fault is not None else "ok",
+            provider or UNREPORTED_PROVIDER,
+            f" — {detail}" if detail else "",
+            extra={FAULT_LOG_FIELD: fault, PROVIDER_LOG_FIELD: provider},
+        )
 
     # ── Chat ─────────────────────────────────────────────────────────────
 
@@ -233,18 +280,21 @@ class LlmClient:
                 # first except clause), and a provider answering 200-with-no-completion
                 # is exactly the transient another attempt usually gets past.
                 if not raw.choices:
-                    last_error = LlmResponseError(_no_payload_detail(raw, "choices"))
-                    logger.warning(
-                        "LLM chat returned no choices (attempt %d/%d): %s",
-                        attempt + 1,
-                        self.max_retries,
-                        last_error,
+                    last_error = LlmResponseError(
+                        _no_payload_detail(raw, "choices"), fault=LlmFault.NO_CHOICES
+                    )
+                    self._log_attempt(
+                        attempt,
+                        fault=LlmFault.NO_CHOICES,
+                        provider=_provider_of(raw),
+                        detail=str(last_error),
                     )
                     if attempt < self.max_retries - 1:
                         await self._backoff(attempt)
                     continue
 
                 response = self._parse_response(raw)
+                self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
                 thinking = response.thinking or response.message.thinking
                 self._log_response(response, thinking)
                 self._log_to_database(
@@ -265,22 +315,18 @@ class LlmClient:
                 raise
             except openai.NotFoundError as error:
                 summary = _summarize_llm_error(error)
+                self._log_attempt(attempt, fault=LlmFault.NOT_FOUND, provider=None, detail=summary)
                 logger.error("LLM chat failed (model not found, no retry): %s", summary)
                 raise LlmNotFoundError(summary) from error
             except openai.APITimeoutError as error:
                 last_error = LlmTimeoutError(str(error))
-                logger.warning(
-                    "LLM request timed out (attempt %d/%d): %s",
-                    attempt + 1,
-                    self.max_retries,
-                    error,
-                )
+                self._log_attempt(attempt, fault=LlmFault.TIMEOUT, provider=None, detail=str(error))
                 if attempt < self.max_retries - 1:
                     await self._backoff(attempt)
             except openai.APIConnectionError as error:
                 last_error = LlmConnectionError(str(error))
-                logger.warning(
-                    "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
+                self._log_attempt(
+                    attempt, fault=LlmFault.CONNECTION, provider=None, detail=str(error)
                 )
                 if attempt < self.max_retries - 1:
                     await self._backoff(attempt)
@@ -292,14 +338,16 @@ class LlmClient:
                 if getattr(error, "status_code", None) == 500 and "error parsing tool call" in str(
                     error
                 ):
+                    self._log_attempt(
+                        attempt, fault=LlmFault.TOOL_PARSE, provider=None, detail=summary
+                    )
                     logger.warning(
                         "Tool parse error — model returned plain text instead of JSON tool call"
                     )
                     raise LlmToolParseError(summary) from error
-                last_error = LlmResponseError(summary)
-                logger.warning(
-                    "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
-                )
+                fault = fault_for_status(getattr(error, "status_code", None))
+                last_error = LlmResponseError(summary, fault=fault)
+                self._log_attempt(attempt, fault=fault, provider=None, detail=summary)
                 if attempt < self.max_retries - 1:
                     await self._backoff(attempt)
 
@@ -344,7 +392,9 @@ class LlmClient:
                     model=self.model, input=text, encoding_format=EMBEDDING_ENCODING_FORMAT
                 )
                 if not response.data:
-                    last_error = LlmResponseError(_no_payload_detail(response, "data"))
+                    last_error = LlmResponseError(
+                        _no_payload_detail(response, "data"), fault=LlmFault.NO_CHOICES
+                    )
                     logger.warning(
                         "LLM embed returned no data (attempt %d/%d): %s",
                         attempt + 1,
@@ -376,7 +426,9 @@ class LlmClient:
                     await self._backoff(attempt)
             except openai.OpenAIError as error:
                 summary = _summarize_llm_error(error)
-                last_error = LlmResponseError(summary)
+                last_error = LlmResponseError(
+                    summary, fault=fault_for_status(getattr(error, "status_code", None))
+                )
                 logger.warning(
                     "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
@@ -459,12 +511,18 @@ class LlmClient:
         format: dict | str | None,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
+        # Both vendor fields ride the same passthrough.  The routing preference is added
+        # only when one was CONFIGURED, so a client without one sends the body it always
+        # sent — and a direct endpoint that has never heard of the field ignores it.
+        extra_body = dict(REASONING_ENABLED_BODY)
+        if self.provider_preference is not None:
+            extra_body[PROVIDER_REQUEST_FIELD] = self.provider_preference.as_request_field()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             # Not an OpenAI-schema field, so it rides in the vendor passthrough the SDK
             # provides. Reasoning comes back where ``_parse_response`` already reads it.
-            "extra_body": REASONING_ENABLED_BODY,
+            "extra_body": extra_body,
         }
         if tools:
             kwargs["tools"] = self._translate_tools(tools)
@@ -546,6 +604,7 @@ class LlmClient:
             ),
             thinking=thinking,
             model=raw.model,
+            provider=_provider_of(raw),
         )
 
     @staticmethod

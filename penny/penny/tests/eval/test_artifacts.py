@@ -44,7 +44,14 @@ _COMMIT = "abcdef1234567890abcdef1234567890abcdef12"
 _TIMINGS = CaseTimings(calls=18, duration_ms=214300, input_tokens=41230, output_tokens=5120)
 
 
-def _manifest(*, dirty_diff: str = "diff body\n", lever: str = "test hypothesis") -> RunManifest:
+def _manifest(
+    *,
+    dirty_diff: str = "diff body\n",
+    lever: str = "test hypothesis",
+    endpoint: str = "http://localhost:11434",
+    provider: str | None = None,
+    preferred_provider: str | None = None,
+) -> RunManifest:
     return build_manifest(
         commit=_COMMIT,
         dirty_diff=dirty_diff,
@@ -53,6 +60,9 @@ def _manifest(*, dirty_diff: str = "diff body\n", lever: str = "test hypothesis"
         samples=5,
         lever=lever,
         now=_NOW,
+        endpoint=endpoint,
+        provider=provider,
+        preferred_provider=preferred_provider,
     )
 
 
@@ -66,6 +76,7 @@ def test_manifest_header_whole_render_dirty() -> None:
 
 - commit: `abcdef1234567890abcdef1234567890abcdef12` (dirty)
 - model: `gpt-oss:20b`
+- endpoint: `http://localhost:11434`
 - N: 5
 - lever: test hypothesis
 """
@@ -78,9 +89,104 @@ def test_manifest_header_whole_render_clean() -> None:
 
 - commit: `abcdef1234567890abcdef1234567890abcdef12`
 - model: `gpt-oss:20b`
+- endpoint: `http://localhost:11434`
 - N: 5
 - lever: test hypothesis
 """
+    )
+
+
+# ── WHERE the model was served from, beside WHICH model it was (#1996) ──
+
+
+def test_manifest_header_names_the_provider_that_answered() -> None:
+    """A model name alone cannot tell a poisoned routing pool from a broken model.
+
+    Observed: gemma-4 unpinned died 34 of 48 samples on 188 empty responses and answered
+    48 of 48 pinned to one provider — and both runs' artifacts said the same thing.
+    """
+    manifest = _manifest(dirty_diff="", endpoint="https://openrouter.ai/api", provider="cloudflare")
+    assert "- endpoint: `https://openrouter.ai/api` via `cloudflare`" in render_manifest_header(
+        manifest
+    )
+
+
+def test_a_manifest_written_before_the_endpoint_existed_still_decodes() -> None:
+    """Both fields are optional, so an older run's manifest reads without them."""
+    older = RunManifest.model_validate_json(
+        json.dumps(
+            {
+                "run_id": "run-old",
+                "created_at": _NOW.isoformat(),
+                "commit": _COMMIT,
+                "dirty": False,
+                "diff_file": None,
+                "model": "gpt-oss:20b",
+                "embedding_model": "embeddinggemma",
+                "samples": 5,
+                "lever": "an older run",
+            }
+        )
+    )
+    assert older.endpoint is None
+    assert older.provider is None
+    # …and the header renders exactly as it always did for such a run.
+    assert render_manifest_header(older) == (
+        """### run-old
+
+- commit: `abcdef1234567890abcdef1234567890abcdef12`
+- model: `gpt-oss:20b`
+- N: 5
+- lever: an older run
+"""
+    )
+
+
+def test_the_run_reads_its_endpoint_and_provider_from_the_environment(tmp_path: Path) -> None:
+    """The Makefile forwards all three; the manifest is where they land."""
+    run = run_from_env(
+        {
+            "EVAL_REPORT_DIR": str(tmp_path),
+            "EVAL_LEVER": "wherever this ran",
+            "LLM_API_URL": "https://openrouter.ai/api",
+            "EVAL_PREFERRED_PROVIDER": "Cloudflare",
+            "EVAL_PROVIDER": "google-vertex",
+        }
+    )
+    assert run is not None
+    assert run.manifest.endpoint == "https://openrouter.ai/api"
+    assert run.manifest.preferred_provider == "Cloudflare"
+    assert run.manifest.provider == "google-vertex"
+
+
+def test_a_fallback_is_stated_rather_than_left_to_be_inferred() -> None:
+    """Routing is a preference, not a wall — so a run CAN be served by another upstream.
+
+    That is the whole diagnosis when a run degrades, so the header says it happened
+    instead of leaving two fields for a reader to notice differ.
+    """
+    fell_back = _manifest(
+        dirty_diff="",
+        endpoint="https://openrouter.ai/api",
+        provider="DeepInfra",
+        preferred_provider="Cloudflare",
+    )
+    assert (
+        "- endpoint: `https://openrouter.ai/api` via `DeepInfra` "
+        "(preferred `Cloudflare` — fell back)" in render_manifest_header(fell_back)
+    )
+
+
+def test_a_preference_that_held_renders_plainly() -> None:
+    """The ordinary case says who answered and nothing else — no noise on every run."""
+    held = _manifest(
+        dirty_diff="",
+        endpoint="https://openrouter.ai/api",
+        provider="Cloudflare",
+        preferred_provider="Cloudflare",
+    )
+    assert "- endpoint: `https://openrouter.ai/api` via `Cloudflare`\n" in render_manifest_header(
+        held
     )
 
 

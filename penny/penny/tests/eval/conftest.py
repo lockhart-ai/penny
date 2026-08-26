@@ -59,7 +59,7 @@ from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
-from penny.tests.eval import report
+from penny.tests.eval import report, run_health
 from penny.tests.eval.artifacts import FailureCause
 from penny.tests.eval.baseline import Baseline, baseline_from_env
 from penny.tests.eval.fixtures import CannedPage, SynthCollection
@@ -106,6 +106,55 @@ SAMPLE_READY_TIMEOUT_SECONDS = 60.0
 
 # Embedding backfill batch size for seeded memory.
 _EMBED_BATCH = 100
+
+
+# ── Run health: the run's own account of itself (#1996) ──────────────────────
+# A run used to report only what its cases scored, so a run that scored six cases out of
+# a cohort that mostly never ran printed "6 passed, EXIT=0". These three hooks are where
+# the run says how much of itself actually happened. They are hooks rather than a fixture
+# because the answer is a property of the SESSION, and under xdist the session spans
+# several processes: each writes its own record, and the one holding the terminal reader
+# adds them up.
+def pytest_configure(config) -> None:
+    """Start counting this process's model calls before any sample runs."""
+    run_health.begin_run()
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Write this process's health record, then — in the reader — settle the verdict.
+
+    An xdist WORKER only writes: it has part of the run and no terminal to report on. The
+    reader (the controller, or a single process) writes its own record if it ran anything,
+    reads every record in the run's health dir, and REFUSES a run whose cohorts mostly did
+    not run — by moving the exit status, since a run that measured a fraction of what it
+    intended must not exit 0 however its surviving samples scored.
+    """
+    worker = os.environ.get(eval_artifacts.XDIST_WORKER_ENV)
+    health = run_health.process_health()
+    directory = run_health.health_dir()
+    if directory is not None and (worker or health.cohorts):
+        run_health.write_health(directory, worker, health)
+    if worker:
+        return
+    whole_run = run_health.load_health(directory) if directory is not None else health
+    run_health.hold_run_health(whole_run)
+    if not whole_run.viable and exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    """Print the run-health block at the head of the summary a reader actually reads.
+
+    Rendered here rather than in ``pytest_sessionfinish`` so it lands in the summary area
+    whether or not the run was given ``-s``: a health block a captured run swallows is the
+    silence this exists to end.
+    """
+    health = run_health.held_run_health()
+    if health is None or not health.cohorts:
+        return
+    terminalreporter.write_sep("=", "run health")
+    terminalreporter.write_line(health.render())
+
 
 # A chat scorer reads persisted DB state (the pre-run collection names + the
 # final reply text) and returns failure strings — empty means the sample passed.
@@ -290,6 +339,7 @@ class _Perf:
 # unchanged by this list existing.
 _ENDPOINT_ENV_VARS = (
     "LLM_API_KEY",
+    "LLM_PROVIDER",
     "LLM_EMBEDDING_API_URL",
     "LLM_EMBEDDING_API_KEY",
 )
@@ -1170,14 +1220,42 @@ async def _embed_seeds(penny: Penny) -> None:
     await penny._backfill_message_embeddings(_EMBED_BATCH)
 
 
+def _refuse_dead_cohort(case_id: str, results: list[SampleResult], intended: int) -> None:
+    """Fail the case when too few of its intended samples ever produced a measured turn.
+
+    Before any score is compared, because a score over a fraction of the cohort is not a
+    lower score — it is not a result.  A run once reported ``6 passed, EXIT=0`` with 34 of
+    48 samples dead, and every one of those means was computed over whatever survived.
+
+    The bar and the reason are both in the message: dead samples are not missing at
+    random (see ``run_health``), so what survives is a biased draw rather than a smaller
+    one, and a strict majority is where that stops being readable as the case.
+    """
+    completed = len(results)
+    if run_health.cohort_is_viable(completed, intended):
+        return
+    pytest.fail(
+        f"{case_id}: {completed} of {intended} samples produced their measured turn — "
+        f"{run_health.COHORT_RULE} (at least {run_health.results_needed(intended)} here), "
+        "because the faults that kill samples correlate with the work, so the survivors "
+        "are a biased draw and not a smaller one. Read the run-health block for the "
+        "dominant fault class, and each sample's .log beside its .db for the calls."
+    )
+
+
 def _assert_threshold(
     case_id: str,
     results: list[SampleResult],
     min_pass_rate: float | None,
     *,
+    intended: int,
     gate_pathology_excluded: bool = False,
 ) -> None:
     """Print the case's X/Y pass rate, and — unless report-only — gate on it.
+
+    ``intended`` is how many samples the case ASKED for: a cohort that mostly died is
+    refused here before any threshold is compared, report-only cases included, because
+    "no result" is not a score that report-only means to tolerate.
 
     ``min_pass_rate=None`` is report-only: the X/Y line and any per-sample
     failures print for insight, but the case never fails the run.  Use it for
@@ -1194,6 +1272,7 @@ def _assert_threshold(
     that pathology.  The raw mean + the pathology count stay visible in the
     printed cause line, so a pathology spike remains legible.
     """
+    _refuse_dead_cohort(case_id, results, intended)
     total = len(results)
     mean = sum(result.score for result in results) / total if total else 0.0
     all_pass = sum(1 for result in results if result.passed)
@@ -2039,7 +2118,12 @@ async def _run_samples(
 
     driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
     _flush_sample_blocks(case_id)
-    return [result for result in driven if result is not None], perf
+    results = [result for result in driven if result is not None]
+    # What the case ASKED for beside what it got, recorded whatever happens next — this is
+    # the only place both numbers exist, and a case that dies on its threshold must still
+    # contribute its cohort to the run's health block.
+    run_health.record_cohort(case_id, intended=samples, completed=len(results))
+    return results, perf
 
 
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
@@ -2246,7 +2330,11 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
         )
         perf.report(case_id, samples)
         _assert_threshold(
-            case_id, results, min_pass_rate, gate_pathology_excluded=gate_pathology_excluded
+            case_id,
+            results,
+            min_pass_rate,
+            intended=samples,
+            gate_pathology_excluded=gate_pathology_excluded,
         )
 
     return _run
@@ -2321,7 +2409,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -2646,7 +2734,7 @@ def collector_cycles_eval(
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -2837,7 +2925,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -3163,7 +3251,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -3222,7 +3310,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -3527,7 +3615,7 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -4175,7 +4263,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Framer
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -4256,7 +4344,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -4486,7 +4574,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Binder
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run
 
@@ -4664,6 +4752,6 @@ def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> Ext
             min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
 
     return _run

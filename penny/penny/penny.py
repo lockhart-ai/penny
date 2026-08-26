@@ -32,7 +32,7 @@ from penny.email.protocol import EmailClient
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
-from penny.llm.models import LlmError
+from penny.llm.models import LlmError, ProviderPreference
 from penny.plugins import Plugin, load_plugins
 from penny.plugins.fastmail import JmapClient
 from penny.plugins.zoho.mail_client import ZohoClient
@@ -99,8 +99,15 @@ class Penny:
         db: Database | None = None,
         api_url: str | None = None,
         api_key: str | None = None,
+        provider_preference: ProviderPreference | None = None,
     ) -> LlmClient:
-        """Create an LlmClient with standard configuration."""
+        """Create an LlmClient with standard configuration.
+
+        ``provider_preference`` belongs to an ENDPOINT rather than to the deployment, so
+        each caller states its own: a client pointed somewhere else (the vision or
+        embedding endpoint) is talking to a different service, and a preferred upstream
+        for the chat gateway means nothing there.
+        """
         return LlmClient(
             api_url=api_url or self.config.llm_api_url,
             model=model,
@@ -109,11 +116,15 @@ class Penny:
             retry_delay=self.config.llm_retry_delay,
             api_key=api_key or self.config.llm_api_key,
             timeout=self.config.llm_timeout,
+            provider_preference=provider_preference,
         )
 
     def _init_llm_clients(self, config: Config) -> None:
         """Create shared LLM model clients."""
-        self.model_client = self._create_llm_client(config.llm_model)
+        self.model_client = self._create_llm_client(
+            config.llm_model,
+            provider_preference=ProviderPreference.prefer(config.llm_provider),
+        )
         self.vision_model_client = (
             self._create_llm_client(
                 config.llm_vision_model,

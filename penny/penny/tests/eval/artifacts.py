@@ -45,6 +45,14 @@ EVAL_DIRTY_DIFF_ENV = "EVAL_DIRTY_DIFF"
 EVAL_SAMPLES_ENV = "EVAL_SAMPLES"
 LLM_MODEL_ENV = "LLM_MODEL"
 LLM_EMBEDDING_MODEL_ENV = "LLM_EMBEDDING_MODEL"
+LLM_API_URL_ENV = "LLM_API_URL"
+# Which upstream answered the endpoint's own smoke call, forwarded by the Makefile from
+# ``endpoint_smoke``.  Empty when the endpoint names no provider (a local Ollama does not).
+EVAL_PROVIDER_ENV = "EVAL_PROVIDER"
+# Which upstream the run PREFERRED, from the configured roster.  Recorded beside the one
+# that answered, so a fallback is a fact the artifacts state rather than one nobody can
+# recover: pinning is a preference and not a wall, so the two legitimately differ.
+EVAL_PREFERRED_PROVIDER_ENV = "EVAL_PREFERRED_PROVIDER"
 
 # ── Artifact filenames (all live under EVAL_REPORT_DIR) ──────────────────────
 MANIFEST_FILENAME = "manifest.json"
@@ -85,6 +93,7 @@ DIRTY_DIFF_FILENAME = "dirty.diff"
 # Defaults mirror `_real_model_config` / the Makefile so a manifest records the
 # same model the run actually used even if the env var is somehow absent.
 UNKNOWN_COMMIT = "unknown"
+DEFAULT_ENDPOINT = "http://localhost:11434"
 DEFAULT_MODEL = "gpt-oss:20b"
 DEFAULT_EMBEDDING_MODEL = "embeddinggemma"
 DEFAULT_SAMPLES = 5
@@ -321,6 +330,16 @@ class RunManifest(BaseModel):
     samples: int
     lever: str
     baseline: str | None = None
+    # WHERE the model was served from, beside WHICH model it was (#1996).  A model name
+    # alone cannot tell a run poisoned by one member of a routing pool from a model that
+    # is simply broken: gemma-4 unpinned died 34 of 48 samples on 188 empty responses and
+    # answered 48 of 48 pinned to one provider, and the artifacts of both runs were
+    # identical.  ``endpoint`` is the URL the run was pointed at; ``provider`` is who
+    # answered its up-front smoke call.  Both optional and defaulted, so a manifest
+    # written before they existed still decodes.
+    endpoint: str | None = None
+    provider: str | None = None
+    preferred_provider: str | None = None
 
 
 # ── Pure builders (no env, no filesystem — the make check test drives these) ──
@@ -453,11 +472,15 @@ def build_manifest(
     now: datetime,
     baseline: str | None = None,
     run_id: str | None = None,
+    endpoint: str = DEFAULT_ENDPOINT,
+    provider: str | None = None,
+    preferred_provider: str | None = None,
 ) -> RunManifest:
     """Assemble the run manifest from explicit inputs (``now`` fixes the run id). ``baseline`` is
     the run's ``EVAL_BASELINE``, recorded so the flips index survives to assemble time (#1752).
     An explicit ``run_id`` overrides the derivation, which is how every xdist worker in one run
-    agrees on one identity instead of each stamping its own clock."""
+    agrees on one identity instead of each stamping its own clock. ``endpoint``/``provider`` are
+    where the model was served from (#1996)."""
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     short = commit[:8] if commit and commit != UNKNOWN_COMMIT else UNKNOWN_COMMIT
     return RunManifest(
@@ -471,18 +494,42 @@ def build_manifest(
         samples=samples,
         lever=lever,
         baseline=baseline or None,
+        endpoint=endpoint,
+        provider=provider or None,
+        preferred_provider=preferred_provider or None,
     )
+
+
+def render_routing(manifest: RunManifest) -> str:
+    """How the run was routed, on the endpoint line: who answered, and whether that is who
+    it asked for.
+
+    The preference is not a wall (see ``ProviderPreference``), so a run CAN be served by an
+    upstream it did not prefer — and that fact is the whole diagnosis when a run degrades,
+    so it is stated rather than left to be inferred from two fields nobody compares.
+    """
+    if not manifest.provider:
+        return ""
+    if manifest.preferred_provider and manifest.preferred_provider != manifest.provider:
+        return f" via `{manifest.provider}` (preferred `{manifest.preferred_provider}` — fell back)"
+    return f" via `{manifest.provider}`"
 
 
 def render_manifest_header(manifest: RunManifest) -> str:
     """The markdown header atop each per-case report (commit · model · N · lever)."""
     dirty = " (dirty)" if manifest.dirty else ""
+    endpoint = (
+        [f"- endpoint: `{manifest.endpoint}`{render_routing(manifest)}"]
+        if manifest.endpoint
+        else []
+    )
     return "\n".join(
         [
             f"### {manifest.run_id}",
             "",
             f"- commit: `{manifest.commit}`{dirty}",
             f"- model: `{manifest.model}`",
+            *endpoint,
             f"- N: {manifest.samples}",
             f"- lever: {manifest.lever}",
             "",
@@ -553,6 +600,9 @@ def run_from_env(env: Mapping[str, str], *, now: datetime | None = None) -> Eval
         now=now or datetime.now(UTC),
         baseline=(env.get(EVAL_BASELINE_ENV) or "").strip() or None,
         run_id=(env.get(EVAL_RUN_ID_ENV) or "").strip() or None,
+        endpoint=(env.get(LLM_API_URL_ENV) or "").strip() or DEFAULT_ENDPOINT,
+        provider=(env.get(EVAL_PROVIDER_ENV) or "").strip() or None,
+        preferred_provider=(env.get(EVAL_PREFERRED_PROVIDER_ENV) or "").strip() or None,
     )
     return EvalRun(Path(report_dir), manifest, dirty_diff)
 

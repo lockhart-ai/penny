@@ -1674,7 +1674,7 @@ def test_result_line_reports_dual_metric(capsys) -> None:
         SampleResult.graded([Check("a", ok=True), Check("b", ok=True)]),  # 1.0, all-pass
         SampleResult.graded([Check("a", ok=True), Check("b", ok=False)]),  # 0.5, not all-pass
     ]
-    _assert_threshold("dual-case", results, None)
+    _assert_threshold("dual-case", results, None, intended=2)
     out = capsys.readouterr().out
     assert "RESULT [dual-case] mean 0.75 · all-pass 1/2 across 2 samples (report-only)" in out
 
@@ -1684,6 +1684,7 @@ def test_result_line_detail_carries_rationale(capsys) -> None:
         "detail-case",
         [SampleResult.graded([Check("reads", ok=False, rationale="expected 3 reads, saw 1")])],
         None,
+        intended=1,
     )
     out = capsys.readouterr().out
     assert "RESULT [detail-case] mean 0.00 · all-pass 0/1 across 1 samples (report-only)" in out
@@ -1691,14 +1692,48 @@ def test_result_line_detail_carries_rationale(capsys) -> None:
 
 
 def test_result_line_gated_pass_names_mean_threshold(capsys) -> None:
-    _assert_threshold("gate-case", [SampleResult.binary([]), SampleResult.binary([])], 0.75)
+    _assert_threshold(
+        "gate-case", [SampleResult.binary([]), SampleResult.binary([])], 0.75, intended=2
+    )
     out = capsys.readouterr().out
     assert "RESULT [gate-case] mean 1.00 · all-pass 2/2 across 2 samples (need mean >=0.75)" in out
 
 
 def test_result_line_gate_fails_below_threshold() -> None:
     with pytest.raises(pytest.fail.Exception):
-        _assert_threshold("red-case", [SampleResult.binary(["boom"])], 0.75)
+        _assert_threshold("red-case", [SampleResult.binary(["boom"])], 0.75, intended=1)
+
+
+# ── A mostly-dead cohort is not a result, whatever the survivors scored (#1996) ──
+
+
+def test_a_mostly_dead_cohort_fails_before_any_score_is_compared() -> None:
+    """Two of five samples ever ran, and BOTH passed — the case still refuses.
+
+    This is the run that reported `6 passed, EXIT=0` over 34 dead samples: every mean it
+    printed was computed from whatever survived. The refusal has to come before the
+    threshold, because a perfect score over a fraction is the exact shape that looked green.
+    """
+    survivors = [SampleResult.binary([]), SampleResult.binary([])]
+    with pytest.raises(pytest.fail.Exception) as failure:
+        _assert_threshold("dead-cohort", survivors, 0.75, intended=5)
+
+    message = str(failure.value)
+    assert "2 of 5 samples produced their measured turn" in message
+    assert "more than half the samples it intended" in message
+    assert "at least 3 here" in message
+
+
+def test_a_report_only_case_refuses_a_dead_cohort_too() -> None:
+    """Report-only means "don't gate the SCORE", never "tolerate having no result"."""
+    with pytest.raises(pytest.fail.Exception):
+        _assert_threshold("quiet-case", [], None, intended=5)
+
+
+def test_a_cohort_that_squeaks_past_the_bar_still_scores(capsys) -> None:
+    """Three of five is a real read — reduced, and the RESULT line says the N it used."""
+    _assert_threshold("thin-case", [SampleResult.binary([])] * 3, 0.75, intended=5)
+    assert "across 3 samples" in capsys.readouterr().out
 
 
 # ── Honest-threshold restoration: gate on the pathology-excluded mean (#1698) ──
@@ -1712,7 +1747,9 @@ def test_gate_pathology_excluded_gates_on_the_honest_mean(capsys) -> None:
     passed = SampleResult.binary([])
     pathological = SampleResult.binary(["collapse"])
     pathological.cause = FailureCause.PATHOLOGY
-    _assert_threshold("honest-case", [passed, pathological], 0.8, gate_pathology_excluded=True)
+    _assert_threshold(
+        "honest-case", [passed, pathological], 0.8, intended=2, gate_pathology_excluded=True
+    )
     out = capsys.readouterr().out
     assert (
         "RESULT [honest-case] mean 0.50 · all-pass 1/2 across 2 samples "
@@ -1727,7 +1764,9 @@ def test_gate_pathology_excluded_still_fails_on_a_behavioral_miss() -> None:
     behavioral = SampleResult.binary(["wrong end state"])
     behavioral.cause = FailureCause.BEHAVIORAL
     with pytest.raises(pytest.fail.Exception):
-        _assert_threshold("behav-case", [passed, behavioral], 0.8, gate_pathology_excluded=True)
+        _assert_threshold(
+            "behav-case", [passed, behavioral], 0.8, intended=2, gate_pathology_excluded=True
+        )
 
 
 def test_pathology_noise_sinks_the_raw_gate_without_the_opt_in() -> None:
@@ -1738,7 +1777,7 @@ def test_pathology_noise_sinks_the_raw_gate_without_the_opt_in() -> None:
     pathological = SampleResult.binary(["collapse"])
     pathological.cause = FailureCause.PATHOLOGY
     with pytest.raises(pytest.fail.Exception):
-        _assert_threshold("raw-gate-case", [passed, pathological], 0.8)
+        _assert_threshold("raw-gate-case", [passed, pathological], 0.8, intended=2)
 
 
 # ── Failure-cause partition (#1695): the structural pathology scan + stamping ──
@@ -1874,7 +1913,7 @@ def test_result_line_renders_cause_summary(capsys) -> None:
     passed = SampleResult.binary([])
     pathological = SampleResult.binary(["poison"])
     pathological.cause = FailureCause.PATHOLOGY
-    _assert_threshold("cause-case", [passed, pathological], None)
+    _assert_threshold("cause-case", [passed, pathological], None, intended=2)
     out = capsys.readouterr().out
     assert "RESULT [cause-case] mean 0.50 · all-pass 1/2 across 2 samples (report-only)" in out
     # The pathology sample drops out of the excluded denominator, so the honest read is 1.00.
