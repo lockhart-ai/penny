@@ -88,6 +88,12 @@ from penny.tools.micro_context import (
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
 
+# How many of a case's samples are driven at once.  Default 1 — strictly sequential, the
+# order every report so far was produced in.  Raise it when the model is REMOTE: a hosted
+# endpoint serves concurrent samples, where the single local GPU serialises them however
+# many are asked for, so concurrency buys wall-clock there and nothing at home.
+EVAL_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "1"))
+
 # Embedding backfill batch size for seeded memory.
 _EMBED_BATCH = 100
 
@@ -1195,20 +1201,27 @@ def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: boo
     visibility.  Reads the ephemeral per-sample promptlog before the DB is
     discarded — the only place the model's reasoning survives (the eval DB is in
     a --rm container).
+
+    Emitted as ONE print: samples may run concurrently (``EVAL_CONCURRENCY``), and a dump
+    written line-by-line would braid itself through another sample's, leaving two traces
+    that each look whole.  A single write keeps a sample's reasoning together.
     """
     if not failed and not os.environ.get("EVAL_DUMP_THINKING"):
         return
     with Session(db.engine) as session:
         rows = session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all()
-    print(f"\n===== THINKING [{case_id} #{sample_index}] — {len(rows)} LLM call(s) =====")
+    lines = [f"\n===== THINKING [{case_id} #{sample_index}] — {len(rows)} LLM call(s) ====="]
     for index, row in enumerate(rows, start=1):
         label = row.agent_name or row.prompt_type or "?"
         if row.thinking:
-            print(f"[{index}:{label}] THINKING: {row.thinking.strip()}")
+            lines.append(f"[{index}:{label}] THINKING: {row.thinking.strip()}")
         for call in _response_tool_calls(row):
             function = call.get("function", {})
-            print(f"[{index}:{label}] TOOL: {function.get('name')}({function.get('arguments')})")
-    print("===== END THINKING =====\n")
+            lines.append(
+                f"[{index}:{label}] TOOL: {function.get('name')}({function.get('arguments')})"
+            )
+    lines.append("===== END THINKING =====\n")
+    print("\n".join(lines))
 
 
 # ── Eval run report (verbatim transcripts, for the PR body) ──────────────────
@@ -1784,6 +1797,35 @@ def _build_transcript(
     )
 
 
+# Rendered sample blocks, held per case and written in SAMPLE order when the case closes.
+# Samples may run concurrently (``EVAL_CONCURRENCY``), and appending as each one finishes
+# would lay a case's ``<case_id>.md`` down in COMPLETION order — sample 4 above sample 2 —
+# which is the one thing a report read top-to-bottom cannot do.  Buffering keeps the file
+# byte-identical to a sequential run at any concurrency.  Emptied by the flush, so a run
+# holds only the case in flight.
+_sample_blocks: dict[str, list[tuple[int, str]]] = {}
+
+
+def _record_sample_block(
+    case_id: str, sample_index: int, transcript: report.SampleTranscript
+) -> None:
+    """Hold one rendered sample block until its case closes."""
+    _sample_blocks.setdefault(case_id, []).append((sample_index, report.render_sample(transcript)))
+
+
+def _flush_sample_blocks(case_id: str) -> None:
+    """Append a case's held blocks to ``EVAL_REPORT_DIR/<case_id>.md`` in sample order."""
+    blocks = _sample_blocks.pop(case_id, [])
+    report_dir = os.environ.get("EVAL_REPORT_DIR")
+    if not report_dir or not blocks:
+        return
+    directory = Path(report_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{case_id}.md").open("a") as handle:
+        for _, rendered in sorted(blocks):
+            handle.write(rendered + "\n\n")
+
+
 def _write_sample_report(
     db: Database,
     case_id: str,
@@ -1812,10 +1854,7 @@ def _write_sample_report(
     transcript = _build_transcript(
         db, result, turns, main_rows, rows, baseline, case_id, sample_index
     )
-    directory = Path(report_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / f"{case_id}.md").open("a") as handle:
-        handle.write(report.render_sample(transcript) + "\n\n")
+    _record_sample_block(case_id, sample_index, transcript)
 
 
 # How many times a sample is driven when the MODEL CALL ITSELF fails — the transport
@@ -1833,6 +1872,66 @@ _MODEL_CALL_ATTEMPTS = 3
 class _ModelCallError(Exception):
     """Raised when a sample's reply is the model-error reply — infrastructure, not
     behaviour, so the sample is re-driven rather than scored."""
+
+
+# What one sample does with the world built for it: drive it, and return its scored result.
+# The last argument says whether another attempt remains if the MODEL CALL itself fails.
+SampleDriver = Callable[[Penny, MockSignalServer, int, bool], Awaitable[SampleResult]]
+
+
+async def _run_samples(
+    make_config: Callable[..., Config],
+    tmp_path,
+    *,
+    case_id: str,
+    samples: int,
+    drive: SampleDriver,
+    attempts: int = 1,
+) -> tuple[list[SampleResult], _Perf]:
+    """Drive ``samples`` hermetic samples of one case; return their results and perf.
+
+    The skeleton every runner shares, in ONE place — which is what makes concurrency a
+    one-line change rather than an eleven-line one.  A sample gets its own mock Signal
+    server (on its own OS-assigned port), its own DB, and its own real-model Penny, and
+    ``drive`` supplies only what the case does with them.  Samples therefore share no
+    state by construction, which is what lets up to ``EVAL_CONCURRENCY`` of them run at
+    once; the returned results stay in SAMPLE order whatever finished first, so a case's
+    pass-rate and its report read identically at any concurrency.
+
+    ``attempts`` above 1 re-drives a sample whose MODEL CALL failed (``_ModelCallError``)
+    from a fresh world; a sample that exhausts its attempts is dropped rather than scored,
+    exactly as before.
+    """
+    limit = asyncio.Semaphore(EVAL_CONCURRENCY)
+    perf = _Perf()
+
+    async def _sample(sample_index: int) -> SampleResult | None:
+        async with limit:
+            for attempt in range(attempts):
+                server = MockSignalServer()
+                await server.start()
+                try:
+                    config = _real_model_config(
+                        make_config,
+                        signal_api_url=f"http://localhost:{server.port}",
+                        db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
+                    )
+                    async with eval_penny(config, server) as penny:
+                        result = await drive(penny, server, sample_index, attempt + 1 < attempts)
+                        perf.add(live_prompt_perf(penny.db))
+                        return result
+                except _ModelCallError:
+                    print(
+                        f"  ↻ {case_id} sample {sample_index}: the model call failed — "
+                        f"retrying ({attempt + 1} of {attempts})"
+                    )
+                finally:
+                    await server.stop()
+        return None
+
+    driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
+    _flush_sample_blocks(case_id)
+    return [result for result in driven if result is not None], perf
 
 
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
@@ -1997,49 +2096,37 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
     ) -> None:
         eval_artifacts.begin_case(case_id)
         turns = _conversation_turns(message, messages)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            for attempt in range(_MODEL_CALL_ATTEMPTS):
-                server = MockSignalServer()
-                await server.start()
-                try:
-                    config = _real_model_config(
-                        make_config,
-                        signal_api_url=f"http://localhost:{server.port}",
-                        db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
-                    )
-                    async with eval_penny(config, server) as penny:
-                        await _seed_sample(
-                            penny,
-                            seed=seed,
-                            seed_skills=seed_skills,
-                            browse=browse,
-                            prepare=prepare,
-                        )
-                        results.append(
-                            await _drive_sample(
-                                penny,
-                                server,
-                                case_id=case_id,
-                                sample_index=sample_index,
-                                turns=turns,
-                                score=score,
-                                wrap_client=wrap_client,
-                                timeout=timeout,
-                                retryable=attempt + 1 < _MODEL_CALL_ATTEMPTS,
-                            )
-                        )
-                        perf.add(live_prompt_perf(penny.db))
-                except _ModelCallError:
-                    print(
-                        f"  ↻ {case_id} sample {sample_index}: the model call failed — "
-                        f"retrying ({attempt + 1} of {_MODEL_CALL_ATTEMPTS})"
-                    )
-                    continue
-                finally:
-                    await server.stop()
-                break
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            await _seed_sample(
+                penny,
+                seed=seed,
+                seed_skills=seed_skills,
+                browse=browse,
+                prepare=prepare,
+            )
+            return await _drive_sample(
+                penny,
+                server,
+                case_id=case_id,
+                sample_index=sample_index,
+                turns=turns,
+                score=score,
+                wrap_client=wrap_client,
+                timeout=timeout,
+                retryable=retryable,
+            )
+
+        results, perf = await _run_samples(
+            make_config,
+            tmp_path,
+            case_id=case_id,
+            samples=samples,
+            drive=_drive,
+            attempts=_MODEL_CALL_ATTEMPTS,
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -2084,46 +2171,39 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
-                )
-                async with eval_penny(config, server) as penny:
-                    seed_user(penny.db)
-                    seed(penny.db)
-                    await _embed_seeds(penny)
-                    if browse is not None:
-                        install_browse(penny, browse)
-                    before = snapshot(penny.db) if snapshot is not None else None
-                    sent_before = len(server.outgoing_messages)
-                    await penny.collector.run_for(collection)
-                    # A collector cycle ENQUEUES sends (send_queue) — the drainer
-                    # that would deliver them to the channel is a separate schedule
-                    # that doesn't run inside run_for.  So read sends off the queue,
-                    # plus anything the drainer happened to deliver to the server.
-                    sent = [item.content for item in penny.db.send_queue.pending_items()] + [
-                        str(message.get("message", ""))
-                        for message in server.outgoing_messages[sent_before:]
-                    ]
-                    scored = list(score(penny.db, before, sent))
-                    if _scorer_is_graded(scored):
-                        result = _guarded_graded(scored, [])
-                    else:
-                        result = SampleResult.binary([s for s in scored if isinstance(s, str)])
-                    results.append(result)
-                    _stamp_cause(penny.db, result)
-                    _write_sample_report(penny.db, case_id, sample_index, result=result)
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            seed_user(penny.db)
+            seed(penny.db)
+            await _embed_seeds(penny)
+            if browse is not None:
+                install_browse(penny, browse)
+            before = snapshot(penny.db) if snapshot is not None else None
+            sent_before = len(server.outgoing_messages)
+            await penny.collector.run_for(collection)
+            # A collector cycle ENQUEUES sends (send_queue) — the drainer
+            # that would deliver them to the channel is a separate schedule
+            # that doesn't run inside run_for.  So read sends off the queue,
+            # plus anything the drainer happened to deliver to the server.
+            sent = [item.content for item in penny.db.send_queue.pending_items()] + [
+                str(message.get("message", ""))
+                for message in server.outgoing_messages[sent_before:]
+            ]
+            scored = list(score(penny.db, before, sent))
+            if _scorer_is_graded(scored):
+                result = _guarded_graded(scored, [])
+            else:
+                result = SampleResult.binary([s for s in scored if isinstance(s, str)])
+            _stamp_cause(penny.db, result)
+            _write_sample_report(penny.db, case_id, sample_index, result=result)
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -2430,34 +2510,25 @@ def collector_cycles_eval(
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
-                )
-                async with eval_penny(config, server) as penny:
-                    results.append(
-                        await _sample(
-                            penny,
-                            case_id=case_id,
-                            sample_index=sample_index,
-                            collection=collection,
-                            seed=seed,
-                            cycles=cycles,
-                            score=score,
-                            seed_skills=seed_skills,
-                            prepare=prepare,
-                        )
-                    )
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            return await _sample(
+                penny,
+                case_id=case_id,
+                sample_index=sample_index,
+                collection=collection,
+                seed=seed,
+                cycles=cycles,
+                score=score,
+                seed_skills=seed_skills,
+                prepare=prepare,
+            )
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -2611,53 +2682,44 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
     ) -> None:
         eval_artifacts.begin_case(case_id)
         make_wrapper = _nudge_injector(wrap, bail_text)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
-                )
-                async with eval_penny(config, server) as penny:
-                    seed_user(penny.db)
-                    seed(penny.db)
-                    await _embed_seeds(penny)
-                    before = snapshot(penny.db) if snapshot is not None else None
-                    sent_before = len(server.outgoing_messages)
-                    wrapper = make_wrapper(penny.collector._model_client)
-                    penny.collector._model_client = wrapper
-                    success, _ = await penny.collector.run_for(collection)
-                    sent = [item.content for item in penny.db.send_queue.pending_items()] + [
-                        str(message.get("message", ""))
-                        for message in server.outgoing_messages[sent_before:]
-                    ]
-                    scored = list(score(penny.db, before, sent)) if score is not None else []
-                    if _scorer_is_graded(scored):
-                        guards = [
-                            _bail_fired_check(wrapper.bail_injected),
-                            _cycle_recovered_check(success),
-                        ]
-                        result = _guarded_graded(scored, guards)
-                    else:
-                        fails = [s for s in scored if isinstance(s, str)]
-                        if not wrapper.bail_injected:
-                            fails.append("forced bail never fired — contract not exercised")
-                        elif not success:
-                            fails.append(
-                                "cycle did not recover to a successful close after the nudge"
-                            )
-                        result = SampleResult.binary(fails)
-                    results.append(result)
-                    _stamp_cause(penny.db, result)
-                    _write_sample_report(penny.db, case_id, sample_index, result=result)
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            seed_user(penny.db)
+            seed(penny.db)
+            await _embed_seeds(penny)
+            before = snapshot(penny.db) if snapshot is not None else None
+            sent_before = len(server.outgoing_messages)
+            wrapper = make_wrapper(penny.collector._model_client)
+            penny.collector._model_client = wrapper
+            success, _ = await penny.collector.run_for(collection)
+            sent = [item.content for item in penny.db.send_queue.pending_items()] + [
+                str(message.get("message", ""))
+                for message in server.outgoing_messages[sent_before:]
+            ]
+            scored = list(score(penny.db, before, sent)) if score is not None else []
+            if _scorer_is_graded(scored):
+                guards = [
+                    _bail_fired_check(wrapper.bail_injected),
+                    _cycle_recovered_check(success),
+                ]
+                result = _guarded_graded(scored, guards)
+            else:
+                fails = [s for s in scored if isinstance(s, str)]
+                if not wrapper.bail_injected:
+                    fails.append("forced bail never fired — contract not exercised")
+                elif not success:
+                    fails.append("cycle did not recover to a successful close after the nudge")
+                result = SampleResult.binary(fails)
+            _stamp_cause(penny.db, result)
+            _write_sample_report(penny.db, case_id, sample_index, result=result)
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -2951,46 +3013,39 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
-                )
-                async with eval_penny(config, server) as penny:
-                    seed_user(penny.db)
-                    seed(penny.db)
-                    await _embed_seeds(penny)
-                    if browse is not None:
-                        install_browse(penny, browse)
-                    sent_before = len(server.outgoing_messages)
-                    wrapper = wrap_client(penny.collector._model_client)
-                    penny.collector._model_client = wrapper
-                    await penny.collector.run_for(collection)
-                    sent = [item.content for item in penny.db.send_queue.pending_items()] + [
-                        str(message.get("message", ""))
-                        for message in server.outgoing_messages[sent_before:]
-                    ]
-                    scored = list(score(penny.db, sent))
-                    if _scorer_is_graded(scored):
-                        result = _guarded_graded(scored, [_bail_fired_check(wrapper.bail_injected)])
-                    else:
-                        fails = [s for s in scored if isinstance(s, str)]
-                        if not wrapper.bail_injected:
-                            fails.append("forced bail never fired — contract not exercised")
-                        result = SampleResult.binary(fails)
-                    results.append(result)
-                    _stamp_cause(penny.db, result)
-                    _write_sample_report(penny.db, case_id, sample_index, result=result)
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            seed_user(penny.db)
+            seed(penny.db)
+            await _embed_seeds(penny)
+            if browse is not None:
+                install_browse(penny, browse)
+            sent_before = len(server.outgoing_messages)
+            wrapper = wrap_client(penny.collector._model_client)
+            penny.collector._model_client = wrapper
+            await penny.collector.run_for(collection)
+            sent = [item.content for item in penny.db.send_queue.pending_items()] + [
+                str(message.get("message", ""))
+                for message in server.outgoing_messages[sent_before:]
+            ]
+            scored = list(score(penny.db, sent))
+            if _scorer_is_graded(scored):
+                result = _guarded_graded(scored, [_bail_fired_check(wrapper.bail_injected)])
+            else:
+                fails = [s for s in scored if isinstance(s, str)]
+                if not wrapper.bail_injected:
+                    fails.append("forced bail never fired — contract not exercised")
+                result = SampleResult.binary(fails)
+            _stamp_cause(penny.db, result)
+            _write_sample_report(penny.db, case_id, sample_index, result=result)
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -3030,41 +3085,26 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
-                )
-                async with eval_penny(config, server) as penny:
-                    seed_user(penny.db)
-                    prior = os.environ.get("GIT_COMMIT_MESSAGE")
-                    os.environ["GIT_COMMIT_MESSAGE"] = commit_message
-                    try:
-                        announcement = await get_restart_message(penny.db, penny.model_client)
-                    finally:
-                        if prior is None:
-                            os.environ.pop("GIT_COMMIT_MESSAGE", None)
-                        else:
-                            os.environ["GIT_COMMIT_MESSAGE"] = prior
-                    # Same graded/binary dispatch as the other runners.  Startup has no
-                    # injection (no wrapper, no framework guard), so a graded return grades
-                    # over the scorer's own Checks with an empty guard list.
-                    scored = list(score(announcement))
-                    if _scorer_is_graded(scored):
-                        result = _guarded_graded(scored, [])
-                    else:
-                        result = SampleResult.binary([s for s in scored if isinstance(s, str)])
-                    results.append(result)
-                    _stamp_cause(penny.db, result)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            seed_user(penny.db)
+            announcement = await get_restart_message(penny.db, penny.model_client, commit_message)
+            # Same graded/binary dispatch as the other runners.  Startup has no
+            # injection (no wrapper, no framework guard), so a graded return grades
+            # over the scorer's own Checks with an empty guard list.
+            scored = list(score(announcement))
+            if _scorer_is_graded(scored):
+                result = _guarded_graded(scored, [])
+            else:
+                result = SampleResult.binary([s for s in scored if isinstance(s, str)])
+            _stamp_cause(penny.db, result)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -3249,10 +3289,7 @@ def _write_classifier_report(
             run_close_score=f"{passed_checks}/{total}",
             system_prompts=_system_prompts(rows),
         )
-    directory = Path(report_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / f"{case_id}.md").open("a") as handle:
-        handle.write(report.render_sample(transcript) + "\n\n")
+    _record_sample_block(case_id, sample_index, transcript)
 
 
 # One structurally-valid placeholder step for an eval-seeded skill: the
@@ -3329,60 +3366,50 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
             phrasing = pool[sample_index % len(pool)]
-            server = MockSignalServer()
-            await server.start()
+            seed_user(penny.db)
+            if seed is not None:
+                seed(penny.db)
+            await _embed_seeds(penny)
+            if seed_skills:
+                await _seed_eval_skills(penny, seed_skills)
+            classifier = StateClassifier(penny.model_client)
             try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                # The PRODUCTION snapshot builder per sample, so the eval
+                # exercises the same path the wiring does — EVERY seeded
+                # skill offered, no ranking or cap (the #1706 ruling).
+                snapshot = build_snapshot(
+                    penny.db,
+                    state=state,
+                    message=phrasing,
+                    penny_last_turn=penny_last_turn,
+                    task_anchor=task_anchor,
                 )
-                async with eval_penny(config, server) as penny:
-                    seed_user(penny.db)
-                    if seed is not None:
-                        seed(penny.db)
-                    await _embed_seeds(penny)
-                    if seed_skills:
-                        await _seed_eval_skills(penny, seed_skills)
-                    classifier = StateClassifier(penny.model_client)
-                    try:
-                        # The PRODUCTION snapshot builder per sample, so the eval
-                        # exercises the same path the wiring does — EVERY seeded
-                        # skill offered, no ranking or cap (the #1706 ruling).
-                        snapshot = build_snapshot(
-                            penny.db,
-                            state=state,
-                            message=phrasing,
-                            penny_last_turn=penny_last_turn,
-                            task_anchor=task_anchor,
-                        )
-                        decision = await asyncio.wait_for(
-                            classifier.classify(
-                                snapshot, phrasing, run_target=penny.chat_agent.name
-                            ),
-                            timeout=timeout,
-                        )
-                        result = _guarded_graded(
-                            list(_score_classifier(decision, expected, expected_skill)), []
-                        )
-                        result.fragile = result.passed and len(_classifier_rows(penny.db)) > 1
-                        results.append(result)
-                        _stamp_cause(penny.db, result)
-                    except TimeoutError:
-                        result = SampleResult.binary(["no decision within timeout"])
-                        _stamp_cause(penny.db, result, timed_out=True)
-                        results.append(result)
-                    _write_classifier_report(
-                        penny.db, case_id, sample_index, result=result, phrasing=phrasing
-                    )
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+                decision = await asyncio.wait_for(
+                    classifier.classify(snapshot, phrasing, run_target=penny.chat_agent.name),
+                    timeout=timeout,
+                )
+                result = _guarded_graded(
+                    list(_score_classifier(decision, expected, expected_skill)), []
+                )
+                result.fragile = result.passed and len(_classifier_rows(penny.db)) > 1
+                _stamp_cause(penny.db, result)
+            except TimeoutError:
+                result = SampleResult.binary(["no decision within timeout"])
+                _stamp_cause(penny.db, result, timed_out=True)
+            _write_classifier_report(
+                penny.db, case_id, sample_index, result=result, phrasing=phrasing
+            )
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -3997,48 +4024,40 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Framer
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
         content = build_framing_content(
             "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in turns]
         )
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            micro = MicroContext(penny.model_client)
             try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                signature = await asyncio.wait_for(
+                    micro.frame_skill(content, run_target=penny.chat_agent.name),
+                    timeout=timeout,
                 )
-                async with eval_penny(config, server) as penny:
-                    micro = MicroContext(penny.model_client)
-                    try:
-                        signature = await asyncio.wait_for(
-                            micro.frame_skill(content, run_target=penny.chat_agent.name),
-                            timeout=timeout,
-                        )
-                        scored = _score_framing(signature, parameters, instance_tokens)
-                        result = _guarded_graded(list(scored), [])
-                        result.fragile = result.passed and _run_end_rerolled(penny.db)
-                        results.append(result)
-                        _stamp_cause(penny.db, result)
-                    except TimeoutError:
-                        result = SampleResult.binary(["no framing draw within timeout"])
-                        _stamp_cause(penny.db, result, timed_out=True)
-                        results.append(result)
-                    _write_classifier_report(
-                        penny.db,
-                        case_id,
-                        sample_index,
-                        result=result,
-                        phrasing=turns[-1] if turns else "",
-                        agent_names=(PennyConstants.SKILL_FRAME_AGENT_NAME,),
-                    )
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+                scored = _score_framing(signature, parameters, instance_tokens)
+                result = _guarded_graded(list(scored), [])
+                result.fragile = result.passed and _run_end_rerolled(penny.db)
+                _stamp_cause(penny.db, result)
+            except TimeoutError:
+                result = SampleResult.binary(["no framing draw within timeout"])
+                _stamp_cause(penny.db, result, timed_out=True)
+            _write_classifier_report(
+                penny.db,
+                case_id,
+                sample_index,
+                result=result,
+                phrasing=turns[-1] if turns else "",
+                agent_names=(PennyConstants.SKILL_FRAME_AGENT_NAME,),
+            )
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -4084,52 +4103,42 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
         content, by_value = _labelling_input(calls, target, utterance, conversation)
         # The spots the rendered document offered, in leaf order — the COVERAGE set the
         # draw is accepted against (#1828).  Read off the distilled leaves rather than
         # authored, so the case can never offer the draw a set the content didn't list.
         offered = list(dict.fromkeys(by_value.values()))
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            micro = MicroContext(penny.model_client)
             try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                labels = await asyncio.wait_for(
+                    micro.label_skill(content, offered, run_target=penny.chat_agent.name),
+                    timeout=timeout,
                 )
-                async with eval_penny(config, server) as penny:
-                    micro = MicroContext(penny.model_client)
-                    try:
-                        labels = await asyncio.wait_for(
-                            micro.label_skill(content, offered, run_target=penny.chat_agent.name),
-                            timeout=timeout,
-                        )
-                        scored = _score_labelling(
-                            labels, by_value, leaves, distinct_names, shared_spot
-                        )
-                        result = _guarded_graded(list(scored), [])
-                        result.fragile = result.passed and _run_end_rerolled(penny.db)
-                        results.append(result)
-                        _stamp_cause(penny.db, result)
-                    except TimeoutError:
-                        result = SampleResult.binary(["no label within timeout"])
-                        _stamp_cause(penny.db, result, timed_out=True)
-                        results.append(result)
-                    _write_classifier_report(
-                        penny.db,
-                        case_id,
-                        sample_index,
-                        result=result,
-                        phrasing=utterance,
-                        agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
-                    )
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+                scored = _score_labelling(labels, by_value, leaves, distinct_names, shared_spot)
+                result = _guarded_graded(list(scored), [])
+                result.fragile = result.passed and _run_end_rerolled(penny.db)
+                _stamp_cause(penny.db, result)
+            except TimeoutError:
+                result = SampleResult.binary(["no label within timeout"])
+                _stamp_cause(penny.db, result, timed_out=True)
+            _write_classifier_report(
+                penny.db,
+                case_id,
+                sample_index,
+                result=result,
+                phrasing=utterance,
+                agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
+            )
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -4326,50 +4335,40 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Binder
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
         spoken = render_spoken_turns(turns)
         content = build_binding_content(spoken, skill, intent, parameters)
         declared = [parameter.name for parameter in parameters]
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            micro = MicroContext(penny.model_client)
             try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                binding = await asyncio.wait_for(
+                    micro.bind_skill(content, declared, spoken, run_target=penny.chat_agent.name),
+                    timeout=timeout,
                 )
-                async with eval_penny(config, server) as penny:
-                    micro = MicroContext(penny.model_client)
-                    try:
-                        binding = await asyncio.wait_for(
-                            micro.bind_skill(
-                                content, declared, spoken, run_target=penny.chat_agent.name
-                            ),
-                            timeout=timeout,
-                        )
-                        scored = _score_binding(binding, expectations, forbidden)
-                        result = _guarded_graded(list(scored), [])
-                        result.fragile = result.passed and _binder_rerolled(penny.db)
-                        results.append(result)
-                        _stamp_cause(penny.db, result)
-                    except TimeoutError:
-                        result = SampleResult.binary(["no binding draw within timeout"])
-                        _stamp_cause(penny.db, result, timed_out=True)
-                        results.append(result)
-                    _write_classifier_report(
-                        penny.db,
-                        case_id,
-                        sample_index,
-                        result=result,
-                        phrasing=turns[-1] if turns else "",
-                        agent_names=(PennyConstants.SKILL_BIND_AGENT_NAME,),
-                    )
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+                scored = _score_binding(binding, expectations, forbidden)
+                result = _guarded_graded(list(scored), [])
+                result.fragile = result.passed and _binder_rerolled(penny.db)
+                _stamp_cause(penny.db, result)
+            except TimeoutError:
+                result = SampleResult.binary(["no binding draw within timeout"])
+                _stamp_cause(penny.db, result, timed_out=True)
+            _write_classifier_report(
+                penny.db,
+                case_id,
+                sample_index,
+                result=result,
+                phrasing=turns[-1] if turns else "",
+                agent_names=(PennyConstants.SKILL_BIND_AGENT_NAME,),
+            )
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -4516,46 +4515,38 @@ def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> Ext
         family: str | None = None,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        results: list[SampleResult] = []
-        perf = _Perf()
         content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
+
+        async def _drive(
+            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
+        ) -> SampleResult:
+            micro = MicroContext(penny.model_client)
             try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                extracted = await asyncio.wait_for(
+                    micro.extract(content, instruction, run_target=penny.chat_agent.name),
+                    timeout=timeout,
                 )
-                async with eval_penny(config, server) as penny:
-                    micro = MicroContext(penny.model_client)
-                    try:
-                        extracted = await asyncio.wait_for(
-                            micro.extract(content, instruction, run_target=penny.chat_agent.name),
-                            timeout=timeout,
-                        )
-                        scored = _score_extraction(extracted, expectations)
-                        result = _guarded_graded(list(scored), [])
-                        result.fragile = result.passed and _extract_rerolled(penny.db)
-                        results.append(result)
-                        _stamp_cause(penny.db, result)
-                    except TimeoutError:
-                        result = SampleResult.binary(["no extraction draw within timeout"])
-                        _stamp_cause(penny.db, result, timed_out=True)
-                        results.append(result)
-                    _write_classifier_report(
-                        penny.db,
-                        case_id,
-                        sample_index,
-                        result=result,
-                        phrasing=instruction,
-                        agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
-                    )
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(live_prompt_perf(penny.db))
-            finally:
-                await server.stop()
+                scored = _score_extraction(extracted, expectations)
+                result = _guarded_graded(list(scored), [])
+                result.fragile = result.passed and _extract_rerolled(penny.db)
+                _stamp_cause(penny.db, result)
+            except TimeoutError:
+                result = SampleResult.binary(["no extraction draw within timeout"])
+                _stamp_cause(penny.db, result, timed_out=True)
+            _write_classifier_report(
+                penny.db,
+                case_id,
+                sample_index,
+                result=result,
+                phrasing=instruction,
+                agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
+            )
+            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+            return result
+
+        results, perf = await _run_samples(
+            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+        )
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
