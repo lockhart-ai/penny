@@ -189,10 +189,16 @@ def _timings(artifacts: list[CaseArtifact]) -> str:
         return ""
     duration_ms = sum(artifact.timings.duration_ms for artifact in artifacts)
     input_tokens = sum(artifact.timings.input_tokens for artifact in artifacts)
+    reasoning_tokens = sum(artifact.timings.reasoning_tokens for artifact in artifacts)
+    # Only when the provider reported it: an absent count renders as no clause rather than
+    # as a confident zero.
+    reasoning_clause = f" ({reasoning_tokens / 1000:.1f}K thinking)" if reasoning_tokens else ""
+
     output_tokens = sum(artifact.timings.output_tokens for artifact in artifacts)
     return (
         f"{calls} calls · {duration_ms / 1000:.0f}s · "
         f"{input_tokens / 1000:.1f}K in / {output_tokens / 1000:.1f}K out"
+        f"{reasoning_clause}"
     )
 
 

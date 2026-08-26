@@ -227,6 +227,7 @@ class PerfTotals(Protocol):
     duration_ms: int
     input_tokens: int
     output_tokens: int
+    reasoning_tokens: int
 
 
 # ── Serialized shapes ────────────────────────────────────────────────────────
@@ -263,12 +264,21 @@ class CheckOutcome(BaseModel):
 
 
 class CaseTimings(BaseModel):
-    """Per-case model-call totals, summed over its samples (from the promptlog)."""
+    """Per-case model-call totals, summed over its samples (from the promptlog).
+
+    ``reasoning_tokens`` is the provider's own count of the thinking part of
+    ``output_tokens``, 0 where a backend does not report one. It is here rather than only
+    on the console line because comparing two MODELS is what this record is for: a remote
+    provider's wall time predicts nothing about local performance, but a run that scores
+    the same while generating far more thinking tokens is a local regression, and that
+    comparison has to be readable from the artifact months later. Defaulted, so a record
+    written before it existed still decodes."""
 
     calls: int
     duration_ms: int
     input_tokens: int
     output_tokens: int
+    reasoning_tokens: int = 0
 
 
 class CaseArtifact(BaseModel):
@@ -428,6 +438,7 @@ def timings_from_perf(perf: PerfTotals) -> CaseTimings:
         duration_ms=perf.duration_ms,
         input_tokens=perf.input_tokens,
         output_tokens=perf.output_tokens,
+        reasoning_tokens=perf.reasoning_tokens,
     )
 
 

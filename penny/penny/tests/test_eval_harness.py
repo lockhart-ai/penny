@@ -1227,6 +1227,47 @@ def test_the_idle_worlds_window_carries_pennys_turns_in_order(tmp_path) -> None:
     assert tail == list(LAST_SPOKEN_TURNS), f"the window must end on the small talk, got {tail}"
 
 
+def test_thinking_tokens_are_read_from_the_provider_not_guessed(tmp_path) -> None:
+    """The reasoning count is a READ of what the provider reported, with the character
+    ratio only as the fallback where a backend reports none.
+
+    Read with care: it counts the SEPARATE reasoning channel, so it does NOT compare
+    across models that put their thinking in different places — one reasoning inline in
+    its visible content reports zero while thinking just as hard. A reported zero means
+    "nothing in the reasoning channel", never "this model did not think", and reading it
+    as the latter is how a whole suite run was drawn against a model whose reasoning the
+    provider had quietly switched off. What compares cleanly is total OUTPUT tokens: a
+    local GPU has to generate those wherever the thinking lives.
+    """
+    db = _make_db(tmp_path)
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": "the visible answer"}}],
+        "usage": {
+            "prompt_tokens": 400,
+            "completion_tokens": 120,
+            "completion_tokens_details": {"reasoning_tokens": 90},
+        },
+    }
+    _log_prompt(db, response=response, run_id="r1")
+    perf = live_prompt_perf(db)
+    assert perf.input_tokens == 400
+    assert perf.output_tokens == 120, "completion_tokens already bundles the reasoning"
+    assert perf.reasoning_tokens == 90, "the provider's own count, not a ratio of characters"
+
+    # A backend that reports no detail leaves it 0 — read by the caller as "not reported"
+    # and never as a confident zero, which is why the fallback ratio inputs are still kept.
+    bare = _make_db(tmp_path / "bare")
+    _log_prompt(
+        bare,
+        response={
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        },
+        run_id="r1",
+    )
+    assert live_prompt_perf(bare).reasoning_tokens == 0
+
+
 def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
     """A case may seed the promptlog of turns that happened BEFORE the one under test
     (#1846), so the sample is answered against the state those turns really left.  Those

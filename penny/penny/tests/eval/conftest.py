@@ -242,6 +242,7 @@ class _Perf:
     output_tokens: int = 0
     thinking_chars: int = 0
     output_chars: int = 0
+    reasoning_tokens: int = 0
 
     def add(self, perf: PromptPerf) -> None:
         self.calls += perf.calls
@@ -250,6 +251,7 @@ class _Perf:
         self.output_tokens += perf.output_tokens
         self.thinking_chars += perf.thinking_chars
         self.output_chars += perf.output_chars
+        self.reasoning_tokens += perf.reasoning_tokens
 
     def report(self, case_id: str, samples: int) -> None:
         if not self.calls:
@@ -260,14 +262,21 @@ class _Perf:
         # true generation tok/s see the native probe in test_perf_probe.py.
         tokens_per_second = self.output_tokens / seconds if seconds else 0.0
         per_call_ms = self.duration_ms / self.calls
-        # output_tokens bundles reasoning + visible; split it by the char ratio.
-        share = self.thinking_chars / (self.thinking_chars + self.output_chars or 1)
-        reasoning_tokens = round(self.output_tokens * share)
+        # output_tokens bundles reasoning + visible.  The provider's own count is a READ;
+        # only where it reports none do we fall back to splitting by the character ratio —
+        # and the line says which, because an estimate shown as a measurement is how two
+        # models get compared on a number one of them never supplied.
+        if self.reasoning_tokens:
+            reasoning_tokens, source = self.reasoning_tokens, "reported"
+        else:
+            share = self.thinking_chars / (self.thinking_chars + self.output_chars or 1)
+            reasoning_tokens, source = round(self.output_tokens * share), "estimated"
+        reasoning_share = reasoning_tokens / self.output_tokens if self.output_tokens else 0.0
         print(
             f"\nPERF [{case_id}] {samples} samples · {self.calls} calls · "
             f"{seconds:.1f}s wall · {per_call_ms:.0f}ms/call · "
             f"{self.input_tokens} in / {self.output_tokens} out tok "
-            f"({reasoning_tokens} reasoning, {share * 100:.0f}%) · "
+            f"({reasoning_tokens} reasoning {source}, {reasoning_share * 100:.0f}%) · "
             f"{tokens_per_second:.1f} end-to-end tok/s"
         )
 
@@ -470,6 +479,7 @@ def live_prompt_perf(db: Database) -> PromptPerf:
         sum(completion_tokens for _, completion_tokens in usage),
         sum(len(row.thinking or "") for row in rows),
         sum(len(MessageStore._extract_content(response)) for response in responses),
+        sum(MessageStore._extract_reasoning_tokens(response) for response in responses),
     )
 
 
