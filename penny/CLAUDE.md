@@ -598,6 +598,13 @@ throughput ceiling on the remote profile: ~7.6 embedding calls per sample all qu
 local GPU, and median embed latency measured 91ms at 10 samples in flight, 161ms at 40 and
 384ms at 80.
 
+**The GPU queue is local-only.** It exists because this machine has one GPU, so a remote
+run takes no ticket, waits for nothing, and is invisible to the queue's busy probe — any
+number proceed at once, which is what lets several agents drive remote evals concurrently
+without colliding with each other or with someone working locally. The probe reads the
+endpoint out of each container's own command and matches only local hosts; it used to match
+any eval container, so a remote run held the line against a local one while touching no GPU.
+
 **One call proves the endpoint before a run commits to anything**
 (`penny.tests.eval.endpoint_smoke`, run by the `eval` recipe before it takes a queue
 ticket): every sample builds its own preflight, so an unserveable model is otherwise

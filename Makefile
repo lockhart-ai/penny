@@ -53,6 +53,11 @@ EVAL_PRIMARY_ENV := $(EVAL_PRIMARY_CHECKOUT)/.env
 # provider leaves memory's embeddings on the local Ollama that serves them —
 # no remote chat provider serves `embeddinggemma`.
 LLM_LOCAL_ENDPOINT := http://host.docker.internal:11434
+# What "the model is on THIS machine's GPU" looks like in an endpoint URL. One definition,
+# read both by the on_gpu decision and by the queue's busy probe, so the two can never
+# disagree about which runs contend for the GPU — they did, and a remote run held the
+# queue against a local one while touching no GPU at all.
+LOCAL_ENDPOINT_HOSTS := host.docker.internal|localhost|127.0.0.1
 # What each profile defaults to. The remote pair is the MEASURED product: 8 workers x 5
 # samples = 40 in flight was both faster and cleaner than 80 on a 10-core box, where the
 # extra contention cost more than the parallelism bought and samples began missing their
@@ -254,12 +259,19 @@ pytest: $(if $(LOCAL),,build)
 # defaults to the local Ollama independently), and a remote chat model skips the
 # GPU queue below, since it contends for no GPU. An empty key on a remote
 # endpoint fails the run up front rather than 401-ing every sample.
-# GPU queue: strictly first-come-first-served via ticket files. Each invocation
-# takes a ticket in EVAL_QUEUE_DIR and runs only when its ticket is the oldest
-# LIVE one (tickets whose holder PID is gone are reaped, so a killed waiter can
-# never wedge the line) and no eval container already holds the GPU. The ticket
-# is held until the eval finishes — later arrivals cannot jump the queue. While
-# waiting, prints queue position and the current GPU holder for observability.
+# GPU queue: LOCAL RUNS ONLY, and it exists for exactly one reason — this machine has one
+# GPU. A remote run takes no ticket, waits for nothing, and is invisible to the probe, so
+# any number of them proceed at once; that is what lets several agents drive remote evals
+# concurrently without colliding with each other or with someone working locally.
+# For a local run it is strictly first-come-first-served via ticket files: each takes a
+# ticket in EVAL_QUEUE_DIR and runs only when its ticket is the oldest LIVE one (tickets
+# whose holder PID is gone are reaped, so a killed waiter can never wedge the line) and no
+# LOCAL eval container already holds the GPU. The ticket is held until the eval finishes —
+# later arrivals cannot jump the queue. While waiting, prints queue position and the
+# current GPU holder for observability.
+# The busy probe reads the endpoint out of the container's own command and matches only
+# LOCAL_ENDPOINT_HOSTS: it used to match any eval container, so a remote run held the line
+# against a local one while touching no GPU at all.
 # Durable reports (#1734): a report run (one that declares its EVAL_LEVER) with
 # no explicit EVAL_REPORT_DIR defaults to a run-stamped dir under the primary
 # checkout's mounted data/eval-artifacts, so artifacts survive the worktree that
@@ -273,7 +285,7 @@ eval-remote: EVAL_PROFILE = remote
 eval-remote: eval
 
 eval: $(if $(LOCAL),,build)
-	@mkdir -p "$(EVAL_QUEUE_DIR)" "$(EVAL_ARTIFACTS_HOST)"; \
+	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"; \
 	banner="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
 	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
 	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | tr -d '"'; }; \
@@ -293,7 +305,7 @@ eval: $(if $(LOCAL),,build)
 	if [ -z "$$llm_key" ] && [ -n "$$key_var" ]; then llm_key="$$(from_env "$$key_var")"; fi; \
 	embed_url="$${LLM_EMBEDDING_API_URL:-$(LLM_LOCAL_ENDPOINT)}"; \
 	embed_key="$${LLM_EMBEDDING_API_KEY:-$$(from_env LLM_EMBEDDING_API_KEY)}"; \
-	case "$$llm_url" in *host.docker.internal*|*localhost*|*127.0.0.1*) on_gpu=1 ;; *) on_gpu=0 ;; esac; \
+	if echo "$$llm_url" | grep -qE '$(LOCAL_ENDPOINT_HOSTS)'; then on_gpu=1; else on_gpu=0; fi; \
 	if [ "$$on_gpu" = 0 ]; then \
 		echo "eval: chat model is REMOTE ($$llm_url) — skipping the local GPU queue; embeddings stay at $$embed_url"; \
 		if [ -z "$$llm_key" ]; then \
@@ -308,23 +320,26 @@ eval: $(if $(LOCAL),,build)
 		echo "eval: refusing to start — the endpoint above will not serve this model." >&2; \
 		exit 1; \
 	fi; \
-	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
-	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
-	trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
-	while [ "$$on_gpu" = 1 ]; do \
-		head=""; ahead=0; \
-		for t in $$(ls "$(EVAL_QUEUE_DIR)" 2>/dev/null | sort); do \
-			pid=$$(cat "$(EVAL_QUEUE_DIR)/$$t" 2>/dev/null || true); \
-			if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then rm -f "$(EVAL_QUEUE_DIR)/$$t"; continue; fi; \
-			if [ -z "$$head" ]; then head="$$t"; fi; \
-			if [ "$$t" = "$$ticket" ]; then break; fi; \
-			ahead=$$((ahead + 1)); \
+	if [ "$$on_gpu" = 1 ]; then \
+		mkdir -p "$(EVAL_QUEUE_DIR)"; \
+		ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
+		echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
+		trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
+		while :; do \
+			head=""; ahead=0; \
+			for t in $$(ls "$(EVAL_QUEUE_DIR)" 2>/dev/null | sort); do \
+				pid=$$(cat "$(EVAL_QUEUE_DIR)/$$t" 2>/dev/null || true); \
+				if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then rm -f "$(EVAL_QUEUE_DIR)/$$t"; continue; fi; \
+				if [ -z "$$head" ]; then head="$$t"; fi; \
+				if [ "$$t" = "$$ticket" ]; then break; fi; \
+				ahead=$$((ahead + 1)); \
+			done; \
+			busy=$$(docker ps --no-trunc --format '{{.Names}} {{.Command}}' 2>/dev/null | grep -E 'tests/eval|-m eval' | grep -E "LLM_API_URL=[^ ]*($(LOCAL_ENDPOINT_HOSTS))" | awk '{print $$1}' | head -1); \
+			if [ "$$head" = "$$ticket" ] && [ -z "$$busy" ]; then break; fi; \
+			echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
+			sleep $$((15 + $$$$ % 10)); \
 		done; \
-		busy=$$(docker ps --no-trunc --format '{{.Names}} {{.Command}}' 2>/dev/null | grep -E 'tests/eval|-m eval' | awk '{print $$1}' | head -1); \
-		if [ "$$head" = "$$ticket" ] && [ -z "$$busy" ]; then break; fi; \
-		echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
-		sleep $$((15 + $$$$ % 10)); \
-	done; \
+	fi; \
 	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
 	commit="$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
 	run_id="$${EVAL_RUN_ID:-run-$$stamp-$$(printf %.8s "$$commit")}"; \
