@@ -233,7 +233,7 @@ def test_user_info(test_config):
 
 @asynccontextmanager
 async def run_penny_with_server(
-    config: Config, signal_server: MockSignalServer
+    config: Config, signal_server: MockSignalServer, *, ready_timeout: float = 10.0
 ) -> AsyncIterator[Penny]:
     """Run a real Penny against a given mock Signal server, with clean teardown.
 
@@ -242,12 +242,19 @@ async def run_penny_with_server(
     ``running_penny`` fixture binds this to the per-test ``signal_server``; the
     live-model eval suite drives it with a fresh server per sample.  Keeping one
     construction path means tests and eval can never diverge.
+
+    ``ready_timeout`` is how long the channel has to connect.  A single test boots one
+    Penny and 10s is generous; the eval suite boots as many as its concurrency allows AT
+    ONCE, and they contend for the same cores through migrations, connectivity validation
+    and preflight — so the same budget stops being about whether the channel connects and
+    starts being about how many samples are booting beside it, which is not a property of
+    the thing under test.  A caller that runs them in parallel says so.
     """
     penny = Penny(config)
     penny_task = asyncio.create_task(penny.run())
     try:
         # Wait for WebSocket connection to establish
-        await wait_until(lambda: len(signal_server._websockets) > 0)
+        await wait_until(lambda: len(signal_server._websockets) > 0, timeout=ready_timeout)
 
         # Mock browse provider on all agents so tool calls don't hit
         # real retry/sleep loops when no browser extension is connected

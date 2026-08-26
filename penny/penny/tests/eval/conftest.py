@@ -95,6 +95,15 @@ SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
 # many are asked for, so concurrency buys wall-clock there and nothing at home.
 EVAL_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "1"))
 
+# How long a sample's channel has to connect.  Every concurrent sample boots its own
+# Penny — 100-odd migrations, connectivity validation, preflight — and they contend for
+# the same cores, so the wait is dominated by how many are booting rather than by whether
+# this one will.  Measured: ~3.3s with 10 samples in flight, past the shared 10s default
+# with 40, where five of eight cases died at startup having run nothing.  Generous rather
+# than tuned: waiting longer costs nothing when the channel connects promptly, and a
+# genuinely stuck sample still ends rather than hanging the run.
+SAMPLE_READY_TIMEOUT_SECONDS = 60.0
+
 # Embedding backfill batch size for seeded memory.
 _EMBED_BATCH = 100
 
@@ -1522,7 +1531,9 @@ async def eval_penny(config: Config, server: MockSignalServer) -> AsyncIterator[
     config's own ``db_path``, which is already the sample's identity.
     """
     with sample_logging(config.db_path):
-        async with run_penny_with_server(config, server) as penny:
+        async with run_penny_with_server(
+            config, server, ready_timeout=SAMPLE_READY_TIMEOUT_SECONDS
+        ) as penny:
             yield penny
 
 
