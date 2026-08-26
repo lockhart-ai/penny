@@ -40,12 +40,12 @@ from pathlib import Path
 from penny.tests.eval import comment_split, report
 from penny.tests.eval.artifacts import (
     MANIFEST_FILENAME,
-    RESULTS_FILENAME,
     CaseArtifact,
     CheckCell,
     FailureCause,
     RunManifest,
     count_causes,
+    load_results_lines,
     pathology_excluded,
     render_manifest_header,
 )
@@ -110,17 +110,13 @@ def load_manifest(report_dir: Path) -> RunManifest:
 
 
 def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
-    """Read every case record from ``results.jsonl`` (one per non-blank line), in file order.
+    """Read every case record in the run dir (one per non-blank line), in file order.
 
-    A missing/empty file → no cases: a manifest can exist before any case has recorded."""
-    path = report_dir / RESULTS_FILENAME
-    if not path.is_file():
-        return []
-    return [
-        CaseArtifact.model_validate_json(line)
-        for line in path.read_text().splitlines()
-        if line.strip()
-    ]
+    A run under xdist writes one results file per worker, so the whole run is the union of
+    them — reading only ``results.jsonl`` would silently report a fraction of the cases as
+    if it were all of them.  No files → no cases: a manifest can exist before any case has
+    recorded."""
+    return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
 
 
 # ── The run header (identity · RESULT · gate · flips) ────────────────────────

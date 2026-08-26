@@ -197,6 +197,12 @@ pytest: $(if $(LOCAL),,build)
 # Forwards the model endpoint into the container (defaulting to the docker host,
 # where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
 # the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
+# Test-level parallelism: pass `-n N` through EVAL_PYTEST_ARGS (pytest-xdist) to run N
+# CASES at once, on top of the EVAL_CONCURRENCY samples each case runs at. Every worker
+# is a separate PROCESS resolving the run from its own environment, so EVAL_RUN_ID is
+# fixed here once and forwarded — otherwise each would stamp its own clock into the run
+# id and one directory would hold N runs. Each worker appends to its own results file;
+# assemble reads them all.
 # Remote endpoints: point LLM_API_URL at any OpenAI-compatible provider and the
 # suite runs against it — e.g. `LLM_API_URL=https://openrouter.ai/api
 # LLM_MODEL=openai/gpt-oss-20b make eval`, with LLM_API_KEY in the primary
@@ -249,9 +255,12 @@ eval: $(if $(LOCAL),,build)
 		echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
 		sleep $$((15 + $$$$ % 10)); \
 	done; \
+	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
+	commit="$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	run_id="$${EVAL_RUN_ID:-run-$$stamp-$$(printf %.8s "$$commit")}"; \
 	report_dir="$${EVAL_REPORT_DIR}"; \
 	if [ -z "$$report_dir" ] && [ -n "$${EVAL_LEVER}" ]; then \
-		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$(date -u +%Y%m%dT%H%M%SZ)"; \
+		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$stamp"; \
 		echo "eval: reports → $$report_dir  (durable host dir: $(EVAL_ARTIFACTS_HOST))"; \
 	fi; \
 	$(EVAL_RUN) env \
@@ -267,7 +276,8 @@ eval: $(if $(LOCAL),,build)
 		EVAL_BASELINE="$${EVAL_BASELINE}" \
 		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \
 		EVAL_LEVER="$${EVAL_LEVER}" \
-		EVAL_COMMIT="$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+		EVAL_RUN_ID="$$run_id" \
+		EVAL_COMMIT="$$commit" \
 		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \
 		pytest $(EVAL_PYTEST_ARGS)
 

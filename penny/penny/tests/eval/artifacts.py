@@ -49,6 +49,37 @@ LLM_EMBEDDING_MODEL_ENV = "LLM_EMBEDDING_MODEL"
 # ── Artifact filenames (all live under EVAL_REPORT_DIR) ──────────────────────
 MANIFEST_FILENAME = "manifest.json"
 RESULTS_FILENAME = "results.jsonl"
+# Every results file in a run dir, single-process and per-worker alike — what a READER
+# must take in to see the whole run.
+RESULTS_GLOB = "results*.jsonl"
+# pytest-xdist names each worker process (gw0, gw1, ...) in this variable.  Cases are
+# distributed ACROSS processes, so each worker appends to its OWN results file and no two
+# processes ever interleave writes into one.  Unset (single process) keeps the plain
+# ``results.jsonl``, so a run dir produced without xdist reads exactly as it always did.
+XDIST_WORKER_ENV = "PYTEST_XDIST_WORKER"
+# The run id shared by every worker.  A worker resolves the run from its OWN environment
+# and would otherwise stamp its own ``datetime.now()`` into the id, so N workers would
+# write N run ids into one directory.  The Makefile sets this once per run.
+EVAL_RUN_ID_ENV = "EVAL_RUN_ID"
+
+
+def results_filename(worker: str | None) -> str:
+    """The results file this process appends to — its own when running under xdist."""
+    return f"results-{worker}.jsonl" if worker else RESULTS_FILENAME
+
+
+def load_results_lines(report_dir: Path) -> list[str]:
+    """Every case record in a run dir, across all its results files, in a stable order.
+
+    Sorted by filename so a re-read renders the same run identically; within a file,
+    append order is preserved.  A run's cases complete in nondeterministic order under
+    xdist anyway, so file order is the only order there is to keep."""
+    lines: list[str] = []
+    for path in sorted(report_dir.glob(RESULTS_GLOB)):
+        lines.extend(line for line in path.read_text().splitlines() if line.strip())
+    return lines
+
+
 DIRTY_DIFF_FILENAME = "dirty.diff"
 
 # Defaults mirror `_real_model_config` / the Makefile so a manifest records the
@@ -410,13 +441,16 @@ def build_manifest(
     lever: str,
     now: datetime,
     baseline: str | None = None,
+    run_id: str | None = None,
 ) -> RunManifest:
     """Assemble the run manifest from explicit inputs (``now`` fixes the run id). ``baseline`` is
-    the run's ``EVAL_BASELINE``, recorded so the flips index survives to assemble time (#1752)."""
+    the run's ``EVAL_BASELINE``, recorded so the flips index survives to assemble time (#1752).
+    An explicit ``run_id`` overrides the derivation, which is how every xdist worker in one run
+    agrees on one identity instead of each stamping its own clock."""
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     short = commit[:8] if commit and commit != UNKNOWN_COMMIT else UNKNOWN_COMMIT
     return RunManifest(
-        run_id=f"run-{stamp}-{short}",
+        run_id=run_id or f"run-{stamp}-{short}",
         created_at=now.isoformat(),
         commit=commit or UNKNOWN_COMMIT,
         dirty=bool(dirty_diff),
@@ -455,13 +489,19 @@ class EvalRun:
     dirty_diff: str
 
     def write_inputs(self) -> None:
-        """Write ``manifest.json`` + the verbatim ``dirty.diff`` (idempotent)."""
+        """Write ``manifest.json`` + the verbatim ``dirty.diff`` — once per run dir.
+
+        Write-ONCE rather than write-always: under xdist every worker resolves the run
+        and would rewrite the manifest, and each carries its own ``created_at``, so
+        racing writes would differ in content as well as timing.  The first writer wins
+        and the rest read through it."""
         self.report_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = self.report_dir / MANIFEST_FILENAME
+        if manifest_path.exists():
+            return
         if self.dirty_diff:
             (self.report_dir / DIRTY_DIFF_FILENAME).write_text(self.dirty_diff)
-        (self.report_dir / MANIFEST_FILENAME).write_text(
-            self.manifest.model_dump_json(indent=2) + "\n"
-        )
+        manifest_path.write_text(self.manifest.model_dump_json(indent=2) + "\n")
 
     def write_case_header(self, case_id: str) -> None:
         """Stamp the manifest header atop this case's report, once (before sample 1)."""
@@ -472,9 +512,10 @@ class EvalRun:
         report.write_text(render_manifest_header(self.manifest) + "\n")
 
     def append_case(self, artifact: CaseArtifact) -> None:
-        """Append one case's record as a line to ``results.jsonl``."""
+        """Append one case's record to THIS process's results file."""
         self.report_dir.mkdir(parents=True, exist_ok=True)
-        with (self.report_dir / RESULTS_FILENAME).open("a") as handle:
+        name = results_filename(os.environ.get(XDIST_WORKER_ENV))
+        with (self.report_dir / name).open("a") as handle:
             handle.write(artifact.model_dump_json() + "\n")
 
 
@@ -500,6 +541,7 @@ def run_from_env(env: Mapping[str, str], *, now: datetime | None = None) -> Eval
         lever=lever,
         now=now or datetime.now(UTC),
         baseline=(env.get(EVAL_BASELINE_ENV) or "").strip() or None,
+        run_id=(env.get(EVAL_RUN_ID_ENV) or "").strip() or None,
     )
     return EvalRun(Path(report_dir), manifest, dirty_diff)
 
