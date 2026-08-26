@@ -140,6 +140,41 @@ class TestRetryResilience:
         await client.close()
 
     @pytest.mark.asyncio
+    async def test_a_200_carrying_no_completion_is_retried_then_reported(self, monkeypatch) -> None:
+        """A gateway can answer 200 with an error payload where a completion belongs.
+
+        The SDK parses it into a ChatCompletion whose `choices` is None — not an openai
+        error, so before this it escaped the retry loop as a TypeError at the first
+        subscript, killed the turn, and left the provider's own reason nowhere. Measured
+        against OpenRouter, that ended 4 of 10 samples with no reply at all.
+        """
+        attempts = 0
+
+        class _NoChoices:
+            choices = None
+            model_extra = {"error": {"message": "upstream provider returned an error"}}
+
+        async def answer_without_a_completion(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            return _NoChoices()
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=3, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
+
+        with pytest.raises(LlmResponseError) as exc_info:
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        assert attempts == 3  # retried, not raised on the first one
+        # The provider's own words survive, so the run record says WHY rather than "None".
+        assert "no choices" in str(exc_info.value)
+        assert "upstream provider returned an error" in str(exc_info.value)
+
+        await client.close()
+
+    @pytest.mark.asyncio
     async def test_a_configured_timeout_reaches_the_underlying_client(self) -> None:
         """The deadline is only real if it lands on the HTTP client that makes the call."""
         client = LlmClient(
