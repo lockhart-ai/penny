@@ -488,6 +488,21 @@ def test_every_sample_folds_whole_in_the_comment(tmp_path: Path) -> None:
     )
 
 
+def test_a_case_level_preamble_reaches_the_comment_verbatim(tmp_path: Path) -> None:
+    """A ported case writes its three-section report above its samples (#1995), and the
+    assembler carries it through unchanged — ONE rendering, on disk and in the comment, rather
+    than two that can disagree.  It lands above the folds, which is where it is read from."""
+    manifest, artifact = _mixed_run(tmp_path)
+    sections = "#### `browse-answer` — end-state assertions, variance, harness\n\n**A.** …"
+    path = tmp_path / f"{artifact.case_id}.md"
+    header = render_manifest_header(manifest) + "\n"
+    path.write_text(f"{header}{sections}\n\n{path.read_text()[len(header) :].lstrip()}")
+    comment = assemble_run_comment(tmp_path)
+    assert sections in comment
+    assert comment.index(sections) < comment.index(_BROWSE_SAMPLE_FOLDED)
+    assert _BROWSE_SAMPLE_FOLDED in comment
+
+
 def test_md_and_comment_render_every_sample_identically(tmp_path: Path) -> None:
     """The ``.md`` and the comment are the SAME rendering now (#1759): the on-disk ``<case_id>.md``
     keeps every sample's full folded body (the footer's audit target), and the comment carries the

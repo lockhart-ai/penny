@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -26,6 +26,7 @@ from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from similarity.embeddings import deserialize_embedding
 from sqlmodel import Session, col, select
 
 from penny.config import Config
@@ -59,6 +60,7 @@ from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
+from penny.tests.eval import cohort as eval_cohort
 from penny.tests.eval import report, run_health
 from penny.tests.eval.artifacts import FailureCause
 from penny.tests.eval.baseline import Baseline, baseline_from_env
@@ -243,6 +245,10 @@ class SampleResult:
     # tool call.  Stamped by ``_write_sample_report`` (same ``EVAL_REPORT_DIR`` gate as the artifact
     # write) so it rides into the ``CaseArtifact.sample_fragile`` list the assembler reads.
     fragile: bool = False
+    # What this sample LEFT BEHIND, read while its database was still live (#1995) — the measured
+    # half of a cohort case.  ``None`` for every case that declares no cohort, so nothing changes
+    # for a case that has not been ported.
+    facts: eval_cohort.SampleFacts | None = None
 
     @property
     def passed(self) -> bool:
@@ -2126,6 +2132,202 @@ async def _run_samples(
     return results, perf
 
 
+# ── The cohort: one request, K phrasings, pooled (#1995) ─────────────────────
+#
+# A ported case declares ARMS instead of one message.  Everything below is the MECHANISM —
+# which arm a sample runs, whether its measured turn ran at all, and how the case's three
+# sections are assembled once every sample is in.  What is asserted and which features are
+# measured stay with the CASE, so porting the next case is writing arms + assertions, not
+# writing harness.
+
+# A cohort scorer: the ordinary scorer plus the ARM this sample ran, since a directed-change
+# assertion has to know which world's facts the reply should be carrying.
+CohortScorer = Callable[[Database, set[str], str, "eval_cohort.CohortArm"], "list[Check]"]
+
+# A cohort fact reader: the sample's measured features, by name, read off its live database.
+CohortFacts = Callable[[Database, "eval_cohort.CohortArm"], dict[str, str]]
+
+# Why a sample is not counted.  The one structural completeness condition every case shares:
+# a sample's database exists from sample START, so a file is not evidence that anything ran.
+NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its seeded world"
+NO_REPLY = "the measured turn produced no reply"
+
+
+def measured_turn_ran(db: Database) -> bool:
+    """Whether THIS sample's own turn reached the model at all.
+
+    ``live_prompts`` already excludes every seeded prior turn, so an empty window is the
+    dead sample exactly: the seeded round is present and nothing was added to it.  Read
+    structurally rather than inferred from a score, because a dead sample scores like a
+    behavioural failure and would otherwise be pooled as wild variance (17 of 31 in the
+    first prototype run)."""
+    return bool(live_prompts(db))
+
+
+def reply_embedding(db: Database, reply: str) -> list[float] | None:
+    """The vector of the reply this sample was scored on.
+
+    Every conversational send is embedded at egress, so the cohort's reply spread costs no
+    model call — it is a read of a column production already fills.  Looked up by the reply's
+    own text rather than by a recency window, so it is the SCORED reply's vector and not
+    whichever send happened to be last.  ``None`` when the row carries no embedding, which
+    the spread treats as one fewer cosine pair rather than one fewer reply."""
+    row = db.messages.find_outgoing_by_content(reply)
+    if row is None or row.embedding is None:
+        return None
+    return deserialize_embedding(row.embedding)
+
+
+def given_to_the_model(db: Database) -> str:
+    """Everything this sample's turn was GIVEN, as one blob: the user's turns and the tool
+    results, and nothing else.
+
+    The world a provenance assertion reads against (#1994).  Penny's OWN turns are excluded
+    deliberately — a value she invents early in a turn rides into the message history and
+    would then source itself from her own account of it, which is the specific way a
+    fabrication launders itself.  Tool results ARE included: a count a write returned is
+    something the model was told, not something it made up."""
+    given = [
+        str(turn.get("content") or "")
+        for turn in _iter_prompt_messages(db)
+        if turn.get("role") in _GIVEN_ROLES
+    ]
+    return "\n".join(given)
+
+
+# The turn roles that count as WORLD.  Assistant turns are absent by design (above), and so
+# is the SYSTEM prompt: #1994 builds the world from what the round was TOLD — the user's words
+# and what her tools answered — and a self-state header restating what Penny already believes
+# is the same laundering risk one step removed.
+_GIVEN_ROLES = frozenset({"user", "tool"})
+
+
+def _sample_facts(
+    db: Database,
+    *,
+    case_id: str,
+    sample_index: int,
+    arm: eval_cohort.CohortArm,
+    reply: str,
+    facts: CohortFacts | None,
+) -> eval_cohort.SampleFacts:
+    """One sample's measured half — gated for completeness FIRST, so a dead sample carries
+    no features to be pooled by accident."""
+    name = f"{case_id}-{sample_index + 1} ({arm.label})"
+    exclusion = _exclusion(db, reply)
+    if exclusion is not None:
+        return eval_cohort.SampleFacts(
+            name=name,
+            arm=arm.label,
+            world=arm.world,
+            pooled=arm.pooled,
+            complete=False,
+            exclusion=exclusion,
+        )
+    return eval_cohort.SampleFacts(
+        name=name,
+        arm=arm.label,
+        world=arm.world,
+        pooled=arm.pooled,
+        features=facts(db, arm) if facts is not None else {},
+        reply=reply,
+        reply_embedding=reply_embedding(db, reply),
+    )
+
+
+def _exclusion(db: Database, reply: str) -> str | None:
+    """Why this sample cannot be counted, or ``None`` when it can."""
+    if not measured_turn_ran(db):
+        return NO_MEASURED_TURN
+    if not reply.strip():
+        return NO_REPLY
+    return None
+
+
+def _assertion_rows(results: Sequence[SampleResult]) -> list[eval_cohort.AssertionRow]:
+    """Section A's rows: the SCORED checks, folded across the cohort by label.
+
+    A projection of the aggregate the harness already computes, so a case's pass rates and
+    its report can never be two different tallies.  Advisory rows are left out — an
+    assertion is what the case CLAIMS, and flavour is not a claim."""
+    return [
+        eval_cohort.AssertionRow(label=outcome.label, passed=outcome.passed, total=outcome.total)
+        for outcome in eval_artifacts.aggregate_checks(results)
+        if outcome.scored
+    ]
+
+
+def _arm_pages(
+    arm: eval_cohort.CohortArm | None,
+    worlds: Mapping[str, list[CannedPage]] | None,
+    browse: list[CannedPage] | None,
+) -> list[CannedPage] | None:
+    """The canned pages this sample browses: its ARM's world when the case declares one,
+    else the case's single browse set.
+
+    A world is looked up by the arm's own name and a missing one is a KeyError rather than
+    a silent fall-back to the base pages — a directed-change assertion whose perturbed world
+    quietly did not install would pass by reading the world it was supposed to have left."""
+    if arm is None or worlds is None:
+        return browse
+    return worlds[arm.world]
+
+
+def _arm_scorer(
+    arm: eval_cohort.CohortArm | None,
+    score: Scorer | None,
+    cohort_score: CohortScorer | None,
+) -> Scorer:
+    """The scorer this sample is graded by — a cohort case's bound to its ARM, since a
+    directed-change assertion is a claim about the world the sample actually ran in.
+
+    Exactly one of the two must be declared, and saying so loudly is the point: a cohort
+    case that passed the plain ``score=`` would have every arm scored against the base
+    world."""
+    if arm is None:
+        if score is None:
+            raise ValueError("chat_eval needs `score` for a case with no cohort")
+        return score
+    if cohort_score is None:
+        raise ValueError("chat_eval needs `cohort_score` for a case declaring a cohort")
+    bound = cohort_score
+    return lambda db, before, reply: bound(db, before, reply, arm)
+
+
+def _reporting_model() -> str:
+    """Which model produced this run's numbers, off the run manifest (the identity the whole
+    report is stamped with) — empty only off-report, where nothing is recorded anyway."""
+    run = eval_artifacts.active_run()
+    return run.manifest.model if run is not None else ""
+
+
+def _record_cohort_report(case_id: str, results: Sequence[SampleResult], perf: _Perf) -> None:
+    """Assemble and write the case's three-section report. No-op off-report, and no-op for a
+    case with no cohort — the sections describe a pooled cohort and there is nothing to say
+    about a case that declared none."""
+    samples = [result.facts for result in results if result.facts is not None]
+    if not samples:
+        return
+    report_model = eval_cohort.CaseReport(
+        cost=eval_cohort.per_sample_cost(
+            samples=len(results),
+            calls=perf.calls,
+            duration_ms=perf.duration_ms,
+            input_tokens=perf.input_tokens,
+            output_tokens=perf.output_tokens,
+            reasoning_tokens=perf.reasoning_tokens,
+        ),
+        case_id=case_id,
+        # The model the numbers were produced by, read off the run's own manifest — a ceiling
+        # recorded without it is unusable, since two models differ several-fold on the same
+        # feature and one shared threshold would measure neither.
+        model=_reporting_model(),
+        assertions=_assertion_rows(results),
+        variance=eval_cohort.pool(samples),
+    )
+    eval_artifacts.record_case_report(case_id, report_model.render())
+
+
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
 ChatEval = Callable[..., Awaitable[None]]
 
@@ -2215,6 +2417,8 @@ async def _drive_sample(
     wrap_client: Callable[[LlmClient], _InjectingClient] | None,
     timeout: float,
     retryable: bool,
+    arm: eval_cohort.CohortArm | None = None,
+    facts: CohortFacts | None = None,
 ) -> SampleResult:
     """ONE attempt at one sample against an already-seeded Penny: drive the turns,
     score them, write the sample's report block and dump its thinking.
@@ -2232,6 +2436,7 @@ async def _drive_sample(
         wrapper = wrap_client(penny.chat_agent._model_client)
         penny.chat_agent._model_client = wrapper
     before = collection_names(penny.db)
+    reply = ""
     try:
         reply = await _drive_turns(server, turns, timeout=timeout, retryable=retryable)
         result = _scored_sample(penny.db, before, reply, score, wrapper)
@@ -2243,6 +2448,18 @@ async def _drive_sample(
         result = SampleResult.binary(["no reply within timeout"])
         _stamp_cause(penny.db, result, timed_out=True)
         _write_sample_report(penny.db, case_id, sample_index, result=result)
+    # The facts are read HERE, while this sample's own database is still open — the only
+    # moment the cohort's measured half is available at all.  A timed-out sample reaches
+    # this line too, so it is EXCLUDED by name rather than silently absent from the pool.
+    if arm is not None:
+        result.facts = _sample_facts(
+            penny.db,
+            case_id=case_id,
+            sample_index=sample_index,
+            arm=arm,
+            reply=reply,
+            facts=facts,
+        )
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
@@ -2274,7 +2491,11 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
         case_id: str,
         message: str | None = None,
         messages: Sequence[str] | None = None,
-        score: Scorer,
+        cohort: Sequence[eval_cohort.CohortArm] | None = None,
+        worlds: Mapping[str, list[CannedPage]] | None = None,
+        score: Scorer | None = None,
+        cohort_score: CohortScorer | None = None,
+        facts: CohortFacts | None = None,
         seed: Seeder | None = None,
         seed_skills: Sequence[SkillDraft] | None = None,
         browse: list[CannedPage] | None = None,
@@ -2287,16 +2508,23 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
         gate_pathology_excluded: bool = False,
     ) -> None:
         eval_artifacts.begin_case(case_id)
-        turns = _conversation_turns(message, messages)
+        arms = eval_cohort.expand_arms(cohort) if cohort else []
+        turns = [] if arms else _conversation_turns(message, messages)
+        # A cohort's N is the sum of its ARMS' own counts, deliberately NOT ``EVAL_SAMPLES``:
+        # a recorded ceiling is ``(feature, N, value)`` and normalised entropy is biased upward
+        # at small N, so an N that drifts with an environment variable would silently make every
+        # recorded threshold incomparable to the run that has to clear it.
+        driven = len(arms) if arms else samples
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
+            arm = arms[sample_index] if arms else None
             await _seed_sample(
                 penny,
                 seed=seed,
                 seed_skills=seed_skills,
-                browse=browse,
+                browse=_arm_pages(arm, worlds, browse),
                 prepare=prepare,
             )
             return await _drive_sample(
@@ -2304,21 +2532,24 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                 server,
                 case_id=case_id,
                 sample_index=sample_index,
-                turns=turns,
-                score=score,
+                turns=[arm.message] if arm is not None else turns,
+                score=_arm_scorer(arm, score, cohort_score),
                 wrap_client=wrap_client,
                 timeout=timeout,
                 retryable=retryable,
+                arm=arm,
+                facts=facts,
             )
 
         results, perf = await _run_samples(
             make_config,
             tmp_path,
             case_id=case_id,
-            samples=samples,
+            samples=driven,
             drive=_drive,
             attempts=_MODEL_CALL_ATTEMPTS,
         )
+        _record_cohort_report(case_id, results, perf)
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -2328,7 +2559,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
             min_pass_rate=min_pass_rate,
             gate_pathology_excluded=gate_pathology_excluded,
         )
-        perf.report(case_id, samples)
+        perf.report(case_id, driven)
         _assert_threshold(
             case_id,
             results,

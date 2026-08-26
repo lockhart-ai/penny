@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
 
 import pytest
 from sqlmodel import Session
@@ -66,13 +67,20 @@ from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState, MachineSnapshot
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, PromptLog
+from penny.database.models import MemoryEntry, MemoryRow, PromptLog, Skill
 from penny.database.skill_store import steps_from_json
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
+
+# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
+# state machine's elicitation edge asks the same question of a turn (nothing acted on
+# before it was taught), and one policy in two copies is two contracts.
+from penny.tests.eval.cohort import (
+    BASE_WORLD,
+    CohortArm,
+    unsourced_specifics,
+)
 from penny.tests.eval.conftest import (
-    DESCRIBES_FETCH,
-    DESCRIBES_SAVE,
     REPLY_ANCHOR,
     ChatEval,
     Check,
@@ -80,6 +88,7 @@ from penny.tests.eval.conftest import (
     chat_run_tool_sequences,
     collection_entries,
     describes,
+    given_to_the_model,
     is_ordered_subsequence,
     is_seeded_run,
     new_collections,
@@ -90,10 +99,6 @@ from penny.tests.eval.conftest import (
     tool_call_sequence,
     tool_was_called,
 )
-
-# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
-# state machine's elicitation edge asks the same question of a turn (nothing acted on
-# before it was taught), and one policy in two copies is two contracts.
 from penny.tests.eval.fixtures import (
     ENACTING_TOOLS,
     MULTIHOP_PAGES,
@@ -1333,70 +1338,195 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
     )
 
 
-# ── Story 15, the learn close: what did it actually capture? (#1943) ──────────
+# ── Story 15, the learn close: end-state assertions plus variance (#1994/#1995) ──
 #
-# A demonstrated round is distilled into a routine WHOLE, so a call it picked up along the
-# way — a page fetched twice, a write of something nobody asked to keep — is captured with
-# everything else and enacted verbatim by every later cycle.  Nothing catches that: the
-# framework does not know what the routine was FOR, and by the time a collector runs it the
-# demonstrator is not in the room.  They are in the room at exactly one moment, the
-# learn-close reply, which is why this case scores that reply for the routine's SHAPE
-# rather than only its name (#1658/#1804 established the name and what it needs).
+# THE REFERENCE IMPLEMENTATION.  Every other case is ported against the shape of this one,
+# so it is arranged to be COPIED: the ARMS say how the one request is asked, the WORLDS say
+# what is true when it is asked, the ASSERTIONS say what the round must have left behind,
+# and the FEATURES say what is merely measured.  Everything those four are handed to is
+# shared (``penny/tests/eval/cohort.py``); nothing below is harness.
 #
-# One MEASURED turn, so the LAST reply IS the learn close — the three-turn story above ends
-# on the apply close, where what is running has already been settled.  Correcting a wrong
-# step is re-teaching the routine, so nothing here scores an edit: there is no edit surface.
+# WHY the case is shaped this way rather than scored on phrasings somebody guessed: a reply
+# check written as a token list is measurably too strict and too loose AT ONCE — across 161
+# samples of one claim, 31 replies that stated the recorded cadence correctly were failed by
+# a token list, while on another case an infrastructure error string, a narration of a FAILED
+# search, and a raw thinking leak all passed a verb alternation on the word "search".  So the
+# line drawn here is between what the round LEFT BEHIND, which is read, and what the model
+# CHOSE, which is measured.
 #
-# The round that turn closes is SEEDED, not hoped for (#1989).  A learn close only exists
-# inside a learn round, and the ask that demonstrates one is an imperative about now —
-# which idle's own definition claims, so left to a cold machine the draw went to idle on
-# every measured sample and every reply check failed for a reply nobody had been asked to
-# write.  So the priors the round really has are laid down: the fused setup ask, Penny's
-# answer to it, that turn's ledger, and the machine parked in ``elicit`` on that ask.  The
-# measured turn is then the elicit → learn move this story is about, taken by the
-# production classifier over a world it could actually be in.
+# WHAT IS ASSERTED (section A) — END STATE only, never the route:
+#   * where the machine landed, and that a routine reached the registry
+#   * a PROPERTY of that routine — it names somewhere to act — never its step sequence
+#   * what the STORE holds, reading the WHOLE entry: a prototype assertion that read content
+#     alone reported a 25/32 model failure that was entirely its own bug, because samples put
+#     the fact in the KEY and the blurb in the content
+#   * PROVENANCE — every specific value in the reply traces to something the model was GIVEN
+#   * DIRECTED CHANGE — perturb the world and the reply's facts move with it
 #
-# WHAT THE ASK LENDS THE SCORER, stated rather than assumed: a teaching turn is made of
-# the very verbs a reply describing the routine would use ("go to", "keep"), and it names
-# both pages, so unlike the legibility story's question this ask CANNOT be held apart from
-# the fetch/save families or from the sources — a reply merely reporting the outcome would
-# go green on all of them.  They are reported here (``scored=False``) rather than scored,
-# and what IS scored is the pair the ask cannot supply: that the reply says what the
-# routine will do when it RUNS AGAIN, and that it says it in plain words — no tool
-# identifier out of the record read aloud, which is the frame's own instruction and the
-# thing that decides whether handing the model the record helped or leaked.
+# WHAT IS MEASURED (section B), never asserted: the tool sequence, the shape of the routine
+# recorded, the container name chosen, how many entries were kept, the walk the machine took,
+# and the reply text's own pairwise spread.  Many routes reach one end state — #1993 is the
+# precedent, where three different tools all correctly reached the run record and the check
+# had pinned one — so a route is a number with a one-sided ceiling.
+#
+# WHAT IS DELIBERATELY NOT ASSERTED: whether the club-housekeeping lines belong in a "team
+# news" list.  The setup ask excludes game scores in as many words, so a stored score is a
+# read; whether a training-camp date is notable is a judgement, and asserting a count would
+# assert one reading of it.  It rides in the ENTRY COUNT feature instead.
+#
+# WHAT IS NOT HERE AT ALL: the single-source variant of this ask.  One page instead of two is
+# a different SCENARIO — what the store must hold is a different claim — so it is a different
+# case, not a sixth phrasing.
 
 _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
+
+# ── The request, asked five ways ─────────────────────────────────────────────
+#
+# ONE request — read these two named pages, take the trades and signings, keep a headline and
+# a blurb in a team news list — worded as five different people would word it.  They pool into
+# one cohort: phrasing was measured to contribute ~0.05 of the spread while model stochasticity
+# carries the rest (gpt-oss produced 4.8 distinct routine shapes inside a SINGLE phrasing, and
+# pooling four only reached 9), so a pooled number estimates the underlying variance rather
+# than blending five different things.
+#
+# They are still five, and not one repeated fifteen times, because phrasings are a COVERAGE
+# mechanism: measured on a consistent model, four phrasings scored H = 0.00, 0.52, 0.00, 0.00
+# — three perfectly stable and one that came apart — which the pooled 0.18 hides completely.
+# That is what section B's per-phrasing rows are for.
 
 _LEARN_CLOSE_ASK = (
     f"go to {_FOXES_URL} and {_SEALS_URL}, pull out the trades and signings from "
     "each, and keep the headline plus a short blurb in a team news list for me"
 )
 
-# How a reply says a routine RUNS AGAIN rather than merely reporting what just happened.
-# Broad, and deliberately none of it in the ask: the ask is an imperative about now, so a
-# recurring frame in the reply is the model speaking about the routine it just learned.
-#
-# CADENCE words are deliberately absent — no "every morning", no "twice a day", no "on a
-# schedule".  The frame closes by asking her to OFFER a schedule, so a pattern carrying
-# those would go green on the offer alone and measure nothing about the steps.
-_RUNS_AGAIN = (
-    r"\b(each|every)\s+(time|run|cycle|round)\b"
-    r"|\bwhen(ever)?\s+(it|i)\s+runs?\b|\bfrom\s+now\s+on\b|\bgoing\s+forward\b"
-    r"|\bnext\s+time\b|\brun\s+(it|this|that)\s+again\b|\bre-?run\b"
+_LEARN_CLOSE_PHRASINGS = (
+    _LEARN_CLOSE_ASK,
+    (
+        f"have a look at both of these — {_FOXES_URL} and {_SEALS_URL} — find "
+        "whichever players got traded or signed, and put each headline with a "
+        "one-line summary into a list of team news for me"
+    ),
+    (
+        f"check {_FOXES_URL} and {_SEALS_URL}, grab any trade or signing news off "
+        "each one, and save the headline and a short summary into a team news list"
+    ),
+    (
+        f"read through {_FOXES_URL} and {_SEALS_URL}, pick out the trades and the "
+        "signings, and store each headline along with a brief note in a list of "
+        "team news for me"
+    ),
+    (
+        f"open {_FOXES_URL}, then {_SEALS_URL}. anything about a player being traded "
+        "or signed, keep the headline and a sentence about it in a team news list."
+    ),
 )
 
-# The two scored reply claims, named once because each is written twice — as the verdict a
-# learn round earns, and as the ➖ a round that never entered learn stands down to.  A label
-# is what a report is read by and what a baseline diff keys on, so the two branches must be
-# the same string rather than two spellings of one intention.
-_RUNS_AGAIN_LABEL = "reply: it says what the routine will do when it runs again"
-_PLAIN_WORDS_LABEL = "reply: the steps are given in plain words, not read back as tool names"
+# ── The two worlds ───────────────────────────────────────────────────────────
+#
+# The same SHAPE twice: each page carries one signing-or-trade, one game score the setup ask
+# excludes word for word, and one piece of club housekeeping.  The perturbed world replaces
+# every proper noun and every fact and changes nothing else, which is what makes "the reply's
+# facts moved with the world" a read rather than a judgement.
 
-# Why EVERY reply row of this case stands down at once — one reason, so it is one string:
-# each of them reads the reply against a routine, and there is no routine.  Which row it
-# renders on is the row's own label's job to say.
-_NOTHING_LEARNED = "nothing was learned, so there was no routine for the reply to be about"
+_PERTURBED_WORLD = "perturbed"
+
+_FOXES_SWAPPED_PAGE = CannedPage(
+    match="ridgelinefoxes",
+    text=(
+        "Title: Ridgeline Foxes | Official Site — Team News\n"
+        f"{_FOXES_URL}\n\n"
+        "Foxes trade defenceman Wilhelmina Roux to the Rovers for a third-round "
+        "pick — the deal was filed Tuesday afternoon.\n"
+        "Final score: Foxes 1, Rovers 5.\n"
+        "Training camp opens next month at Ridgeline Arena.\n"
+    ),
+)
+
+_SEALS_SWAPPED_PAGE = CannedPage(
+    match="harborseals",
+    text=(
+        "Title: Harbor Seals | Official Site — Team News\n"
+        f"{_SEALS_URL}\n\n"
+        "Seals sign winger Casimir Oyelaran to a one-year contract ahead of the "
+        "autumn window.\n"
+        "Final score: Seals 6, Gulls 2.\n"
+        "Season ticket renewals open Friday.\n"
+    ),
+)
+
+
+class _World(NamedTuple):
+    """What is TRUE in one world, and what its pages return.
+
+    ``keeps`` is one token set per SOURCE — the names that appear only on that page's
+    trade-or-signing line, so a stored copy says which page it came from and an invented one
+    matches neither.  ``excludes`` are score-line-only tokens: the setup ask says "not game
+    scores" in as many words, which is what makes a stored score a READ rather than a taste.
+    ``says`` is every page's text, the ground a stored entry's specifics are traced to."""
+
+    pages: list[CannedPage]
+    keeps: tuple[tuple[str, ...], ...]
+    excludes: tuple[str, ...]
+
+    @property
+    def says(self) -> str:
+        return "\n".join(page.text for page in self.pages)
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(token for source in self.keeps for token in source)
+
+
+_WORLDS: dict[str, _World] = {
+    BASE_WORLD: _World(
+        pages=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
+        keeps=(("brandt", "aurelio"), ("volk", "petra")),
+        excludes=("rovers 2", "gulls 4"),
+    ),
+    _PERTURBED_WORLD: _World(
+        pages=[_FOXES_SWAPPED_PAGE, _SEALS_SWAPPED_PAGE],
+        keeps=(("roux", "wilhelmina"), ("oyelaran", "casimir")),
+        excludes=("rovers 5", "gulls 2"),
+    ),
+}
+
+# The world each arm's facts are checked AGAINST the other of — directed change is a claim
+# about both directions at once, so each world names its opposite here rather than at four
+# call sites.
+_OTHER_WORLD = {BASE_WORLD: _PERTURBED_WORLD, _PERTURBED_WORLD: BASE_WORLD}
+
+_PAGES_BY_WORLD = {name: world.pages for name, world in _WORLDS.items()}
+
+# ── The cohort ───────────────────────────────────────────────────────────────
+#
+# 5 phrasings x 3 = 15 POOLED, plus 3 on the perturbed world that are not.  Fifteen is near
+# the floor of what the statistic supports and deliberately not below it: subsampling two real
+# 32-sample cohorts down to 15 puts the spread on normalised entropy at ~±0.11, which is not
+# precise — but a variant cohort (modal share 0.33) and a consistent one (0.80) overlap 0.2%
+# there, so destabilisation is caught cleanly while a two-point wobble is not.  At N=9 the
+# spread is 0.33-0.43, wider than the gap between a good case and a bad one.
+#
+# The perturbed arm does NOT pool: it exists to make the directed-change assertion, and folding
+# a deliberately different world into the spread would report that difference as instability.
+_LEARN_CLOSE_SAMPLES_PER_PHRASING = 3
+_LEARN_CLOSE_PERTURBED_SAMPLES = 3
+
+_LEARN_CLOSE_ARMS = [
+    CohortArm(
+        label=f"phrasing {index + 1}",
+        message=message,
+        samples=_LEARN_CLOSE_SAMPLES_PER_PHRASING,
+    )
+    for index, message in enumerate(_LEARN_CLOSE_PHRASINGS)
+] + [
+    CohortArm(
+        label="perturbed world",
+        message=_LEARN_CLOSE_ASK,
+        samples=_LEARN_CLOSE_PERTURBED_SAMPLES,
+        world=_PERTURBED_WORLD,
+        pooled=False,
+    )
+]
 
 # The round the measured turn closes, one turn each: the user's fused setup ask — story
 # 15's OWN opening ask, so the two cases open on one ask rather than on two spellings of it
@@ -1408,22 +1538,6 @@ _LEARN_CLOSE_TEACH_QUESTION = (
     "happy to set that up — but i don't have a routine for it yet. can you walk me "
     "through one pass in a single message? which pages should i read, what counts as "
     "notable, and what should i keep for each one?"
-)
-
-# Every turn of the seeded round is held to the rule the ask already was: none of them may
-# lend the prompt under test the RECURRENCE words the scored claim looks for.  Penny's own
-# seeded turn is the one the model is most likely to echo, so it is checked here beside the
-# ask rather than left to a reader to notice.  The two ADVISORY families are deliberately
-# out of scope: the ask already carries their verbs by its nature (a teaching turn is made
-# of them), which is exactly why they are reported and not scored.
-_ROUND_TURNS_LENDING_RECURRENCE = [
-    turn
-    for turn in (_LEARN_CLOSE_ASK, _LEARN_CLOSE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
-    if describes(turn, _RUNS_AGAIN)
-]
-assert not _ROUND_TURNS_LENDING_RECURRENCE, (
-    f"the round's turns must lend no word to the recurrence pattern: "
-    f"{_ROUND_TURNS_LENDING_RECURRENCE}"
 )
 
 # The run ids the seeded elicit turn is written under — its classifier draw and its chat
@@ -1524,144 +1638,222 @@ def _assert_the_round_has_not_started(db: Database) -> None:
 
 
 def _learned_shapes(db: Database) -> list[str]:
-    """The shape line the framework rendered from what this sample actually learned —
-    reported beside the reply checks so a reader compares the account against the RECORD
-    rather than against what the case's author expected the round to capture.  A list,
-    because a round that minted more than one routine is itself the finding."""
+    """The shape line the framework rendered from what this sample actually learned.
+
+    MEASURED, never asserted: a routine's step sequence is model output exactly like the
+    reply, and many sequences reach the same end state.  A list, because a round that minted
+    more than one routine is itself the finding and collapses to its own feature value."""
     return [render_skill_shape(skill) for skill in db.skills.list_all()]
 
 
-def _tools_read_aloud(db: Database, reply: str) -> list[str]:
-    """The RECORD's own tool identifiers that turned up verbatim in the reply.
+# ── A. The deterministic assertions — END STATE only ─────────────────────────
 
-    Read off the learned steps rather than from a list written here, so a routine built
-    on a tool nobody has enumerated is covered the same way: what is being checked is
-    that the frame's record came back TRANSLATED, in the plain words it asks for, rather
-    than recited — the leak #1799 measured, which handing the model a step shape at all
-    is what risks re-opening."""
-    normalized = _normalize(reply)
-    return sorted(
-        {
-            step.tool
-            for skill in db.skills.list_all()
-            for step in steps_from_json(skill.steps)
-            if _normalize(step.tool) in normalized
-        }
+
+def _has_a_destination(skill: Skill) -> bool:
+    """Whether a recorded routine names somewhere to act.
+
+    Read off the ATTACHMENT MARK, which distillation sets on any leaf whose demonstrated
+    value named one of Penny's own collections — registry-derived, so it is true of a write,
+    of a log append, and of a plugin verb nobody here has heard of, and false of a routine
+    that only browses.  Keyed to the mark and never to a tool name, because a skill is an
+    arbitrary tool sequence and a name-keyed rule simply would not fire for a shape nobody
+    enumerated."""
+    return any(
+        substitution.attachment
+        for step in steps_from_json(skill.steps)
+        for substitution in step.substitutions
     )
 
 
-def _describes_check(claim: str, pattern: str, reply: str, learned: bool) -> Check:
-    """One of the routine's moves as the reply describes it — reported, not scored, for
-    the reason given above: the teaching ask carries both families' verbs, so a green here
-    cannot tell an account of the routine from an echo of the instruction.
+def _routine_can_persist(db: Database) -> Check:
+    """A PROPERTY of the routine, never its shape.
 
-    NOT APPLICABLE when nothing was learned (#1989): there is no routine for a reply to
-    describe, so a ❌ here would report a bad account of a routine that does not exist."""
-    label = f"reply: it describes {claim}"
-    if not learned:
-        return Check.na(label, rationale=_NOTHING_LEARNED, kind="reply", anchor=REPLY_ANCHOR)
+    The prototype cohort minted two routines that browse and never persist — they would have
+    run every cycle for ever and kept nothing — and no check in the suite could see it,
+    because every check was about the reply.  What is asserted is that the routine names a
+    destination; the step sequence that reaches it is measured, not asserted."""
+    skills = db.skills.list_all()
+    missing = [skill.name for skill in skills if not _has_a_destination(skill)]
     return Check(
-        label,
-        describes(reply, pattern),
-        scored=False,
+        "state: the routine it recorded names somewhere to act",
+        bool(skills) and not missing,
+        rationale=f"no destination in {missing}" if missing else None,
+        kind="state",
+    )
+
+
+def _stored_text_of(written: list[tuple[str, MemoryEntry]]) -> str:
+    """Every entry this run wrote, KEY AND CONTENT together, normalized.
+
+    Both halves, always: a prototype assertion that read content alone reported a 25/32 model
+    failure that was entirely its own bug — seven samples had put the fact in the key and the
+    blurb in the body, which is a perfectly good way to store it."""
+    return " ".join(_entry_text(entry) for _name, entry in written)
+
+
+def _store_holds_each_source(written: list[tuple[str, MemoryEntry]], world: _World) -> Check:
+    """What the round KEPT, one claim per source page.
+
+    The ask says to take the trades and signings from EACH page, so a round that read both and
+    kept one has not done what was asked — and which page it dropped is the finding, so the
+    rationale names it rather than reporting a bare miss."""
+    stored = _stored_text_of(written)
+    missed = [source[0] for source in world.keeps if not any(token in stored for token in source)]
+    return Check(
+        "state: what each page said was kept",
+        bool(written) and not missed,
+        rationale=f"nothing stored from {missed}" if missed else None,
+        kind="state",
+    )
+
+
+def _store_holds_nothing_excluded(written: list[tuple[str, MemoryEntry]], world: _World) -> Check:
+    """The one exclusion the round was told in as many words: not game scores.
+
+    A read rather than a taste — the setup ask says it, and the tokens compared appear ONLY on
+    the score line, so a stored score is unambiguous.  One prototype sample stored the raw page
+    body against exactly this ask and no check could see it."""
+    stored = _stored_text_of(written)
+    landed = [token for token in world.excludes if token in stored]
+    return Check(
+        "state: nothing the ask excluded was stored",
+        not landed,
+        rationale=f"stored the excluded {landed}" if landed else None,
+        kind="state",
+    )
+
+
+def _store_traces_to_the_pages(written: list[tuple[str, MemoryEntry]], world: _World) -> Check:
+    """Every stored entry's specifics come off the pages the round read.
+
+    The store's own provenance claim, using the same rule the reply's does — an entry naming a
+    player nobody's page mentions was invented, and once it is in a collection a collector
+    re-reads it for ever."""
+    invented = {
+        token
+        for _name, entry in written
+        for token in unsourced_specifics(_entry_text_raw(entry), world.says)
+    }
+    return Check(
+        "state: every stored entry traces to the pages",
+        not invented,
+        rationale=f"unsourced in the store: {sorted(invented)}" if invented else None,
+        kind="state",
+    )
+
+
+def _entry_text_raw(entry: MemoryEntry) -> str:
+    """An entry's key and content UNFOLDED — the provenance rule reads capitalisation, which
+    ``_entry_text``'s normalisation deliberately throws away."""
+    return " ".join(text for text in (entry.key, entry.content) if text)
+
+
+def _reply_is_sourced(db: Database, reply: str) -> Check:
+    """Every specific value in the reply traces to something the model was GIVEN.
+
+    The world is the user's turns and the tool results — never Penny's own turns, because a
+    value she invents early in a turn rides into the message history and would then source
+    itself from her own account of it."""
+    invented = unsourced_specifics(reply, given_to_the_model(db))
+    return Check(
+        "reply: every specific value in it is sourced",
+        not invented,
+        rationale=f"unsourced: {invented}" if invented else None,
         kind="reply",
         anchor=REPLY_ANCHOR,
     )
 
 
-def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
-    """The routine's two moves as the reply describes them, plus which of the two pages it
-    named — reported, not scored, for the reason given above: the teaching ask carries
-    both families' verbs and both sources, so a green here cannot tell an account of the
-    routine from an echo of the instruction."""
-    sources = [token for token in ("foxes", "seals") if token in _normalize(reply)]
+def _reply_reads_this_world(reply: str, world: _World) -> Check:
+    """Half of DIRECTED CHANGE: the reply carries this world's own facts."""
+    folded = _normalize(reply)
+    named = [token for token in world.names if token in folded]
+    return Check(
+        "reply: it names what this world says",
+        bool(named),
+        rationale=f"named {named}" if named else "named none of this world's facts",
+        kind="reply",
+        anchor=REPLY_ANCHOR,
+    )
+
+
+def _reply_reads_no_other_world(reply: str, other: _World) -> Check:
+    """The other half: nothing from the world this sample was NOT given.
+
+    Perturb the world and the facts must move with it — a reply that says the same thing over
+    a different world was never reading the world.  The prototype measured zero cross-
+    contamination across 40 samples, which is what makes this an assertion rather than a
+    number: the round really is reading, so a leak is a regression and not noise."""
+    folded = _normalize(reply)
+    leaked = [token for token in other.names if token in folded]
+    return Check(
+        "reply: it names nothing from the world it was not given",
+        not leaked,
+        rationale=f"leaked {leaked}" if leaked else None,
+        kind="reply",
+        anchor=REPLY_ANCHOR,
+    )
+
+
+def _score_learn_close(db: Database, before: set[str], reply: str, arm: CohortArm) -> list[Check]:
+    """Section A, in one place: where the machine landed, what the store holds, and whether
+    the reply is grounded in the world this arm was actually given."""
+    world = _WORLDS[arm.world]
+    written = _entries_this_run_wrote(db)
     return [
-        _describes_check(claim, pattern, reply, learned)
-        for claim, pattern in (
-            ("the pages being read", DESCRIBES_FETCH),
-            ("what it finds being kept", DESCRIBES_SAVE),
-        )
-    ] + [
-        Check(
-            "reply: which pages it named",
-            len(sources) == 2,
-            rationale=f"named {sources}",
-            scored=False,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        )
-    ]
-
-
-def _learn_close_reply_checks(reply: str, learned: bool, recited: list[str]) -> list[Check]:
-    """The pair the ask cannot supply — that the reply says what the routine will do when
-    it RUNS AGAIN, and that it says it in plain words rather than reciting the record's own
-    tool identifiers.
-
-    Both are claims about a LEARN CLOSE, so both are NOT APPLICABLE when the round taught
-    nothing (#1989): the reply that was written closed some other kind of turn, and grading
-    it against this contract reports a failed contract for a contract nobody exercised.
-    What is graded then is the landing, which says the true thing — the round never entered
-    learn."""
-    if not learned:
-        return [
-            Check.na(label, rationale=_NOTHING_LEARNED, kind="reply", anchor=REPLY_ANCHOR)
-            for label in (_RUNS_AGAIN_LABEL, _PLAIN_WORDS_LABEL)
-        ]
-    return [
-        Check(
-            _RUNS_AGAIN_LABEL,
-            describes(reply, _RUNS_AGAIN),
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        ),
-        Check(
-            _PLAIN_WORDS_LABEL,
-            not recited,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-            rationale=f"read aloud {recited}" if recited else None,
-        ),
-    ]
-
-
-def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check]:
-    learned = bool(db.skills.list_all())
-    shapes = _learned_shapes(db)
-    recited = _tools_read_aloud(db, reply)
-    return [
-        # The landing is this story's PRECONDITION, so it is the scored gate: a round that
-        # never entered learn has no learn close, and every reply check below stands down.
+        # The landing is this story's PRECONDITION and so its scored gate: a round that never
+        # entered learn has no learn close, and every claim below is about one.
         _landing_advisory(db, ConversationState.LEARN, scored=True),
-        Check("state: the round taught a routine", learned, kind="state"),
-        *_learn_close_reply_checks(reply, learned, recited),
-        *_shape_family_checks(reply, learned),
-        Check(
-            "state: the shape the record holds",
-            len(shapes) == 1,
-            rationale=" | ".join(shapes) or "no routine in the registry",
-            scored=False,
-            kind="state",
-        ),
+        Check("state: the round taught a routine", bool(db.skills.list_all()), kind="state"),
+        _routine_can_persist(db),
+        Check("state: the store holds at least one entry", bool(written), kind="state"),
+        _store_holds_each_source(written, world),
+        _store_holds_nothing_excluded(written, world),
+        _store_traces_to_the_pages(written, world),
+        _reply_is_sourced(db, reply),
+        _reply_reads_this_world(reply, world),
+        _reply_reads_no_other_world(reply, _WORLDS[_OTHER_WORLD[arm.world]]),
         _routing_advisory(db),
     ]
 
 
-async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval) -> None:
-    """Story 15, the learn close: one demonstrated round, and the reply that closes it
-    tells the user what the routine will RUN — so a step it captured by accident is
-    visible to the only person who can tell that it does not belong.
+# ── B. What is MEASURED — the features, never asserted ───────────────────────
+#
+# Each is a string because what is being measured is DISTINCTNESS: two samples agree when they
+# produced the same value, and every feature answers that the same way whatever it is made of.
+# Declaration order is render order.
 
-    The round is standing already (``_seed_learn_close_round``): the user asked for the
-    job, Penny asked to be taught one pass, and the machine is parked in ``elicit`` on that
-    ask — so the measured turn is the demonstration, and the reply it draws is a learn
-    close rather than an answer to a request handled on the spot."""
+
+def _learn_close_features(db: Database, arm: CohortArm) -> dict[str, str]:
+    """This sample's value for each measured feature."""
+    written = _entries_this_run_wrote(db)
+    return {
+        "tool sequence": " → ".join(_enacting_calls(db)) or "no enacting call",
+        "routine shape": " | ".join(_learned_shapes(db)) or "no routine",
+        "container name": ", ".join(sorted({name for name, _entry in written})) or "none",
+        "entries stored": str(len(written)),
+        "transitions": _walked(db),
+    }
+
+
+async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval) -> None:
+    """Story 15, the learn close, as end-state assertions plus variance (#1994/#1995).
+
+    The round is standing already (``_seed_learn_close_round``): the user asked for the job,
+    Penny asked to be taught one pass, and the machine is parked in ``elicit`` on that ask — so
+    the measured turn is the demonstration, and the reply it draws is a learn close rather than
+    an answer to a request handled on the spot.
+
+    REPORT-ONLY, deliberately: the floors and ceilings this run proposes are the code owner's
+    to accept once the numbers have been read.  A near-ceiling feature is not lockable at all —
+    it is a defect to fix first."""
     await chat_eval(
         case_id=_LEARN_CLOSE_CASE_ID,
-        message=_LEARN_CLOSE_ASK,
+        cohort=_LEARN_CLOSE_ARMS,
+        worlds=_PAGES_BY_WORLD,
         seed=_seed_learn_close_round,
-        browse=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
-        score=_score_learn_close,
+        cohort_score=_score_learn_close,
+        facts=_learn_close_features,
         min_pass_rate=None,
         family=_FAMILY,
         timeout=240.0,  # one turn, but it reads two pages before it writes

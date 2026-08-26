@@ -597,6 +597,20 @@ class EvalRun:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report.write_text(render_manifest_header(self.manifest) + "\n")
 
+    def write_case_report(self, case_id: str, rendered: str) -> None:
+        """Insert a case's own three-section report between the manifest header and its
+        sample transcripts (#1995).
+
+        Inserted rather than appended: the sections summarise the case, so a reader meets
+        them before the samples they summarise — and the assembler passes everything above
+        the first sample fold through verbatim, so the on-disk report and the posted comment
+        carry ONE rendering rather than two that can disagree."""
+        report = self.report_dir / f"{case_id}.md"
+        header = render_manifest_header(self.manifest) + "\n"
+        body = report.read_text() if report.exists() else header
+        rest = body[len(header) :] if body.startswith(header) else body
+        report.write_text(f"{header}{rendered}\n\n{rest.lstrip()}")
+
     def append_case(self, artifact: CaseArtifact) -> None:
         """Append one case's record to THIS process's results file."""
         self.report_dir.mkdir(parents=True, exist_ok=True)
@@ -664,6 +678,13 @@ def begin_case(case_id: str) -> None:
     run = active_run()
     if run is not None:
         run.write_case_header(case_id)
+
+
+def record_case_report(case_id: str, rendered: str) -> None:
+    """Per-case entry point for the three-section report. No-op off-report."""
+    run = active_run()
+    if run is not None:
+        run.write_case_report(case_id, rendered)
 
 
 def record_case(

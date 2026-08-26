@@ -378,6 +378,19 @@ def test_split_sample_blocks_separates_mixed_forms() -> None:
     assert report.split_sample_blocks("") == []
 
 
+def test_a_case_level_preamble_is_split_off_rather_than_parsed_as_a_sample() -> None:
+    """A ported case writes its three-section report above its samples (#1995), so a case
+    transcript can open on something that is not a sample block.  It comes back as the
+    PREAMBLE, verbatim and unparsed — nothing here has to know what a case says about
+    itself — and a transcript that opens straight onto sample 1 reports no preamble at all,
+    which is what it did before case sections existed."""
+    folded = report.fold_sample(1, "✅ pass · 1/1 (1.00) · 8s · 2 calls", "| a | b |  |")
+    sections = "#### `case` — end-state assertions, variance, harness\n\n**A.** …"
+    assert report.split_case_transcript(f"{sections}\n\n{folded}\n\n") == (sections, [folded])
+    assert report.split_case_transcript(f"{folded}\n\n") == ("", [folded])
+    assert report.split_case_transcript("") == ("", [])
+
+
 # ── Hoisting a case's shared system-prompt block (#1763) ────────────────────
 
 
