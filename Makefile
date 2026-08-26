@@ -304,6 +304,8 @@ eval: $(if $(LOCAL),,build)
 	echo "eval: profile $(EVAL_PROFILE) — $$model at $$llm_url · $$workers worker(s) x $$concurrency sample(s) in flight"; \
 	if ! $(EVAL_RUN) env LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
 		LLM_MODEL="$$model" \
+		LLM_EMBEDDING_API_URL="$$embed_url" LLM_EMBEDDING_API_KEY="$$embed_key" \
+		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		python -m penny.tests.eval.endpoint_smoke; then \
 		echo "eval: refusing to start — the endpoint above will not serve this model." >&2; \
 		exit 1; \
