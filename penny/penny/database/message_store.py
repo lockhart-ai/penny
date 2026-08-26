@@ -39,9 +39,17 @@ class PromptPerf(NamedTuple):
     can report throughput without any new instrumentation.
 
     ``output_tokens`` (the OpenAI ``completion_tokens``) already *includes* the
-    reasoning trace, so to expose how much of the generation was reasoning we
-    also carry the character lengths of the stored ``thinking`` trace and the
-    visible ``content``; their ratio gives the reasoning share of generation.
+    reasoning trace. ``reasoning_tokens`` is the provider's OWN count of that part
+    (``usage.completion_tokens_details.reasoning_tokens``) — a read, not a guess. Backends
+    that do not report it leave it 0, which is why the character lengths of the stored
+    ``thinking`` trace and the visible ``content`` are still carried: their ratio is the
+    ESTIMATE a reader falls back to, and keeping both is what lets a report say which of
+    the two it is showing rather than presenting an estimate as a measurement.
+
+    Why this matters beyond curiosity: a remote provider's wall time says nothing about
+    how the same model will run locally, but its token counts do. Two runs that score the
+    same while one spends far more tokens thinking are not equivalent — the second is a
+    performance regression on the machine that has to generate them.
     """
 
     calls: int
@@ -50,6 +58,7 @@ class PromptPerf(NamedTuple):
     output_tokens: int
     thinking_chars: int = 0
     output_chars: int = 0
+    reasoning_tokens: int = 0
 
     @property
     def tokens_per_second(self) -> float:
@@ -1320,16 +1329,24 @@ class MessageStore:
         output_tokens = 0
         thinking_chars = 0
         output_chars = 0
+        reasoning_tokens = 0
         for row in rows:
             response = json.loads(row.response) if row.response else {}
             prompt_tokens, completion_tokens = self._extract_token_usage(response)
             input_tokens += prompt_tokens
             output_tokens += completion_tokens
+            reasoning_tokens += self._extract_reasoning_tokens(response)
             thinking_chars += len(row.thinking or "")
             output_chars += len(self._extract_content(response))
         duration_ms = sum(row.duration_ms or 0 for row in rows)
         return PromptPerf(
-            len(rows), duration_ms, input_tokens, output_tokens, thinking_chars, output_chars
+            len(rows),
+            duration_ms,
+            input_tokens,
+            output_tokens,
+            thinking_chars,
+            output_chars,
+            reasoning_tokens,
         )
 
     @staticmethod
@@ -1347,6 +1364,18 @@ class MessageStore:
         if not usage:
             return 0, 0
         return usage.get("prompt_tokens", 0) or 0, usage.get("completion_tokens", 0) or 0
+
+    @staticmethod
+    def _extract_reasoning_tokens(response: dict) -> int:
+        """The provider's own count of the reasoning part of ``completion_tokens``.
+
+        Reported by providers that serve reasoning models under
+        ``usage.completion_tokens_details.reasoning_tokens``; 0 where a backend omits it,
+        which the reader treats as "not reported" and falls back to the character ratio.
+        """
+        usage = response.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        return details.get("reasoning_tokens", 0) or 0
 
     @staticmethod
     def _serialize_run(

@@ -11,21 +11,33 @@ from penny.responses import PennyResponse
 
 logger = logging.getLogger(__name__)
 
+# Where the build stamps the commit this deployment is running (Dockerfile build arg).
+GIT_COMMIT_MESSAGE_ENV = "GIT_COMMIT_MESSAGE"
 
-async def get_restart_message(db: Database, ollama_client: LlmClient) -> str:
+
+def commit_message_from_env() -> str:
+    """The build-stamped commit message ``get_restart_message`` announces."""
+    return os.environ.get(GIT_COMMIT_MESSAGE_ENV, "")
+
+
+async def get_restart_message(db: Database, ollama_client: LlmClient, commit_message: str) -> str:
     """
     Generate a casual restart announcement based on the latest git commit.
+
+    The commit is a PARAMETER rather than an env read: the eval suite drives this
+    prompt with a case's own commit, and samples that ran concurrently while each
+    swapped one process-wide env var would announce each other's commits.
 
     Args:
         db: Database, for the current-date/time anchor (user timezone)
         ollama_client: Ollama client for transforming commit message
+        commit_message: the commit to announce (``commit_message_from_env()`` in production)
 
     Returns:
         A casual, first-person restart message (e.g., "I added a new command! /debug")
         or fallback PennyResponse.RESTART_FALLBACK if commit message unavailable
     """
-    # Get commit message from environment variable (set at build time)
-    commit_message = os.environ.get("GIT_COMMIT_MESSAGE", "").strip()
+    commit_message = commit_message.strip()
 
     if not commit_message or commit_message == "unknown":
         logger.info("No git commit message available, using fallback")

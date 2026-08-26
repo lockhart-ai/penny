@@ -15,13 +15,18 @@ import httpx
 import openai
 import pytest
 
+from penny.constants import PennyConstants
 from penny.llm.client import (
     LlmClient,
     _extract_model_ids,
     _summarize_httpx_error,
     _summarize_llm_error,
 )
-from penny.llm.models import LlmNotFoundError, LlmResponseError
+from penny.llm.models import (
+    LlmNotFoundError,
+    LlmResponseError,
+    LlmTimeoutError,
+)
 
 _HTML_ERROR_BODY = (
     f"<!DOCTYPE html><html><head><title>404</title></head><body>{'x' * 5000}</body></html>"
@@ -96,6 +101,149 @@ class TestChatPropagatesSummarizedError:
         assert "HTTP 404" in message
         assert "<!DOCTYPE" not in message  # summarized, not the raw HTML body
 
+        await client.close()
+
+
+def _completion(content: str):
+    """A minimal ChatCompletion-shaped response — what the SDK hands ``chat`` back."""
+
+    class _Message:
+        role = "assistant"
+        tool_calls = None
+        model_extra: dict = {}
+
+        def __init__(self, text: str) -> None:
+            self.content = text
+
+    class _Choice:
+        def __init__(self, text: str) -> None:
+            self.message = _Message(text)
+
+    class _Completion:
+        model = "m"
+        usage = None
+
+        def __init__(self, text: str) -> None:
+            self.choices = [_Choice(text)]
+
+        def model_dump(self) -> dict:
+            return {"choices": [{"message": {"content": content}}]}
+
+    return _Completion(content)
+
+
+class TestReasoningAlwaysOn:
+    """Reasoning is a property of every call, not a setting a run might forget."""
+
+    @pytest.mark.asyncio
+    async def test_every_chat_call_asks_for_reasoning(self, monkeypatch) -> None:
+        """The same weights reason or do not depending on who serves them.
+
+        Ollama runs a hybrid model with thinking on by default; a gateway serving that
+        model defaults it off — a difference nothing in a run records, and one that cost a
+        whole eval suite comparing a model against itself. So the switch is sent on every
+        call rather than configured per run.
+        """
+        sent = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat([{"role": "user", "content": "hi"}])
+
+        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        await client.close()
+
+
+class TestRetryResilience:
+    """A remote endpoint fails in bursts, and a stall is not a failure at all until a
+    deadline makes it one — so the two things that keep a run alive are pinned here."""
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_request_is_retried_on_a_doubling_backoff(self, monkeypatch) -> None:
+        """A timing-out call is re-attempted, waiting twice as long before each try.
+
+        The measured failure this guards: an endpoint that stops answering mid-run. Without
+        a deadline the SDK waits out its own 600s read and the retry loop never sees a
+        failure to retry — so the request must TIME OUT, and the waits must spread rather
+        than re-attempting three times into the same bad moment.
+        """
+        waits: list[float] = []
+
+        async def record_sleep(seconds: float) -> None:
+            waits.append(seconds)
+
+        async def always_time_out(**kwargs):
+            raise openai.APITimeoutError(request=httpx.Request("POST", "http://localhost/v1"))
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=3, retry_delay=1.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", always_time_out)
+        monkeypatch.setattr("penny.llm.client.asyncio.sleep", record_sleep)
+
+        with pytest.raises(LlmTimeoutError):
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        # Three attempts, so two waits between them — doubling, not flat.
+        assert waits == [1.0, 2.0]
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_200_carrying_no_completion_is_retried_then_reported(self, monkeypatch) -> None:
+        """A gateway can answer 200 with an error payload where a completion belongs.
+
+        The SDK parses it into a ChatCompletion whose `choices` is None — not an openai
+        error, so before this it escaped the retry loop as a TypeError at the first
+        subscript, killed the turn, and left the provider's own reason nowhere. Measured
+        against OpenRouter, that ended 4 of 10 samples with no reply at all.
+        """
+        attempts = 0
+
+        class _NoChoices:
+            choices = None
+            model_extra = {"error": {"message": "upstream provider returned an error"}}
+
+        async def answer_without_a_completion(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            return _NoChoices()
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=3, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
+
+        with pytest.raises(LlmResponseError) as exc_info:
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        assert attempts == 3  # retried, not raised on the first one
+        # The provider's own words survive, so the run record says WHY rather than "None".
+        assert "no choices" in str(exc_info.value)
+        assert "upstream provider returned an error" in str(exc_info.value)
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_configured_timeout_reaches_the_underlying_client(self) -> None:
+        """The deadline is only real if it lands on the HTTP client that makes the call."""
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            timeout=20.0,
+        )
+        timeout = client.client.timeout
+        assert isinstance(timeout, httpx.Timeout)  # a bare float would not bound the read
+        assert timeout.read == 20.0
+        assert timeout.connect == PennyConstants.LLM_CONNECT_TIMEOUT_SECONDS
         await client.close()
 
 

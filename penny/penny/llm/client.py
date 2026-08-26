@@ -35,6 +35,22 @@ logger = logging.getLogger(__name__)
 # Default API key for local inference servers that require one but don't check it
 _DEFAULT_API_KEY = "not-needed"
 
+# Reasoning is ON for every call, everywhere — not a setting.  A model that is not
+# reasoning makes visibly worse decisions on the work Penny does, and the failure is quiet:
+# it still answers, still calls tools, and only the DECISIONS degrade.
+#
+# It is hardcoded here rather than configured because the same weights reason or do not
+# depending on who is serving them, which is a difference nothing in a run records. Ollama
+# runs a hybrid model with thinking ON by default; a gateway serving the same model
+# defaults it OFF. A full eval suite was spent comparing a model against itself that way —
+# non-thinking remote against thinking local — and every conclusion drawn from it was
+# about the switch rather than the model.
+#
+# Read-only: sent as-is, never mutated. Backends that do not know the field ignore it
+# (verified against Ollama's OpenAI-compatible endpoint), so the local path is unchanged
+# and the remote path stops silently differing from it.
+REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
+
 # Fallback when an error response carries no content-type header.
 _UNKNOWN_CONTENT_TYPE = "unknown"
 
@@ -80,6 +96,21 @@ def _json_error_message(body: Any) -> str | None:
         return error_field["message"]
     message = body.get("message")
     return message if isinstance(message, str) else None
+
+
+def _no_payload_detail(raw: Any, field: str) -> str:
+    """Describe a 200 response that carried no payload, quoting the provider's own reason.
+
+    A gateway in front of a model (OpenRouter, a proxy) can answer 200 with an ERROR
+    payload where a completion belongs — the SDK parses it into a model whose ``choices``
+    / ``data`` is None. That is not an ``openai`` error and never reaches the retry loop:
+    it surfaces as a ``TypeError`` at the first subscript, kills the run, and leaves no
+    record of what the provider actually said. Measured against OpenRouter, this ended 4
+    of 10 samples with no reply at all.
+    """
+    message = _json_error_message(getattr(raw, "model_extra", None))
+    detail = f": {message}" if message else ""
+    return f"response carried no {field}{detail}"
 
 
 def _summarize_httpx_error(response: httpx.Response) -> str:
@@ -152,6 +183,16 @@ class LlmClient:
 
         logger.info("Initialized LLM client: url=%s, model=%s", api_url, model)
 
+    async def _backoff(self, attempt: int) -> None:
+        """Wait before re-attempting a failed call, doubling with each attempt.
+
+        A remote endpoint's failures arrive in bursts — a provider draining a queue, a
+        node cycling — so a flat delay re-attempts three times into the same bad moment
+        and reports the burst as three separate failures.  Doubling spends the same first
+        wait and gives the last attempt a materially later one.
+        """
+        await asyncio.sleep(self.retry_delay * 2**attempt)
+
     # ── Chat ─────────────────────────────────────────────────────────────
 
     async def chat(
@@ -178,6 +219,22 @@ class LlmClient:
                 kwargs = self._build_chat_kwargs(translated_messages, tools, format)
                 raw = await self.client.chat.completions.create(**kwargs)
                 duration_ms = int((time.time() - start) * 1000)
+
+                # Checked BEFORE parsing, and treated as a retryable fault rather than
+                # raised: an LlmError raised from here would re-raise untried (see the
+                # first except clause), and a provider answering 200-with-no-completion
+                # is exactly the transient another attempt usually gets past.
+                if not raw.choices:
+                    last_error = LlmResponseError(_no_payload_detail(raw, "choices"))
+                    logger.warning(
+                        "LLM chat returned no choices (attempt %d/%d): %s",
+                        attempt + 1,
+                        self.max_retries,
+                        last_error,
+                    )
+                    if attempt < self.max_retries - 1:
+                        await self._backoff(attempt)
+                    continue
 
                 response = self._parse_response(raw)
                 thinking = response.thinking or response.message.thinking
@@ -211,14 +268,14 @@ class LlmClient:
                     error,
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
             except openai.APIConnectionError as error:
                 last_error = LlmConnectionError(str(error))
                 logger.warning(
                     "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
             except openai.OpenAIError as error:
                 summary = _summarize_llm_error(error)
                 # 500 "error parsing tool call" means the model produced plain text
@@ -236,7 +293,7 @@ class LlmClient:
                     "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
 
         logger.error("LLM chat failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:
@@ -276,6 +333,17 @@ class LlmClient:
                 logger.debug("Sending embed request (attempt %d/%d)", attempt + 1, self.max_retries)
 
                 response = await self.client.embeddings.create(model=self.model, input=text)
+                if not response.data:
+                    last_error = LlmResponseError(_no_payload_detail(response, "data"))
+                    logger.warning(
+                        "LLM embed returned no data (attempt %d/%d): %s",
+                        attempt + 1,
+                        self.max_retries,
+                        last_error,
+                    )
+                    if attempt < self.max_retries - 1:
+                        await self._backoff(attempt)
+                    continue
                 embeddings = [list(item.embedding) for item in response.data]
 
                 logger.debug(
@@ -295,7 +363,7 @@ class LlmClient:
                     "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
             except openai.OpenAIError as error:
                 summary = _summarize_llm_error(error)
                 last_error = LlmResponseError(summary)
@@ -303,7 +371,7 @@ class LlmClient:
                     "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
+                    await self._backoff(attempt)
 
         logger.error("LLM embed failed after %d attempts: %s", self.max_retries, last_error)
         if last_error is None:
@@ -381,7 +449,13 @@ class LlmClient:
         format: dict | str | None,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
-        kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            # Not an OpenAI-schema field, so it rides in the vendor passthrough the SDK
+            # provides. Reasoning comes back where ``_parse_response`` already reads it.
+            "extra_body": REASONING_ENABLED_BODY,
+        }
         if tools:
             kwargs["tools"] = self._translate_tools(tools)
         if format is not None:

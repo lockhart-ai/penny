@@ -577,8 +577,33 @@ Strongly prefer end-to-end integration tests over unit tests. Test through publi
 
 A separate suite of **contract tests against a real Ollama model** — the canonical
 coverage of Penny's core use cases and the yardstick for swapping models. It's
-gated behind the `eval` marker (excluded from `make check`/`make pytest`; run via
-`make eval`, default 5 samples/case, `EVAL_SAMPLES=N` to override). Cases drive the
+gated behind the `eval` marker (excluded from `make check`/`make pytest`).
+
+**Two profiles, because they are two different machines** (`EVAL_PROFILE`, resolved in the
+Makefile's `eval` recipe): **`make eval`** runs `local` — the GPU on this box, one sample
+at a time, since the GPU serialises them anyway and asking for more only adds contention.
+**`make eval-remote`** runs `remote` — an OpenAI-compatible provider at 8 xdist workers x 5
+samples in flight, which the provider serves concurrently. That 40 is MEASURED, not
+chosen: 80 in flight on a 10-core box was both slower and dirtier (samples began missing
+their channel-readiness window), so raise `EVAL_REMOTE_WORKERS`/`EVAL_REMOTE_CONCURRENCY`
+only with a measurement in hand. Every value a profile picks stays individually
+overridable — `EVAL_WORKERS=1 make eval-remote` is remote-but-serial for debugging one
+case, `EVAL_SAMPLES=N` changes the per-case sample count on either.
+
+**The embedding model is NOT part of the profile**: it stays on the local Ollama in both,
+so moving the chat model never silently moves the vector space every memory case is scored
+against (the dedup thresholds and `find` ranking sit on embeddinggemma's cosine geometry).
+Its endpoint moves only if `LLM_EMBEDDING_API_URL` is set deliberately. That is also the
+throughput ceiling on the remote profile: ~7.6 embedding calls per sample all queue on one
+local GPU, and median embed latency measured 91ms at 10 samples in flight, 161ms at 40 and
+384ms at 80.
+
+**One call proves the endpoint before a run commits to anything**
+(`penny.tests.eval.endpoint_smoke`, run by the `eval` recipe before it takes a queue
+ticket): every sample builds its own preflight, so an unserveable model is otherwise
+discovered 755 times, concurrently, minutes deep — which is how a full-suite run was spent
+against a model whose provider 404'd every call. The refusal carries the provider's own
+message verbatim, because that message is the whole answer. Cases drive the
 real chat/collector loops and score persisted DB state + sends at a `pass_rate`
 threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`

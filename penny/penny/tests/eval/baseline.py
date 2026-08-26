@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from penny.tests.eval.artifacts import EVAL_BASELINE_ENV, RESULTS_FILENAME, CaseArtifact
+from penny.tests.eval.artifacts import EVAL_BASELINE_ENV, CaseArtifact, load_results_lines
 
 
 @dataclass
@@ -48,30 +48,26 @@ class Baseline:
         return artifact.run_id if artifact is not None else None
 
 
-def _resolve_results_path(raw_path: str) -> Path | None:
-    """Resolve ``EVAL_BASELINE`` to a ``results.jsonl`` file, or ``None`` if absent.
+def _baseline_lines(raw_path: str) -> list[str]:
+    """The case records ``EVAL_BASELINE`` points at, across every results file it covers.
 
-    Accepts either a report DIRECTORY (its ``results.jsonl`` is used) or the file
-    itself.  A path that resolves to no existing file is ``None`` — the graceful
-    'no baseline yet' case, not an error."""
+    Accepts either a report DIRECTORY (all of its results files — a baseline run may have
+    been produced under xdist, one file per worker) or a single file.  A path that
+    resolves to nothing is empty — the graceful 'no baseline yet' case, not an error."""
     path = Path(raw_path)
     if path.is_dir():
-        path = path / RESULTS_FILENAME
-    return path if path.is_file() else None
+        return load_results_lines(path)
+    if path.is_file():
+        return [line for line in path.read_text().splitlines() if line.strip()]
+    return []
 
 
 def load_baseline(raw_path: str) -> Baseline | None:
-    """Parse a prior ``results.jsonl`` into a :class:`Baseline`, or ``None`` when the
-    file is missing or empty.  Each non-blank line is one :class:`CaseArtifact`."""
-    path = _resolve_results_path(raw_path)
-    if path is None:
-        return None
+    """Parse a prior run's case records into a :class:`Baseline`, or ``None`` when there
+    are none.  Each non-blank line is one :class:`CaseArtifact`."""
     by_case: dict[str, CaseArtifact] = {}
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        artifact = CaseArtifact.model_validate_json(stripped)
+    for line in _baseline_lines(raw_path):
+        artifact = CaseArtifact.model_validate_json(line)
         by_case[artifact.case_id] = artifact
     return Baseline(by_case) if by_case else None
 

@@ -18,6 +18,7 @@ from penny.tests.eval.artifacts import (
     DIRTY_DIFF_FILENAME,
     MANIFEST_FILENAME,
     RESULTS_FILENAME,
+    XDIST_WORKER_ENV,
     CaseTimings,
     CauseCounts,
     CheckCell,
@@ -30,6 +31,7 @@ from penny.tests.eval.artifacts import (
     classify_cause,
     count_causes,
     default_family,
+    load_results_lines,
     pathology_excluded,
     render_cause_summary,
     render_manifest_header,
@@ -320,6 +322,74 @@ def test_case_header_stamped_once_atop_report(tmp_path: Path) -> None:
     run.write_case_header("some-case")  # idempotent — a second call must not re-stamp
     report = (tmp_path / "some-case.md").read_text()
     assert report == render_manifest_header(run.manifest) + "\n"
+
+
+def test_every_worker_in_one_run_shares_the_run_id(tmp_path: Path) -> None:
+    """Under xdist each worker is a separate PROCESS resolving the run from its own env.
+
+    Left to derive its own id from its own clock, each would stamp a DIFFERENT one into a
+    single directory — so the Makefile fixes EVAL_RUN_ID once and every worker adopts it,
+    whatever time it happens to start."""
+    env = {
+        "EVAL_REPORT_DIR": str(tmp_path),
+        "EVAL_LEVER": "one lever",
+        "EVAL_COMMIT": _COMMIT,
+        "EVAL_RUN_ID": "run-20260720T004512Z-abcdef12",
+    }
+    first = run_from_env(env, now=_NOW)
+    later = run_from_env(env, now=datetime(2026, 7, 20, 3, 22, 8, tzinfo=UTC))
+    assert first is not None and later is not None
+    assert first.manifest.run_id == later.manifest.run_id == "run-20260720T004512Z-abcdef12"
+    # Without it, the id still derives from the clock — the single-process behaviour.
+    derived = run_from_env({k: v for k, v in env.items() if k != "EVAL_RUN_ID"}, now=_NOW)
+    assert derived is not None
+    assert derived.manifest.run_id == "run-20260720T004512Z-abcdef12"
+
+
+def test_each_worker_appends_to_its_own_results_file(tmp_path: Path, monkeypatch) -> None:
+    """Two worker processes must not interleave writes into one results file — and a
+    reader must see the whole run, not whichever fraction one file happens to hold."""
+    run = EvalRun(tmp_path, _manifest(), "diff")
+
+    def record(case_id: str) -> None:
+        run.append_case(
+            build_case_artifact(
+                run_id=run.manifest.run_id,
+                case_id=case_id,
+                family="fam",
+                results=[SampleResult.graded([Check("c1", ok=True)])],
+                timings=_TIMINGS,
+            )
+        )
+
+    monkeypatch.setenv(XDIST_WORKER_ENV, "gw0")
+    record("case-on-gw0")
+    monkeypatch.setenv(XDIST_WORKER_ENV, "gw1")
+    record("case-on-gw1")
+    assert (tmp_path / "results-gw0.jsonl").exists()
+    assert (tmp_path / "results-gw1.jsonl").exists()
+    assert not (tmp_path / RESULTS_FILENAME).exists()
+    recorded = [json.loads(line)["case_id"] for line in load_results_lines(tmp_path)]
+    assert recorded == ["case-on-gw0", "case-on-gw1"]
+
+    # Off xdist the plain name comes back, and a reader takes in every file either way.
+    monkeypatch.delenv(XDIST_WORKER_ENV)
+    record("case-single-process")
+    assert (tmp_path / RESULTS_FILENAME).exists()
+    assert [json.loads(line)["case_id"] for line in load_results_lines(tmp_path)] == [
+        "case-on-gw0",
+        "case-on-gw1",
+        "case-single-process",
+    ]
+
+
+def test_write_inputs_leaves_an_existing_manifest_alone(tmp_path: Path) -> None:
+    """First writer wins: every worker resolves the run and would rewrite the manifest,
+    each with its own created_at, so a later write would race on differing content."""
+    first = EvalRun(tmp_path, _manifest(lever="the real lever"), "diff")
+    first.write_inputs()
+    EvalRun(tmp_path, _manifest(lever="a second worker's copy"), "diff").write_inputs()
+    assert _read_manifest(tmp_path).lever == "the real lever"
 
 
 def test_two_runs_produce_mechanically_diffable_jsonl(tmp_path: Path) -> None:

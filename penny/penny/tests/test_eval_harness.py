@@ -17,6 +17,7 @@ check`` rather than only on the ``eval``-marked run the marker deselects.
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -56,6 +57,7 @@ from penny.tests.eval.artifacts import (
 )
 from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
+    PENNY_LOGGER,
     BoundExpectation,
     Check,
     CycleCall,
@@ -66,6 +68,7 @@ from penny.tests.eval.conftest import (
     _assert_threshold,
     _bail_fired_check,
     _cycle_recovered_check,
+    _flush_sample_blocks,
     _frame_attributes_to,
     _guarded_graded,
     _labelling_input,
@@ -80,6 +83,7 @@ from penny.tests.eval.conftest import (
     continue_nudge_fired,
     count_tool_calls,
     draw_rerolled,
+    env_seconds,
     is_seeded_run,
     live_prompt_perf,
     routing_clean,
@@ -208,6 +212,55 @@ from penny.tools.models import ToolResult
 # fragility / nudge-frame probes must keep recognising them (the same legacy-leg
 # discipline the eval conftest's retired bail markers keep).
 _RETIRED_CONTINUE_NUDGE = "Please provide your response."
+
+
+def test_a_forwarded_but_unset_duration_reads_as_its_default(monkeypatch) -> None:
+    """`make eval` forwards every variable, so an unset one arrives EMPTY, not absent.
+
+    Read with a plain default that empty string reaches `float("")`, which raises while
+    the module is still being imported — the eval suite then dies before any sample runs,
+    with a traceback about a conftest rather than about the run.
+    """
+    monkeypatch.setenv("SOME_DURATION", "")
+    assert env_seconds("SOME_DURATION", 20.0) == 20.0
+    monkeypatch.delenv("SOME_DURATION")
+    assert env_seconds("SOME_DURATION", 20.0) == 20.0
+    monkeypatch.setenv("SOME_DURATION", "45")
+    assert env_seconds("SOME_DURATION", 20.0) == 45.0
+
+
+async def test_concurrent_samples_keep_their_logs_apart(tmp_path) -> None:
+    """Two samples in flight must not write into each other's log.
+
+    The ``penny`` logger is process-global, so concurrent samples attach concurrent
+    handlers — and before the records carried a sample identity, every open log took
+    every sample's lines. Measured on a 2-worker run, one sample's log held ten agent
+    shutdowns instead of one, which is what made a stalled sample undiagnosable from it.
+    """
+    logger = logging.getLogger(PENNY_LOGGER)
+
+    async def run_sample(name: str) -> Path:
+        with sample_logging(str(tmp_path / f"{name}.db")) as path:
+            logger.info("start %s", name)
+            await asyncio.sleep(0)  # yield, so the two samples interleave for real
+            logger.info("end %s", name)
+            return path
+
+    first, second = await asyncio.gather(run_sample("alpha"), run_sample("beta"))
+    assert first.read_text().count("alpha") == 2
+    assert "beta" not in first.read_text()
+    assert second.read_text().count("beta") == 2
+    assert "alpha" not in second.read_text()
+
+
+def _sample_report_text(directory, case_id: str) -> str:
+    """A case's report file, read the way a runner produces it.
+
+    A sample's block is HELD when it is written and the file is laid down when the case
+    closes, so the two steps stay together here rather than in each test.
+    """
+    _flush_sample_blocks(case_id)
+    return (directory / f"{case_id}.md").read_text()
 
 
 def _make_db(tmp_path, name: str = "harness") -> Database:
@@ -1174,6 +1227,47 @@ def test_the_idle_worlds_window_carries_pennys_turns_in_order(tmp_path) -> None:
     assert tail == list(LAST_SPOKEN_TURNS), f"the window must end on the small talk, got {tail}"
 
 
+def test_thinking_tokens_are_read_from_the_provider_not_guessed(tmp_path) -> None:
+    """The reasoning count is a READ of what the provider reported, with the character
+    ratio only as the fallback where a backend reports none.
+
+    Read with care: it counts the SEPARATE reasoning channel, so it does NOT compare
+    across models that put their thinking in different places — one reasoning inline in
+    its visible content reports zero while thinking just as hard. A reported zero means
+    "nothing in the reasoning channel", never "this model did not think", and reading it
+    as the latter is how a whole suite run was drawn against a model whose reasoning the
+    provider had quietly switched off. What compares cleanly is total OUTPUT tokens: a
+    local GPU has to generate those wherever the thinking lives.
+    """
+    db = _make_db(tmp_path)
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": "the visible answer"}}],
+        "usage": {
+            "prompt_tokens": 400,
+            "completion_tokens": 120,
+            "completion_tokens_details": {"reasoning_tokens": 90},
+        },
+    }
+    _log_prompt(db, response=response, run_id="r1")
+    perf = live_prompt_perf(db)
+    assert perf.input_tokens == 400
+    assert perf.output_tokens == 120, "completion_tokens already bundles the reasoning"
+    assert perf.reasoning_tokens == 90, "the provider's own count, not a ratio of characters"
+
+    # A backend that reports no detail leaves it 0 — read by the caller as "not reported"
+    # and never as a confident zero, which is why the fallback ratio inputs are still kept.
+    bare = _make_db(tmp_path / "bare")
+    _log_prompt(
+        bare,
+        response={
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        },
+        run_id="r1",
+    )
+    assert live_prompt_perf(bare).reasoning_tokens == 0
+
+
 def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
     """A case may seed the promptlog of turns that happened BEFORE the one under test
     (#1846), so the sample is answered against the state those turns really left.  Those
@@ -1410,7 +1504,7 @@ def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) ->
         [_bail_fired_check(False)],
     )
     _write_sample_report(db, "guard-case", 0, result=result, reply="saved")
-    text = (tmp_path / "guard-case.md").read_text()
+    text = _sample_report_text(tmp_path, "guard-case")
     # the guard failed → 1/2
     assert text.startswith("<details><summary>sample 1 — ❌ fail · 1/2 (0.50) ·")
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
@@ -1442,7 +1536,7 @@ def test_report_renders_rationale_and_ignored(tmp_path, monkeypatch) -> None:
         ]
     )
     _write_sample_report(db, "rationale-case", 0, result=result, reply="saved")
-    text = (tmp_path / "rationale-case.md").read_text()
+    text = _sample_report_text(tmp_path, "rationale-case")
     assert text.startswith("<details><summary>sample 1 — ❌ fail · 1/2 (0.50) ·")
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert "| expected | C2 ⚖ read count | ❌ C2 — expected 3 reads, saw 1 |" in text
@@ -1463,11 +1557,36 @@ def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
         ],
     )
     _write_sample_report(db, "fragile-case", 0, result=SampleResult.binary([]), reply="found it")
-    text = (tmp_path / "fragile-case.md").read_text()
+    text = _sample_report_text(tmp_path, "fragile-case")
     # fragile still folds whole now (#1753); banner carries the fragile flag
     assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
     assert "| actual | 🔧 browse({}) |" in text
     assert "| actual | 📥 You tried to use `browse` but it didn't work: down |" in text
+
+
+def test_report_blocks_land_in_sample_order_whatever_finishes_first(tmp_path, monkeypatch) -> None:
+    """A case's samples may finish in any order; its report may not be written in one.
+
+    ``EVAL_CONCURRENCY`` above 1 lets sample 3 come back before sample 1, so blocks are
+    HELD as they are written and laid down by sample index when the case closes.  Written
+    back-to-front here, since that is the ordering an append-as-you-go writer got wrong.
+    """
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    db = _make_db(tmp_path)
+    _log_prompt(db, messages=[{"role": "user", "content": "look it up"}])
+    for sample_index in (2, 0, 1):
+        _write_sample_report(
+            db, "out-of-order", sample_index, result=SampleResult.binary([]), reply="found it"
+        )
+    text = _sample_report_text(tmp_path, "out-of-order")
+    banners = [line for line in text.splitlines() if line.startswith("<details><summary>sample ")]
+    assert [banner.split(" — ")[0] for banner in banners] == [
+        "<details><summary>sample 1",
+        "<details><summary>sample 2",
+        "<details><summary>sample 3",
+    ]
+    # The flush empties the case, so a second read is not a second copy of every block.
+    assert _sample_report_text(tmp_path, "out-of-order") == text
 
 
 def test_report_renders_the_terminal_call_and_result_from_the_run_tail(
@@ -1506,7 +1625,7 @@ def test_report_renders_the_terminal_call_and_result_from_the_run_tail(
     )
     result = SampleResult.graded([Check("attached the skill", ok=False, anchor="collection_set(")])
     _write_sample_report(db, "tail-case", 0, result=result, reply="")
-    text = (tmp_path / "tail-case.md").read_text()
+    text = _sample_report_text(tmp_path, "tail-case")
     assert '| actual | 🔧 collection_set({"memory": "shelf"}) | ❌ C1 |' in text
     assert f"| actual | 📥 {report.escape_cell(frame)} |" in text
     assert sample_is_fragile(db)
@@ -1525,7 +1644,7 @@ def test_report_banner_and_verdict_carry_the_failure_cause(tmp_path, monkeypatch
     )
     result.cause = FailureCause.BEHAVIORAL  # the runner stamps this before _write_sample_report
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
-    text = (tmp_path / "watch-fern.md").read_text()
+    text = _sample_report_text(tmp_path, "watch-fern")
     assert text.startswith("<details><summary>sample 1 — ❌ fail · 0/1 (0.00) · behavioral ·")
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 · behavioral |" in text
     assert "<details><summary>thinking</summary>The entry is already written" in text
@@ -1541,7 +1660,7 @@ def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) 
     timed = SampleResult.binary(["no reply within timeout"])
     _stamp_cause(db, timed, timed_out=True)
     _write_sample_report(db, "timeout-case", 2, result=timed)
-    text = (tmp_path / "timeout-case.md").read_text()
+    text = _sample_report_text(tmp_path, "timeout-case")
     # no k/n: the scorer never ran
     assert text.startswith("<details><summary>sample 3 — ❌ fail · harness ·")
     assert report.NO_TURNS_PLACEHOLDER in text
@@ -1848,7 +1967,7 @@ def test_report_marks_regressed_and_renders_thinking(tmp_path, monkeypatch) -> N
         [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
     )
     _write_sample_report(db, "watch-fern", 2, result=result, reply="")
-    text = (tmp_path / "watch-fern.md").read_text()
+    text = _sample_report_text(tmp_path, "watch-fern")
     assert text.startswith("<details><summary>sample 3 — ❌ fail · 0/1 (0.00) ·")
     assert '| step 1 · 👤 | "run the fern watch" | ✅→❌ |' in text  # the flip on the step header
     assert "| actual | 🔧 done({}) | ✅→❌ **REGRESSED** C1 — expected 1 send, saw 0 |" in text
@@ -1864,7 +1983,7 @@ def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatc
         [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
     )
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
-    text = (tmp_path / "watch-fern.md").read_text()
+    text = _sample_report_text(tmp_path, "watch-fern")
     assert text.startswith("<details><summary>sample 1 — ❌ fail · 0/1 (0.00) ·")
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 |" in text
     assert "<details><summary>thinking</summary>The entry is already written" in text
@@ -1913,7 +2032,7 @@ def test_thinking_attaches_across_compact_and_pretty_serializations(tmp_path, mo
     result = SampleResult.graded([Check("browsed", ok=True, anchor="browse(", kind="spine")])
     # reply="" → no trailing reply action, so the ONLY 💭 row is the browse call's — a clean probe.
     _write_sample_report(db, "thinking-key", 0, result=result, reply="")
-    text = (tmp_path / "thinking-key.md").read_text()
+    text = _sample_report_text(tmp_path, "thinking-key")
     assert "| expected | C1 [spine]⚖ browsed |  |" in text  # finding 4: the [class] tag renders
     # The thinking sits directly ABOVE the browse call (attached, not the silent 💭 (empty) the key
     # mismatch produced), and the arg renders as a real ``é`` — not a ``\uXXXX`` escape.
@@ -1943,7 +2062,7 @@ def test_report_renders_fragile_via_user_turn_nudge(tmp_path, monkeypatch) -> No
         ],
     )
     _write_sample_report(db, "nudge-fragile", 0, result=SampleResult.binary([]), reply="saved")
-    text = (tmp_path / "nudge-fragile.md").read_text()
+    text = _sample_report_text(tmp_path, "nudge-fragile")
     # fragile still folds whole now (#1753)
     assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
     assert "| actual | 👤 *(nudge)* Please provide your response. | ⚠ recovery event |" in text
@@ -1968,7 +2087,7 @@ def test_report_renders_thinking_for_every_action(tmp_path, monkeypatch) -> None
     # #1725 supersedes the failed-turns-only capture: thinking renders for EVERY model action,
     # including a passing one (in its own collapsed <details> above the action). A clean pass
     # folds the whole block into a <details>.
-    text = (tmp_path / "pass-case.md").read_text()
+    text = _sample_report_text(tmp_path, "pass-case")
     assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) ·")
     assert (
         "| 💭 | <details><summary>thinking</summary>Writing the entry now.</details> |  |" in text
@@ -2054,7 +2173,7 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
     _three_micro_context_ledger(db)
     result = SampleResult.graded([Check("browsed", ok=True, anchor="browse(", kind="spine")])
     _write_sample_report(db, "micro-actors", 0, result=result, reply=_REPLY_TEXT)
-    assert (tmp_path / "micro-actors.md").read_text() == (
+    assert _sample_report_text(tmp_path, "micro-actors") == (
         "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 0s · 5 calls</summary>\n"
         "\n"
         "<details><summary>system prompt — state-classifier (15 chars)</summary>\n"

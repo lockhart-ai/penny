@@ -46,7 +46,7 @@ from penny.scheduler import (
     Schedule,
 )
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
-from penny.startup import get_restart_message
+from penny.startup import commit_message_from_env, get_restart_message
 from penny.tools import Tool
 from penny.tools.draft_email import DraftEmailTool
 from penny.tools.list_emails import ListEmailsTool
@@ -634,7 +634,9 @@ class Penny:
             if await self._send_ios_operational_announcement():
                 return
 
-            restart_msg = await get_restart_message(self.db, self.model_client)
+            restart_msg = await get_restart_message(
+                self.db, self.model_client, commit_message_from_env()
+            )
             announcement = f"👋 {restart_msg}"
 
             logger.info("Sending startup announcement to %s", sender)

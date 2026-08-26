@@ -137,6 +137,8 @@ make build            # Build the penny Docker image
 make token            # Generate GitHub App installation token for gh CLI
 make check            # Format check, lint, typecheck, and run tests
 make pytest           # Run integration tests
+make eval             # Live-model eval suite on the LOCAL GPU, one sample at a time
+make eval-remote      # Live-model eval suite on a remote provider, 8 cases x 5 samples at once
 make fmt              # Format with ruff
 make lint             # Lint with ruff
 make fix              # Format + autofix lint issues

@@ -5,6 +5,21 @@ RUFF_TARGETS = penny/
 PYTEST_ARGS = penny/tests/ -v -m "not eval"
 # -s streams the PERF lines (wall time + tok/s, printed per case) live.
 EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
+
+# --- Eval profiles -----------------------------------------------------------
+# HOW a run is driven, named rather than reassembled from six variables each time.
+# The two are not interchangeable-with-different-numbers: they are different machines.
+#
+#   local  (default) — the GPU on this box. One sample at a time, because the GPU
+#                      serialises them anyway; asking for more only adds contention.
+#   remote           — an OpenAI-compatible provider. Samples AND cases in parallel,
+#                      because the provider serves them concurrently and the only
+#                      local work left is the embedding model.
+#
+# `make eval` is local; `make eval-remote` is remote. Every value a profile picks is
+# still individually overridable, so a remote SERIAL run (debugging a single case) or a
+# scoped local run needs no new target — just the variable.
+EVAL_PROFILE ?= local
 # FIFO ticket directory for serializing make eval on the single-tenant GPU.
 EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 
@@ -22,6 +37,38 @@ EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 EVAL_PRIMARY_CHECKOUT := $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
 EVAL_ARTIFACTS_HOST := $(EVAL_PRIMARY_CHECKOUT)/data/eval-artifacts
 EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
+
+# --- Remote model endpoints --------------------------------------------------
+# `make eval` forwards model config as explicit env vars rather than reading the
+# mounted `/penny/.env`, because it runs from a WORKTREE and only the primary
+# checkout has a real `.env`.  A remote OpenAI-compatible provider (OpenRouter)
+# adds a credential to that list, and a credential belongs in `.env`, not in
+# shell history — so each one is read from the host shell first and from the
+# PRIMARY checkout's `.env` second, which makes `LLM_API_KEY=...` in that file
+# work from any worktree.  Values are forwarded into the container's env and
+# never echoed.
+EVAL_PRIMARY_ENV := $(EVAL_PRIMARY_CHECKOUT)/.env
+# Where the GPU lives, from inside the eval container.  Both the chat and the
+# embedding endpoint default here, so pointing ONLY the chat model at a remote
+# provider leaves memory's embeddings on the local Ollama that serves them —
+# no remote chat provider serves `embeddinggemma`.
+LLM_LOCAL_ENDPOINT := http://host.docker.internal:11434
+# What each profile defaults to. The remote pair is the MEASURED product: 8 workers x 5
+# samples = 40 in flight was both faster and cleaner than 80 on a 10-core box, where the
+# extra contention cost more than the parallelism bought and samples began missing their
+# channel-readiness window. Raise them together only with a measurement in hand.
+EVAL_LOCAL_MODEL := gpt-oss:20b
+EVAL_REMOTE_ENDPOINT := https://openrouter.ai/api
+EVAL_REMOTE_MODEL := openai/gpt-oss-20b
+EVAL_REMOTE_WORKERS := 8
+EVAL_REMOTE_CONCURRENCY := 5
+# The .env key holding the remote profile's credential. A profile already names the
+# endpoint and the model it points at; the credential is the third thing that travels with
+# them, so naming it here keeps the RESOLUTION generic rather than teaching the plumbing
+# about one provider — LLM_API_KEY still wins from the shell, then from .env, and this is
+# only the last fallback, for the provider this profile actually defaults to. Point the
+# profile somewhere else and you set LLM_API_KEY, exactly as before.
+EVAL_REMOTE_API_KEY_VAR := OPENROUTER_API_KEY
 # The marker `make eval-report` stamps into a posted run dir (#1757). Must match
 # `penny.tests.eval.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
 POSTED_MARKER := .posted
@@ -38,7 +85,7 @@ COMMENT_BODY := body.md
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fmt lint fix typecheck check pytest eval eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fmt lint fix typecheck check pytest eval eval-remote eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -175,12 +222,38 @@ check: $(if $(LOCAL),,build)
 pytest: $(if $(LOCAL),,build)
 	$(RUN) pytest $(PYTEST_ARGS)
 
-# Live-model contract suite — drives the REAL agents against a running Ollama
-# (gpt-oss + embeddinggemma) on synthetic seeds. Slow and stochastic, so it's
-# kept out of make check; run it by hand to validate prompt/behaviour changes.
-# Forwards the model endpoint into the container (defaulting to the docker host,
-# where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
-# the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
+# Live-model contract suite — drives the REAL agents against a real model
+# (a chat model + embeddinggemma) on synthetic seeds. Slow and stochastic, so it's kept
+# out of make check; run it by hand to validate prompt/behaviour changes.
+#
+#   make eval                                  the local GPU, one sample at a time
+#   make eval-remote                           a provider, 8 cases x 5 samples at once
+#   EVAL_SAMPLES=2 make eval                   fewer samples per case
+#   EVAL_PYTEST_ARGS="<node ids> -m eval -s" make eval-remote      scoped to some cases
+#   EVAL_WORKERS=1 make eval-remote            remote but SERIAL, for debugging one case
+#   LLM_MODEL=google/gemma-4-26b-a4b-it make eval-remote           a different model
+#
+# The embedding model is NOT part of the profile: it stays on the local Ollama in both,
+# so moving the chat model never silently moves the vector space every memory case is
+# scored against. Override LLM_EMBEDDING_API_URL deliberately if you mean to.
+# Before anything is spent, ONE call proves the endpoint serves the model (see
+# penny.tests.eval.endpoint_smoke). Every sample builds its own preflight, so without this
+# an unserveable model is discovered 755 times, concurrently, minutes in — which is how a
+# full-suite run was spent against a model whose provider 404'd every call. The refusal
+# carries the provider's own message, because that message is the whole answer.
+# Test-level parallelism: pass `-n N` through EVAL_PYTEST_ARGS (pytest-xdist) to run N
+# CASES at once, on top of the EVAL_CONCURRENCY samples each case runs at. Every worker
+# is a separate PROCESS resolving the run from its own environment, so EVAL_RUN_ID is
+# fixed here once and forwarded — otherwise each would stamp its own clock into the run
+# id and one directory would hold N runs. Each worker appends to its own results file;
+# assemble reads them all.
+# Remote endpoints: point LLM_API_URL at any OpenAI-compatible provider and the
+# suite runs against it — e.g. `LLM_API_URL=https://openrouter.ai/api
+# LLM_MODEL=openai/gpt-oss-20b make eval`, with LLM_API_KEY in the primary
+# checkout's .env. The chat endpoint moving does NOT move the embedding one (it
+# defaults to the local Ollama independently), and a remote chat model skips the
+# GPU queue below, since it contends for no GPU. An empty key on a remote
+# endpoint fails the run up front rather than 401-ing every sample.
 # GPU queue: strictly first-come-first-served via ticket files. Each invocation
 # takes a ticket in EVAL_QUEUE_DIR and runs only when its ticket is the oldest
 # LIVE one (tickets whose holder PID is gone are reaped, so a killed waiter can
@@ -192,14 +265,53 @@ pytest: $(if $(LOCAL),,build)
 # checkout's mounted data/eval-artifacts, so artifacts survive the worktree that
 # ran the eval. An explicit EVAL_REPORT_DIR is always honored; a lever-less
 # iteration run stays ephemeral (no artifacts, no lever requirement) as before.
+# The remote entry point: `make eval-remote`, plus anything else you would pass to
+# `make eval`. Sets the profile and hands off — a target-specific variable reaches the
+# prerequisite, so there is no recursive make here and `make -n eval-remote` stays a true
+# dry-run.
+eval-remote: EVAL_PROFILE = remote
+eval-remote: eval
+
 eval: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_QUEUE_DIR)" "$(EVAL_ARTIFACTS_HOST)"; \
 	banner="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
 	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
+	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | tr -d '"'; }; \
+	case "$(EVAL_PROFILE)" in \
+		local)  url_default="$(LLM_LOCAL_ENDPOINT)"; model_default="$(EVAL_LOCAL_MODEL)"; \
+			workers_default=1; concurrency_default=1; key_var="" ;; \
+		remote) url_default="$(EVAL_REMOTE_ENDPOINT)"; model_default="$(EVAL_REMOTE_MODEL)"; \
+			workers_default=$(EVAL_REMOTE_WORKERS); concurrency_default=$(EVAL_REMOTE_CONCURRENCY); \
+			key_var="$(EVAL_REMOTE_API_KEY_VAR)" ;; \
+		*) echo "eval: unknown EVAL_PROFILE '$(EVAL_PROFILE)' — expected 'local' or 'remote'" >&2; exit 1 ;; \
+	esac; \
+	workers="$${EVAL_WORKERS:-$$workers_default}"; \
+	concurrency="$${EVAL_CONCURRENCY:-$$concurrency_default}"; \
+	model="$${LLM_MODEL:-$$model_default}"; \
+	llm_url="$${LLM_API_URL:-$$url_default}"; \
+	llm_key="$${LLM_API_KEY:-$$(from_env LLM_API_KEY)}"; \
+	if [ -z "$$llm_key" ] && [ -n "$$key_var" ]; then llm_key="$$(from_env "$$key_var")"; fi; \
+	embed_url="$${LLM_EMBEDDING_API_URL:-$(LLM_LOCAL_ENDPOINT)}"; \
+	embed_key="$${LLM_EMBEDDING_API_KEY:-$$(from_env LLM_EMBEDDING_API_KEY)}"; \
+	case "$$llm_url" in *host.docker.internal*|*localhost*|*127.0.0.1*) on_gpu=1 ;; *) on_gpu=0 ;; esac; \
+	if [ "$$on_gpu" = 0 ]; then \
+		echo "eval: chat model is REMOTE ($$llm_url) — skipping the local GPU queue; embeddings stay at $$embed_url"; \
+		if [ -z "$$llm_key" ]; then \
+			echo "eval: no credential — set LLM_API_KEY (or $(EVAL_REMOTE_API_KEY_VAR)) in $(EVAL_PRIMARY_ENV), or LLM_API_KEY in the shell." >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	echo "eval: profile $(EVAL_PROFILE) — $$model at $$llm_url · $$workers worker(s) x $$concurrency sample(s) in flight"; \
+	if ! $(EVAL_RUN) env LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
+		LLM_MODEL="$$model" \
+		python -m penny.tests.eval.endpoint_smoke; then \
+		echo "eval: refusing to start — the endpoint above will not serve this model." >&2; \
+		exit 1; \
+	fi; \
 	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
 	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
 	trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
-	while :; do \
+	while [ "$$on_gpu" = 1 ]; do \
 		head=""; ahead=0; \
 		for t in $$(ls "$(EVAL_QUEUE_DIR)" 2>/dev/null | sort); do \
 			pid=$$(cat "$(EVAL_QUEUE_DIR)/$$t" 2>/dev/null || true); \
@@ -213,23 +325,32 @@ eval: $(if $(LOCAL),,build)
 		echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
 		sleep $$((15 + $$$$ % 10)); \
 	done; \
+	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
+	commit="$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	run_id="$${EVAL_RUN_ID:-run-$$stamp-$$(printf %.8s "$$commit")}"; \
 	report_dir="$${EVAL_REPORT_DIR}"; \
 	if [ -z "$$report_dir" ] && [ -n "$${EVAL_LEVER}" ]; then \
-		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$(date -u +%Y%m%dT%H%M%SZ)"; \
+		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$stamp"; \
 		echo "eval: reports → $$report_dir  (durable host dir: $(EVAL_ARTIFACTS_HOST))"; \
 	fi; \
 	$(EVAL_RUN) env \
-		LLM_API_URL="$${LLM_API_URL:-http://host.docker.internal:11434}" \
-		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \
+		LLM_API_URL="$$llm_url" \
+		LLM_API_KEY="$$llm_key" \
+		LLM_MODEL="$$model" \
+		LLM_EMBEDDING_API_URL="$$embed_url" \
+		LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
+		LLM_TIMEOUT="$${LLM_TIMEOUT}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
+		EVAL_CONCURRENCY="$$concurrency" \
 		EVAL_REPORT_DIR="$$report_dir" \
 		EVAL_BASELINE="$${EVAL_BASELINE}" \
 		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \
 		EVAL_LEVER="$${EVAL_LEVER}" \
-		EVAL_COMMIT="$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+		EVAL_RUN_ID="$$run_id" \
+		EVAL_COMMIT="$$commit" \
 		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \
-		pytest $(EVAL_PYTEST_ARGS)
+		pytest $(EVAL_PYTEST_ARGS) $$( [ "$$workers" -gt 1 ] && echo "-n $$workers" )
 
 # Assemble a completed eval run's artifacts (manifest.json + results.jsonl + the
 # per-case <case_id>.md transcripts) into THE postable PR comment (#1717) and

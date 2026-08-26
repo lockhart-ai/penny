@@ -11,6 +11,12 @@ correctness.
 
 Marked ``eval`` so it runs only under ``make eval``.  It measures; it does not
 gate — it asserts only that the native endpoint answered with timings.
+
+It is the ONE case that cannot run against a remote OpenAI-compatible provider: the
+native endpoint is Ollama's, and a gateway serving ``/v1`` has no ``/api/chat`` to
+answer.  Rather than fail the run with a 404 on a URL nobody meant to build, it SKIPS
+and names the endpoint it wanted — a suite otherwise green should not carry one red
+case that is red for being pointed somewhere it was never meant to go.
 """
 
 from __future__ import annotations
@@ -42,7 +48,19 @@ async def _chat(client: httpx.AsyncClient, content: str) -> dict:
     return response.json()
 
 
+def _is_native_ollama(api_url: str) -> bool:
+    """Whether this endpoint serves Ollama's NATIVE API, the only one this probe can read.
+
+    Read from the endpoint rather than from a flag the caller must remember to pass: the
+    probe's own requirement is what decides, so pointing a run anywhere else skips it
+    without anyone having to know it exists.
+    """
+    return not api_url.startswith("https://")
+
+
 async def test_perf_probe() -> None:
+    if not _is_native_ollama(_API_URL):
+        pytest.skip(f"native-API probe needs an Ollama endpoint; {_API_URL} serves /v1 only")
     async with httpx.AsyncClient(timeout=300.0) as client:
         await _chat(client, "Hi")  # warm-up: load weights so the measured calls are steady-state
         decode = await _chat(client, _DECODE_PROMPT)

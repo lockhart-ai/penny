@@ -40,12 +40,12 @@ from pathlib import Path
 from penny.tests.eval import comment_split, report
 from penny.tests.eval.artifacts import (
     MANIFEST_FILENAME,
-    RESULTS_FILENAME,
     CaseArtifact,
     CheckCell,
     FailureCause,
     RunManifest,
     count_causes,
+    load_results_lines,
     pathology_excluded,
     render_manifest_header,
 )
@@ -110,17 +110,13 @@ def load_manifest(report_dir: Path) -> RunManifest:
 
 
 def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
-    """Read every case record from ``results.jsonl`` (one per non-blank line), in file order.
+    """Read every case record in the run dir (one per non-blank line), in file order.
 
-    A missing/empty file → no cases: a manifest can exist before any case has recorded."""
-    path = report_dir / RESULTS_FILENAME
-    if not path.is_file():
-        return []
-    return [
-        CaseArtifact.model_validate_json(line)
-        for line in path.read_text().splitlines()
-        if line.strip()
-    ]
+    A run under xdist writes one results file per worker, so the whole run is the union of
+    them — reading only ``results.jsonl`` would silently report a fraction of the cases as
+    if it were all of them.  No files → no cases: a manifest can exist before any case has
+    recorded."""
+    return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
 
 
 # ── The run header (identity · RESULT · gate · flips) ────────────────────────
@@ -193,10 +189,16 @@ def _timings(artifacts: list[CaseArtifact]) -> str:
         return ""
     duration_ms = sum(artifact.timings.duration_ms for artifact in artifacts)
     input_tokens = sum(artifact.timings.input_tokens for artifact in artifacts)
+    reasoning_tokens = sum(artifact.timings.reasoning_tokens for artifact in artifacts)
+    # Only when the provider reported it: an absent count renders as no clause rather than
+    # as a confident zero.
+    reasoning_clause = f" ({reasoning_tokens / 1000:.1f}K thinking)" if reasoning_tokens else ""
+
     output_tokens = sum(artifact.timings.output_tokens for artifact in artifacts)
     return (
         f"{calls} calls · {duration_ms / 1000:.0f}s · "
         f"{input_tokens / 1000:.1f}K in / {output_tokens / 1000:.1f}K out"
+        f"{reasoning_clause}"
     )
 
 
