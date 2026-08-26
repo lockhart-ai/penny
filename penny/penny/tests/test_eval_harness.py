@@ -31,6 +31,7 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
+from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
@@ -46,7 +47,7 @@ from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
-from penny.tests.conftest import TEST_SENDER
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -80,6 +81,7 @@ from penny.tests.eval.conftest import (
     _stamp_cause,
     _without_examples,
     _write_sample_report,
+    collection_entries,
     continue_nudge_fired,
     count_tool_calls,
     draw_rerolled,
@@ -149,6 +151,11 @@ from penny.tests.eval.test_email_dispatch import (
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.test_speakable_log_reads import (
+    _FAILURE_TOKEN,
+    _SEEDED_CYCLES,
+    _seed_collector_activity,
+)
 from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
     BAIL_CASES,
@@ -755,6 +762,58 @@ def _assert_one_span_moved(case: _EnactmentCase) -> None:
         f"{case.case_id}: the change page must move the datum and nothing else — "
         f"{len(moves)} spans differ"
     )
+
+
+def test_the_collector_runs_world_holds_what_its_cycles_claim(tmp_path) -> None:
+    """The log-reads collector-runs world reads back the way its own cycles describe it, and
+    the failing cycle's REASON is reachable ONLY through the run record.
+
+    Both halves are what that case rests on, and both were silently wrong (#1990).  A cycle
+    whose trace says it wrote but whose entry never landed leaves the collection empty and
+    drops the ``· wrote '<key>'`` clause the self-state header renders in production — so the
+    case measured a world THINNER than the real one, against a 'read the collections instead'
+    alternative that was a dead end rather than a wrong answer.  And the reason is the whole
+    ask: were the header to carry it, the read would be redundant again and a model that
+    reasons would rightly skip it, which is precisely how that case came to score a correct
+    answer as a miss.
+
+    Pinned here, deterministically, because the alternative is discovering it on a live run —
+    which is how it went unnoticed through three full suites."""
+    db = migrated_db(str(tmp_path / "collector-runs.db"))
+    _seed_collector_activity(db)
+    header = SelfStateHeader(db, TEST_SENDER).render()
+
+    for cycle in _SEEDED_CYCLES:
+        if cycle.wrote is None:
+            continue
+        key, content = cycle.wrote
+        assert collection_entries(db, cycle.job.container).get(key) == content, (
+            f"{cycle.name}: its trace says it wrote {key!r}, the collection does not hold it"
+        )
+        assert db.memories.writes_by_run([cycle.run_id]).get(cycle.run_id), (
+            f"{cycle.name}: the write is not attributed to the cycle that made it, so the "
+            "header drops the writes clause production renders"
+        )
+        assert key in header, f"{cycle.name}: {key!r} is not ambient, but production makes it so"
+
+    record = "\n".join(
+        entry.content
+        for entry in require_memory(db, PennyConstants.MEMORY_COLLECTOR_RUNS_LOG).read_all()
+    )
+    assert _FAILURE_TOKEN in record, (
+        "the failing cycle's reason must render in the run record — it is the whole answer "
+        "the case asks for"
+    )
+    assert _FAILURE_TOKEN not in header, (
+        "the self-state header must NOT carry the failure reason — if it did, the read the "
+        "case scores would be redundant and skipping it would be correct"
+    )
+    for cycle in _SEEDED_CYCLES:
+        stored = " ".join(collection_entries(db, cycle.job.container).values())
+        assert _FAILURE_TOKEN not in stored, (
+            f"{cycle.job.container} carries the failure reason — a failed cycle writes "
+            "nothing, so reading the collections must not answer the ask"
+        )
 
 
 def test_the_enactment_scorer_passes_three_cycles_that_did_the_job(tmp_path) -> None:

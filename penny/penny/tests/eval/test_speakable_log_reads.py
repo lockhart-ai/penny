@@ -19,6 +19,18 @@ turns after it, pushing it out of BOTH the context window and the per-direction 
 read.  Nothing else can leak it in: the chat prompt injects no speculative recalled-content
 block (the ambient inversion, #1555, and the recall substrate's removal, #1583).
 
+**The self-state confound (the collector-runs case).**  The same confound with a different
+ambient carrier, and for a long time it went untreated here.  Penny's self-state header
+renders her Active mechanisms and Recent activity EVERY turn — each job's cadence, its last
+run's outcome, one line per recent run — so "how have the jobs been doing" is fully answered
+at zero calls, and a model that reasons notices and skips the read.  (Measured, #1990: with
+reasoning enabled four of five samples answered from the header, correctly, and a case that
+scored the read marked all four wrong.  The more intelligent behaviour scored lower.)  The
+treatment mirrors ``_FILLER_PAIRS``: aim the ask at what the header STRUCTURALLY cannot
+carry.  A cycle's OUTCOME is ambient; the REASON behind it never is, and a failed cycle
+writes nothing, so no collection holds it either.  Retrieval genuinely requires a read
+again, and — as with ``silverleaf`` — the reply is what proves the read happened.
+
 **The world is one the user built (#1911/migration 0108: nothing is pre-seeded).**  The
 collection the act case saves into is a plain user-built container, and the two jobs the
 collector-runs case reads about are STANDING JOBS — a taught routine applied to two pages
@@ -97,6 +109,13 @@ _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
 # here, since the store is the claim and the verb is the model's choice.
 _MEMORY_ARG = "memory"
 
+# The other two arguments a RUN is addressed by.  A collector run is identified in exactly
+# three ways — the cross-collector log's name (``memory``), the run's own id (``event_id``)
+# and the run's target (``target``) — and different tools take different ones.  Naming the
+# anchors rather than the verbs is what lets a tool nobody listed count as a run-record read.
+_TARGET_ARG = "target"
+_EVENT_ARG = "event_id"
+
 # Wide enough that a world seeding a conversation window is read WHOLE: the probe's answer
 # has to be "none of them", not "none of the first few".
 _VECTOR_PROBE_LIMIT = 500
@@ -105,6 +124,7 @@ _VECTOR_PROBE_LIMIT = 500
 _INCOMING = PennyConstants.MessageDirection.INCOMING
 _OUTGOING = PennyConstants.MessageDirection.OUTGOING
 _PENNY = PennyConstants.MessageAuthor.PENNY
+_COLLECTOR = PennyConstants.MessageAuthor.COLLECTOR
 
 # The collection the act case saves into — user-built storage, no job attached, which is
 # what a collection someone made to keep a list in looks like after the soft reboot.
@@ -315,7 +335,8 @@ def _seed_browse_history(db: Database) -> None:
 #
 # The jobs are the standing-collection story's own world — ONE taught routine, applied to
 # two pages, so the pair is two real jobs rather than two rows shaped like jobs.  What this
-# case adds is their HISTORY: completed runs, which is what the collector-runs index reads.
+# case adds is their HISTORY: completed cycles, which is what the collector-runs index
+# reads — including one that FAILED, the cycle the case is actually about.
 
 _PATCH_NOTES_JOB = StandingJob(
     routine=WATCH_ROUTINE,
@@ -337,82 +358,44 @@ _TRAIL_JOB = StandingJob(
     schedule="FREQ=HOURLY",
     notify=False,
 )
+_SEEDED_JOBS = (_PATCH_NOTES_JOB, _TRAIL_JOB)
 
-
-def _seed_run(
-    db: Database,
-    *,
-    target: str,
-    run_id: str,
-    outcome: RunOutcome,
-    summary: str,
-    steps: list[DistillInput],
-) -> None:
-    """Seed one completed collector run as a ``promptlog`` row (+ its outcome).
-
-    That row IS the ``collector-runs`` content — a run renders once ``set_run_outcome``
-    stamps ``run_outcome`` on it, and the response carries the calls the run made.  The
-    envelope is built by the seeded-ledger helpers the transition suite already writes
-    history with, so a run seeded here and a run seeded there are one wire shape rather
-    than two hand-built ones free to differ.
-
-    The id is a SEEDED one, so every reader of "what did the model do this sample"
-    excludes it: a job's past cycles are history, and counting them as this turn's calls
-    would report a quiet turn as a busy one."""
-    calls = [_wire_tool_call(f"{run_id}-{index}", step) for index, step in enumerate(steps)]
-    db.messages.log_prompt(
-        model="seed",
-        messages=[],
-        response=_seeded_response(tool_calls=calls),
-        agent_name="collector",
-        run_id=run_id,
-        run_target=target,
-    )
-    db.messages.set_run_outcome(run_id, outcome.value, summary)
-
-
-def _cycle_steps(job: StandingJob, *, wrote: tuple[str, str] | None) -> list[DistillInput]:
-    """One cycle's calls, as the job's own program makes them: read the page, write what it
-    found (when it found something), close.  A quiet cycle just reads and closes."""
-    page, watched_for = job.values["page"], job.values["watched_for"]
-    steps = [
-        DistillInput(
-            source_ordinal=1,
-            tool=_BROWSE,
-            arguments={"queries": [page], "extract": watched_for},
-            result=f"You opened {page} ({_BROWSE} result)\n{watched_for}: nothing new.",
-        )
-    ]
-    if wrote is not None:
-        key, content = wrote
-        steps.append(
-            DistillInput(
-                source_ordinal=2,
-                tool=_WRITE,
-                arguments={"memory": job.container, "entries": [{"key": key, "content": content}]},
-                result=f"You saved an entry to {job.container}: ({_WRITE} result)\nWrote 1 entry.",
-            )
-        )
-    return [
-        *steps,
-        DistillInput(
-            source_ordinal=len(steps) + 1,
-            tool=PennyConstants.DONE_TOOL_NAME,
-            arguments={},
-            result=f"You finished the cycle. ({PennyConstants.DONE_TOOL_NAME} result)\nDone.",
-        ),
-    ]
+# The failed cycle's stamped reason, and the invented word inside it the reply is scored on.
+# ``thistledown`` exists in this world in exactly ONE place: this string, stamped on the run
+# and rendered by the run record.  The self-state header renders that cycle's OUTCOME
+# (``FAILED``) and never the reason behind it, and a failed cycle writes nothing, so no
+# collection holds it either.  A reply carrying the word therefore came from the run record
+# and from nowhere else — the ``silverleaf`` construction, applied to the one case in this
+# module that never had it.
+_TRAIL_FAILURE_REASON = (
+    "Couldn't read the page — it bounced to a notice about the thistledown survey closure."
+)
+_FAILURE_TOKEN = "thistledown"
 
 
 class _SeededCycle(NamedTuple):
-    """One completed cycle in a job's history: which job ran, what it came back with (a
-    key and content, or nothing on a quiet cycle), and how the run recorded itself."""
+    """One completed cycle in a job's history: which job ran, what it came back with (a key
+    and content, or nothing on a quiet or failed cycle), and how the run recorded itself."""
 
     job: StandingJob
     name: str
     outcome: RunOutcome
     summary: str
     wrote: tuple[str, str] | None = None
+
+    @property
+    def run_id(self) -> str:
+        """The seeded id every row of this cycle carries — minted once, so the ledger row,
+        the entry it wrote and any probe naming the run all say the same thing."""
+        return seeded_run_id(self.name)
+
+    @property
+    def closed(self) -> bool:
+        """Whether the cycle reached ``done()``.  A FAILED one did not — never reaching a
+        healthy end is what failing means (#1936) — and that is also what makes its stamped
+        reason READ: a cycle that closed cleanly renders its outcome instead, so a failure
+        seeded as closed would hide the very sentence this case is about."""
+        return self.outcome is not RunOutcome.FAILED
 
 
 _SEEDED_CYCLES = (
@@ -424,34 +407,131 @@ _SEEDED_CYCLES = (
         wrote=("Patch 2.3", "Patch 2.3 — ember mage rebalance."),
     ),
     _SeededCycle(
-        _PATCH_NOTES_JOB,
-        "patch-notes-cycle-2",
-        RunOutcome.NO_WORK,
-        "No new patch notes this cycle.",
-    ),
-    _SeededCycle(
         _TRAIL_JOB,
         "trail-cycle-1",
         RunOutcome.WORKED,
         "Logged today's trail status.",
         wrote=("today", "Verdant Hollow — muddy after rain."),
     ),
+    _SeededCycle(
+        _PATCH_NOTES_JOB,
+        "patch-notes-cycle-2",
+        RunOutcome.NO_WORK,
+        "No new patch notes this cycle.",
+    ),
+    _SeededCycle(_TRAIL_JOB, "trail-cycle-2", RunOutcome.FAILED, _TRAIL_FAILURE_REASON),
 )
+_SEEDED_RUN_IDS = tuple(cycle.run_id for cycle in _SEEDED_CYCLES)
+
+
+def _browse_result(cycle: _SeededCycle) -> str:
+    """What the cycle's page read came back with — the finding it went on to write, the
+    failure that ended it, or nothing new on a quiet cycle.  A cycle whose trace says it
+    read nothing while its reason says it recorded a patch is a world at odds with itself,
+    and the model reads both."""
+    page, watched_for = cycle.job.values["page"], cycle.job.values["watched_for"]
+    if not cycle.closed:
+        return f"You tried to open {page} ({_BROWSE} result)\n{cycle.summary}"
+    found = cycle.wrote[1] if cycle.wrote is not None else "nothing new."
+    return f"You opened {page} ({_BROWSE} result)\n{watched_for}: {found}"
+
+
+def _read_step(cycle: _SeededCycle) -> DistillInput:
+    """The cycle's page read.  Every cycle makes one — what it comes back with is what the
+    cycle went on to do, or the reason it stopped."""
+    return DistillInput(
+        source_ordinal=1,
+        tool=_BROWSE,
+        arguments={
+            "queries": [cycle.job.values["page"]],
+            "extract": cycle.job.values["watched_for"],
+        },
+        result=_browse_result(cycle),
+    )
+
+
+def _write_step(cycle: _SeededCycle, key: str, content: str) -> DistillInput:
+    """The entry the cycle kept, as the call that kept it."""
+    return DistillInput(
+        source_ordinal=2,
+        tool=_WRITE,
+        arguments={"memory": cycle.job.container, "entries": [{"key": key, "content": content}]},
+        result=f"You saved an entry to {cycle.job.container}: ({_WRITE} result)\nWrote 1 entry.",
+    )
+
+
+def _close_step(ordinal: int) -> DistillInput:
+    """The ``done()`` a healthy cycle ends on."""
+    return DistillInput(
+        source_ordinal=ordinal,
+        tool=PennyConstants.DONE_TOOL_NAME,
+        arguments={},
+        result=f"You finished the cycle. ({PennyConstants.DONE_TOOL_NAME} result)\nDone.",
+    )
+
+
+def _cycle_steps(cycle: _SeededCycle) -> list[DistillInput]:
+    """One cycle's calls, as the job's own program makes them: read the page, write what it
+    found (when it found something), close.  A quiet cycle just reads and closes; a failed
+    cycle reads and stops there, because that is what its outcome means."""
+    steps = [_read_step(cycle)]
+    if cycle.wrote is not None:
+        steps.append(_write_step(cycle, *cycle.wrote))
+    if not cycle.closed:
+        return steps
+    return [*steps, _close_step(len(steps) + 1)]
+
+
+def _seed_run(db: Database, cycle: _SeededCycle) -> None:
+    """Seed one completed collector cycle: the ``promptlog`` row that IS its
+    ``collector-runs`` content, the outcome + reason stamped on it, and — when the cycle
+    wrote — the entry it left behind, attributed to this run.
+
+    That last part is what makes the world COHERE, and it was missing.  The cycle's trace
+    says it wrote and its reason says what it recorded; if the entry never lands, the
+    collection the model is pointed at is empty, no ``last_written_by_run_id`` is stamped,
+    and the self-state header silently drops the ``· wrote '<key>' → `<collection>``` clause
+    production renders (#1641).  The case would then measure a world THINNER than the real
+    one, against a 'read the collections instead' alternative that is a dead end rather than
+    a wrong answer.
+
+    The envelope is built by the seeded-ledger helpers the transition suite already writes
+    history with, so a run seeded here and a run seeded there are one wire shape rather than
+    two hand-built ones free to differ.  The id is a SEEDED one, so every reader of "what did
+    the model do this sample" excludes it: a job's past cycles are history, and counting them
+    as this turn's calls would report a quiet turn as a busy one."""
+    steps = _cycle_steps(cycle)
+    calls = [_wire_tool_call(f"{cycle.run_id}-{index}", step) for index, step in enumerate(steps)]
+    db.messages.log_prompt(
+        model="seed",
+        messages=[],
+        response=_seeded_response(tool_calls=calls),
+        agent_name=_COLLECTOR,
+        run_id=cycle.run_id,
+        run_target=cycle.job.container,
+    )
+    db.messages.set_run_outcome(cycle.run_id, cycle.outcome.value, cycle.summary)
+    _seed_what_the_cycle_kept(db, cycle)
+
+
+def _seed_what_the_cycle_kept(db: Database, cycle: _SeededCycle) -> None:
+    """The entry a cycle wrote, landed in the job's collection under that cycle's OWN run
+    id — so the write is attributed the way production attributes it, and the header renders
+    the writes clause it renders in a real deployment."""
+    if cycle.wrote is None:
+        return
+    key, content = cycle.wrote
+    require_memory(db, cycle.job.container).write(
+        [EntryInput(key=key, content=content)], author=_COLLECTOR, run_id=cycle.run_id
+    )
 
 
 def _seed_collector_activity(db: Database) -> None:
     """Two standing jobs, then the completed cycles behind them — the cross-collector
     history the ``collector-runs`` index renders."""
-    seed_standing_jobs(_PATCH_NOTES_JOB, _TRAIL_JOB)(db)
+    seed_standing_jobs(*_SEEDED_JOBS)(db)
     for cycle in _SEEDED_CYCLES:
-        _seed_run(
-            db,
-            target=cycle.job.container,
-            run_id=seeded_run_id(cycle.name),
-            outcome=cycle.outcome,
-            summary=cycle.summary,
-            steps=_cycle_steps(cycle.job, wrote=cycle.wrote),
-        )
+        _seed_run(db, cycle)
 
 
 # ── Scorers ──────────────────────────────────────────────────────────────────
@@ -528,16 +608,69 @@ def _score_browse_results(db: Database, _before: set[str], reply: str) -> list[C
     ]
 
 
-def _score_collector_runs(db: Database, _before: set[str], _reply: str) -> list[Check]:
-    """Asked how her background jobs have been doing, she reads the cross-collector
-    collector-runs index rather than the collections themselves."""
-    read = _dispatched(db, _LOG_READ, "memory", _COLLECTOR_RUNS)
+def _named_the_run_record(db: Database, tool: str) -> bool:
+    """Did this tool's calls this run bind any of the three run anchors to THIS world's run
+    history — the cross-collector log, one of the jobs as a run target, or a seeded run id?"""
+    if _dispatched(db, tool, _MEMORY_ARG, _COLLECTOR_RUNS):
+        return True
+    if any(_dispatched(db, tool, _TARGET_ARG, job.container) for job in _SEEDED_JOBS):
+        return True
+    return any(
+        _normalize(run_id) in _normalize(value)
+        for value in tool_call_arg_values(db, tool, _EVENT_ARG)
+        for run_id in _SEEDED_RUN_IDS
+    )
+
+
+def _consulted_the_run_record(db: Database) -> bool:
+    """Did ANY call this run go to the run record?
+
+    Keyed to the ANCHORS a run is addressed by, never to a verb — the rule
+    ``_read_the_store`` states, widened past a single argument name because a run has three
+    anchors and different tools take different ones: the log's NAME
+    (``log_read(memory=collector-runs)``), a run TARGET (``read_run_calls(target=<job>)``)
+    and a run ID (``get_event(event_id="run <id>")``).  All three are rendered verbatim in
+    the self-state header, all three lead to the same records, and which she reaches for is
+    her call to make.  Reading a job's COLLECTION binds that collection to ``memory`` and
+    matches none of them — which is what keeps "the index rather than the collections" a
+    real distinction rather than a preference for one verb.
+
+    The verb set is READ from what the run actually called rather than enumerated here, so a
+    tool nobody listed participates for free."""
+    return any(_named_the_run_record(db, tool) for tool in set(tool_call_sequence(db)))
+
+
+def _score_collector_runs(db: Database, _before: set[str], reply: str) -> list[Check]:
+    """Asked how her background jobs have been doing and why any of them is in trouble, she
+    goes to the run record — by whichever verb — and tells the user what it says.
+
+    The scored claim is the OUTCOME: the reply carries the failed cycle's reason, a phrase
+    that exists in this world only in the run record.  The header renders that cycle's
+    outcome and never its reason, and a failed cycle wrote nothing, so no collection holds
+    it — a reply carrying it can only have come from the run record.  That makes "the index
+    rather than the collections" something the case OBSERVES in the answer instead of
+    something it demands of the call sequence.
+
+    The route is scored too, one rung below the answer, because the two failures underneath
+    a silent 0.00 are different and a reader needs to tell them apart: "answered from the
+    header without looking" fails both checks, "looked and then said nothing useful" fails
+    only the reply.  The old single check scored those two identically — and scored a
+    correct header answer as a miss."""
+    consulted = _consulted_the_run_record(db)
+    told = _FAILURE_TOKEN in _normalize(reply)
     return [
         Check(
-            f"spine: she read the {_COLLECTOR_RUNS} index",
-            read,
-            anchor=f"{_LOG_READ}(",
+            "spine: she went to the run record",
+            consulted,
+            rationale=None if consulted else "no call this run named the run record",
             kind="spine",
+        ),
+        Check(
+            "reply: it says WHY the failing cycle failed",
+            told,
+            anchor=REPLY_ANCHOR,
+            rationale=None if told else f"the reply never names {_FAILURE_TOKEN!r}",
+            kind="reply",
         ),
         landed_state_check(db),
     ]
@@ -602,11 +735,22 @@ async def test_browse_results(chat_eval: ChatEval) -> None:
 
 async def test_collector_runs(chat_eval: ChatEval) -> None:
     """Report-only.  The chat-side introspection ask about background work — the enactment
-    suite drives cycles, but nothing else asks her ABOUT them."""
+    suite drives cycles, but nothing else asks her ABOUT them.
+
+    The ask reaches PAST the self-state header deliberately.  "How have they been doing" is
+    answered by the header alone — every mechanism, every cadence, every run's outcome — so
+    a case that stopped there scored the read as effort rather than as routing, and marked a
+    correct header answer wrong (#1990).  What the header cannot carry is WHY a cycle
+    failed, and the second clause is what asks for it: the opening stays verbatim so the
+    case is still the same introspection ask, and the clause makes the answer live somewhere
+    only a read can reach."""
     await chat_eval(
         case_id="speak-logread-collector-runs",
         family=_FAMILY,
-        message="how have your background jobs been doing lately?",
+        message=(
+            "how have your background jobs been doing lately? if any of them is having "
+            "trouble i want to know why"
+        ),
         seed=_seed_collector_activity,
         seed_skills=[WATCH_ROUTINE],
         score=_score_collector_runs,
