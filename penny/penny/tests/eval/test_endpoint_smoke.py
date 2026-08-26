@@ -5,8 +5,13 @@ from __future__ import annotations
 import pytest
 
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmMessage, LlmNotFoundError, LlmResponse
-from penny.tests.eval.endpoint_smoke import main, smoke
+from penny.llm.models import (
+    LlmMessage,
+    LlmNotFoundError,
+    LlmResponse,
+    LlmResponseError,
+)
+from penny.tests.eval.endpoint_smoke import main, smoke, smoke_embedding
 
 # The verbatim shape of the refusal that motivated this check: a provider allowlist that
 # excludes every provider serving the requested model. Kept whole because the point of the
@@ -58,6 +63,41 @@ async def test_a_refused_model_fails_carrying_the_providers_own_words(monkeypatc
     assert "REFUSED" in result.render()
 
 
+@pytest.mark.asyncio
+async def test_a_dead_embedding_backend_is_caught_before_the_run(monkeypatch) -> None:
+    """Listing the model is not proof it can embed — only a real call is.
+
+    The failure this exists for is the quiet one: a backend refused every embedding call,
+    the write path stored NULL vectors and carried on, and a whole memory suite scored
+    ~1.00 with no vectors in it at all. The preflight had passed, because the model WAS
+    listed; it just could not embed.
+    """
+
+    async def refuse(self, text):  # bound: patched on the class
+        raise LlmResponseError("HTTP 400: embeddings do not support base64 encoding_format")
+
+    monkeypatch.setattr(LlmClient, "embed", refuse)
+    result = await smoke_embedding(
+        api_url="https://openrouter.ai/api", model="some/embedder", api_key="k"
+    )
+    assert not result.ok
+    assert "base64 encoding_format" in result.detail
+    assert "embedding endpoint REFUSED" in result.render()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_vector_is_a_refusal_not_a_pass(monkeypatch) -> None:
+    """A backend that answers with nothing is as dead as one that errors."""
+
+    async def empty(self, text):  # bound: patched on the class
+        return [[]]
+
+    monkeypatch.setattr(LlmClient, "embed", empty)
+    result = await smoke_embedding(api_url="http://localhost:11434", model="m", api_key="k")
+    assert not result.ok
+    assert "no vector" in result.detail
+
+
 def test_the_cli_exit_code_is_what_stops_the_run(monkeypatch) -> None:
     """`make eval` reads the exit code, so a refusal must be non-zero and a pass zero."""
     monkeypatch.setenv("LLM_API_URL", "https://openrouter.ai/api")
@@ -73,7 +113,11 @@ def test_the_cli_exit_code_is_what_stops_the_run(monkeypatch) -> None:
     async def answer(self, messages, tools=None, **kwargs):  # bound: patched on the class
         return LlmResponse(message=LlmMessage(role="assistant", content="ready."))
 
+    async def embed_ok(self, text):  # bound: patched on the class
+        return [[0.1, 0.2, 0.3]]
+
     monkeypatch.setattr(LlmClient, "chat", answer)
+    monkeypatch.setattr(LlmClient, "embed", embed_ok)
     assert main([]) == 0
 
     # A stray argument is a usage error, distinct from a refused endpoint.

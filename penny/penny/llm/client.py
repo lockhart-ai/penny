@@ -51,6 +51,14 @@ _DEFAULT_API_KEY = "not-needed"
 # and the remote path stops silently differing from it.
 REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
 
+# Ask for embedding vectors as plain floats rather than the SDK's base64 default.
+# Not every backend accepts base64: Google AI Studio refuses it outright ("embeddings do
+# not support base64 encoding_format"), and the failure is the quiet kind — the write path
+# stores a NULL vector and carries on, so a whole memory suite ran with no embeddings at
+# all and still scored ~1.00. Floats are what every OpenAI-compatible backend accepts, and
+# the SDK decodes either into the same list, so nothing downstream can tell the difference.
+EMBEDDING_ENCODING_FORMAT = "float"
+
 # Fallback when an error response carries no content-type header.
 _UNKNOWN_CONTENT_TYPE = "unknown"
 
@@ -332,7 +340,9 @@ class LlmClient:
             try:
                 logger.debug("Sending embed request (attempt %d/%d)", attempt + 1, self.max_retries)
 
-                response = await self.client.embeddings.create(model=self.model, input=text)
+                response = await self.client.embeddings.create(
+                    model=self.model, input=text, encoding_format=EMBEDDING_ENCODING_FORMAT
+                )
                 if not response.data:
                     last_error = LlmResponseError(_no_payload_detail(response, "data"))
                     logger.warning(
