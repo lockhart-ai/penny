@@ -22,6 +22,22 @@ EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 EVAL_PRIMARY_CHECKOUT := $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
 EVAL_ARTIFACTS_HOST := $(EVAL_PRIMARY_CHECKOUT)/data/eval-artifacts
 EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
+
+# --- Remote model endpoints --------------------------------------------------
+# `make eval` forwards model config as explicit env vars rather than reading the
+# mounted `/penny/.env`, because it runs from a WORKTREE and only the primary
+# checkout has a real `.env`.  A remote OpenAI-compatible provider (OpenRouter)
+# adds a credential to that list, and a credential belongs in `.env`, not in
+# shell history — so each one is read from the host shell first and from the
+# PRIMARY checkout's `.env` second, which makes `LLM_API_KEY=...` in that file
+# work from any worktree.  Values are forwarded into the container's env and
+# never echoed.
+EVAL_PRIMARY_ENV := $(EVAL_PRIMARY_CHECKOUT)/.env
+# Where the GPU lives, from inside the eval container.  Both the chat and the
+# embedding endpoint default here, so pointing ONLY the chat model at a remote
+# provider leaves memory's embeddings on the local Ollama that serves them —
+# no remote chat provider serves `embeddinggemma`.
+LLM_LOCAL_ENDPOINT := http://host.docker.internal:11434
 # The marker `make eval-report` stamps into a posted run dir (#1757). Must match
 # `penny.tests.eval.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
 POSTED_MARKER := .posted
@@ -175,12 +191,19 @@ check: $(if $(LOCAL),,build)
 pytest: $(if $(LOCAL),,build)
 	$(RUN) pytest $(PYTEST_ARGS)
 
-# Live-model contract suite — drives the REAL agents against a running Ollama
+# Live-model contract suite — drives the REAL agents against a real model
 # (gpt-oss + embeddinggemma) on synthetic seeds. Slow and stochastic, so it's
 # kept out of make check; run it by hand to validate prompt/behaviour changes.
 # Forwards the model endpoint into the container (defaulting to the docker host,
 # where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
 # the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
+# Remote endpoints: point LLM_API_URL at any OpenAI-compatible provider and the
+# suite runs against it — e.g. `LLM_API_URL=https://openrouter.ai/api
+# LLM_MODEL=openai/gpt-oss-20b make eval`, with LLM_API_KEY in the primary
+# checkout's .env. The chat endpoint moving does NOT move the embedding one (it
+# defaults to the local Ollama independently), and a remote chat model skips the
+# GPU queue below, since it contends for no GPU. An empty key on a remote
+# endpoint fails the run up front rather than 401-ing every sample.
 # GPU queue: strictly first-come-first-served via ticket files. Each invocation
 # takes a ticket in EVAL_QUEUE_DIR and runs only when its ticket is the oldest
 # LIVE one (tickets whose holder PID is gone are reaped, so a killed waiter can
@@ -196,10 +219,23 @@ eval: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_QUEUE_DIR)" "$(EVAL_ARTIFACTS_HOST)"; \
 	banner="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
 	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
+	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | tr -d '"'; }; \
+	llm_url="$${LLM_API_URL:-$(LLM_LOCAL_ENDPOINT)}"; \
+	llm_key="$${LLM_API_KEY:-$$(from_env LLM_API_KEY)}"; \
+	embed_url="$${LLM_EMBEDDING_API_URL:-$(LLM_LOCAL_ENDPOINT)}"; \
+	embed_key="$${LLM_EMBEDDING_API_KEY:-$$(from_env LLM_EMBEDDING_API_KEY)}"; \
+	case "$$llm_url" in *host.docker.internal*|*localhost*|*127.0.0.1*) on_gpu=1 ;; *) on_gpu=0 ;; esac; \
+	if [ "$$on_gpu" = 0 ]; then \
+		echo "eval: chat model is REMOTE ($$llm_url) — skipping the local GPU queue; embeddings stay at $$embed_url"; \
+		if [ -z "$$llm_key" ]; then \
+			echo "eval: LLM_API_KEY is empty — a remote endpoint will reject every call. Set it in $(EVAL_PRIMARY_ENV) or the shell." >&2; \
+			exit 1; \
+		fi; \
+	fi; \
 	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
 	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
 	trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
-	while :; do \
+	while [ "$$on_gpu" = 1 ]; do \
 		head=""; ahead=0; \
 		for t in $$(ls "$(EVAL_QUEUE_DIR)" 2>/dev/null | sort); do \
 			pid=$$(cat "$(EVAL_QUEUE_DIR)/$$t" 2>/dev/null || true); \
@@ -219,10 +255,14 @@ eval: $(if $(LOCAL),,build)
 		echo "eval: reports → $$report_dir  (durable host dir: $(EVAL_ARTIFACTS_HOST))"; \
 	fi; \
 	$(EVAL_RUN) env \
-		LLM_API_URL="$${LLM_API_URL:-http://host.docker.internal:11434}" \
+		LLM_API_URL="$$llm_url" \
+		LLM_API_KEY="$$llm_key" \
 		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \
+		LLM_EMBEDDING_API_URL="$$embed_url" \
+		LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
+		EVAL_CONCURRENCY="$${EVAL_CONCURRENCY:-1}" \
 		EVAL_REPORT_DIR="$$report_dir" \
 		EVAL_BASELINE="$${EVAL_BASELINE}" \
 		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \

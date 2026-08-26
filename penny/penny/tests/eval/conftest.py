@@ -256,22 +256,58 @@ class _Perf:
         )
 
 
+# Endpoint settings a REMOTE OpenAI-compatible provider needs and a local Ollama does
+# not: an API key that is actually checked, and a separate endpoint for the embedding
+# model — no remote chat provider serves ``embeddinggemma``, so sending the chat model
+# somewhere else must not drag memory's embeddings along with it.  Each name is its
+# ``Config`` field uppercased, so a var present here overrides exactly that field and an
+# absent one leaves the field's own default standing — which is why the local path is
+# unchanged by this list existing.
+_ENDPOINT_ENV_VARS = (
+    "LLM_API_KEY",
+    "LLM_EMBEDDING_API_URL",
+    "LLM_EMBEDDING_API_KEY",
+)
+
+# A remote endpoint puts a network between the sample and the model, where a transient
+# timeout or 502 is ordinary rather than a defect.  The integration-test default of a
+# single attempt would spend a whole SAMPLE reroll on one, so the eval path retries the
+# CALL first, and waits long enough between tries for a rate limiter to reopen.
+_EVAL_LLM_MAX_RETRIES = 3
+_EVAL_LLM_RETRY_DELAY = 1.0
+
+
+def _endpoint_overrides() -> dict[str, str]:
+    """The endpoint settings present in the environment, keyed by ``Config`` field.
+
+    An unset var is OMITTED rather than passed as empty, so ``Config``'s own default
+    stays in place: absent ``LLM_EMBEDDING_API_URL`` keeps embeddings on the chat
+    endpoint (what a local Ollama run wants), and absent ``LLM_API_KEY`` keeps the
+    "not-needed" key local inference servers accept.
+    """
+    return {name.lower(): value for name in _ENDPOINT_ENV_VARS if (value := os.environ.get(name))}
+
+
 def _real_model_config(
     make_config: Callable[..., Config], *, signal_api_url: str, db_path: str
 ) -> Config:
-    """A test Config pointed at the real Ollama text + embedding models.
+    """A test Config pointed at the real text + embedding models.
 
     Reads endpoint/model from the environment so the same suite runs on the
-    host (localhost) and inside the penny container (host.docker.internal),
-    falling back to local defaults.  ``signal_api_url`` binds to the sample's
-    own mock server so samples never share a channel.
+    host (localhost), inside the penny container (host.docker.internal), and
+    against a remote OpenAI-compatible provider (e.g. OpenRouter), falling back
+    to local defaults.  ``signal_api_url`` binds to the sample's own mock server
+    so samples never share a channel.
     """
     return make_config(
         signal_api_url=signal_api_url,
         llm_model=os.environ.get("LLM_MODEL", "gpt-oss:20b"),
         llm_api_url=os.environ.get("LLM_API_URL", "http://localhost:11434"),
         llm_embedding_model=os.environ.get("LLM_EMBEDDING_MODEL", "embeddinggemma"),
+        llm_max_retries=_EVAL_LLM_MAX_RETRIES,
+        llm_retry_delay=_EVAL_LLM_RETRY_DELAY,
         db_path=db_path,
+        **_endpoint_overrides(),
     )
 
 
