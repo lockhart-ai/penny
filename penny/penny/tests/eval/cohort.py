@@ -714,48 +714,102 @@ def _values(values: Sequence[str]) -> str:
 # customers a ported case has: the reply against the world, and a stored entry against the
 # pages it claims to come from.
 
-# A SPECIFIC value is a number or a proper noun.  Numbers are caught by shape; a proper noun
-# is approximated as a capitalised word, which is only meaningful where a capital is not
-# merely grammatical — hence the sentence-opener rule below.
-_SPECIFIC = re.compile(r"\b(?:\d[\d,.:%]*|[A-Z][A-Za-z'’-]{2,})\b")
+# A SPECIFIC value is one of the classes #1994 names that can be recognised WITHOUT a
+# dictionary: a number, a URL, or a capitalised NAME PHRASE of two or more words.
+#
+# The two-word rule is the load-bearing part, and it is a correction of a measured scorer bug
+# rather than a preference.  Counting every capitalised word as a name failed 15 of 18 samples
+# on `URLs`, `English`, `I’ve` and `Brandt’s` — ordinary English that happens to carry a
+# capital — which is the "too strict" half of exactly the defect this whole design replaces.
+# A lone capital is far more often grammar or a common noun than an invention; a fabricated
+# entity in this domain is a person, a team or a place, and those are written as several
+# capitalised words together.
+#
+# THE BLIND SPOT, STATED: a single-word invention (a bare invented surname) is not caught
+# here.  The cross-world half of that is already an assertion of its own — a reply naming the
+# world it was not given fails DIRECTED CHANGE — so what is uncovered is a value belonging to
+# NEITHER world, and that is a narrower gap than the false-positive rate it buys off.
+_NUMBER = r"\d[\d,.:%$]*"
+_URL = r"https?://\S+"
+_CAPITALISED = r"[A-Z][A-Za-z'-]*"
+_NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
+_SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
 
-# What a capital means nothing after: the start of the text, the end of a sentence, or a piece
-# of markdown furniture.  A word there opens its sentence, so its capital is grammar rather
-# than a name, and reading it as a specific would fail every reply that begins with a word.
-_GRAMMATICAL_CAPITAL = ".!?:;\n-*#" + chr(62) + chr(124) + "•"
+# Words that carry a capital everywhere in English and are never part of a name, so a phrase
+# is not built across them: the first person, which would otherwise glue two unrelated
+# sentences into one "name" at a clause boundary.
+_NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 
-# Capitalised words that are never a name however they are placed — the first person, which
-# carries a capital everywhere in English.
-_NEVER_A_NAME = frozenset({"i", "i'm", "i've", "i'll", "i'd"})
+# Curly and straight apostrophes are the same character as far as a name is concerned, and the
+# model emits whichever its tokenizer prefers — so both sides are folded before comparison.
+# Not folding them reported `I’ve` and `Brandt’s` as inventions.
+_APOSTROPHES = "’‘`´"
 
 
-def _opens_a_sentence(text: str, index: int) -> bool:
-    """Whether the token at ``index`` sits where a capital is grammar rather than a name."""
-    before = text[:index].rstrip()
-    return not before or before[-1] in _GRAMMATICAL_CAPITAL
+def _fold(text: str) -> str:
+    """One spelling of a word, whatever apostrophe it was written with."""
+    for mark in _APOSTROPHES:
+        text = text.replace(mark, "'")
+    return text.casefold()
+
+
+def _bare(token: str) -> str:
+    """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``."""
+    folded = _fold(token)
+    return folded[:-2] if folded.endswith("'s") else folded
 
 
 def specifics(text: str) -> list[str]:
-    """Every specific value stated in ``text`` — numbers, and names that are not merely
-    sentence-initial — in the order they are said, without repeats."""
+    """Every specific value stated in ``text`` — URLs, numbers, and the WORDS of each
+    capitalised name phrase — in the order they are said, without repeats.
+
+    A phrase decides WHAT gets checked; its words are what is checked.  Measured, the whole
+    phrase is too brittle to compare directly: a capitalised label sitting against a name
+    (``Key⁠Ridgeline Foxes Sign Aurelio Brandt``, glued by a narrow no-break space) is not a
+    string the world contains, though every name in it is.
+
+    THE TRADE, STATED: checking word by word cannot catch a RECOMBINATION of two real names.
+    The cross-world form of that is an assertion of its own — a reply carrying the world it was
+    not given fails directed change — and a false positive here costs more than that gap, since
+    reporting the model's own formatting as a fabrication is the exact defect this replaces."""
     found: list[str] = []
-    for match in _SPECIFIC.finditer(text):
-        token = match.group()
-        opener = _opens_a_sentence(text, match.start())
-        if token[0].isalpha() and (opener or token.casefold() in _NEVER_A_NAME):
-            continue
-        if token not in found:
-            found.append(token)
+    for match in _SPECIFIC.finditer(_fold_phrases(text)):
+        token = match.group().strip()
+        parts = [token] if _is_atomic(token) else token.split()
+        found += [part for part in parts if part and part not in found]
     return found
+
+
+def _is_atomic(token: str) -> bool:
+    """Whether a match is one value rather than a phrase of them — a URL or a number."""
+    return token[0].isdigit() or "://" in token
+
+
+def _fold_phrases(text: str) -> str:
+    """Blank out the words a name phrase may not be built across, so a clause boundary like
+    ``… saved. I'll check again`` cannot read as the name ``I'll Check``."""
+    return re.sub(
+        rf"\b{_CAPITALISED}\b",
+        lambda m: (
+            " " * len(m.group())
+            if _bare(m.group()).replace("'", "") in _NEVER_A_NAME
+            else m.group()
+        ),
+        text,
+    )
 
 
 def unsourced_specifics(text: str, given: str) -> list[str]:
     """The specific values in ``text`` that appear NOWHERE in ``given``.
 
     An empty list is the assertion holding: everything said traces to something the round was
-    handed.  Matching is a case-folded substring test against the whole of ``given`` rather
-    than a token comparison, because a value is often said in a different shape from the one
-    it arrived in (``Foxes'`` for ``Foxes``, ``499`` inside ``Price: 499``) and a stricter
-    comparison would report the model's own grammar as an invention."""
-    haystack = given.casefold()
-    return [token for token in specifics(text) if token.casefold() not in haystack]
+    handed.  Matching folds apostrophes and drops possessives on both sides, because a value is
+    usually said in a different shape from the one it arrived in — and comparing the raw forms
+    reported the model's own grammar as an invention."""
+    haystack = " ".join(_bare(word) for word in _fold(given).split())
+    return [token for token in specifics(text) if _phrase_key(token) not in haystack]
+
+
+def _phrase_key(token: str) -> str:
+    """A phrase as it would appear in the folded haystack — word by word, possessives gone."""
+    return " ".join(_bare(word) for word in token.split())

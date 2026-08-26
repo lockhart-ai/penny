@@ -199,24 +199,56 @@ def test_an_assertion_that_did_not_hold_proposes_no_floor():
 
 
 # ── Provenance ───────────────────────────────────────────────────────────────
-def test_a_capital_that_merely_opens_a_sentence_is_not_a_specific_value():
-    """Reading a sentence-initial capital as a name would fail every reply that begins with a
-    word — the scorer-bug shape this whole family is prone to."""
+def test_an_ordinary_capitalised_word_is_not_a_specific_value():
+    """The measured scorer bug this rule is a correction of: counting every capital as a name
+    failed 15 of 18 samples on `URLs`, `English`, `I’ve` and `Brandt’s` — ordinary English that
+    happens to carry a capital, which is the "too strict" half of the defect being replaced."""
     assert specifics("Here is what I saved.") == []
+    assert specifics("I’ve saved the URLs and I’ll check again in English.") == []
     assert specifics("- Saved it.\n* Then again.") == []
-    assert specifics("I'll keep an eye on Ridgeline Foxes.") == ["Ridgeline", "Foxes"]
+
+
+def test_a_name_phrase_and_a_number_are_specific_values():
+    assert specifics("saved the Ridgeline Foxes headline") == ["Ridgeline", "Foxes"]
     assert specifics("kept 2 entries") == ["2"]
+    assert specifics("read https://example.com/news") == ["https://example.com/news"]
 
 
-def test_a_value_the_round_was_never_given_is_reported_by_name():
+def test_a_capital_at_a_clause_boundary_does_not_glue_into_a_name():
+    """``… saved. I'll check`` must not read as the name ``I'll Check`` — the first person is
+    blanked before phrases are built, so a phrase is never assembled across one."""
+    assert specifics("Saved it. I’ll check Ridgeline Foxes again.") == ["Ridgeline", "Foxes"]
+
+
+def test_a_name_the_round_was_never_given_is_reported_by_name():
     given = "Foxes sign veteran goalie Aurelio Brandt to a two-year deal.\nkeep 2 of them"
-    assert unsourced_specifics("Saved the Brandt signing — 2 entries.", given) == []
-    assert unsourced_specifics("Saved the Oyelaran signing.", given) == ["Oyelaran"]
+    assert unsourced_specifics("Saved the Aurelio Brandt signing — 2 entries.", given) == []
+    assert unsourced_specifics("Saved the Casimir Oyelaran signing.", given) == [
+        "Casimir",
+        "Oyelaran",
+    ]
 
 
 def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_traces():
-    """Punctuation and possessives are the model's grammar, not an invention."""
-    assert unsourced_specifics("the Foxes' goalie", "Ridgeline Foxes news") == []
+    """Apostrophes and possessives are the model's grammar, not an invention — and not folding
+    them reported `Brandt’s` as a fabrication."""
+    assert unsourced_specifics("the Ridgeline Foxes’ goalie", "Ridgeline Foxes news") == []
+    assert unsourced_specifics("Aurelio Brandt’s deal", "signed Aurelio Brandt today") == []
+
+
+def test_a_capitalised_label_against_a_name_is_not_a_fabrication():
+    """The residual false positive the per-word rule exists for: the model wrote
+    ``Key⁠Ridgeline Foxes …`` with a narrow no-break space, and comparing the whole phrase
+    reported a sourced headline as invented."""
+    given = "Ridgeline Foxes sign Aurelio Brandt. entries carry a key and content."
+    assert unsourced_specifics("Key\u202fRidgeline Foxes Sign Aurelio Brandt", given) == []
+
+
+def test_a_single_word_invention_is_the_stated_blind_spot():
+    """Stated rather than discovered later: a bare invented surname is NOT caught here.  The
+    cross-world half of it is an assertion of its own — a reply naming the world it was not
+    given fails directed change — so what is uncovered is a value belonging to NEITHER world."""
+    assert unsourced_specifics("the Oyelaran signing", "Aurelio Brandt signed") == []
 
 
 # ── Cost ─────────────────────────────────────────────────────────────────────

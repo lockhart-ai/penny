@@ -1723,19 +1723,22 @@ def _store_holds_nothing_excluded(written: list[tuple[str, MemoryEntry]], world:
     )
 
 
-def _store_traces_to_the_pages(written: list[tuple[str, MemoryEntry]], world: _World) -> Check:
-    """Every stored entry's specifics come off the pages the round read.
+def _store_traces_to_what_was_given(db: Database, written: list[tuple[str, MemoryEntry]]) -> Check:
+    """Every stored entry's specifics trace to something the round was given.
 
-    The store's own provenance claim, using the same rule the reply's does — an entry naming a
+    The store's own provenance claim, against the SAME world the reply's is — an entry naming a
     player nobody's page mentions was invented, and once it is in a collection a collector
-    re-reads it for ever."""
+    re-reads it for ever.  Against what was GIVEN rather than against the pages alone, because
+    an entry keyed by the day it was saved reads that date off the self-state header: measured,
+    the narrower haystack reported the current date as a fabrication in 3 of 18 samples."""
+    given = given_to_the_model(db)
     invented = {
         token
         for _name, entry in written
-        for token in unsourced_specifics(_entry_text_raw(entry), world.says)
+        for token in unsourced_specifics(_entry_text_raw(entry), given)
     }
     return Check(
-        "state: every stored entry traces to the pages",
+        "state: every stored entry traces to what the round was given",
         not invented,
         rationale=f"unsourced in the store: {sorted(invented)}" if invented else None,
         kind="state",
@@ -1809,7 +1812,7 @@ def _score_learn_close(db: Database, before: set[str], reply: str, arm: CohortAr
         Check("state: the store holds at least one entry", bool(written), kind="state"),
         _store_holds_each_source(written, world),
         _store_holds_nothing_excluded(written, world),
-        _store_traces_to_the_pages(written, world),
+        _store_traces_to_what_was_given(db, written),
         _reply_is_sourced(db, reply),
         _reply_reads_this_world(reply, world),
         _reply_reads_no_other_world(reply, _WORLDS[_OTHER_WORLD[arm.world]]),

@@ -2195,11 +2195,15 @@ def given_to_the_model(db: Database) -> str:
     return "\n".join(given)
 
 
-# The turn roles that count as WORLD.  Assistant turns are absent by design (above), and so
-# is the SYSTEM prompt: #1994 builds the world from what the round was TOLD — the user's words
-# and what her tools answered — and a self-state header restating what Penny already believes
-# is the same laundering risk one step removed.
-_GIVEN_ROLES = frozenset({"user", "tool"})
+# The turn roles that count as WORLD.  Assistant turns are absent by design (above).
+#
+# The SYSTEM prompt IS included, which is a correction rather than a choice: excluding it
+# reported the CURRENT DATE as a fabrication in 3 of 18 measured samples, because an entry keyed
+# by the day it was saved reads that date off the self-state header and nowhere else.  It
+# carries none of the laundering risk an assistant turn does — it is framework-rendered from the
+# registry and the ledger, deterministic, and rendered BEFORE the turn acts, so it cannot
+# contain anything this turn invented.
+_GIVEN_ROLES = frozenset({"user", "tool", "system"})
 
 
 def _sample_facts(
