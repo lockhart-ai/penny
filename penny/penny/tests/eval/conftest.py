@@ -291,7 +291,22 @@ _EVAL_LLM_RETRY_DELAY = 1.0
 # retries and, failing that, into an aborted run the harness RE-DRIVES from a clean world.
 # The budget is what makes it work: attempts x deadline (plus backoff) must fit inside the
 # runner's turn timeout, or the turn dies first and the retries never run.
-_EVAL_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "20"))
+_EVAL_LLM_TIMEOUT_DEFAULT_SECONDS = 20.0
+
+
+def env_seconds(name: str, default: float) -> float:
+    """A duration read from the environment, where UNSET and EMPTY mean the same thing.
+
+    ``make eval`` forwards its whole variable list explicitly, so a variable the caller
+    did not set arrives as an EMPTY STRING rather than absent — and ``float("")`` raises
+    at IMPORT time, which takes the entire eval suite down before a single sample runs
+    (measured: two runs died in 7 seconds this way).  Reading the default for both is what
+    makes "forwarded but unset" and "not forwarded" the same thing they look like.
+    """
+    return float(os.environ.get(name) or default)
+
+
+_EVAL_LLM_TIMEOUT = env_seconds("LLM_TIMEOUT", _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS)
 
 
 def _endpoint_overrides() -> dict[str, str]:

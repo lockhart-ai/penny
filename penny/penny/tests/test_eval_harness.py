@@ -83,6 +83,7 @@ from penny.tests.eval.conftest import (
     continue_nudge_fired,
     count_tool_calls,
     draw_rerolled,
+    env_seconds,
     is_seeded_run,
     live_prompt_perf,
     routing_clean,
@@ -211,6 +212,21 @@ from penny.tools.models import ToolResult
 # fragility / nudge-frame probes must keep recognising them (the same legacy-leg
 # discipline the eval conftest's retired bail markers keep).
 _RETIRED_CONTINUE_NUDGE = "Please provide your response."
+
+
+def test_a_forwarded_but_unset_duration_reads_as_its_default(monkeypatch) -> None:
+    """`make eval` forwards every variable, so an unset one arrives EMPTY, not absent.
+
+    Read with a plain default that empty string reaches `float("")`, which raises while
+    the module is still being imported — the eval suite then dies before any sample runs,
+    with a traceback about a conftest rather than about the run.
+    """
+    monkeypatch.setenv("SOME_DURATION", "")
+    assert env_seconds("SOME_DURATION", 20.0) == 20.0
+    monkeypatch.delenv("SOME_DURATION")
+    assert env_seconds("SOME_DURATION", 20.0) == 20.0
+    monkeypatch.setenv("SOME_DURATION", "45")
+    assert env_seconds("SOME_DURATION", 20.0) == 45.0
 
 
 async def test_concurrent_samples_keep_their_logs_apart(tmp_path) -> None:
