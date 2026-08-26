@@ -104,6 +104,62 @@ class TestChatPropagatesSummarizedError:
         await client.close()
 
 
+def _completion(content: str):
+    """A minimal ChatCompletion-shaped response — what the SDK hands ``chat`` back."""
+
+    class _Message:
+        role = "assistant"
+        tool_calls = None
+        model_extra: dict = {}
+
+        def __init__(self, text: str) -> None:
+            self.content = text
+
+    class _Choice:
+        def __init__(self, text: str) -> None:
+            self.message = _Message(text)
+
+    class _Completion:
+        model = "m"
+        usage = None
+
+        def __init__(self, text: str) -> None:
+            self.choices = [_Choice(text)]
+
+        def model_dump(self) -> dict:
+            return {"choices": [{"message": {"content": content}}]}
+
+    return _Completion(content)
+
+
+class TestReasoningAlwaysOn:
+    """Reasoning is a property of every call, not a setting a run might forget."""
+
+    @pytest.mark.asyncio
+    async def test_every_chat_call_asks_for_reasoning(self, monkeypatch) -> None:
+        """The same weights reason or do not depending on who serves them.
+
+        Ollama runs a hybrid model with thinking on by default; a gateway serving that
+        model defaults it off — a difference nothing in a run records, and one that cost a
+        whole eval suite comparing a model against itself. So the switch is sent on every
+        call rather than configured per run.
+        """
+        sent = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+        await client.chat([{"role": "user", "content": "hi"}])
+
+        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        await client.close()
+
+
 class TestRetryResilience:
     """A remote endpoint fails in bursts, and a stall is not a failure at all until a
     deadline makes it one — so the two things that keep a run alive are pinned here."""

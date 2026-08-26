@@ -35,6 +35,22 @@ logger = logging.getLogger(__name__)
 # Default API key for local inference servers that require one but don't check it
 _DEFAULT_API_KEY = "not-needed"
 
+# Reasoning is ON for every call, everywhere — not a setting.  A model that is not
+# reasoning makes visibly worse decisions on the work Penny does, and the failure is quiet:
+# it still answers, still calls tools, and only the DECISIONS degrade.
+#
+# It is hardcoded here rather than configured because the same weights reason or do not
+# depending on who is serving them, which is a difference nothing in a run records. Ollama
+# runs a hybrid model with thinking ON by default; a gateway serving the same model
+# defaults it OFF. A full eval suite was spent comparing a model against itself that way —
+# non-thinking remote against thinking local — and every conclusion drawn from it was
+# about the switch rather than the model.
+#
+# Read-only: sent as-is, never mutated. Backends that do not know the field ignore it
+# (verified against Ollama's OpenAI-compatible endpoint), so the local path is unchanged
+# and the remote path stops silently differing from it.
+REASONING_ENABLED_BODY = {"reasoning": {"enabled": True}}
+
 # Fallback when an error response carries no content-type header.
 _UNKNOWN_CONTENT_TYPE = "unknown"
 
@@ -433,7 +449,13 @@ class LlmClient:
         format: dict | str | None,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
-        kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            # Not an OpenAI-schema field, so it rides in the vendor passthrough the SDK
+            # provides. Reasoning comes back where ``_parse_response`` already reads it.
+            "extra_body": REASONING_ENABLED_BODY,
+        }
         if tools:
             kwargs["tools"] = self._translate_tools(tools)
         if format is not None:
