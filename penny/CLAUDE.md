@@ -644,7 +644,8 @@ for. The probe carries the run's own provider preference, so what it proves is t
 the samples will use, and the upstream that answered it is forwarded into the manifest.
 
 **A run reports its own health (#1996)** (`penny.tests.eval.run_health`, printed in the
-terminal summary and written to the run dir as `health*.json`). A degraded run used to look
+terminal summary and written to the run dir as `health*.jsonl`, riding the same per-worker
+record convention the per-case results use). A degraded run used to look
 exactly like a healthy one — `6 passed, EXIT=0` over a cohort in which 34 of 48 samples
 never produced their measured turn, all killed by 188 empty `choices` responses, with
 nothing in the output naming a number. The block states **completed vs dead samples**, the
