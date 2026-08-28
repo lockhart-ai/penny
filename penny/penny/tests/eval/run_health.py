@@ -50,14 +50,18 @@ from penny.llm.models import (
     UNREPORTED_PROVIDER,
     LlmFault,
 )
+from penny.tests.eval import artifacts as eval_artifacts
 
-# Where each process drops its own health record, and how a reader finds them all.  One
-# file per process for the same reason ``results-<worker>.jsonl`` is: under xdist the
-# cases are spread across worker PROCESSES, each with its own tally, and two processes
-# appending to one file interleave.
+# Health is another per-worker JSONL record riding the convention the per-case results
+# already use (``artifacts.worker_filename`` / ``load_worker_lines``), so this names only
+# the thing that is its own — its stem.  Under xdist the cases are spread across worker
+# PROCESSES, each with its own tally, and two processes appending to one file interleave.
+HEALTH_STEM = "health"
+
+# Where those records live.  Usually the run's report dir; a LEVER-LESS run keeps no
+# artifacts at all, so the Makefile points this at an ephemeral dir inside the --rm
+# container instead — the run still gets its health block, which is the point.
 HEALTH_DIR_ENV = "EVAL_HEALTH_DIR"
-HEALTH_GLOB = "health*.json"
-SINGLE_PROCESS_HEALTH_FILENAME = "health.json"
 
 # The logger every penny module logs through — the same root the per-sample capture
 # attaches to, so one handler here sees every model call any sample made.
@@ -331,41 +335,28 @@ def process_health() -> RunHealth:
     return begin_run().snapshot(_cohorts)
 
 
-def reset_process_health() -> None:
-    """Drop this process's tally and cohorts — the seam the deterministic tests drive."""
-    global _tally, _run_health
-    if _tally is not None:
-        logging.getLogger(PENNY_LOGGER).removeHandler(_tally)
-        _tally = None
-    _cohorts.clear()
-    _run_health = None
-
-
 def health_dir() -> Path | None:
     """Where health records for this run live, or ``None`` when the run keeps none."""
     directory = os.environ.get(HEALTH_DIR_ENV)
     return Path(directory) if directory else None
 
 
-def health_filename(worker: str | None) -> str:
-    """This process's health file — its own when running under xdist."""
-    return f"health-{worker}.json" if worker else SINGLE_PROCESS_HEALTH_FILENAME
-
-
 def write_health(directory: Path, worker: str | None, health: RunHealth) -> Path:
     """Write one process's health record where the whole-run read will find it."""
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / health_filename(worker)
-    path.write_text(health.model_dump_json(indent=2) + "\n")
+    path = directory / eval_artifacts.worker_filename(HEALTH_STEM, worker)
+    path.write_text(health.model_dump_json() + "\n")
     return path
 
 
 def load_health(directory: Path) -> RunHealth:
     """Every process's health record in a run dir, merged into the run's own.
 
-    Sorted by filename so a re-read renders the run identically.
+    The read is the shared one, so health and results agree about what "every worker's
+    file, in a stable order" means; folding is all this adds, because merging two tallies
+    is the only part that is health's own.
     """
     merged = RunHealth()
-    for path in sorted(directory.glob(HEALTH_GLOB)):
-        merged = merged.merge(RunHealth.model_validate_json(path.read_text()))
+    for line in eval_artifacts.load_worker_lines(directory, HEALTH_STEM):
+        merged = merged.merge(RunHealth.model_validate_json(line))
     return merged

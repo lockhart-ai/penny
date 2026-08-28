@@ -56,36 +56,64 @@ EVAL_PREFERRED_PROVIDER_ENV = "EVAL_PREFERRED_PROVIDER"
 
 # ── Artifact filenames (all live under EVAL_REPORT_DIR) ──────────────────────
 MANIFEST_FILENAME = "manifest.json"
-RESULTS_FILENAME = "results.jsonl"
-# Every results file in a run dir, single-process and per-worker alike — what a READER
-# must take in to see the whole run.
-RESULTS_GLOB = "results*.jsonl"
 # pytest-xdist names each worker process (gw0, gw1, ...) in this variable.  Cases are
-# distributed ACROSS processes, so each worker appends to its OWN results file and no two
-# processes ever interleave writes into one.  Unset (single process) keeps the plain
-# ``results.jsonl``, so a run dir produced without xdist reads exactly as it always did.
+# distributed ACROSS processes, so each worker writes its OWN file and no two processes
+# ever interleave writes into one.  Unset (single process) keeps the plain unsuffixed
+# name, so a run dir produced without xdist reads exactly as it always did.
 XDIST_WORKER_ENV = "PYTEST_XDIST_WORKER"
 # The run id shared by every worker.  A worker resolves the run from its OWN environment
 # and would otherwise stamp its own ``datetime.now()`` into the id, so N workers would
 # write N run ids into one directory.  The Makefile sets this once per run.
 EVAL_RUN_ID_ENV = "EVAL_RUN_ID"
 
+# ── The per-worker record convention (one mechanism, every JSONL artifact) ────
+# A run writes more than one KIND of per-process record — the per-case results, and the
+# run-health record each process contributes (#1996) — and every one of them faces the
+# identical problem: N processes cannot append to one file, so each writes its own and the
+# reader globs them back together.  So the naming, the glob and the merge-read live here
+# ONCE, parameterised by the record's stem, and each customer supplies only its own stem.
+# The alternative is what this replaced: a second set of the same four functions, three
+# files away, drifting independently.
+RESULTS_STEM = "results"
 
-def results_filename(worker: str | None) -> str:
-    """The results file this process appends to — its own when running under xdist."""
-    return f"results-{worker}.jsonl" if worker else RESULTS_FILENAME
+
+def worker_filename(stem: str, worker: str | None) -> str:
+    """The file THIS process writes for one kind of record — its own when under xdist."""
+    return f"{stem}-{worker}.jsonl" if worker else f"{stem}.jsonl"
 
 
-def load_results_lines(report_dir: Path) -> list[str]:
-    """Every case record in a run dir, across all its results files, in a stable order.
+def worker_glob(stem: str) -> str:
+    """Every process's file for one kind of record, single-process and per-worker alike —
+    what a READER must take in to see the whole run."""
+    return f"{stem}*.jsonl"
+
+
+def load_worker_lines(report_dir: Path, stem: str) -> list[str]:
+    """Every record of one kind in a run dir, across all its files, in a stable order.
 
     Sorted by filename so a re-read renders the same run identically; within a file,
     append order is preserved.  A run's cases complete in nondeterministic order under
     xdist anyway, so file order is the only order there is to keep."""
     lines: list[str] = []
-    for path in sorted(report_dir.glob(RESULTS_GLOB)):
+    for path in sorted(report_dir.glob(worker_glob(stem))):
         lines.extend(line for line in path.read_text().splitlines() if line.strip())
     return lines
+
+
+# The results customer, named so the call sites that predate the generalisation read
+# unchanged.
+RESULTS_FILENAME = worker_filename(RESULTS_STEM, None)
+RESULTS_GLOB = worker_glob(RESULTS_STEM)
+
+
+def results_filename(worker: str | None) -> str:
+    """The results file this process appends to — its own when running under xdist."""
+    return worker_filename(RESULTS_STEM, worker)
+
+
+def load_results_lines(report_dir: Path) -> list[str]:
+    """Every case record in a run dir, across all its results files, in a stable order."""
+    return load_worker_lines(report_dir, RESULTS_STEM)
 
 
 DIRTY_DIFF_FILENAME = "dirty.diff"

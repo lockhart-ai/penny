@@ -17,6 +17,7 @@ import pytest
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmFault, LlmResponseError
 from penny.tests.eval import run_health
+from penny.tests.eval.artifacts import worker_filename
 from penny.tests.eval.run_health import (
     CohortRecord,
     ProviderTally,
@@ -217,7 +218,12 @@ class TestTheBlockARunPrintsAboutItself:
 
 
 class TestMergingWhatSeveralProcessesSaw:
-    """Under xdist the cases are spread across processes; the run is their sum."""
+    """Under xdist the cases are spread across processes; the run is their sum.
+
+    Health is not its own filing scheme — it rides the per-worker JSONL convention the
+    per-case results already use, so these pin the shared naming rather than a second
+    copy of it.
+    """
 
     def test_worker_records_round_trip_and_add_up(self, tmp_path) -> None:
         first = RunHealth(
@@ -235,6 +241,10 @@ class TestMergingWhatSeveralProcessesSaw:
         run_health.write_health(tmp_path, "gw0", first)
         run_health.write_health(tmp_path, "gw1", second)
 
+        # The SAME naming the results records use — one convention, two customers.
+        assert (tmp_path / worker_filename(run_health.HEALTH_STEM, "gw0")).exists()
+        assert (tmp_path / "health-gw1.jsonl").exists()
+
         merged = run_health.load_health(tmp_path)
 
         assert [cohort.case_id for cohort in merged.cohorts] == ["a", "b"]
@@ -246,8 +256,10 @@ class TestMergingWhatSeveralProcessesSaw:
         assert not merged.viable
 
     def test_a_single_process_run_writes_the_plain_name(self, tmp_path) -> None:
+        """No xdist, no suffix — the unsuffixed name the convention gives every record."""
         run_health.write_health(tmp_path, None, _HEALTHY)
-        assert (tmp_path / run_health.SINGLE_PROCESS_HEALTH_FILENAME).exists()
+        assert (tmp_path / worker_filename(run_health.HEALTH_STEM, None)).exists()
+        assert (tmp_path / "health.jsonl").exists()
         assert run_health.load_health(tmp_path).completed == 10
 
     def test_an_empty_dir_reads_as_a_run_that_measured_nothing(self, tmp_path) -> None:

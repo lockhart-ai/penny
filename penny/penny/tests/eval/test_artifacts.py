@@ -18,6 +18,7 @@ from penny.tests.eval.artifacts import (
     DIRTY_DIFF_FILENAME,
     MANIFEST_FILENAME,
     RESULTS_FILENAME,
+    RESULTS_GLOB,
     XDIST_WORKER_ENV,
     CaseTimings,
     CauseCounts,
@@ -32,10 +33,13 @@ from penny.tests.eval.artifacts import (
     count_causes,
     default_family,
     load_results_lines,
+    load_worker_lines,
     pathology_excluded,
     render_cause_summary,
     render_manifest_header,
     run_from_env,
+    worker_filename,
+    worker_glob,
 )
 from penny.tests.eval.conftest import Check, SampleResult
 
@@ -188,6 +192,35 @@ def test_a_preference_that_held_renders_plainly() -> None:
     assert "- endpoint: `https://openrouter.ai/api` via `Cloudflare`\n" in render_manifest_header(
         held
     )
+
+
+# -- The per-worker record convention: one mechanism, several customers (#1996) --
+
+
+def test_the_worker_naming_is_one_rule_every_record_kind_shares() -> None:
+    """Results and health are the same filing problem, so they are the same code.
+
+    N processes cannot append to one file, so each writes its own and the reader globs
+    them back. Parameterising by stem is what stops the second customer growing a second
+    copy of the four functions.
+    """
+    assert worker_filename("results", "gw0") == "results-gw0.jsonl"
+    assert worker_filename("results", None) == "results.jsonl"
+    assert worker_filename("health", "gw3") == "health-gw3.jsonl"
+    assert worker_filename("health", None) == "health.jsonl"
+    assert worker_glob("health") == "health*.jsonl"
+    # The named results constants stay exactly what they always were.
+    assert RESULTS_FILENAME == "results.jsonl"
+    assert RESULTS_GLOB == "results*.jsonl"
+
+
+def test_the_shared_reader_takes_every_worker_file_in_a_stable_order(tmp_path: Path) -> None:
+    """Sorted by filename, so a re-read renders the same run identically."""
+    (tmp_path / "health-gw1.jsonl").write_text('{"b": 1}\n')
+    (tmp_path / "health-gw0.jsonl").write_text('{"a": 1}\n\n')
+    (tmp_path / "results-gw0.jsonl").write_text('{"not": "health"}\n')
+
+    assert load_worker_lines(tmp_path, "health") == ['{"a": 1}', '{"b": 1}']
 
 
 def test_default_family_strips_test_prefix() -> None:
