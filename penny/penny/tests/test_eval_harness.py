@@ -134,6 +134,7 @@ from penny.tests.eval.conftest import (
     _bail_fired_check,
     _case_prompts,
     _cycle_recovered_check,
+    _enacting_name,
     _flush_sample_blocks,
     _frame_attributes_to,
     _guarded_graded,
@@ -3213,3 +3214,19 @@ def test_the_duplicate_reply_read_fails_a_fresh_claim_not_a_neutral_one() -> Non
 
     fresh, claimed = _honest_about_the_duplicate("sea kayaking is officially on the radar 🛶")
     assert (fresh, claimed) == (False, "claimed 'officially on the radar'")
+
+
+def test_a_leaked_control_token_does_not_hide_a_call_that_ran() -> None:
+    """The runtime executed `collection_write<|channel|>commentary` — the entry is in the store —
+    and a bare membership test read it as a tool nobody has heard of and dropped it, so the
+    sample's tool sequence rendered as `browse` alone and it was reported as an outlier for a
+    divergence that never happened.
+
+    Silently discarding a call the store can prove ran is the worst of the three options."""
+    assert _enacting_name("collection_write<|channel|>commentary") == "collection_write"
+    assert _enacting_name("collection_write") == "collection_write"
+    assert _enacting_name("browse") == "browse"
+    # A name that is genuinely not an enacting tool still drops — normalising a leaked token is
+    # not the same as widening what counts as enactment.
+    assert _enacting_name("find") is None
+    assert _enacting_name("not_a_tool<|channel|>x") is None

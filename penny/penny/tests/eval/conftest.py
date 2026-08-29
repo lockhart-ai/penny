@@ -2391,6 +2391,21 @@ def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
     )
 
 
+def _enacting_name(call: str) -> str | None:
+    """One logged call's enacting-tool name, or ``None`` where it enacted nothing.
+
+    The name is NORMALISED first.  A leaked harmony control token glued to a tool name
+    (`collection_write<|channel|>commentary`) is the same call — the runtime executed it and the
+    entry is in the store — but a bare membership test read it as a tool nobody has heard of and
+    dropped it, so the sequence rendered as `browse` alone and the sample was reported as an
+    outlier for a divergence that never happened. Silently discarding a call the store can prove
+    ran is the worst of the three options; the other two are to keep it under its raw name (which
+    makes one call read as two distinct tools across samples) or to normalise, which is what the
+    runtime itself effectively did."""
+    name = call.split("<|", 1)[0].strip()
+    return name if name in ENACTING_TOOLS else None
+
+
 def _machine_walk(db: Database) -> str:
     """The machine's walk this sample, oldest move first — ``idle→learn, learn→apply``."""
     moves = reversed(db.machine.recent_transitions(limit=20))
@@ -2419,7 +2434,10 @@ def _observe_sample(
         routines=_routine_records(db),
         entries=_stored_entries(db),
         tool_sequence=[
-            tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS
+            tool
+            for run in chat_run_tool_sequences(db)
+            for tool in (_enacting_name(call) for call in run)
+            if tool is not None
         ],
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
