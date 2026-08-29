@@ -774,10 +774,17 @@ def render_outliers(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
     communicate one changed feature is three orders of magnitude of the wrong thing, and it is
     what made a single case's report 787,681 characters."""
     outliers = [(number, s) for number, s in rows if s.standing == cohort.Standing.OUTLIER]
-    driven = len(rows)
+    # Out of the POOLED samples, not out of everything the case drove: a control answers an
+    # assertion against different facts and a dead sample has no shape, so neither could have
+    # been an outlier and neither belongs in the denominator.
+    pooled = sum(
+        1
+        for _n, s in rows
+        if s.standing in (cohort.Standing.MODAL, cohort.Standing.TYPICAL, cohort.Standing.OUTLIER)
+    )
     if not outliers:
         return fold(
-            OUTLIERS_LABEL.format(count=0, driven=driven, features=plural(0, "feature")),
+            OUTLIERS_LABEL.format(count=0, driven=pooled, features=plural(0, "feature")),
             _NO_OUTLIERS,
         )
     features = {d.feature for _n, s in outliers for d in s.divergences}
@@ -789,7 +796,7 @@ def render_outliers(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
         body = f"{_OUTLIER_HEAD}\n{table}" if table else "_(no feature diverged)_"
         blocks.append(f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{body}")
     label = OUTLIERS_LABEL.format(
-        count=len(outliers), driven=driven, features=plural(len(features), "feature")
+        count=len(outliers), driven=pooled, features=plural(len(features), "feature")
     )
     return fold(label, "\n\n".join(blocks))
 
