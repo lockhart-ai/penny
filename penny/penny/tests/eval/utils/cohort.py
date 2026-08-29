@@ -110,6 +110,10 @@ class SampleObservation(BaseModel):
     entries: list[StoredEntry] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
+    # EVERY turn of Penny's this sample, not the scored one alone.  A round that reported the
+    # value and then said something else still reported it, and reading only the last turn scored
+    # that as a miss — 8/18 where the canonical case it was ported from scores 3/3.
+    replies: list[str] = Field(default_factory=list)
     reply_embedding: list[float] | None = None
     given: str = ""
     # The container the round was FRAMED on, read off the move that settled it — the same anchor

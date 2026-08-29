@@ -317,8 +317,11 @@ def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
 
 
 def _said_equals_did(sample: SampleObservation, world: World) -> Answer:
-    reply = _normalise(sample.reply)
-    missing = [name for name in world.names if name.lower() not in reply]
+    """Ported from the canonical case's own reading: EVERY turn of Penny's this sample, not the
+    scored one alone, because a round that reported the value and then said something else still
+    reported it."""
+    said = _normalise(" ".join([*sample.replies, sample.reply]))
+    missing = [name for name in world.names if name.lower() not in said]
     return not missing, f"no reply names {missing}"
 
 

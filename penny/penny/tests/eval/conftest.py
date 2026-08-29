@@ -2387,6 +2387,7 @@ def _observe_sample(
             tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS
         ],
         reply=reply,
+        replies=outgoing_replies(db),
         reply_embedding=reply_embedding(db, reply),
         given=given_to_the_model(db),
         pages_read=_pages_read(db),
