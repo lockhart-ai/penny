@@ -37,7 +37,10 @@ from penny.tests.eval.worlds import World
 
 # How one sample answers one claim: ``(ok, rationale)``.
 Answer = tuple[bool, str | None]
-SampleClaim = Callable[[SampleObservation], Answer]
+# How one sample answers one claim, judged against the world THAT SAMPLE was given — never a
+# world closed over at declaration time, or a control's samples would be graded against the
+# cohort's facts.
+WorldClaim = Callable[[SampleObservation, World], Answer]
 
 
 class Cohort:
@@ -60,8 +63,45 @@ class Cohort:
         self.model = model
         self.world = world
         self.samples = samples
-        self.claims: list[Claim] = []
         self.features: list[Feature] = []
+        # A claim is DECLARED here and answered at report time, over every sample the case
+        # drove.  Declaring rather than answering immediately is what lets a control adopted
+        # AFTER the claims were made still answer them: the case body reads claims-then-control,
+        # and a claim evaluated on the spot would have covered only the samples driven so far.
+        self._declared: list[tuple[str, str, WorldClaim]] = []
+        self._adopted: list[SampleObservation] = []
+        self._worlds: dict[str, World] = {world.name: world}
+
+    @property
+    def covered(self) -> list[SampleObservation]:
+        """Every sample this case's claims are answered over — its own and any control's.
+
+        A control is a real drive of the same ask: it lands a machine state, mints a routine
+        and writes entries exactly as the cohort does, so its end state is as assertable.  What
+        differs is the WORLD each sample is judged against, which is why a claim resolves the
+        sample's own world rather than closing over one."""
+        return [*self.samples, *self._adopted]
+
+    @property
+    def claims(self) -> list[Claim]:
+        """Every declared claim, answered over every covered sample against its own world."""
+        return [
+            Claim(label=label, kind=kind, outcomes=self._answer(answer))
+            for label, kind, answer in self._declared
+        ]
+
+    def _answer(self, answer: WorldClaim) -> list[ClaimOutcome]:
+        outcomes = []
+        for sample in self.covered:
+            # An incomplete sample answers nothing: it never ran its measured turn, so grading
+            # it would report a failed contract for a contract nobody exercised.
+            if not sample.complete:
+                continue
+            ok, rationale = answer(sample, self._worlds[sample.world])
+            outcomes.append(
+                ClaimOutcome(sample=sample.name, ok=ok, rationale=None if ok else rationale)
+            )
+        return outcomes
 
     # ── the claims ───────────────────────────────────────────────────────────
     def assert_machine_landed(self, state: ConversationState) -> None:
@@ -72,13 +112,13 @@ class Cohort:
         outside that state."""
         self._claim(
             f"state: the machine landed in {state.value}",
-            lambda s: (s.landed == state.value, f"walked {s.walk}"),
+            lambda s, _world: (s.landed == state.value, f"walked {s.walk}"),
         )
 
     def assert_a_routine_reached_the_registry(self) -> None:
         self._claim(
             "state: the round taught a routine",
-            lambda s: (bool(s.routines), "nothing reached the registry"),
+            lambda s, _world: (bool(s.routines), "nothing reached the registry"),
         )
 
     def assert_the_routine_names_a_destination(self) -> None:
@@ -98,7 +138,7 @@ class Cohort:
     def assert_the_store_holds_an_entry(self) -> None:
         self._claim(
             "state: the store holds at least one entry",
-            lambda s: (bool(s.entries), "nothing was written"),
+            lambda s, _world: (bool(s.entries), "nothing was written"),
         )
 
     def assert_each_source_was_kept(self) -> None:
@@ -107,12 +147,12 @@ class Cohort:
         Reads the WHOLE entry — key and content — because a fact in the key and a blurb in the
         body is a perfectly good way to store it, and a content-only read reported a 25/32
         model failure that was entirely its own bug."""
-        self._claim("state: what each page said was kept", _each_source_kept(self.world))
+        self._claim("state: what each page said was kept", _each_source_kept)
 
     def assert_nothing_excluded_was_stored(self) -> None:
         """The exclusion the round was told in as many words.  A read rather than a taste: the
         compared tokens appear ONLY on the excluded line."""
-        self._claim("state: nothing the ask excluded was stored", _nothing_excluded(self.world))
+        self._claim("state: nothing the ask excluded was stored", _nothing_excluded)
 
     def assert_every_stored_entry_traces_to_the_world(self) -> None:
         """An entry naming something nobody's page mentions was invented — and once it is in a
@@ -141,14 +181,16 @@ class Cohort:
         assert control.world.name != self.world.name, (
             "a control must be a DIFFERENT world from the one it controls"
         )
-        reads, avoids = _READS_ITS_WORLD, _AVOIDS_THE_OTHER
-        self._claim(reads, _reply_reads(self.world), kind="reply")
-        self._claim(avoids, _reply_avoids(control.world), kind="reply")
-        control._claim(reads, _reply_reads(control.world), kind="reply")
-        control._claim(avoids, _reply_avoids(self.world), kind="reply")
-        # The control's answers belong to THIS case's score: they are the same claims about the
-        # same round, and reporting them separately would hide half of a two-directional test.
-        self._absorb(control)
+        # The control's samples come under this case's claims — every one of them, not just
+        # these two: a control is a real drive of the same ask, and its end state is as
+        # assertable as the cohort's.
+        self._adopt(control)
+        self._claim(_READS_ITS_WORLD, _reply_reads, kind="reply")
+        self._claim(_AVOIDS_THE_OTHER, _reply_avoids(self._other_worlds), kind="reply")
+
+    def _other_worlds(self, sample: SampleObservation) -> list[World]:
+        """Every world this case drove EXCEPT the one this sample was given."""
+        return [world for name, world in self._worlds.items() if name != sample.world]
 
     # ── what is measured ─────────────────────────────────────────────────────
     def measure(self, *features: Feature) -> None:
@@ -156,30 +198,21 @@ class Cohort:
         self.features += [feature for feature in features if feature not in self.features]
 
     # ── internals ────────────────────────────────────────────────────────────
-    def _claim(self, label: str, answer: SampleClaim, kind: str = "state") -> None:
-        """Answer one claim for every COMPLETE sample.
-
-        An incomplete sample answers nothing: it never ran its measured turn, so grading it
-        would report a failed contract for a contract nobody exercised."""
-        outcomes = []
-        for sample in self.samples:
-            if not sample.complete:
-                continue
-            ok, rationale = answer(sample)
-            outcomes.append(
-                ClaimOutcome(sample=sample.name, ok=ok, rationale=None if ok else rationale)
-            )
+    def _claim(self, label: str, answer: WorldClaim, kind: str = "state") -> None:
+        """Declare one claim.  It is answered at report time over every covered sample."""
         flavour = "reply" if label.startswith("reply:") else kind
-        self.claims.append(Claim(label=label, kind=flavour, outcomes=outcomes))
+        self._declared.append((label, flavour, answer))
 
-    def _absorb(self, other: Cohort) -> None:
-        """Fold another cohort's answers into this case's claims, matching on label."""
-        by_label = {claim.label: claim for claim in self.claims}
-        for claim in other.claims:
-            target = by_label.get(claim.label)
-            if target is not None:
-                target.outcomes += claim.outcomes
-        other.claims.clear()
+    def _adopt(self, control: Cohort) -> None:
+        """Take a control's samples under this case's claims.
+
+        Every claim the case makes — declared before this call or after it — is then answered
+        over the control's samples too, each against the control's own world.  That is what the
+        per-sample scorer it replaces did, and dropping it silently shrank every denominator
+        from 18 to 15."""
+        self._worlds[control.world.name] = control.world
+        self._adopted += control.samples
+        control._declared.clear()
 
 
 # The two directed-change labels, named once because each is written twice — once for the
@@ -191,30 +224,24 @@ _AVOIDS_THE_OTHER = "reply: it names nothing from the world it was not given"
 
 
 # ── The claims themselves, as pure functions over one sample ─────────────────
-def _names_a_destination(sample: SampleObservation) -> Answer:
+def _names_a_destination(sample: SampleObservation, _world: World) -> Answer:
     missing = [r.name for r in sample.routines if not r.names_a_destination]
     return bool(sample.routines) and not missing, f"no destination in {missing}"
 
 
-def _each_source_kept(world: World) -> SampleClaim:
-    def answer(sample: SampleObservation) -> Answer:
-        stored = _normalise(sample.stored_text)
-        missed = [source[0] for source in world.keeps if not any(t in stored for t in source)]
-        return bool(sample.entries) and not missed, f"nothing stored from {missed}"
-
-    return answer
+def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
+    stored = _normalise(sample.stored_text)
+    missed = [source[0] for source in world.keeps if not any(t in stored for t in source)]
+    return bool(sample.entries) and not missed, f"nothing stored from {missed}"
 
 
-def _nothing_excluded(world: World) -> SampleClaim:
-    def answer(sample: SampleObservation) -> Answer:
-        stored = _normalise(sample.stored_text)
-        landed = [token for token in world.excludes if token in stored]
-        return not landed, f"stored the excluded {landed}"
-
-    return answer
+def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
+    stored = _normalise(sample.stored_text)
+    landed = [token for token in world.excludes if token in stored]
+    return not landed, f"stored the excluded {landed}"
 
 
-def _store_is_sourced(sample: SampleObservation) -> Answer:
+def _store_is_sourced(sample: SampleObservation, _world: World) -> Answer:
     invented = sorted(
         {
             token
@@ -225,22 +252,26 @@ def _store_is_sourced(sample: SampleObservation) -> Answer:
     return not invented, f"unsourced in the store: {invented}"
 
 
-def _reply_is_sourced(sample: SampleObservation) -> Answer:
+def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
     invented = unsourced_specifics(sample.reply, sample.given)
     return not invented, f"unsourced: {invented}"
 
 
-def _reply_reads(world: World) -> SampleClaim:
-    def answer(sample: SampleObservation) -> Answer:
-        named = [token for token in world.names if token in _normalise(sample.reply)]
-        return bool(named), "named none of this world's facts"
-
-    return answer
+def _reply_reads(sample: SampleObservation, world: World) -> Answer:
+    """Half of DIRECTED CHANGE: the reply carries the facts of the world THIS sample was given."""
+    named = [token for token in world.names if token in _normalise(sample.reply)]
+    return bool(named), "named none of this world's facts"
 
 
-def _reply_avoids(world: World) -> SampleClaim:
-    def answer(sample: SampleObservation) -> Answer:
-        leaked = [token for token in world.names if token in _normalise(sample.reply)]
+def _reply_avoids(others: Callable[[SampleObservation], list[World]]) -> WorldClaim:
+    """The other half: nothing from the world this sample was NOT given.
+
+    The other worlds are resolved per sample rather than closed over, so the cohort and its
+    control are judged by one claim in both directions instead of two spellings of it."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        reply = _normalise(sample.reply)
+        leaked = [token for other in others(sample) for token in other.names if token in reply]
         return not leaked, f"leaked {leaked}"
 
     return answer

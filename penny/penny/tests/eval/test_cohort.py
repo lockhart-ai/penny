@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+from penny.conversation_machine import ConversationState
+from penny.tests.eval.assertions import Cohort
 from penny.tests.eval.cohort import (
     BASE_WORLD,
     CONTROL_WORLD,
@@ -19,6 +21,7 @@ from penny.tests.eval.cohort import (
     CaseReport,
     RoutineRecord,
     SampleObservation,
+    StoredEntry,
     compare_to_ceiling,
     feature_variance,
     normalised_entropy,
@@ -30,6 +33,7 @@ from penny.tests.eval.cohort import (
     unsourced_specifics,
 )
 from penny.tests.eval.conftest import _phrasing_label
+from penny.tests.eval.worlds import World
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
@@ -443,3 +447,58 @@ def test_a_samples_global_and_local_positions_are_not_the_same_number():
     ]
     assert len(set(names)) == len(names), "a case's two drives must not share a sample name"
     assert names[-3:] == ["case-16 (control)", "case-17 (control)", "case-18 (control)"]
+
+
+# ── A control's samples answer the case's claims too ─────────────────────────
+def _world(name: str, keep: str, exclude: str) -> World:
+    return World(name=name, pages=(), keeps=((keep,),), excludes=(exclude,))
+
+
+def _observed(name: str, world: str, stored: str, reply: str) -> SampleObservation:
+    return SampleObservation(
+        name=name,
+        phrasing=world,
+        world=world,
+        landed="learn",
+        routines=[RoutineRecord(name="r", shape="s", names_a_destination=True)],
+        entries=[StoredEntry(collection="c", key=None, content=stored)],
+        reply=reply,
+        given=stored + " " + reply,
+    )
+
+
+def test_every_claim_covers_the_control_samples_too():
+    """The bug this pins: claims answered over the primary cohort ALONE silently shrank every
+    denominator from 18 to 15, because a control's three samples stopped answering anything but
+    directed change.  A control is a real drive of the same ask — it lands a state, mints a
+    routine and writes entries — so its end state is as assertable as the cohort's."""
+    base, control_world = _world("base", "brandt", "gulls 4"), _world("control", "roux", "gulls 2")
+    cohort = Cohort(
+        "case", "m", base, [_observed(f"b{i}", "base", "brandt", "brandt") for i in range(3)]
+    )
+    control = Cohort("case", "m", control_world, [_observed("c1", "control", "roux", "roux")])
+
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    cohort.assert_each_source_was_kept()
+    cohort.assert_facts_moved_with_the_world(control)
+
+    totals = {claim.label: (claim.passed, claim.total) for claim in cohort.claims}
+    assert all(total == 4 for _, total in totals.values()), totals
+    # Each sample is judged against ITS OWN world: the control kept `roux`, which is its world's
+    # fact and not the cohort's, and both read as kept.
+    assert totals["state: what each page said was kept"] == (4, 4)
+    assert totals["reply: it names what this world says"] == (4, 4)
+    assert totals["reply: it names nothing from the world it was not given"] == (4, 4)
+
+
+def test_a_control_graded_against_the_cohorts_world_would_fail_every_claim():
+    """The paired over-correction guard: if the world were closed over at declaration time
+    instead of resolved per sample, the control's samples would be judged against the cohort's
+    facts — which is the same defect wearing the opposite sign."""
+    base, control_world = _world("base", "brandt", "gulls 4"), _world("control", "roux", "gulls 2")
+    cohort = Cohort("case", "m", base, [_observed("b1", "base", "brandt", "brandt")])
+    control = Cohort("case", "m", control_world, [_observed("c1", "control", "roux", "roux")])
+    cohort.assert_each_source_was_kept()
+    cohort.assert_facts_moved_with_the_world(control)
+    kept = {claim.label: claim for claim in cohort.claims}["state: what each page said was kept"]
+    assert [outcome.ok for outcome in kept.outcomes] == [True, True]
