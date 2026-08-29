@@ -2738,10 +2738,15 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         )
         offset = pending.driven if pending is not None else 0
 
+        # A sample has TWO positions and confusing them is a real bug that has bitten twice: the
+        # GLOBAL index keys its database file and its report name (continuing across the case's
+        # drives, so the second drive cannot land on the first drive's files), while the LOCAL
+        # position says which of THIS drive's wordings it ran.  Converted once, here.
+        def _local(sample_index: int) -> int:
+            return sample_index - offset
+
         def _observe(sample_index: int) -> Callable[[Database, str], eval_cohort.SampleObservation]:
-            # The phrasing is read from this drive's OWN position; the index is global so a
-            # case's second drive cannot land on the first drive's database files.
-            phrasing = _phrasing_label(phrasings, sample_index - offset, per_phrasing, world_name)
+            phrasing = _phrasing_label(phrasings, _local(sample_index), per_phrasing, world_name)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
             return lambda db, reply: _observe_sample(
                 db, name=name, phrasing=phrasing, world=world_name, reply=reply
@@ -2758,7 +2763,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 server,
                 case_id=case_id,
                 sample_index=sample_index,
-                turns=[spoken[sample_index]] if spoken else turns,
+                turns=[spoken[_local(sample_index)]] if spoken else turns,
                 score=score or _no_scorer,
                 wrap_client=wrap_client,
                 timeout=timeout,

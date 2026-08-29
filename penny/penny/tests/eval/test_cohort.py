@@ -418,3 +418,28 @@ def test_a_control_sample_is_named_for_its_job_not_given_a_phrasing_number():
     assert _phrasing_label(["a", "b"], 4, 3, BASE_WORLD) == "phrasing 2"
     assert _phrasing_label(["a"], 0, 3, BASE_WORLD) == "the ask"
     assert _phrasing_label(["a"], 0, 3, CONTROL_WORLD) == CONTROL_WORLD
+
+
+def test_a_samples_global_and_local_positions_are_not_the_same_number():
+    """The bug this pins, twice over: a sample's GLOBAL index keys its database file and report
+    name and continues across a case's drives, while its LOCAL position says which of THIS
+    drive's wordings it ran.  Reading the wordings at the global index walks off the end of the
+    second drive's list; naming from the local one collides with the first drive's names."""
+    cohort_wordings = ["p1", "p2", "p3", "p4", "p5"] * 3
+    control_wordings = ["ask"] * 3
+    cohort = [(index, index - 0) for index in range(0, 15)]
+    control = [(index, index - 15) for index in range(15, 18)]
+
+    assert [g for g, _ in control] == [15, 16, 17]
+    assert [local for _, local in control] == [0, 1, 2]
+    assert all(local < len(control_wordings) for _, local in control)
+    assert all(local < len(cohort_wordings) for _, local in cohort)
+
+    names = [
+        f"case-{g + 1} ({_phrasing_label(['a', 'b'], loc, 3, BASE_WORLD)})" for g, loc in cohort
+    ]
+    names += [
+        f"case-{g + 1} ({_phrasing_label(['a'], loc, 3, CONTROL_WORLD)})" for g, loc in control
+    ]
+    assert len(set(names)) == len(names), "a case's two drives must not share a sample name"
+    assert names[-3:] == ["case-16 (control)", "case-17 (control)", "case-18 (control)"]
