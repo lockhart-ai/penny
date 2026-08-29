@@ -1,0 +1,328 @@
+"""Run-comment assembler (#1717/#1725): compose a completed run's artifacts into THE
+postable PR comment — the durable record of the iteration.
+
+The per-run artifacts and per-case report blocks all exist after a ``make eval`` run —
+``manifest.json`` + ``results.jsonl`` (``artifacts.py``) and one ``<case_id>.md``
+transcript per case (``conftest.py``'s ``_write_sample_report``, now the iteration-6
+transcript-integrated blocks rendered by ``report.py``) — but no step composes them into
+the ONE markdown document the format spec (``docs/eval-report-format.md``) specifies. This
+module is that step.
+
+Given a completed run's report directory it emits one markdown comment (v3, #1725):
+
+  1. the **run header** — one identity line (run id · commit · model · N · lever), the
+     **RESULT** line (mean · all-pass · pathology-excluded · cause tally · per-family
+     rollup · timings), a **gate** line per gated case (``⚖ threshold on metric → PASS/FAIL``),
+     and — in diff mode — a **flips** index (each regressed check + the samples it flipped in).
+  2. one section per case — its heading (only when the run spans multiple cases) above the
+     case's per-sample transcript blocks. EVERY sample block folds whole under its banner — the
+     one and only rendering (#1753/#1759): collapsed by default, its full body always a click
+     away, identical in the on-disk ``<case_id>.md`` and this comment (there is no banner-only /
+     compact form — "default collapsed" never means the body is dropped).
+  3. the **footer** — the local artifact directory + the ``make assemble`` re-render line.
+
+Pure artifact + transcript consumption: no model, no git, no network — so it's exercised by
+plain (non-eval) whole-render tests. The gate value is read from each ``CaseArtifact``'s
+``min_pass_rate`` / ``gate_metric``; the flips index resolves the baseline from the run's DURABLE
+manifest reference (``RunManifest.baseline``, recorded at eval time; ``EVAL_BASELINE`` overrides
+for an ad-hoc re-diff), joining on ``(case_id, label)`` — the same diff key the per-sample REGRESSED
+marks use. Reading a durable reference (not a volatile env at assemble time) is what keeps the
+header flips index consistent with the per-row badges baked into the transcripts (#1752).
+
+Run it via ``python -m penny.tests.eval.utils.assemble <report_dir>``
+(writes the comment to stdout).
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from penny.tests.eval.utils import comment_split, report
+from penny.tests.eval.utils.artifacts import (
+    MANIFEST_FILENAME,
+    CaseArtifact,
+    CheckCell,
+    FailureCause,
+    RunManifest,
+    count_causes,
+    load_results_lines,
+    pathology_excluded,
+    render_manifest_header,
+)
+from penny.tests.eval.utils.baseline import Baseline, resolve_baseline
+
+# ── Section literals (no magic strings) ──────────────────────────────────────
+RESULT_LABEL = "**RESULT:**"
+GATE_LABEL = "**gate:**"
+FLIPS_LABEL = "flips:"
+FAMILIES_LABEL = "families:"
+CAUSES_LABEL = "causes —"
+NO_TRANSCRIPT = "_(no transcript recorded)_"
+SECTION_SEPARATOR = "\n\n"
+
+# The most a single sample fold may render to before it is given internal seams (#1917).  The
+# splitter's own per-part budget, read from it rather than restated: a fold larger than one part
+# can never be packed into a postable comment however the document is cut, because a fold is
+# the finest seam the splitter has.
+SAMPLE_FOLD_BUDGET = comment_split.PART_BUDGET
+GATING_GLYPH = "⚖"
+FLIP_GLYPH = "✅→❌"
+UNKNOWN_COMMIT = "unknown"
+
+USAGE = "usage: python -m penny.tests.eval.utils.assemble <report_dir>"
+
+
+def assemble_run_comment(report_dir: Path) -> str:
+    """Compose the run's whole PR comment from its report directory (the summary method): the run
+    header, one section per case (heading only when multi-case), and the local-artifacts footer.
+
+    EVERY sample block folds whole under its banner — collapsed by default, its full body always a
+    click away, identical to the on-disk ``.md`` (#1753/#1759, the one and only rendering)."""
+    manifest = load_manifest(report_dir)
+    artifacts = load_case_artifacts(report_dir)
+    # The flips index reads the run's DURABLE baseline reference (recorded in the manifest at eval
+    # time), so it survives to assemble time even when `make assemble` carries no EVAL_BASELINE —
+    # the divergence that dropped the flips line while the baked per-row REGRESSED badges stayed
+    # (#1752).
+    baseline = resolve_baseline(manifest.baseline)
+    multi = len(artifacts) > 1
+    sections = [render_run_header(manifest, artifacts, baseline)]
+    sections += [_case_section(report_dir, manifest, artifact, multi) for artifact in artifacts]
+    sections.append(render_footer(report_dir))
+    # A case's samples each carry a ~6K system prompt that is mostly the same text,
+    # and restating it per sample made one 4-case run 525K against a 64K comment cap
+    # (#1763).  Lift each case's shared block under its heading; samples keep only
+    # what is genuinely theirs.  Nothing is dropped — every prompt stays
+    # reconstructable, verbatim, one click from where it applies.
+    return report.hoist_shared_prompt_blocks(SECTION_SEPARATOR.join(sections)) + "\n"
+
+
+# ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──
+def load_manifest(report_dir: Path) -> RunManifest:
+    """Read the run's ``manifest.json``, or fail with an actionable message if it's absent."""
+    path = report_dir / MANIFEST_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No {MANIFEST_FILENAME} in {report_dir} — is this a completed eval run's report "
+            f"directory? Run `EVAL_REPORT_DIR={report_dir} … make eval` first."
+        )
+    return RunManifest.model_validate_json(path.read_text())
+
+
+def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
+    """Read every case record in the run dir (one per non-blank line), in file order.
+
+    A run under xdist writes one results file per worker, so the whole run is the union of
+    them — reading only ``results.jsonl`` would silently report a fraction of the cases as
+    if it were all of them.  No files → no cases: a manifest can exist before any case has
+    recorded."""
+    return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
+
+
+# ── The run header (identity · RESULT · gate · flips) ────────────────────────
+def render_run_header(
+    manifest: RunManifest, artifacts: list[CaseArtifact], baseline: Baseline | None
+) -> str:
+    """The run header: the identity line, the RESULT line, a gate line per gated case, and (in
+    diff mode) the flips index."""
+    dirty = " (dirty)" if manifest.dirty else ""
+    lines = [
+        f"**{manifest.run_id}** · commit `{_short(manifest.commit)}`{dirty} · {manifest.model} · "
+        f"N={manifest.samples} · **lever:** {manifest.lever}",
+        f"{RESULT_LABEL} {render_result_line(artifacts)}",
+    ]
+    lines += render_gate_lines(artifacts)
+    flips = render_flips_line(artifacts, baseline)
+    if flips:
+        lines.append(flips)
+    return "\n".join(lines)
+
+
+def _short(commit: str) -> str:
+    """The 8-char short commit for the header (``unknown`` passes through)."""
+    return commit if commit == UNKNOWN_COMMIT else commit[:8]
+
+
+def render_result_line(artifacts: list[CaseArtifact]) -> str:
+    """The run-level RESULT line: the dual metrics, the pathology-excluded mean, the cause tally,
+    the per-family rollup, and the summed timings — one skimmable line."""
+    scores, causes = _flatten(artifacts)
+    total = len(scores)
+    mean = sum(scores) / total if total else 0.0
+    all_pass = sum(1 for cause in causes if cause is None)
+    excluded_mean, _kept = pathology_excluded(scores, causes)
+    counts = count_causes(causes)
+    parts = [
+        f"mean {mean:.2f}",
+        f"all-pass {all_pass}/{total}",
+        f"pathology-excluded {excluded_mean:.2f}",
+        f"{CAUSES_LABEL} behavioral {counts.behavioral} · pathology {counts.pathology} · "
+        f"harness {counts.harness}",
+        _family_rollup(artifacts),
+    ]
+    timings = _timings(artifacts)
+    if timings:
+        parts.append(timings)
+    return " · ".join(parts)
+
+
+def _family_rollup(artifacts: list[CaseArtifact]) -> str:
+    """``families: <fam> <mean> [(<n> cases)] · …`` — each family's mean over its samples, with a
+    case count only when the family spans more than one case."""
+    groups: dict[str, list[CaseArtifact]] = {}
+    for artifact in artifacts:
+        groups.setdefault(artifact.family, []).append(artifact)
+    parts = []
+    for family, group in groups.items():
+        scores, _causes = _flatten(group)
+        mean = sum(scores) / len(scores) if scores else 0.0
+        suffix = f" ({len(group)} cases)" if len(group) > 1 else ""
+        parts.append(f"{family} {mean:.2f}{suffix}")
+    return f"{FAMILIES_LABEL} {' · '.join(parts)}"
+
+
+def _timings(artifacts: list[CaseArtifact]) -> str:
+    """The summed run timings — ``<calls> calls · <s>s · <in>K in / <out>K out`` (empty when no
+    model call was logged)."""
+    calls = sum(artifact.timings.calls for artifact in artifacts)
+    if not calls:
+        return ""
+    duration_ms = sum(artifact.timings.duration_ms for artifact in artifacts)
+    input_tokens = sum(artifact.timings.input_tokens for artifact in artifacts)
+    reasoning_tokens = sum(artifact.timings.reasoning_tokens for artifact in artifacts)
+    # Only when the provider reported it: an absent count renders as no clause rather than
+    # as a confident zero.
+    reasoning_clause = f" ({reasoning_tokens / 1000:.1f}K thinking)" if reasoning_tokens else ""
+
+    output_tokens = sum(artifact.timings.output_tokens for artifact in artifacts)
+    return (
+        f"{calls} calls · {duration_ms / 1000:.0f}s · "
+        f"{input_tokens / 1000:.1f}K in / {output_tokens / 1000:.1f}K out"
+        f"{reasoning_clause}"
+    )
+
+
+def render_gate_lines(artifacts: list[CaseArtifact]) -> list[str]:
+    """One gate line per gated case (``min_pass_rate`` set): the threshold, which score it gates,
+    the gated value, and PASS/FAIL. In a multi-case run each gate names its case."""
+    lines = []
+    for artifact in artifacts:
+        if artifact.min_pass_rate is None:
+            continue
+        gated = (
+            artifact.mean if artifact.gate_metric == "mean" else artifact.pathology_excluded_mean
+        )
+        verdict = "✅ PASS" if gated >= artifact.min_pass_rate else "❌ FAIL"
+        prefix = f"`{artifact.case_id}`: " if len(artifacts) > 1 else ""
+        lines.append(
+            f"{GATE_LABEL} {prefix}{GATING_GLYPH} {artifact.min_pass_rate} on "
+            f"{artifact.gate_metric} → **{verdict}** ({gated:.2f})"
+        )
+    return lines
+
+
+def render_flips_line(artifacts: list[CaseArtifact], baseline: Baseline | None) -> str:
+    """The diff-mode flips index — each check that was fully green in the baseline but failed a
+    sample here (a regression), with the samples it flipped in. Empty off-diff / on a clean run."""
+    if baseline is None:
+        return ""
+    entries = []
+    for artifact in artifacts:
+        for outcome in artifact.checks:
+            if not baseline.was_passing(artifact.case_id, outcome.label):
+                continue
+            fails = [i for i, cell in enumerate(outcome.cells) if cell == CheckCell.FAILED]
+            if fails:
+                where = ", ".join(f"s{index + 1}" for index in fails)
+                entries.append(f"{outcome.label} {FLIP_GLYPH} ({where})")
+    return f"{FLIPS_LABEL} {' · '.join(entries)}" if entries else ""
+
+
+def _flatten(artifacts: list[CaseArtifact]) -> tuple[list[float], list[FailureCause | None]]:
+    """Every case's per-sample scores and causes concatenated — the run-totals denominator."""
+    scores: list[float] = []
+    causes: list[FailureCause | None] = []
+    for artifact in artifacts:
+        scores.extend(artifact.sample_scores)
+        causes.extend(artifact.sample_causes)
+    return scores, causes
+
+
+# ── Per-case section + footer ────────────────────────────────────────────────
+def _case_section(
+    report_dir: Path, manifest: RunManifest, artifact: CaseArtifact, multi: bool
+) -> str:
+    """One case's section: its per-sample transcript blocks, under a ``### case — family`` heading
+    only when the run spans multiple cases (a single-case run needs no divider)."""
+    body = _transcript_block(report_dir, manifest, artifact)
+    if multi:
+        return f"### `{artifact.case_id}` — {artifact.family}\n\n{body}"
+    return body
+
+
+def _transcript_block(report_dir: Path, manifest: RunManifest, artifact: CaseArtifact) -> str:
+    """The case's ``<case_id>.md`` transcript with its leading manifest header stripped (the run
+    header carries the run identity once), re-normalized for the comment. A missing/empty
+    transcript renders a placeholder."""
+    path = report_dir / f"{artifact.case_id}.md"
+    if not path.is_file():
+        return NO_TRANSCRIPT
+    text = path.read_text()
+    header = render_manifest_header(manifest) + "\n"  # exactly what write_case_header stamped
+    if text.startswith(header):
+        text = text[len(header) :]
+    transcript = text.strip()
+    if not transcript:
+        return NO_TRANSCRIPT
+    return _folded_transcript(transcript)
+
+
+def _folded_transcript(transcript: str) -> str:
+    """Re-normalize a case's per-sample blocks for the comment: EVERY block folds whole under its
+    banner — the one and only rendering (#1753/#1759). Re-folds an old unfolded ``#### `` block on
+    the way, so a re-assembled prior run is uniform too. Collapsed by default, the full body always
+    a click away — there is no banner-only form.
+
+    A sample too big to POST as one fold renders as several instead (#1917), each opening on the
+    same seam so the splitter can cut between them. Done here rather than at write time so the
+    per-sample artifact on disk stays one fold — the seams belong to the comment, which is the only
+    place a size cap exists.
+
+    A case-level PREAMBLE above the first sample fold (the three-section report, #1995) is carried
+    through verbatim — one rendering, on disk and in the comment."""
+    preamble, sample_blocks = report.split_case_transcript(transcript)
+    blocks = [preamble] if preamble else []
+    for block in sample_blocks:
+        number, banner, body = report.parse_sample_block(block)
+        blocks.append(report.fold_sample_parts(number, banner, body, SAMPLE_FOLD_BUDGET))
+    return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
+
+
+def render_footer(report_dir: Path) -> str:
+    """The n≤1 pointer from the comment back to the raw evidence — the LOCAL artifact directory
+    (nothing is committed, #1725 policy) and the ``make assemble`` re-render line."""
+    return (
+        f"_artifacts (local, never committed): `{report_dir}` · per-sample DBs beside them · "
+        f"re-render: `EVAL_REPORT_DIR={report_dir} make assemble`_"
+    )
+
+
+# ── CLI: python -m penny.tests.eval.utils.assemble <report_dir> ─────────────────────
+def main(argv: list[str]) -> int:
+    """Write the assembled comment for the report dir to stdout; 1 on a bad dir. Every sample folds
+    whole under its banner (collapsed by default, full body a click away) — the one rendering."""
+    if len(argv) != 1:
+        print(USAGE, file=sys.stderr)
+        return 2
+    try:
+        comment = assemble_run_comment(Path(argv[0]))
+    except FileNotFoundError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    sys.stdout.write(comment)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

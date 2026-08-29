@@ -76,18 +76,18 @@ EVAL_REMOTE_CONCURRENCY := 5
 # profile somewhere else and you set LLM_API_KEY, exactly as before.
 EVAL_REMOTE_API_KEY_VAR := OPENROUTER_API_KEY
 # The remote profile's MODELS are not a make variable at all: they live in EVAL_MODELS in
-# the primary checkout's .env, resolved by `penny.tests.eval.roster` before a run spends
+# the primary checkout's .env, resolved by `penny.tests.eval.utils.roster` before a run spends
 # anything. There is deliberately no remote model default left to fall back to — a default
 # here is exactly the ad-hoc single-model pass that made a run's model unrecoverable
 # afterwards and its provider inexpressible.
 # The marker `make eval-report` stamps into a posted run dir (#1757). Must match
-# `penny.tests.eval.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
+# `penny.tests.eval.utils.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
 POSTED_MARKER := .posted
-# The line `penny.tests.eval.endpoint_smoke` prints the answering provider on. Must match
+# The line `penny.tests.eval.utils.endpoint_smoke` prints the answering provider on. Must match
 # `endpoint_smoke.PROVIDER_LINE_PREFIX` — the recipe reads the provider off it and forwards
 # it as EVAL_PROVIDER, so the manifest records WHERE the model was served from (#1996).
 SMOKE_PROVIDER_LINE := eval: chat provider =
-# The two lines `penny.tests.eval.roster` prints its resolution on. Must match
+# The two lines `penny.tests.eval.utils.roster` prints its resolution on. Must match
 # `roster.MODEL_LINE_PREFIX` / `roster.PREFERRED_PROVIDER_LINE_PREFIX` — the recipe reads
 # the run's model and its PREFERRED upstream off them.
 ROSTER_MODEL_LINE := eval: model =
@@ -262,7 +262,7 @@ pytest: $(if $(LOCAL),,build)
 # WHICH models a remote run may measure is CONFIGURATION, not a make variable: EVAL_MODELS
 # in the primary checkout's .env is a JSON list of {"model": ..., "provider": ...} entries,
 # at least two of them, and a remote run refuses to start without it (see
-# penny.tests.eval.roster for why two, and why the requirement is remote-only). The recipe
+# penny.tests.eval.utils.roster for why two, and why the requirement is remote-only). The recipe
 # resolves this invocation's entry — the first by default, or the one LLM_MODEL names — and
 # forwards its provider as a PREFERENCE with fallbacks ON, never a hard pin: pinning hard
 # put 325 rate limits on one endpoint at a concurrency the same run handled with zero
@@ -272,7 +272,7 @@ pytest: $(if $(LOCAL),,build)
 # so moving the chat model never silently moves the vector space every memory case is
 # scored against. Override LLM_EMBEDDING_API_URL deliberately if you mean to.
 # Before anything is spent, ONE call proves the endpoint serves the model (see
-# penny.tests.eval.endpoint_smoke). Every sample builds its own preflight, so without this
+# penny.tests.eval.utils.endpoint_smoke). Every sample builds its own preflight, so without this
 # an unserveable model is discovered 755 times, concurrently, minutes in — which is how a
 # full-suite run was spent against a model whose provider 404'd every call. The refusal
 # carries the provider's own message, because that message is the whole answer.
@@ -323,7 +323,7 @@ eval-remote: eval
 
 eval: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"; \
-	banner="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
+	banner="$$($(EVAL_RUN) python -m penny.tests.eval.utils.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
 	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
 	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | tr -d '"'; }; \
 	case "$(EVAL_PROFILE)" in \
@@ -341,7 +341,7 @@ eval: $(if $(LOCAL),,build)
 	if [ "$(EVAL_PROFILE)" = remote ]; then \
 		roster_log="$$(mktemp)"; \
 		if ( $(EVAL_RUN) env EVAL_MODELS="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}" \
-			python -m penny.tests.eval.roster $$model ) > "$$roster_log" 2>&1; then rostered=1; else rostered=0; fi; \
+			python -m penny.tests.eval.utils.roster $$model ) > "$$roster_log" 2>&1; then rostered=1; else rostered=0; fi; \
 		cat "$$roster_log"; \
 		model="$$(sed -n 's/^$(ROSTER_MODEL_LINE) //p' "$$roster_log" | tail -1)"; \
 		preferred="$$(sed -n 's/^$(ROSTER_PROVIDER_LINE) //p' "$$roster_log" | tail -1)"; \
@@ -367,7 +367,7 @@ eval: $(if $(LOCAL),,build)
 		LLM_MODEL="$$model" LLM_PROVIDER="$$preferred" \
 		LLM_EMBEDDING_API_URL="$$embed_url" LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
-		python -m penny.tests.eval.endpoint_smoke ) > "$$smoke_log" 2>&1; then smoked=1; else smoked=0; fi; \
+		python -m penny.tests.eval.utils.endpoint_smoke ) > "$$smoke_log" 2>&1; then smoked=1; else smoked=0; fi; \
 	cat "$$smoke_log"; \
 	provider="$$(sed -n 's/^$(SMOKE_PROVIDER_LINE) //p' "$$smoke_log" | tail -1)"; \
 	rm -f "$$smoke_log"; \
@@ -444,7 +444,7 @@ eval: $(if $(LOCAL),,build)
 # There is no compact/banner-only form and no `--full` flag.
 assemble: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"
-	$(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
+	$(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.utils.assemble "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
 
 # Post a completed eval run's assembled report to its iteration PR as a comment — the ONE-SHOT that
 # makes the joint-checkpoint rule (run → report → STOP for joint review) STRUCTURAL (#1757). It
@@ -459,7 +459,7 @@ assemble: $(if $(LOCAL),,build)
 # shows the same durable-home resolution (`-v <primary>/data/eval-artifacts:/penny/eval-artifacts`).
 # OVER THE 64K CAP (#1808): GitHub refuses a comment body over 65,536 chars and an 8-sample chat beat
 # assembles to ~290K, so the body is staged into <run>/$(COMMENT_SUBDIR)/ and cut there by
-# `penny.tests.eval.comment_split` — on SAMPLE-FOLD boundaries only, each part headed `report N of M`,
+# `penny.tests.eval.utils.comment_split` — on SAMPLE-FOLD boundaries only, each part headed `report N of M`,
 # posted in order, and `.posted` stamped with the FIRST part's URL so idempotency + the unreviewed-run
 # banner stay honest. The splitter also REFUSES a body opening with build noise (`docker compose`,
 # `GIT_COMMIT=`, `#1 [internal]`) — the pollution a hand-piped `make assemble` publishes.
@@ -470,7 +470,7 @@ eval-report: $(if $(LOCAL),,build)
 	fi; \
 	run="$(if $(filter command line,$(origin RUN)),$(RUN),)"; \
 	if [ -z "$$run" ]; then \
-		run="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint latest "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null)"; \
+		run="$$($(EVAL_RUN) python -m penny.tests.eval.utils.checkpoint latest "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null)"; \
 		if [ -z "$$run" ]; then \
 			echo "eval-report: no completed run dirs under $(EVAL_ARTIFACTS_HOST) — run make eval first" >&2; \
 			exit 1; \
@@ -489,7 +489,7 @@ eval-report: $(if $(LOCAL),,build)
 	host_parts="$$host_dir/$(COMMENT_SUBDIR)"; \
 	mount_parts="$(EVAL_ARTIFACTS_MOUNT)/$$run/$(COMMENT_SUBDIR)"; \
 	mkdir -p "$$host_parts"; \
-	if ! $(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble "$(EVAL_ARTIFACTS_MOUNT)/$$run" > "$$host_parts/$(COMMENT_BODY)"; then \
+	if ! $(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.utils.assemble "$(EVAL_ARTIFACTS_MOUNT)/$$run" > "$$host_parts/$(COMMENT_BODY)"; then \
 		echo "eval-report: assemble failed for $$run" >&2; \
 		exit 1; \
 	fi; \
@@ -497,7 +497,7 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: assemble produced no output for $$run — is it a completed run?" >&2; \
 		exit 1; \
 	fi; \
-	if ! names="$$($(EVAL_RUN) python -m penny.tests.eval.comment_split "$$mount_parts/$(COMMENT_BODY)" "$$mount_parts")"; then \
+	if ! names="$$($(EVAL_RUN) python -m penny.tests.eval.utils.comment_split "$$mount_parts/$(COMMENT_BODY)" "$$mount_parts")"; then \
 		echo "eval-report: could not prepare $$run for posting" >&2; \
 		exit 1; \
 	fi; \

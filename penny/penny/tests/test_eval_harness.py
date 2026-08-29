@@ -47,15 +47,80 @@ from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
-from penny.tests.eval import report
-from penny.tests.eval.artifacts import (
-    CaseArtifact,
-    CaseTimings,
-    CauseCounts,
-    CheckOutcome,
-    FailureCause,
+from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
+from penny.tests.eval.chat.apply.test_known_routine_new_space import (
+    IDLE_APPLY_CASES,
+    assert_new_space_is_unknown,
 )
-from penny.tests.eval.baseline import load_baseline
+from penny.tests.eval.chat.apply.test_missing_value_arrives import _names_the_cadence_check
+from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
+    BRACKET_KEY_CASES,
+    _seed_board_games,
+    assert_board_games_world,
+)
+from penny.tests.eval.chat.idle.test_chat_reply import (
+    _STORED_TITLES,
+    _carries,
+    _honest_about_the_duplicate,
+)
+from penny.tests.eval.chat.idle.test_choose_dispatch import (
+    _OPTIONS as _CHOOSE_OPTIONS,
+)
+from penny.tests.eval.chat.idle.test_choose_dispatch import (
+    CHOOSE_CASES,
+    _gave_an_opinion_check,
+    _reply_reports,
+    assert_choose_world,
+)
+from penny.tests.eval.chat.idle.test_command_tools import (
+    IMAGE_CASES,
+    _claims_no_picture_check,
+    assert_image_world,
+    install_image_client,
+)
+from penny.tests.eval.chat.idle.test_email_dispatch import (
+    EMAIL_CASES,
+    _claims_no_search_check,
+    assert_mailbox_world,
+    install_mailbox,
+)
+from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
+    BAIL_CASES,
+    _claims_no_job_check,
+    assert_the_round_built_what_it_claims,
+)
+from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
+    CORRECTION_CASES,
+    SHAPE_DELTA_WITHOUT_RE_RUNNING,
+    SHAPE_RE_RAN_AND_APPLIED,
+    _correction_shape,
+    assert_the_correction_is_unsaid,
+    assert_the_teach_round_is_parked,
+    seed_corrected_round,
+)
+from penny.tests.eval.chat.learn.test_teach_arrives_whole import (
+    assert_the_teach_is_new_to_the_world,
+)
+from penny.tests.eval.chat.request.test_ask_is_one_value_short import (
+    _asks_for_what_is_missing_check,
+    _does_not_re_ask_check,
+)
+from penny.tests.eval.collector.test_collector_enactment import (
+    _STOP_REASON as _STOP,
+)
+from penny.tests.eval.collector.test_collector_enactment import (
+    DIRECTION_CHECK_LABEL,
+    ENACTMENT_CASES,
+    GATE_CASES,
+    _assert_the_baseline_is_stored,
+    _EnactmentCase,
+    _score_enactment,
+    assert_applied_world,
+    configured_terms,
+    rendered_program,
+    seed_applied_job,
+    seed_gate_world,
+)
 from penny.tests.eval.conftest import (
     PENNY_LOGGER,
     BoundExpectation,
@@ -96,96 +161,41 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
-from penny.tests.eval.dispatch_world import assert_no_collections, collection_names
-from penny.tests.eval.fixtures import BOARD_GAMES
-from penny.tests.eval.test_bracket_key_recovery import (
-    BRACKET_KEY_CASES,
-    _seed_board_games,
-    assert_board_games_world,
+from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
+from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
+from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.utils import report
+from penny.tests.eval.utils.artifacts import (
+    CaseArtifact,
+    CaseTimings,
+    CauseCounts,
+    CheckOutcome,
+    FailureCause,
 )
-from penny.tests.eval.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
-from penny.tests.eval.test_chat_reply import (
-    _STORED_TITLES,
-    _carries,
-    _honest_about_the_duplicate,
-)
-from penny.tests.eval.test_choose_dispatch import (
-    _OPTIONS as _CHOOSE_OPTIONS,
-)
-from penny.tests.eval.test_choose_dispatch import (
-    CHOOSE_CASES,
-    _gave_an_opinion_check,
-    _reply_reports,
-    assert_choose_world,
-)
-from penny.tests.eval.test_collector_enactment import (
-    _STOP_REASON as _STOP,
-)
-from penny.tests.eval.test_collector_enactment import (
-    DIRECTION_CHECK_LABEL,
-    ENACTMENT_CASES,
-    GATE_CASES,
-    _assert_the_baseline_is_stored,
-    _EnactmentCase,
-    _score_enactment,
-    assert_applied_world,
-    configured_terms,
-    rendered_program,
-    seed_applied_job,
-    seed_gate_world,
-)
-from penny.tests.eval.test_command_tools import (
-    IMAGE_CASES,
-    _claims_no_picture_check,
-    assert_image_world,
-    install_image_client,
-)
-from penny.tests.eval.test_email_dispatch import (
-    EMAIL_CASES,
-    _claims_no_search_check,
-    assert_mailbox_world,
-    install_mailbox,
-)
-from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
-from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
-from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
-from penny.tests.eval.test_state_transitions import (
+from penny.tests.eval.utils.baseline import load_baseline
+from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
+from penny.tests.eval.utils.fixtures import BOARD_GAMES
+from penny.tests.eval.utils.transition_world import (
     APPLY_CASES,
-    BAIL_CASES,
-    CORRECTION_CASES,
-    IDLE_APPLY_CASES,
     IDLE_LEARN_CASES,
     IDLE_REQUEST_CASES,
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
     REQUEST_APPLY_CASES,
-    SHAPE_DELTA_WITHOUT_RE_RUNNING,
-    SHAPE_RE_RAN_AND_APPLIED,
-    _asks_for_what_is_missing_check,
-    _claims_no_job_check,
-    _correction_shape,
-    _does_not_re_ask_check,
     _interface_check,
-    _names_the_cadence_check,
     _overlaps,
     _round_reported_checks,
     _said_back,
     assert_composed_world,
-    assert_new_space_is_unknown,
     assert_parked_in_request_world,
     assert_round_cites_its_run,
     assert_round_is_framed,
     assert_seeded_ledger,
-    assert_the_correction_is_unsaid,
-    assert_the_round_built_what_it_claims,
-    assert_the_teach_is_new_to_the_world,
-    assert_the_teach_round_is_parked,
     assert_values_are_new,
     cadence_seconds,
     parked_binding,
     rule_parts,
     seed_composed_world,
-    seed_corrected_round,
     seed_learned_round,
     seed_parked_in_request,
 )
