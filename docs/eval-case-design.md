@@ -34,7 +34,7 @@ A case therefore makes **three different kinds of claim**, which must never be m
 
 | | the claim | how it is judged |
 |---|---|---|
-| **A · assertions** | end state only — the four categories in §2 | a **pass-rate floor** (a fall below is a regression) |
+| **A · assertions** | end state only — the three categories in §2 | a **pass-rate floor** (a fall below is a regression) |
 | **B · variance** | model output — tool sequence, routine shape, names, reply text | a **one-sided ceiling** (only a *rise* is a regression) |
 | **C · run health** | how much of the cohort actually ran, and what killed the rest | a **gate**: broken samples are excluded *before* pooling, and a mostly-dead cohort **fails the run** |
 
@@ -48,7 +48,7 @@ order — one line, then folds:
 
 | | fold | carries |
 |---|---|---|
-| — | **the summary line** | both scores plus the whole sample accounting: `15 pooled + 3 control + 0 excluded = 18 driven` |
+| — | **the summary line** | both scores, plus the sample accounting — every sample driven is either pooled or named as excluded, and the arithmetic closes |
 | A | **Assertions** | one table per spec category, and **a category nobody wrote a claim for renders as a visible gap** |
 | B | **Variance** | per-feature entropy, proposed ceilings, the per-phrasing rows |
 | B | **Cost** | input/output tokens per sample and their proposed ceilings (§5) |
@@ -94,14 +94,13 @@ renders as a stub every time is a section people learn to skip.
 
 ## 2 · Section A — the closed list
 
-**Four categories. Nothing else is an assertion.**
+**Three categories. Nothing else is an assertion.**
 
 | category | what it asserts | read off |
 |---|---|---|
 | `LANDED` | where the machine landed — the state transition the story is about | the conversation machine's walk |
 | `STORE` | what the store holds — entries, keys, contents, record fields, registry rows | the sample's database, while it is still live |
 | `PROVENANCE` | every specific value traces to what the model was **given** — user turns and tool results, **never Penny's own turns** | the sample's inputs vs its output |
-| `DIRECTED_CHANGE` | perturb the world, re-run the same ask, the facts move with it | this cohort's world vs the control's |
 
 **If a check fits none of these, it is not an assertion.** Delete it, or move it to variance.
 
@@ -109,9 +108,22 @@ renders as a stub every time is a section people learn to skip.
 rides into the message history, and a later check that treats the history as source material lets
 the fabrication launder itself.
 
-`DIRECTED_CHANGE` is the claim that wording variation **cannot** make. If Penny were
-pattern-completing from the shape of the request, every phrasing would name the same fact and every
-phrasing would be right; only a different world can tell reading apart from completing.
+### Why there is no fourth category
+
+A `DIRECTED_CHANGE` category — perturb the world, re-run, the facts move with it — was ratified and
+then removed. The reasoning is recorded here so it is not reinstated on the strength of how good it
+sounds:
+
+| | |
+|---|---|
+| **Samples are hermetic** | own database, own conversation, own page. A sample was never shown another world's fact, so *"it names nothing from the world it was not given"* asserts the absence of something that has no cause. It read 18/18 every run and always would. |
+| **It was redundant** | `PROVENANCE` already catches a fabricated value on a single world — and catches **every** invention, not one specific foreign token. |
+| **The base/control framing did not fit** | treatment-vs-control assumes comparable arms differing by one manipulation. These are isolated runs, each of which saw exactly one world, and every claim already resolves the sample's **own** world. Nothing was being compared. |
+
+**The defence it was written for survives without it.** A model that ignored the page and emitted a
+plausible value fails the `STORE` claim on whichever world it guessed wrong. What that needs is
+**the world to vary** — not two cohorts to compare. Varying the page fact is a second *input* axis,
+like phrasing (§6), and it is not in use today.
 
 ### The non-negotiables
 
@@ -137,24 +149,27 @@ every time, on every case.**
 
 > ### Outward — for each check on the source case
 >
-> **Which of the four categories does it fall in?**
+> **Which of the three categories does it fall in?**
 >
 > **None → delete it. It does not port.** Being on the canonical case is not a reason to keep it:
 > the canonical cases predate this design, so a check surviving there is evidence of nothing.
 >
-> ### Inward — for each of the four categories
+> ### Inward — for each of the three categories
 >
 > **Does the ported case make a claim in it?**
 >
 > **No → write one**, even though the source case had none to copy.
 
 **The inward direction is the one nobody runs.** Outward feels like work — you are looking at a
-check and deciding its fate. Inward looks like nothing is missing, because the thing that is
-missing was never on the page. That is exactly what it cost: the reference port shipped **with no
-store-side `DIRECTED_CHANGE` claim**, because the case it was ported from had none to copy. It
-asserted that the *reply's* facts move with the world and never asserted that the *store's* do — so
-a round that reads the perturbed world, says the right thing, and writes the wrong thing passes
-every check in section A.
+check and deciding its fate. Inward looks like nothing is missing, because the thing that is missing
+was never on the page.
+
+Here is what it found on the reference port. The canonical case it was ported from carried **no
+`PROVENANCE` claim of either kind**. Both of the ported case's — that every stored entry traces to
+what the round was given, and that every specific value in the reply is sourced — exist *only*
+because somebody ran the inward column and wrote them; there was nothing to copy. A port that had
+run the outward column alone would have shipped a case that cannot tell a fact read off the page
+from one the model invented, and every check it did carry would have passed.
 
 The two outward misses from the same port, as worked examples of what "fits no category" looks
 like:
@@ -162,7 +177,7 @@ like:
 | check | why it is not an assertion | where it goes |
 |---|---|---|
 | `assert_each_page_was_read` — reads `sample.pages_read` | asserts that a **browse call happened**. That is a route. `LANDED`? No — a fetch is not a landing. `STORE`? No — nothing was stored. It is model output. | section B, inside tool sequence |
-| `assert_the_reply_reports_what_was_stored` — asserts the reply text contains a token | a **phrasing match**, the thing the design exists to abolish. Its legitimate half — does the reply's content track the world? — is already `DIRECTED_CHANGE`'s positive direction. | delete: it is a duplicate wearing a regex |
+| `assert_the_reply_reports_what_was_stored` — asserts the reply text contains a token | a **phrasing match** — a token somebody guessed in advance, which is the thing this design exists to abolish. | delete. Whether the reply describes what actually landed is a real question and is not answerable from prose — see §9 |
 
 Note what makes the first one seductive: it distinguishes "read the page and correctly found
 nothing in scope" from "never looked", which is a real distinction worth having. It is still a
@@ -175,10 +190,11 @@ rather than as one sample's failed check.
 The checklist has help now, and it is worth knowing exactly how much:
 
 - **The category is a required field from a closed enum** (`SpecCategory`, no default), so a check
-  that fits none of the four **cannot be declared**. That makes the *outward* column a fact the
+  that fits none of the three **cannot be declared**. That makes the *outward* column a fact the
   code states rather than a review someone remembers to run.
-- **The assertions table groups by category and renders an empty one as a visible gap**, so a
-  missing `DIRECTED_CHANGE` claim shows as a hole in the report instead of as nothing at all.
+- **The assertions table groups by category and renders an empty one as a visible gap**, so a case
+  asserting nothing about, say, `PROVENANCE` shows as a hole in the report rather than as nothing
+  at all.
 
 Neither one writes the claim for you. A gap you can see is still a gap until the inward column is
 run and something is written into it — and a claim can satisfy its enum while being the wrong claim.
@@ -187,7 +203,7 @@ The backstops make the omission *visible*; the checklist is what closes it.
 ### Copying the reference port
 
 Sub-tickets say *copy the shape of `learn-demonstrated-round`*. Copy its **structure** — the
-fixture, the world, the control drive, the `measure(...)` call, the parametrisation over models.
+fixture, the world, the `measure(...)` call, the parametrisation over models.
 **Do not copy its claim list.** Every claim is re-derived against the checklist above, for your
 case's own behaviour, or the next thirty cases inherit whichever checks happened to be on the
 reference the afternoon you read it.
@@ -219,38 +235,23 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    # A · DIRECTED_CHANGE — a SECOND VISIBLE DRIVE, beside the claim it serves.
-    control = await chat_eval(..., world=<WORLD_CONTROL>, ask=<THE ASK>, samples_per_phrasing=3)
-    cohort.assert_facts_moved_with_the_world(control)   # store side (gated) + reply side (reported)
-
     # B · what is measured, never asserted
     cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS,
                    REPLY_SPREAD)
 ```
 
-The four category comments are load-bearing: they are where the **inward** pass is run. A case with
-no `# A · DIRECTED_CHANGE` block is a case that skipped it.
+The three category comments are load-bearing: they are where the **inward** pass is run. A case
+with no `# A · PROVENANCE` block is a case that skipped it. Expect your case to have one claim
+nobody can hand you — a category the source case said nothing about, which only the inward column
+will surface.
 
-`assert_facts_moved_with_the_world` declares **both halves** of `DIRECTED_CHANGE` — that what the
-round **stored** moved with the world (`state: what it stored moved with the world`, always
-decidable, so it is the one half that can carry a floor) and that the **reply's** facts moved, in
-both directions (it names this world's facts, and none from the world it was not given; read out of
-model prose, so reported and never floored — §8).
-
-That second half is worth knowing the history of, because it is what this checklist is for. The
-reference port shipped with the reply side only, and no store-side claim at all — not because
-anyone judged it unnecessary, but because the case it was ported from had none to copy. **The
-inward pass is what found it**, and it exists as a shared claim today because that pass ran. Expect
-your case to have one of these: a category whose claim nobody could hand you, which only the
-inward column will surface.
+**One setup, one enactment, one set of assertions.** A case drives its ask **once**. Two enactments
+in one test body is a structural antipattern: it turns the body into a script, and it hides a second
+cohort inside a test named for one. Input variation is expressed as **parametrisation** — that is
+what `also_phrased` is, and what the model axis is — never as a second drive.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
-
-**The control is a visible drive.** The case makes it and passes it in; it is never made secretly
-inside an assertion — a claim that quietly issues three more model calls is a nasty surprise. Its
-samples come under the case's claims (each judged against its *own* world) but never enter the
-variance pool.
 
 ---
 
@@ -283,9 +284,9 @@ is how a section meant to name the samples worth looking at came to name every o
 feature measuring **0.90 entropy in both models**. It is not unconstrained and never was: a
 container's name is `derive_collection_name(routine name, bound values)`, a pure function, exposed
 as `round_framing.container_name` precisely so a fixture cannot grow a second copy of the scheme.
-Checked across all 18 samples of one run it holds exactly, and the bound-value half is **identical
-in all 18**. What varied was the **routine name the framer invents** — eleven distinct names for one
-routine across those eighteen samples. The container name is a pure function of it, so it carried
+Checked across every sample of one run it holds exactly, and the bound-value half is **identical
+in all of them**. What varied was the **routine name the framer invents** — eleven distinct names
+for one routine across that run. The container name is a pure function of it, so it carried
 the framer's spread downstream and got the blame for it.
 
 The lesson generalises past this feature, which is why it is here rather than in a ticket:
@@ -329,18 +330,23 @@ entropy denominator is. Both carry a one-sided ceiling, per model.
 
 ---
 
-## 6 · Cohort sizing, and the three things people confuse
+## 6 · Cohort sizing, and the two things people confuse
 
-**5 phrasings × 3 samples = 15 pooled, plus 3 control = 18 per case.**
+**5 phrasings × 3 samples = 15 pooled per case.**
 
 | mechanism | is | pooled into variance? | serves |
 |---|---|---|---|
 | **phrasing** | *same world, different words* | **yes** — it is the cohort | coverage, and the pooled variance score |
-| **control** | *same words, different world* | **never** | the `DIRECTED_CHANGE` assertion |
-| **scenario** | a different ask reaching the same end state | no — it is a **different case** with its own 18 | its own behaviour |
+| **scenario** | a different ask reaching the same end state | no — it is a **different case** with its own 15 | its own behaviour |
 
-Reading a control as an extra phrasing is the mistake this table exists to prevent: it folds a
-deliberate difference into the spread and reports it as instability.
+The line that matters is phrasing versus scenario: five wordings of one ask pool into one number,
+while a different ask is a different case — folding it in would average two behaviours into one
+score and call the result instability.
+
+A third axis exists on paper and is **not in use**: *same words, different world*. It is a second
+**input** axis and would pool exactly like phrasing; it is **not** a control, and nothing is
+compared against anything (§2). If it is ever turned on it must **not increase the total sample
+count** — the world would be varied *within* the 15, never added beside them.
 
 Why 15 and not fewer, measured by subsampling two real 32-sample cohorts:
 
@@ -391,9 +397,10 @@ than answered:
 
 **Gated ≠ held.** A claim read out of **model prose** is *reported and not floored at this N* —
 **even at full marks**. Across two runs of identical code, on the same commit and the same model, a
-reply-content rate moved by **3 samples of 18** where every structural claim moved by at most 1. At
-18 samples that is ±17 points: a floor tight enough to catch a real regression there would flap on
-an ordinary re-run, and one loose enough not to flap would catch nothing. **A prose-read claim must
+reply-content rate moved by **3 samples** where every structural claim moved by at most 1 —
+measured over the 18 samples a case covered then, so ±17 points, and wider still at the 15 a case
+pools now. A floor tight enough to catch a real regression there would flap on an ordinary re-run,
+and one loose enough not to flap would catch nothing. **A prose-read claim must
 not be counted as a failure in the headline.**
 
 A claim that does *not* hold on every sample is also not floored — for the opposite reason. The
@@ -447,6 +454,17 @@ substitutable for another:
 
 This is why the report names one sample **modal** and hands it to the reader rather than making
 them choose.
+
+**A worked example, and an honest cost.** A known defect — the learn close reporting the *write
+record* instead of the value it stored, seen on 8 samples of 18 (#2010) — is measured by **nothing**
+in this design. It is not a `STORE` miss: the right value is in the store. It is not `PROVENANCE`:
+the record it names is real. And reading it out of the reply text is the phrasing match §2 forbids.
+It is exactly the third row — wrong-but-stable, catchable only by a human reading one sample — and
+the finding lives on its ticket rather than in a check.
+
+**Do not invent a category or a special case to keep it measured.** A fourth kind of assertion added
+to preserve one measurement is how a closed list stops being closed, and the list being closed is
+what makes the porting checklist decidable at all.
 
 ### Alternatives measured and rejected — do not re-propose without new evidence
 

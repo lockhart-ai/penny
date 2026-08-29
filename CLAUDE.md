@@ -109,7 +109,7 @@ docs/                           — Design documents and review guides
   agent-task-workflow.md        — Task-agent SOP: one ticket → worktree → gate → PR → shepherd → cleanup
   agent-supervisor-runbook.md   — Supervisor runbook: meta ticket, dispatch, waves, heartbeat, fleet-end
   eval-iteration-workflow.md    — Eval iteration loop: one beat → pairs → seeded world → run → report → merge
-  eval-case-design.md           — Eval case contract: end-state assertions (four categories),
+  eval-case-design.md           — Eval case contract: end-state assertions (three categories),
                                   measured variance, the porting checklist (#1994)
   eval-report-format.md         — How a run's report is posted (one-shot, marker, 64K split);
                                   its pre-#1994 grading grammar is a superseded appendix

@@ -8,7 +8,7 @@ The golden rule underneath all of it: **one beat at a time, pairs before code, e
 
 - **`docs/eval-iteration-workflow.md`** (this doc) — the **loop**: scope → pairs → seeded world → run → report → diagnose → iterate → merge.
 - **[`docs/prompt-writing-guide.md`](prompt-writing-guide.md)** — **how to write** the model-facing text a round changes (plain words, numbered call steps, the canonical call notation).
-- **[`docs/eval-case-design.md`](eval-case-design.md)** — the **contract a case is written to**: end-state assertions in four categories, everything the model emits measured as variance, and the porting checklist. Required reading before a case is written or ported.
+- **[`docs/eval-case-design.md`](eval-case-design.md)** — the **contract a case is written to**: end-state assertions in three categories, everything the model emits measured as variance, and the porting checklist. Required reading before a case is written or ported.
 - **[`docs/eval-report-format.md`](eval-report-format.md)** — how a run's report is **posted** (the one-shot, the marker, the 64K split). Its pre-#1994 grading grammar is a superseded appendix.
 - **[`docs/agent-task-workflow.md`](agent-task-workflow.md)** — the **contract** the implementing task agent follows for each round's ticket → worktree → gate → PR → cleanup.
 
