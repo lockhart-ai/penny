@@ -131,12 +131,12 @@ _RUN_TABLE_HEAD = "| | |\n|---|---|"
 # What the roll-up AGGREGATES, said rather than implied: one number over several cases must not
 # read as though it covered a single one.
 _RUN_VERDICT = "**{glyph} {passed} / {total} checks · {rate:.0%}**{variance} — {scope}"
-# The spread half of the headline, over features that could actually carry a ceiling. A naive max
-# would be pinned to the saturated naming feature for ever — H 0.7-0.9 on every run of every case
-# by design — and a number that reads the same whatever happened is one readers learn to skip.
-_RUN_VARIANCE = "  ·  **{glyph} variance max H {entropy:.3f}**"
-_RUN_SATURATED = " · {count} saturated"
-_RUN_NO_SPREAD = "  ·  **{glyph} no gateable feature**"
+# The spread half of the headline: what varies MOST across the run, over EVERY feature. Not
+# filtered to what could carry a ceiling — a ceiling catches a RISE and saturation governs that,
+# while this answers which aspect is most variant right now, and filtering hides the answer. The
+# shape rides beside the magnitude, because "one aspect spiking" and "everything wobbling" are
+# different findings that a maximum alone cannot separate.
+_RUN_VARIANCE = "  ·  **{glyph} variance max H {entropy:.3f}** `{feature}` · {varying}/{total} vary"
 _RUN_LEVER = "**Lever** — {lever}"
 
 
@@ -213,23 +213,24 @@ def _run_variance(artifacts: list[CaseArtifact]) -> str:
     """The run's spread reading — the SAME statistic the per-case line carries, so a reader can
     see how a case contributed to the total.
 
+    Every feature counts, saturated ones included: saturation decides whether a CEILING is
+    proposed, and that is a guard against a rise rather than an answer to "what is most variant
+    here". Filtering by it would hide the very aspect worth surfacing.
+
     Empty when the run recorded no variance at all, which is what a record written before the
     field existed decodes as: a header that silently reported H 0.000 for an unmeasured run would
     be inventing a reading rather than omitting one."""
-    readings = [
-        cohort.VarianceFeature(name=feature.name, n=0, distinct=0, modal=0, entropy=feature.entropy)
-        for artifact in artifacts
-        for feature in artifact.variance
-        if not feature.saturated
-    ]
-    saturated = sum(1 for a in artifacts for f in a.variance if f.saturated)
-    if not readings and not saturated:
-        return ""
-    tail = _RUN_SATURATED.format(count=saturated) if saturated else ""
+    readings = [feature for artifact in artifacts for feature in artifact.variance]
     if not readings:
-        return _RUN_NO_SPREAD.format(glyph=report.UNGATED_GLYPH) + tail
+        return ""
     top = max(readings, key=lambda feature: feature.entropy)
-    return _RUN_VARIANCE.format(glyph=report.UNGATED_GLYPH, entropy=top.entropy) + tail
+    return _RUN_VARIANCE.format(
+        glyph=report.UNGATED_GLYPH,
+        entropy=top.entropy,
+        feature=top.name,
+        varying=sum(1 for feature in readings if feature.distinct > 1),
+        total=len(readings),
+    )
 
 
 def _short(commit: str) -> str:
@@ -363,6 +364,7 @@ def _folded_transcript(
             continue
         blocks.append(
             report.titled_fold(
+                report.REPRESENTATIVE_HEADING,
                 report.representative_summary(banner, body.count("| step ")),
                 report.render_representative(
                     banner=banner,

@@ -321,27 +321,24 @@ class CohortVariance(BaseModel):
 
 
 class VarianceHeadline(BaseModel):
-    """The one spread reading a headline should carry, and how many features are past carrying one.
+    """What varies MOST right now, and how much of the case varies at all.
 
-    NOT a naive max over every feature.  A saturated feature — no majority behaviour, so no
-    ceiling can fire on it — would pin the headline to itself for ever: the framer's naming sits
-    at H 0.7-0.9 by design on every run of every case, and a number that reads the same whatever
-    happened is one readers learn to skip.  That is the variance-side twin of the unfireable
-    floor, and it is refused for the same reason.
+    Max entropy over EVERY feature — no gateable filter.  Surfacing and gating are different
+    jobs and saturation belongs only to the second: a ceiling exists to catch a RISE, so a
+    feature with no majority behaviour can carry none, and ``proposed_ceiling`` still refuses
+    one.  The headline answers a different question — *which aspect of this case is most
+    variant* — and excluding a saturated feature from it hides exactly the answer.  If the
+    framer's naming is the most variant thing here, that is true, and it is a finding about the
+    system rather than noise.
 
-    So the headline is the worst spread among features that COULD carry a ceiling, and the
-    saturated ones are counted beside it rather than folded in.
-
-    THE CAVEAT, because the count is load-bearing and not decoration: a feature crossing INTO
-    saturation LOWERS this number while behaviour gets worse — it leaves the gateable set, taking
-    its spread with it.  A fall in ``entropy`` paired with a rise in ``saturated`` is a
-    destabilisation, not an improvement, which is why both are printed and neither alone is the
-    reading."""
+    ``varying`` is the shape beside the magnitude, because "a bunch at zero and one high" and
+    "everything wobbling" are different findings that one maximum cannot tell apart.  Counted
+    STRUCTURALLY — more than one distinct value — so no magnitude threshold enters."""
 
     feature: str | None = None
     entropy: float = NO_SPREAD
-    saturated: int = 0
-    gateable: int = 0
+    varying: int = 0
+    total: int = 0
 
     @property
     def has_reading(self) -> bool:
@@ -349,14 +346,13 @@ class VarianceHeadline(BaseModel):
 
 
 def variance_headline(features: Sequence[VarianceFeature]) -> VarianceHeadline:
-    """The worst gateable spread across ``features``, with the saturated ones counted beside it."""
-    gateable = [feature for feature in features if not feature.saturated]
-    top = max(gateable, key=lambda feature: feature.entropy, default=None)
+    """The most variant feature across ``features``, and how many of them vary at all."""
+    top = max(features, key=lambda feature: feature.entropy, default=None)
     return VarianceHeadline(
         feature=top.name if top is not None else None,
         entropy=top.entropy if top is not None else NO_SPREAD,
-        saturated=sum(1 for feature in features if feature.saturated),
-        gateable=len(gateable),
+        varying=sum(1 for feature in features if feature.distinct > 1),
+        total=len(features),
     )
 
 

@@ -2568,7 +2568,10 @@ def _variance_readings(
     pooled = eval_cohort.pool(samples, features)
     return [
         eval_artifacts.VarianceReading(
-            name=feature.name, entropy=feature.entropy, saturated=feature.saturated
+            name=feature.name,
+            entropy=feature.entropy,
+            saturated=feature.saturated,
+            distinct=feature.distinct,
         )
         for feature in pooled.features
     ]

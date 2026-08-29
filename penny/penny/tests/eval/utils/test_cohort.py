@@ -499,48 +499,75 @@ def test_the_summary_counts_a_reply_claim_exactly_like_a_state_one():
     assert assertion_summary(rows) == AssertionSummary(passed=28, total=30)
 
 
-# ── The headline spread excludes what it could never gate ────────────────────
+# ── The headline surfaces what varies most, gating is a separate job ────────
 def _feature(name: str, entropy: float, *, modal: int, n: int = 15) -> VarianceFeature:
     return VarianceFeature(name=name, n=n, distinct=n - modal + 1, modal=modal, entropy=entropy)
 
 
-def test_the_headline_spread_skips_saturated_features_and_counts_them():
-    """A naive max would be pinned to the framer's naming for ever.
+def test_the_headline_names_the_most_variant_feature_even_when_it_cannot_be_gated():
+    """SURFACING and GATING are different jobs, and only the second is saturation's.
 
-    `routine name` is unconstrained BY DESIGN — no majority behaviour, so no ceiling can fire on
-    it — and it reads H 0.7-0.9 on every run of every case. A headline that reads the same
-    whatever happened is one readers learn to skip, which is the variance-side twin of the
-    unfireable floor. So the reading is the worst spread among features that COULD gate, and the
-    saturated ones are counted beside it."""
-    headline = variance_headline(
+    A ceiling exists to catch a RISE, so a feature with no majority behaviour can carry none —
+    and `proposed_ceiling` still refuses one. The headline answers a different question: which
+    aspect of this case is most variant right now. Filtering the saturated feature out of it
+    hides exactly the answer, which is what "if a bunch of measures have 0 variance but some
+    measure does, that's what we want to surface" asks for."""
+    features = [
+        _feature("tool sequence", 0.090, modal=14),
+        _feature("routine shape", 0.000, modal=15),
+        _feature("routine name", 0.885, modal=3),
+    ]
+    headline = variance_headline(features)
+
+    assert (headline.feature, headline.entropy) == ("routine name", 0.885)
+    assert proposed_ceiling(features[2], _MODEL) is None, "and it still proposes no ceiling"
+
+
+def test_the_headline_says_how_much_of_the_case_varies_at_all():
+    """Magnitude alone cannot tell one aspect spiking from everything wobbling.
+
+    Counted STRUCTURALLY — more than one distinct value — so no magnitude threshold enters."""
+    spike = variance_headline(
         [
-            _feature("tool sequence", 0.090, modal=14),
+            _feature("tool sequence", 0.000, modal=15),
             _feature("routine shape", 0.000, modal=15),
             _feature("routine name", 0.885, modal=3),
         ]
     )
-    assert (headline.feature, headline.entropy) == ("tool sequence", 0.090)
-    assert (headline.saturated, headline.gateable) == (1, 2)
+    assert (spike.varying, spike.total) == (1, 3), "one aspect moved, two did not"
+
+    wobble = variance_headline(
+        [
+            _feature("tool sequence", 0.400, modal=10),
+            _feature("routine shape", 0.300, modal=11),
+            _feature("routine name", 0.885, modal=3),
+        ]
+    )
+    assert (wobble.varying, wobble.total) == (3, 3), "and here everything moved"
+    assert spike.entropy == wobble.entropy, "which one maximum alone could not have told apart"
 
 
-def test_a_cohort_whose_every_feature_is_saturated_reports_no_reading():
-    """Not H 0.000 — that would claim perfect agreement where nothing is measurable at all."""
-    headline = variance_headline([_feature("routine name", 0.885, modal=3)])
-    assert not headline.has_reading
-    assert (headline.saturated, headline.gateable) == (1, 0)
+def test_a_feature_destabilising_past_the_leader_raises_the_reading():
+    """The direct refutation of the gateable-max this replaces.
 
-
-def test_a_feature_crossing_into_saturation_lowers_the_reading_it_leaves():
-    """THE CAVEAT the saturated count exists to carry, pinned so nobody reads it as decoration.
-
-    A destabilising feature leaves the gateable set, taking its spread with it — so the headline
-    FALLS while behaviour gets worse. A fall paired with a rise in the count is the signature,
-    and neither number alone is the reading."""
+    Under that design a feature crossing INTO saturation LEFT the set, taking its spread with it,
+    so the headline FELL while behaviour worsened. Counting every feature, the same movement
+    RAISES the number and renames the feature — which is the signal a reader needs."""
     before = variance_headline(
-        [_feature("tool sequence", 0.450, modal=9), _feature("routine shape", 0.090, modal=14)]
+        [_feature("tool sequence", 0.450, modal=9), _feature("routine name", 0.700, modal=4)]
     )
     after = variance_headline(
-        [_feature("tool sequence", 0.950, modal=3), _feature("routine shape", 0.090, modal=14)]
+        [_feature("tool sequence", 0.950, modal=3), _feature("routine name", 0.700, modal=4)]
     )
-    assert before.entropy > after.entropy, "the number improves"
-    assert after.saturated > before.saturated, "and only the count says why"
+
+    assert before.feature == "routine name", "naming led while the sequence was stable"
+    assert after.feature == "tool sequence", "and the destabilised feature takes the headline"
+    assert after.entropy > before.entropy, "the number RISES, where the old design fell"
+
+
+def test_a_case_that_measured_nothing_has_no_reading():
+    """No features at all is the only case with nothing to report — with every feature counted,
+    a cohort that measured anything always has a most-variant one."""
+    empty = variance_headline([])
+    assert not empty.has_reading
+    assert (empty.varying, empty.total) == (0, 0)

@@ -473,14 +473,11 @@ def test_the_tail_states_the_inputs_and_what_the_outliers_did():
         outliers=[(3, outlier)],
     )
 
-    assert (
-        "<summary><h3>Test inputs — 2 phrasings · 1 page · 1 must-keep, 0 must-not</h3></summary>"
-        in tail
-    )
+    assert "#### Test inputs" in tail
     assert "<summary>Phrasings — 2 wordings of one ask</summary>" in tail
     assert "| # | ask |" in tail, "the wordings are a table, not stacked paragraphs"
     assert "| phrasing 1 | watch the two pages |" in tail
-    assert "<summary><h3>Outliers — 1 of 1 samples · diverging on 1 feature</h3></summary>" in tail
+    assert "#### Outliers" in tail
     assert "| `tool sequence` | `a` | `b` |" in tail
     assert "Which samples to read" not in tail, "the outlier section already indexes the work"
 
@@ -728,15 +725,15 @@ def test_the_three_sections_render_whole():
         [
             # The case's own HEADING, then both readings.  The assertion side is ONE number
             # over every check the case made — 5 of 6 — since none of them is gated.
-            "#### 🔴 `memory-learn-close-shape`\n"
+            "### 🔴 `memory-learn-close-shape`\n"
             "\n"
             "**assertions** 5/6 · 83% "
             "(lowest 🟡 0.67 `reply: every specific value in it is sourced`) · "
-            "**variance** ⚪ max H 0.579 `routine shape` · "
+            "**variance** ⚪ max H 0.579 `routine shape` · 1 of 1 features vary · "
             "3 pooled + 1 excluded = 4 driven",
             report.titled_fold(
-                "🟡 Assertions — 5/6 checks · 83% · lowest 0.67 "
-                "`reply: every specific value in it is sourced`",
+                "🟡 Assertions",
+                "5/6 checks · 83% · lowest 0.67 `reply: every specific value in it is sourced`",
                 "\n\n".join(
                     [
                         # A category nobody wrote a claim for renders as a GAP, not a blank —
@@ -766,7 +763,8 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.titled_fold(
-                "⚪ Variance — 1 feature · max H 0.579 `routine shape`",
+                "⚪ Variance",
+                "1 feature · max H 0.579 `routine shape` · 1 of 1 features vary",
                 "\n\n".join(
                     [
                         "\n".join(
@@ -796,7 +794,8 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.titled_fold(
-                "⚪ Cost — 40,000 in / 10,000 out per sample · 200s",
+                "⚪ Cost",
+                "40,000 in / 10,000 out per sample · 200s",
                 "\n\n".join(
                     [
                         "**Cost, per sample.**",
@@ -817,7 +816,8 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.titled_fold(
-                "🔴 Excluded samples — 1 of 4 · dominant: the measured turn never ran",
+                "🔴 Excluded samples",
+                "1 of 4 · dominant: the measured turn never ran",
                 "\n\n".join(
                     [
                         "Dominant failure class: **the measured turn never ran** (1 of 1).",
@@ -970,7 +970,10 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
         world=TWO_TEAM_NEWS.render(),
         world_facts=report.WorldFacts(*TWO_TEAM_NEWS.counts),
     )
-    assert "Test inputs — 1 phrasing · 2 pages · 6 must-keep, 2 must-not" in tail
+    assert (
+        "#### Test inputs\n\n"
+        "<details><summary>1 phrasing · 2 pages · 6 must-keep, 2 must-not</summary>" in tail
+    )
     assert "Seeded pages — 2 pages · 6 must-keep, 2 must-not" in tail
     assert "| 1 | `ridgelinefoxes` |" in tail, "and the table it labels is right there"
 
@@ -1027,7 +1030,7 @@ def test_the_representative_fold_carries_no_verdict():
     banner = report.render_banner(passed=True, fragile=True, duration_s=17, calls=11)
     summary = report.representative_summary(banner, turns=2)
 
-    assert summary == "Representative sample — 2 turns · fragile · 17s · 11 calls"
+    assert summary == "2 turns · fragile · 17s · 11 calls"
     assert "pass" not in summary and "fail" not in summary
     assert (
         report.without_verdict("❌ fail · behavioral · 3s · 1 calls") == "behavioral · 3s · 1 calls"

@@ -330,6 +330,9 @@ class VarianceReading(BaseModel):
     name: str
     entropy: float
     saturated: bool
+    # How many values the feature took. Whether it VARIES is read structurally — more than one —
+    # so the run header needs no magnitude threshold to say how much of a case moved at all.
+    distinct: int = 1
 
 
 class CaseArtifact(BaseModel):
