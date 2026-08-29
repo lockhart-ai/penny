@@ -35,6 +35,12 @@ pytest_plugins = ("pytest_asyncio",)
 # Standard test sender phone number
 TEST_SENDER = "+15559876543"
 
+# What a backend that fails to parse the Harmony envelope leaks onto a tool-call NAME
+# (#2013).  The live object strips it at the read-off boundary, so the call DISPATCHES
+# and its work lands; the raw name reaches the ledger alone, which is where every
+# consumer that re-reads a run gets it from.
+LEAKED_HARMONY_TOKEN = "<|channel|>commentary"
+
 # A minimal valid 1x1 PNG, base64-encoded — the shape the image model returns.
 ONE_PX_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
