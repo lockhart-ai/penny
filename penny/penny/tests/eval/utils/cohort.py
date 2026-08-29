@@ -66,6 +66,10 @@ class RoutineRecord(BaseModel):
     name: str
     shape: str
     names_a_destination: bool
+    # Spots the labelling draw left as leaf parameters.  A named spot stops being a parameter,
+    # and the labeller names every spot unconditionally — so a leftover one means the draw FELL
+    # BACK and the routine kept its arg-derived names.
+    open_parameters: list[str] = Field(default_factory=list)
 
 
 class StoredEntry(BaseModel):
@@ -108,6 +112,13 @@ class SampleObservation(BaseModel):
     reply: str = ""
     reply_embedding: list[float] | None = None
     given: str = ""
+    # The container the round was FRAMED on, read off the move that settled it — the same anchor
+    # the turn's instruction rendered.  A write that landed anywhere else invented a destination
+    # over one it was given.
+    container: str | None = None
+    # Collections this round created that carry a schedule or a notify flag.  Learning must not
+    # INSTANTIATE, so this is empty on a correct round.
+    scheduled: list[str] = Field(default_factory=list)
     # Every page this sample actually fetched, concatenated — so "the page was read" is
     # decidable separately from "something was written down".  Without it a round that never
     # looked and a round that looked and correctly found nothing score identically.

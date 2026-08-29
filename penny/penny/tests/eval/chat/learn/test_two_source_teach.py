@@ -64,7 +64,6 @@ from penny.tests.eval.utils.memory_world import (
     _FAMILY,
     _FOXES_TOKENS,
     _SEALS_TOKENS,
-    LEARN_CLOSE_ASK,
     _carries,
     _landing_advisory,
     _pages_fetched,
@@ -83,12 +82,16 @@ from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
 # widening a neighbour's fixture type is one restated probe, named here rather than left
 # for a reader to notice.
 from penny.tests.eval.utils.worlds import (
+    AURORA_LISTING,
+    AURORA_LISTING_CONTROL,
     FOXES_NEWS,
     FOXES_URL,
+    LISTING_DEMO,
+    LISTING_DEMO_PHRASINGS,
+    LISTING_SETUP_ASK,
+    LISTING_TEACH_QUESTION,
     SEALS_NEWS,
     SEALS_URL,
-    TWO_TEAM_NEWS,
-    TWO_TEAM_NEWS_CONTROL,
 )
 
 pytestmark = pytest.mark.eval
@@ -284,43 +287,18 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 
 _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 
-# Four more wordings of the SAME demonstration, and what varies is only how a person writes
-# three steps: numbered or dashed or spelled out, "skip" or "not" or "ignore", "remember" or
-# "keep" or "save", the filter before the destination or after it.  What does NOT vary is that
-# they wrote steps at all — the wordings this replaced were paraphrases of a conversational
-# request, so they varied the one thing that has to be held fixed and the case measured the
-# model's guess at the step boundaries rather than its enactment of them.
+# ═══ The ported learn case — `transition-elicit-to-learn`, in the new structure ═══════
 #
-# None of them retypes the URLs.  The pages are "those two"/"both" because the referent is in
-# the seeded turn above, and a user who has just been asked to walk through one pass does not
-# paste the addresses back.
-LEARN_CLOSE_PHRASINGS = (
-    (
-        "ok here's one pass: 1. open both of those news pages 2. grab the "
-        "trades, signings and injuries — not the game scores 3. keep the "
-        "headline and a one-line blurb for each"
-    ),
-    (
-        "sure — 1) read those two pages 2) find any trade, signing or injury "
-        "news, ignoring the game scores 3) save the title plus a short summary "
-        "for each one"
-    ),
-    (
-        "yep: - visit the two news pages - pick out trades, signings and "
-        "injuries, skipping scores - store each headline with a brief note"
-    ),
-    (
-        "of course. step 1: check both news pages. step 2: pull anything about "
-        "trades, signings or injuries — game scores don't count. step 3: keep "
-        "the title and a short blurb for each."
-    ),
-)
+# The turns, the world and the claims are that case's, taken rather than derived: it scores
+# mean 1.0 with 24/30 modal on tool sequence, and a case that already lands where we want to
+# land IS the specification.  What the new structure adds on top is the cohort — five wordings
+# pooled, a control world for directed change, and the tool calls measured instead of asserted.
+#
+# ONE source and PROSE, both deliberate.  The two-source world and its numbered demonstration
+# stay with `memory-two-source-teach` below, in the old format; two-source can become its own
+# case when it is wanted, and it is not what this prototypes.
 
-_LEARN_CLOSE_TEACH_QUESTION = (
-    "happy to set that up — but i don't have a routine for it yet. can you walk me "
-    "through one pass in a single message? which pages should i read, what counts as "
-    "notable, and what should i keep for each one?"
-)
+_LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 
 
 @pytest.fixture
@@ -331,7 +309,7 @@ def standing_elicit_round() -> Seeder:
     Seeded rather than hoped for (#1989) — the ask is an imperative about now, which idle's own
     definition claims, so on a cold machine both measured models drew idle on 10 of 10 samples
     and every reply check failed for a reply nobody had been asked to write."""
-    return round_parked_in_elicit(_TWO_SOURCE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
+    return round_parked_in_elicit(LISTING_SETUP_ASK, LISTING_TEACH_QUESTION)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -348,21 +326,26 @@ async def test_the_learn_close_states_the_steps_it_captured(
         case_id=_LEARN_CLOSE_CASE_ID,
         model=model,
         seed=standing_elicit_round,
-        world=TWO_TEAM_NEWS,
-        ask=LEARN_CLOSE_ASK,
-        also_phrased=LEARN_CLOSE_PHRASINGS,
+        world=AURORA_LISTING,
+        ask=LISTING_DEMO,
+        also_phrased=LISTING_DEMO_PHRASINGS,
         samples_per_phrasing=3,
         min_pass_rate=None,
         family=_FAMILY,
         timeout=240.0,
     )
+    # `transition-elicit-to-learn`'s own checks, ported one for one.
     cohort.assert_machine_landed(ConversationState.LEARN)
-    cohort.assert_a_routine_reached_the_registry()
-    cohort.assert_the_routine_names_a_destination()
-    cohort.assert_the_store_holds_an_entry()
     cohort.assert_each_page_was_read()
     cohort.assert_something_from_each_page_was_written()
-    cohort.assert_nothing_excluded_was_stored()
+    cohort.assert_the_write_landed_in_the_round_container()
+    cohort.assert_a_routine_reached_the_registry()
+    cohort.assert_nothing_was_scheduled()
+    cohort.assert_every_spot_is_a_placeholder()
+    cohort.assert_the_reply_reports_what_was_stored()
+
+    # What the new structure adds, and the canonical case has no equivalent for.
+    cohort.assert_the_routine_names_a_destination()
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
@@ -372,8 +355,8 @@ async def test_the_learn_close_states_the_steps_it_captured(
         case_id=_LEARN_CLOSE_CASE_ID,
         model=model,
         seed=standing_elicit_round,
-        world=TWO_TEAM_NEWS_CONTROL,
-        ask=LEARN_CLOSE_ASK,
+        world=AURORA_LISTING_CONTROL,
+        ask=LISTING_DEMO,
         samples_per_phrasing=3,
         min_pass_rate=None,
         family=_FAMILY,

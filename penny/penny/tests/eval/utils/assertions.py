@@ -173,6 +173,37 @@ class Cohort:
         tell apart, and which is the difference between a correct round and a broken one."""
         self._claim("state: each page was read", _each_page_read)
 
+    def assert_the_write_landed_in_the_round_container(self) -> None:
+        """The demonstrated write landed where the turn was TOLD to put it.
+
+        The instruction renders the framed container's name verbatim, so the destination is a
+        COPY of a rendered anchor and a write that went elsewhere invented one over what it was
+        given. This replaces every judgement about what a collection ought to be called."""
+        self._claim(
+            "state: the demonstrated write landed in the round's container", _wrote_into_container
+        )
+
+    def assert_nothing_was_scheduled(self) -> None:
+        """Learning must not INSTANTIATE: teaching a round does not set it running."""
+        self._claim("state: nothing it created was scheduled", _nothing_scheduled)
+
+    def assert_every_spot_is_a_placeholder(self) -> None:
+        """Every spot in the routine was named by the labeller.
+
+        A named spot stops being a leaf parameter, and the labeller names every spot
+        unconditionally — so a leftover one means the labelling draw fell back as a whole and the
+        routine kept its arg-derived names."""
+        self._claim("state: every spot in the routine is a placeholder", _placeholders_only)
+
+    def assert_the_reply_reports_what_was_stored(self) -> None:
+        """SAID == DID: the closing report names the value the round really stored.
+
+        The failure this catches is a reply describing a round that did something other than what
+        landed — which is invisible to every state check, because the state is correct."""
+        self._claim(
+            "reply: she reports the value she stored (SAID == DID)", _said_equals_did, kind="reply"
+        )
+
     def assert_nothing_excluded_was_stored(self) -> None:
         """The exclusion the round was told in as many words.  A read rather than a taste: the
         compared tokens appear ONLY on the excluded line."""
@@ -262,6 +293,33 @@ def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
 def _each_page_read(sample: SampleObservation, world: World) -> Answer:
     unread = [page.match for page in world.pages if page.match not in sample.pages_read]
     return not unread, f"never fetched {unread}"
+
+
+def _wrote_into_container(sample: SampleObservation, _world: World) -> Answer:
+    if sample.container is None or not sample.entries:
+        # Nothing framed the round, or it wrote nothing at all — the second is already the
+        # durable-write claim's own miss, and grading it twice reports one failure as two.
+        return True, None
+    elsewhere = sorted({e.collection for e in sample.entries if e.collection != sample.container})
+    landed = any(e.collection == sample.container for e in sample.entries)
+    return landed, f"wrote into {elsewhere} instead of {sample.container!r}"
+
+
+def _nothing_scheduled(sample: SampleObservation, _world: World) -> Answer:
+    return not sample.scheduled, f"scheduled {sample.scheduled}"
+
+
+def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
+    asking = sorted({p for routine in sample.routines for p in routine.open_parameters})
+    # Vacuously true over an empty registry, which would render a round that produced nothing as
+    # a pass — so the claim only speaks where a routine exists.
+    return bool(sample.routines) and not asking, f"still a leaf parameter: {asking}"
+
+
+def _said_equals_did(sample: SampleObservation, world: World) -> Answer:
+    reply = _normalise(sample.reply)
+    missing = [name for name in world.names if name.lower() not in reply]
+    return not missing, f"no reply names {missing}"
 
 
 def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:

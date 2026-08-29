@@ -99,7 +99,7 @@ from penny.tests.eval.utils.memory_world import (
     _FAMILY,
     _FOXES_TOKENS,
     _SEALS_TOKENS,
-    LEARN_CLOSE_ASK,
+    TWO_SOURCE_ASK,
     _carries,
     _entries_this_run_wrote,
     _entry_text,
@@ -1161,7 +1161,7 @@ async def test_a_demonstration_reports_what_landed_when_a_source_is_down(
     visited both pages — which is exactly why the count has to come off the record."""
     await chat_eval(
         case_id="memory-writes-landed-source-down",
-        message=LEARN_CLOSE_ASK,
+        message=TWO_SOURCE_ASK,
         # The unreachable source FIRST: ``install_browse`` answers with the first page whose
         # match is in the url, so the order is what decides which source is down.
         browse=[_SEALS_UNREACHABLE, FOXES_NEWS],

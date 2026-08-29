@@ -23,6 +23,7 @@ from penny.tests.eval.conftest import (
     is_seeded_run,
     routing_clean,
 )
+from penny.tests.eval.utils.worlds import FOXES_URL, SEALS_URL
 
 # The enacting-tool set is read from the suite's shared fixtures, not restated here: the
 # state machine's elicitation edge asks the same question of a turn (nothing acted on
@@ -152,6 +153,16 @@ def _routing_advisory(db: Database) -> Check:
 
 # Tokens that exist ONLY on one page, so a stored copy names which source it came from
 # and a fabricated entry matches neither.
+# The two-source watch ask, as `memory-writes-landed-source-down` has always asked it.  It stays
+# in the conversational register that case was written and measured against — it scores a reply
+# about a source being unreachable, not the shape of a demonstrated round, so the register work
+# on the learn case does not apply to it and changing it here would move an unrelated number.
+TWO_SOURCE_ASK = (
+    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
+    "each, and keep the headline plus a short blurb in a team news list for me"
+)
+
+
 _FOXES_TOKENS = ("brandt", "aurelio", "goalie")
 _SEALS_TOKENS = ("volk", "petra", "player development")
 
@@ -160,27 +171,3 @@ def _carries(db: Database, tokens: tuple[str, ...]) -> bool:
     """Whether any entry this run wrote carries one of a page's own tokens."""
     written = [_entry_text(entry) for _, entry in _entries_this_run_wrote(db)]
     return any(token in text for text in written for token in tokens)
-
-
-# ONE demonstration in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
-# model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE
-# mechanism — measured, four scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides
-# the one that came apart.
-#
-# A DEMONSTRATION, not a request, and that distinction is the whole case.  What stood here was a
-# flowing sentence with four requirements embedded in it — "go to X and Y, pull out the trades
-# and signings from each, and keep the headline plus a short blurb in a team news list for me" —
-# which asks the model to decide what the STEPS even are before it can enact them, and it decided
-# differently nearly every time: 13 distinct tool sequences in 18 samples against 60-80% modal
-# share on every one-source learn case in the suite.
-#
-# The turn is what a user actually says when asked to walk through one pass, and it answers the
-# three questions the seeded round asked, in order: which pages, what counts, what to keep.  It
-# references "those two news pages" rather than retyping the URLs, because a real user does not
-# repeat themselves and the referent is right there in the turn before.  Same shape as the
-# sibling two-source case's turn 2, which is where it came from.
-LEARN_CLOSE_ASK = (
-    "sure: 1. go to those two news pages 2. pull out any trades, signings, "
-    "or injuries — skip game scores 3. remember the title plus a short "
-    "blurb for each"
-)

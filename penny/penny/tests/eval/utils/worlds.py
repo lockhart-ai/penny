@@ -16,7 +16,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from penny.tests.eval.utils.fixtures import CannedPage
+from penny.tests.eval.utils.fixtures import (
+    AURORA_LISTING_499,
+    AURORA_LISTING_549,
+    LISTING_URL,
+    CannedPage,
+)
 
 
 class World(BaseModel):
@@ -172,3 +177,69 @@ TWO_TEAM_NEWS_CONTROL = World(
     keeps=(("roux", "wilhelmina"), ("oyelaran", "casimir")),
     excludes=("rovers 5", "gulls 2"),
 )
+
+
+# ── The listing world, and its control ───────────────────────────────────────
+#
+# ONE source, because that is what the learn state's canonical case watches and what every
+# consistently-passing learn case in the suite uses.  The page has exactly one controllable
+# field, its price, so "she read the page" is decidable from a single token and the control
+# moves that token and nothing else.
+
+AURORA_LISTING = World(
+    name="base",
+    pages=(AURORA_LISTING_499,),
+    keeps=(("499",),),
+    excludes=(),
+)
+
+# The same listing, one field moved.  A reply naming 549 read THIS page; one naming 499 read
+# the other, which is what makes directed change decidable rather than assumed.
+AURORA_LISTING_CONTROL = World(
+    name="control",
+    pages=(AURORA_LISTING_549,),
+    keeps=(("549",),),
+    excludes=(),
+)
+
+
+# ── The canonical learn round, taken verbatim from `transition-elicit-to-learn` ───────────
+#
+# That case scores mean 1.0 — every scored check 3/3 — with 24/30 modal on tool sequence, and
+# it is what weeks of work on the learn state produced.  The ported case takes its turns rather
+# than deriving new ones, because a case that already lands where we want to land is the
+# specification.
+#
+# PROSE, not a numbered procedure.  The numbered form appears once in the suite, in a case that
+# exists to prove a round survives being written as one; every learn case that passes
+# consistently uses this shape.
+
+LISTING_SETUP_ASK = (
+    f"can you watch this listing for me daily and let me know when the price changes? {LISTING_URL}"
+)
+
+# Penny's offer, which the demonstration answers turn for turn: what to read, what to look for,
+# what to remember.
+LISTING_TEACH_QUESTION = (
+    "i don't have a routine for that yet — can you walk me through it once? "
+    "what should i read, what am i looking for, what should i remember?"
+)
+
+# The demonstration itself — three discrete actions against one page.
+LISTING_DEMO = f"yeah — go to {LISTING_URL}, find the current price, and remember it"
+
+# Four more wordings of that same demonstration.  What varies is only how a person says three
+# things in a sentence: which verb opens it, "current price" or "what the price is right now",
+# "remember" or "keep" or "save".  What does NOT vary is the prose register, the single source,
+# or the three actions — those are what the case measures enactment against.
+LISTING_DEMO_PHRASINGS = (
+    f"sure — open {LISTING_URL}, get the current price, and keep it",
+    f"ok, head to {LISTING_URL}, check what the price is right now, and save it",
+    f"yep — read {LISTING_URL}, pull the current price off it, and remember that",
+    f"just visit {LISTING_URL}, note the price it's at now, and hang on to it",
+)
+
+# The value that page carries and nothing else does — what "she read it" is decided on, and
+# what the control moves.
+LISTING_FACT = "499"
+LISTING_CONTROL_FACT = "549"

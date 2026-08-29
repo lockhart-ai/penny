@@ -41,6 +41,7 @@ from penny.config import Config
 from penny.constants import ChannelType, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
+    RoundFraming,
     StateClassifier,
     StateDecision,
     build_snapshot,
@@ -55,6 +56,7 @@ from penny.database.skills import (
     SkillDraft,
     SkillParameter,
     SkillStep,
+    SkillSubKind,
     build_binding_content,
     derive_collection_name,
     distill_steps,
@@ -2274,6 +2276,14 @@ def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
         eval_cohort.RoutineRecord(
             name=skill.name,
             shape=render_skill_shape(skill),
+            open_parameters=sorted(
+                {
+                    substitution.parameter
+                    for step in steps_from_json(skill.steps)
+                    for substitution in step.substitutions
+                    if substitution.kind == SkillSubKind.HOLE and substitution.parameter is not None
+                }
+            ),
             names_a_destination=any(
                 substitution.attachment
                 for step in steps_from_json(skill.steps)
@@ -2322,6 +2332,30 @@ def _pages_read(db: Database) -> str:
     return "\n".join(entry.content for entry in memory.read_recent(window_seconds=3600, cap=None))
 
 
+def _framed_container(db: Database) -> str | None:
+    """The container the round was framed on, read off the move that settled it.
+
+    From the MACHINE rather than guessed from the collections that appeared, because the claim
+    is whether the write landed where the turn was told to put it, and only the framing says
+    where that was."""
+    latest = db.machine.latest_transition()
+    if latest is None or latest.skill_frame is None:
+        return None
+    return RoundFraming.model_validate_json(latest.skill_frame).container
+
+
+def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
+    """Collections this round created that carry a schedule or a notify flag.
+
+    Scored against what the turn PRODUCED rather than the whole store: a seeded collection's own
+    cadence predates the round, and failing on it would report the fixtures as her doing."""
+    return sorted(
+        row.name
+        for row in db.memories.list_all()
+        if row.name not in before and (row.schedule is not None or row.notify)
+    )
+
+
 def _machine_walk(db: Database) -> str:
     """The machine's walk this sample, oldest move first — ``idle→learn, learn→apply``."""
     moves = reversed(db.machine.recent_transitions(limit=20))
@@ -2329,7 +2363,7 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, world: str, reply: str
+    db: Database, *, name: str, phrasing: str, world: str, reply: str, before: set[str]
 ) -> eval_cohort.SampleObservation:
     """Read everything one sample left behind, while its database is still live.
 
@@ -2356,6 +2390,8 @@ def _observe_sample(
         reply_embedding=reply_embedding(db, reply),
         given=given_to_the_model(db),
         pages_read=_pages_read(db),
+        container=_framed_container(db),
+        scheduled=_scheduled_by_this_round(db, before),
     )
 
 
@@ -2708,7 +2744,7 @@ async def _drive_sample(
     wrap_client: Callable[[LlmClient], _InjectingClient] | None,
     timeout: float,
     retryable: bool,
-    observe: Callable[[Database, str], eval_cohort.SampleObservation] | None = None,
+    observe: Callable[[Database, str, set[str]], eval_cohort.SampleObservation] | None = None,
 ) -> SampleResult:
     """ONE attempt at one sample against an already-seeded Penny: drive the turns,
     score them, write the sample's report block and dump its thinking.
@@ -2742,7 +2778,7 @@ async def _drive_sample(
     # moment what the round left behind is available at all.  A timed-out sample reaches this
     # line too, so it is EXCLUDED by name rather than silently absent from the pool.
     if observe is not None:
-        result.observation = observe(penny.db, reply)
+        result.observation = observe(penny.db, reply, before)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
@@ -2840,11 +2876,13 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         def _local(sample_index: int) -> int:
             return sample_index - offset
 
-        def _observe(sample_index: int) -> Callable[[Database, str], eval_cohort.SampleObservation]:
+        def _observe(
+            sample_index: int,
+        ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
             phrasing = _phrasing_label(phrasings, _local(sample_index), per_phrasing, world_name)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, reply: _observe_sample(
-                db, name=name, phrasing=phrasing, world=world_name, reply=reply
+            return lambda db, reply, before: _observe_sample(
+                db, name=name, phrasing=phrasing, world=world_name, reply=reply, before=before
             )
 
         async def _drive(
