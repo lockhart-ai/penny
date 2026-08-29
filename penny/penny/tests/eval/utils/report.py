@@ -2,9 +2,11 @@
 
 This is the PURE renderer for one sample's transcript: it turns a structured
 ``SampleTranscript`` (built from the persisted promptlog by ``conftest.py``) into the
-per-step markdown tables the format spec (``docs/eval-report-format.md``) defines. No
-model, no git, no DB — a hand-built ``SampleTranscript`` renders identically to one
-extracted from a real run, which is what makes the whole-render tests possible.
+per-step markdown tables. There is no format document: the format is what this module
+renders and what ``test_report.py`` pins as whole-render literals, so a prose description
+of it would be a third copy free to drift from both. No model, no git, no DB — a
+hand-built ``SampleTranscript`` renders identically to one extracted from a real run,
+which is what makes the whole-render tests possible.
 
 The grammar (one fixed form per row type, used identically everywhere):
 

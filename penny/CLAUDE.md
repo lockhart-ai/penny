@@ -963,10 +963,11 @@ the failed/regressed **tool-call** turns only — passing turns are omitted so t
 bloats. On a first run with no baseline, thinking still renders at failed turns.
 
 **Run-comment assembler (#1717).** The per-run artifacts and per-case transcripts all exist after
-a run, but no step composes them into THE ONE markdown comment the protocol
-(`docs/eval-report-format.md`) specifies. `penny/tests/eval/utils/assemble.py` is that step: given a
-completed run's report directory it emits one document in the spec's section order — the manifest
-header (`render_manifest_header`: commit · model · N · lever), the **run totals** (the run-level
+a run, but no step composes them into THE ONE markdown comment that gets posted.
+`penny/tests/eval/utils/assemble.py` is that step, and is where that document's shape is DEFINED —
+there is no prose spec to drift from what is emitted. Given a completed run's report directory it
+emits one document: the case's own heading and measures table (a run-level roll-up appears above
+them only when the run spans more than one case), the **run totals** (the run-level
 aggregate across every case — mean · all-pass · the cause tally, from flattening every case's
 `sample_scores`/`sample_causes`), then one block per case: its **dual RESULT line** (mean + all-pass)
 and **cause summary** (`render_cause_summary` — this is where the per-case aggregates finally render;
@@ -1024,8 +1025,9 @@ Additive artifact fields carry it:
 `CheckOutcome` gained `scored`/`cells[]`/`rationales[]`, `Check` gained `kind`, `CaseArtifact` gained
 `sample_fragile[]` + `min_pass_rate`/`gate_metric`; `RunManifest` gained `baseline` (#1752). **No artifact is committed** — the PR comment is
 the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
-`EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
-whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).
+`EVAL_BASELINE` diffs those local paths (#1725 policy). The format is pinned by whole-render tests
+in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`) rather than by a
+document.
 
 **Every micro-context renders as its own actor (#1773).** The v3 transcript admitted only
 `browse-extract` rows, so the state classifier's draw (#1706) and the run-end skill labeller's

@@ -5,16 +5,18 @@ The per-run artifacts and per-case report blocks all exist after a ``make eval``
 ``manifest.json`` + ``results.jsonl`` (``artifacts.py``) and one ``<case_id>.md``
 transcript per case (``conftest.py``'s ``_write_sample_report``, now the iteration-6
 transcript-integrated blocks rendered by ``report.py``, under the case document its own
-three sections and shared prompts render into) — but no step composes them into
-the ONE markdown document the format spec (``docs/eval-report-format.md``) specifies. This
-module is that step.
+three sections and shared prompts render into) — but no step composes them into the ONE
+markdown document that gets posted. This module is that step, and it is also where that
+document's shape is DEFINED: ``test_assemble.py`` pins it as whole-render literals, so
+there is no prose spec to drift from what is actually emitted.
 
 Given a completed run's report directory it emits one markdown comment (v3, #1725):
 
-  1. the **run header** — one identity line (run id · commit · model · N · lever), the
-     **RESULT** line (mean · all-pass · pathology-excluded · cause tally · per-family
-     rollup · timings), a **gate** line per gated case (``⚖ threshold on metric → PASS/FAIL``),
-     and — in diff mode — a **flips** index (each regressed check + the samples it flipped in).
+  1. the **run roll-up** — ONLY when the run spans more than one case, because a single case
+     names the report itself and its own table already carries every number one would repeat:
+     a verdict over every deterministic check, the run's identity as a table, a **gate** line
+     per gated case (``⚖ threshold on metric → PASS/FAIL``), and — in diff mode — a **flips**
+     index (each regressed check + the samples it flipped in).
   2. one section per case — its heading (only when the run spans multiple cases) above the
      case's per-sample transcript blocks. EVERY sample block folds whole under its banner — the
      one and only rendering (#1753/#1759): collapsed by default, its full body always a click
