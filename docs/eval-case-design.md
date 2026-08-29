@@ -92,7 +92,28 @@ renders as a stub every time is a section people learn to skip.
 
 ---
 
-## 2 · Section A — the closed list
+## 2 · Section A — what an assertion is
+
+**An assertion is a statement expected to be strictly true of the run.** At the end of a run each
+one is **either true or false of that sample, and those are counted**. Everything else in this
+section is a consequence of that sentence.
+
+| consequence | |
+|---|---|
+| **There is no third outcome** | not "not applicable", not "unexercised", not "skipped". A third state makes a printed rate mean something other than what it says: `14/14` needs a gloss to read, `14/15` does not. |
+| **A claim answers its own sentence** | where a precondition is absent the sentence is usually **false**, not unasked — *"the demonstrated write landed in the round's container"* is false when nothing was written, because no write landed there. Returning early on an absent precondition answers a different question from the one the label states. |
+| **Claims do not partition blame** | they are independent statements about end state, so a sample that did nothing fails every claim about what it should have done. That is several unmet contracts, not one failure counted several times — and suppressing the repeats to tidy a report trades a check's truth for its presentation. |
+| **Unanswerable is not an assertion** | a statement that cannot be answered true-or-false of a run is not one. Rewrite the sentence so it can be, or it belongs in section B. |
+
+A sample the run-health gate excluded is **not** a third outcome: it left the population before any
+claim was answered (§1.2).
+
+And one more, about *when* the counting is judged rather than what is counted: a claim **records, it
+does not raise**. `assert_*` states the case's claim and answers it for every sample; whether a rate
+is a **failure** is the recorded floor's job (§8). That is what makes "run it, read it, then lock
+it" possible at all.
+
+### The closed list
 
 **Three categories. Nothing else is an assertion.**
 
@@ -121,10 +142,6 @@ plausible value fails the `STORE` claim on whichever world it was handed.
 | **An assertion about the store reads the WHOLE entry** — key *and* content. | A fact in the key and a blurb in the body is a perfectly good way to store it. | A prototype reported a 25/32 model failure that was entirely its own bug: it read content only. |
 | **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | the machinery that closes this, and what it cost before it existed: §1.2 |
 | **Never match a phrasing.** A reply check looking for a token you guessed in advance is the thing this design replaces. | Measurably both too strict and too loose in the same suite. | 31 replies that stated the recorded cadence correctly were failed; elsewhere an infra error string and a raw thinking leak both scored *passed* (#1994 §1). |
-
-A claim **records, it does not raise**: `assert_*` states what the case claims and answers it for
-every sample. Whether a rate is a failure is the recorded floor's job — which is what makes "run
-it, read it, then lock it" possible at all.
 
 ---
 
