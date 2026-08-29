@@ -13,11 +13,11 @@ Read this alongside:
   posts its report as a **new** comment). This document is the *format* those comments take.
 - **`docs/eval-iteration-workflow.md`** — the *loop* those comments punctuate (one beat: pairs →
   seeded world → scoped run → report → joint read → ruling), including the summary shape §5 asks for.
-- **`penny/tests/eval/report.py`** — the pure renderer of the grammar below (the row types, the
+- **`penny/tests/eval/utils/report.py`** — the pure renderer of the grammar below (the row types, the
   per-step tables, the banner, folding). Hand-built inputs render identically to extracted ones.
 - **`penny/tests/eval/conftest.py`** (`_write_sample_report` + the `_build_transcript` extraction) —
   turns a sample's persisted promptlog into the `report.py` model.
-- **`penny/tests/eval/assemble.py`** — composes the run header + per-sample blocks + footer.
+- **`penny/tests/eval/utils/assemble.py`** — composes the run header + per-sample blocks + footer.
 
 ## The one rule: the PR comment IS the record; the bulk stays local
 
@@ -43,7 +43,7 @@ report). Two mechanisms close that gap:
   run dir holding the posted comment's URL. `RUN` names a run dir under the durable artifact home
   (#1734); omitted, it defaults to the **most-recent completed run** (the newest dir holding a
   `manifest.json`). The assemble output is captured cleanly by invoking the containerized
-  `python -m penny.tests.eval.assemble` directly (never `make assemble` piped through stripping), and the
+  `python -m penny.tests.eval.utils.assemble` directly (never `make assemble` piped through stripping), and the
   token is minted inside the recipe (`GH_TOKEN=$(make token) gh pr comment …`). It **fails loudly** — never
   a silent no-op — when `PR` is unset, the run dir is missing, the token is empty, or the assembled output
   is empty. It is **idempotent by the marker**: a run already carrying `.posted` re-posts **only** with
@@ -59,7 +59,7 @@ report). Two mechanisms close that gap:
 comment body over 65,536 characters, and a real run blows straight past it — one 8-sample chat beat
 assembles to ~290K *after* #1763's shared-prompt hoisting, and ~172K of a 32-sample run is thinking
 blocks and transcript tables, all distinct. So `eval-report` posts a run as **as many comments as it
-takes**, cut by the pure `penny/tests/eval/comment_split.py`:
+takes**, cut by the pure `penny/tests/eval/utils/comment_split.py`:
 
 - **The only legal seam is a sample-fold boundary** — the blank line before a sample's opening
   `<details>` (`report.SAMPLE_BLOCK_START`, single-sourced with the assembler's re-normalizer). A cut
@@ -88,7 +88,7 @@ was posted is inspectable after the fact; like every artifact they stay local an
 (#1734), so it is never a run dir here and never appears in the banner — by design: those runs leave no
 artifacts to review. The marker file's content is the posted comment's URL (read back by the idempotency
 branch). The Makefile checks the marker host-side; the scan/latest logic lives in the pure, plain-tested
-`penny/tests/eval/checkpoint.py` (`run_dirs` / `latest_run_dir` / `unreviewed_runs` / `render_banner`),
+`penny/tests/eval/utils/checkpoint.py` (`run_dirs` / `latest_run_dir` / `unreviewed_runs` / `render_banner`),
 invoked in-container by the recipes so it reads the mounted home.
 
 ---

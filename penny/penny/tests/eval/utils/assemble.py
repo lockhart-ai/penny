@@ -29,7 +29,8 @@ for an ad-hoc re-diff), joining on ``(case_id, label)`` — the same diff key th
 marks use. Reading a durable reference (not a volatile env at assemble time) is what keeps the
 header flips index consistent with the per-row badges baked into the transcripts (#1752).
 
-Run it via ``python -m penny.tests.eval.utils.assemble <report_dir>`` (writes the comment to stdout).
+Run it via ``python -m penny.tests.eval.utils.assemble <report_dir>``
+(writes the comment to stdout).
 """
 
 from __future__ import annotations

@@ -27,7 +27,15 @@ from penny.conversation_machine import ConversationState, MachineSnapshot
 from penny.database import Database
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import seeded_run_id
-from penny.tests.eval.utils.transition_ledger import _drawn_state, _log_ask, _log_chat_step, _log_classifier_draw, _log_reply, _park, _seeded_response
+from penny.tests.eval.utils.transition_ledger import (
+    _drawn_state,
+    _log_ask,
+    _log_chat_step,
+    _log_classifier_draw,
+    _log_reply,
+    _park,
+    _seeded_response,
+)
 
 # A case's priors: whatever must already be true when the measured turn arrives.
 Seeder = Callable[[Database], None]

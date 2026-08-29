@@ -19,10 +19,12 @@ run writes no ``manifest.json``, so it never appears here (by design — no arti
 
 CLI (invoked in-container by the Makefile, home = the mounted ``/penny/eval-artifacts``):
 
-  ``python -m penny.tests.eval.utils.checkpoint latest <home>``  → prints the most-recent completed run
-      dir's name (exit 0), or an actionable message on stderr (exit 1) when there are none.
-  ``python -m penny.tests.eval.utils.checkpoint banner <home>``  → prints the unreviewed-run banner to
-      stdout when any exist, else nothing (always exit 0 — warn, never block).
+  ``python -m penny.tests.eval.utils.checkpoint latest <home>``
+      → prints the most-recent completed run dir's name (exit 0), or an actionable
+      message on stderr (exit 1) when there are none.
+  ``python -m penny.tests.eval.utils.checkpoint banner <home>``
+      → prints the unreviewed-run banner to stdout when any exist, else nothing
+      (always exit 0 — warn, never block).
 """
 
 from __future__ import annotations
@@ -40,7 +42,8 @@ POSTED_MARKER = ".posted"
 LATEST_CMD = "latest"
 BANNER_CMD = "banner"
 USAGE = (
-    f"usage: python -m penny.tests.eval.utils.checkpoint {{{LATEST_CMD}|{BANNER_CMD}}} <artifact_home>"
+    f"usage: python -m penny.tests.eval.utils.checkpoint "
+    f"{{{LATEST_CMD}|{BANNER_CMD}}} <artifact_home>"
 )
 
 # ── Banner literals (loud, multi-line; whole-render tested) ──────────────────

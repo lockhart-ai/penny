@@ -1,47 +1,33 @@
 """Chat in LEARN, entered from learn: the correction re-runs the round.
 
-The round was taught and run; the user now corrects it -- a different target, a different filter, a value the routine is identified by.  The turn re-runs the round on the corrected instructions and updates the routine, rather than keeping the first version, answering about the change without re-running, or shaking loose a term that was deferred rather than corrected.
+The round was taught and run; the user now corrects it -- a different target, a different
+filter, a value the routine is identified by. The turn re-runs the round on the corrected
+instructions and updates the routine, rather than keeping the first version, answering about the
+change without re-running, or shaking loose a term that was deferred rather than corrected.
 """
 
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from functools import partial
-from itertools import islice
 from typing import NamedTuple
 
 import pytest
-from dateutil.rrule import rrulestr
 
-from penny.constants import ChatPromptType, PennyConstants, TransitionCause
+from penny.constants import PennyConstants
 from penny.conversation_machine import (
-    CandidateParameter,
     ConversationState,
     MachineSnapshot,
     RoundFraming,
     RoundProvenance,
-    RoundShortfall,
-    SkillCandidate,
-    render_classifier_content,
 )
 from penny.database import Database
-from penny.database.memory import EntryInput, LogEntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill, StateTransition
-from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.memory import EntryInput, LogEntryInput
+from penny.database.models import Skill, StateTransition
 from penny.database.skills import (
-    DistillInput,
     SkillDraft,
-    SkillParameter,
     SkillStep,
-    SkillSubKind,
-    SkillSubstitution,
-    derive_collection_name,
-    distill_steps,
-    render_skill,
-    retarget_writes,
     slug_skill_name,
 )
 from penny.penny import Penny
@@ -49,8 +35,6 @@ from penny.penny import Penny
 # The SHIPPED container derivation, used as itself: a seeded round has to run into the
 # container production would have built for it, and a fixture spelling that name out would
 # be a second copy of the naming scheme, free to drift from the one jobs are identified by.
-from penny.round_framing import container_name
-
 # The production draw-application, used as itself: a fixture skill has to be the SHAPE
 # run-end extraction really produces, and re-implementing that mapping here would be a
 # fixture that drifts from the pipeline it stands in for.  Both halves of the #1824
@@ -59,54 +43,101 @@ from penny.round_framing import container_name
 # ``attachment_names`` is the registry policy for what a routine can be attached to, read
 # for the same reason: the scorer asks whether a learned routine HAS a destination, and
 # that is the question extraction already answers when it decides which leaves to mark.
-from penny.skill_extraction import (
-    _apply_leaf_labels,
-    _interface_parameters,
-    _naming,
-    attachment_names,
-)
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
-    ParameterFamily,
     Preparer,
     Seeder,
-    asked_for_page_structure,
-    chat_run_tool_sequences,
-    classify_by_family,
     collection_entries,
-    count_tool_calls,
-    is_seeded_run,
-    last_tool_args,
     live_prompts,
     new_collections,
     outgoing_replies,
     routing_clean,
-    seeded_run_id,
     tool_not_called,
-    tool_was_called,
 )
-
-# The listing this script is built on, and the enacting-tool set the elicitation
-# contract IS — the calls that would mean she acted before being taught.  Both are read
-# from the suite's shared fixtures rather than restated here: the passing-mention guard
-# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
-# one policy are two contracts free to drift.
-from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, ENACTING_TOOLS, LISTING_URL, CannedPage
 
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
 # suite declares it rather than restated here: what a page parameter may reasonably be
 # called is one code-owner-agreed vocabulary, and two copies would drift into two
 # contracts (the same rule ``ENACTING_TOOLS`` is read under).
-from penny.tests.eval.framer.test_skill_framing import _PLACE_TOKENS
-from penny.text_validity import is_blank
+# The listing this script is built on, and the enacting-tool set the elicitation
+# contract IS — the calls that would mean she acted before being taught.  Both are read
+# from the suite's shared fixtures rather than restated here: the passing-mention guard
+# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
+# one policy are two contracts free to drift.
+from penny.tests.eval.utils.transition_ledger import (
+    _BROWSE_CALL_ID,
+    _BROWSE_TOOL,
+    _FAMILY,
+    _SET_TOOL,
+    _WRITE_CALL_ID,
+    _drawn_state,
+    _entries_written_by_this_run,
+    _journey_runs,
+    _JourneyRuns,
+    _landed_state,
+    _log_ask,
+    _log_chat_step,
+    _log_classifier_draw,
+    _log_reply,
+    _pages_fetched,
+    _park,
+    _seeded_response,
+    _written_texts,
+)
+from penny.tests.eval.utils.transition_world import (
+    _CHOIR_REHEARSALS_URL,
+    _CLIFF_WALK_URL,
+    _COMPOSED_MESSAGE_WINDOW,
+    _HARBOUR_SIGNALS_URL,
+    _IDLE_BANTER,
+    _JOURNEYS,
+    _LIVE_JOB_CONTAINERS,
+    _PLOT_RULES_URL,
+    _TEACH_CLIFF_WALK,
+    _TEACH_FREE_EVENT,
+    _TEACH_HARBOUR_FLAG,
+    _TEACH_REHEARSAL_PIECE,
+    _TEACH_WATERING_RULE,
+    _TOWN_HALL_EVENTS_URL,
+    _assert_every_job_is_live,
+    _assert_every_reply_is_threaded,
+    _attaches_nothing_checks,
+    _candidate,
+    _demonstrated_ledger,
+    _DemonstratedRound,
+    _destination_subs,
+    _extraction_shape_checks,
+    _first_divergence,
+    _fixture_skill,
+    _FixtureDraws,
+    _framed,
+    _framed_checks,
+    _landed_in,
+    _learned_this_turn,
+    _log_browse_extract,
+    _mentions,
+    _mentions_any,
+    _round_framing,
+    _round_ran_checks,
+    _round_reported_checks,
+    _row_tool_calls,
+    _said_back,
+    _seed_call_step,
+    _seeded_ask_id,
+    _seeded_jobs_untouched_check,
+    _skill_steps,
+    _spoken_and_stored,
+    _TeachCase,
+    _wrote_into_the_container_check,
+    expected_conversation,
+    seed_composed_world,
+)
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
 # read the way the loop really writes them, and a hand-written frame is a second copy of a
 # format the model is shown every turn.
-from penny.tools.base import Tool
-
 # The schedule's own render + grammar tokens, read from where the tool declares them: a
 # stored rule renders back AS the copyable ``schedule`` input (#1857), so the advisory shows
 # what she committed to in the form it was set, and the line/tag literals a rule is written
@@ -114,31 +145,11 @@ from penny.tools.base import Tool
 # ``parse_schedule`` + ``render_reinstantiation_echo`` are read for the same reason on the
 # seeding side: a seeded apply turn stores the rule the tool would have stored and echoes
 # back what the tool would have echoed.
-from penny.tools.collection_instantiation import (
-    _DTSTART_TAG,
-    _LINE_ESCAPE,
-    _RRULE_TAG,
-    has_schedule,
-    parse_schedule,
-    render_reinstantiation_echo,
-    render_schedule_clause,
-)
 from penny.tools.micro_context import (
-    SKILL_TAG,
-    STATE_CLASSIFIER_SYSTEM_PROMPT,
-    STATE_TAG,
     FramedParameter,
     LeafLabel,
-    SkillLabels,
     SkillSignature,
-    StateDrawOutcome,
 )
-from penny.tools.models import ToolResult
-
-from penny.tests.eval.utils.transition_ledger import _BROWSE_CALL_ID, _BROWSE_TOOL, _FAMILY, _JourneyRuns, _SET_TOOL, _WRITE_CALL_ID, _drawn_state, _entries_written_by_this_run, _journey_runs, _landed_state, _log_ask, _log_chat_step, _log_classifier_draw, _log_reply, _pages_fetched, _park, _seeded_response, _written_texts
-
-from penny.tests.eval.utils.transition_world import _CHOIR_REHEARSALS_URL, _CLIFF_WALK_URL, _COMPOSED_MESSAGE_WINDOW, _DemonstratedRound, _FixtureDraws, _HARBOUR_SIGNALS_URL, _IDLE_BANTER, _JOURNEYS, _LIVE_JOB_CONTAINERS, _PLOT_RULES_URL, _TEACH_CLIFF_WALK, _TEACH_FREE_EVENT, _TEACH_HARBOUR_FLAG, _TEACH_REHEARSAL_PIECE, _TEACH_WATERING_RULE, _TOWN_HALL_EVENTS_URL, _TeachCase, _assert_every_job_is_live, _assert_every_reply_is_threaded, _attaches_nothing_checks, _candidate, _demonstrated_ledger, _destination_subs, _extraction_shape_checks, _first_divergence, _fixture_skill, _framed, _framed_checks, _landed_in, _learned_this_turn, _log_browse_extract, _mentions, _mentions_any, _round_framing, _round_ran_checks, _round_reported_checks, _row_tool_calls, _said_back, _seed_call_step, _seeded_ask_id, _seeded_jobs_untouched_check, _skill_steps, _spoken_and_stored, _wrote_into_the_container_check, expected_conversation, seed_composed_world
-
 
 pytestmark = pytest.mark.eval
 

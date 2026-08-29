@@ -1,37 +1,38 @@
-"""The world the state-machine cases run in -- pages, journeys, routines and the probes that assert it.
+"""The world the state-machine cases run in -- pages, journeys, routines and the probes that assert
+it.
 
-Five fictional journeys (an aurora deck price, a ferry timetable, a bakery special, a seal-colony count, a library's new arrivals) are taught, run and stood up here, plus the spaces a later ask points them at and the values a short ask leaves out.  Every chat state's cases draw on them, which is why they live in one place: a second copy of a journey would be a second history, free to drift from the one chat really leaves.
+Five fictional journeys (an aurora deck price, a ferry timetable, a bakery special, a seal-
+colony count, a library's new arrivals) are taught, run and stood up here, plus the spaces a
+later ask points them at and the values a short ask leaves out. Every chat state's cases draw on
+them, which is why they live in one place: a second copy of a journey would be a second history,
+free to drift from the one chat really leaves.
 
-Also here: the seeders that compose those worlds, the loud probes that assert a case's world really is what the case claims, and the checks shared across more than one landed state.
+Also here: the seeders that compose those worlds, the loud probes that assert a case's world
+really is what the case claims, and the checks shared across more than one landed state.
 """
 
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from itertools import islice
 from typing import NamedTuple
 
-import pytest
 from dateutil.rrule import rrulestr
 
-from penny.constants import ChatPromptType, PennyConstants, TransitionCause
+from penny.constants import PennyConstants, TransitionCause
 from penny.conversation_machine import (
     CandidateParameter,
     ConversationState,
     MachineSnapshot,
     RoundFraming,
-    RoundProvenance,
     RoundShortfall,
     SkillCandidate,
-    render_classifier_content,
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill, StateTransition
+from penny.database.models import MemoryRow, MessageLog, Skill, StateTransition
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
     DistillInput,
@@ -46,7 +47,6 @@ from penny.database.skills import (
     retarget_writes,
     slug_skill_name,
 )
-from penny.penny import Penny
 
 # The SHIPPED container derivation, used as itself: a seeded round has to run into the
 # container production would have built for it, and a fixture spelling that name out would
@@ -69,19 +69,15 @@ from penny.skill_extraction import (
 )
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
-    ChatEval,
     Check,
     ParameterFamily,
-    Preparer,
     Seeder,
     asked_for_page_structure,
-    chat_run_tool_sequences,
     classify_by_family,
     collection_entries,
     count_tool_calls,
     is_seeded_run,
     last_tool_args,
-    live_prompts,
     new_collections,
     outgoing_replies,
     routing_clean,
@@ -90,18 +86,47 @@ from penny.tests.eval.conftest import (
     tool_was_called,
 )
 
-# The listing this script is built on, and the enacting-tool set the elicitation
-# contract IS — the calls that would mean she acted before being taught.  Both are read
-# from the suite's shared fixtures rather than restated here: the passing-mention guard
-# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
-# one policy are two contracts free to drift.
-from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, ENACTING_TOOLS, LISTING_URL, CannedPage
-
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
 # suite declares it rather than restated here: what a page parameter may reasonably be
 # called is one code-owner-agreed vocabulary, and two copies would drift into two
 # contracts (the same rule ``ENACTING_TOOLS`` is read under).
 from penny.tests.eval.framer.test_skill_framing import _PLACE_TOKENS
+
+# The listing this script is built on, and the enacting-tool set the elicitation
+# contract IS — the calls that would mean she acted before being taught.  Both are read
+# from the suite's shared fixtures rather than restated here: the passing-mention guard
+# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
+# one policy are two contracts free to drift.
+from penny.tests.eval.utils.fixtures import (
+    AURORA_LISTING_499,
+    LISTING_URL,
+    CannedPage,
+)
+from penny.tests.eval.utils.transition_ledger import (
+    _BROWSE_CALL_ID,
+    _BROWSE_TOOL,
+    _DEFAULT_RUNS,
+    _SEEDED_MODEL,
+    _SET_TOOL,
+    _WRITE_CALL_ID,
+    _declared_parameters,
+    _drawn_state,
+    _entries_written_by_this_run,
+    _journey_runs,
+    _JourneyRuns,
+    _leaf_at,
+    _log_ask,
+    _log_chat_step,
+    _log_classifier_draw,
+    _log_reply,
+    _pages_fetched,
+    _park,
+    _seeded_response,
+    _structural_reset,
+    _tool_result_turn,
+    _wire_tool_call,
+    _written_texts,
+)
 from penny.text_validity import is_blank
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
@@ -126,20 +151,12 @@ from penny.tools.collection_instantiation import (
     render_schedule_clause,
 )
 from penny.tools.micro_context import (
-    SKILL_TAG,
-    STATE_CLASSIFIER_SYSTEM_PROMPT,
-    STATE_TAG,
     FramedParameter,
     LeafLabel,
     SkillLabels,
     SkillSignature,
-    StateDrawOutcome,
 )
 from penny.tools.models import ToolResult
-
-from penny.tests.eval.utils.transition_ledger import _BROWSE_CALL_ID, _BROWSE_TOOL, _DEFAULT_RUNS, _JourneyRuns, _SEEDED_MODEL, _SET_TOOL, _WRITE_CALL_ID, _declared_parameters, _drawn_state, _entries_written_by_this_run, _journey_runs, _leaf_at, _log_ask, _log_chat_step, _log_classifier_draw, _log_reply, _pages_fetched, _park, _seeded_response, _structural_reset, _tool_result_turn, _wire_tool_call, _written_texts
-
-
 
 # ── idle → elicit: the ask lands cold, and nothing is enacted ─────────────────
 #

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from penny.tests.eval.conftest import Check, SampleResult
 from penny.tests.eval.utils.artifacts import (
     DIRTY_DIFF_FILENAME,
     MANIFEST_FILENAME,
@@ -41,7 +42,6 @@ from penny.tests.eval.utils.artifacts import (
     worker_filename,
     worker_glob,
 )
-from penny.tests.eval.conftest import Check, SampleResult
 
 _NOW = datetime(2026, 7, 20, 0, 45, 12, tzinfo=UTC)
 _COMMIT = "abcdef1234567890abcdef1234567890abcdef12"

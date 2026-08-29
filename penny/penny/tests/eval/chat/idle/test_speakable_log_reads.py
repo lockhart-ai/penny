@@ -53,17 +53,6 @@ from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.skills import DistillInput
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
-from penny.tests.eval.conftest import (
-    REPLY_ANCHOR,
-    ChatEval,
-    Check,
-    Seeder,
-    collection_entries,
-    seeded_run_id,
-    tool_call_arg_values,
-    tool_call_sequence,
-)
-from penny.tests.eval.utils.fixtures import SynthCollection
 
 # The seeded-ledger wire helpers the transition suite writes its own history with — read
 # from there rather than restated, so a collector run seeded here has the same envelope
@@ -75,6 +64,17 @@ from penny.tests.eval.chat.idle.test_standing_collection import (
     landed_state_check,
     seed_standing_jobs,
 )
+from penny.tests.eval.conftest import (
+    REPLY_ANCHOR,
+    ChatEval,
+    Check,
+    Seeder,
+    collection_entries,
+    seeded_run_id,
+    tool_call_arg_values,
+    tool_call_sequence,
+)
+from penny.tests.eval.utils.fixtures import SynthCollection
 from penny.tests.eval.utils.transition_ledger import _seeded_response, _wire_tool_call
 
 pytestmark = pytest.mark.eval

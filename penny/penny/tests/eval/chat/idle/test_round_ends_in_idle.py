@@ -1,47 +1,26 @@
 """Chat in IDLE, entered from a parked round: the round ends here.
 
-Every parked state bails back to idle when the user drops the task -- elicit mid-question, learn mid-demonstration, request mid-binding (including one where the binding was half settled).  The turn answers the new subject and leaves nothing half-built behind it.  The fifth case is the floor: ordinary banter in idle, which fires nothing at all.
+Every parked state bails back to idle when the user drops the task -- elicit mid-question, learn
+mid-demonstration, request mid-binding (including one where the binding was half settled). The
+turn answers the new subject and leaves nothing half-built behind it. The fifth case is the
+floor: ordinary banter in idle, which fires nothing at all.
 """
 
 from __future__ import annotations
 
-import json
-import os
-from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
 from functools import partial
-from itertools import islice
 from typing import NamedTuple
 
 import pytest
-from dateutil.rrule import rrulestr
 
-from penny.constants import ChatPromptType, PennyConstants, TransitionCause
 from penny.conversation_machine import (
-    CandidateParameter,
     ConversationState,
-    MachineSnapshot,
-    RoundFraming,
-    RoundProvenance,
-    RoundShortfall,
-    SkillCandidate,
-    render_classifier_content,
 )
 from penny.database import Database
-from penny.database.memory import EntryInput, LogEntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill, StateTransition
-from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.models import StateTransition
 from penny.database.skills import (
-    DistillInput,
     SkillDraft,
-    SkillParameter,
-    SkillStep,
-    SkillSubKind,
-    SkillSubstitution,
-    derive_collection_name,
-    distill_steps,
-    render_skill,
-    retarget_writes,
     slug_skill_name,
 )
 from penny.penny import Penny
@@ -49,8 +28,6 @@ from penny.penny import Penny
 # The SHIPPED container derivation, used as itself: a seeded round has to run into the
 # container production would have built for it, and a fixture spelling that name out would
 # be a second copy of the naming scheme, free to drift from the one jobs are identified by.
-from penny.round_framing import container_name
-
 # The production draw-application, used as itself: a fixture skill has to be the SHAPE
 # run-end extraction really produces, and re-implementing that mapping here would be a
 # fixture that drifts from the pipeline it stands in for.  Both halves of the #1824
@@ -59,54 +36,61 @@ from penny.round_framing import container_name
 # ``attachment_names`` is the registry policy for what a routine can be attached to, read
 # for the same reason: the scorer asks whether a learned routine HAS a destination, and
 # that is the question extraction already answers when it decides which leaves to mark.
-from penny.skill_extraction import (
-    _apply_leaf_labels,
-    _interface_parameters,
-    _naming,
-    attachment_names,
-)
-from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
-    ParameterFamily,
     Preparer,
     Seeder,
-    asked_for_page_structure,
-    chat_run_tool_sequences,
-    classify_by_family,
-    collection_entries,
-    count_tool_calls,
-    is_seeded_run,
-    last_tool_args,
-    live_prompts,
     new_collections,
-    outgoing_replies,
     routing_clean,
-    seeded_run_id,
     tool_not_called,
-    tool_was_called,
 )
-
-# The listing this script is built on, and the enacting-tool set the elicitation
-# contract IS — the calls that would mean she acted before being taught.  Both are read
-# from the suite's shared fixtures rather than restated here: the passing-mention guard
-# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
-# one policy are two contracts free to drift.
-from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, ENACTING_TOOLS, LISTING_URL, CannedPage
 
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
 # suite declares it rather than restated here: what a page parameter may reasonably be
 # called is one code-owner-agreed vocabulary, and two copies would drift into two
 # contracts (the same rule ``ENACTING_TOOLS`` is read under).
-from penny.tests.eval.framer.test_skill_framing import _PLACE_TOKENS
-from penny.text_validity import is_blank
+# The listing this script is built on, and the enacting-tool set the elicitation
+# contract IS — the calls that would mean she acted before being taught.  Both are read
+# from the suite's shared fixtures rather than restated here: the passing-mention guard
+# in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
+# one policy are two contracts free to drift.
+from penny.tests.eval.utils.fixtures import (
+    AURORA_LISTING_499,
+    CannedPage,
+)
+from penny.tests.eval.utils.transition_ledger import _FAMILY, _SET_TOOL
+from penny.tests.eval.utils.transition_world import (
+    _AURORA_APPLY,
+    _AURORA_ROUND,
+    _DECOY_SKILL,
+    _JOBS_UNTOUCHED_LABEL,
+    _JOURNEYS,
+    _SUPPLIED_PIER,
+    _SUPPLIED_SPACES,
+    _SUPPLIED_TIMETABLE,
+    _ApplyCase,
+    _assert_parked_on_the_ask,
+    _assert_seeded_world,
+    _ElicitRound,
+    _Journey,
+    _RequestApplyCase,
+    _seed_elicit_round,
+    _seeded_ask_id,
+    _seeded_jobs_untouched_check,
+    assert_composed_world,
+    assert_parked_in_request_world,
+    assert_round_cites_its_run,
+    assert_round_is_framed,
+    assert_seeded_ledger,
+    seed_composed_world,
+    seed_learned_round,
+    seed_parked_in_request,
+)
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
 # read the way the loop really writes them, and a hand-written frame is a second copy of a
 # format the model is shown every turn.
-from penny.tools.base import Tool
-
 # The schedule's own render + grammar tokens, read from where the tool declares them: a
 # stored rule renders back AS the copyable ``schedule`` input (#1857), so the advisory shows
 # what she committed to in the form it was set, and the line/tag literals a rule is written
@@ -114,31 +98,6 @@ from penny.tools.base import Tool
 # ``parse_schedule`` + ``render_reinstantiation_echo`` are read for the same reason on the
 # seeding side: a seeded apply turn stores the rule the tool would have stored and echoes
 # back what the tool would have echoed.
-from penny.tools.collection_instantiation import (
-    _DTSTART_TAG,
-    _LINE_ESCAPE,
-    _RRULE_TAG,
-    has_schedule,
-    parse_schedule,
-    render_reinstantiation_echo,
-    render_schedule_clause,
-)
-from penny.tools.micro_context import (
-    SKILL_TAG,
-    STATE_CLASSIFIER_SYSTEM_PROMPT,
-    STATE_TAG,
-    FramedParameter,
-    LeafLabel,
-    SkillLabels,
-    SkillSignature,
-    StateDrawOutcome,
-)
-from penny.tools.models import ToolResult
-
-from penny.tests.eval.utils.transition_ledger import _FAMILY, _SET_TOOL
-
-from penny.tests.eval.utils.transition_world import _AURORA_APPLY, _AURORA_ROUND, _ApplyCase, _DECOY_SKILL, _ElicitRound, _JOBS_UNTOUCHED_LABEL, _JOURNEYS, _Journey, _RequestApplyCase, _SUPPLIED_PIER, _SUPPLIED_SPACES, _SUPPLIED_TIMETABLE, _assert_parked_on_the_ask, _assert_seeded_world, _seed_elicit_round, _seeded_ask_id, _seeded_jobs_untouched_check, assert_composed_world, assert_parked_in_request_world, assert_round_cites_its_run, assert_round_is_framed, assert_seeded_ledger, seed_composed_world, seed_learned_round, seed_parked_in_request
-
 
 pytestmark = pytest.mark.eval
 

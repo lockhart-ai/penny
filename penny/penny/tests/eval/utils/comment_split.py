@@ -133,7 +133,8 @@ def build_noise_reason(document: str) -> str | None:
             return (
                 f"the report opens with build noise ({marker!r} on line {opening!r}) — that is "
                 f"`make assemble`'s recipe/build log, not the report. Capture the body by invoking "
-                f"`python -m penny.tests.eval.utils.assemble <run_dir>` in the container directly, never "
+                f"`python -m penny.tests.eval.utils.assemble <run_dir>` in the container "
+                f"directly, never "
                 f"`make assemble` piped through stripping."
             )
     return None

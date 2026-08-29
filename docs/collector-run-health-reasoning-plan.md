@@ -109,7 +109,7 @@ From the root `CLAUDE.md` and `docs/self-improvement-loop.md`:
    appear correctly on real failing runs, and do NOT appear on healthy ones.
    *(Do not commit any output — it contains real content.)*
 2. **`make eval` for the model-facing prompt changes** — phase 1's `done()`
-   guidance: ✅ DONE — `tests/eval/test_collector_honesty.py` validates it live,
+   guidance: ✅ DONE — `tests/eval/collector/test_collector_honesty.py` validates it live,
    baseline (no phase 1) **0/3** → with phase-1 wording **3/3** (working-source guard
    3/3); no wording iteration needed. Phase 5's quality prompt (suggest-not-apply, 0073):
    ✅ DONE — persistent-no-writes 3/3, single-no-writes 3/3, healthy 3/3, rebroadcast 3/3
@@ -342,7 +342,7 @@ Validate with `make eval` (focused low-N first; read the thinking on failures;
 full suite once at the end). Also pair with a deterministic `tests/` mock test if
 there's a mechanism to pin (e.g. assert quality's tool surface excludes
 `collection_update`). The phase-1 `done()` guidance is covered by
-`tests/eval/test_collector_honesty.py` (already validated 0/3→3/3) plus confirming
+`tests/eval/collector/test_collector_honesty.py` (already validated 0/3→3/3) plus confirming
 the extractor cases don't regress under the new runtime rules.
 
 ---

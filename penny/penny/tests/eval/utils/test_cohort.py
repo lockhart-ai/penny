@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 
 from penny.conversation_machine import ConversationState
+from penny.tests.eval.conftest import _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.cohort import (
     BASE_WORLD,
@@ -32,7 +33,6 @@ from penny.tests.eval.utils.cohort import (
     specifics,
     unsourced_specifics,
 )
-from penny.tests.eval.conftest import _phrasing_label
 from penny.tests.eval.utils.worlds import World
 
 _MODEL = "openai/gpt-oss-20b"

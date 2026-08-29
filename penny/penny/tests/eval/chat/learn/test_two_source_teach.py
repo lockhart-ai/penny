@@ -35,20 +35,19 @@ invented markets — because the repo is public.
 
 from __future__ import annotations
 
-import re
-from datetime import UTC, datetime, timedelta
-
 import pytest
-from sqlmodel import Session
 
-from penny.agents.self_state import SelfStateHeader
-from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
-from penny.database.memory import EntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, PromptLog
-from penny.penny import Penny
-from penny.tests.conftest import TEST_SENDER, require_memory
+from penny.database.models import MemoryRow
+from penny.tests.eval.conftest import (
+    EVAL_MODELS,
+    ChatEval,
+    Check,
+    asked_for_page_structure,
+    new_collections,
+    outgoing_replies,
+)
 
 # The enacting-tool set is read from the suite's shared fixtures, not restated here: the
 # state machine's elicitation edge asks the same question of a turn (nothing acted on
@@ -61,30 +60,15 @@ from penny.tests.eval.utils.cohort import (
     TOOL_SEQUENCE,
     TRANSITIONS,
 )
-from penny.tests.eval.conftest import (
-    EVAL_MODELS,
-    REPLY_ANCHOR,
-    ChatEval,
-    Check,
-    asked_for_page_structure,
-    chat_run_tool_sequences,
-    collection_entries,
-    describes,
-    is_ordered_subsequence,
-    is_seeded_run,
-    new_collections,
-    outgoing_replies,
-    routing_clean,
-    seeded_run_id,
-    tool_call_arg_values,
-    tool_call_sequence,
-    tool_was_called,
-)
-from penny.tests.eval.utils.fixtures import (
-    ENACTING_TOOLS,
-    MULTIHOP_PAGES,
-    CannedPage,
-    SynthCollection,
+from penny.tests.eval.utils.memory_world import (
+    _FAMILY,
+    _FOXES_TOKENS,
+    _SEALS_TOKENS,
+    LEARN_CLOSE_ASK,
+    _carries,
+    _landing_advisory,
+    _pages_fetched,
+    _routing_advisory,
 )
 from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
 
@@ -106,9 +90,6 @@ from penny.tests.eval.utils.worlds import (
     TWO_TEAM_NEWS,
     TWO_TEAM_NEWS_CONTROL,
 )
-
-from penny.tests.eval.utils.memory_world import LEARN_CLOSE_ASK, _FAMILY, _FOXES_TOKENS, _SEALS_TOKENS, _carries, _landing_advisory, _pages_fetched, _routing_advisory
-
 
 pytestmark = pytest.mark.eval
 

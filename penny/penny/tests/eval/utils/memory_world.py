@@ -12,59 +12,21 @@ moved to ``chat/learn/``:
 
 from __future__ import annotations
 
-import re
-from datetime import UTC, datetime, timedelta
-
-import pytest
-from sqlmodel import Session
-
-from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
-from penny.database.memory import EntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, PromptLog
-from penny.penny import Penny
-from penny.tests.conftest import TEST_SENDER, require_memory
+from penny.database.memory import MemoryType
+from penny.database.models import MemoryEntry
+from penny.tests.conftest import require_memory
+from penny.tests.eval.conftest import (
+    Check,
+    is_seeded_run,
+    routing_clean,
+)
 
 # The enacting-tool set is read from the suite's shared fixtures, not restated here: the
 # state machine's elicitation edge asks the same question of a turn (nothing acted on
 # before it was taught), and one policy in two copies is two contracts.
-from penny.tests.eval.utils.cohort import (
-    CONTAINER_NAME,
-    ENTRIES_STORED,
-    REPLY_SPREAD,
-    ROUTINE_SHAPE,
-    TOOL_SEQUENCE,
-    TRANSITIONS,
-)
-from penny.tests.eval.conftest import (
-    EVAL_MODELS,
-    REPLY_ANCHOR,
-    ChatEval,
-    Check,
-    asked_for_page_structure,
-    chat_run_tool_sequences,
-    collection_entries,
-    describes,
-    is_ordered_subsequence,
-    is_seeded_run,
-    new_collections,
-    outgoing_replies,
-    routing_clean,
-    seeded_run_id,
-    tool_call_arg_values,
-    tool_call_sequence,
-    tool_was_called,
-)
-from penny.tests.eval.utils.fixtures import (
-    ENACTING_TOOLS,
-    MULTIHOP_PAGES,
-    CannedPage,
-    SynthCollection,
-)
-from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
-
 # Standing a ROUND up before the measured turn is the transition suite's idiom, read from
 # where that suite declares it rather than restated here: a seeded machine state, a seeded
 # conversation turn and a seeded ledger row are one shape, and a second copy of it would be
@@ -76,14 +38,9 @@ from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
 # widening a neighbour's fixture type is one restated probe, named here rather than left
 # for a reader to notice.
 from penny.tests.eval.utils.worlds import (
-    FOXES_NEWS,
     FOXES_URL,
-    SEALS_NEWS,
     SEALS_URL,
-    TWO_TEAM_NEWS,
-    TWO_TEAM_NEWS_CONTROL,
 )
-
 
 _FAMILY = "chat-memory"
 
@@ -196,6 +153,7 @@ def _routing_advisory(db: Database) -> Check:
         kind="proc",
     )
 
+
 # Tokens that exist ONLY on one page, so a stored copy names which source it came from
 # and a fabricated entry matches neither.
 _FOXES_TOKENS = ("brandt", "aurelio", "goalie")
@@ -206,6 +164,7 @@ def _carries(db: Database, tokens: tuple[str, ...]) -> bool:
     """Whether any entry this run wrote carries one of a page's own tokens."""
     written = [_entry_text(entry) for _, entry in _entries_this_run_wrote(db)]
     return any(token in text for text in written for token in tokens)
+
 
 # ONE request in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
 # model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE

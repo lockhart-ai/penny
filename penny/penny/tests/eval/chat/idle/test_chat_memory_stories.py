@@ -66,48 +66,48 @@ from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
-from penny.database.memory import EntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, PromptLog
+from penny.database.memory import EntryInput
+from penny.database.models import MemoryEntry, PromptLog
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
-
-# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
-# state machine's elicitation edge asks the same question of a turn (nothing acted on
-# before it was taught), and one policy in two copies is two contracts.
-from penny.tests.eval.utils.cohort import (
-    CONTAINER_NAME,
-    ENTRIES_STORED,
-    REPLY_SPREAD,
-    ROUTINE_SHAPE,
-    TOOL_SEQUENCE,
-    TRANSITIONS,
-)
 from penny.tests.eval.conftest import (
-    EVAL_MODELS,
     REPLY_ANCHOR,
     ChatEval,
     Check,
-    asked_for_page_structure,
     chat_run_tool_sequences,
     collection_entries,
     describes,
     is_ordered_subsequence,
-    is_seeded_run,
     new_collections,
     outgoing_replies,
-    routing_clean,
     seeded_run_id,
     tool_call_arg_values,
     tool_call_sequence,
     tool_was_called,
 )
+
+# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
+# state machine's elicitation edge asks the same question of a turn (nothing acted on
+# before it was taught), and one policy in two copies is two contracts.
 from penny.tests.eval.utils.fixtures import (
     ENACTING_TOOLS,
     MULTIHOP_PAGES,
     CannedPage,
     SynthCollection,
 )
-from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
+from penny.tests.eval.utils.memory_world import (
+    _FAMILY,
+    _FOXES_TOKENS,
+    _SEALS_TOKENS,
+    LEARN_CLOSE_ASK,
+    _carries,
+    _entries_this_run_wrote,
+    _entry_text,
+    _landing_advisory,
+    _normalize,
+    _pages_fetched,
+    _routing_advisory,
+)
 
 # Standing a ROUND up before the measured turn is the transition suite's idiom, read from
 # where that suite declares it rather than restated here: a seeded machine state, a seeded
@@ -121,15 +121,7 @@ from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
 # for a reader to notice.
 from penny.tests.eval.utils.worlds import (
     FOXES_NEWS,
-    FOXES_URL,
-    SEALS_NEWS,
-    SEALS_URL,
-    TWO_TEAM_NEWS,
-    TWO_TEAM_NEWS_CONTROL,
 )
-
-from penny.tests.eval.utils.memory_world import LEARN_CLOSE_ASK, _FAMILY, _FOXES_TOKENS, _SEALS_TOKENS, _carries, _entries_this_run_wrote, _entry_text, _landing_advisory, _normalize, _pages_fetched, _routing_advisory
-
 
 pytestmark = pytest.mark.eval
 
