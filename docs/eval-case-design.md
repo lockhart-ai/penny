@@ -158,8 +158,7 @@ because somebody ran the inward column and wrote them; there was nothing to copy
 run the outward column alone would have shipped a case that cannot tell a fact read off the page
 from one the model invented, and every check it did carry would have passed.
 
-The two outward misses from the same port, as worked examples of what "fits no category" looks
-like:
+Two checks that fit no category, as worked examples of how to recognise one:
 
 | check | why it is not an assertion | where it goes |
 |---|---|---|
@@ -488,7 +487,7 @@ Two other scope rules that come from the same place:
 
 | file | holds |
 |---|---|
-| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed four), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_floor`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
+| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_floor`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes` |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
