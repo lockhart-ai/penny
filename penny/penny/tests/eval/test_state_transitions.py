@@ -140,13 +140,13 @@ from penny.tests.eval.conftest import (
 # from the suite's shared fixtures rather than restated here: the passing-mention guard
 # in ``test_chat_memory_stories.py`` asks the same question of a turn, and two copies of
 # one policy are two contracts free to drift.
-from penny.tests.eval.fixtures import AURORA_LISTING_499, ENACTING_TOOLS, LISTING_URL, CannedPage
+from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, ENACTING_TOOLS, LISTING_URL, CannedPage
 
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
 # suite declares it rather than restated here: what a page parameter may reasonably be
 # called is one code-owner-agreed vocabulary, and two copies would drift into two
 # contracts (the same rule ``ENACTING_TOOLS`` is read under).
-from penny.tests.eval.test_skill_framing import _PLACE_TOKENS
+from penny.tests.eval.framer.test_skill_framing import _PLACE_TOKENS
 from penny.text_validity import is_blank
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to

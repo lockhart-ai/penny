@@ -47,15 +47,15 @@ from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
-from penny.tests.eval import report
-from penny.tests.eval.artifacts import (
+from penny.tests.eval.utils import report
+from penny.tests.eval.utils.artifacts import (
     CaseArtifact,
     CaseTimings,
     CauseCounts,
     CheckOutcome,
     FailureCause,
 )
-from penny.tests.eval.baseline import load_baseline
+from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.conftest import (
     PENNY_LOGGER,
     BoundExpectation,
@@ -96,32 +96,32 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
-from penny.tests.eval.dispatch_world import assert_no_collections, collection_names
-from penny.tests.eval.fixtures import BOARD_GAMES
-from penny.tests.eval.test_bracket_key_recovery import (
+from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
+from penny.tests.eval.utils.fixtures import BOARD_GAMES
+from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
     BRACKET_KEY_CASES,
     _seed_board_games,
     assert_board_games_world,
 )
-from penny.tests.eval.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
-from penny.tests.eval.test_chat_reply import (
+from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
+from penny.tests.eval.chat.idle.test_chat_reply import (
     _STORED_TITLES,
     _carries,
     _honest_about_the_duplicate,
 )
-from penny.tests.eval.test_choose_dispatch import (
+from penny.tests.eval.chat.idle.test_choose_dispatch import (
     _OPTIONS as _CHOOSE_OPTIONS,
 )
-from penny.tests.eval.test_choose_dispatch import (
+from penny.tests.eval.chat.idle.test_choose_dispatch import (
     CHOOSE_CASES,
     _gave_an_opinion_check,
     _reply_reports,
     assert_choose_world,
 )
-from penny.tests.eval.test_collector_enactment import (
+from penny.tests.eval.collector.test_collector_enactment import (
     _STOP_REASON as _STOP,
 )
-from penny.tests.eval.test_collector_enactment import (
+from penny.tests.eval.collector.test_collector_enactment import (
     DIRECTION_CHECK_LABEL,
     ENACTMENT_CASES,
     GATE_CASES,
@@ -134,21 +134,21 @@ from penny.tests.eval.test_collector_enactment import (
     seed_applied_job,
     seed_gate_world,
 )
-from penny.tests.eval.test_command_tools import (
+from penny.tests.eval.chat.idle.test_command_tools import (
     IMAGE_CASES,
     _claims_no_picture_check,
     assert_image_world,
     install_image_client,
 )
-from penny.tests.eval.test_email_dispatch import (
+from penny.tests.eval.chat.idle.test_email_dispatch import (
     EMAIL_CASES,
     _claims_no_search_check,
     assert_mailbox_world,
     install_mailbox,
 )
-from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
-from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
-from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
+from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
+from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
     BAIL_CASES,

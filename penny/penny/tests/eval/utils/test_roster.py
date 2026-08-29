@@ -1,0 +1,123 @@
+"""The configured model roster: required, validated, and refused loudly (#1996).
+
+The failure this closes is not a crash — it is a run that measures less than it claims to
+and says nothing. So every refusal here is checked for the thing that makes it useful: the
+variable's name, and what to write in it.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from penny.tests.eval.utils.roster import (
+    EVAL_MODELS_ENV,
+    MINIMUM_MODELS,
+    EvalModel,
+    RosterError,
+    main,
+    parse_roster,
+    render_resolution,
+    resolve,
+)
+
+_ROSTER = json.dumps(
+    [
+        {"model": "vendor/model-a", "provider": "SomeCloud"},
+        {"model": "vendor/model-b", "provider": "OtherCloud"},
+    ]
+)
+
+
+class TestTheRosterIsRequired:
+    """Fail at startup, the way an unset embedding model does — never mid-run."""
+
+    def test_an_unset_roster_names_the_variable_and_the_shape(self) -> None:
+        with pytest.raises(RosterError) as refusal:
+            parse_roster(None)
+        message = str(refusal.value)
+        assert EVAL_MODELS_ENV in message
+        assert '{"model"' in message  # the shape to write, not just the complaint
+
+    def test_a_blank_roster_reads_as_unset(self) -> None:
+        with pytest.raises(RosterError):
+            parse_roster("   ")
+
+    def test_one_model_is_not_enough_and_the_refusal_says_why(self) -> None:
+        """A suite tuned against one model measures how much like it the next one is."""
+        with pytest.raises(RosterError) as refusal:
+            parse_roster(json.dumps([{"model": "vendor/model-a", "provider": "SomeCloud"}]))
+        message = str(refusal.value)
+        assert f"at least {MINIMUM_MODELS} models" in message
+        assert "vendor/model-a via SomeCloud" in message  # what IS configured, quoted back
+
+    def test_a_malformed_roster_is_refused_rather_than_half_read(self) -> None:
+        with pytest.raises(RosterError) as refusal:
+            parse_roster('["vendor/model-a", "vendor/model-b"]')
+        assert EVAL_MODELS_ENV in str(refusal.value)
+
+    def test_an_unknown_key_is_refused_rather_than_absorbed(self) -> None:
+        """A typo'd field would otherwise mean "no provider", silently."""
+        with pytest.raises(RosterError):
+            parse_roster(json.dumps([{"model": "a", "providers": "X"}, {"model": "b"}]))
+
+    def test_a_well_formed_roster_parses_into_typed_entries(self) -> None:
+        roster = parse_roster(_ROSTER)
+        assert roster == [
+            EvalModel(model="vendor/model-a", provider="SomeCloud"),
+            EvalModel(model="vendor/model-b", provider="OtherCloud"),
+        ]
+
+    def test_an_entry_may_name_no_provider(self) -> None:
+        """A direct endpoint has none to name, and that is a stated fact, not a gap."""
+        roster = parse_roster(json.dumps([{"model": "a"}, {"model": "b"}]))
+        assert roster[0].provider is None
+        assert roster[0].render() == "a (no provider named)"
+
+
+class TestWhichEntryThisInvocationRuns:
+    def test_the_first_entry_is_the_default(self) -> None:
+        assert resolve(parse_roster(_ROSTER), None).model == "vendor/model-a"
+
+    def test_a_named_model_is_picked_out_of_the_roster_with_its_provider(self) -> None:
+        entry = resolve(parse_roster(_ROSTER), "vendor/model-b")
+        assert entry.provider == "OtherCloud"
+
+    def test_a_model_outside_the_roster_is_refused_and_the_roster_is_listed(self) -> None:
+        """An unconfigured model has no upstream to prefer and none to record.
+
+        That is the ad-hoc pass this variable replaces, so it is refused — and the refusal
+        renders the roster verbatim, so adding the model is a copy rather than a lookup.
+        """
+        with pytest.raises(RosterError) as refusal:
+            resolve(parse_roster(_ROSTER), "vendor/model-c")
+        message = str(refusal.value)
+        assert "vendor/model-c" in message
+        assert "vendor/model-a via SomeCloud" in message
+        assert "vendor/model-b via OtherCloud" in message
+
+
+class TestWhatTheRecipeReads:
+    def test_the_resolution_renders_the_two_lines_the_makefile_parses(self) -> None:
+        assert render_resolution(EvalModel(model="vendor/model-a", provider="SomeCloud")) == [
+            "eval: model = vendor/model-a",
+            "eval: preferred provider = SomeCloud",
+        ]
+
+    def test_a_providerless_entry_renders_no_provider_line(self) -> None:
+        assert render_resolution(EvalModel(model="local-model")) == ["eval: model = local-model"]
+
+    def test_the_cli_exit_code_is_what_stops_the_run(self, monkeypatch, capsys) -> None:
+        monkeypatch.delenv(EVAL_MODELS_ENV, raising=False)
+        assert main([]) == 1
+        assert EVAL_MODELS_ENV in capsys.readouterr().err
+
+        monkeypatch.setenv(EVAL_MODELS_ENV, _ROSTER)
+        assert main(["vendor/model-b"]) == 0
+        out = capsys.readouterr().out
+        assert "eval: model = vendor/model-b" in out
+        assert "eval: preferred provider = OtherCloud" in out
+
+        # A stray argument is a usage error, distinct from an unconfigured roster.
+        assert main(["a", "b"]) == 2

@@ -60,15 +60,15 @@ from penny.responses import PennyResponse
 from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
-from penny.tests.eval import artifacts as eval_artifacts
-from penny.tests.eval import assertions as eval_assertions
-from penny.tests.eval import cohort as eval_cohort
-from penny.tests.eval import report, run_health
-from penny.tests.eval.artifacts import FailureCause
-from penny.tests.eval.assertions import Cohort
-from penny.tests.eval.baseline import Baseline, baseline_from_env
-from penny.tests.eval.fixtures import ENACTING_TOOLS, CannedPage, SynthCollection
-from penny.tests.eval.worlds import World
+from penny.tests.eval.utils import artifacts as eval_artifacts
+from penny.tests.eval.utils import assertions as eval_assertions
+from penny.tests.eval.utils import cohort as eval_cohort
+from penny.tests.eval.utils import report, run_health
+from penny.tests.eval.utils.artifacts import FailureCause
+from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
+from penny.tests.eval.utils.fixtures import ENACTING_TOOLS, CannedPage, SynthCollection
+from penny.tests.eval.utils.worlds import World
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.text_validity import (
     has_leaked_harmony_envelope,
