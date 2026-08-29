@@ -4,11 +4,12 @@ The repeatable loop for changing **model-facing behaviour**: how **one** objecti
 
 The golden rule underneath all of it: **one beat at a time, pairs before code, every change measured, every run read jointly — the code owner rules at every checkpoint.**
 
-**The four docs are one system.** Each owns exactly one thing:
+**The five docs are one system.** Each owns exactly one thing:
 
 - **`docs/eval-iteration-workflow.md`** (this doc) — the **loop**: scope → pairs → seeded world → run → report → diagnose → iterate → merge.
 - **[`docs/prompt-writing-guide.md`](prompt-writing-guide.md)** — **how to write** the model-facing text a round changes (plain words, numbered call steps, the canonical call notation).
-- **[`docs/eval-report-format.md`](eval-report-format.md)** — the **format** of the report every run posts, section by section.
+- **[`docs/eval-case-design.md`](eval-case-design.md)** — the **contract a case is written to**: end-state assertions in four categories, everything the model emits measured as variance, and the porting checklist. Required reading before a case is written or ported.
+- **[`docs/eval-report-format.md`](eval-report-format.md)** — how a run's report is **posted** (the one-shot, the marker, the 64K split). Its pre-#1994 grading grammar is a superseded appendix.
 - **[`docs/agent-task-workflow.md`](agent-task-workflow.md)** — the **contract** the implementing task agent follows for each round's ticket → worktree → gate → PR → cleanup.
 
 ---
@@ -55,7 +56,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 ## 5. Report
 
-- **Every run posts its verbatim report to the PR** (`make eval-report PR=<n>`) — the comment stream **is** the durable record of the iteration. Format: [`docs/eval-report-format.md`](eval-report-format.md).
+- **Every run posts its verbatim report to the PR** (`make eval-report PR=<n>`) — the comment stream **is** the durable record of the iteration. What a ported case's report says: [`docs/eval-case-design.md`](eval-case-design.md); how it gets posted: [`docs/eval-report-format.md`](eval-report-format.md).
 - **The chat summary follows one shape, in this order:**
   1. **Overall scores** — decimals, with the baseline beside them.
   2. **Per-case table** — mean · all-pass, each row naming the transition under test and its mode.

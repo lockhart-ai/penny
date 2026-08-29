@@ -1,23 +1,43 @@
 # Eval Run Report Format
 
-The comment-ready markdown one eval run posts to its iteration PR — the **transcript-integrated**
-format (iteration-6, #1725). The graded-check mechanics live **inside** the transcript, in causal
-order (contract → thinking → action → verdict-on-action), so a reader follows the run as it
-happened instead of hunting a separate table. This is the format contract: what every run comment
-carries, section by section, so the renderer (`report.py`), the assembler (`assemble.py`), the
-extractor (`conftest.py`), and a human reading the PR all share one shape.
+> ## ⚠ Superseded, in part — read this first
+>
+> **The shape of a case's report is now [`docs/eval-case-design.md`](eval-case-design.md)**
+> (#1994): three sections per case — deterministic **assertions** on end state, **variance** on
+> everything the model emitted, and the **harness** samples too broken to count. That document is
+> the authority for anything written from now on, and it is required reading before a case is
+> written or ported.
+>
+> **What is still current, and still lives here:** how a run gets *posted* — the `make eval-report`
+> one-shot, the `.posted` marker, the unreviewed-run banner, the 64K comment split, cell hygiene,
+> the footer, and where artifacts live (and that they are never committed). #1994 changes what a
+> report *says*, not how it reaches the PR.
+>
+> **What is superseded:** the pre-#1994 **grading grammar** — per-step `expected` / `actual` /
+> verdict rows carried inside the transcript, `Cn [class]marker` check identity, the `RESULT` /
+> `gate` header lines, and baseline diff mode. It is kept below, under
+> [Appendix](#appendix--the-pre-1994-grading-grammar), **only** because the port is in flight and
+> un-ported cases still render it. It is retired case by case. **Do not write anything new against
+> it.**
+
+The comment-ready markdown one eval run posts to its iteration PR. This is the transport contract:
+what every run comment carries and how it gets there, so the assembler (`assemble.py`), the
+splitter (`comment_split.py`), the `eval-report` recipe, and a human reading the PR all share one
+shape.
 
 Read this alongside:
 
+- **[`docs/eval-case-design.md`](eval-case-design.md)** — what a case **claims and reports**: the
+  three sections, the four assertion categories, the variance ceilings, the porting checklist.
 - **`docs/agent-task-workflow.md` §4** — the *protocol* (a PR is live from the first run; every run
-  posts its report as a **new** comment). This document is the *format* those comments take.
+  posts its report as a **new** comment). This document is the transport those comments take.
 - **`docs/eval-iteration-workflow.md`** — the *loop* those comments punctuate (one beat: pairs →
-  seeded world → scoped run → report → joint read → ruling), including the summary shape §5 asks for.
-- **`penny/tests/eval/utils/report.py`** — the pure renderer of the grammar below (the row types, the
-  per-step tables, the banner, folding). Hand-built inputs render identically to extracted ones.
-- **`penny/tests/eval/conftest.py`** (`_write_sample_report` + the `_build_transcript` extraction) —
-  turns a sample's persisted promptlog into the `report.py` model.
-- **`penny/tests/eval/utils/assemble.py`** — composes the run header + per-sample blocks + footer.
+  seeded world → scoped run → report → joint read → ruling).
+- **`penny/tests/eval/utils/report.py`** — the pure renderer. **`.../utils/assemble.py`** — composes
+  the run header + per-case blocks + footer. **`.../conftest.py`** — turns a sample's persisted
+  promptlog into the renderer's model.
+
+---
 
 ## The one rule: the PR comment IS the record; the bulk stays local
 
@@ -25,8 +45,6 @@ A run comment carries the **whole evaluation** — the verdict, every step, the 
 model action — because the comment *is* the durable, inspectable record of the iteration (read as
 GitHub markdown, in the PR's comment stream). The heavy raw artifacts never enter the comment and
 are **never committed** (see [What gets committed](#what-gets-committed)).
-
----
 
 ## Posting a run: the one-shot + the unreviewed-run banner (#1757)
 
@@ -91,144 +109,6 @@ branch). The Makefile checks the marker host-side; the scan/latest logic lives i
 `penny/tests/eval/utils/checkpoint.py` (`run_dirs` / `latest_run_dir` / `unreviewed_runs` / `render_banner`),
 invoked in-container by the recipes so it reads the mounted home.
 
----
-
-## Row grammar (one fixed form per row type)
-
-Every per-step table uses these rows, identically everywhere:
-
-| row type | column-1 label | body (column 2) | score cell (column 3) |
-|---|---|---|---|
-| **step header** | `step N · 👤` | `"user message"` | the step verdict (✅ / ❌ / ✅→❌) |
-| **expected** | `expected` | `Cn [class]marker label` | empty — or the verdict for a no-evidence-row contract |
-| **💭** | `💭` | an ALWAYS-collapsed `<details><summary>thinking</summary>…</details>`, one per model action, directly ABOVE it (`💭 (empty)` when the model emitted none) | always empty |
-| **actual** | `actual` | one transcript event (`🔧 call` · `📥 result` · `🤖 reply` · `👤 nudge` · `🧩 <context> ← user turn:` / `🧩 <context> →`) | the check verdict on the anchor row; `⚠ recovery event` on a nudge; else empty |
-| **baseline** | `baseline` | the prior run's anchor event (diff mode only) | the prior verdict, tagged `*(prior run)*` |
-| **note** | `note` | free text, always last | always empty |
-
-**Check identity + class.** Each check renders `Cn [class]marker label` on its `expected` row.
-`Cn` is `C1, C2, …` in scorer order; a framework guard is `Gn`. `[class]` is an authoring tag —
-`[spine]` (call-spine) · `[reply]` (reply-content) · `[state]` (durable state) · `[proc]`
-(procedure) · `[guard]` (framework-injected). `marker` is `⚖` (a **scored** check, counts toward
-the score) or `ℹ` (an **advisory** check — renders, never scores); an n/a check carries neither.
-
-**Verdict cell.** `mark [Cn] [— rationale] [· cause]`. The marks:
-
-| mark | meaning |
-|---|---|
-| `✅` | check passed |
-| `❌` | check failed (carries its observed-vs-expected `rationale` + the sample's `cause`) |
-| `✅→❌ **REGRESSED**` | failed here, fully green in the baseline run — a flip (diff mode) |
-| `❌→✅ **FIXED**` | passed here, failing in the baseline run (diff mode) |
-| `➖ n/a` | the check's branch didn't run this sample — out of the graded denominator |
-| `⚠ recovery event` | on a nudge row: the loop refused/recovered a call (flags a passing sample `fragile`) |
-
-**Verdict placement (the anchor rule).** A check anchored to a transcript event renders its
-`expected` row atop that event's step and its verdict on that event's `actual` row. A check with
-**no anchor row** — a whole-run property, or a *missing* expected action that never happened —
-falls to the **run-close** table (`| run-close | whole-conversation contracts | k/n |`), where its
-verdict sits on its own `expected` row (these have no evidence row of their own). This is the
-deterministic realization of "run-close = checks with no anchor row."
-
-## Per-sample banner + folding
-
-Each sample opens with a banner naming its stats before you read a row:
-
-```
-<verdict> · <k/n> (<score>) · [fragile ·] [cause ·] <duration>s · <calls> calls
-```
-
-A clean pass carries no cause; a passed-but-shaky sample — one that reached its result only after a
-**recovery event** (a rejected/refused tool call, OR a user-turn recovery nudge — the continue and
-parse-failure nudges the render marks `⚠ recovery event`) — carries `fragile`; a **harness-timeout**
-sample (no completed turn) omits `k/n` (the scorer never ran) and renders an honest placeholder body
-instead of a table — so the report's sample count always matches N (visible degradation).
-
-**Uniform sample-level collapse — the one and only rendering (#1753/#1759).** EVERY sample block
-folds whole — the entire block inside a `<details>` whose `<summary>` is `sample N — <banner>` —
-regardless of verdict (passing, failed, fragile, regressed, harness-timeout). It is **collapsed by
-default, and its full body is always one click away**: "default collapsed" never means the body is
-dropped. There is **no compact / banner-only form and no `--full` flag** — the per-case `.md` and
-the assembled comment render each sample identically, byte-for-byte. The report's visible skeleton
-is the run header → per-case heading + RESULT/gate lines → **sample banner rows**; everything below
-a banner is one click deep. This supersedes the old density-follows-failure split (a clean pass
-folded, a failure rendered unfolded); the assembler re-normalizes even a re-assembled prior run
-(whose failures may be in the pre-#1753 unfolded `#### ` form) to the uniform fold.
-
-## System prompts (per context) — one collapsed row each (#1759)
-
-Every rendered sample carries, **directly under its banner and inside the fold**, one always-
-collapsed `<details>` row per DISTINCT system prompt among that sample's promptlog calls — the main
-agent's (`chat` / `collector`) and each micro-context flavour's (`browse-extract`,
-`state-classifier`). The summary names the context + size — `system prompt — <agent> (<n> chars)` —
-and the verbatim prompt sits inside. Identical prompts within a sample dedupe by text, so a repeated
-main-loop prompt renders once. Source: the persisted promptlog messages (`role: system`).
-
-Motivation: a micro-context's `🧩 <context> ← user turn:` row is that context's **USER** turn,
-not its system prompt — and the user mistook one for the other. When the surface under test IS a
-micro-context, its system prompt is half the contract, so each distinct context gets its own visible
-row. The rows are always present in the per-case `.md` and the assembled comment (there is no
-compact form to drop them).
-
-## Micro-context (🧩) — every sub-model is an official actor
-
-**Every** micro-context call in a sample's ledger renders inline, in ledger order, as two `actual`
-rows labelled with the calling context's ledger identity (#1773): the scoped turn INTO the sub-model
-as its USER turn (`🧩 <context> ← user turn: …`, #1759 — the explicit role label, so it is never
-mistaken for the sub-model's system prompt, which has its own
-[system-prompt row](#system-prompts-per-context--one-collapsed-row-each-1759)) and its drawn output
-OUT (`🧩 <context> → …`) — with the sub-model's own `💭 (<context>)` above the OUT row. The label
-is the same `agent_name` the context's system-prompt row carries, so the two read as one actor.
-
-Where a batch splices is its **placement** — the causal relationship it has to the run, declared per
-context and read by one generic walk (a fourth customer is a data row, not new code):
-
-| placement | who | where it renders |
-|---|---|---|
-| in-call | `browse-extract` — runs while `browse` executes | right after the `extract=` browse call that spawned it (FIFO-paired; a multi-page `extract` browse renders one pair per page) |
-| turn-head | `state-classifier` — draws before the chat agent | at the head of the turn it decided, right after that user turn |
-| run-close | `skill-namer` — labels every spot in the routine at run end; `skill-framer` — writes its name, description and parameters from the user's ask | closing the turn, after the final reply |
-
-The main-loop context never sees what a sub-model read — only the typed value returns — so the
-report is the one place these exchanges are visible. Before #1773 only the browse-extract batch was
-admitted, so a classifier draw that inverted a whole turn (it picks the per-state instruction chat is
-answered under) showed as a downstream check failure with no visible cause.
-
-## Run header
-
-The comment opens with the run header (no per-sample transcript above it):
-
-- **identity** — `**<run-id>** · commit \`<sha>\` [(dirty)] · <model> · N=<n> · **lever:** <lever>`.
-  The **lever** is required (the run's hypothesis; an unlabelled run can't attribute a score shift).
-- **RESULT** — one line: `mean · all-pass · pathology-excluded · causes — behavioral B · pathology P
-  · harness H · families: <fam> <mean> [(k cases)] · … · <calls> calls · <s>s · <in>K in / <out>K out`.
-  *mean* is the partial-credit mean the case gates on; *all-pass* the strict count of perfect
-  samples; *pathology-excluded* the honest mean over every non-pathology sample; the *families*
-  rollup names each family's mean (a case count only when a family spans more than one case).
-- **gate** — one line per gated case: `**gate:** [<case>: ]⚖ <threshold> on <metric> → **PASS/FAIL**
-  (<value>)`, where `<metric>` is `mean` or `pathology-excluded` (the honest-threshold opt-in, #1698).
-  A report-only case (`min_pass_rate=None`) has no gate line.
-- **flips** (diff mode) — `flips: <label> ✅→❌ (s1, s3) · …`, one entry per check that was fully
-  green in the baseline but failed a sample here. This is the one cross-sample join the transcript
-  flow can't give you; it joins on `(case_id, label)`. The assembler resolves the baseline from the
-  run's **durable manifest reference** (`RunManifest.baseline`, recorded from `EVAL_BASELINE` at eval
-  time), so the index survives to assemble time even when `make assemble` carries no `EVAL_BASELINE`
-  — the same durable state the per-row REGRESSED badges were baked from, so header and badges agree
-  (#1752). An explicit `EVAL_BASELINE` at assemble time overrides it (an ad-hoc re-diff).
-
-Then one section per case — a `### \`<case_id>\` — <family>` heading **only when the run spans
-multiple cases** — above that case's per-sample blocks. A single-case run needs no divider.
-
-## Diff mode (when a baseline is set)
-
-Same grammar plus the `baseline` row (the prior run's anchor event, its cell the prior verdict) and
-the flip badges (`✅→❌ REGRESSED` / `❌→✅ FIXED`) in place of the plain glyph; the step header shows
-the step-level flip, and the run header gains the `flips:` index. The baseline is set via
-`EVAL_BASELINE` at eval time (baking the per-row badges into the transcripts) and **recorded in the
-manifest** so the flips index re-derives at assemble time from that durable reference, not the live
-env (#1752). Off-diff (no baseline, or a first run) there are no baseline rows, no flip badges, and
-no flips line — no error.
-
 ## Deterministic cell hygiene
 
 - **Escaping.** Every cell escapes `|` (→ `\|`) and renders newlines as `<br>`, so a tool call or a
@@ -270,15 +150,159 @@ worktree that produced them being removed**, and `EVAL_BASELINE` can point a lat
 run's durable path. An explicit `EVAL_REPORT_DIR` is always honored (point it under
 `/penny/eval-artifacts` to keep it durable).
 
-## Check-label stability (an authoring note)
+---
+
+## Appendix — the pre-#1994 grading grammar
+
+**Superseded.** What follows describes the transcript-integrated graded-check format
+(iteration-6, #1725), where one pass/fail per check rendered per sample as `expected` / `actual`
+rows. It is kept because un-ported cases still render it while the canonical set is being built
+(#2004), and it is retired as each case ports. For anything you are writing now, the contract is
+[`docs/eval-case-design.md`](eval-case-design.md).
+
+### Row grammar (one fixed form per row type)
+
+Every per-step table uses these rows, identically everywhere:
+
+| row type | column-1 label | body (column 2) | score cell (column 3) |
+|---|---|---|---|
+| **step header** | `step N · 👤` | `"user message"` | the step verdict (✅ / ❌ / ✅→❌) |
+| **expected** | `expected` | `Cn [class]marker label` | empty — or the verdict for a no-evidence-row contract |
+| **💭** | `💭` | an ALWAYS-collapsed `<details><summary>thinking</summary>…</details>`, one per model action, directly ABOVE it (`💭 (empty)` when the model emitted none) | always empty |
+| **actual** | `actual` | one transcript event (`🔧 call` · `📥 result` · `🤖 reply` · `👤 nudge` · `🧩 <context> ← user turn:` / `🧩 <context> →`) | the check verdict on the anchor row; `⚠ recovery event` on a nudge; else empty |
+| **baseline** | `baseline` | the prior run's anchor event (diff mode only) | the prior verdict, tagged `*(prior run)*` |
+| **note** | `note` | free text, always last | always empty |
+
+**Check identity + class.** Each check renders `Cn [class]marker label` on its `expected` row.
+`Cn` is `C1, C2, …` in scorer order; a framework guard is `Gn`. `[class]` is an authoring tag —
+`[spine]` (call-spine) · `[reply]` (reply-content) · `[state]` (durable state) · `[proc]`
+(procedure) · `[guard]` (framework-injected). `marker` is `⚖` (a **scored** check, counts toward
+the score) or `ℹ` (an **advisory** check — renders, never scores); an n/a check carries neither.
+
+**Verdict cell.** `mark [Cn] [— rationale] [· cause]`. The marks:
+
+| mark | meaning |
+|---|---|
+| `✅` | check passed |
+| `❌` | check failed (carries its observed-vs-expected `rationale` + the sample's `cause`) |
+| `✅→❌ **REGRESSED**` | failed here, fully green in the baseline run — a flip (diff mode) |
+| `❌→✅ **FIXED**` | passed here, failing in the baseline run (diff mode) |
+| `➖ n/a` | the check's branch didn't run this sample — out of the graded denominator |
+| `⚠ recovery event` | on a nudge row: the loop refused/recovered a call (flags a passing sample `fragile`) |
+
+**Verdict placement (the anchor rule).** A check anchored to a transcript event renders its
+`expected` row atop that event's step and its verdict on that event's `actual` row. A check with
+**no anchor row** — a whole-run property, or a *missing* expected action that never happened —
+falls to the **run-close** table (`| run-close | whole-conversation contracts | k/n |`), where its
+verdict sits on its own `expected` row (these have no evidence row of their own). This is the
+deterministic realization of "run-close = checks with no anchor row."
+
+### Per-sample banner + folding
+
+Each sample opens with a banner naming its stats before you read a row:
+
+```
+<verdict> · <k/n> (<score>) · [fragile ·] [cause ·] <duration>s · <calls> calls
+```
+
+A clean pass carries no cause; a passed-but-shaky sample — one that reached its result only after a
+**recovery event** (a rejected/refused tool call, OR a user-turn recovery nudge — the continue and
+parse-failure nudges the render marks `⚠ recovery event`) — carries `fragile`; a **harness-timeout**
+sample (no completed turn) omits `k/n` (the scorer never ran) and renders an honest placeholder body
+instead of a table — so the report's sample count always matches N (visible degradation).
+
+**Uniform sample-level collapse — the one and only rendering (#1753/#1759).** EVERY sample block
+folds whole — the entire block inside a `<details>` whose `<summary>` is `sample N — <banner>` —
+regardless of verdict (passing, failed, fragile, regressed, harness-timeout). It is **collapsed by
+default, and its full body is always one click away**: "default collapsed" never means the body is
+dropped. There is **no compact / banner-only form and no `--full` flag** — the per-case `.md` and
+the assembled comment render each sample identically, byte-for-byte. The report's visible skeleton
+is the run header → per-case heading + RESULT/gate lines → **sample banner rows**; everything below
+a banner is one click deep. This supersedes the old density-follows-failure split (a clean pass
+folded, a failure rendered unfolded); the assembler re-normalizes even a re-assembled prior run
+(whose failures may be in the pre-#1753 unfolded `#### ` form) to the uniform fold.
+
+### System prompts (per context) — one collapsed row each (#1759)
+
+Every rendered sample carries, **directly under its banner and inside the fold**, one always-
+collapsed `<details>` row per DISTINCT system prompt among that sample's promptlog calls — the main
+agent's (`chat` / `collector`) and each micro-context flavour's (`browse-extract`,
+`state-classifier`). The summary names the context + size — `system prompt — <agent> (<n> chars)` —
+and the verbatim prompt sits inside. Identical prompts within a sample dedupe by text, so a repeated
+main-loop prompt renders once. Source: the persisted promptlog messages (`role: system`).
+
+Motivation: a micro-context's `🧩 <context> ← user turn:` row is that context's **USER** turn,
+not its system prompt — and the user mistook one for the other. When the surface under test IS a
+micro-context, its system prompt is half the contract, so each distinct context gets its own visible
+row. The rows are always present in the per-case `.md` and the assembled comment (there is no
+compact form to drop them).
+
+### Micro-context (🧩) — every sub-model is an official actor
+
+**Every** micro-context call in a sample's ledger renders inline, in ledger order, as two `actual`
+rows labelled with the calling context's ledger identity (#1773): the scoped turn INTO the sub-model
+as its USER turn (`🧩 <context> ← user turn: …`, #1759 — the explicit role label, so it is never
+mistaken for the sub-model's system prompt, which has its own
+[system-prompt row](#system-prompts-per-context--one-collapsed-row-each-1759)) and its drawn output
+OUT (`🧩 <context> → …`) — with the sub-model's own `💭 (<context>)` above the OUT row. The label
+is the same `agent_name` the context's system-prompt row carries, so the two read as one actor.
+
+Where a batch splices is its **placement** — the causal relationship it has to the run, declared per
+context and read by one generic walk (a fourth customer is a data row, not new code):
+
+| placement | who | where it renders |
+|---|---|---|
+| in-call | `browse-extract` — runs while `browse` executes | right after the `extract=` browse call that spawned it (FIFO-paired; a multi-page `extract` browse renders one pair per page) |
+| turn-head | `state-classifier` — draws before the chat agent | at the head of the turn it decided, right after that user turn |
+| run-close | `skill-namer` — labels every spot in the routine at run end; `skill-framer` — writes its name, description and parameters from the user's ask | closing the turn, after the final reply |
+
+The main-loop context never sees what a sub-model read — only the typed value returns — so the
+report is the one place these exchanges are visible. Before #1773 only the browse-extract batch was
+admitted, so a classifier draw that inverted a whole turn (it picks the per-state instruction chat is
+answered under) showed as a downstream check failure with no visible cause.
+
+### Run header
+
+The comment opens with the run header (no per-sample transcript above it):
+
+- **identity** — `**<run-id>** · commit \`<sha>\` [(dirty)] · <model> · N=<n> · **lever:** <lever>`.
+  The **lever** is required (the run's hypothesis; an unlabelled run can't attribute a score shift).
+- **RESULT** — one line: `mean · all-pass · pathology-excluded · causes — behavioral B · pathology P
+  · harness H · families: <fam> <mean> [(k cases)] · … · <calls> calls · <s>s · <in>K in / <out>K out`.
+  *mean* is the partial-credit mean the case gates on; *all-pass* the strict count of perfect
+  samples; *pathology-excluded* the honest mean over every non-pathology sample; the *families*
+  rollup names each family's mean (a case count only when a family spans more than one case).
+- **gate** — one line per gated case: `**gate:** [<case>: ]⚖ <threshold> on <metric> → **PASS/FAIL**
+  (<value>)`, where `<metric>` is `mean` or `pathology-excluded` (the honest-threshold opt-in, #1698).
+  A report-only case (`min_pass_rate=None`) has no gate line.
+- **flips** (diff mode) — `flips: <label> ✅→❌ (s1, s3) · …`, one entry per check that was fully
+  green in the baseline but failed a sample here. This is the one cross-sample join the transcript
+  flow can't give you; it joins on `(case_id, label)`. The assembler resolves the baseline from the
+  run's **durable manifest reference** (`RunManifest.baseline`, recorded from `EVAL_BASELINE` at eval
+  time), so the index survives to assemble time even when `make assemble` carries no `EVAL_BASELINE`
+  — the same durable state the per-row REGRESSED badges were baked from, so header and badges agree
+  (#1752). An explicit `EVAL_BASELINE` at assemble time overrides it (an ad-hoc re-diff).
+
+Then one section per case — a `### \`<case_id>\` — <family>` heading **only when the run spans
+multiple cases** — above that case's per-sample blocks. A single-case run needs no divider.
+
+### Diff mode (when a baseline is set)
+
+Same grammar plus the `baseline` row (the prior run's anchor event, its cell the prior verdict) and
+the flip badges (`✅→❌ REGRESSED` / `❌→✅ FIXED`) in place of the plain glyph; the step header shows
+the step-level flip, and the run header gains the `flips:` index. The baseline is set via
+`EVAL_BASELINE` at eval time (baking the per-row badges into the transcripts) and **recorded in the
+manifest** so the flips index re-derives at assemble time from that durable reference, not the live
+env (#1752). Off-diff (no baseline, or a first run) there are no baseline rows, no flip badges, and
+no flips line — no error.
+
+### Check-label stability (an authoring note)
 
 The diff joins on `(case_id, label)`, so **renaming a check silently breaks its regression
 continuity** — the flip/REGRESSED machinery can no longer match it against the baseline. Relabeling
 a check is therefore a recorded scorer-semantics change, not a cosmetic edit.
 
----
-
-## Worked example
+### Worked example
 
 One complete run comment, rendered by the assembler — a chat-browse case at N=3 (a clean pass, plus a
 harness-timeout sample the format makes visible). Entirely synthetic, shown in a fenced block so the
@@ -346,9 +370,7 @@ and the folded F2 placeholder makes the timeout *visible* — its per-sample DB 
 for the full parse-failure trace, per the footer. Every sample — clean pass, failure, timeout —
 folds whole under its banner: collapsed by default, its full body always one click away.
 
----
-
-## Field glossary (names shared across the artifact + renderer)
+### Field glossary (names shared across the artifact + renderer)
 
 | field | source | meaning |
 |---|---|---|
@@ -363,7 +385,7 @@ folds whole under its banner: collapsed by default, its full body always one cli
 | `checks[]` | artifact | per-check `CheckOutcome`: `label · passed · total · scored · cells[] · rationales[]` |
 | `min_pass_rate` / `gate_metric` | artifact (#1725) | the gate threshold + which score it compares (`mean` \| `pathology-excluded`) |
 
-## Decided ambiguities (resolved here)
+### Decided ambiguities (resolved here)
 
 Points the reference grammar left open, decided for this implementation:
 
