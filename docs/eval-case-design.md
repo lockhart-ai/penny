@@ -159,7 +159,8 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
 
     # A · DIRECTED_CHANGE — a SECOND VISIBLE DRIVE, beside the claim it serves.
     control = await chat_eval(..., world=<WORLD_CONTROL>, ask=<THE ASK>, samples_per_phrasing=3)
-    cohort.assert_facts_moved_with_the_world(control)
+    cohort.assert_facts_moved_with_the_world(control)   # the REPLY's facts moved
+    cohort.assert_<the store's facts moved too>()       # write it — nothing to copy
 
     # B · what is measured, never asserted
     cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS,
@@ -168,6 +169,13 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
 
 The four category comments are load-bearing: they are where the **inward** pass is run. A case with
 no `# A · DIRECTED_CHANGE` block is a case that skipped it.
+
+Note the second directed-change line, and that it has no helper to call. `DIRECTED_CHANGE` has two
+halves — the **reply's** facts move with the world, and the **store's** do — and only the first
+exists as a shared claim today, because the reference port needed only the first. Writing the
+second, per case, against the world your case declares, *is* the inward pass. If your case genuinely
+stores nothing, say so in a comment rather than leaving the block empty; an absent claim and a
+deliberately-absent claim look identical six weeks later.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
