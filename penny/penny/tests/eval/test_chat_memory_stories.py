@@ -57,18 +57,16 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
-from typing import NamedTuple
 
 import pytest
 from sqlmodel import Session
 
 from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState, MachineSnapshot
+from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, PromptLog, Skill
-from penny.database.skill_store import steps_from_json
+from penny.database.models import MemoryEntry, MemoryRow, PromptLog
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
 
@@ -77,10 +75,16 @@ from penny.tests.conftest import TEST_SENDER, require_memory
 # before it was taught), and one policy in two copies is two contracts.
 from penny.tests.eval.cohort import (
     BASE_WORLD,
-    CohortArm,
-    unsourced_specifics,
+    CONTAINER_NAME,
+    CONTROL_WORLD,
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    ROUTINE_SHAPE,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
 )
 from penny.tests.eval.conftest import (
+    EVAL_MODELS,
     REPLY_ANCHOR,
     ChatEval,
     Check,
@@ -88,7 +92,6 @@ from penny.tests.eval.conftest import (
     chat_run_tool_sequences,
     collection_entries,
     describes,
-    given_to_the_model,
     is_ordered_subsequence,
     is_seeded_run,
     new_collections,
@@ -105,6 +108,7 @@ from penny.tests.eval.fixtures import (
     CannedPage,
     SynthCollection,
 )
+from penny.tests.eval.seeds import Seeder, round_parked_in_elicit
 
 # Standing a ROUND up before the measured turn is the transition suite's idiom, read from
 # where that suite declares it rather than restated here: a seeded machine state, a seeded
@@ -116,16 +120,7 @@ from penny.tests.eval.fixtures import (
 # for.  What a probe asserts is the seed it stands beside, so the honest cost of not
 # widening a neighbour's fixture type is one restated probe, named here rather than left
 # for a reader to notice.
-from penny.tests.eval.test_state_transitions import (
-    _drawn_state,
-    _log_ask,
-    _log_chat_step,
-    _log_classifier_draw,
-    _log_reply,
-    _park,
-    _seeded_response,
-)
-from penny.tools.skill_tools import render_skill_shape
+from penny.tests.eval.worlds import World
 
 pytestmark = pytest.mark.eval
 
@@ -1340,42 +1335,30 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 
 # ── Story 15, the learn close: end-state assertions plus variance (#1994/#1995) ──
 #
-# THE REFERENCE IMPLEMENTATION.  Every other case is ported against the shape of this one,
-# so it is arranged to be COPIED: the ARMS say how the one request is asked, the WORLDS say
-# what is true when it is asked, the ASSERTIONS say what the round must have left behind,
-# and the FEATURES say what is merely measured.  Everything those four are handed to is
-# shared (``penny/tests/eval/cohort.py``); nothing below is harness.
+# THE REFERENCE IMPLEMENTATION — every other case is ported against this shape, so it is
+# arranged to be COPIED: fixtures say what is TRUE before the turn, the body TRIGGERS the
+# action once, and the claims say what the round must have left behind.  Everything those
+# three are handed to is shared (`cohort.py` · `assertions.py` · `worlds.py` · `seeds.py`);
+# nothing below is harness.
 #
-# WHY the case is shaped this way rather than scored on phrasings somebody guessed: a reply
-# check written as a token list is measurably too strict and too loose AT ONCE — across 161
-# samples of one claim, 31 replies that stated the recorded cadence correctly were failed by
-# a token list, while on another case an infrastructure error string, a narration of a FAILED
-# search, and a raw thinking leak all passed a verb alternation on the word "search".  So the
-# line drawn here is between what the round LEFT BEHIND, which is read, and what the model
+# WHY it is shaped this way rather than scored on phrasings somebody guessed: a reply check
+# written as a token list is measurably too strict and too loose AT ONCE — across 161 samples
+# of one claim, 31 replies that stated the recorded cadence correctly were FAILED by a token
+# list, while on another case an infrastructure error string, a narration of a FAILED search,
+# and a raw thinking leak all PASSED a verb alternation on the word "search".  So the line
+# drawn here is between what the round LEFT BEHIND, which is asserted, and what the model
 # CHOSE, which is measured.
 #
-# WHAT IS ASSERTED (section A) — END STATE only, never the route:
-#   * where the machine landed, and that a routine reached the registry
-#   * a PROPERTY of that routine — it names somewhere to act — never its step sequence
-#   * what the STORE holds, reading the WHOLE entry: a prototype assertion that read content
-#     alone reported a 25/32 model failure that was entirely its own bug, because samples put
-#     the fact in the KEY and the blurb in the content
-#   * PROVENANCE — every specific value in the reply traces to something the model was GIVEN
-#   * DIRECTED CHANGE — perturb the world and the reply's facts move with it
+# PHRASINGS and the CONTROL are two different mechanisms, and the naming says so:
+#   * phrasings — same world, different words → VARIANCE, pooled into one score
+#   * control   — same words, different world → an ASSERTION, never pooled
+# Wording variation cannot do the control's job: if Penny were pattern-completing from the
+# shape of the request, every phrasing would name the same player and every phrasing would be
+# right.  The control is a SECOND VISIBLE DRIVE in the body — an assertion that quietly made
+# three more model calls would be a nasty surprise.
 #
-# WHAT IS MEASURED (section B), never asserted: the tool sequence, the shape of the routine
-# recorded, the container name chosen, how many entries were kept, the walk the machine took,
-# and the reply text's own pairwise spread.  Many routes reach one end state — #1993 is the
-# precedent, where three different tools all correctly reached the run record and the check
-# had pinned one — so a route is a number with a one-sided ceiling.
-#
-# WHAT IS DELIBERATELY NOT ASSERTED: whether the club-housekeeping lines belong in a "team
-# news" list.  The setup ask excludes game scores in as many words, so a stored score is a
-# read; whether a training-camp date is notable is a judgement, and asserting a count would
-# assert one reading of it.  It rides in the ENTRY COUNT feature instead.
-#
-# WHAT IS NOT HERE AT ALL: the single-source variant of this ask.  One page instead of two is
-# a different SCENARIO — what the store must hold is a different claim — so it is a different
+# NOT HERE AT ALL: the single-source variant of this ask.  One page instead of two is a
+# different SCENARIO — what the store must hold is a different claim — so it is a different
 # case, not a sixth phrasing.
 
 _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
@@ -1383,24 +1366,18 @@ _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 # ── The request, asked five ways ─────────────────────────────────────────────
 #
 # ONE request — read these two named pages, take the trades and signings, keep a headline and
-# a blurb in a team news list — worded as five different people would word it.  They pool into
-# one cohort: phrasing was measured to contribute ~0.05 of the spread while model stochasticity
-# carries the rest (gpt-oss produced 4.8 distinct routine shapes inside a SINGLE phrasing, and
-# pooling four only reached 9), so a pooled number estimates the underlying variance rather
-# than blending five different things.
-#
-# They are still five, and not one repeated fifteen times, because phrasings are a COVERAGE
-# mechanism: measured on a consistent model, four phrasings scored H = 0.00, 0.52, 0.00, 0.00
-# — three perfectly stable and one that came apart — which the pooled 0.18 hides completely.
-# That is what section B's per-phrasing rows are for.
+# a blurb in a team news list — worded as five different people would word it.  They pool:
+# phrasing was measured to contribute ~0.05 of the spread while model stochasticity carries
+# the rest, so a pooled number estimates the underlying variance rather than blending five
+# things.  They are still FIVE because phrasings are a COVERAGE mechanism — measured, four
+# scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides the one that came apart.
 
-_LEARN_CLOSE_ASK = (
+LEARN_CLOSE_ASK = (
     f"go to {_FOXES_URL} and {_SEALS_URL}, pull out the trades and signings from "
     "each, and keep the headline plus a short blurb in a team news list for me"
 )
 
-_LEARN_CLOSE_PHRASINGS = (
-    _LEARN_CLOSE_ASK,
+LEARN_CLOSE_PHRASINGS = (
     (
         f"have a look at both of these — {_FOXES_URL} and {_SEALS_URL} — find "
         "whichever players got traded or signed, and put each headline with a "
@@ -1421,16 +1398,22 @@ _LEARN_CLOSE_PHRASINGS = (
     ),
 )
 
-# ── The two worlds ───────────────────────────────────────────────────────────
+# The fused ask the round opens on, and Penny's answer to it — she splits teaching from
+# setting a job running, which is the reply that leaves the machine parked in elicit.
+_LEARN_CLOSE_TEACH_QUESTION = (
+    "happy to set that up — but i don't have a routine for it yet. can you walk me "
+    "through one pass in a single message? which pages should i read, what counts as "
+    "notable, and what should i keep for each one?"
+)
+
+# ── The control world ────────────────────────────────────────────────────────
 #
-# The same SHAPE twice: each page carries one signing-or-trade, one game score the setup ask
-# excludes word for word, and one piece of club housekeeping.  The perturbed world replaces
-# every proper noun and every fact and changes nothing else, which is what makes "the reply's
-# facts moved with the world" a read rather than a judgement.
+# The same SHAPE as the base world: each page carries one signing-or-trade, one game score the
+# setup ask excludes word for word, and one piece of club housekeeping.  Every proper noun and
+# every fact is replaced and nothing else is, which is what makes "the reply's facts moved with
+# the world" a read rather than a judgement.
 
-_PERTURBED_WORLD = "perturbed"
-
-_FOXES_SWAPPED_PAGE = CannedPage(
+_FOXES_CONTROL_PAGE = CannedPage(
     match="ridgelinefoxes",
     text=(
         "Title: Ridgeline Foxes | Official Site — Team News\n"
@@ -1442,7 +1425,7 @@ _FOXES_SWAPPED_PAGE = CannedPage(
     ),
 )
 
-_SEALS_SWAPPED_PAGE = CannedPage(
+_SEALS_CONTROL_PAGE = CannedPage(
     match="harborseals",
     text=(
         "Title: Harbor Seals | Official Site — Team News\n"
@@ -1455,411 +1438,98 @@ _SEALS_SWAPPED_PAGE = CannedPage(
 )
 
 
-class _World(NamedTuple):
-    """What is TRUE in one world, and what its pages return.
+# ── The priors, the worlds, and the request: fixtures ────────────────────────
+@pytest.fixture
+def standing_elicit_round() -> Seeder:
+    """The round the measured turn closes: the user asked for the job, Penny asked to be
+    taught one pass, and the machine is parked in ``elicit`` on that ask.
 
-    ``keeps`` is one token set per SOURCE — the names that appear only on that page's
-    trade-or-signing line, so a stored copy says which page it came from and an invented one
-    matches neither.  ``excludes`` are score-line-only tokens: the setup ask says "not game
-    scores" in as many words, which is what makes a stored score a READ rather than a taste.
-    ``says`` is every page's text, the ground a stored entry's specifics are traced to."""
-
-    pages: list[CannedPage]
-    keeps: tuple[tuple[str, ...], ...]
-    excludes: tuple[str, ...]
-
-    @property
-    def says(self) -> str:
-        return "\n".join(page.text for page in self.pages)
-
-    @property
-    def names(self) -> tuple[str, ...]:
-        return tuple(token for source in self.keeps for token in source)
+    Seeded rather than hoped for (#1989) — the ask is an imperative about now, which idle's own
+    definition claims, so on a cold machine both measured models drew idle on 10 of 10 samples
+    and every reply check failed for a reply nobody had been asked to write."""
+    return round_parked_in_elicit(_TWO_SOURCE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
 
 
-_WORLDS: dict[str, _World] = {
-    BASE_WORLD: _World(
-        pages=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
+@pytest.fixture
+def two_team_news() -> World:
+    """Both team news pages: one trade-or-signing each, among distractors the ask excludes
+    (a final score, a training camp date, ticket renewals)."""
+    return World(
+        name=BASE_WORLD,
+        pages=(_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE),
         keeps=(("brandt", "aurelio"), ("volk", "petra")),
         excludes=("rovers 2", "gulls 4"),
-    ),
-    _PERTURBED_WORLD: _World(
-        pages=[_FOXES_SWAPPED_PAGE, _SEALS_SWAPPED_PAGE],
+    )
+
+
+@pytest.fixture
+def two_team_news_control() -> World:
+    """The same world with every proper noun and every fact replaced.
+
+    A CONTROL, not a cohort arm: it is what makes "she read the page" decidable instead of
+    assumed."""
+    return World(
+        name=CONTROL_WORLD,
+        pages=(_FOXES_CONTROL_PAGE, _SEALS_CONTROL_PAGE),
         keeps=(("roux", "wilhelmina"), ("oyelaran", "casimir")),
         excludes=("rovers 5", "gulls 2"),
-    ),
-}
-
-# The world each arm's facts are checked AGAINST the other of — directed change is a claim
-# about both directions at once, so each world names its opposite here rather than at four
-# call sites.
-_OTHER_WORLD = {BASE_WORLD: _PERTURBED_WORLD, _PERTURBED_WORLD: BASE_WORLD}
-
-_PAGES_BY_WORLD = {name: world.pages for name, world in _WORLDS.items()}
-
-# ── The cohort ───────────────────────────────────────────────────────────────
-#
-# 5 phrasings x 3 = 15 POOLED, plus 3 on the perturbed world that are not.  Fifteen is near
-# the floor of what the statistic supports and deliberately not below it: subsampling two real
-# 32-sample cohorts down to 15 puts the spread on normalised entropy at ~±0.11, which is not
-# precise — but a variant cohort (modal share 0.33) and a consistent one (0.80) overlap 0.2%
-# there, so destabilisation is caught cleanly while a two-point wobble is not.  At N=9 the
-# spread is 0.33-0.43, wider than the gap between a good case and a bad one.
-#
-# The perturbed arm does NOT pool: it exists to make the directed-change assertion, and folding
-# a deliberately different world into the spread would report that difference as instability.
-_LEARN_CLOSE_SAMPLES_PER_PHRASING = 3
-_LEARN_CLOSE_PERTURBED_SAMPLES = 3
-
-_LEARN_CLOSE_ARMS = [
-    CohortArm(
-        label=f"phrasing {index + 1}",
-        message=message,
-        samples=_LEARN_CLOSE_SAMPLES_PER_PHRASING,
-    )
-    for index, message in enumerate(_LEARN_CLOSE_PHRASINGS)
-] + [
-    CohortArm(
-        label="perturbed world",
-        message=_LEARN_CLOSE_ASK,
-        samples=_LEARN_CLOSE_PERTURBED_SAMPLES,
-        world=_PERTURBED_WORLD,
-        pooled=False,
-    )
-]
-
-# The round the measured turn closes, one turn each: the user's fused setup ask — story
-# 15's OWN opening ask, so the two cases open on one ask rather than on two spellings of it
-# — and Penny's answer, the teach question the demonstration replies to.  She splits the
-# fused ask out loud (teaching and setting a job running are two different turns), which
-# is the reply that leaves the machine in ``elicit``.
-_LEARN_CLOSE_SETUP_ASK = _TWO_SOURCE_SETUP_ASK
-_LEARN_CLOSE_TEACH_QUESTION = (
-    "happy to set that up — but i don't have a routine for it yet. can you walk me "
-    "through one pass in a single message? which pages should i read, what counts as "
-    "notable, and what should i keep for each one?"
-)
-
-# The run ids the seeded elicit turn is written under — its classifier draw and its chat
-# call, which production mints separately (the turn's own run reaches the classifier only
-# through the transition row).  Seeded ids, so every "what did THIS sample do" reader
-# excludes them.
-_LEARN_CLOSE_ELICIT_DRAW = seeded_run_id("learn-close-elicit-draw")
-_LEARN_CLOSE_ELICIT_TURN = seeded_run_id("learn-close-elicit-turn")
-
-
-def _seed_learn_close_round(db: Database) -> None:
-    """Lay down the round the measured turn closes — the state an idle → elicit turn
-    leaves behind, item for item:
-
-    * the fused setup ask, logged INCOMING — the message the round is ANCHORED to
-    * Penny's teach question, logged OUTGOING and THREADED to it — her last turn, the one
-      the demonstration answers, and the only way a reply of hers reaches the window
-    * that turn's LEDGER — the draw that chose elicit over a cold machine, and the one
-      chat call that answered.  No tool calls: an elicitation turn enacts nothing
-    * the machine parked in ``elicit``, carrying that ask as its anchor
-
-    Nothing else: an empty registry, no collection, no page read.  What the round is FOR
-    has been said and what it DOES has not, which is exactly the world a demonstration
-    arrives into."""
-    ask_id = _log_ask(db, _LEARN_CLOSE_SETUP_ASK, _LEARN_CLOSE_CASE_ID)
-    _log_reply(db, _LEARN_CLOSE_TEACH_QUESTION, answering=ask_id)
-    _seed_setup_turn_ledger(db)
-    _park(
-        db,
-        ConversationState.ELICIT,
-        anchor_message_id=ask_id,
-        run_id=_LEARN_CLOSE_ELICIT_TURN,
-        message_id=ask_id,
-    )
-    _assert_parked_in_elicit(db, ask_id)
-    _assert_the_round_has_not_started(db)
-
-
-def _seed_setup_turn_ledger(db: Database) -> None:
-    """The setup turn's promptlog: the classifier draw that chose elicit over a COLD
-    machine (no history, no skills), then the one chat call that answered with the teach
-    question.  No tool calls — an elicitation turn enacts nothing, so a seeded call would
-    be seeding a world the preceding beat is measured against not having."""
-    _log_classifier_draw(
-        db,
-        run_id=_LEARN_CLOSE_ELICIT_DRAW,
-        snapshot=MachineSnapshot(state=ConversationState.IDLE),
-        message=_LEARN_CLOSE_SETUP_ASK,
-        drawn=_drawn_state(ConversationState.ELICIT),
-    )
-    _log_chat_step(
-        db,
-        run_id=_LEARN_CLOSE_ELICIT_TURN,
-        messages=[{"role": "user", "content": _LEARN_CLOSE_SETUP_ASK}],
-        response=_seeded_response(_LEARN_CLOSE_TEACH_QUESTION),
     )
 
 
-def _assert_parked_in_elicit(db: Database, ask_id: int) -> None:
-    """Loud probe: the machine is parked in elicit on THIS ask, and the round reads back
-    as a two-turn CONVERSATION rather than as one user turn (Penny's turn reaches the
-    window only because it is threaded to the ask).
-
-    A seed that has drifted from the state it claims makes this case a turn answered
-    against a world nothing produces, which is precisely what the bare cold machine was —
-    so it fails HERE, in the seed, rather than as a puzzling 0.00 after a paid run."""
-    latest = db.machine.latest_transition()
-    assert latest is not None and latest.to_state == ConversationState.ELICIT.value, (
-        f"{_LEARN_CLOSE_CASE_ID}: the machine must be parked in elicit, not {latest}"
-    )
-    assert latest.anchor_message_id == ask_id, (
-        f"{_LEARN_CLOSE_CASE_ID}: the park must be anchored to the ask, "
-        f"not {latest.anchor_message_id}"
-    )
-    expected = [
-        (PennyConstants.MessageDirection.INCOMING, _LEARN_CLOSE_SETUP_ASK),
-        (PennyConstants.MessageDirection.OUTGOING, _LEARN_CLOSE_TEACH_QUESTION),
-    ]
-    window = db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=len(expected))
-    seen = [(row.direction, row.content) for row in window]
-    assert seen == expected, (
-        f"{_LEARN_CLOSE_CASE_ID}: the round must read as a two-turn conversation, got {seen}"
-    )
-
-
-def _assert_the_round_has_not_started(db: Database) -> None:
-    """The other half of that probe — the setup turn enacted NOTHING, which is the whole
-    of what an elicitation turn's contract is: no routine in the registry, nothing written
-    by any run, and no page fetched.  Every one of them is what the measured turn is about
-    to do for the first time."""
-    assert not db.skills.list_all(), (
-        f"{_LEARN_CLOSE_CASE_ID}: the round starts with no routine in the registry"
-    )
-    assert not _entries_this_run_wrote(db), (
-        f"{_LEARN_CLOSE_CASE_ID}: the round starts with nothing written"
-    )
-    assert not _pages_fetched(db), f"{_LEARN_CLOSE_CASE_ID}: the round starts with no page read"
-
-
-def _learned_shapes(db: Database) -> list[str]:
-    """The shape line the framework rendered from what this sample actually learned.
-
-    MEASURED, never asserted: a routine's step sequence is model output exactly like the
-    reply, and many sequences reach the same end state.  A list, because a round that minted
-    more than one routine is itself the finding and collapses to its own feature value."""
-    return [render_skill_shape(skill) for skill in db.skills.list_all()]
-
-
-# ── A. The deterministic assertions — END STATE only ─────────────────────────
-
-
-def _has_a_destination(skill: Skill) -> bool:
-    """Whether a recorded routine names somewhere to act.
-
-    Read off the ATTACHMENT MARK, which distillation sets on any leaf whose demonstrated
-    value named one of Penny's own collections — registry-derived, so it is true of a write,
-    of a log append, and of a plugin verb nobody here has heard of, and false of a routine
-    that only browses.  Keyed to the mark and never to a tool name, because a skill is an
-    arbitrary tool sequence and a name-keyed rule simply would not fire for a shape nobody
-    enumerated."""
-    return any(
-        substitution.attachment
-        for step in steps_from_json(skill.steps)
-        for substitution in step.substitutions
-    )
-
-
-def _routine_can_persist(db: Database) -> Check:
-    """A PROPERTY of the routine, never its shape.
-
-    The prototype cohort minted two routines that browse and never persist — they would have
-    run every cycle for ever and kept nothing — and no check in the suite could see it,
-    because every check was about the reply.  What is asserted is that the routine names a
-    destination; the step sequence that reaches it is measured, not asserted."""
-    skills = db.skills.list_all()
-    missing = [skill.name for skill in skills if not _has_a_destination(skill)]
-    return Check(
-        "state: the routine it recorded names somewhere to act",
-        bool(skills) and not missing,
-        rationale=f"no destination in {missing}" if missing else None,
-        kind="state",
-    )
-
-
-def _stored_text_of(written: list[tuple[str, MemoryEntry]]) -> str:
-    """Every entry this run wrote, KEY AND CONTENT together, normalized.
-
-    Both halves, always: a prototype assertion that read content alone reported a 25/32 model
-    failure that was entirely its own bug — seven samples had put the fact in the key and the
-    blurb in the body, which is a perfectly good way to store it."""
-    return " ".join(_entry_text(entry) for _name, entry in written)
-
-
-def _store_holds_each_source(written: list[tuple[str, MemoryEntry]], world: _World) -> Check:
-    """What the round KEPT, one claim per source page.
-
-    The ask says to take the trades and signings from EACH page, so a round that read both and
-    kept one has not done what was asked — and which page it dropped is the finding, so the
-    rationale names it rather than reporting a bare miss."""
-    stored = _stored_text_of(written)
-    missed = [source[0] for source in world.keeps if not any(token in stored for token in source)]
-    return Check(
-        "state: what each page said was kept",
-        bool(written) and not missed,
-        rationale=f"nothing stored from {missed}" if missed else None,
-        kind="state",
-    )
-
-
-def _store_holds_nothing_excluded(written: list[tuple[str, MemoryEntry]], world: _World) -> Check:
-    """The one exclusion the round was told in as many words: not game scores.
-
-    A read rather than a taste — the setup ask says it, and the tokens compared appear ONLY on
-    the score line, so a stored score is unambiguous.  One prototype sample stored the raw page
-    body against exactly this ask and no check could see it."""
-    stored = _stored_text_of(written)
-    landed = [token for token in world.excludes if token in stored]
-    return Check(
-        "state: nothing the ask excluded was stored",
-        not landed,
-        rationale=f"stored the excluded {landed}" if landed else None,
-        kind="state",
-    )
-
-
-def _store_traces_to_what_was_given(db: Database, written: list[tuple[str, MemoryEntry]]) -> Check:
-    """Every stored entry's specifics trace to something the round was given.
-
-    The store's own provenance claim, against the SAME world the reply's is — an entry naming a
-    player nobody's page mentions was invented, and once it is in a collection a collector
-    re-reads it for ever.  Against what was GIVEN rather than against the pages alone, because
-    an entry keyed by the day it was saved reads that date off the self-state header: measured,
-    the narrower haystack reported the current date as a fabrication in 3 of 18 samples."""
-    given = given_to_the_model(db)
-    invented = {
-        token
-        for _name, entry in written
-        for token in unsourced_specifics(_entry_text_raw(entry), given)
-    }
-    return Check(
-        "state: every stored entry traces to what the round was given",
-        not invented,
-        rationale=f"unsourced in the store: {sorted(invented)}" if invented else None,
-        kind="state",
-    )
-
-
-def _entry_text_raw(entry: MemoryEntry) -> str:
-    """An entry's key and content UNFOLDED — the provenance rule reads capitalisation, which
-    ``_entry_text``'s normalisation deliberately throws away."""
-    return " ".join(text for text in (entry.key, entry.content) if text)
-
-
-def _reply_is_sourced(db: Database, reply: str) -> Check:
-    """Every specific value in the reply traces to something the model was GIVEN.
-
-    The world is the user's turns and the tool results — never Penny's own turns, because a
-    value she invents early in a turn rides into the message history and would then source
-    itself from her own account of it."""
-    invented = unsourced_specifics(reply, given_to_the_model(db))
-    return Check(
-        "reply: every specific value in it is sourced",
-        not invented,
-        rationale=f"unsourced: {invented}" if invented else None,
-        kind="reply",
-        anchor=REPLY_ANCHOR,
-    )
-
-
-def _reply_reads_this_world(reply: str, world: _World) -> Check:
-    """Half of DIRECTED CHANGE: the reply carries this world's own facts."""
-    folded = _normalize(reply)
-    named = [token for token in world.names if token in folded]
-    return Check(
-        "reply: it names what this world says",
-        bool(named),
-        rationale=f"named {named}" if named else "named none of this world's facts",
-        kind="reply",
-        anchor=REPLY_ANCHOR,
-    )
-
-
-def _reply_reads_no_other_world(reply: str, other: _World) -> Check:
-    """The other half: nothing from the world this sample was NOT given.
-
-    Perturb the world and the facts must move with it — a reply that says the same thing over
-    a different world was never reading the world.  The prototype measured zero cross-
-    contamination across 40 samples, which is what makes this an assertion rather than a
-    number: the round really is reading, so a leak is a regression and not noise."""
-    folded = _normalize(reply)
-    leaked = [token for token in other.names if token in folded]
-    return Check(
-        "reply: it names nothing from the world it was not given",
-        not leaked,
-        rationale=f"leaked {leaked}" if leaked else None,
-        kind="reply",
-        anchor=REPLY_ANCHOR,
-    )
-
-
-def _score_learn_close(db: Database, before: set[str], reply: str, arm: CohortArm) -> list[Check]:
-    """Section A, in one place: where the machine landed, what the store holds, and whether
-    the reply is grounded in the world this arm was actually given."""
-    world = _WORLDS[arm.world]
-    written = _entries_this_run_wrote(db)
-    return [
-        # The landing is this story's PRECONDITION and so its scored gate: a round that never
-        # entered learn has no learn close, and every claim below is about one.
-        _landing_advisory(db, ConversationState.LEARN, scored=True),
-        Check("state: the round taught a routine", bool(db.skills.list_all()), kind="state"),
-        _routine_can_persist(db),
-        Check("state: the store holds at least one entry", bool(written), kind="state"),
-        _store_holds_each_source(written, world),
-        _store_holds_nothing_excluded(written, world),
-        _store_traces_to_what_was_given(db, written),
-        _reply_is_sourced(db, reply),
-        _reply_reads_this_world(reply, world),
-        _reply_reads_no_other_world(reply, _WORLDS[_OTHER_WORLD[arm.world]]),
-        _routing_advisory(db),
-    ]
-
-
-# ── B. What is MEASURED — the features, never asserted ───────────────────────
-#
-# Each is a string because what is being measured is DISTINCTNESS: two samples agree when they
-# produced the same value, and every feature answers that the same way whatever it is made of.
-# Declaration order is render order.
-
-
-def _learn_close_features(db: Database, arm: CohortArm) -> dict[str, str]:
-    """This sample's value for each measured feature."""
-    written = _entries_this_run_wrote(db)
-    return {
-        "tool sequence": " → ".join(_enacting_calls(db)) or "no enacting call",
-        "routine shape": " | ".join(_learned_shapes(db)) or "no routine",
-        "container name": ", ".join(sorted({name for name, _entry in written})) or "none",
-        "entries stored": str(len(written)),
-        "transitions": _walked(db),
-    }
-
-
-async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval) -> None:
-    """Story 15, the learn close, as end-state assertions plus variance (#1994/#1995).
-
-    The round is standing already (``_seed_learn_close_round``): the user asked for the job,
-    Penny asked to be taught one pass, and the machine is parked in ``elicit`` on that ask — so
-    the measured turn is the demonstration, and the reply it draws is a learn close rather than
-    an answer to a request handled on the spot.
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_learn_close_states_the_steps_it_captured(
+    chat_eval: ChatEval,
+    model: str,
+    standing_elicit_round: Seeder,
+    two_team_news: World,
+    two_team_news_control: World,
+) -> None:
+    """Story 15, the learn close: one demonstrated round, and the reply that closes it tells the
+    user what the routine will RUN — so a step it captured by accident is visible to the only
+    person who can tell that it does not belong.
 
     REPORT-ONLY, deliberately: the floors and ceilings this run proposes are the code owner's
-    to accept once the numbers have been read.  A near-ceiling feature is not lockable at all —
-    it is a defect to fix first."""
-    await chat_eval(
+    to accept once the numbers have been read."""
+    cohort = await chat_eval(
         case_id=_LEARN_CLOSE_CASE_ID,
-        cohort=_LEARN_CLOSE_ARMS,
-        worlds=_PAGES_BY_WORLD,
-        seed=_seed_learn_close_round,
-        cohort_score=_score_learn_close,
-        facts=_learn_close_features,
+        model=model,
+        seed=standing_elicit_round,
+        world=two_team_news,
+        ask=LEARN_CLOSE_ASK,
+        also_phrased=LEARN_CLOSE_PHRASINGS,
+        samples_per_phrasing=3,
         min_pass_rate=None,
         family=_FAMILY,
-        timeout=240.0,  # one turn, but it reads two pages before it writes
+        timeout=240.0,
+    )
+
+    # ── what the round left behind ───────────────────────────────────────────
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    cohort.assert_a_routine_reached_the_registry()
+    cohort.assert_the_routine_names_a_destination()
+    cohort.assert_the_store_holds_an_entry()
+    cohort.assert_each_source_was_kept()
+    cohort.assert_nothing_excluded_was_stored()
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    # ── that the answer was READ, not recalled ───────────────────────────────
+    control = await chat_eval(
+        case_id=_LEARN_CLOSE_CASE_ID,
+        model=model,
+        seed=standing_elicit_round,
+        world=two_team_news_control,
+        ask=LEARN_CLOSE_ASK,
+        samples_per_phrasing=3,
+        min_pass_rate=None,
+        family=_FAMILY,
+        timeout=240.0,
+    )
+    cohort.assert_facts_moved_with_the_world(control)
+
+    # ── measured, never asserted ─────────────────────────────────────────────
+    cohort.measure(
+        TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
     )
 
 
@@ -2010,7 +1680,7 @@ async def test_a_demonstration_reports_what_landed_when_a_source_is_down(
     visited both pages — which is exactly why the count has to come off the record."""
     await chat_eval(
         case_id="memory-writes-landed-source-down",
-        message=_LEARN_CLOSE_ASK,
+        message=LEARN_CLOSE_ASK,
         # The unreachable source FIRST: ``install_browse`` answers with the first page whose
         # match is in the url, so the order is what decides which source is down.
         browse=[_SEALS_UNREACHABLE, _FOXES_NEWS_PAGE],

@@ -11,13 +11,13 @@ from __future__ import annotations
 import math
 
 from penny.tests.eval.cohort import (
-    BASE_WORLD,
+    REPLY_SPREAD,
+    ROUTINE_SHAPE,
     AssertionRow,
     CaseReport,
-    CohortArm,
-    SampleFacts,
+    RoutineRecord,
+    SampleObservation,
     compare_to_ceiling,
-    expand_arms,
     feature_variance,
     normalised_entropy,
     per_sample_cost,
@@ -32,8 +32,11 @@ _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
 
 
-def _sample(name: str, arm: str, shape: str, **kwargs) -> SampleFacts:
-    return SampleFacts(name=name, arm=arm, features={"routine shape": shape}, **kwargs)
+def _sample(name: str, arm: str, shape: str, **kwargs) -> SampleObservation:
+    """One observation carrying a routine of the given SHAPE — the feature every test here
+    measures, since what is under test is the statistic and not the reading of it."""
+    routines = [RoutineRecord(name="r", shape=shape, names_a_destination=True)]
+    return SampleObservation(name=name, phrasing=arm, routines=routines, **kwargs)
 
 
 # ── The statistic ────────────────────────────────────────────────────────────
@@ -62,7 +65,7 @@ def test_a_feature_reports_its_modal_share_and_its_per_phrasing_rows():
         _sample("s3", "p2", "browse → write"),
         _sample("s4", "p2", "browse → browse → write"),
     ]
-    feature = feature_variance("routine shape", samples)
+    feature = feature_variance(ROUTINE_SHAPE, samples)
     assert (feature.distinct, feature.modal, feature.n) == (2, 3, 4)
     assert round(feature.modal_share, 2) == 0.75
     rows = {row.arm: row for row in feature.phrasings}
@@ -82,7 +85,7 @@ def test_a_phrasing_that_agrees_with_its_neighbours_is_not_flagged():
         _sample("s3", "p2", "one"),
         _sample("s4", "p2", "two"),
     ]
-    assert all(not row.flagged for row in feature_variance("routine shape", samples).phrasings)
+    assert all(not row.flagged for row in feature_variance(ROUTINE_SHAPE, samples).phrasings)
 
 
 def test_one_phrasing_flags_nothing_because_there_is_no_other_wording_to_differ_from():
@@ -90,7 +93,7 @@ def test_one_phrasing_flags_nothing_because_there_is_no_other_wording_to_differ_
     is trivially unique to the only arm there is, and flagging it would report the shape of the
     cohort as a finding."""
     samples = [_sample(f"s{i}", "phrasing 1", str(i)) for i in range(3)]
-    rows = feature_variance("routine shape", samples).phrasings
+    rows = feature_variance(ROUTINE_SHAPE, samples).phrasings
     assert [row.arm for row in rows] == ["phrasing 1"]
     assert rows[0].distinct == 3 and rows[0].only_here == [] and not rows[0].flagged
 
@@ -99,7 +102,7 @@ def test_total_agreement_is_zero_and_never_negative_zero():
     """Total agreement is the one reading of this statistic that has to be unmistakable, and
     the sum computes to NEGATIVE zero — which renders as ``-0.000`` and reads as a number
     rather than as the absence of one."""
-    feature = feature_variance("routine shape", [_sample(f"s{i}", "p1", "same") for i in range(3)])
+    feature = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(3)])
     assert feature.entropy == 0.0
     assert f"{feature.entropy:.3f}" == "0.000"
 
@@ -111,9 +114,11 @@ def test_a_dead_sample_is_excluded_by_name_before_anything_is_pooled():
     samples = [
         _sample("s1", "p1", "browse → write"),
         _sample("s2", "p1", "browse → write"),
-        SampleFacts(name="s3", arm="p1", complete=False, exclusion="the measured turn never ran"),
+        SampleObservation(
+            name="s3", phrasing="p1", complete=False, exclusion="the measured turn never ran"
+        ),
     ]
-    variance = pool(samples)
+    variance = pool(samples, [ROUTINE_SHAPE, REPLY_SPREAD])
     assert (variance.pooled, variance.driven) == (2, 3)
     assert [(row.name, row.reason) for row in variance.excluded] == [
         ("s3", "the measured turn never ran")
@@ -121,27 +126,30 @@ def test_a_dead_sample_is_excluded_by_name_before_anything_is_pooled():
     assert variance.features[0].n == 2
 
 
-def test_an_unpooled_arm_is_measured_by_nothing_but_still_counts_as_driven():
-    """A perturbed-world arm exists to make a directed-change ASSERTION; folding a deliberately
-    different world into the spread would report that difference as instability."""
+def test_a_control_is_measured_by_nothing_but_still_counts_as_driven():
+    """A control drives the same ask against different facts to serve an ASSERTION, so folding
+    its samples into the spread would report a deliberate difference as instability — and the
+    harness section still counts it, because a control sample is one the case drove."""
     samples = [
         _sample("s1", "p1", "browse → write"),
-        _sample("s2", "perturbed", "browse → browse → write", pooled=False, world="perturbed"),
+        _sample("s2", "the ask", "browse → browse → write", world="control"),
     ]
-    variance = pool(samples)
+    variance = pool(samples, [ROUTINE_SHAPE])
     assert (variance.pooled, variance.driven, variance.excluded) == (1, 2, [])
     assert variance.features[0].distinct == 1
 
 
 def test_reply_spread_reads_the_embeddings_the_replies_already_carry():
     samples = [
-        SampleFacts(name="s1", arm="p1", reply="foxes sign a goalie", reply_embedding=[1.0, 0.0]),
-        SampleFacts(
-            name="s2", arm="p1", reply="the foxes signed a goalie", reply_embedding=[0.0, 1.0]
+        SampleObservation(
+            name="s1", phrasing="p1", reply="foxes sign a goalie", reply_embedding=[1.0, 0.0]
         ),
-        SampleFacts(name="s3", arm="p2", reply="a goalie was signed"),
+        SampleObservation(
+            name="s2", phrasing="p1", reply="the foxes signed a goalie", reply_embedding=[0.0, 1.0]
+        ),
+        SampleObservation(name="s3", phrasing="p2", reply="a goalie was signed"),
     ]
-    spread = pool(samples).text
+    spread = pool(samples, [ROUTINE_SHAPE, REPLY_SPREAD]).text
     assert spread is not None
     # Three replies → three text pairs, but only one pair has embeddings on both sides.
     assert spread.pairs == 3
@@ -149,29 +157,18 @@ def test_reply_spread_reads_the_embeddings_the_replies_already_carry():
     assert spread.containment_mean > 0.0
 
 
-# ── Arms ─────────────────────────────────────────────────────────────────────
-def test_arms_expand_to_one_entry_per_sample_in_declaration_order():
-    arms = [
-        CohortArm(label="p1", message="a", samples=2),
-        CohortArm(label="perturbed", message="a", samples=1, world="swapped", pooled=False),
-    ]
-    assert [arm.label for arm in expand_arms(arms)] == ["p1", "p1", "perturbed"]
-    assert expand_arms(arms)[2].world == "swapped"
-    assert arms[0].world == BASE_WORLD
-
-
 # ── Thresholds ───────────────────────────────────────────────────────────────
 def test_a_ceiling_sits_a_sampling_margin_above_the_observed_value():
-    feature = feature_variance("routine shape", [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
+    feature = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
     ceiling = proposed_ceiling(feature, _MODEL)
     assert ceiling.value == 1.0  # every sample distinct, and the margin cannot exceed 1.0
-    quiet = feature_variance("transitions", [_sample(f"s{i}", "p1", "same") for i in range(4)])
+    quiet = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(4)])
     assert proposed_ceiling(quiet, _MODEL).value == 0.10
 
 
 def test_only_a_rise_in_variance_is_a_regression():
-    observed = feature_variance("routine shape", [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
-    calm = feature_variance("routine shape", [_sample(f"s{i}", "p1", "same") for i in range(4)])
+    observed = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
+    calm = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(4)])
     ceiling = proposed_ceiling(calm, _MODEL)
     assert compare_to_ceiling(ceiling, observed, _MODEL).regressed
     assert not compare_to_ceiling(proposed_ceiling(observed, _MODEL), calm, _MODEL).regressed
@@ -181,12 +178,12 @@ def test_a_ceiling_refuses_to_be_compared_across_models_or_cohort_sizes():
     """Both qualifiers make the two numbers different statistics, so the verdict says so rather
     than answering wrongly — a shared ceiling would be useless for the consistent model and
     permanently failing for the variant one."""
-    observed = feature_variance("routine shape", [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
+    observed = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
     other_model = compare_to_ceiling(proposed_ceiling(observed, _MODEL), observed, _OTHER_MODEL)
     assert not other_model.comparable and not other_model.regressed
     assert _OTHER_MODEL in other_model.note
 
-    smaller = feature_variance("routine shape", [_sample(f"s{i}", "p1", str(i)) for i in range(3)])
+    smaller = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(3)])
     other_size = compare_to_ceiling(proposed_ceiling(observed, _MODEL), smaller, _MODEL)
     assert not other_size.comparable and "N=3" in other_size.note
 
@@ -308,9 +305,9 @@ def test_the_case_report_renders_its_three_sections_whole():
         _sample("case-1 (phrasing 1)", "phrasing 1", "browse → write"),
         _sample("case-2 (phrasing 1)", "phrasing 1", "browse → write"),
         _sample("case-3 (phrasing 2)", "phrasing 2", "browse → browse → write"),
-        SampleFacts(
+        SampleObservation(
             name="case-4 (phrasing 2)",
-            arm="phrasing 2",
+            phrasing="phrasing 2",
             complete=False,
             exclusion="the measured turn never ran",
         ),
@@ -322,7 +319,7 @@ def test_the_case_report_renders_its_three_sections_whole():
             AssertionRow(label="state: the round taught a routine", passed=3, total=3),
             AssertionRow(label="reply: every specific value in it is sourced", passed=2, total=3),
         ],
-        variance=pool(samples),
+        variance=pool(samples, [ROUTINE_SHAPE, REPLY_SPREAD]),
         cost=per_sample_cost(
             samples=4,
             calls=48,
@@ -389,7 +386,9 @@ def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_t
     rendered = CaseReport(
         case_id="quiet",
         model=_MODEL,
-        variance=pool([_sample(f"s{i}", "phrasing 1", "browse → write") for i in range(3)]),
+        variance=pool(
+            [_sample(f"s{i}", "phrasing 1", "browse → write") for i in range(3)], [ROUTINE_SHAPE]
+        ),
     ).render()
     assert "_No phrasing produced a value the others did not._" in rendered
     assert "3 pooled of 3 driven · 0 excluded — every sample ran its measured turn." in rendered
