@@ -23,9 +23,15 @@ from penny.llm.client import (
     _summarize_llm_error,
 )
 from penny.llm.models import (
+    LlmError,
+    LlmFault,
+    LlmMessage,
     LlmNotFoundError,
+    LlmResponse,
     LlmResponseError,
     LlmTimeoutError,
+    ProviderPreference,
+    fault_for_status,
 )
 
 _HTML_ERROR_BODY = (
@@ -348,4 +354,212 @@ class TestListEmbeddingModels:
         assert "HTTP 404" in message
         assert "<!DOCTYPE" not in message  # summarized, not the raw HTML body
 
+        await client.close()
+
+
+class TestFaultClassIsAValueNotASentence:
+    """A failure already produced a message; none of them produced a value (#1996).
+
+    So a run that died 188 times of one cause and one that died once of 188 causes read
+    identically, and telling them apart meant grepping logs by hand. The class rides on
+    the error, and callers decide by reading it.
+    """
+
+    @pytest.mark.parametrize(
+        ("status", "fault"),
+        [
+            (429, LlmFault.RATE_LIMITED),
+            (500, LlmFault.SERVER_ERROR),
+            (502, LlmFault.SERVER_ERROR),
+            (400, LlmFault.CLIENT_ERROR),
+            (401, LlmFault.CLIENT_ERROR),
+            (None, LlmFault.OTHER),
+        ],
+    )
+    def test_a_status_names_its_class(self, status: int | None, fault: LlmFault) -> None:
+        assert fault_for_status(status) == fault
+
+    def test_transience_is_what_separates_a_bad_minute_from_a_verdict(self) -> None:
+        """The smoke check reads this to decide whether another draw could help."""
+        assert LlmFault.SERVER_ERROR.transient
+        assert LlmFault.RATE_LIMITED.transient
+        assert LlmFault.NO_CHOICES.transient
+        assert LlmFault.TIMEOUT.transient
+        assert not LlmFault.NOT_FOUND.transient
+        assert not LlmFault.CLIENT_ERROR.transient
+        # An unrecognised class stays non-transient on purpose: a gate whose whole job is
+        # to be decisive must not become flaky over a case nobody has looked at yet.
+        assert not LlmFault.OTHER.transient
+
+    def test_each_error_carries_the_class_it_always_is(self) -> None:
+        assert LlmNotFoundError("gone").fault == LlmFault.NOT_FOUND
+        assert LlmTimeoutError("slow").fault == LlmFault.TIMEOUT
+        assert LlmError("who knows").fault == LlmFault.OTHER
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limit_reaches_the_caller_as_a_rate_limit(self, monkeypatch) -> None:
+        """The one shape that varies takes its class from the status the client read.
+
+        325 rate limits and 325 empty responses are different runs with different fixes,
+        and `LlmResponseError` alone said neither.
+        """
+        request = httpx.Request("POST", "https://gateway.example/api/v1/chat/completions")
+        response = httpx.Response(429, request=request, json={"error": {"message": "slow down"}})
+
+        async def refuse(**kwargs):
+            raise openai.RateLimitError("Error code: 429", response=response, body=None)
+
+        client = LlmClient(
+            api_url="https://gateway.example/api", model="m", max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", refuse)
+
+        with pytest.raises(LlmResponseError) as exc_info:
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        assert exc_info.value.fault == LlmFault.RATE_LIMITED
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_completion_reaches_the_caller_as_no_choices(self, monkeypatch) -> None:
+        """The class that killed 34 of 48 samples, now nameable and countable."""
+
+        class _NoChoices:
+            choices = None
+            model_extra = {"provider": "some-upstream"}
+
+        async def answer_without_a_completion(**kwargs):
+            return _NoChoices()
+
+        client = LlmClient(
+            api_url="https://gateway.example/api", model="m", max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
+
+        with pytest.raises(LlmResponseError) as exc_info:
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        assert exc_info.value.fault == LlmFault.NO_CHOICES
+        await client.close()
+
+
+class TestRoutingIsAPreferenceNotAWall:
+    """Which upstream serves a model is asked for, observed, and never enforced (#1996)."""
+
+    def test_a_preference_travels_with_fallbacks_on(self) -> None:
+        """Hard pinning concentrates a whole run's load on one upstream.
+
+        Measured: `allow_fallbacks: false` put 325 rate limits on ONE endpoint at a
+        concurrency the same run handled with zero unpinned. So the default is a
+        preference — the pool's throughput stays available and a fallback is recorded
+        rather than forbidden.
+        """
+        preference = ProviderPreference.prefer("Cloudflare")
+        assert preference is not None
+        assert preference.as_request_field() == {
+            "order": ["Cloudflare"],
+            "allow_fallbacks": True,
+        }
+
+    def test_no_configured_provider_is_no_preference_at_all(self) -> None:
+        """A direct endpoint has no upstreams, so nothing is sent — not an empty pin."""
+        assert ProviderPreference.prefer(None) is None
+        assert ProviderPreference.prefer("") is None
+
+    @pytest.mark.asyncio
+    async def test_the_preference_reaches_the_request_body(self, monkeypatch) -> None:
+        """A preference nothing sends is a preference that does nothing."""
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            raise openai.APIConnectionError(request=httpx.Request("POST", "http://x/v1"))
+
+        client = LlmClient(
+            api_url="https://gateway.example/api",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            provider_preference=ProviderPreference.prefer("Cloudflare"),
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+
+        with pytest.raises(LlmError):
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        assert sent["extra_body"]["provider"] == {
+            "order": ["Cloudflare"],
+            "allow_fallbacks": True,
+        }
+        # The reasoning switch still rides the same passthrough — one is not added at the
+        # cost of the other, and a run that lost it would be comparing a model to itself.
+        assert sent["extra_body"]["reasoning"] == {"enabled": True}
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_client_with_no_preference_sends_the_body_it_always_sent(
+        self, monkeypatch
+    ) -> None:
+        sent: dict = {}
+
+        async def capture(**kwargs):
+            sent.update(kwargs)
+            raise openai.APIConnectionError(request=httpx.Request("POST", "http://x/v1"))
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", capture)
+
+        with pytest.raises(LlmError):
+            await client.chat([{"role": "user", "content": "hi"}])
+
+        assert sent["extra_body"] == {"reasoning": {"enabled": True}}
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_the_upstream_that_answered_comes_back_on_the_response(self, monkeypatch) -> None:
+        """Reproducibility is OBSERVED: the answer says who served it, preference or not."""
+
+        class _Answered:
+            model = "m"
+            model_extra = {"provider": "DeepInfra"}
+            choices = [
+                type(
+                    "Choice",
+                    (),
+                    {
+                        "message": type(
+                            "Message",
+                            (),
+                            {
+                                "role": "assistant",
+                                "content": "hi",
+                                "tool_calls": None,
+                                "model_extra": {},
+                            },
+                        )()
+                    },
+                )()
+            ]
+
+        async def answer(**kwargs):
+            return _Answered()
+
+        client = LlmClient(
+            api_url="https://gateway.example/api",
+            model="m",
+            max_retries=1,
+            retry_delay=0.0,
+            provider_preference=ProviderPreference.prefer("Cloudflare"),
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer)
+
+        response = await client.chat([{"role": "user", "content": "hi"}])
+
+        # It preferred Cloudflare and DeepInfra answered — a fallback, stated rather than
+        # hidden behind an assumption that the pin held.
+        assert response.provider == "DeepInfra"
+        assert isinstance(response, LlmResponse)
+        assert isinstance(response.message, LlmMessage)
         await client.close()

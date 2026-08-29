@@ -590,6 +590,31 @@ only with a measurement in hand. Every value a profile picks stays individually
 overridable — `EVAL_WORKERS=1 make eval-remote` is remote-but-serial for debugging one
 case, `EVAL_SAMPLES=N` changes the per-case sample count on either.
 
+**Which models the remote profile may measure is CONFIGURATION, and BOTH are required
+(#1996).** `EVAL_MODELS` in the primary checkout's `.env` is a JSON list of
+`{"model": …, "provider": …}` entries (`penny/tests/eval/roster.py`), and a remote run
+**refuses to start** when it names fewer than two — the fail-fast shape `LLM_EMBEDDING_MODEL`
+already has, because a suite ported and tuned against ONE model bakes that model's quirks
+into its fixtures and then measures how much like it the next model is (#1994 §5b). The
+minimum is a COUNT, never two named models: naming them here would rot the day the pair
+changes. A JSON list because that is how `PLUGINS` is configured, and because an env var
+name cannot contain `/`. The recipe resolves this invocation's entry before anything is
+spent — the first by default, or the one `LLM_MODEL` names, and a model **outside** the
+roster is refused (it has no upstream to prefer and none to record, which is the ad-hoc
+pass the variable replaces). **The requirement binds the REMOTE profile only**: the field
+that makes an entry load-bearing is `provider`, and a local Ollama has none — it serves one
+model at a time on one GPU, so `make eval` keeps its own single configured model.
+
+**Pinning is a PREFERENCE, never a wall.** The resolved entry's provider becomes the run's
+`LLM_PROVIDER`, which reaches the chat client as a `ProviderPreference` (`penny/llm/models.py`)
+and rides the request body's vendor passthrough with **fallbacks ON**. Hard pinning and
+concurrency are coupled: `allow_fallbacks: false` put **325 HTTP 429s** on one endpoint at a
+concurrency the same run handled with **zero** unpinned, because forbidding every other
+upstream concentrates the whole run's load onto one. So reproducibility is **observed**
+rather than enforced — the answering provider comes back on every response, the manifest
+records it beside the preferred one (a differing pair renders as `fell back`), and the run
+health block tallies every provider that served the run.
+
 **The embedding model is NOT part of the profile**: it stays on the local Ollama in both,
 so moving the chat model never silently moves the vector space every memory case is scored
 against (the dedup thresholds and `find` ranking sit on embeddinggemma's cosine geometry).
@@ -610,7 +635,31 @@ any eval container, so a remote run held the line against a local one while touc
 ticket): every sample builds its own preflight, so an unserveable model is otherwise
 discovered 755 times, concurrently, minutes deep — which is how a full-suite run was spent
 against a model whose provider 404'd every call. The refusal carries the provider's own
-message verbatim, because that message is the whole answer. Cases drive the
+message verbatim, because that message is the whole answer. **It RETRIES a transient fault
+first (#1996)**: one un-retried `HTTP 502` blocked two whole runs while the same model
+answered a direct call seconds later, so the check draws up to `SMOKE_ATTEMPTS` times on a
+fault whose `LlmFault` is `transient` — and still refuses on the FIRST draw for one that is
+not (a 404 is a verdict, not a moment), which keeps the fast, decisive refusal it exists
+for. The probe carries the run's own provider preference, so what it proves is the routing
+the samples will use, and the upstream that answered it is forwarded into the manifest.
+
+**A run reports its own health (#1996)** (`penny.tests.eval.run_health`, printed in the
+terminal summary and written to the run dir as `health*.jsonl`, riding the same per-worker
+record convention the per-case results use). A degraded run used to look
+exactly like a healthy one — `6 passed, EXIT=0` over a cohort in which 34 of 48 samples
+never produced their measured turn, all killed by 188 empty `choices` responses, with
+nothing in the output naming a number. The block states **completed vs dead samples**, the
+**fault classes with counts** (`no choices` · `429` · `5xx` · `timeout`, worst first), and
+**every provider that served the run** with its own faults — a poisoned member of a routing
+pool reads off the artifacts instead of costing a second run with a pin. The tally is a read
+of VALUES: every chat attempt logs its `LlmFault` and serving provider as structured fields
+(`penny/llm/models.py`), and a `logging.Handler` on the `penny` logger adds them up, so no
+message text is ever matched. **A mostly-dead cohort FAILS**: a case must complete a strict
+majority of its intended samples, refused before any threshold is compared and report-only
+cases included, because dead samples are not missing at random — the faults that kill them
+correlate with the work, so the survivors are a biased draw rather than a smaller one. The
+run-level verdict moves the session's exit status, so a run computed from a fraction of its
+cohort can never exit 0. Cases drive the
 real chat/collector loops and score persisted DB state + sends at a `pass_rate`
 threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`

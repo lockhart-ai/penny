@@ -159,6 +159,7 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_api_url": os.getenv("LLM_API_URL", "http://host.docker.internal:11434"),
         "llm_model": os.getenv("LLM_MODEL", "gpt-oss:20b"),
         "llm_api_key": os.getenv("LLM_API_KEY", "not-needed"),
+        "llm_provider": os.getenv("LLM_PROVIDER"),
         "llm_vision_model": os.getenv("LLM_VISION_MODEL"),
         "llm_vision_api_url": os.getenv("LLM_VISION_API_URL"),
         "llm_vision_api_key": os.getenv("LLM_VISION_API_KEY"),
@@ -250,6 +251,11 @@ class Config:
     llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
+    # Which upstream to PREFER when the chat endpoint is a routing gateway serving one
+    # model from several providers. A preference, never a wall: fallbacks stay on, so a
+    # busy upstream costs a fallback rather than the run's whole throughput, and which
+    # provider actually answered is recorded per call rather than assumed.
+    llm_provider: str | None = None
     image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for image generation
 
     # LLM retry configuration

@@ -200,12 +200,16 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `LLM_API_URL`: API endpoint (default: http://host.docker.internal:11434)
 - `LLM_MODEL`: Single text model for all penny agents — chat, thinking, history, notify (default: gpt-oss:20b)
 - `LLM_API_KEY`: API key (default: "not-needed")
+- `LLM_PROVIDER`: Which upstream to **prefer** when `LLM_API_URL` points at a routing gateway that serves one model from several providers (e.g. `Cloudflare`). Optional; unset sends no routing field at all, and a direct endpoint ignores it. A **preference, never a wall** — fallbacks stay on, because forbidding every other upstream concentrates the whole load onto one (measured: a hard pin drew 325 HTTP 429s at a concurrency the same run handled with zero unpinned). Which provider actually answered comes back on every response and is recorded, so reproducibility is observed rather than enforced
 - `LLM_VISION_MODEL`: Vision model for image understanding (e.g., qwen3-vl). Optional; if unset, image messages get an acknowledgment response
 - `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override endpoint for vision model
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., embeddinggemma) — backs Penny's memory (preference dedup and similarity recall). Penny fails fast at startup if it is unset; there is no degraded, embedding-less mode
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override endpoint for embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables the `generate_image` chat tool. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: http://host.docker.internal:11434)
+
+**Eval suite** (read from the primary checkout's `.env` by `make eval-remote`):
+- `EVAL_MODELS`: **Required for a remote run.** A JSON list of the models the suite measures and the upstream each prefers — `[{"model":"vendor/model-a","provider":"SomeCloud"},{"model":"vendor/model-b","provider":"OtherCloud"}]`. A JSON list because that is how `PLUGINS` is configured, and because an env var name cannot contain `/`, so a per-model-suffixed scheme is unavailable. **At least two entries**, and a remote run refuses to start otherwise — the same fail-fast shape as `LLM_EMBEDDING_MODEL`, for the same reason: a suite ported and tuned against ONE model bakes that model's quirks into its fixtures and then measures how much like it the next model is. The minimum is a count rather than two named models, so it survives the pair changing. `provider` on an entry is optional and becomes that run's `LLM_PROVIDER` — a preference, fallbacks on (above). `make eval-remote` runs the FIRST entry by default; `LLM_MODEL=<name> make eval-remote` runs the entry that names it, and a model outside the roster is refused (it has no upstream to prefer and none to record). **The requirement binds the remote profile only** — `make eval` against the local Ollama has no providers and serves one model at a time, so it keeps its own single configured model.
 
 **API Keys**:
 - `FASTMAIL_API_TOKEN`: API token for Fastmail JMAP email (optional, enables the email tools on the chat surface — `search_emails`, `read_emails`)
