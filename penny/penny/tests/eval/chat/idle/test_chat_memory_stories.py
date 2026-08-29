@@ -2,7 +2,7 @@
 
 Each case drives the REAL chat path against the live model with the user's own words
 and scores PERSISTED state: the collections, the entries and their run stamps, the
-pages the browse log holds, the machine's own move, and the replies Penny sent.  Six
+pages the browse log holds, the machine's own move, and the replies Penny sent.  Five
 stories, in the order a user meets them:
 
     1. remember it        "remember X for me"  → it is stored, and it comes back later
@@ -16,11 +16,16 @@ stories, in the order a user meets them:
                           nothing written
    11. two facts at once  one message carrying a like and a dislike → two writes, each
                           into the collection that fits it
-   15. two sources        the fused ask for a routine over TWO pages — the estate's
-                          only two-page routine: decompose, demonstrate, set running —
-                          and the learn close, where the reply states what the routine
-                          it just learned will RUN, for the one person who can tell a
-                          captured step from a stray one (#1943)
+
+Every story here is a turn that begins and ends in ``idle`` — the whole of it happens
+inside the one turn, and the ``state_transition`` rows read ``idle → idle`` for every
+case in the file.  That includes the ones whose message carries an instruction
+("remember it", "save it to my games list"): a message with no standing or scheduling
+component is handled in the conversation, so it never leaves idle.  Story 15's two
+teach cases DID leave it — they walk idle → elicit → learn — so they are the learn
+microcontext's and live in ``chat/learn/test_two_source_teach.py``.  What stayed from
+that world is its third case, the demonstration whose source is down, which is an
+ordinary idle turn like the rest.
 
 The worlds are the CURRENT runtime's.  Nothing is pre-seeded any more (migration
 0108), so every collection a case starts with is one this file creates the way the
@@ -29,24 +34,20 @@ collection's own ``write``, stamped with a seeded run id so "what did THIS sampl
 write" stays answerable (``is_seeded_run``).  The old ``likes`` / ``dislikes``
 catch-alls are gone and no case leans on them.
 
-WHERE a write lands is deliberately open where the story does not fix it.  A turn
-carrying an instruction ("remember it", "save it to my games list") lands the machine
-in ``learn``, and a learn round is FRAMED on the way in — Penny already has a
-container of the round's own before the first call — so a scorer that demanded one
-named destination would report the framework's own routing as a model failure.  So
-the durable checks read what THIS RUN wrote wherever it landed, and the destination is
-reported beside them.  Story 11 is the exception, because there the destination IS the
-story: two facts, two fitting places.
+WHERE a write lands is deliberately open where the story does not fix it: the durable
+checks read what THIS RUN wrote wherever it landed, and the destination is reported
+beside them, so a story that never named a destination is not scored on one.  Story 11
+is the exception, because there the destination IS the story: two facts, two fitting
+places.
 
 Check labels carry one of three prefixes — ``state:`` (end DB facts), ``reply:``
 (what Penny said, against what she did), ``calls:`` (call provenance).  State and
 reply checks are SCORED; the call spine, the state the machine landed in, and the
 loop-health verdict are ADVISORY (``scored=False``) unless that row IS the story's own
 claim — a lookup before a write is one, since a write with no browse is a fact that
-came from nowhere, and the learn close's LANDING is the other, since a story about the
-reply that ends a learn round has no subject at all outside that state (#1989).  Where
-a scored claim only exists in a state a sample never reached, it reads ``Check.na(...)``
-rather than ❌: a precondition nobody met is not a contract anybody failed.
+came from nowhere.  Where a scored claim only exists in a state a sample never
+reached, it reads ``Check.na(...)`` rather than ❌: a precondition nobody met is not a
+contract anybody failed.
 
 Every case is REPORT-ONLY (``min_pass_rate=None``): the thresholds are the code
 owner's to set once the numbers are read.  All content is synthetic — invented games,
@@ -127,9 +128,10 @@ from penny.tests.eval.utils.worlds import (
     TWO_TEAM_NEWS_CONTROL,
 )
 
-pytestmark = pytest.mark.eval
+from penny.tests.eval.utils.memory_world import LEARN_CLOSE_ASK, _FAMILY, _FOXES_TOKENS, _SEALS_TOKENS, _carries, _entries_this_run_wrote, _entry_text, _landing_advisory, _normalize, _pages_fetched, _routing_advisory
 
-_FAMILY = "chat-memory"
+
+pytestmark = pytest.mark.eval
 
 # The reads a scorer asks "was the answer backed by storage" through.  ``find`` is the
 # guess-free route and carries no ``memory`` argument, so it is checked by name alone.
@@ -214,58 +216,6 @@ def _seed_collection(db: Database, synth: SynthCollection, *, run_id: str) -> No
     )
 
 
-# ── Reading what the sample did ──────────────────────────────────────────────
-
-
-def _written_by_this_run(entry: MemoryEntry) -> bool:
-    """Whether THIS sample put an entry's current value there — created by a live run,
-    or last rewritten by one.  Both stamps, because an edit of a seeded entry moves
-    only ``last_written_by_run_id``."""
-    stamps = (entry.created_by_run_id, entry.last_written_by_run_id)
-    return any(stamp is not None and not is_seeded_run(stamp) for stamp in stamps)
-
-
-def _entries_this_run_wrote(db: Database) -> list[tuple[str, MemoryEntry]]:
-    """``(collection, entry)`` for every COLLECTION entry this sample wrote, wherever
-    it landed — the run-id stamp answering "what did she store", so a case never has
-    to guess which container a framed round used.
-
-    Collections only: the browse log carries the fetched page, and counting that as a
-    stored fact would let "she wrote it down" pass on a run that only read a page."""
-    written: list[tuple[str, MemoryEntry]] = []
-    for row in db.memories.list_all():
-        if row.type != MemoryType.COLLECTION:
-            continue
-        memory = db.memory(row.name)
-        entries = memory.read_all() if memory is not None else []
-        written += [(row.name, entry) for entry in entries if _written_by_this_run(entry)]
-    return written
-
-
-def _normalize(text: str) -> str:
-    """Fold the typography gpt-oss sprinkles into its output so a SEMANTIC substring
-    probe isn't defeated by cosmetics: unicode hyphens → '-', nbsp/zero-width/narrow
-    spaces → ' ', bold markers stripped, curly quotes straightened, lowercased.  (A
-    0/N from an un-normalized probe is a scorer bug — the model wrote 'co‑op' /
-    'Mist​forge', semantically right.)"""
-    folded = text.lower()
-    for dash in ("‐", "‑", "‒", "–", "—", "−"):
-        folded = folded.replace(dash, "-")
-    for space in ("\xa0", "​", " ", " "):
-        folded = folded.replace(space, " ")
-    for source, target in (("’", "'"), ("“", '"'), ("”", '"'), ("*", "")):
-        folded = folded.replace(source, target)
-    return folded
-
-
-def _entry_text(entry: MemoryEntry) -> str:
-    """An entry's KEY and CONTENT, normalized and joined — the probe for "did this
-    fact land here", robust to which half the model put the fact in (one measured
-    sample keyed ``mistforge_tactics`` and stylized the body, so contents alone
-    missed it)."""
-    return _normalize(" ".join(text for text in (entry.key, entry.content) if text))
-
-
 def _stored_text(db: Database, name: str) -> str:
     """Every key and content a collection currently holds, normalized and joined."""
     entries = collection_entries(db, name)
@@ -276,18 +226,6 @@ def _landed_in(db: Database, fact: str) -> set[str]:
     """The collections where THIS run's own writes carry ``fact``."""
     needle = _normalize(fact)
     return {name for name, entry in _entries_this_run_wrote(db) if needle in _entry_text(entry)}
-
-
-def _pages_fetched(db: Database) -> list[MemoryEntry]:
-    """Every page this sample read — the browse log's recent window."""
-    return require_memory(db, PennyConstants.MEMORY_BROWSE_RESULTS_LOG).read_recent(
-        window_seconds=3600, cap=None
-    )
-
-
-def _fetched(db: Database, token: str) -> bool:
-    """Whether a page carrying ``token`` was actually read this sample."""
-    return any(token in entry.content for entry in _pages_fetched(db))
 
 
 def _read_backed(db: Database, name: str) -> bool:
@@ -305,56 +243,6 @@ def _enacting_calls(db: Database) -> list[str]:
     """Every enacting call this sample made, in order — what a no-fire guard names
     when it fails, and what an elicitation turn must not carry."""
     return [tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS]
-
-
-# ── The advisory rows every case carries ─────────────────────────────────────
-
-
-def _landed_state(db: Database) -> str | None:
-    latest = db.machine.latest_transition()
-    return latest.to_state if latest else None
-
-
-def _walked(db: Database) -> str:
-    """The machine's walk this sample, oldest move first — ``idle→learn, learn→apply``."""
-    moves = reversed(db.machine.recent_transitions(limit=20))
-    return ", ".join(f"{move.from_state}→{move.to_state}" for move in moves) or "no move"
-
-
-def _landing_advisory(
-    db: Database, expected: ConversationState | None = None, *, scored: bool = False
-) -> Check:
-    """Where the machine ended up, reported beside the story's own checks.
-
-    A turn carrying an instruction lands in ``learn`` and mints a routine at run end;
-    a question lands in idle.  Which of those a given phrasing is belongs to the state
-    definitions rather than to a memory story, so this row REPORTS the landing (and
-    the whole walk) and only ``expected`` — set where the story does turn on it —
-    makes it a verdict.
-
-    ``scored`` promotes that verdict into the graded denominator, for the one story whose
-    contract only EXISTS in the state it names (#1989): the learn close is a claim about
-    the reply that ends a learn round, so where the machine landed is that story's
-    precondition, and reporting it unscored beside scored reply checks put the accurate
-    signal out of the score and the misleading one in it."""
-    landed = _landed_state(db)
-    ok = landed == expected.value if expected is not None else landed is not None
-    return Check(
-        "calls: where the machine landed",
-        ok,
-        rationale=f"walked {_walked(db)}",
-        scored=scored,
-        kind="spine",
-    )
-
-
-def _routing_advisory(db: Database) -> Check:
-    return Check(
-        "calls: clean routing (no re-rolled draw or continue nudge)",
-        routing_clean(db),
-        scored=False,
-        kind="proc",
-    )
 
 
 def _reply_names(reply: str, tokens: tuple[str, ...]) -> list[Check]:
@@ -1131,301 +1019,6 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval) -> None:
         score=_score_two_writes,
         min_pass_rate=None,
         family=_FAMILY,
-    )
-
-
-# ═══ Story 15 — the two-source routine ═══════════════════════════════════════
-#
-# The FUSED ask the first external deployment produced: one message carrying sources,
-# cadence and filter, and never an imperative.  Observed live, she elicited page
-# mechanics and planned forever; no round ever ran.  Four prompt iterations demanding a
-# self-started round moved nothing — the conversational prior at a descriptive message
-# is propose-and-confirm.  The design HARNESSES that prior: teaching and setting a job
-# running are two different things, so a fused ask is SPLIT OUT LOUD — "teach me the
-# find first, in one message; then I'll run it on your schedule."  The user's routine
-# reply is the imperative the round fires on, and the closing schedule intent stands
-# the job up.
-#
-# It is the only story in this file whose routine reads TWO pages, which is what it is
-# kept for: everything else in the estate demonstrates against one source, so nothing
-# else measures a round that has to visit both and keep both.
-
-# The FUSED ask both story-15 cases open on — sources + filter + schedule, no imperative,
-# the field shape verbatim.  Named rather than left as a position in the turns list below,
-# because the learn close reads it as the ask its seeded round is anchored to: a turn
-# inserted at the head of that list would silently re-seed a case two hundred lines away.
-_TWO_SOURCE_SETUP_ASK = (
-    "hey can you set up news alerts for my favourite teams? the ridgeline "
-    f"foxes and the harbor seals — their news pages are {FOXES_URL} and "
-    f"{SEALS_URL}. check them twice a day, and alert me about "
-    "notable stuff like trades, signings, and injuries — not game scores."
-)
-
-# Turn 1 = that fused ask.  Turn 2 = the user's routine, the answer the decompose ask
-# requests (the URLs referenced, not retyped — a real user doesn't repeat themselves).
-# Turn 3 = pure schedule intent.
-_TWO_SOURCE_TURNS = [
-    _TWO_SOURCE_SETUP_ASK,
-    (
-        "sure: 1. go to those two news pages 2. pull out any trades, signings, "
-        "or injuries — skip game scores 3. remember the title plus a short "
-        "blurb for each"
-    ),
-    "perfect — now do that twice a day and let me know when something new shows up.",
-]
-
-# Tokens that exist ONLY on one page, so a stored copy names which source it came from
-# and a fabricated entry matches neither.
-_FOXES_TOKENS = ("brandt", "aurelio", "goalie")
-_SEALS_TOKENS = ("volk", "petra", "player development")
-
-# How she asks to be walked through the round.  Broad by design — measured replies said
-# "teach me a single round" and "a quick walkthrough of one round", never the scripted
-# phrase — because what is scored is one-complete-pass elicitation, not wording.
-_TEACH_ASK_TOKENS = (
-    "teach me",
-    "walk me through",
-    "walkthrough",
-    "one message",
-    "single message",
-    "one round",
-    "single round",
-    "one pass",
-    "one complete pass",
-)
-_SOURCE_TOKENS = ("ridgelinefoxes", "harborseals", "foxes", "seals")
-
-
-def _teach_ask(text: str) -> bool:
-    return any(token in text.lower() for token in _TEACH_ASK_TOKENS)
-
-
-def _carries(db: Database, tokens: tuple[str, ...]) -> bool:
-    """Whether any entry this run wrote carries one of a page's own tokens."""
-    written = [_entry_text(entry) for _, entry in _entries_this_run_wrote(db)]
-    return any(token in text for text in written for token in tokens)
-
-
-def _configured_jobs(db: Database, before: set[str]) -> list[MemoryRow]:
-    """Collections created this sample that are CONFIGURED to run: a routine attached
-    and its program rendered in (a container the round framed carries neither until the
-    job is stood up)."""
-    return [
-        row
-        for row in new_collections(db, before)
-        if row.skill_name is not None and row.extraction_prompt is not None
-    ]
-
-
-def _decompose_checks(replies: list[str], *, ran_to_completion: bool) -> list[Check]:
-    """Turn 1's verdicts, read off the FIRST reply: she recognized she cannot act yet
-    and asked to be taught the round, with the example modelled from THEIR sources so
-    "yes, do that" is a complete answer.
-
-    Running the whole chain without asking is spontaneous one-shot success — the end
-    goal, not a failure — so the ask is the FALLBACK, and the modelled facet is
-    not-applicable when no ask happened."""
-    first = replies[0].lower() if replies else ""
-    asked = _teach_ask(first)
-    modelled = any(token in first for token in _SOURCE_TOKENS)
-    modelled_check = (
-        Check("reply: the ask was modelled from their own sources", modelled, kind="reply")
-        if asked
-        else Check.na("reply: the ask was modelled from their own sources", kind="reply")
-    )
-    return [
-        Check(
-            "reply: she asked to be taught the round, or ran it herself to completion",
-            asked or ran_to_completion,
-            kind="reply",
-        ),
-        modelled_check,
-    ]
-
-
-def _score_two_source_teach(db: Database, before: set[str], reply: str) -> list[Check]:
-    replies = outgoing_replies(db)
-    jobs = _configured_jobs(db, before)
-    job = jobs[0] if jobs else None
-    structure = next((asked_for_page_structure(sent) for sent in replies if sent), None)
-    return [
-        *_decompose_checks(replies, ran_to_completion=bool(jobs) and _carries(db, _FOXES_TOKENS)),
-        Check("state: the foxes page was read", _fetched(db, "ridgelinefoxes"), kind="state"),
-        Check("state: the seals page was read", _fetched(db, "harborseals"), kind="state"),
-        Check(
-            "state: something from the foxes page was written down",
-            _carries(db, _FOXES_TOKENS),
-            kind="state",
-        ),
-        Check(
-            "state: something from the seals page was written down",
-            _carries(db, _SEALS_TOKENS),
-            kind="state",
-        ),
-        Check(
-            "state: the round taught a routine",
-            bool(db.skills.list_all()),
-            kind="state",
-        ),
-        Check(
-            "state: the routine was set running on its own container",
-            len(jobs) == 1,
-            kind="state",
-            rationale=f"configured {[row.name for row in jobs]}",
-        ),
-        Check(
-            "state: it runs on a schedule and tells the user",
-            job is not None and job.schedule is not None and bool(job.notify),
-            kind="state",
-            rationale=(
-                f"schedule {job.schedule!r}, notify {job.notify}" if job is not None else "no job"
-            ),
-        ),
-        Check(
-            "reply: no re-teach ask once the routine exists",
-            not (_teach_ask(replies[-1]) if replies else False),
-            kind="reply",
-        ),
-        Check(
-            "reply: she never asked how the pages are built",
-            structure is None,
-            rationale=f"asked for {structure!r}" if structure else None,
-            kind="reply",
-        ),
-        _landing_advisory(db, ConversationState.APPLY),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatEval) -> None:
-    """Story 15: the fused ask is split out loud, the routine the user then gives is
-    run once across BOTH pages, and the closing "do that twice a day" stands the job
-    up on the container the round built."""
-    await chat_eval(
-        case_id="memory-two-source-teach",
-        messages=_TWO_SOURCE_TURNS,
-        browse=[FOXES_NEWS, SEALS_NEWS],
-        score=_score_two_source_teach,
-        min_pass_rate=None,
-        family=_FAMILY,
-        timeout=300.0,  # three turns: decompose, then the round, then standing it up
-    )
-
-
-# ── Story 15, the learn close (#1994/#1995) ──────────────────────────────────
-#
-# THE REFERENCE IMPLEMENTATION — every other case is ported against this shape.  Why a case
-# asserts end state and measures model output at all is `cohort.py`; what a claim means is
-# `assertions.py`.  What is here is what is true of THIS case:
-#
-# PHRASINGS and the CONTROL are different mechanisms, and reading one as the other is the
-# mistake this case exists to prevent:
-#   * phrasings — same world, different words → VARIANCE, pooled into one score
-#   * control   — same words, different world → an ASSERTION, never pooled
-# Wording variation cannot do the control's job: if Penny were pattern-completing from the
-# shape of the request, every phrasing would name the same player and every one would be right.
-#
-# NOT HERE: the single-source variant of this ask.  One page instead of two is a different
-# SCENARIO — what the store must hold is a different claim — so it is a different case.
-
-_LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
-
-# ONE request in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
-# model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE
-# mechanism — measured, four scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides
-# the one that came apart.
-LEARN_CLOSE_ASK = (
-    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
-    "each, and keep the headline plus a short blurb in a team news list for me"
-)
-
-LEARN_CLOSE_PHRASINGS = (
-    (
-        f"have a look at both of these — {FOXES_URL} and {SEALS_URL} — find "
-        "whichever players got traded or signed, and put each headline with a "
-        "one-line summary into a list of team news for me"
-    ),
-    (
-        f"check {FOXES_URL} and {SEALS_URL}, grab any trade or signing news off "
-        "each one, and save the headline and a short summary into a team news list"
-    ),
-    (
-        f"read through {FOXES_URL} and {SEALS_URL}, pick out the trades and the "
-        "signings, and store each headline along with a brief note in a list of "
-        "team news for me"
-    ),
-    (
-        f"open {FOXES_URL}, then {SEALS_URL}. anything about a player being traded "
-        "or signed, keep the headline and a sentence about it in a team news list."
-    ),
-)
-
-_LEARN_CLOSE_TEACH_QUESTION = (
-    "happy to set that up — but i don't have a routine for it yet. can you walk me "
-    "through one pass in a single message? which pages should i read, what counts as "
-    "notable, and what should i keep for each one?"
-)
-
-
-@pytest.fixture
-def standing_elicit_round() -> Seeder:
-    """The round the measured turn closes: the user asked for the job, Penny asked to be taught
-    one pass, and the machine is parked in ``elicit`` on that ask.
-
-    Seeded rather than hoped for (#1989) — the ask is an imperative about now, which idle's own
-    definition claims, so on a cold machine both measured models drew idle on 10 of 10 samples
-    and every reply check failed for a reply nobody had been asked to write."""
-    return round_parked_in_elicit(_TWO_SOURCE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_the_learn_close_states_the_steps_it_captured(
-    chat_eval: ChatEval, model: str, standing_elicit_round: Seeder
-) -> None:
-    """Story 15, the learn close: one demonstrated round, and the reply that closes it tells the
-    user what the routine will RUN — so a step it captured by accident is visible to the only
-    person who can tell that it does not belong.
-
-    REPORT-ONLY: the floors and ceilings this run proposes are the code owner's to accept once
-    the numbers have been read."""
-    cohort = await chat_eval(
-        case_id=_LEARN_CLOSE_CASE_ID,
-        model=model,
-        seed=standing_elicit_round,
-        world=TWO_TEAM_NEWS,
-        ask=LEARN_CLOSE_ASK,
-        also_phrased=LEARN_CLOSE_PHRASINGS,
-        samples_per_phrasing=3,
-        min_pass_rate=None,
-        family=_FAMILY,
-        timeout=240.0,
-    )
-    cohort.assert_machine_landed(ConversationState.LEARN)
-    cohort.assert_a_routine_reached_the_registry()
-    cohort.assert_the_routine_names_a_destination()
-    cohort.assert_the_store_holds_an_entry()
-    cohort.assert_each_source_was_kept()
-    cohort.assert_nothing_excluded_was_stored()
-    cohort.assert_every_stored_entry_traces_to_the_world()
-    cohort.assert_every_value_in_the_reply_is_sourced()
-
-    # A SECOND VISIBLE DRIVE, beside the claim it serves: an assertion that quietly made three
-    # more model calls would be a nasty surprise.
-    control = await chat_eval(
-        case_id=_LEARN_CLOSE_CASE_ID,
-        model=model,
-        seed=standing_elicit_round,
-        world=TWO_TEAM_NEWS_CONTROL,
-        ask=LEARN_CLOSE_ASK,
-        samples_per_phrasing=3,
-        min_pass_rate=None,
-        family=_FAMILY,
-        timeout=240.0,
-    )
-    cohort.assert_facts_moved_with_the_world(control)
-
-    cohort.measure(
-        TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
     )
 
 
