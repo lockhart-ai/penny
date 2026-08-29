@@ -978,30 +978,30 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
     assert "| 1 | `ridgelinefoxes` |" in tail, "and the table it labels is right there"
 
 
-def _named(name: str, arm: str, tools: list[str], container: str):
+def _named(name: str, arm: str, tools: list[str], routine: str):
     return cohort.SampleObservation(
         name=name,
         phrasing=arm,
         tool_sequence=tools,
-        entries=[cohort.StoredEntry(collection=container, key="k", content="c")],
+        routines=[cohort.RoutineRecord(name=routine, shape="s", names_a_destination=True)],
     )
 
 
 def test_a_feature_every_sample_differs_on_is_not_a_divergence():
     """When 14 of 15 samples are outliers, `outlier` has stopped meaning anything — and the cause
-    is a feature at maximum entropy. Every sample invents its own container name, so every sample
+    is a feature at maximum entropy. Every sample's framer draws its own routine name, so every
     diverges on it by construction, so every sample is an outlier and the section names all of
     them and therefore none.
 
     That fact belongs to the FEATURE and is already stated once in the variance table; it is not
     a finding about any one sample. So it is excluded from standing and from the divergences, and
-    a sample whose only difference was its container name is not an outlier at all."""
-    samples = [_named(f"c-{n}", "a", ["browse"], f"container-{n}") for n in range(4)]
+    a sample whose only difference was the name it drew is not an outlier at all."""
+    samples = [_named(f"c-{n}", "a", ["browse"], f"watch_price_{n}") for n in range(4)]
     # …except one, which also took a different route — the only real divergence here.
-    samples[3] = _named("c-3", "a", ["browse", "write"], "container-3")
-    features = [cohort.CONTAINER_NAME, cohort.TOOL_SEQUENCE]
+    samples[3] = _named("c-3", "a", ["browse", "write"], "watch_price_3")
+    features = [cohort.ROUTINE_NAME, cohort.TOOL_SEQUENCE]
 
-    assert cohort.everywhere_distinct(samples, features) == ["container name"]
+    assert cohort.everywhere_distinct(samples, features) == ["routine name"]
     standings = cohort.standings(samples, features)
     assert [s.standing for s in standings] == [
         cohort.Standing.MODAL,
@@ -1071,26 +1071,26 @@ def test_every_spec_category_renders_including_the_empty_ones():
 def test_a_cosmetic_divergence_never_makes_an_outlier():
     """A feature unconstrained in BOTH measured models is a system-level finding for the
     variance table, not fifteen per-sample findings. Without the split, 8 of 9 outlier rows were
-    container-name-only — reporting "60% of samples are outliers" where the true statement was
+    routine-name-only — reporting "60% of samples are outliers" where the true statement was
     "1 of 15 diverged consequentially"."""
-    # Two samples share a container name, so the feature is INFORMATIVE (not everywhere-distinct)
+    # Two samples draw the same routine name, so the feature is INFORMATIVE (not all-distinct)
     # and reaches the consequence rule rather than being dropped before it.
     samples = [
         cohort.SampleObservation(
             name=f"c-{n}",
             phrasing="a",
             tool_sequence=["browse"],
-            entries=[cohort.StoredEntry(collection=container, key="k", content="c")],
+            routines=[cohort.RoutineRecord(name=routine, shape="s", names_a_destination=True)],
         )
-        for n, container in enumerate(["alpha", "alpha", "beta", "gamma"])
+        for n, routine in enumerate(["watch_price", "watch_price", "monitor_price", "check_price"])
     ]
-    features = [cohort.CONTAINER_NAME, cohort.TOOL_SEQUENCE]
+    features = [cohort.ROUTINE_NAME, cohort.TOOL_SEQUENCE]
     standings = cohort.standings(samples, features)
 
     assert all(s.standing is not cohort.Standing.OUTLIER for s in standings), (
-        "naming the container differently is cosmetic — it makes no outlier"
+        "the name the framer drew is cosmetic — it makes no outlier"
     )
     rendered = report.render_outliers(list(enumerate(standings, start=1)))
     assert "No sample diverged consequentially" in rendered
-    assert "2 samples differ on `container name`" in rendered
+    assert "2 samples differ on `routine name`" in rendered
     assert "entropy reported in Variance" in rendered

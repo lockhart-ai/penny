@@ -23,6 +23,7 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
     StoredEntry,
+    VarianceFeature,
     compare_to_ceiling,
     feature_variance,
     normalised_entropy,
@@ -165,33 +166,78 @@ def test_reply_spread_reads_the_embeddings_the_replies_already_carry():
 
 
 # ── Thresholds ───────────────────────────────────────────────────────────────
+def _mixed() -> VarianceFeature:
+    """A cohort with a real majority — three of one shape, two of another, one of a third.
+
+    Not every-sample-distinct, which is now the SATURATED case and proposes nothing."""
+    shapes = ["a", "a", "a", "b", "b", "c"]
+    return feature_variance(
+        ROUTINE_SHAPE, [_sample(f"s{i}", "p1", shape) for i, shape in enumerate(shapes)]
+    )
+
+
+def _quiet() -> VarianceFeature:
+    """The same cohort SIZE as `_mixed`, because a ceiling refuses comparison across N."""
+    return feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(6)])
+
+
 def test_a_ceiling_sits_a_sampling_margin_above_the_observed_value():
-    feature = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
-    ceiling = proposed_ceiling(feature, _MODEL)
-    assert ceiling.value == 1.0  # every sample distinct, and the margin cannot exceed 1.0
-    quiet = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(4)])
-    assert proposed_ceiling(quiet, _MODEL).value == 0.10
+    mixed = _mixed()
+    ceiling = proposed_ceiling(mixed, _MODEL)
+    assert ceiling is not None
+    assert ceiling.value == round(mixed.entropy + 0.10, 3)
+    quiet = proposed_ceiling(_quiet(), _MODEL)
+    assert quiet is not None and quiet.value == 0.10
+
+
+def test_a_feature_with_nowhere_left_to_rise_proposes_no_ceiling():
+    """A ceiling catches a RISE, and normalised entropy is bounded at 1.0 — so where most samples
+    already produced a value no other sample produced, any ceiling above the observed value is a
+    guard that can never trip, and printing one implies a gate that does not exist.
+
+    The boundary is NO MAJORITY BEHAVIOUR — the modal value is not shared by even half the
+    samples. Chosen over "most values are distinct" because that reads the wrong quantity at
+    small N: two distinct values in three samples is ordinary spread, not saturation. It is a
+    judgement about where to stop PROPOSING — nothing is gated on it."""
+    # The framer's naming shape from the reference run: nine distinct names, the commonest held
+    # by four of fifteen — no majority behaviour at all.
+    scattered = feature_variance(
+        ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i // 4)) for i in range(15)]
+    )
+    assert scattered.modal * 2 < scattered.n
+    assert scattered.saturated
+    assert proposed_ceiling(scattered, _MODEL) is None
+
+    mixed = _mixed()
+    assert not mixed.saturated, "a real majority still proposes"
+    assert proposed_ceiling(mixed, _MODEL) is not None
 
 
 def test_only_a_rise_in_variance_is_a_regression():
-    observed = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
-    calm = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", "same") for i in range(4)])
+    observed, calm = _mixed(), _quiet()
     ceiling = proposed_ceiling(calm, _MODEL)
+    assert ceiling is not None
     assert compare_to_ceiling(ceiling, observed, _MODEL).regressed
-    assert not compare_to_ceiling(proposed_ceiling(observed, _MODEL), calm, _MODEL).regressed
+    higher = proposed_ceiling(observed, _MODEL)
+    assert higher is not None
+    assert not compare_to_ceiling(higher, calm, _MODEL).regressed
 
 
 def test_a_ceiling_refuses_to_be_compared_across_models_or_cohort_sizes():
     """Both qualifiers make the two numbers different statistics, so the verdict says so rather
     than answering wrongly — a shared ceiling would be useless for the consistent model and
     permanently failing for the variant one."""
-    observed = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(4)])
-    other_model = compare_to_ceiling(proposed_ceiling(observed, _MODEL), observed, _OTHER_MODEL)
+    observed = _mixed()
+    ceiling = proposed_ceiling(observed, _MODEL)
+    assert ceiling is not None
+    other_model = compare_to_ceiling(ceiling, observed, _OTHER_MODEL)
     assert not other_model.comparable and not other_model.regressed
     assert _OTHER_MODEL in other_model.note
 
-    smaller = feature_variance(ROUTINE_SHAPE, [_sample(f"s{i}", "p1", str(i)) for i in range(3)])
-    other_size = compare_to_ceiling(proposed_ceiling(observed, _MODEL), smaller, _MODEL)
+    smaller = feature_variance(
+        ROUTINE_SHAPE, [_sample(f"s{i}", "p1", shape) for i, shape in enumerate(["a", "a", "b"])]
+    )
+    other_size = compare_to_ceiling(ceiling, smaller, _MODEL)
     assert not other_size.comparable and "N=3" in other_size.note
 
 

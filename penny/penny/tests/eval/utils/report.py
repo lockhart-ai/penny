@@ -366,6 +366,10 @@ _COST_HEAD = "| tokens | observed | proposed ceiling |\n|---|---|---|"
 _NO_ASSERTIONS = "_(no assertions)_"
 _NOTHING_POOLED = "_(nothing pooled — see the harness section)_"
 _NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
+# A feature already so spread that a ceiling could not fire proposes none: printing one
+# implies a guard that can never trip.  The reading itself still renders — it is the
+# diagnostic, and on a distinctness statistic it is usually the most interesting row.
+_NO_CEILING = "— diagnostic reading; too spread to gate"
 _COST_LEAD = "**Cost, per sample.**"
 
 _FLOOR_NOTE = (
@@ -628,10 +632,15 @@ def _assertion_row(row: cohort.AssertionRow) -> str:
 
 def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
     ceiling = cohort.proposed_ceiling(feature, model)
+    proposal = (
+        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n}"
+        if ceiling is not None
+        else _NO_CEILING
+    )
     return (
         f"| {variance_glyph(feature)} | `{feature.name}` | {feature.distinct} | "
         f"{feature.modal}/{feature.n} ({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
-        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n} |"
+        f"{proposal} |"
     )
 
 

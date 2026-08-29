@@ -53,9 +53,9 @@ from penny.tests.eval.conftest import (
 # state machine's elicitation edge asks the same question of a turn (nothing acted on
 # before it was taught), and one policy in two copies is two contracts.
 from penny.tests.eval.utils.cohort import (
-    CONTAINER_NAME,
     ENTRIES_STORED,
     REPLY_SPREAD,
+    ROUTINE_NAME,
     ROUTINE_SHAPE,
     TOOL_SEQUENCE,
     TRANSITIONS,
@@ -360,5 +360,5 @@ async def test_a_demonstrated_round_is_enacted_learned_and_reported(
     cohort.assert_facts_moved_with_the_world(control)
 
     cohort.measure(
-        TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
+        TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
     )

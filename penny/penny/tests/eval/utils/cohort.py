@@ -198,11 +198,21 @@ TOOL_SEQUENCE = Feature("tool sequence", lambda o: " → ".join(o.tool_sequence)
 ROUTINE_SHAPE = Feature(
     "routine shape", lambda o: " | ".join(r.shape for r in o.routines) or "no routine"
 )
-# COSMETIC: unconstrained at 0.90 entropy in both measured models, so a divergence here is a
-# system-level finding that belongs in the variance table and never a fact about one sample.
-CONTAINER_NAME = Feature(
-    "container name",
-    lambda o: ", ".join(sorted({e.collection for e in o.entries})) or "none",
+# What the framer called the routine.  Measured DIRECTLY rather than through the container it
+# produces: a container name is `derive_collection_name(skill.name, [parameter values])`, and on
+# the reference run the parameter half was byte-identical across all 18 samples — so measuring
+# the container measured the routine name through a slug function, under a label that hid what
+# it was.  Nothing about the naming MECHANISM is loose: `round_framing.container_name` is fully
+# deterministic and public precisely so a fixture cannot grow a second copy of the scheme.  What
+# varies is the framer's output, upstream of it.
+#
+# COSMETIC because the end state is equivalent whichever name is drawn — `watch_price` and
+# `monitor_listing_price` leave the same round, the same write and the same container shape
+# behind — so its spread belongs in the variance table as the FRAMER's naming spread, never as
+# a fact about one sample.
+ROUTINE_NAME = Feature(
+    "routine name",
+    lambda o: ", ".join(sorted({r.name for r in o.routines})) or "none",
     consequence=Consequence.COSMETIC,
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
@@ -254,6 +264,32 @@ class VarianceFeature(BaseModel):
     @property
     def modal_share(self) -> float:
         return self.modal / self.n if self.n else NO_SPREAD
+
+    @property
+    def saturated(self) -> bool:
+        """Whether this feature is too spread for a ceiling to mean anything.
+
+        A ceiling catches a RISE, and normalised entropy is bounded at 1.0 — so a feature already
+        near the top of its range gets a ceiling it could never breach, which prints a guard that
+        cannot fire.
+
+        The boundary is NO MAJORITY BEHAVIOUR: the modal value is not shared by even half the
+        The boundary is NO MAJORITY BEHAVIOUR: the modal value is not shared by even half
+        the samples (exactly half still counts as a majority).  Chosen over "most values are
+        distinct" because that reads the wrong quantity at small N — two distinct values in
+        three samples is ordinary spread, not saturation, and it would have silenced ceilings
+        on cohorts that plainly deserve one.  Measured on the reference run this separates the
+        real cases cleanly: the framer's naming sits at modal 4/15 and proposes nothing, while
+        tool sequence and routine shape at 13/15 both propose.
+        small N — two distinct values in three samples is ordinary spread, not saturation, and it
+        would have silenced ceilings on cohorts that plainly deserve one.  Measured on the
+        reference run this separates the real cases cleanly: the framer's naming sits at modal
+        4/15 and proposes nothing, while tool sequence and routine shape at 13/15 both propose.
+
+        It needs no new constant — "half" is the same majority notion standing decides on — and
+        it is read off the two numbers the table already shows.  A judgement about where to stop
+        PROPOSING; nothing is gated on it and nothing fails because of it."""
+        return self.n > 0 and self.modal * 2 < self.n
 
 
 class TextSpread(BaseModel):
@@ -442,9 +478,14 @@ def pool(
 
 def proposed_ceiling(
     feature: VarianceFeature, model: str, margin: float = CEILING_MARGIN
-) -> RecordedCeiling:
-    """The ceiling this run PROPOSES — observed plus the sampling margin.  Proposed, never
-    locked: a near-ceiling feature is a defect to fix first, not a threshold to record."""
+) -> RecordedCeiling | None:
+    """The ceiling this run PROPOSES — observed plus the sampling margin — or ``None`` where the
+    feature is already too spread for one to mean anything.
+
+    Proposed, never locked: a near-ceiling feature is a defect to fix first, not a threshold to
+    record, and proposing one anyway prints a guard that could not fire."""
+    if feature.saturated:
+        return None
     return RecordedCeiling(
         feature=feature.name,
         model=model,
