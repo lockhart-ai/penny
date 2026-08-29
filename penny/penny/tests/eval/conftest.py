@@ -1480,8 +1480,8 @@ def _sample_turns(
     samples carry exactly TWO outgoing messages and the report showed three: Penny sends one
     message, the report claimed she sent two.  Rerolls are working machinery and must not appear
     anywhere they can be read as output, so a text draw renders as a reply only if it was
-    delivered; the rest are collected by ``rejected_draws`` for their own fold.  Empty
-    ``delivered`` keeps the old behaviour."""
+    delivered; the rest are collected by ``rejected_draws`` for their own fold.  An empty
+    ``delivered`` names nothing to exclude, so every draw renders as a reply."""
     turns: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     pushed = {content.strip() for content in driven}

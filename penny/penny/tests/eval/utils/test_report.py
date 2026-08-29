@@ -398,13 +398,13 @@ def test_a_prompt_every_sample_shared_renders_once_naming_them_all():
 
 
 def test_prompts_that_differ_each_render_verbatim_naming_their_own_samples():
-    """The finding the line-diffing hid.  A `chat` prompt carries the self-state header, which
-    feeds each sample its OWN minted collection name back — so on the reference port all 18 were
-    distinct, and that is the cohort's `container name` variance showing up in the prompt.
+    """The finding a whole render makes visible.  A `chat` prompt carries the self-state header,
+    which feeds each sample its OWN minted collection name back — so on the reference port all 18
+    were distinct, and that is the cohort's `container name` variance showing up in the prompt.
 
     Each distinct text renders WHOLE, so a reader opening a sample's prompt reads what the model
-    read.  The machinery this replaced rebuilt a synthetic 'shared block' no sample was ever
-    given and left every prompt reconstructable-but-not-readable."""
+    read — never a block assembled out of what several prompts have in common, which is a text no
+    sample was given."""
     variants = report.prompt_variants(
         _pairs(
             ("sample 1", "chat", "you are penny\ncollection: alpha"),
@@ -936,10 +936,9 @@ def test_a_single_block_over_budget_keeps_its_own_fold_for_the_guard_to_refuse()
 
 
 def test_the_harness_counts_add_up():
-    """The arithmetic must CLOSE. A pooled count short of the driven one with nothing to explain
-    the gap left samples unaccounted for on the one surface whose job is to say whether the run
-    can be believed — and a section that raises a question it does not answer is one people
-    learn to skip, which is how 288 infrastructure failures came to be booked as behavioural."""
+    """The arithmetic must CLOSE. This is the one surface whose job is to say whether a run can
+    be believed, so a pooled count short of the driven one has to name what it lost — a sample it
+    cannot account for is how infrastructure failure gets read as behaviour."""
     samples = [
         _observation("c-1 (a)", "a", ["browse"]),
         _observation("c-2 (a)", "a", ["browse"]),
@@ -1036,11 +1035,9 @@ def test_a_thinking_trace_shorter_than_its_own_label_renders_inline():
 
 
 def test_every_spec_category_renders_including_the_empty_ones():
-    """The design permits exactly FOUR kinds of deterministic assertion, and a category nobody
-    wrote a claim for is a FINDING rather than a blank.
-
-    The reference port asserted nothing about PROVENANCE at first, purely because the case it
-    was ported from had no such claim to copy, and nothing in the document showed the hole."""
+    """The design permits exactly THREE kinds of deterministic assertion, and a category nobody
+    wrote a claim for is a FINDING rather than a blank: it says this case checks nothing of that
+    kind, which is what a reader porting the next case needs to see."""
     rendered = report.CaseSections(
         case_id="c",
         model="m",

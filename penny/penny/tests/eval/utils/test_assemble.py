@@ -504,7 +504,7 @@ def test_a_case_level_preamble_reaches_the_comment_verbatim(tmp_path: Path) -> N
 
 
 def test_md_and_comment_render_every_sample_identically(tmp_path: Path) -> None:
-    """A case that nominated no sample keeps the old behaviour exactly: the on-disk ``.md`` holds
+    """A case that nominated no sample reproduces every one of them: the on-disk ``.md`` holds
     every sample's full folded body, and the comment carries the same bodies. Only a case whose
     cohort named a representative is indexed rather than reproduced (below)."""
     _, artifact = _mixed_run(tmp_path)
@@ -612,9 +612,8 @@ def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_pat
 
 
 def test_the_samples_the_comment_does_not_carry_are_accounted_for() -> None:
-    """An accounting, never a claim. `17 other samples agreed with the representative` counted
-    fourteen outliers and called all seventeen agreeing — on the same page as fourteen blocks
-    showing exactly how they differed.
+    """An accounting, never a claim that the samples it left out AGREED — on a variant cohort
+    that claim is false, and it renders directly above the blocks showing how they differed.
 
     The arithmetic closes the way the summary line's does: representative + matched +
     diverged = pooled."""

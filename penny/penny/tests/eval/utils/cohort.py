@@ -26,9 +26,8 @@ Two properties of the statistic decide how it may be read, both measured rather 
   every feature also carries a :class:`PhrasingRow`, reporting the weaker honest signal at
   n=3: a wording that produced a value **no other wording did**.
 
-A cohort's samples are HERMETIC — own database, own conversation, own pages — and every one
-of them was driven against the same world.  So nothing here compares two cohorts: a claim
-resolves the one world its sample was given, and the spread is measured within the pool.
+A cohort's samples are HERMETIC — own database, own conversation, own pages — and every one of
+them was driven against the same world, so the spread is measured within the pool.
 """
 
 from __future__ import annotations
@@ -560,18 +559,7 @@ class SpecCategory(StrEnum):
 
     The list is CLOSED and the field is REQUIRED, which is the whole point: a check that fits no
     category cannot be declared, so the audit is a fact the code states rather than a review
-    somebody has to remember to run.  In prose the list existed already, and this branch shipped
-    a route assertion and a phrasing match anyway — nothing stopped them being written.
-
-    THREE, not four: a fourth category asserted that a reply's facts MOVED when the world moved,
-    against a second drive of the same ask in another world.  It was withdrawn (#2002).  Samples
-    are hermetic — own database, own conversation, own pages — so a sample was never shown the
-    other world's fact, and "it names nothing from the world it was not given" asserted the
-    absence of something with no cause; it read 18/18 every run and always would.  It was also
-    redundant: PROVENANCE already catches a fabricated value, and catches every invention rather
-    than one foreign token.  The pattern-completion defence it was for survives without it — a
-    model that ignored the page and emitted a plausible value fails the STORE claim on whichever
-    world it guessed wrong, which needs the world to VARY and not two cohorts to compare.
+    somebody has to remember to run.  A list kept in prose does not stop anything being written.
 
     The rules themselves live in #1994 §A and #2011; they are deliberately not restated here,
     because a third copy is a third thing to drift.
@@ -861,9 +849,8 @@ def divergences(
 # implementation.
 #
 # THE BLIND SPOTS, STATED: a single-word invention, and a recombination of two real names.
-# Nothing else in the suite covers them, and the trade is deliberate — the strict form of this
-# rule failed 15 of 18 samples on ordinary English, so a rule that misses a bare invented
-# surname is the honest half of the choice rather than an oversight nobody noticed.
+# Nothing else in the suite covers them.  Tightening the rule to catch them is what the measured
+# false-positive rate above rules out, so the miss is the bought half of that trade.
 _NUMBER = r"\d[\d,.:%$]*"
 _URL = r"https?://\S+"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"

@@ -129,18 +129,17 @@ class TestWhatTheRecipeReads:
 # ── What the Makefile actually hands this parser (#1997) ─────────────────────
 #
 # The roster is configuration, and configuration is read from the primary checkout's `.env` by
-# the Makefile's own `from_env` helper.  That helper ended in `tr -d '"'` — written to unquote a
-# scalar like `LLM_API_KEY="abc"`, and it stripped EVERY quote, so a JSON value arrived as
-# `[{model:openai/gpt-oss-20b,...}]` and every `.env`-configured run refused to start.
+# the Makefile's own `from_env` helper — so a JSON value passes through a shell unquoter written
+# for scalars like `LLM_API_KEY="abc"`.  That transformation is what these tests guard.
 #
-# The bug was invisible from both ends.  Validating the FILE says it parses; validating the
-# PARSER says it accepts JSON; neither exercises the transformation between them.  And an agent
-# passing `EVAL_MODELS` through the environment takes the other branch of `$${EVAL_MODELS:-...}`
-# and sails straight past it — so the only path that breaks is the one a human uses.
+# VALIDATE THE SEAM, not either end.  Checking the FILE says it parses; checking the PARSER says
+# it accepts JSON; neither exercises what happens between them.  And an agent passing
+# `EVAL_MODELS` through the environment takes the other branch of `$${EVAL_MODELS:-...}` and
+# never touches the helper at all — so the path that breaks is the one a human uses, and it is
+# the one no other test covers.
 #
-# The guard therefore runs the REAL helper, lifted out of the Makefile text rather than
-# reimplemented here: a reimplementation is a second copy of the logic, and a second copy is
-# what drifts silently back into the bug it was written to catch.
+# The guard runs the REAL helper, lifted out of the Makefile text rather than reimplemented here:
+# a reimplementation is a second copy of the logic, and a second copy drifts.
 
 
 def _from_env_helper(env_file: pathlib.Path) -> str:
@@ -174,8 +173,8 @@ class TestTheMakefileHandsTheRosterWhatIsConfigured:
     """A roster that parses in `.env` and not after the Makefile has read it is not configured."""
 
     def test_a_json_roster_survives_being_read_out_of_the_env_file(self, tmp_path) -> None:
-        """The regression: `tr -d '"'` made this exact value unparseable, so the config path
-        #1996 added was the one path that could not work."""
+        """A roster that parses in `.env` and not after the Makefile has read it is not
+        configured — the value must survive the read byte for byte."""
         resolved = _resolve_through_the_makefile(
             tmp_path, EVAL_MODELS_ENV, f"{EVAL_MODELS_ENV}={_ROSTER}"
         )

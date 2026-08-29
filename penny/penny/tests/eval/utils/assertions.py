@@ -40,7 +40,7 @@ from penny.tests.eval.utils.worlds import World
 Answer = tuple[bool, str | None]
 # How one sample answers one claim, judged against the world the cohort was driven against.
 # The world is a parameter rather than a closure so a claim stays a pure function of the sample
-# and the ground it was given — readable, and testable without building a cohort.
+# and the ground it was given — testable without building a cohort.
 WorldClaim = Callable[[SampleObservation, World], Answer]
 
 
@@ -52,9 +52,7 @@ class Cohort:
     and a per-sample callback cannot see the cohort it belongs to.
 
     A cohort is one request at one model, against ONE world.  Its samples are hermetic — own
-    database, own conversation, own pages — so they are weighed against each other and never
-    against another cohort: a claim about a sample resolves the only world that sample was
-    given, and there is nothing to compare it to.
+    database, own conversation, own pages — and a claim reads that one world.
     """
 
     def __init__(

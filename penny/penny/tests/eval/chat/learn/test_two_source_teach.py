@@ -274,31 +274,14 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 # asserts end state and measures model output at all is `cohort.py`; what a claim means is
 # `assertions.py`.  What is here is what is true of THIS case:
 #
-# ═══ The ported learn round — `transition-elicit-to-learn`, in the cohort structure ═══════
-#
-# The turns, the world and the claims are that case's, taken rather than derived: it scores mean
-# 1.0 with 24/30 modal on tool sequence, and a case that already lands where we want to land IS
-# the specification.
-#
-# ONE source and PROSE, both deliberate.  The two-source world and its numbered demonstration
-# stay with `memory-two-source-teach` above, in the old format; two-source can become its own
-# case when it is wanted, and it is not what this prototypes.
-#
-# What the cohort adds on top, and the canonical case has no equivalent for:
+# ONE source and PROSE, both deliberate.  `memory-two-source-teach` above is the two-source
+# case; this one demonstrates three actions against a single page, said as a sentence rather
+# than as a numbered procedure.  Its turns and world are `transition-elicit-to-learn`'s.
 #
 #   * PHRASINGS — the same request in five wordings, POOLED into one variance score.  Wording is
 #     an INPUT axis: what varies is how a person says three things in a sentence, and what is
 #     scored is that the end state does not move with it.
 #   * the tool calls MEASURED rather than asserted, because many routes reach one end state.
-#
-# ONE WORLD, one drive.  A fourth claim family once drove the same ask against a second world
-# and asserted the reply's facts moved with it (#2002).  Samples are hermetic — own database,
-# own conversation, own page — so a sample was never shown the other world's fact, and "it
-# names nothing from the world it was not given" asserted the absence of something with no
-# cause; it read 18/18 every run and always would.  The pattern-completion worry it was for is
-# already covered: a model ignoring the page and emitting a plausible price fails the STORE
-# claim on whichever world it guessed wrong.  That needs the world to VARY, not two cohorts to
-# compare, and the world stays fixed for now.
 
 _DEMONSTRATED_ROUND_CASE_ID = "learn-demonstrated-round"
 
@@ -336,16 +319,18 @@ async def test_a_demonstrated_round_is_enacted_learned_and_reported(
         family=_FAMILY,
         timeout=240.0,
     )
-    # `transition-elicit-to-learn`'s own checks, ported one for one.
+    # LANDED
     cohort.assert_machine_landed(ConversationState.LEARN)
+
+    # STORE
     cohort.assert_something_from_each_page_was_written()
     cohort.assert_the_write_landed_in_the_round_container()
     cohort.assert_a_routine_reached_the_registry()
     cohort.assert_nothing_was_scheduled()
     cohort.assert_every_spot_is_a_placeholder()
-
-    # What the new structure adds, and the canonical case has no equivalent for.
     cohort.assert_the_routine_names_a_destination()
+
+    # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 

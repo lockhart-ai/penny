@@ -6,9 +6,8 @@ fixture and hands it to the driver; the assertions then read the world rather th
 of tokens restated at each call site, so "she kept what the page said" is one claim about
 two objects instead of a comparison somebody has to keep in sync by hand.
 
-A case declares ONE world, and its samples are hermetic — own database, own conversation, own
-pages — so a claim resolves the one world its sample was given.  Varying the pages would be a
-second INPUT axis, like phrasing, and not a control arm: nothing here compares two cohorts.
+A case declares ONE world.  Its samples are hermetic — own database, own conversation, own
+pages — and every claim the case makes reads that world.
 """
 
 from __future__ import annotations

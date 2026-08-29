@@ -316,9 +316,7 @@ def variance_glyph(feature: cohort.VarianceFeature) -> str:
 # data compares one arithmetic to one rendering rather than two.
 
 # Declarative labels.  A heading NAMES the thing; the explanation belongs in the body, or
-# nowhere.  What stood here — "What every sample was given — the ask, the world, the prompts",
-# "Which samples to read", "Harness — samples too broken to count" — were sentences pretending
-# to be headings, and a reader scanning a hundred cases reads labels, not prose.
+# nowhere — a reader scanning a hundred cases reads labels, not prose.
 SECTION_A = "Assertions"
 SECTION_B = "Variance"
 SECTION_COST = "Cost"
@@ -327,10 +325,9 @@ SECTION_C = "Excluded samples"
 # A collapsed section states what is INSIDE it, not just where to click — the point of a folded
 # document is deciding what to open without opening it.  `Label — facts` is still a label: a noun
 # phrase with counts attached, never a sentence.
-# GATED != HELD.  Counting an ungated claim as not-held reported a check standing at 18/18 as
-# a miss, purely because no floor can be accepted for it at this N — which is a fact about the
-# threshold, not about the run.  So the headline counts what CAN be gated, and says separately
-# how many are measured without one.
+# GATED != HELD.  Whether a claim can carry a floor is a fact about the THRESHOLD, not about the
+# run, so an ungated claim is never counted as a miss: the headline counts what CAN be gated, and
+# says separately how many are measured without one.
 _A_SUMMARY = "{label} — {held} of {gated} gated held{ungated}{lowest}"
 _A_UNGATED = " · {count} ungated"
 _A_LOWEST = " · lowest {rate:.2f} `{claim}`"
@@ -346,16 +343,15 @@ _SUMMARY_LINE = (
 _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
 # The harness accounting lives HERE rather than in a section of its own: on a healthy run it is
 # one line, and a section that renders as a stub every time is one people learn to skip.  The
-# counts must still ADD UP — three unexplained samples on the surface that says whether a run can
-# be believed is how 288 infrastructure failures came to be booked as behavioural.
+# counts must still ADD UP: this is the surface that says whether a run can be believed, and a
+# sample it cannot account for is how infrastructure failure gets read as behaviour.
 _COUNTS = "{pooled} pooled + {excluded} excluded = {driven} driven"
 _NO_VARIANCE = "nothing pooled"
 
 _ASSERTION_HEAD = "|  | assertion | held | rate | proposed floor |\n|---|---|---|---|---|"
 _CATEGORY_HEADING = "**{category}**"
-# A category with no claims renders as a GAP rather than as an absence nobody notices.  The
-# reference port asserted nothing about PROVENANCE at first, purely because the case it was
-# ported from had no such claim to copy, and nothing in the document showed the hole.
+# A category with no claims renders as a GAP rather than as an absence nobody notices: a case
+# that checks nothing of one kind is a finding, and a blank says nothing.
 _CATEGORY_GAP = "**{category}** — _no claim. This case asserts nothing in this category._"
 _VARIANCE_HEAD = (
     "|  | feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|---|"
@@ -672,19 +668,18 @@ def _value_list(values: Sequence[str]) -> str:
 
 # ── The case document: what every sample shares, stated ONCE ─────────────────
 #
-# Sharing is DECLARED, not discovered.  What stood here computed which LINES happened to be
-# common across a case's prompts and rendered each sample as a diff against them — machinery
-# that existed because samples could not be assumed to share anything.  Under the pooled cohort
-# they do: one world, one seed set, K wordings of one ask.
+# Sharing is DECLARED, not discovered.  A cohort's samples share one world, one seed set and K
+# wordings of one ask, so prompts are grouped by EXACT TEXT: each distinct one renders once,
+# verbatim, naming the samples that used it.  Nothing computes which LINES two prompts happen to
+# have in common.
 #
-# So prompts are grouped by EXACT TEXT and each distinct one renders once, verbatim, naming the
-# samples that used it.  Measured on the reference port's own 18-sample run, four of the five
-# contexts are byte-identical across every sample (state-classifier, skill-framer, skill-namer
-# and browse-extract: 125,586 characters collapsing to 6,977), so declared sharing costs nothing
-# where sharing is real.  The fifth is the finding: `chat` has 18 distinct texts because the
-# self-state header feeds each sample its OWN minted collection and routine names back into its
-# prompt — which is the cohort's `container name` feature, showing up in the prompt.  A line
-# diff hid exactly that behind a marker, and it is the kind of thing a reader must see.
+# Measured on the reference port's own 18-sample run, four of the five contexts are
+# byte-identical across every sample (state-classifier, skill-framer, skill-namer and
+# browse-extract: 125,586 characters collapsing to 6,977), so declared sharing costs nothing
+# where sharing is real.  The fifth is the finding, and it is only visible because each text
+# renders whole: `chat` has 18 distinct texts because the self-state header feeds each sample its
+# OWN minted collection and routine names back into its prompt — which is the cohort's
+# `container name` feature, showing up in the prompt.
 #
 # The rule this keeps that the diff could not: every prompt renders VERBATIM.  A reader opening
 # a sample's prompt reads what the model read, never a reconstruction assembled from two places.
@@ -701,10 +696,9 @@ _EVERYWHERE_DISTINCT = (
 TEST_INPUTS_LABEL = "Test inputs — {phrasings} · {pages}"
 REPRESENTATIVE_LABEL = "Representative sample"
 REPRESENTATIVE_SUMMARY = "Representative sample — {turns} · {banner}"
-# What a per-sample verdict meant under the old scoring, and means nothing under the cohort:
-# the assertions hold across the cohort or they do not, so `✅ pass` on one sample is
-# `1/1 (1.00)` in a different spelling.  The summary line's harness accounting already says
-# whether a sample ran.
+# Per-sample verdicts, stripped from a banner.  A claim holds across the cohort or it does not,
+# so `✅ pass` on one sample is `1/1 (1.00)` in a different spelling, and whether the sample ran
+# at all is the summary line's harness accounting.
 _VERDICTS = ("✅ pass · ", "❌ fail · ", "✅ pass", "❌ fail")
 
 _ALL_SAMPLES = "every sample"
@@ -1069,16 +1063,12 @@ def summarise_thinking(body: str) -> str:
     return _THINKING_BLOCK.sub(shorten, body)
 
 
-# What the comment says about the samples it does NOT carry.  This was one sentence asserting
-# that they AGREED, written when the assumption was that most samples agree and a few stand out.
-# On a variant cohort that assumption is false and the sentence became a CLAIM: it counted every
-# sample the comment left out and called all seventeen agreeing, with fourteen outlier blocks
-# rendering directly underneath saying exactly how they differed.
-#
-# It is an ACCOUNTING now, and its arithmetic closes the way the summary line's does:
-# representative + matched + diverged = pooled.  Two named cases, because "none of them agreed
-# with each other" is the most important thing this run can say and a template built for the
-# happy path renders it as a small number nobody reads.
+# What the comment says about the samples it does NOT carry: an ACCOUNTING, never a claim that
+# they agreed — on a variant cohort that claim is false, and it would render directly above the
+# outlier blocks saying how they differed.  Its arithmetic closes the way the summary line's
+# does: representative + matched + diverged = pooled.  Two named cases, because "none of them
+# agreed with each other" is the most important thing such a run can say and a template built
+# for the happy path renders it as a small number nobody reads.
 SAMPLES_ACCOUNTED = (
     "_Of {pooled} pooled samples: the representative, {matched} that matched it, and "
     "{diverged} that diverged (see Outliers). Full transcripts in the run artifact._"
@@ -1112,8 +1102,8 @@ def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
     its prompt. That is one line's worth of fact and 134,365 characters' worth of folds.
 
     What this does NOT do is diff two prompts to find where they differ. Every prompt it keeps is
-    verbatim and the ones it drops are COUNTED, never reconstructed — the line-level hoisting
-    this replaced built a shared block no sample was ever given."""
+    verbatim and the ones it drops are COUNTED, never reconstructed: a block assembled out of
+    what several prompts have in common is a block no sample was ever given."""
     dropped: list[re.Match[str]] = []
 
     def prune(match: re.Match[str]) -> str:
@@ -1136,10 +1126,8 @@ def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
 def samples_accounted(*, matched: int, diverged: int) -> str:
     """How the samples the comment does not carry are accounted for — never a claim about them.
 
-    `17 other samples agreed with the representative` was counting fourteen outliers and calling
-    all seventeen agreeing, on the same page as fourteen blocks showing how they differed. It
-    degrades at both ends: a consistent cohort reports how many matched, and one where nothing
-    matched says so in as many words."""
+    It degrades at both ends: a consistent cohort reports how many matched, and one where
+    nothing matched says so in as many words rather than as a small number nobody reads."""
     if matched == 0 and diverged:
         return NONE_MATCHED.format(diverged=diverged)
     return SAMPLES_ACCOUNTED.format(
