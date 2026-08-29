@@ -41,9 +41,12 @@ story: two facts, two fitting places.
 Check labels carry one of three prefixes — ``state:`` (end DB facts), ``reply:``
 (what Penny said, against what she did), ``calls:`` (call provenance).  State and
 reply checks are SCORED; the call spine, the state the machine landed in, and the
-loop-health verdict are ADVISORY (``scored=False``) unless a call IS the story's own
+loop-health verdict are ADVISORY (``scored=False``) unless that row IS the story's own
 claim — a lookup before a write is one, since a write with no browse is a fact that
-came from nowhere.
+came from nowhere, and the learn close's LANDING is the other, since a story about the
+reply that ends a learn round has no subject at all outside that state (#1989).  Where
+a scored claim only exists in a state a sample never reached, it reads ``Check.na(...)``
+rather than ❌: a precondition nobody met is not a contract anybody failed.
 
 Every case is REPORT-ONLY (``min_pass_rate=None``): the thresholds are the code
 owner's to set once the numbers are read.  All content is synthetic — invented games,
@@ -64,12 +67,22 @@ from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.models import MemoryEntry, MemoryRow, PromptLog
-from penny.database.skill_store import steps_from_json
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
+
+# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
+# state machine's elicitation edge asks the same question of a turn (nothing acted on
+# before it was taught), and one policy in two copies is two contracts.
+from penny.tests.eval.cohort import (
+    CONTAINER_NAME,
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    ROUTINE_SHAPE,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
+)
 from penny.tests.eval.conftest import (
-    DESCRIBES_FETCH,
-    DESCRIBES_SAVE,
+    EVAL_MODELS,
     REPLY_ANCHOR,
     ChatEval,
     Check,
@@ -87,17 +100,32 @@ from penny.tests.eval.conftest import (
     tool_call_sequence,
     tool_was_called,
 )
-
-# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
-# state machine's elicitation edge asks the same question of a turn (nothing acted on
-# before it was taught), and one policy in two copies is two contracts.
 from penny.tests.eval.fixtures import (
     ENACTING_TOOLS,
     MULTIHOP_PAGES,
     CannedPage,
     SynthCollection,
 )
-from penny.tools.skill_tools import render_skill_shape
+from penny.tests.eval.seeds import Seeder, round_parked_in_elicit
+
+# Standing a ROUND up before the measured turn is the transition suite's idiom, read from
+# where that suite declares it rather than restated here: a seeded machine state, a seeded
+# conversation turn and a seeded ledger row are one shape, and a second copy of it would be
+# a second contract free to drift from the one every edge case is measured against.
+#
+# Its PROBES are deliberately restated instead (``_assert_parked_in_elicit`` below): that
+# suite's are keyed to its own ``_ElicitRound`` case type, which this file has no shape
+# for.  What a probe asserts is the seed it stands beside, so the honest cost of not
+# widening a neighbour's fixture type is one restated probe, named here rather than left
+# for a reader to notice.
+from penny.tests.eval.worlds import (
+    FOXES_NEWS,
+    FOXES_URL,
+    SEALS_NEWS,
+    SEALS_URL,
+    TWO_TEAM_NEWS,
+    TWO_TEAM_NEWS_CONTROL,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -293,21 +321,29 @@ def _walked(db: Database) -> str:
     return ", ".join(f"{move.from_state}→{move.to_state}" for move in moves) or "no move"
 
 
-def _landing_advisory(db: Database, expected: ConversationState | None = None) -> Check:
+def _landing_advisory(
+    db: Database, expected: ConversationState | None = None, *, scored: bool = False
+) -> Check:
     """Where the machine ended up, reported beside the story's own checks.
 
     A turn carrying an instruction lands in ``learn`` and mints a routine at run end;
     a question lands in idle.  Which of those a given phrasing is belongs to the state
     definitions rather than to a memory story, so this row REPORTS the landing (and
     the whole walk) and only ``expected`` — set where the story does turn on it —
-    makes it a verdict."""
+    makes it a verdict.
+
+    ``scored`` promotes that verdict into the graded denominator, for the one story whose
+    contract only EXISTS in the state it names (#1989): the learn close is a claim about
+    the reply that ends a learn round, so where the machine landed is that story's
+    precondition, and reporting it unscored beside scored reply checks put the accurate
+    signal out of the score and the misleading one in it."""
     landed = _landed_state(db)
     ok = landed == expected.value if expected is not None else landed is not None
     return Check(
         "calls: where the machine landed",
         ok,
         rationale=f"walked {_walked(db)}",
-        scored=False,
+        scored=scored,
         kind="spine",
     )
 
@@ -1114,43 +1150,22 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval) -> None:
 # kept for: everything else in the estate demonstrates against one source, so nothing
 # else measures a round that has to visit both and keep both.
 
-_FOXES_URL = "https://www.ridgelinefoxes.com/news"
-_SEALS_URL = "https://www.harborseals.com/news"
-
-_FOXES_NEWS_PAGE = CannedPage(
-    match="ridgelinefoxes",
-    text=(
-        "Title: Ridgeline Foxes | Official Site — Team News\n"
-        f"{_FOXES_URL}\n\n"
-        "Foxes sign veteran goalie Aurelio Brandt to a two-year deal — the club "
-        "confirmed the signing Thursday morning.\n"
-        "Final score: Foxes 3, Rovers 2 (overtime).\n"
-        "Training camp opens next month at Ridgeline Arena.\n"
-    ),
+# The FUSED ask both story-15 cases open on — sources + filter + schedule, no imperative,
+# the field shape verbatim.  Named rather than left as a position in the turns list below,
+# because the learn close reads it as the ask its seeded round is anchored to: a turn
+# inserted at the head of that list would silently re-seed a case two hundred lines away.
+_TWO_SOURCE_SETUP_ASK = (
+    "hey can you set up news alerts for my favourite teams? the ridgeline "
+    f"foxes and the harbor seals — their news pages are {FOXES_URL} and "
+    f"{SEALS_URL}. check them twice a day, and alert me about "
+    "notable stuff like trades, signings, and injuries — not game scores."
 )
 
-_SEALS_NEWS_PAGE = CannedPage(
-    match="harborseals",
-    text=(
-        "Title: Harbor Seals | Official Site — Team News\n"
-        f"{_SEALS_URL}\n\n"
-        "Seals name Petra Volk head of player development after a lengthy search.\n"
-        "Final score: Seals 1, Gulls 4.\n"
-        "Season ticket renewals open Friday.\n"
-    ),
-)
-
-# Turn 1 = the FUSED ask (sources + filter + schedule, no imperative — the field shape
-# verbatim).  Turn 2 = the user's routine, the answer the decompose ask requests (the
-# URLs referenced, not retyped — a real user doesn't repeat themselves).  Turn 3 = pure
-# schedule intent.
+# Turn 1 = that fused ask.  Turn 2 = the user's routine, the answer the decompose ask
+# requests (the URLs referenced, not retyped — a real user doesn't repeat themselves).
+# Turn 3 = pure schedule intent.
 _TWO_SOURCE_TURNS = [
-    (
-        "hey can you set up news alerts for my favourite teams? the ridgeline "
-        f"foxes and the harbor seals — their news pages are {_FOXES_URL} and "
-        f"{_SEALS_URL}. check them twice a day, and alert me about "
-        "notable stuff like trades, signings, and injuries — not game scores."
-    ),
+    _TWO_SOURCE_SETUP_ASK,
     (
         "sure: 1. go to those two news pages 2. pull out any trades, signings, "
         "or injuries — skip game scores 3. remember the title plus a short "
@@ -1289,7 +1304,7 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
     await chat_eval(
         case_id="memory-two-source-teach",
         messages=_TWO_SOURCE_TURNS,
-        browse=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
+        browse=[FOXES_NEWS, SEALS_NEWS],
         score=_score_two_source_teach,
         min_pass_rate=None,
         family=_FAMILY,
@@ -1297,164 +1312,135 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
     )
 
 
-# ── Story 15, the learn close: what did it actually capture? (#1943) ──────────
+# ── Story 15, the learn close (#1994/#1995) ──────────────────────────────────
 #
-# A demonstrated round is distilled into a routine WHOLE, so a call it picked up along the
-# way — a page fetched twice, a write of something nobody asked to keep — is captured with
-# everything else and enacted verbatim by every later cycle.  Nothing catches that: the
-# framework does not know what the routine was FOR, and by the time a collector runs it the
-# demonstrator is not in the room.  They are in the room at exactly one moment, the
-# learn-close reply, which is why this case scores that reply for the routine's SHAPE
-# rather than only its name (#1658/#1804 established the name and what it needs).
+# THE REFERENCE IMPLEMENTATION — every other case is ported against this shape.  Why a case
+# asserts end state and measures model output at all is `cohort.py`; what a claim means is
+# `assertions.py`.  What is here is what is true of THIS case:
 #
-# One turn, so the LAST reply IS the learn close — the three-turn story above ends on the
-# apply close, where what is running has already been settled.  Correcting a wrong step is
-# re-teaching the routine, so nothing here scores an edit: there is no edit surface.
+# PHRASINGS and the CONTROL are different mechanisms, and reading one as the other is the
+# mistake this case exists to prevent:
+#   * phrasings — same world, different words → VARIANCE, pooled into one score
+#   * control   — same words, different world → an ASSERTION, never pooled
+# Wording variation cannot do the control's job: if Penny were pattern-completing from the
+# shape of the request, every phrasing would name the same player and every one would be right.
 #
-# WHAT THE ASK LENDS THE SCORER, stated rather than assumed: a teaching turn is made of
-# the very verbs a reply describing the routine would use ("go to", "keep"), and it names
-# both pages, so unlike the legibility story's question this ask CANNOT be held apart from
-# the fetch/save families or from the sources — a reply merely reporting the outcome would
-# go green on all of them.  They are reported here (``scored=False``) rather than scored,
-# and what IS scored is the pair the ask cannot supply: that the reply says what the
-# routine will do when it RUNS AGAIN, and that it says it in plain words — no tool
-# identifier out of the record read aloud, which is the frame's own instruction and the
-# thing that decides whether handing the model the record helped or leaked.
+# NOT HERE: the single-source variant of this ask.  One page instead of two is a different
+# SCENARIO — what the store must hold is a different claim — so it is a different case.
 
-_LEARN_CLOSE_ASK = (
-    f"go to {_FOXES_URL} and {_SEALS_URL}, pull out the trades and signings from "
+_LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
+
+# ONE request in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
+# model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE
+# mechanism — measured, four scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides
+# the one that came apart.
+LEARN_CLOSE_ASK = (
+    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
     "each, and keep the headline plus a short blurb in a team news list for me"
 )
 
-# How a reply says a routine RUNS AGAIN rather than merely reporting what just happened.
-# Broad, and deliberately none of it in the ask: the ask is an imperative about now, so a
-# recurring frame in the reply is the model speaking about the routine it just learned.
-#
-# CADENCE words are deliberately absent — no "every morning", no "twice a day", no "on a
-# schedule".  The frame closes by asking her to OFFER a schedule, so a pattern carrying
-# those would go green on the offer alone and measure nothing about the steps.
-_RUNS_AGAIN = (
-    r"\b(each|every)\s+(time|run|cycle|round)\b"
-    r"|\bwhen(ever)?\s+(it|i)\s+runs?\b|\bfrom\s+now\s+on\b|\bgoing\s+forward\b"
-    r"|\bnext\s+time\b|\brun\s+(it|this|that)\s+again\b|\bre-?run\b"
+LEARN_CLOSE_PHRASINGS = (
+    (
+        f"have a look at both of these — {FOXES_URL} and {SEALS_URL} — find "
+        "whichever players got traded or signed, and put each headline with a "
+        "one-line summary into a list of team news for me"
+    ),
+    (
+        f"check {FOXES_URL} and {SEALS_URL}, grab any trade or signing news off "
+        "each one, and save the headline and a short summary into a team news list"
+    ),
+    (
+        f"read through {FOXES_URL} and {SEALS_URL}, pick out the trades and the "
+        "signings, and store each headline along with a brief note in a list of "
+        "team news for me"
+    ),
+    (
+        f"open {FOXES_URL}, then {SEALS_URL}. anything about a player being traded "
+        "or signed, keep the headline and a sentence about it in a team news list."
+    ),
 )
 
-assert not describes(_LEARN_CLOSE_ASK, _RUNS_AGAIN), (
-    f"the ask must lend no word to the recurrence pattern: {_LEARN_CLOSE_ASK!r}"
+_LEARN_CLOSE_TEACH_QUESTION = (
+    "happy to set that up — but i don't have a routine for it yet. can you walk me "
+    "through one pass in a single message? which pages should i read, what counts as "
+    "notable, and what should i keep for each one?"
 )
 
 
-def _learned_shapes(db: Database) -> list[str]:
-    """The shape line the framework rendered from what this sample actually learned —
-    reported beside the reply checks so a reader compares the account against the RECORD
-    rather than against what the case's author expected the round to capture.  A list,
-    because a round that minted more than one routine is itself the finding."""
-    return [render_skill_shape(skill) for skill in db.skills.list_all()]
+@pytest.fixture
+def standing_elicit_round() -> Seeder:
+    """The round the measured turn closes: the user asked for the job, Penny asked to be taught
+    one pass, and the machine is parked in ``elicit`` on that ask.
+
+    Seeded rather than hoped for (#1989) — the ask is an imperative about now, which idle's own
+    definition claims, so on a cold machine both measured models drew idle on 10 of 10 samples
+    and every reply check failed for a reply nobody had been asked to write."""
+    return round_parked_in_elicit(_TWO_SOURCE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
 
 
-def _tools_read_aloud(db: Database, reply: str) -> list[str]:
-    """The RECORD's own tool identifiers that turned up verbatim in the reply.
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_learn_close_states_the_steps_it_captured(
+    chat_eval: ChatEval, model: str, standing_elicit_round: Seeder
+) -> None:
+    """Story 15, the learn close: one demonstrated round, and the reply that closes it tells the
+    user what the routine will RUN — so a step it captured by accident is visible to the only
+    person who can tell that it does not belong.
 
-    Read off the learned steps rather than from a list written here, so a routine built
-    on a tool nobody has enumerated is covered the same way: what is being checked is
-    that the frame's record came back TRANSLATED, in the plain words it asks for, rather
-    than recited — the leak #1799 measured, which handing the model a step shape at all
-    is what risks re-opening."""
-    normalized = _normalize(reply)
-    return sorted(
-        {
-            step.tool
-            for skill in db.skills.list_all()
-            for step in steps_from_json(skill.steps)
-            if _normalize(step.tool) in normalized
-        }
-    )
-
-
-def _shape_family_checks(reply: str, learned: bool) -> list[Check]:
-    """The routine's two moves as the reply describes them, plus which of the two pages it
-    named — reported, not scored, for the reason given above: the teaching ask carries
-    both families' verbs and both sources, so a green here cannot tell an account of the
-    routine from an echo of the instruction."""
-    sources = [token for token in ("foxes", "seals") if token in _normalize(reply)]
-    return [
-        Check(
-            f"reply: it describes {claim}",
-            describes(reply, pattern) if learned else False,
-            scored=False,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        )
-        for claim, pattern in (
-            ("the pages being read", DESCRIBES_FETCH),
-            ("what it finds being kept", DESCRIBES_SAVE),
-        )
-    ] + [
-        Check(
-            "reply: which pages it named",
-            len(sources) == 2,
-            rationale=f"named {sources}",
-            scored=False,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        )
-    ]
-
-
-def _score_learn_close(db: Database, before: set[str], reply: str) -> list[Check]:
-    learned = bool(db.skills.list_all())
-    shapes = _learned_shapes(db)
-    recited = _tools_read_aloud(db, reply)
-    return [
-        Check("state: the round taught a routine", learned, kind="state"),
-        Check(
-            "reply: it says what the routine will do when it runs again",
-            describes(reply, _RUNS_AGAIN) if learned else False,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-            rationale=None if learned else "nothing was learned, so there was nothing to state",
-        ),
-        Check(
-            "reply: the steps are given in plain words, not read back as tool names",
-            learned and not recited,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-            rationale=f"read aloud {recited}" if recited else None,
-        ),
-        *_shape_family_checks(reply, learned),
-        Check(
-            "state: the shape the record holds",
-            len(shapes) == 1,
-            rationale=" | ".join(shapes) or "no routine in the registry",
-            scored=False,
-            kind="state",
-        ),
-        _landing_advisory(db, ConversationState.LEARN),
-        _routing_advisory(db),
-    ]
-
-
-async def test_the_learn_close_states_the_steps_it_captured(chat_eval: ChatEval) -> None:
-    """Story 15, the learn close: one demonstrated round, and the reply that closes it
-    tells the user what the routine will RUN — so a step it captured by accident is
-    visible to the only person who can tell that it does not belong."""
-    await chat_eval(
-        case_id="memory-learn-close-shape",
-        message=_LEARN_CLOSE_ASK,
-        browse=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
-        score=_score_learn_close,
+    REPORT-ONLY: the floors and ceilings this run proposes are the code owner's to accept once
+    the numbers have been read."""
+    cohort = await chat_eval(
+        case_id=_LEARN_CLOSE_CASE_ID,
+        model=model,
+        seed=standing_elicit_round,
+        world=TWO_TEAM_NEWS,
+        ask=LEARN_CLOSE_ASK,
+        also_phrased=LEARN_CLOSE_PHRASINGS,
+        samples_per_phrasing=3,
         min_pass_rate=None,
         family=_FAMILY,
-        timeout=240.0,  # one turn, but it reads two pages before it writes
+        timeout=240.0,
+    )
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    cohort.assert_a_routine_reached_the_registry()
+    cohort.assert_the_routine_names_a_destination()
+    cohort.assert_the_store_holds_an_entry()
+    cohort.assert_each_source_was_kept()
+    cohort.assert_nothing_excluded_was_stored()
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    # A SECOND VISIBLE DRIVE, beside the claim it serves: an assertion that quietly made three
+    # more model calls would be a nasty surprise.
+    control = await chat_eval(
+        case_id=_LEARN_CLOSE_CASE_ID,
+        model=model,
+        seed=standing_elicit_round,
+        world=TWO_TEAM_NEWS_CONTROL,
+        ask=LEARN_CLOSE_ASK,
+        samples_per_phrasing=3,
+        min_pass_rate=None,
+        family=_FAMILY,
+        timeout=240.0,
+    )
+    cohort.assert_facts_moved_with_the_world(control)
+
+    cohort.measure(
+        TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
     )
 
 
 # ── Story 15, half the sources down: what LANDED, not what was attempted (#1946) ──
 #
-# The same two-source demonstration as the learn close above, with ONE source unreachable.
-# It is deliberately the same world minus one page: the pair differ only in what the browse
-# layer answers, so a difference in the reply is attributable to the world rather than to a
-# second ask written a second way.
+# The same two-source demonstration as the learn close above, with ONE source unreachable —
+# the same ASK, deliberately, so a difference in the reply is attributable to what the
+# browse layer answered rather than to a second ask written a second way.
+#
+# It no longer shares that case's WORLD.  The learn close seeds the round it closes, because
+# its every claim is about a learn round (#1989); this case's scored claims are about what
+# the STORE holds against what the reply says, which no state gates — so it stands on the
+# cold machine it always did, and where it lands is reported beside its checks.  Whether it
+# would read differently from inside a learn round is an open question rather than a
+# settled one, recorded here as the reason the two worlds diverged.
 #
 # What it measures is the asymmetry the writes-landed frame exists for.  From inside a run,
 # a source that failed and a source that produced nothing look much like one that was
@@ -1590,10 +1576,10 @@ async def test_a_demonstration_reports_what_landed_when_a_source_is_down(
     visited both pages — which is exactly why the count has to come off the record."""
     await chat_eval(
         case_id="memory-writes-landed-source-down",
-        message=_LEARN_CLOSE_ASK,
+        message=LEARN_CLOSE_ASK,
         # The unreachable source FIRST: ``install_browse`` answers with the first page whose
         # match is in the url, so the order is what decides which source is down.
-        browse=[_SEALS_UNREACHABLE, _FOXES_NEWS_PAGE],
+        browse=[_SEALS_UNREACHABLE, FOXES_NEWS],
         score=_score_half_the_sources_landed,
         min_pass_rate=None,
         family=_FAMILY,

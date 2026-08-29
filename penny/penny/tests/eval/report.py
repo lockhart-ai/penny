@@ -511,6 +511,9 @@ def _packed_blocks(blocks: list[str], budget: int) -> list[list[str]]:
 
 
 _SAMPLE_BOUNDARY = re.compile(rf"\n\n(?={SAMPLE_BLOCK_START})")
+# Whether a split fragment IS a sample block — what tells a case-level preamble from the
+# first sample when a transcript carries both.
+_SAMPLE_BLOCK_OPENS = re.compile(SAMPLE_BLOCK_START)
 _FOLDED_SAMPLE = re.compile(
     rf"\A<details><summary>{SAMPLE_ROW} (\d+) — (.*?)</summary>\n\n(.*)\n\n</details>\Z", re.DOTALL
 )
@@ -523,6 +526,23 @@ def split_sample_blocks(transcript: str) -> list[str]:
     re-assembled prior run may carry the old unfolded failures)."""
     text = transcript.strip()
     return _SAMPLE_BOUNDARY.split(text) if text else []
+
+
+def split_case_transcript(transcript: str) -> tuple[str, list[str]]:
+    """Split a case's rendered transcript into ``(preamble, sample blocks)``.
+
+    The preamble is everything above the FIRST sample fold — a case-level section written
+    by the runner (the three-section report, #1995) rather than by any one sample. It is
+    carried through verbatim rather than parsed: a case may state whatever it needs to
+    above its samples, and nothing here has to know what that is. Empty when the transcript
+    opens straight onto sample 1, which is what it did before case sections existed."""
+    text = transcript.strip()
+    if not text:
+        return "", []
+    blocks = _SAMPLE_BOUNDARY.split(text)
+    if _SAMPLE_BLOCK_OPENS.match(blocks[0]):
+        return "", blocks
+    return blocks[0].strip(), blocks[1:]
 
 
 def parse_sample_block(block: str) -> tuple[int, str, str]:

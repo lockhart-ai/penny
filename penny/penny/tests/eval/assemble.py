@@ -286,9 +286,13 @@ def _folded_transcript(transcript: str) -> str:
     A sample too big to POST as one fold renders as several instead (#1917), each opening on the
     same seam so the splitter can cut between them. Done here rather than at write time so the
     per-sample artifact on disk stays one fold — the seams belong to the comment, which is the only
-    place a size cap exists."""
-    blocks = []
-    for block in report.split_sample_blocks(transcript):
+    place a size cap exists.
+
+    A case-level PREAMBLE above the first sample fold (the three-section report, #1995) is carried
+    through verbatim — one rendering, on disk and in the comment."""
+    preamble, sample_blocks = report.split_case_transcript(transcript)
+    blocks = [preamble] if preamble else []
+    for block in sample_blocks:
         number, banner, body = report.parse_sample_block(block)
         blocks.append(report.fold_sample_parts(number, banner, body, SAMPLE_FOLD_BUDGET))
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
