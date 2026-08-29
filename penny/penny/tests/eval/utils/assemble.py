@@ -119,37 +119,117 @@ def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
     return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
 
 
-# ── The run header (identity · RESULT · gate · flips) ────────────────────────
+# ── The run header (verdict · identity table · lever · gate · flips) ─────────
+#
+# A REPORT, not a debug log.  The verdict LEADS: the run id and the model are scaffolding, and
+# the counted reading with its colour is the finding — it used to sit last, under five dense
+# `key: value` lines.  Run-level facts are stated ONCE, in a table, because this has to scale:
+# at ~33 cases the commit and the provider must not repeat per case, and each case becomes a
+# scannable `####` line underneath.
+_RUN_HEADING = "### Eval run · `{model}`"
+_RUN_TABLE_HEAD = "| | |\n|---|---|"
+# What the roll-up AGGREGATES, said rather than implied: one number over several cases must not
+# read as though it covered a single one.
+_RUN_VERDICT = "**{glyph} {passed} / {total} checks · {rate:.0%}**{variance} — {scope}"
+# The spread half of the headline, over features that could actually carry a ceiling. A naive max
+# would be pinned to the saturated naming feature for ever — H 0.7-0.9 on every run of every case
+# by design — and a number that reads the same whatever happened is one readers learn to skip.
+_RUN_VARIANCE = "  ·  **{glyph} variance max H {entropy:.3f}**"
+_RUN_SATURATED = " · {count} saturated"
+_RUN_NO_SPREAD = "  ·  **{glyph} no gateable feature**"
+_RUN_LEVER = "**Lever** — {lever}"
+
+
 def render_run_header(
     manifest: RunManifest, artifacts: list[CaseArtifact], baseline: Baseline | None
 ) -> str:
-    """The run header: what was run and what it cost, a gate line per gated case, and (in diff
-    mode) the flips index.
+    """The run header: the verdict first, then the run's identity as a table, then the lever.
 
     There is no RESULT line any more (#1997).  Every number on it belonged to the design #1994
     replaced — `mean` and `all-pass` are aggregates of PER-SAMPLE scores, and a sample has no
     score now; `pathology-excluded` and the behavioural/pathology/harness tally are the
-    three-cause taxonomy that assertions, variance and harness supersede.  It sat ABOVE the new
-    per-case summary line and contradicted it, so a reader met the obsolete summary first.
+    three-cause taxonomy that assertions, variance and harness supersede.
 
-    The fields still live in ``results.jsonl``, where the per-case gate line and the baseline
-    diff read them; what is gone is presenting them as the run's headline."""
+    The COMMIT stays in the table rather than behind a fold: it is the provenance a reviewer
+    checks unprompted.  The LEVER stays visible below it for the same reason in reverse —
+    folded, every report in a series looks interchangeable."""
+    lines = [_RUN_HEADING.format(model=manifest.model), "", render_run_verdict(artifacts), ""]
+    lines += [_RUN_TABLE_HEAD, *_run_rows(manifest, artifacts), ""]
+    lines.append(_RUN_LEVER.format(lever=manifest.lever))
+    gates = render_gate_lines(artifacts)
+    flips = render_flips_line(artifacts, baseline)
+    extra = [*gates, *([flips] if flips else [])]
+    if extra:
+        lines += ["", *extra]
+    return "\n".join(lines)
+
+
+def _run_rows(manifest: RunManifest, artifacts: list[CaseArtifact]) -> list[str]:
+    """The run's identity, one fact per row — commit, where it ran, what it cost, which run."""
     dirty = " (dirty)" if manifest.dirty else ""
-    provider = f" via `{manifest.provider}`" if manifest.provider else ""
-    lines = [
-        f"**{manifest.run_id}** · commit `{_short(manifest.commit)}`{dirty}",
-        f"**model:** `{manifest.model}` · `{manifest.endpoint}`{provider} · "
-        f"**embeddings:** `{manifest.embedding_model}`",
-        f"**lever:** {manifest.lever}",
-    ]
+    rows = [f"| commit | `{_short(manifest.commit)}`{dirty} |"]
+    if manifest.endpoint:
+        provider = f" via **{manifest.provider}**" if manifest.provider else ""
+        rows.append(f"| provider | `{manifest.endpoint}`{provider} |")
+    rows.append(f"| embeddings | `{manifest.embedding_model}` |")
     cost = render_run_cost(artifacts)
     if cost:
-        lines.append(cost)
-    lines += render_gate_lines(artifacts)
-    flips = render_flips_line(artifacts, baseline)
-    if flips:
-        lines.append(flips)
-    return "\n".join(lines)
+        # Cost is PER SAMPLE and identical across every case in a run, so it is run metadata
+        # rather than a finding about any case.  Its detailed fold stays in the case document.
+        rows.append(f"| cost / sample | {cost} |")
+    rows.append(f"| run | `{manifest.run_id}` |")
+    return rows
+
+
+def render_run_verdict(artifacts: list[CaseArtifact]) -> str:
+    """The run's one counted reading, coloured, over every deterministic check it made.
+
+    Scored checks only, so an advisory row cannot pad the denominator.  The scope clause names
+    what the number covers — a run over several cases says so rather than letting one figure
+    imply it described a single one."""
+    rows = [check for artifact in artifacts for check in artifact.checks if check.scored]
+    passed = sum(check.passed for check in rows)
+    total = sum(check.total for check in rows)
+    samples = sum(artifact.samples for artifact in artifacts)
+    dead = cohort.Standing.DEAD.value
+    excluded = sum(artifact.standing_counts.get(dead, 0) for artifact in artifacts)
+    scope = (
+        f"{len(artifacts)} case{'s' if len(artifacts) != 1 else ''} · "
+        f"{samples} sample{'s' if samples != 1 else ''} · {excluded} excluded"
+    )
+    if not total:
+        return f"**no deterministic checks** — {scope}"
+    return _RUN_VERDICT.format(
+        glyph=report.rate_glyph(passed / total),
+        passed=passed,
+        total=total,
+        rate=passed / total,
+        variance=_run_variance(artifacts),
+        scope=scope,
+    )
+
+
+def _run_variance(artifacts: list[CaseArtifact]) -> str:
+    """The run's spread reading — the SAME statistic the per-case line carries, so a reader can
+    see how a case contributed to the total.
+
+    Empty when the run recorded no variance at all, which is what a record written before the
+    field existed decodes as: a header that silently reported H 0.000 for an unmeasured run would
+    be inventing a reading rather than omitting one."""
+    readings = [
+        cohort.VarianceFeature(name=feature.name, n=0, distinct=0, modal=0, entropy=feature.entropy)
+        for artifact in artifacts
+        for feature in artifact.variance
+        if not feature.saturated
+    ]
+    saturated = sum(1 for a in artifacts for f in a.variance if f.saturated)
+    if not readings and not saturated:
+        return ""
+    tail = _RUN_SATURATED.format(count=saturated) if saturated else ""
+    if not readings:
+        return _RUN_NO_SPREAD.format(glyph=report.UNGATED_GLYPH) + tail
+    top = max(readings, key=lambda feature: feature.entropy)
+    return _RUN_VARIANCE.format(glyph=report.UNGATED_GLYPH, entropy=top.entropy) + tail
 
 
 def _short(commit: str) -> str:
@@ -179,14 +259,10 @@ def render_run_cost(artifacts: list[CaseArtifact]) -> str:
     )
     if per is None:
         return ""
-    thinking = (
-        f" ({per.reasoning_tokens:,.0f} thinking, {per.reasoning_share:.0%})"
-        if per.reasoning_tokens
-        else ""
-    )
+    thinking = f" ({per.reasoning_share:.0%} thinking)" if per.reasoning_tokens else ""
     return (
-        f"**cost/sample:** {per.input_tokens:,.0f} in / {per.output_tokens:,.0f} out{thinking} · "
-        f"{per.calls:,.1f} calls · {per.seconds:,.0f}s  _over {samples} samples_"
+        f"{per.input_tokens:,.0f} in · {per.output_tokens:,.0f} out{thinking} · "
+        f"{per.calls:,.1f} calls · {per.seconds:,.0f}s"
     )
 
 
@@ -286,7 +362,7 @@ def _folded_transcript(
             blocks.append(report.fold_sample_parts(number, banner, folded, SAMPLE_FOLD_BUDGET))
             continue
         blocks.append(
-            report.fold(
+            report.titled_fold(
                 report.representative_summary(banner, body.count("| step ")),
                 report.render_representative(
                     banner=banner,

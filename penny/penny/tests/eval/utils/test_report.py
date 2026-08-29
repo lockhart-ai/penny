@@ -473,11 +473,14 @@ def test_the_tail_states_the_inputs_and_what_the_outliers_did():
         outliers=[(3, outlier)],
     )
 
-    assert "<summary>Test inputs — 2 phrasings · 1 page · 1 must-keep, 0 must-not</summary>" in tail
+    assert (
+        "<summary><h3>Test inputs — 2 phrasings · 1 page · 1 must-keep, 0 must-not</h3></summary>"
+        in tail
+    )
     assert "<summary>Phrasings — 2 wordings of one ask</summary>" in tail
     assert "| # | ask |" in tail, "the wordings are a table, not stacked paragraphs"
     assert "| phrasing 1 | watch the two pages |" in tail
-    assert "<summary>Outliers — 1 of 1 samples · diverging on 1 feature</summary>" in tail
+    assert "<summary><h3>Outliers — 1 of 1 samples · diverging on 1 feature</h3></summary>" in tail
     assert "| `tool sequence` | `a` | `b` |" in tail
     assert "Which samples to read" not in tail, "the outlier section already indexes the work"
 
@@ -723,14 +726,15 @@ def test_the_three_sections_render_whole():
 
     assert rendered == "\n\n".join(
         [
-            # The whole default view: one line, carrying the case's WORST state (a sample was
-            # lost) and both readings at once.  The assertion side is ONE number over every
-            # check the case made — 5 of 6 — since none of them is gated.
-            "🔴 **`memory-learn-close-shape`** — assertions 5/6 checks 83% "
+            # The case's own HEADING, then both readings.  The assertion side is ONE number
+            # over every check the case made — 5 of 6 — since none of them is gated.
+            "#### 🔴 `memory-learn-close-shape`\n"
+            "\n"
+            "**assertions** 5/6 · 83% "
             "(lowest 🟡 0.67 `reply: every specific value in it is sourced`) · "
-            "variance ⚪ max H 0.579 `routine shape` · "
+            "**variance** ⚪ max H 0.579 `routine shape` · "
             "3 pooled + 1 excluded = 4 driven",
-            report.fold(
+            report.titled_fold(
                 "🟡 Assertions — 5/6 checks · 83% · lowest 0.67 "
                 "`reply: every specific value in it is sourced`",
                 "\n\n".join(
@@ -761,8 +765,8 @@ def test_the_three_sections_render_whole():
                     ]
                 ),
             ),
-            report.fold(
-                "⚪ Variance — 1 feature · max H 0.579 `routine shape` · none gated",
+            report.titled_fold(
+                "⚪ Variance — 1 feature · max H 0.579 `routine shape`",
                 "\n\n".join(
                     [
                         "\n".join(
@@ -791,7 +795,7 @@ def test_the_three_sections_render_whole():
                     ]
                 ),
             ),
-            report.fold(
+            report.titled_fold(
                 "⚪ Cost — 40,000 in / 10,000 out per sample · 200s",
                 "\n\n".join(
                     [
@@ -812,7 +816,7 @@ def test_the_three_sections_render_whole():
                     ]
                 ),
             ),
-            report.fold(
+            report.titled_fold(
                 "🔴 Excluded samples — 1 of 4 · dominant: the measured turn never ran",
                 "\n\n".join(
                     [

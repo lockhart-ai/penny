@@ -320,6 +320,18 @@ class CaseTimings(BaseModel):
     reasoning_tokens: int = 0
 
 
+class VarianceReading(BaseModel):
+    """One measured feature as the RECORD keeps it — enough to roll a run's headline up.
+
+    The raw per-feature reading rather than the case's computed headline: a headline is a
+    JUDGEMENT about which features can carry a ceiling, and storing the judgement would mean a
+    later change to it could not re-render a run that is already on disk."""
+
+    name: str
+    entropy: float
+    saturated: bool
+
+
 class CaseArtifact(BaseModel):
     """One case's line in ``results.jsonl`` — the mechanically-diffable record."""
 
@@ -350,6 +362,10 @@ class CaseArtifact(BaseModel):
     # posted comment can ACCOUNT for the samples it does not carry rather than assert something
     # about them.
     standing_counts: dict[str, int] = Field(default_factory=dict)
+    # What the case MEASURED, so the run header can roll a spread up across cases. Defaulted, so
+    # a record written before this field decodes as a run with no variance to report rather than
+    # failing to load at all.
+    variance: list[VarianceReading] = Field(default_factory=list)
 
 
 class RunManifest(BaseModel):
@@ -464,6 +480,7 @@ def build_case_artifact(
     gate_pathology_excluded: bool = False,
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
+    variance: Sequence[VarianceReading] = (),
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -491,6 +508,7 @@ def build_case_artifact(
         gate_metric=metric,
         expand_samples=list(expand_samples),
         standing_counts=dict(standing_counts or {}),
+        variance=list(variance),
     )
 
 
@@ -718,6 +736,7 @@ def record_case(
     gate_pathology_excluded: bool = False,
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
+    variance: Sequence[VarianceReading] = (),
 ) -> None:
     """Append the case's ``results.jsonl`` record. No-op off-report. The gate the case ran under
     (``min_pass_rate`` + which score it compares, #1725) rides into the record for the gate line."""
@@ -734,5 +753,6 @@ def record_case(
         gate_pathology_excluded=gate_pathology_excluded,
         expand_samples=expand_samples,
         standing_counts=standing_counts,
+        variance=variance,
     )
     run.append_case(artifact)

@@ -330,15 +330,26 @@ SECTION_C = "Excluded samples"
 # rather than a count of claims that could carry a threshold.
 _A_SUMMARY = "{label} — {passed}/{total} checks · {rate:.0%}{lowest}"
 _A_LOWEST = " · lowest {rate:.2f} `{claim}`"
-_B_SUMMARY = "{label} — {features} · max H {entropy:.3f} `{feature}` · none gated"
+_B_SUMMARY = "{label} — {features} · {spread}"
 _B_EMPTY = "{label} — nothing pooled"
 _COST_SUMMARY = "{label} — {input:,.0f} in / {output:,.0f} out per sample · {seconds:,.0f}s"
 _C_SUMMARY = "{label} — {count} of {driven} · dominant: {reason}"
 
+# The case's own heading and reading, under the run header's table.  A `####` heading rather
+# than a bolded id, because at ~33 cases this is the line a reader scans for and headings are
+# what a document is navigated by; the run-level facts are stated once above and never repeat
+# here.
+_CASE_HEADING = "#### {glyph} `{case_id}`"
 _SUMMARY_LINE = (
-    "{glyph} **`{case_id}`** — assertions {passed}/{total} checks {rate:.0%}{lowest} · "
-    "variance {var_glyph} max H {entropy:.3f} `{feature}` · {counts}"
+    "**assertions** {passed}/{total} · {rate:.0%}{lowest} · "
+    "**variance** {var_glyph} {spread} · {counts}"
 )
+# The SAME split the run header carries, so a reader can see how a case contributed to the
+# total: the worst spread among features that could carry a ceiling, and the saturated ones
+# counted rather than folded in.
+_SPREAD = "max H {entropy:.3f} `{feature}`"
+_NO_GATEABLE_SPREAD = "no gateable feature"
+_SATURATED_COUNT = " · {count} saturated"
 _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
 # The harness accounting lives HERE rather than in a section of its own: on a healthy run it is
 # one line, and a section that renders as a stub every time is one people learn to skip.  The
@@ -411,6 +422,22 @@ def fold(summary: str, body: str) -> str:
     return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
 
 
+def titled_fold(title: str, body: str) -> str:
+    """A TOP-LEVEL section: the same collapsible block, its summary carrying a real heading so
+    the sections read as distinct blocks rather than a run of similar-looking rows.
+
+    The heading goes INSIDE ``<summary>`` rather than above the fold, which was verified against
+    GitHub rather than assumed — its sanitiser keeps `<h3>` there, and Primer ships
+    `.markdown-body summary h3 {{ display: inline-block }}` precisely so the disclosure triangle
+    stays beside the text. Above the fold would print the title twice once a summary line is also
+    kept.
+
+    The title carries the FINDING, not just the noun: a fold's title is what a reader reads while
+    it is closed, so deciding whether to open it needs the number. Nested folds keep plain
+    ``fold`` — the heading marks a section, not every disclosure on the page."""
+    return fold(f"<h3>{title}</h3>", body)
+
+
 @dataclass(frozen=True)
 class CaseSections:
     """One case's three sections, rendered from what the cohort computed.
@@ -430,15 +457,15 @@ class CaseSections:
         sections behind folds."""
         blocks = [
             self.summary_line(),
-            fold(self._assertions_summary(), self._assertions()),
-            fold(self._variance_summary(), self._variance()),
+            titled_fold(self._assertions_summary(), self._assertions()),
+            titled_fold(self._variance_summary(), self._variance()),
         ]
         if self.cost is not None:
-            blocks.append(fold(self._cost_summary(), self._cost()))
+            blocks.append(titled_fold(self._cost_summary(), self._cost()))
         # Only when something was actually lost.  A clean run says so on the summary line and
         # spends no section on it; a degraded one gets the names and the dominant class.
         if self.variance.excluded:
-            blocks.append(fold(self._excluded_summary(), self._excluded()))
+            blocks.append(titled_fold(self._excluded_summary(), self._excluded()))
         return "\n\n".join(blocks)
 
     # ── What each fold says while it is still closed ─────────────────────
@@ -455,15 +482,15 @@ class CaseSections:
         )
 
     def _variance_summary(self) -> str:
+        """The fold's title, carrying the same spread reading its case line does — a title is
+        read while the fold is CLOSED, so it has to hold the finding and not just the noun."""
         label = f"{self._variance_glyph()} {SECTION_B}"
-        top = self._top_feature()
-        if top is None:
+        if not self.variance.features:
             return _B_EMPTY.format(label=label)
         return _B_SUMMARY.format(
             label=label,
             features=plural(len(self.variance.features), "feature"),
-            entropy=top.entropy,
-            feature=top.name,
+            spread=self._spread(),
         )
 
     def _cost_summary(self) -> str:
@@ -486,25 +513,23 @@ class CaseSections:
 
     # ── The one line a reader sees by default ────────────────────────────
     def summary_line(self) -> str:
-        """Both scores and the whole sample accounting, behind the worst glyph in the case."""
+        """The case's heading and its two readings, behind the worst glyph in the case."""
         summary = self._assertion_summary()
-        top = self._top_feature()
-        return _SUMMARY_LINE.format(
-            glyph=self.glyph(),
-            case_id=self.case_id,
+        heading = _CASE_HEADING.format(glyph=self.glyph(), case_id=self.case_id)
+        reading = _SUMMARY_LINE.format(
             passed=summary.passed,
             total=summary.total,
             rate=summary.rate,
             lowest=self._lowest(),
             var_glyph=self._variance_glyph(),
-            entropy=top.entropy if top else 0.0,
-            feature=top.name if top else _NO_VARIANCE,
+            spread=self._spread(),
             counts=_COUNTS.format(
                 pooled=self.variance.pooled,
                 excluded=len(self.variance.excluded),
                 driven=self.variance.driven,
             ),
         )
+        return f"{heading}\n\n{reading}"
 
     def glyph(self) -> str:
         """The case's worst state — what someone paging ~100 one-line entries reads."""
@@ -517,8 +542,19 @@ class CaseSections:
     def _variance_glyph(self) -> str:
         return worst_glyph([variance_glyph(f) for f in self.variance.features])
 
-    def _top_feature(self) -> cohort.VarianceFeature | None:
-        return max(self.variance.features, key=lambda f: f.entropy, default=None)
+    def _spread(self) -> str:
+        """This case's spread reading, split the way the run header splits it.
+
+        A saturated feature is EXCLUDED from the number and COUNTED beside it. Including it would
+        pin the reading to the framer's naming — unconstrained by design, H 0.7-0.9 every run —
+        and a headline that cannot move is one nobody reads. The count is not decoration: a
+        feature crossing into saturation LOWERS this number while behaviour worsens, so a fall
+        here beside a rise there is a destabilisation, not an improvement."""
+        headline = cohort.variance_headline(self.variance.features)
+        tail = _SATURATED_COUNT.format(count=headline.saturated) if headline.saturated else ""
+        if not headline.has_reading:
+            return (_NO_GATEABLE_SPREAD if self.variance.features else _NO_VARIANCE) + tail
+        return _SPREAD.format(entropy=headline.entropy, feature=headline.feature) + tail
 
     def _assertion_summary(self) -> cohort.AssertionSummary:
         """The case's one assertion number — every check, over every sample that answered."""
@@ -840,7 +876,7 @@ def render_outliers(
     cosmetic = _cosmetic_line(rows)
     if not outliers:
         body = "\n\n".join([_NO_OUTLIERS, *blocks, *([cosmetic] if cosmetic else [])])
-        return fold(
+        return titled_fold(
             OUTLIERS_LABEL.format(count=0, driven=pooled, features=plural(0, "feature")), body
         )
     features = {d.feature for _n, s in outliers for d in _consequential(s)}
@@ -856,7 +892,7 @@ def render_outliers(
     label = OUTLIERS_LABEL.format(
         count=len(outliers), driven=pooled, features=plural(len(features), "feature")
     )
-    return fold(label, "\n\n".join(body))
+    return titled_fold(label, "\n\n".join(body))
 
 
 def _consequential(standing: cohort.SampleStanding) -> list[cohort.FeatureDivergence]:
@@ -930,7 +966,7 @@ def render_case_tail(
         pages=f"{plural(facts.pages, 'page')} · {facts.keeps} must-keep, {facts.excludes} must-not",
     )
     parts = [
-        fold(label, inputs) if inputs else "",
+        titled_fold(label, inputs) if inputs else "",
         render_outliers(outliers, everywhere_distinct) if outliers else "",
     ]
     return "\n\n".join(part for part in parts if part)

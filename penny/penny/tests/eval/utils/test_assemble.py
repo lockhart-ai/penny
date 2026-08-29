@@ -135,11 +135,20 @@ def test_single_gated_case_whole_render(tmp_path: Path) -> None:
     )
     _write_run(tmp_path, manifest, [artifact], {artifact.case_id: _browse_sample()})
     assert assemble_run_comment(tmp_path) == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a`\n"
-        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
-        "**embeddings:** `embeddinggemma`\n"
-        "**lever:** framework baseline\n"
-        "**cost/sample:** 18,067 in / 1,967 out · 6.3 calls · 49s  _over 3 samples_\n"
+        "### Eval run · `gpt-oss:20b`\n"
+        "\n"
+        "**🟡 2 / 3 checks · 67%** — 1 case · 3 samples · 0 excluded\n"
+        "\n"
+        "| | |\n"
+        "|---|---|\n"
+        "| commit | `abba710a` |\n"
+        "| provider | `http://localhost:11434` |\n"
+        "| embeddings | `embeddinggemma` |\n"
+        "| cost / sample | 18,067 in · 1,967 out · 6.3 calls · 49s |\n"
+        "| run | `run-20260721T051017Z-abba710a` |\n"
+        "\n"
+        "**Lever** — framework baseline\n"
+        "\n"
         "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\n"
         "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)
@@ -204,11 +213,19 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
     )
     _write_run(tmp_path, manifest, [alpha, beta], {alpha.case_id: hi_block})  # beta: no transcript
     assert assemble_run_comment(tmp_path) == (
-        "**run-20260720T090000Z-beef1234** · commit `beef1234`\n"
-        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
-        "**embeddings:** `embeddinggemma`\n"
-        "**lever:** two families\n"
-        "**cost/sample:** 27,100 in / 2,950 out · 9.5 calls · 74s  _over 4 samples_\n"
+        "### Eval run · `gpt-oss:20b`\n"
+        "\n"
+        "**no deterministic checks** — 2 cases · 4 samples · 0 excluded\n"
+        "\n"
+        "| | |\n"
+        "|---|---|\n"
+        "| commit | `beef1234` |\n"
+        "| provider | `http://localhost:11434` |\n"
+        "| embeddings | `embeddinggemma` |\n"
+        "| cost / sample | 27,100 in · 2,950 out · 9.5 calls · 74s |\n"
+        "| run | `run-20260720T090000Z-beef1234` |\n"
+        "\n"
+        "**Lever** — two families\n"
         "\n"
         "### `test_a.py::one` — alpha\n"
         "\n"
@@ -280,7 +297,7 @@ def test_diff_mode_flips_index_whole_render(
     _write_run(run, manifest, [artifact], {artifact.case_id: _browse_sample()})
     comment = assemble_run_comment(run)
     assert "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\nflips: browsed ✅→❌ (s3)\n" in comment
-    assert comment.startswith("**run-20260721T051017Z-abba710a** · commit `abba710a`")
+    assert comment.startswith("### Eval run · `gpt-oss:20b`")
 
 
 def _hold_run(
@@ -363,16 +380,12 @@ def test_flips_index_from_durable_manifest_baseline(
     prior = tmp_path / "prior"
     run = tmp_path / "run"
     manifest = _hold_run(run, prior, recorded_baseline=str(prior))
-    header = assemble_run_comment(run).split("\n\n", 1)[0]
-    assert header == (
-        f"**{manifest.run_id}** · commit `d1429159`\n"
-        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
-        "**embeddings:** `embeddinggemma`\n"
-        "**lever:** beat 2 baseline\n"
-        "**cost/sample:** 5,420 in / 590 out · 1.9 calls · 15s  _over 10 samples_\n"
-        "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)\n"
-        "flips: decided idle ✅→❌ (s7, s10)"
-    )
+    comment = assemble_run_comment(run)
+    # The FLIPS index is what this test is about; the header's layout is pinned whole by the
+    # two render tests above, and re-pinning it here would make them one change apart.
+    assert "flips: decided idle ✅→❌ (s7, s10)" in comment
+    assert "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)" in comment
+    assert f"| run | `{manifest.run_id}` |" in comment
 
 
 def test_flips_index_absent_without_a_baseline_reference(
@@ -477,11 +490,19 @@ def test_every_sample_folds_whole_in_the_comment(tmp_path: Path) -> None:
     _mixed_run(tmp_path)
     comment = assemble_run_comment(tmp_path)
     assert comment == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a`\n"
-        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
-        "**embeddings:** `embeddinggemma`\n"
-        "**lever:** mixed run\n"
-        "**cost/sample:** 27,100 in / 2,950 out · 9.5 calls · 74s  _over 2 samples_\n"
+        "### Eval run · `gpt-oss:20b`\n"
+        "\n"
+        "**🟡 1 / 2 checks · 50%** — 1 case · 2 samples · 0 excluded\n"
+        "\n"
+        "| | |\n"
+        "|---|---|\n"
+        "| commit | `abba710a` |\n"
+        "| provider | `http://localhost:11434` |\n"
+        "| embeddings | `embeddinggemma` |\n"
+        "| cost / sample | 27,100 in · 2,950 out · 9.5 calls · 74s |\n"
+        "| run | `run-20260721T051017Z-abba710a` |\n"
+        "\n"
+        "**Lever** — mixed run\n"
         "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _FAIL_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)

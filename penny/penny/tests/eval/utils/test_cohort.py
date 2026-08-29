@@ -32,6 +32,7 @@ from penny.tests.eval.utils.cohort import (
     proposed_ceiling,
     specifics,
     unsourced_specifics,
+    variance_headline,
 )
 from penny.tests.eval.utils.worlds import World
 
@@ -496,3 +497,50 @@ def test_the_summary_counts_a_reply_claim_exactly_like_a_state_one():
         ),
     ]
     assert assertion_summary(rows) == AssertionSummary(passed=28, total=30)
+
+
+# ── The headline spread excludes what it could never gate ────────────────────
+def _feature(name: str, entropy: float, *, modal: int, n: int = 15) -> VarianceFeature:
+    return VarianceFeature(name=name, n=n, distinct=n - modal + 1, modal=modal, entropy=entropy)
+
+
+def test_the_headline_spread_skips_saturated_features_and_counts_them():
+    """A naive max would be pinned to the framer's naming for ever.
+
+    `routine name` is unconstrained BY DESIGN — no majority behaviour, so no ceiling can fire on
+    it — and it reads H 0.7-0.9 on every run of every case. A headline that reads the same
+    whatever happened is one readers learn to skip, which is the variance-side twin of the
+    unfireable floor. So the reading is the worst spread among features that COULD gate, and the
+    saturated ones are counted beside it."""
+    headline = variance_headline(
+        [
+            _feature("tool sequence", 0.090, modal=14),
+            _feature("routine shape", 0.000, modal=15),
+            _feature("routine name", 0.885, modal=3),
+        ]
+    )
+    assert (headline.feature, headline.entropy) == ("tool sequence", 0.090)
+    assert (headline.saturated, headline.gateable) == (1, 2)
+
+
+def test_a_cohort_whose_every_feature_is_saturated_reports_no_reading():
+    """Not H 0.000 — that would claim perfect agreement where nothing is measurable at all."""
+    headline = variance_headline([_feature("routine name", 0.885, modal=3)])
+    assert not headline.has_reading
+    assert (headline.saturated, headline.gateable) == (1, 0)
+
+
+def test_a_feature_crossing_into_saturation_lowers_the_reading_it_leaves():
+    """THE CAVEAT the saturated count exists to carry, pinned so nobody reads it as decoration.
+
+    A destabilising feature leaves the gateable set, taking its spread with it — so the headline
+    FALLS while behaviour gets worse. A fall paired with a rise in the count is the signature,
+    and neither number alone is the reading."""
+    before = variance_headline(
+        [_feature("tool sequence", 0.450, modal=9), _feature("routine shape", 0.090, modal=14)]
+    )
+    after = variance_headline(
+        [_feature("tool sequence", 0.950, modal=3), _feature("routine shape", 0.090, modal=14)]
+    )
+    assert before.entropy > after.entropy, "the number improves"
+    assert after.saturated > before.saturated, "and only the count says why"

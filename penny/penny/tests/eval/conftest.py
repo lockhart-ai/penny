@@ -2543,6 +2543,7 @@ class _PendingCase:
             self.intended,
             _expandable(standings),
             Counter(standing.standing.value for standing in standings),
+            _variance_readings(observations, self.driven_cohort.features),
         )
 
     def _grade(self) -> None:
@@ -2556,6 +2557,21 @@ class _PendingCase:
     def _observations(self) -> list[eval_cohort.SampleObservation]:
         """Every sample the case drove."""
         return list(self.driven_cohort.samples)
+
+
+def _variance_readings(
+    samples: Sequence[eval_cohort.SampleObservation], features: Sequence[eval_cohort.Feature]
+) -> list[eval_artifacts.VarianceReading]:
+    """What the case MEASURED, in the record, so the run header can roll a spread up across
+    cases — the per-case document computes this from the cohort, but the assembler runs as its
+    own process over the report dir and has no cohort to read."""
+    pooled = eval_cohort.pool(samples, features)
+    return [
+        eval_artifacts.VarianceReading(
+            name=feature.name, entropy=feature.entropy, saturated=feature.saturated
+        )
+        for feature in pooled.features
+    ]
 
 
 def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
@@ -2578,6 +2594,7 @@ def _finish_case(
     intended: int,
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
+    variance: Sequence[eval_artifacts.VarianceReading] = (),
 ) -> None:
     """Record the case's artifact, print its perf line, and apply its gate."""
     _record_unported_prompts(case_id, driven)
@@ -2591,6 +2608,7 @@ def _finish_case(
         gate_pathology_excluded=gate_pathology_excluded,
         expand_samples=expand_samples,
         standing_counts=standing_counts,
+        variance=variance,
     )
     perf.report(case_id, driven)
     _assert_threshold(
