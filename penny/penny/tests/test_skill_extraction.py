@@ -71,6 +71,7 @@ from penny.skill_extraction import (
     SkillExtracted,
     SkillExtractor,
 )
+from penny.tests.conftest import LEAKED_HARMONY_TOKEN
 from penny.tests.eval.utils.transition_world import learn_to_apply_fixture_skill
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
@@ -100,11 +101,6 @@ _READ_OK = "You looked up your notes: (collection_read_latest result)\n(empty)"
 
 _BROWSE = ("browse", _BROWSE_ARGS, _BROWSE_OK, True)
 _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
-
-# What a backend that fails to parse the Harmony envelope leaks onto a tool-call NAME.
-# The live object strips it, so the call DISPATCHED and the entry landed; the raw name
-# reaches the ledger alone, which is where extraction reads it back from (#2013).
-_LEAKED_TOKEN = "<|channel|>commentary"
 
 # The SAME round, corrected: the user changes what the first step reads and leaves the
 # write alone, and the corrected turn re-runs the whole flow (which is what the measured
@@ -227,7 +223,7 @@ def _log_run(
 
 @pytest.mark.parametrize(
     "emitted_write_tool",
-    ["collection_write", f"collection_write{_LEAKED_TOKEN}"],
+    ["collection_write", f"collection_write{LEAKED_HARMONY_TOKEN}"],
     ids=["clean", "leaked-harmony-token"],
 )
 @pytest.mark.asyncio
@@ -400,14 +396,26 @@ async def test_the_health_gate_is_retired(db):
 # ── Nothing captured: the learn turn that FAILED (#1839's terminal check) ──────
 
 
+@pytest.mark.parametrize(
+    "calls",
+    [[], [(f"done{LEAKED_HARMONY_TOKEN}", {}, "Closed the turn.", True)]],
+    ids=["no-calls", "a-leaked-close-and-nothing-else"],
+)
 @pytest.mark.asyncio
-async def test_run_with_no_tool_calls_is_excluded(db):
+async def test_run_with_no_tool_calls_is_excluded(db, calls):
     """A learn turn that made no tool call at all captured nothing → NO_TOOL_CALLS.
 
     This is the quantity floor that survives #1850, and it is what the learn terminal
     reads: a learn turn's one valid end is a skill in the registry, so a round with
-    nothing in it fails the turn honestly rather than storing an empty routine."""
-    _log_run(db, "run-A", "hey how's it going", [])
+    nothing in it fails the turn honestly rather than storing an empty routine.
+
+    A turn whose ONLY call was the close reaches the same floor even when a leaked
+    Harmony control token came back on that close's name (#2013): the run did nothing,
+    and the gate that says so has to recognise a close by the tool it names.  Read raw,
+    the leaked name was not ``done``, so the close counted as a runnable step and the
+    turn passed a gate that means "this run did something" — failing one step later, as
+    the different and less true ``NO_CERTIFIED_STEPS``."""
+    _log_run(db, "run-A", "hey how's it going", calls)
 
     result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 

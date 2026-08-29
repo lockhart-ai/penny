@@ -10,6 +10,8 @@ worked run and a healthy quiet read carry no flags.
 
 import json
 
+import pytest
+
 from penny.agents.models import ModelCallError, RunAbort
 from penny.constants import PennyConstants
 from penny.database.memory import (
@@ -22,11 +24,8 @@ from penny.database.memory import (
 )
 from penny.database.models import PromptLog
 from penny.llm.models import LlmToolCallFunction, strip_harmony_control_tokens
+from penny.tests.conftest import LEAKED_HARMONY_TOKEN
 from penny.text_validity import is_unfinished_fragment
-
-# What a backend that fails to parse the Harmony envelope leaks onto a tool-call NAME.
-# Dispatch is unaffected (the live object strips it), so the leak reaches the log alone.
-_LEAKED_TOKEN = "<|channel|>commentary"
 
 
 def _call(name: str, args: dict, call_id: str | None = None) -> dict:
@@ -317,57 +316,35 @@ browses: 1 ok, 0 failed · writes: 0"""
     )
 
 
-def test_browse_failures_but_wrote_is_not_no_writes():
+@pytest.mark.parametrize(
+    "emitted_suffix", ["", LEAKED_HARMONY_TOKEN], ids=["clean", "leaked-harmony-token"]
+)
+def test_browse_failures_but_wrote_is_not_no_writes(emitted_suffix):
     """A partial browse failure that still produced a write is not NO WRITES — the
     run wrote from the sources that succeeded, exactly what browse's partial-failure
-    contract intends."""
-    run = [
-        _prompt(
-            [
-                _call("browse", {"queries": ["a", "b"]}),
-                _call("collection_write", {"memory": "games", "entries": [{"content": "x"}]}),
-                _DONE_OK,
-            ],
-            outcome="worked",
-            messages=_browse_messages(pages=1, errors=1),
-        )
-    ]
-    health = classify_run(run)
-    assert health.no_writes is False
-    assert health.flags == []
-    assert (
-        render_run_record(run)
-        == """\
-[games] worked
-browses: 1 ok, 1 failed · writes: 1
-browse(['a', 'b'])
-collection_write(memory='games', entries='x')"""
-    )
+    contract intends.
 
-
-def test_a_leaked_harmony_token_never_hides_the_tool_a_call_named():
-    """A logged name carrying a leaked Harmony control token still names its tool (#2013).
-
-    Dispatch strips the leak at the live boundary, so the write and the close both RAN —
-    only the ledger kept the raw name, and every reader that compared it matched nothing.
-    The same run read raw: the write counts as a read, so ``writes: 0`` against a failed
-    browse raises ⚠ NO WRITES on a run that wrote; the leaked ``done()`` renders as a
-    step of the trace and the conclusion says the run never closed.
-
-    Both renders whole, so what the model reads of its own run names tools it can call."""
+    Run twice over the names the model EMITTED, clean and carrying a leaked Harmony
+    control token (#2013).  Dispatch strips the leak at the live boundary, so the write
+    and the close both ran either way and only the ledger kept the raw name — so every
+    reading of this run is identical, and both renders are asserted whole.  Read raw,
+    the same run reports three lies: the write counts as a *read*, so ``writes: 0``
+    against a failed browse raises ⚠ NO WRITES on a run that wrote; the leaked
+    ``done()`` renders as a step of the trace; and the conclusion says the run never
+    closed."""
     run = [
         _prompt(
             [
                 _call("browse", {"queries": ["a", "b"]}),
                 _call(
-                    f"collection_write{_LEAKED_TOKEN}",
+                    f"collection_write{emitted_suffix}",
                     {"memory": "games", "entries": [{"content": "x"}]},
                     call_id="w1",
                 ),
-                _call(f"done{_LEAKED_TOKEN}", {}, call_id="d1"),
+                _call(f"done{emitted_suffix}", {}, call_id="d1"),
             ],
             outcome="worked",
-            run_id="leak-fixed",
+            run_id="wrote-fixed",
             messages=_browse_messages(pages=1, errors=1),
         )
     ]
@@ -385,11 +362,28 @@ collection_write(memory='games', entries='x')"""
     assert (
         render_run_calls(run)
         == """\
-run leak-fixed
+run wrote-fixed
 [games]
     step 1: browse(['a', 'b'])
     step 2: collection_write(memory='games', entries='x')
 done: worked"""
+    )
+
+
+def test_a_call_that_named_only_control_tokens_named_no_tool():
+    """A name that is ENTIRELY control tokens named no tool at all (#2013).
+
+    The repair keeps the leading identifier when there is one; here there is none, so
+    the call renders as the same ``?`` sentinel a nameless call has always rendered as,
+    rather than as a tool nothing can call.  The verbatim name stays in the ledger."""
+    assert LoggedToolCall.from_function({"name": LEAKED_HARMONY_TOKEN}).tool == ""
+    run = [_prompt([_call(LEAKED_HARMONY_TOKEN, {})], outcome="worked")]
+    assert classify_run(run).flags == []
+    assert (
+        render_run_record(run)
+        == """\
+[games] worked
+?()"""
     )
 
 
@@ -476,10 +470,10 @@ def test_logged_tool_call_round_trips_to_the_wire_form():
     # answers "which tool is this?" the way production answers it at the live boundary,
     # so a consumer comparing names never has to know the leak exists (#2013).
     leaked = LoggedToolCall.from_function(
-        {"name": f"collection_write{_LEAKED_TOKEN}", "arguments": "{}"}
+        {"name": f"collection_write{LEAKED_HARMONY_TOKEN}", "arguments": "{}"}
     )
-    assert leaked.name == f"collection_write{_LEAKED_TOKEN}"
-    assert leaked.to_wire()["name"] == f"collection_write{_LEAKED_TOKEN}"
+    assert leaked.name == f"collection_write{LEAKED_HARMONY_TOKEN}"
+    assert leaked.to_wire()["name"] == f"collection_write{LEAKED_HARMONY_TOKEN}"
     assert LoggedToolCall.from_function(leaked.to_wire()) == leaked
     assert leaked.tool == "collection_write"
     assert leaked.tool == strip_harmony_control_tokens(leaked.name)
