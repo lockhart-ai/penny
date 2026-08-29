@@ -2113,6 +2113,7 @@ async def _run_samples(
     drive: SampleDriver,
     attempts: int = 1,
     model: str = "",
+    index_offset: int = 0,
 ) -> tuple[list[SampleResult], _Perf]:
     """Drive ``samples`` hermetic samples of one case; return their results and perf.
 
@@ -2156,7 +2157,13 @@ async def _run_samples(
                     await server.stop()
         return None
 
-    driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
+    # Sample indices continue across a case's DRIVES (its cohort, then its control): a
+    # sample's DB path and its report name are both keyed on the index, and nothing deletes a
+    # sample's DB — so restarting at 0 for the second drive would re-seed over the first
+    # drive's rows and inherit its promptlog, scoring the control against the cohort's turn.
+    driven = await asyncio.gather(
+        *(_sample(index) for index in range(index_offset, index_offset + samples))
+    )
     _flush_sample_blocks(case_id)
     results = [result for result in driven if result is not None]
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
@@ -2338,9 +2345,19 @@ def _no_scorer(db: Database, before: set[str], reply: str) -> list[Check]:
     return []
 
 
-def _phrasing_label(phrasings: Sequence[str], sample_index: int, per_phrasing: int) -> str:
-    """Which wording this sample ran, named for the report."""
-    return f"phrasing {sample_index // per_phrasing + 1}" if phrasings else "the ask"
+def _phrasing_label(
+    phrasings: Sequence[str], local_index: int, per_phrasing: int, world: str
+) -> str:
+    """What this sample is called in the report.
+
+    A CONTROL sample is named for its job rather than given a phrasing number: it is the same
+    words against a different world, so numbering it alongside the wordings would read as a
+    sixth phrasing — the exact confusion the control/phrasing split exists to prevent."""
+    if world != eval_cohort.BASE_WORLD:
+        return world
+    if len(phrasings) > 1:
+        return f"phrasing {local_index // per_phrasing + 1}"
+    return "the ask"
 
 
 # The world a case declares nothing about — a cohort still needs one to compare a control
@@ -2371,6 +2388,16 @@ class _PendingCase:
     def add(
         self, cohort: Cohort, results: Sequence[SampleResult], perf: _Perf, *, intended: int
     ) -> None:
+        """Fold one drive into the case.
+
+        A case's sample names must be DISTINCT across its drives, and it fails here if they are
+        not: names are how the cohort's claims are dealt back out to the samples that answered
+        them, so a collision would silently grade one sample against another's turn.  The same
+        index also keys the sample's database file, and nothing deletes those — a second drive
+        landing on the first drive's indices re-seeds over its rows and inherits its promptlog.
+        Caught loudly rather than read as a surprising number later."""
+        clash = {s.name for s in cohort.samples} & {s.name for s in self._observations()}
+        assert not clash, f"{self.case_id}: two drives produced the same sample name: {clash}"
         self.cohorts.append(cohort)
         self.results += results
         self.perf.merge(perf)
@@ -2695,8 +2722,26 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         world_name = world.name if world is not None else eval_cohort.BASE_WORLD
         pages = list(world.pages) if world is not None else browse
 
+        pending = (
+            _cohorts.setdefault(
+                case_id,
+                _PendingCase(
+                    case_id=case_id,
+                    family=family,
+                    module=request.module.__name__,
+                    min_pass_rate=min_pass_rate,
+                    gate_pathology_excluded=gate_pathology_excluded,
+                ),
+            )
+            if spoken
+            else None
+        )
+        offset = pending.driven if pending is not None else 0
+
         def _observe(sample_index: int) -> Callable[[Database, str], eval_cohort.SampleObservation]:
-            phrasing = _phrasing_label(phrasings, sample_index, per_phrasing)
+            # The phrasing is read from this drive's OWN position; the index is global so a
+            # case's second drive cannot land on the first drive's database files.
+            phrasing = _phrasing_label(phrasings, sample_index - offset, per_phrasing, world_name)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
             return lambda db, reply: _observe_sample(
                 db, name=name, phrasing=phrasing, world=world_name, reply=reply
@@ -2729,6 +2774,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             drive=_drive,
             attempts=_MODEL_CALL_ATTEMPTS,
             model=model,
+            index_offset=offset,
         )
         if not spoken:
             # A case that has not been ported is driven and gated inline, exactly as before, and
@@ -2752,16 +2798,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             world=world if world is not None else _NO_WORLD,
             samples=[r.observation for r in results if r.observation is not None],
         )
-        pending = _cohorts.setdefault(
-            case_id,
-            _PendingCase(
-                case_id=case_id,
-                family=family,
-                module=request.module.__name__,
-                min_pass_rate=min_pass_rate,
-                gate_pathology_excluded=gate_pathology_excluded,
-            ),
-        )
+        assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
 

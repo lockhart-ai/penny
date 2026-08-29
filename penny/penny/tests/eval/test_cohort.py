@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 
 from penny.tests.eval.cohort import (
+    BASE_WORLD,
+    CONTROL_WORLD,
     REPLY_SPREAD,
     ROUTINE_SHAPE,
     AssertionRow,
@@ -27,6 +29,7 @@ from penny.tests.eval.cohort import (
     specifics,
     unsourced_specifics,
 )
+from penny.tests.eval.conftest import _phrasing_label
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
@@ -401,3 +404,17 @@ def test_entropy_matches_the_shannon_definition_it_claims_to_be():
     values = ["a"] * 3 + ["b"] * 1
     expected = -(0.75 * math.log(0.75) + 0.25 * math.log(0.25)) / math.log(4)
     assert normalised_entropy(values) == expected
+
+
+# ── Naming across a case's two drives ────────────────────────────────────────
+def test_a_control_sample_is_named_for_its_job_not_given_a_phrasing_number():
+    """A control is the same words against a different world, so numbering it alongside the
+    wordings would read as a sixth phrasing — the exact confusion the split exists to prevent.
+
+    The names also have to be DISTINCT across a case's two drives: they are how the cohort's
+    claims are dealt back out to the samples that answered them, and the same index keys the
+    sample's database file, which nothing deletes."""
+    assert _phrasing_label(["a", "b"], 0, 3, BASE_WORLD) == "phrasing 1"
+    assert _phrasing_label(["a", "b"], 4, 3, BASE_WORLD) == "phrasing 2"
+    assert _phrasing_label(["a"], 0, 3, BASE_WORLD) == "the ask"
+    assert _phrasing_label(["a"], 0, 3, CONTROL_WORLD) == CONTROL_WORLD
