@@ -233,32 +233,27 @@ class SystemPrompt:
 # The default view of a run is ONE LINE PER CASE.  Everything else is behind a fold, so ~100
 # cases is ~100 lines a person can page through, and any case opens to its full detail.
 #
-# One glyph means one thing in all three sections, and the four states are four because the
-# distinctions were expensive to establish and collapsing them would throw the findings away:
-#
-#   ✅  gated, and holding
-#   ❌  gated, and breached — or a structural claim that did not hold on every sample
-#   ⚠️   something was lost: samples excluded, a cohort degraded
-#   👁   OBSERVED, NOT GATED — measured and reported, with no threshold behind it
-#
-# The fourth is the one that must never be shown as the first.  A reply-content claim at 1.00
-# has no floor and CANNOT carry one at this N (two runs of identical code move it ±3 of 18), so
-# rendering it green would re-imply exactly the gate the measurement says does not exist.  The
-# same holds for every variance feature today: a PROPOSED ceiling is not an accepted one.
+# The scale is a THRESHOLD scale, not a set of states: a rate of 0.61 should look like a warning
+# at a glance rather than sharing a glyph with 0.05.  Colour is reserved for what is GATED —
+# grey means measured with no threshold behind it, which is most of the report today and must
+# never read as passing.  A reply-content claim at 1.00 is grey for exactly that reason: it has
+# no floor and cannot carry one at this N, so a green tick would re-imply the gate the noise
+# measurement says does not exist.
 
-PASS_GLYPH = "✅"
-FAIL_GLYPH = "❌"
-WARN_GLYPH = "⚠️"
-UNGATED_GLYPH = "👁"
+PASS_GLYPH = "🟢"
+WARN_GLYPH = "🟡"
+FAIL_GLYPH = "🔴"
+UNGATED_GLYPH = "⚪"
+
+PASS_ABOVE = 0.90
+WARN_ABOVE = 0.50
 
 GLYPH_KEY = (
-    f"_{PASS_GLYPH} gated and holding · {FAIL_GLYPH} breached · {WARN_GLYPH} samples lost · "
-    f"{UNGATED_GLYPH} observed, not gated (no threshold accepted — proposing one is the code "
-    f"owner's act)_"
+    f"_{PASS_GLYPH} >90% · {WARN_GLYPH} 50–90% · {FAIL_GLYPH} <50% · "
+    f"{UNGATED_GLYPH} ungated (measured, no threshold accepted)_"
 )
 
-# Worst-first, because the summary line exists so a reader scanning the default view knows where
-# the problems are without opening anything.
+# Worst-first, so the one line a reader scans carries the problem rather than the average.
 _SEVERITY = {FAIL_GLYPH: 3, WARN_GLYPH: 2, UNGATED_GLYPH: 1, PASS_GLYPH: 0}
 
 
@@ -267,24 +262,24 @@ def worst_glyph(glyphs: Sequence[str]) -> str:
     return max(glyphs, key=lambda g: _SEVERITY[g], default=PASS_GLYPH)
 
 
+def rate_glyph(rate: float) -> str:
+    """Where a pass rate falls on the scale."""
+    if rate > PASS_ABOVE:
+        return PASS_GLYPH
+    return WARN_GLYPH if rate >= WARN_ABOVE else FAIL_GLYPH
+
+
 def assertion_glyph(row: cohort.AssertionRow) -> str:
-    """A claim's state.  Model prose is never green: it is observed and it is not gated."""
+    """A claim's colour, or grey where no floor can be accepted at this N."""
     if row.reads_model_prose:
         return UNGATED_GLYPH
-    return PASS_GLYPH if row.at_full else FAIL_GLYPH
+    return rate_glyph(row.pass_rate)
 
 
 def variance_glyph(feature: cohort.VarianceFeature) -> str:
-    """A feature's state.  No ceiling has been ACCEPTED anywhere yet — every one this report
-    prints is proposed — so the honest answer is observed-not-gated until that changes."""
+    """A feature's colour.  No ceiling has been ACCEPTED anywhere yet — every one this report
+    prints is proposed — so the honest answer is grey until one is."""
     return UNGATED_GLYPH
-
-
-def harness_glyph(variance: cohort.CohortVariance) -> str:
-    """Whether the run can be believed: nothing pooled is a refusal, anything lost is a warning."""
-    if not variance.pooled:
-        return FAIL_GLYPH
-    return WARN_GLYPH if variance.excluded else PASS_GLYPH
 
 
 # ── The three sections a case reports ────────────────────────────────────────
@@ -297,15 +292,24 @@ def harness_glyph(variance: cohort.CohortVariance) -> str:
 # standings and the divergences are the cohort's, so a reader comparing the document against the
 # data compares one arithmetic to one rendering rather than two.
 
-SECTION_A = "A. Deterministic assertions — end state only"
-SECTION_B = "B. Variance — model output"
-SECTION_C = "C. Harness — samples too broken to count"
+# Declarative labels.  A heading NAMES the thing; the explanation belongs in the body, or
+# nowhere.  What stood here — "What every sample was given — the ask, the world, the prompts",
+# "Which samples to read", "Harness — samples too broken to count" — were sentences pretending
+# to be headings, and a reader scanning a hundred cases reads labels, not prose.
+SECTION_A = "Assertions"
+SECTION_B = "Variance"
+SECTION_C = "Excluded samples"
 
 _SUMMARY_LINE = (
-    "{glyph} **`{case_id}`** — assertions {held}/{claims} held{lowest} · "
-    "variance {var_glyph} max H {entropy:.3f} `{feature}` · {pooled} pooled of {driven}"
+    "{glyph} **`{case_id}`** — assertions {held}/{claims}{lowest} · "
+    "variance {var_glyph} max H {entropy:.3f} `{feature}` · {counts}"
 )
-_LOWEST = " (lowest {rate:.2f} `{label}`)"
+_LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
+# The harness accounting lives HERE rather than in a section of its own: on a healthy run it is
+# one line, and a section that renders as a stub every time is one people learn to skip.  The
+# counts must still ADD UP — three unexplained samples on the surface that says whether a run can
+# be believed is how 288 infrastructure failures came to be booked as behavioural.
+_COUNTS = "{pooled} pooled + {control} control + {excluded} excluded = {driven} driven"
 _NO_VARIANCE = "nothing pooled"
 
 _ASSERTION_HEAD = "|  | assertion | held | rate | proposed floor |\n|---|---|---|---|---|"
@@ -349,12 +353,8 @@ _COST_NOTE = (
     "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
     "number rather than a measured one._"
 )
-_HARNESS_CLEAN = "{counts} — every sample ran its measured turn."
-_CONTROL_NOTE = (
-    " · {control} control (drove the same ask against different facts, so they answer the "
-    "directed-change assertion instead of entering the spread)"
-)
-_HARNESS_DOMINANT = "Dominant failure class: **{reason}** ({count} of {total})."
+
+_DOMINANT = "Dominant failure class: **{reason}** ({count} of {total})."
 
 
 def fold(summary: str, body: str) -> str:
@@ -379,18 +379,20 @@ class CaseSections:
     def render(self) -> str:
         """The summary method: one line that carries the case's worst state, then the three
         sections behind folds."""
-        return "\n\n".join(
-            [
-                self.summary_line(),
-                fold(f"{self._assertions_glyph()} {SECTION_A}", self._assertions()),
-                fold(f"{self._variance_glyph()} {SECTION_B}", self._variance()),
-                fold(f"{harness_glyph(self.variance)} {SECTION_C}", self._harness()),
-            ]
-        )
+        blocks = [
+            self.summary_line(),
+            fold(f"{self._assertions_glyph()} {SECTION_A}", self._assertions()),
+            fold(f"{self._variance_glyph()} {SECTION_B}", self._variance()),
+        ]
+        # Only when something was actually lost.  A clean run says so on the summary line and
+        # spends no section on it; a degraded one gets the names and the dominant class.
+        if self.variance.excluded:
+            blocks.append(fold(f"{FAIL_GLYPH} {SECTION_C}", self._excluded()))
+        return "\n\n".join(blocks)
 
     # ── The one line a reader sees by default ────────────────────────────
     def summary_line(self) -> str:
-        """Both scores at once, behind the worst glyph in the case."""
+        """Both scores and the whole sample accounting, behind the worst glyph in the case."""
         held = sum(1 for row in self.assertions if row.at_full)
         top = self._top_feature()
         return _SUMMARY_LINE.format(
@@ -402,15 +404,18 @@ class CaseSections:
             var_glyph=self._variance_glyph(),
             entropy=top.entropy if top else 0.0,
             feature=top.name if top else _NO_VARIANCE,
-            pooled=self.variance.pooled,
-            driven=self.variance.driven,
+            counts=_COUNTS.format(
+                pooled=self.variance.pooled,
+                control=self.variance.control,
+                excluded=len(self.variance.excluded),
+                driven=self.variance.driven,
+            ),
         )
 
     def glyph(self) -> str:
         """The case's worst state — what someone paging ~100 one-line entries reads."""
-        return worst_glyph(
-            [self._assertions_glyph(), self._variance_glyph(), harness_glyph(self.variance)]
-        )
+        lost = [FAIL_GLYPH] if self.variance.excluded else []
+        return worst_glyph([self._assertions_glyph(), self._variance_glyph(), *lost])
 
     def _assertions_glyph(self) -> str:
         return worst_glyph([assertion_glyph(row) for row in self.assertions])
@@ -427,7 +432,7 @@ class CaseSections:
         worst = min(scored, key=lambda row: row.pass_rate, default=None)
         if worst is None or worst.at_full:
             return ""
-        return _LOWEST.format(rate=worst.pass_rate, label=worst.label)
+        return _LOWEST.format(glyph=assertion_glyph(worst), rate=worst.pass_rate, label=worst.label)
 
     # ── A ────────────────────────────────────────────────────────────────
     def _assertions(self) -> str:
@@ -470,25 +475,15 @@ class CaseSections:
         return f"{_PHRASING_LEAD}\n\n{_PHRASING_HEAD}\n{rows}"
 
     # ── C ────────────────────────────────────────────────────────────────
-    def _harness(self) -> str:
-        """Every sample the case drove, accounted for — pooled, control, or excluded.
+    def _excluded(self) -> str:
+        """The samples too broken to count, by name, under the class that cost the most.
 
-        The counts must ADD UP.  "15 pooled of 18 driven · 0 excluded" left three samples
-        unexplained on the one surface whose job is to say whether the run can be believed, and a
-        section that raises a question it does not answer is one people learn to skip past — which
-        is how 288 infrastructure failures came to be booked as behavioural."""
-        excluded = self.variance.excluded
-        control = (
-            _CONTROL_NOTE.format(control=self.variance.control) if self.variance.control else ""
+        Rendered ONLY when there are some — the accounting itself rides on the summary line,
+        where it is one clause on a healthy run instead of a section that always says nothing."""
+        named = "\n".join(
+            f"- `{sample.name}` — {sample.reason}" for sample in self.variance.excluded
         )
-        counts = (
-            f"{self.variance.pooled} pooled{control} · {len(excluded)} excluded "
-            f"= {self.variance.driven} driven"
-        )
-        if not excluded:
-            return _HARNESS_CLEAN.format(counts=counts)
-        named = "\n".join(f"- `{sample.name}` — {sample.reason}" for sample in excluded)
-        return f"{counts}\n\n{self._dominant()}\n\n{named}"
+        return f"{self._dominant()}\n\n{named}"
 
     def _dominant(self) -> str:
         """What cost this case its samples, named — so a reader meets the class before the list.
@@ -500,9 +495,7 @@ class CaseSections:
         if dominant is None:
             return ""
         reason, count = dominant
-        return _HARNESS_DOMINANT.format(
-            reason=reason, count=count, total=len(self.variance.excluded)
-        )
+        return _DOMINANT.format(reason=reason, count=count, total=len(self.variance.excluded))
 
 
 def _assertion_row(row: cohort.AssertionRow) -> str:
@@ -569,17 +562,16 @@ def _value_list(values: Sequence[str]) -> str:
 # The rule this keeps that the diff could not: every prompt renders VERBATIM.  A reader opening
 # a sample's prompt reads what the model read, never a reconstruction assembled from two places.
 
-PROMPT_VARIANTS_LABEL = "System prompts, shared once"
-PHRASINGS_LABEL = "The ask, phrased {count} ways"
-WORLD_LABEL = "The seeded world"
-SAMPLE_MAP_LABEL = "Which samples to read"
-OUTLIERS_LABEL = "Outliers — {count} samples, and what each did differently"
-SHARED_LABEL = "What every sample was given — the ask, the world, the prompts"
+PROMPT_VARIANTS_LABEL = "System prompts"
+PHRASINGS_LABEL = "Phrasings ({count})"
+WORLD_LABEL = "Seeded pages"
+OUTLIERS_LABEL = "Outliers ({count})"
+TEST_INPUTS_LABEL = "Test inputs"
+REPRESENTATIVE_LABEL = "Representative sample"
 
 _ALL_SAMPLES = "every sample"
 _PROMPT_SUMMARY = "{label} — {chars:,} chars · {used}"
-_SAMPLE_MAP_HEAD = "| sample | phrasing | standing |\n|---|---|---|"
-_PHRASING_ROW = "**{label}** — {text}"
+_PHRASING_HEAD_ROW = "| # | ask |\n|---|---|"
 _OUTLIER_HEAD = "| feature | this sample | the representative |\n|---|---|---|"
 _OUTLIER_LEAD = (
     "_An outlier is outlying on a SPECIFIC feature, so what renders here is the divergence and "
@@ -639,15 +631,20 @@ def render_prompt_variants(variants: Sequence[PromptVariant]) -> str:
 
 
 def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
-    """The K wordings of the one ask, listed once.
+    """The K wordings of the one ask, as a table.
 
-    A sample names which it used in the map rather than reprinting it, which is the whole point
-    of listing them here: the wordings are a COVERAGE mechanism, so they belong together where
-    they can be read against each other."""
+    Tabular rather than a run of prose blocks: the wordings are a COVERAGE mechanism and the
+    reason they sit together is to be read AGAINST each other, which a column does and stacked
+    paragraphs do not."""
     if not phrasings:
         return ""
-    rows = "\n\n".join(_PHRASING_ROW.format(label=label, text=text) for label, text in phrasings)
-    return fold(PHRASINGS_LABEL.format(count=len(phrasings)), rows)
+    rows = "\n".join(f"| {label} | {_cell(text)} |" for label, text in phrasings)
+    return fold(PHRASINGS_LABEL.format(count=len(phrasings)), f"{_PHRASING_HEAD_ROW}\n{rows}")
+
+
+def _cell(text: str) -> str:
+    """One table cell: pipes escaped and newlines flattened so a long ask stays in its row."""
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def render_seeded_world(world: str) -> str:
@@ -678,32 +675,23 @@ def _code(value: str) -> str:
     return f"`{value}`" if value else "—"
 
 
-def render_sample_map(rows: Sequence[tuple[int, str, str, bool]]) -> str:
-    """Which sample to open, and why — ``(number, phrasing, standing, worth_opening)``."""
-    if not rows:
-        return ""
-    body = "\n".join(
-        f"| {'**' if open_it else ''}{SAMPLE_ROW} {number}{'**' if open_it else ''} "
-        f"| {phrasing} | {standing} |"
-        for number, phrasing, standing, open_it in rows
-    )
-    return fold(SAMPLE_MAP_LABEL, f"{_SAMPLE_MAP_LEAD}\n\n{_SAMPLE_MAP_HEAD}\n{body}")
+# The seam between what a reader meets BEFORE the representative sample and what belongs after
+# it.  The sample is what they were sent to read, so it sits directly under the scores rather
+# than below the setup; the setup is reference material and reads last.
+CASE_TAIL_MARKER = "<!-- case tail -->"
 
 
-def render_case_document(
+def render_case_tail(
     *,
-    sections: str,
     prompts: Sequence[PromptVariant] = (),
     phrasings: Sequence[tuple[str, str]] = (),
     world: str = "",
-    sample_map: Sequence[tuple[int, str, str, bool]] = (),
     outliers: Sequence[tuple[int, cohort.SampleStanding]] = (),
 ) -> str:
-    """A case's whole preamble: its one summary line, its three sections, what its samples SHARE,
-    and what the outlying ones did differently — everything but the line itself behind a fold.
+    """What closes a case: the inputs it was given, then what the outlying samples did.
 
-    Every part is optional, so a case that declares none of them renders exactly its sections."""
-    shared = "\n\n".join(
+    Every part is optional, so a case declaring none of them closes with nothing at all."""
+    inputs = "\n\n".join(
         part
         for part in (
             render_phrasings(phrasings),
@@ -713,10 +701,8 @@ def render_case_document(
         if part
     )
     parts = [
-        sections,
-        fold(SHARED_LABEL, shared) if shared else "",
+        fold(TEST_INPUTS_LABEL, inputs) if inputs else "",
         render_outliers(outliers) if outliers else "",
-        render_sample_map(sample_map),
     ]
     return "\n\n".join(part for part in parts if part)
 
@@ -784,10 +770,6 @@ def fold_sample(number: int, banner: str, body: str) -> str:
 # markup this module itself emits, and neither can reach the artifact.
 
 THINKING_SUMMARY_HEAD = "thinking — {chars:,} chars, in full in the artifact"
-SAMPLE_IN_ARTIFACT = (
-    "_Not expanded here — this sample agreed with the cohort. Its whole transcript is in the "
-    "run artifact; the map above says which samples carry the work._"
-)
 THINKING_TASTE = 160
 
 # The exact form `_thinking_details` emits, matched back at assembly.  A structural rewrite of
@@ -821,7 +803,9 @@ def summarise_thinking(body: str) -> str:
     return _THINKING_BLOCK.sub(shorten, body)
 
 
-OTHER_SAMPLES_LABEL = "Other samples — {count}, each agreeing with the representative"
+OTHER_SAMPLES_LINE = (
+    "_{count} other samples agreed with the representative — full transcripts in the run artifact._"
+)
 
 # The prompt fold this module emits, matched back at assembly.  Same idiom as the thinking
 # rewrite: a structural transform on markup report.py owns, never a comparison between samples.
@@ -856,27 +840,13 @@ def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
     return _PROMPT_FOLD.sub(prune, text)
 
 
-def group_references(references: Sequence[str]) -> str:
-    """Every sample the comment does not carry, under ONE fold.
+def other_samples_line(count: int) -> str:
+    """The samples the comment does not carry, as ONE line.
 
-    Eighteen banner lines per case is eighteen hundred at a hundred cases, which is the default
-    view ceasing to be a page again.  They stay visible one click in, and the map above already
-    names each by its standing."""
-    if not references:
-        return ""
-    return fold(OTHER_SAMPLES_LABEL.format(count=len(references)), "\n\n".join(references))
-
-
-def reference_sample(number: int, banner: str) -> str:
-    """A sample the comment names and accounts for without carrying its body.
-
-    It keeps the banner — the verdict, the score, the cause, the cost — so every sample the case
-    drove is still visible and countable in the comment, and opens on the same seam as any other
-    so the splitter needs to know nothing about it."""
-    return (
-        f"<details><summary>{SAMPLE_ROW} {number} — {banner}</summary>"
-        f"\n\n{SAMPLE_IN_ARTIFACT}\n\n</details>"
-    )
+    Seventeen collapsed stubs each saying "not expanded here" is seventeen folds that say
+    nothing, and at a hundred cases it is seventeen hundred. What a reader needs is the count and
+    where the transcripts are; which of them diverged is the outlier section's job."""
+    return OTHER_SAMPLES_LINE.format(count=count)
 
 
 # The seam a sample block opens on — the folded form and the legacy bare heading. Public because

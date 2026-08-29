@@ -47,31 +47,36 @@ class World(BaseModel):
         return tuple(token for source in self.keeps for token in source)
 
     def render(self) -> str:
-        """This world as a READER meets it: each page verbatim, then what the ask makes of it.
+        """This world as a table: one row per page, what must be kept from it, and — once — what
+        must not be kept from any of them.
 
-        Every sample in a cohort is answered against these same pages, so the report states them
-        once beside the score rather than leaving a reader to infer the ground from transcripts.
-        The keep/exclude lists come last because they are the world read through the ASK — which
-        is what an assertion about a stored fact is actually comparing against."""
+        A table rather than stacked prose because these are the rows an assertion reads: "she
+        kept what the page said" is a comparison between a page and a token set, and putting them
+        in one row is what lets a reader check it at a glance. The page bodies stay openable
+        underneath, since the tokens are a claim ABOUT the text and not a substitute for it."""
         if not self.pages:
             return ""
-        pages = "\n\n".join(
-            f"<details><summary>page matching `{page.match}` "
+        rows = "\n".join(
+            f"| {index + 1} | `{page.match}` | {_tokens(self._keeps_for(index))} |"
+            for index, page in enumerate(self.pages)
+        )
+        bodies = "\n\n".join(
+            f"<details><summary>page {index + 1} — `{page.match}` "
             f"({len(page.text):,} chars)</summary>\n\n```\n{page.text}\n```\n\n</details>"
-            for page in self.pages
+            for index, page in enumerate(self.pages)
         )
-        keeps = " · ".join(
-            f"source {index + 1}: {_tokens(source)}" for index, source in enumerate(self.keeps)
-        )
-        return "\n\n".join(
-            part
-            for part in (
-                pages,
-                f"**Must be kept** — {keeps}" if keeps else "",
-                f"**Must NOT be kept** — {_tokens(self.excludes)}" if self.excludes else "",
-            )
-            if part
-        )
+        parts = [f"{_PAGE_HEAD}\n{rows}"]
+        if self.excludes:
+            parts.append(f"**Must not be kept, from any page** — {_tokens(self.excludes)}")
+        parts.append(bodies)
+        return "\n\n".join(parts)
+
+    def _keeps_for(self, index: int) -> tuple[str, ...]:
+        """The tokens this page contributes, or empty where the case named none for it."""
+        return self.keeps[index] if index < len(self.keeps) else ()
+
+
+_PAGE_HEAD = "| # | page | must be kept |\n|---|---|---|"
 
 
 def _tokens(tokens: tuple[str, ...]) -> str:

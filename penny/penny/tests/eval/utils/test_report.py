@@ -470,36 +470,39 @@ def test_a_sample_naming_one_context_twice_is_counted_once():
     assert variants[0].shared_by_all, "two samples, both accounted for"
 
 
-def test_the_document_states_the_ask_the_world_and_which_samples_to_read():
-    """The whole preamble, in the order a reader needs it: the score, the one ask in its several
-    wordings, the world it was asked against, the prompts, then the map into the samples.
+def test_the_tail_states_the_inputs_and_what_the_outliers_did():
+    """What closes a case: the inputs it was given as TABLES, then the outlier divergences.
 
-    The map is what makes the workflow's 'read ONE sample' step actionable — the modal sample
-    and the outliers are marked, everything else folds, and nothing is dropped."""
-    document = report.render_case_document(
-        sections="SECTIONS",
+    Declarative labels, not prose sentences — a heading names the thing and a reader scanning a
+    hundred cases reads labels. The phrasings are a table because the reason they sit together is
+    to be read against each other."""
+    outlier = cohort.SampleStanding(
+        name="c-3",
+        phrasing="phrasing 2",
+        standing=cohort.Standing.OUTLIER,
+        shape="x",
+        divergences=[cohort.FeatureDivergence(feature="tool sequence", value="a", modal="b")],
+    )
+    tail = report.render_case_tail(
         prompts=report.prompt_variants(_pairs(("sample 1", "chat", "prompt text")), total=1),
         phrasings=[("phrasing 1", "watch the two pages"), ("phrasing 2", "keep an eye on them")],
-        world="two pages, one signing each",
-        sample_map=[
-            (1, "phrasing 1", "modal", True),
-            (2, "phrasing 1", "typical", False),
-            (3, "phrasing 2", "outlier", True),
-        ],
+        world="| # | page | must be kept |\n|---|---|---|\n| 1 | `foxes` | `brandt` |",
+        outliers=[(3, outlier)],
     )
 
-    assert document.startswith("SECTIONS")
-    assert "The ask, phrased 2 ways" in document
-    assert "watch the two pages" in document and "keep an eye on them" in document
-    assert "two pages, one signing each" in document
-    assert "**sample 1**" in document and "**sample 3**" in document, "modal + outlier stand out"
-    assert "| sample 2 | phrasing 1 | typical |" in document, "and the rest still render"
+    assert "<summary>Test inputs</summary>" in tail
+    assert "<summary>Phrasings (2)</summary>" in tail
+    assert "| # | ask |" in tail, "the wordings are a table, not stacked paragraphs"
+    assert "| phrasing 1 | watch the two pages |" in tail
+    assert "<summary>Outliers (1)</summary>" in tail
+    assert "| `tool sequence` | `a` | `b` |" in tail
+    assert "Which samples to read" not in tail, "the outlier section already indexes the work"
 
 
-def test_a_case_declaring_nothing_shared_renders_only_its_sections():
-    """Every part of the document is optional, so an unported case — or one driven with a single
-    wording against no declared world — is exactly its three sections and nothing else."""
-    assert report.render_case_document(sections="SECTIONS") == "SECTIONS"
+def test_a_case_declaring_nothing_shared_closes_with_nothing():
+    """Every part of the tail is optional, so an unported case — or one driven with a single
+    wording against no declared world — closes with nothing at all."""
+    assert report.render_case_tail() == ""
 
 
 # ── The three sections (#1997) ──────────────────────────────────────────────
@@ -579,7 +582,7 @@ def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
     )
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
 
-    assert "1 pooled · 2 excluded = 3 driven" in rendered
+    assert "1 pooled + 0 control + 2 excluded = 3 driven" in rendered
     assert "Dominant failure class: **no turn** (2 of 2)." in rendered
     assert "- `c-2 (phrasing 1)` — no turn" in rendered
     assert "- `c-3 (phrasing 1)` — no turn" in rendered
@@ -732,21 +735,22 @@ def test_the_three_sections_render_whole():
         [
             # The whole default view: one line, carrying the case's WORST state (⚠️ — a sample
             # was lost) and both scores at once.
-            "⚠️ **`memory-learn-close-shape`** — assertions 1/2 held "
-            "(lowest 0.67 `reply: every specific value in it is sourced`) · "
-            "variance 👁 max H 0.579 `routine shape` · 3 pooled of 4",
+            "🔴 **`memory-learn-close-shape`** — assertions 1/2 "
+            "(lowest ⚪ 0.67 `reply: every specific value in it is sourced`) · "
+            "variance ⚪ max H 0.579 `routine shape` · "
+            "3 pooled + 0 control + 1 excluded = 4 driven",
             report.fold(
-                "👁 A. Deterministic assertions — end state only",
+                "⚪ Assertions",
                 "\n\n".join(
                     [
                         "\n".join(
                             [
                                 "|  | assertion | held | rate | proposed floor |",
                                 "|---|---|---|---|---|",
-                                "| ✅ | state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
+                                "| 🟢 | state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
                                 # Model prose is never green: it is observed and NOT gated, and
                                 # a tick here would re-imply the floor it cannot carry.
-                                "| 👁 | reply: every specific value in it is sourced | 2/3 | "
+                                "| ⚪ | reply: every specific value in it is sourced | 2/3 | "
                                 "0.67 | — reported, not floored at this N — it reads model "
                                 "prose |",
                             ]
@@ -756,14 +760,14 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.fold(
-                "👁 B. Variance — model output",
+                "⚪ Variance",
                 "\n\n".join(
                     [
                         "\n".join(
                             [
                                 "|  | feature | distinct | modal | entropy | proposed ceiling |",
                                 "|---|---|---|---|---|---|",
-                                "| 👁 | `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
+                                "| ⚪ | `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
                                 "`0.68` @ openai/gpt-oss-20b N=3 |",
                             ]
                         ),
@@ -800,10 +804,9 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.fold(
-                "⚠️ C. Harness — samples too broken to count",
+                "🔴 Excluded samples",
                 "\n\n".join(
                     [
-                        "3 pooled · 1 excluded = 4 driven",
                         "Dominant failure class: **the measured turn never ran** (1 of 1).",
                         "- `case-4 (phrasing 2)` — the measured turn never ran",
                     ]
@@ -825,7 +828,7 @@ def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_t
         ),
     ).render()
     assert "_No phrasing produced a value the others did not._" in rendered
-    assert "3 pooled · 0 excluded = 3 driven — every sample ran its measured turn." in rendered
+    assert "3 pooled + 0 control + 0 excluded = 3 driven" in rendered
     assert "_(no assertions)_" in rendered
 
 
@@ -942,6 +945,5 @@ def test_the_harness_counts_add_up_including_the_control_drive():
     assert (variance.pooled, variance.control, variance.driven) == (2, 1, 3)
 
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
-    assert "2 pooled · 1 control" in rendered
-    assert "· 0 excluded = 3 driven" in rendered, "pooled + control + excluded == driven"
-    assert "directed-change assertion" in rendered, "and it says WHY they are not pooled"
+    assert "2 pooled + 1 control + 0 excluded = 3 driven" in rendered
+    assert report.SECTION_C not in rendered, "a clean run spends no section on it"

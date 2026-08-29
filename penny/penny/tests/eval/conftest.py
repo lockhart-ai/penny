@@ -2525,9 +2525,8 @@ def _record_unported_prompts(case_id: str, driven: int) -> None:
         return
     eval_artifacts.record_case_report(
         case_id,
-        report.render_case_document(
-            sections="", prompts=report.prompt_variants(prompts, total=driven)
-        ),
+        "",
+        report.render_case_tail(prompts=report.prompt_variants(prompts, total=driven)),
     )
 
 
@@ -2584,12 +2583,90 @@ def _record_case_report(
     prompts = _case_prompts.pop(cohort.case_id, [])
     eval_artifacts.record_case_report(
         cohort.case_id,
-        report.render_case_document(
-            sections=sections,
+        sections,
+        report.render_case_tail(
             prompts=report.prompt_variants(prompts, total=len(samples)),
             phrasings=cohort.phrasings,
             world=cohort.world.render(),
-            sample_map=_sample_map(standings),
+            outliers=list(enumerate(standings, start=1)),
+        ),
+    )
+
+
+def _record_unported_prompts(case_id: str, driven: int) -> None:
+    """A case with no cohort still states its system prompts once. No-op off-report.
+
+    A ported case has already popped its prompts into the case document by the time this runs,
+    so this writes only for a case that never built one — which is what keeps the shared-once
+    rendering true of the whole suite rather than only of the part that has been ported."""
+    prompts = _case_prompts.pop(case_id, [])
+    if not prompts:
+        return
+    eval_artifacts.record_case_report(
+        case_id,
+        "",
+        report.render_case_tail(prompts=report.prompt_variants(prompts, total=driven)),
+    )
+
+
+def _cohort_checks(cohort: Cohort) -> dict[str, list[Check]]:
+    """The case's claims, redistributed to the samples that answered them.
+
+    The graded machinery is per sample (a sample's score, the report's per-sample cells), and
+    the claims are made over the whole cohort — so the answers are dealt back out by sample
+    name.  One conversion, at the one seam where the two shapes meet."""
+    by_sample: dict[str, list[Check]] = {}
+    for claim in cohort.claims:
+        for outcome in claim.outcomes:
+            by_sample.setdefault(outcome.sample, []).append(
+                Check(
+                    claim.label,
+                    outcome.ok,
+                    rationale=outcome.rationale,
+                    kind=claim.kind,
+                    anchor=REPLY_ANCHOR if claim.kind == "reply" else None,
+                )
+            )
+    return by_sample
+
+
+def _record_case_report(
+    cohort: Cohort,
+    samples: Sequence[eval_cohort.SampleObservation],
+    standings: Sequence[eval_cohort.SampleStanding],
+    perf: _Perf,
+    driven: int,
+) -> None:
+    """Assemble and write the case's document — its three sections, then everything its samples
+    SHARE: the one ask in its several wordings, the one world, the system prompts, and the map
+    saying which samples to open. No-op off-report.
+
+    Assembled HERE rather than in the report layer because this is where the three halves meet:
+    the claims come from the case body, the pooled variance from the observations, and the
+    prompts from what each sample was handed while its database was live."""
+    variance = eval_cohort.pool(samples, cohort.features, world=cohort.world.name)
+    sections = report.CaseSections(
+        case_id=cohort.case_id,
+        model=cohort.model,
+        assertions=eval_assertions.assertion_rows(cohort.claims),
+        variance=variance,
+        cost=eval_cohort.per_sample_cost(
+            samples=driven,
+            calls=perf.calls,
+            duration_ms=perf.duration_ms,
+            input_tokens=perf.input_tokens,
+            output_tokens=perf.output_tokens,
+            reasoning_tokens=perf.reasoning_tokens,
+        ),
+    ).render()
+    prompts = _case_prompts.pop(cohort.case_id, [])
+    eval_artifacts.record_case_report(
+        cohort.case_id,
+        sections,
+        report.render_case_tail(
+            prompts=report.prompt_variants(prompts, total=len(samples)),
+            phrasings=cohort.phrasings,
+            world=cohort.world.render(),
             outliers=list(enumerate(standings, start=1)),
         ),
     )

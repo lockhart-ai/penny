@@ -569,19 +569,18 @@ def test_cli_writes_comment_and_reports_errors(
 
 def test_only_the_nominated_sample_is_carried_in_full(tmp_path: Path) -> None:
     """The scaling fix (#1997): the artifact is the complete record and the comment is an INDEX
-    into it, so a case that named a representative carries THAT sample's body and references the
-    rest — each keeping its banner, so every sample is still visible and countable.
-
-    Measured on the reference port, expanding all 18 made one case 787,681 characters, which is
-    not a document anyone reads; an outlier is communicated by its divergence instead."""
+    into it, so a case that named a representative carries THAT sample and counts the rest on one
+    line. Seventeen collapsed stubs each saying "not expanded here" is seventeen folds that say
+    nothing, and at a hundred cases it is seventeen hundred."""
     _, artifact = _mixed_run(tmp_path, expand_samples=[1])
     comment = assemble_run_comment(tmp_path)
 
-    assert _BROWSE_SAMPLE_FOLDED in comment, "the nominated sample is carried whole"
-    assert "sample 2 — " in comment, "and every other sample keeps its banner"
-    assert report.SAMPLE_IN_ARTIFACT in comment, "pointing at the record that holds it"
+    assert report.REPRESENTATIVE_LABEL in comment, "the carried sample is labelled as such"
+    assert "deepest lake?" in comment, "and carried whole"
+    assert report.other_samples_line(1) in comment, "the rest are one line"
+    assert "sample 2 — " not in comment, "not seventeen stubs"
     on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
-    assert report.SAMPLE_IN_ARTIFACT not in on_disk, "the artifact keeps every body regardless"
+    assert "sample 2 — " in on_disk, "the artifact keeps every sample regardless"
 
 
 def test_a_long_thinking_trace_is_shortened_only_in_the_comment(tmp_path: Path) -> None:
@@ -617,12 +616,10 @@ def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_pat
     assert "chat — 400 chars · sample 2" in elided, "but its summary still names it"
 
 
-def test_the_samples_the_comment_does_not_carry_sit_under_one_fold(tmp_path: Path) -> None:
-    """Eighteen banner lines per case is eighteen hundred at a hundred cases, which is the default
-    view ceasing to be a page. They stay one click in, and nothing is dropped."""
-    refs = [report.reference_sample(n, f"✅ pass · {n}") for n in (2, 3, 4)]
-    grouped = report.group_references(refs)
-    assert grouped.startswith("<details><summary>Other samples — 3")
-    for ref in refs:
-        assert ref in grouped
-    assert report.group_references([]) == "", "a case carrying every sample adds no empty fold"
+def test_the_samples_the_comment_does_not_carry_are_one_line(tmp_path: Path) -> None:
+    """A count and where to find them is what a reader needs; which of them diverged is the
+    outlier section's job, and it says it far better than a stub can."""
+    line = report.other_samples_line(17)
+    assert "17 other samples agreed" in line
+    assert "artifact" in line
+    assert "<details>" not in line, "one line, not a fold"

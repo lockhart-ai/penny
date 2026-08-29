@@ -284,40 +284,41 @@ def _transcript_block(report_dir: Path, manifest: RunManifest, artifact: CaseArt
 
 
 def _folded_transcript(transcript: str, expand: Sequence[int] = ()) -> str:
-    """Re-normalize a case's per-sample blocks for the comment: EVERY block folds whole under its
-    banner — the one and only rendering (#1753/#1759). Re-folds an old unfolded ``#### `` block on
-    the way, so a re-assembled prior run is uniform too. Collapsed by default, the full body always
-    a click away — there is no banner-only form.
-
-    A sample too big to POST as one fold renders as several instead (#1917), each opening on the
-    same seam so the splitter can cut between them. Done here rather than at write time so the
-    per-sample artifact on disk stays one fold — the seams belong to the comment, which is the only
-    place a size cap exists.
-
-    A case-level PREAMBLE above the first sample fold is carried through verbatim.
+    """Order a case for the COMMENT: its scores, the sample it nominated, then its setup.
 
     The two SIZE transforms live here and nowhere else (#1997), because the artifact on disk is
-    the complete record and this is the index into it: a sample the case did not nominate keeps
-    its banner and points at the artifact, and an expanded sample has its thinking traces
-    shortened to their head and their length. Measured on the reference port, thinking was 68% of
-    every sample and one case ran to 787,681 characters — which is not a document anyone reads.
-    Neither transform can reach the ``.md``, so nothing is lost anywhere."""
-    preamble, sample_blocks = report.split_case_transcript(transcript)
+    the complete record and this is the index into it: a sample the case did not nominate is
+    named on one line, and an expanded sample has its thinking traces shortened to their head and
+    their length. Measured on the reference port, thinking was 68% of every sample and one case
+    ran to 787,681 characters. Neither transform can reach the ``.md``, so nothing is lost."""
+    head, tail = _split_tail(transcript)
+    preamble, sample_blocks = report.split_case_transcript(head)
     nominated = set(expand)
     kept = [f"{report.SAMPLE_ROW} {number}" for number in sorted(nominated)]
-    blocks = [report.elide_unused_prompts(preamble, kept)] if preamble else []
-    references: list[str] = []
+    blocks = [preamble] if preamble else []
+    others: list[int] = []
     for block in sample_blocks:
         number, banner, body = report.parse_sample_block(block)
         if nominated and number not in nominated:
-            references.append(report.reference_sample(number, banner))
+            others.append(number)
             continue
         folded = report.summarise_thinking(body)
-        blocks.append(report.fold_sample_parts(number, banner, folded, SAMPLE_FOLD_BUDGET))
-    grouped = report.group_references(references)
-    if grouped:
-        blocks.append(grouped)
+        labelled = f"{report.REPRESENTATIVE_LABEL} · {banner}" if nominated else banner
+        blocks.append(report.fold_sample_parts(number, labelled, folded, SAMPLE_FOLD_BUDGET))
+    if others:
+        blocks.append(report.other_samples_line(len(others)))
+    if tail:
+        blocks.append(report.elide_unused_prompts(tail, kept))
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
+
+
+def _split_tail(transcript: str) -> tuple[str, str]:
+    """Split a case's document on the marker its own renderer wrote."""
+    marker = report.CASE_TAIL_MARKER
+    if marker not in transcript:
+        return transcript, ""
+    head, _, tail = transcript.partition(marker)
+    return head.rstrip(), tail.strip()
 
 
 def render_footer(report_dir: Path) -> str:

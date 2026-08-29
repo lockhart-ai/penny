@@ -36,6 +36,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from penny.tests.eval.utils import report as report_grammar
+
 # ── Environment contract (forwarded by the Makefile `eval` target) ───────────
 EVAL_REPORT_DIR_ENV = "EVAL_REPORT_DIR"
 EVAL_LEVER_ENV = "EVAL_LEVER"
@@ -605,19 +607,19 @@ class EvalRun:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report.write_text(render_manifest_header(self.manifest) + "\n")
 
-    def write_case_report(self, case_id: str, rendered: str) -> None:
-        """Insert a case's own three-section report between the manifest header and its
-        sample transcripts (#1995).
+    def write_case_report(self, case_id: str, head: str, tail: str = "") -> None:
+        """Wrap this case's samples: the scores go ABOVE them, the setup and outliers BELOW.
 
-        Inserted rather than appended: the sections summarise the case, so a reader meets
-        them before the samples they summarise — and the assembler passes everything above
-        the first sample fold through verbatim, so the on-disk report and the posted comment
-        carry ONE rendering rather than two that can disagree."""
+        The representative sample is what a reader was sent to read, so it sits directly under
+        the scores rather than below the reference material. The tail is separated by a marker
+        the assembler splits on, so the posted comment can order the two around the sample it
+        carries without either document guessing where the boundary is."""
         report = self.report_dir / f"{case_id}.md"
         header = render_manifest_header(self.manifest) + "\n"
         body = report.read_text() if report.exists() else header
         rest = body[len(header) :] if body.startswith(header) else body
-        report.write_text(f"{header}{rendered}\n\n{rest.lstrip()}")
+        closing = f"\n\n{report_grammar.CASE_TAIL_MARKER}\n\n{tail}" if tail else ""
+        report.write_text(f"{header}{head}\n\n{rest.lstrip()}{closing}")
 
     def append_case(self, artifact: CaseArtifact) -> None:
         """Append one case's record to THIS process's results file."""
@@ -688,11 +690,11 @@ def begin_case(case_id: str) -> None:
         run.write_case_header(case_id)
 
 
-def record_case_report(case_id: str, rendered: str) -> None:
-    """Per-case entry point for the three-section report. No-op off-report."""
+def record_case_report(case_id: str, head: str, tail: str = "") -> None:
+    """Per-case entry point for the case document. No-op off-report."""
     run = active_run()
     if run is not None:
-        run.write_case_report(case_id, rendered)
+        run.write_case_report(case_id, head, tail)
 
 
 def record_case(
