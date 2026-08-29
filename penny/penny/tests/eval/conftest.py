@@ -2588,6 +2588,9 @@ def _record_case_report(
             world=cohort.world.render(),
             world_facts=report.WorldFacts(*cohort.world.counts),
             outliers=list(enumerate(standings, start=1)),
+            everywhere_distinct=eval_cohort.everywhere_distinct(
+                samples, cohort.features, cohort.world.name
+            ),
         ),
     )
 

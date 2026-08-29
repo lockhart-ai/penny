@@ -629,12 +629,58 @@ class SampleStanding(BaseModel):
         return self.standing == Standing.MODAL
 
 
+def telling_features(
+    pooled: Sequence[SampleObservation], features: Sequence[Feature]
+) -> list[Feature]:
+    """The features that can say something about an INDIVIDUAL sample.
+
+    A feature whose every pooled value is distinct carries no information about any one of them:
+    if all fifteen samples differ, differing is not a divergence, and "this sample named the
+    container differently" is true by construction of all fifteen.  That fact belongs to the
+    FEATURE and is already stated once in the variance table as `15 distinct` — restating it
+    fifteen times as a per-sample finding is how a section meant to name the samples worth
+    looking at came to name every one of them.
+
+    Derived, not tuned: the condition is that no two samples agree, which is exactly the point at
+    which agreement stops being able to group anything.  A feature that is merely NEARLY that
+    variant still survives here, and the honest fix for that is the naming defect itself rather
+    than a threshold picked to hide it."""
+    structural = [f for f in features if f is not REPLY_SPREAD]
+    # Below three samples "no two agree" is not a degeneracy, it is the ordinary case: with two
+    # samples there is ONE pair, and their disagreeing carries exactly as much information as
+    # anything else does.  The rule targets "every sample invented its own value", which cannot
+    # be told apart from ordinary disagreement until a third sample can join a group.
+    if len(pooled) < 3:
+        return structural
+    return [
+        feature
+        for feature in structural
+        if max(Counter(feature.read(s) for s in pooled).values()) > 1
+    ]
+
+
+def everywhere_distinct(
+    samples: Sequence[SampleObservation],
+    features: Sequence[Feature],
+    world: str = BASE_WORLD,
+) -> list[str]:
+    """The features every pooled sample gave a different value — named so the report can say it
+    ONCE instead of repeating it under every sample."""
+    pooled = [s for s in samples if s.complete and s.world == world]
+    telling = {feature.name for feature in telling_features(pooled, features)}
+    return [
+        feature.name
+        for feature in features
+        if feature is not REPLY_SPREAD and feature.name not in telling
+    ]
+
+
 def sample_shape(sample: SampleObservation, features: Sequence[Feature]) -> str:
-    """One sample's whole measured shape — every structural feature's value at once.
+    """One sample's whole measured shape — every feature's value at once.
 
     The shape, not any single feature, is what makes a sample typical or not: a sample agreeing
-    on tool sequence while inventing its own routine shape is an outlier, and reading one
-    feature at a time would file it under the majority."""
+    on tool sequence while inventing its own routine shape is an outlier, and reading one feature
+    at a time would file it under the majority."""
     return " · ".join(feature.read(sample) for feature in features if feature is not REPLY_SPREAD)
 
 
@@ -651,12 +697,17 @@ def standings(
     outlier and opens.  A dead sample is neither: it has no shape to be typical of, and is the
     harness section's business rather than a reading recommendation."""
     pooled = [s for s in samples if s.complete and s.world == world]
-    shapes = Counter(sample_shape(s, features) for s in pooled)
+    # Only the features that can distinguish one sample from another decide standing.  Including a
+    # maximally-variant one makes every shape unique, so every sample becomes an outlier and the
+    # modal sample is whichever happened to be first — the section names everything and therefore
+    # nothing.
+    telling = telling_features(pooled, features)
+    shapes = Counter(sample_shape(s, telling) for s in pooled)
     modal_shape = shapes.most_common(1)[0][0] if shapes else ""
     # Divergence is measured against the REPRESENTATIVE sample rather than against each feature's
     # own mode, so the two halves of the report cannot disagree: the sample the reader is sent to
     # read has, by construction, nothing in its own divergence list.
-    representative = next((s for s in pooled if sample_shape(s, features) == modal_shape), None)
+    representative = next((s for s in pooled if sample_shape(s, telling) == modal_shape), None)
     seen_modal = False
     out: list[SampleStanding] = []
     for sample in samples:
@@ -675,7 +726,7 @@ def standings(
                 )
             )
             continue
-        shape = sample_shape(sample, features)
+        shape = sample_shape(sample, telling)
         if shape != modal_shape:
             standing = Standing.OUTLIER
         elif seen_modal:
@@ -688,7 +739,7 @@ def standings(
                 phrasing=sample.phrasing,
                 standing=standing,
                 shape=shape,
-                divergences=divergences(sample, representative, features),
+                divergences=divergences(sample, representative, telling),
             )
         )
     return out

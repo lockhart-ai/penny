@@ -171,13 +171,16 @@ def micro_thinking_row(thinking: str, context: str | None = None) -> Row:
 
 
 def _thinking_details(thinking: str, context: str = "") -> str:
-    """The collapsed markup for a thinking trace.
+    """The markup for a thinking trace: a collapsed fold, or the trace itself when folding it
+    would cost more than it saves.
 
-    ONE label shape everywhere — ``thinking (context) — N chars`` — so the same thing does not
-    read two ways depending on how long it happens to be; the assembler shortens the BODY for the
-    posted comment and leaves the label alone."""
+    A fold whose contents are shorter than its own summary is pure overhead — `thinking — 12
+    chars` wrapping twelve characters asks for a click to reveal less text than the click target.
+    Derived, not tuned: the saving has to be real."""
     body = escape_cell(thinking.strip()).replace("<br>", " ")
     label = _thinking_label(context, len(thinking.strip()))
+    if len(body) <= len(label):
+        return f"{label}: {body}" if context else body
     return f"<details><summary>{label}</summary>{body}</details>"
 
 
@@ -655,9 +658,19 @@ PROMPT_VARIANTS_LABEL = "System prompts — {contexts} contexts · {shared} shar
 PHRASINGS_LABEL = "Phrasings — {count} of one ask"
 WORLD_LABEL = "Seeded pages — {pages} · {keeps} must-keep, {excludes} must-not"
 OUTLIERS_LABEL = "Outliers — {count} of {driven} samples · diverging on {features}"
+_EVERYWHERE_DISTINCT = (
+    "_All {count} pooled samples chose a distinct {features} — a property of the "
+    "FEATURE, reported once in Variance, not a finding about any one sample. It is "
+    "excluded from the divergences below, and from what makes a sample an outlier._"
+)
 TEST_INPUTS_LABEL = "Test inputs — {phrasings} · {pages}"
 REPRESENTATIVE_LABEL = "Representative sample"
 REPRESENTATIVE_SUMMARY = "Representative sample — {turns} · {banner}"
+# What a per-sample verdict meant under the old scoring, and means nothing under the cohort:
+# the assertions hold across the cohort or they do not, so `✅ pass` on one sample is
+# `1/1 (1.00)` in a different spelling.  The summary line's harness accounting already says
+# whether a sample ran.
+_VERDICTS = ("✅ pass · ", "❌ fail · ", "✅ pass", "❌ fail")
 
 _ALL_SAMPLES = "every sample"
 _PROMPT_SUMMARY = "{label} — {chars:,} chars · {used}"
@@ -767,34 +780,48 @@ def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
     return fold(label, world)
 
 
-def render_outliers(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
+def render_outliers(
+    rows: Sequence[tuple[int, cohort.SampleStanding]],
+    everywhere_distinct: Sequence[str] = (),
+    pooled_count: int = 0,
+) -> str:
     """What each outlying sample did differently — the divergence, never the transcript.
 
     This is what makes a variant cohort readable at all.  Rendering each outlier's whole run to
     communicate one changed feature is three orders of magnitude of the wrong thing, and it is
     what made a single case's report 787,681 characters."""
-    outliers = [(number, s) for number, s in rows if s.standing == cohort.Standing.OUTLIER]
-    # Out of the POOLED samples, not out of everything the case drove: a control answers an
-    # assertion against different facts and a dead sample has no shape, so neither could have
-    # been an outlier and neither belongs in the denominator.
     pooled = sum(
         1
         for _n, s in rows
         if s.standing in (cohort.Standing.MODAL, cohort.Standing.TYPICAL, cohort.Standing.OUTLIER)
     )
+    outliers = [
+        (number, s) for number, s in rows if s.standing == cohort.Standing.OUTLIER and s.divergences
+    ]
+    note = (
+        _EVERYWHERE_DISTINCT.format(
+            count=pooled_count or pooled,
+            features=", ".join(f"`{name}`" for name in everywhere_distinct),
+        )
+        if everywhere_distinct
+        else ""
+    )
     if not outliers:
+        body = "\n\n".join(part for part in (_NO_OUTLIERS, note) if part)
         return fold(
-            OUTLIERS_LABEL.format(count=0, driven=pooled, features=plural(0, "feature")),
-            _NO_OUTLIERS,
+            OUTLIERS_LABEL.format(count=0, driven=pooled, features=plural(0, "feature")), body
         )
     features = {d.feature for _n, s in outliers for d in s.divergences}
     blocks = [_OUTLIER_LEAD]
+    if note:
+        blocks.append(note)
     for number, standing in outliers:
         table = "\n".join(
             f"| `{d.feature}` | {_code(d.value)} | {_code(d.modal)} |" for d in standing.divergences
         )
-        body = f"{_OUTLIER_HEAD}\n{table}" if table else "_(no feature diverged)_"
-        blocks.append(f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{body}")
+        blocks.append(
+            f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{_OUTLIER_HEAD}\n{table}"
+        )
     label = OUTLIERS_LABEL.format(
         count=len(outliers), driven=pooled, features=plural(len(features), "feature")
     )
@@ -818,6 +845,7 @@ def render_case_tail(
     world: str = "",
     world_facts: WorldFacts | None = None,
     outliers: Sequence[tuple[int, cohort.SampleStanding]] = (),
+    everywhere_distinct: Sequence[str] = (),
 ) -> str:
     """What closes a case: the inputs the CASE declares, then what the outlying samples did.
 
@@ -836,7 +864,7 @@ def render_case_tail(
     )
     parts = [
         fold(label, inputs) if inputs else "",
-        render_outliers(outliers) if outliers else "",
+        render_outliers(outliers, everywhere_distinct) if outliers else "",
     ]
     return "\n\n".join(part for part in parts if part)
 
@@ -852,8 +880,20 @@ def render_representative(*, banner: str, number: int, prompts: str, transcript:
 
 
 def representative_summary(banner: str, turns: int) -> str:
-    """What the closed `Representative sample` fold says: how much turn there is, and its cost."""
-    return REPRESENTATIVE_SUMMARY.format(turns=plural(turns, "turn"), banner=banner)
+    """What the closed `Representative sample` fold says: how much turn there is, and its cost —
+    never a verdict, because a sample has none to give."""
+    return REPRESENTATIVE_SUMMARY.format(
+        turns=plural(turns, "turn"), banner=without_verdict(banner)
+    )
+
+
+def without_verdict(banner: str) -> str:
+    """A banner with its pass/fail dropped, keeping what is true of one sample on its own:
+    whether it got there shakily, and what it cost."""
+    for verdict in _VERDICTS:
+        if banner.startswith(verdict):
+            return banner[len(verdict) :]
+    return banner
 
 
 # ── The whole sample ─────────────────────────────────────────────────────────

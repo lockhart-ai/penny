@@ -92,9 +92,9 @@ _BROWSE_SAMPLE_FOLDED = (
     '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
     "|---|---|---|\n"
     "| expected | C1 [spine]⚖ browsed |  |\n"
-    "| 💭 | <details><summary>thinking — 6 chars</summary>verify</details> |  |\n"
+    "| 💭 | verify |  |\n"
     "| actual | 🔧 browse({...}) | ✅ C1 |\n"
-    "| 💭 | <details><summary>thinking — 6 chars</summary>answer</details> |  |\n"
+    "| 💭 | answer |  |\n"
     "| actual | 🤖 Baikal 1642m |  |\n"
     "\n"
     "</details>"
@@ -425,7 +425,7 @@ _FAIL_SAMPLE_FOLDED = (
     '| step 1 · 👤 | "add a reminder" | ❌ |\n'
     "|---|---|---|\n"
     "| expected | C1 [state]⚖ reminder set |  |\n"
-    "| 💭 | <details><summary>thinking — 7 chars</summary>skip it</details> |  |\n"
+    "| 💭 | skip it |  |\n"
     "| actual | 🤖 done! | ❌ C1 — no cadence written · behavioral |\n"
     "\n"
     "</details>"

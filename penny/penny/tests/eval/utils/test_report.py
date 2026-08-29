@@ -86,21 +86,19 @@ def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> Non
         "| expected | C1 [spine]⚖ browsed |  |\n"
         "| expected | C2 [reply]⚖ reply names the fact |  |\n"
         "| actual | 🧩 state-classifier ← user turn: newest message: deepest lake? |  |\n"
-        "| 💭 | <details><summary>thinking (state-classifier) — 19 chars</summary>"
-        "a question, no task"
-        "</details> |  |\n"
+        "| 💭 | thinking (state-classifier) — 19 chars: a question, no task |  |\n"
         "| actual | 🧩 state-classifier → STATE: idle |  |\n"
-        "| 💭 | <details><summary>thinking — 18 chars</summary>verify with source</details> |  |\n"
+        "| 💭 | verify with source |  |\n"
         '| actual | 🔧 browse({"queries":["x"],"extract":"depth"}) | ✅ C1 |\n'
         "| actual | 🧩 browse-extract ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
-        "| 💭 | <details><summary>thinking (browse-extract) — 13 chars</summary>"
-        "value present</details> |  |\n"
+        "| 💭 | thinking (browse-extract) — 13 chars: "
+        "value present |  |\n"
         "| actual | 🧩 browse-extract → EXTRACTED: 1642 |  |\n"
         "| actual | 📥 You opened wiki (browse result) · 1642 |  |\n"
         "| actual | 🤖 Lake Baikal, 1,642 m. | ✅ C2 |\n"
         "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
-        "| 💭 | <details><summary>thinking (skill-namer) — 12 chars</summary>"
-        "generic name</details> |  |\n"
+        "| 💭 | thinking (skill-namer) — 12 chars: "
+        "generic name |  |\n"
         "| actual | 🧩 skill-namer → NAME: look-up-a-lake-depth |  |\n"
         "\n"
         "</details>"
@@ -174,7 +172,7 @@ def test_failed_sample_with_nudge_run_close_and_na() -> None:
         "fold in once confirmed</details> |  |\n"
         "| actual | 🤖 I'll ditch that. Just to... |  |\n"
         "| actual | 👤 *(nudge)* Please provide your response. | ⚠ recovery event |\n"
-        "| 💭 | <details><summary>thinking — 7 chars</summary>restate</details> |  |\n"
+        "| 💭 | restate |  |\n"
         "| actual | 🤖 Updated plan. | ❌ C7 — read still in recipe · behavioral |\n"
         "\n"
         "| run-close | whole-conversation contracts | 1/2 |\n"
@@ -253,7 +251,7 @@ def test_diff_mode_regressed_flip_with_baseline_row() -> None:
         "|---|---|---|\n"
         "| expected | C8 [state]⚖ notify off |  |\n"
         '| baseline | 🔧 collection_set({"notify":false}) → confirmed | ✅ C8 *(prior run)* |\n'
-        "| 💭 | <details><summary>thinking — 5 chars</summary>defer</details> |  |\n"
+        "| 💭 | defer |  |\n"
         "| actual | 🤖 Turning it off | ✅→❌ **REGRESSED** C8 — notify still on · behavioral |\n"
         "\n"
         "</details>"
@@ -957,3 +955,69 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
     assert "Test inputs — 1 phrasing · 2 pages · 4 must-keep, 2 must-not" in tail
     assert "Seeded pages — 2 pages · 4 must-keep, 2 must-not" in tail
     assert "| 1 | `ridgelinefoxes` |" in tail, "and the table it labels is right there"
+
+
+def _named(name: str, arm: str, tools: list[str], container: str):
+    return cohort.SampleObservation(
+        name=name,
+        phrasing=arm,
+        tool_sequence=tools,
+        entries=[cohort.StoredEntry(collection=container, key="k", content="c")],
+    )
+
+
+def test_a_feature_every_sample_differs_on_is_not_a_divergence():
+    """When 14 of 15 samples are outliers, `outlier` has stopped meaning anything — and the cause
+    is a feature at maximum entropy. Every sample invents its own container name, so every sample
+    diverges on it by construction, so every sample is an outlier and the section names all of
+    them and therefore none.
+
+    That fact belongs to the FEATURE and is already stated once in the variance table; it is not
+    a finding about any one sample. So it is excluded from standing and from the divergences, and
+    a sample whose only difference was its container name is not an outlier at all."""
+    samples = [_named(f"c-{n}", "a", ["browse"], f"container-{n}") for n in range(4)]
+    # …except one, which also took a different route — the only real divergence here.
+    samples[3] = _named("c-3", "a", ["browse", "write"], "container-3")
+    features = [cohort.CONTAINER_NAME, cohort.TOOL_SEQUENCE]
+
+    assert cohort.everywhere_distinct(samples, features) == ["container name"]
+    standings = cohort.standings(samples, features)
+    assert [s.standing for s in standings] == [
+        cohort.Standing.MODAL,
+        cohort.Standing.TYPICAL,
+        cohort.Standing.TYPICAL,
+        cohort.Standing.OUTLIER,
+    ], "naming the container differently is not what makes a sample worth reading"
+    assert [d.feature for d in standings[3].divergences] == ["tool sequence"]
+
+
+def test_the_outlier_section_states_the_uniform_spread_once():
+    """Stated once, above the divergences, rather than repeated under every sample as a finding
+    about that sample."""
+    standings = [
+        (n, cohort.SampleStanding(name=f"c-{n}", phrasing="a", standing=st, shape="x"))
+        for n, st in enumerate([cohort.Standing.MODAL, cohort.Standing.TYPICAL], start=1)
+    ]
+    rendered = report.render_outliers(standings, ["container name"], pooled_count=15)
+    assert "All 15 pooled samples chose a distinct `container name`" in rendered
+    assert "reported once in Variance" in rendered
+
+
+def test_the_representative_fold_carries_no_verdict():
+    """A sample does not pass or fail — the cohort's assertions hold or they do not, which is the
+    whole reason the cohort is the unit of scoring. `✅ pass` was `1/1 (1.00)` respelled."""
+    banner = report.render_banner(passed=True, fragile=True, duration_s=17, calls=11)
+    summary = report.representative_summary(banner, turns=2)
+
+    assert summary == "Representative sample — 2 turns · fragile · 17s · 11 calls"
+    assert "pass" not in summary and "fail" not in summary
+    assert (
+        report.without_verdict("❌ fail · behavioral · 3s · 1 calls") == "behavioral · 3s · 1 calls"
+    )
+
+
+def test_a_thinking_trace_shorter_than_its_own_label_renders_inline():
+    """A fold whose contents are shorter than its summary asks for a click to reveal less text
+    than the click target."""
+    assert report.thinking_row("brief").render() == "| 💭 | brief |  |"
+    assert "<details>" in report.thinking_row("x" * 200).render()
