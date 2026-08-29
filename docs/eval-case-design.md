@@ -268,17 +268,34 @@ site. It decides how the feature is *read*, not whether it is measured:
 | class | means | features | rendering |
 |---|---|---|---|
 | **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions | rendered individually in the outliers fold, with its evidence |
-| **cosmetic** | a divergence is a different word for the same outcome | container name, reply text | measured, entropy reported, ceiling proposed, collapsed to one count line |
+| **cosmetic** | a divergence is a different word for the same outcome | container name, reply text | measured, entropy reported, a ceiling proposed only where one could fire (§8), collapsed to one count line |
 
 A feature not in that table is classified by the question, not by the list: **does a divergence here
 imply a different end state?** Getting it wrong is not cosmetic in either direction — misfiling
 container name as consequential once made 8 of 9 outlier rows container-name-only, reporting "60% of
 samples are outliers" where the true statement was "1 of 15 diverged consequentially".
 
-Container naming is unconstrained at **0.90 entropy in both measured models** — a value that does
-not separate the models is a **system-level** finding for the variance table, never a per-sample
-outlier. Repeating "this sample named the container differently" fifteen times is how a section
-meant to name the samples worth looking at came to name every one of them.
+**A value that does not separate the models is a system-level finding** for the variance table,
+never a per-sample outlier — repeating "this sample named the container differently" fifteen times
+is how a section meant to name the samples worth looking at came to name every one of them.
+
+**But name the right system.** Container naming was read for a long time as "unconstrained", on a
+feature measuring **0.90 entropy in both models**. It is not unconstrained and never was: a
+container's name is `derive_collection_name(routine name, bound values)`, a pure function, exposed
+as `round_framing.container_name` precisely so a fixture cannot grow a second copy of the scheme.
+Checked across all 18 samples of one run it holds exactly, and the bound-value half is **identical
+in all 18**. What varied was the **routine name the framer invents** — eleven distinct names for one
+routine across those eighteen samples. The container name is a pure function of it, so it carried
+the framer's spread downstream and got the blame for it.
+
+The lesson generalises past this feature, which is why it is here rather than in a ticket:
+
+> **When a derived value is varying, name the thing it is derived FROM before calling anything
+> unconstrained.**
+
+Measuring the derived value attributes the spread to a component with no discretion, and points the
+fix at code that cannot be fixed. The feature is being replaced by one that reads the routine name
+directly, for exactly that reason.
 
 **Report per-phrasing rows beside the pooled score.** Phrasings are a *coverage* mechanism, not a
 variance one — model stochasticity carries essentially all the spread (~0.05 of it is phrasing; one
@@ -350,8 +367,8 @@ trap that rules out golden reference sets (§9).
 **Thresholds are per-model and cannot be shared.** The two measured models differ ~3x on the same
 features (routine-shape entropy 0.53 vs 0.18; tool-sequence 0.69 vs 0.19); one ceiling would be
 either useless for the consistent model or permanently failing for the variant one. Where a feature
-does **not** separate them — container naming at 0.90 on both — that is the signature of a *system*
-defect rather than a model one, and it is only visible by running both.
+does **not** separate them — the routine name the framer invents, 0.90 on both — that is the
+signature of a *system* defect rather than a model one, and it is only visible by running both.
 
 ---
 
@@ -382,6 +399,15 @@ not be counted as a failure in the headline.**
 A claim that does *not* hold on every sample is also not floored — for the opposite reason. The
 misses are the naming work, and recording a floor underneath them would bless the defect as the
 contract. The two reasons must never be blurred in the report.
+
+**A saturated feature carries no ceiling.** The margin is a fixed +0.10, so a feature already near
+the top of its range gets a ceiling with nothing above it. Measured: one read **0.761**, which the
+margin turned into a proposed ceiling of **0.86** — on a statistic that tops out at 1.0. It has
+almost nowhere left to rise, so that ceiling could never fire, and printing it implies a guard that
+does not exist. **A threshold that cannot be crossed is worse than no threshold, because it reads as
+protection.** So report the value, propose no ceiling, and **say why**. A feature up there is a
+**diagnostic reading, not a gate** — and it is usually a defect to fix rather than a number to
+record.
 
 ---
 
