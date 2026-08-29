@@ -14,7 +14,7 @@ Read alongside:
 - **[`docs/agent-task-workflow.md`](agent-task-workflow.md) §4** — how a run is invoked, scoped,
   detached, and posted to its PR.
 - **`penny/penny/tests/eval/utils/cohort.py`** — the arithmetic (`Claim`, `Feature`, entropy,
-  proposed floors and ceilings). **`.../utils/assertions.py`** — the named claims a case makes.
+  proposed ceilings). **`.../utils/assertions.py`** — the named claims a case makes.
   **`.../utils/worlds.py`** — what is true while the ask is answered.
 
 ---
@@ -34,12 +34,17 @@ A case therefore makes **three different kinds of claim**, which must never be m
 
 | | the claim | how it is judged |
 |---|---|---|
-| **A · assertions** | end state only — the three categories in §2 | a **pass-rate floor** (a fall below is a regression) |
+| **A · assertions** | end state only — the three categories in §2 | a **coloured summary** over every deterministic check — total passed of total checked, reported and never enforced |
 | **B · variance** | model output — tool sequence, routine shape, names, reply text | a **one-sided ceiling** (only a *rise* is a regression) |
 | **C · run health** | how much of the cohort actually ran, and what killed the rest | a **gate**: broken samples are excluded *before* pooling, and a mostly-dead cohort **fails the run** |
 
 **C is read first even though it renders last**, and it is not a section a healthy case renders —
 it is a gate plus an accounting clause (§1.2).
+
+**Nothing on the assertion side fails a run automatically.** Assertions are expected to run at 100%,
+so a floor under them adds nothing: the colour is the signal and a human reads it. What still fails
+a run on its own is **run health**, which refuses a dead cohort, and a **variance ceiling**, which
+catches a rise.
 
 ### 1.1 · What a case's report actually renders
 
@@ -49,7 +54,7 @@ order — one line, then folds:
 | | fold | carries |
 |---|---|---|
 | — | **the summary line** | both scores, plus the sample accounting — every sample driven is either pooled or named as excluded, and the arithmetic closes |
-| A | **Assertions** | one table per spec category, and **a category nobody wrote a claim for renders as a visible gap** |
+| A | **Assertions** | the coloured summary — total checks passed of total checked (9 claims × 15 samples = 135 on the reference case) — then one table per spec category, with **a category nobody wrote a claim for rendered as a visible gap** |
 | B | **Variance** | per-feature entropy, proposed ceilings, the per-phrasing rows |
 | B | **Cost** | input/output tokens per sample and their proposed ceilings (§5) |
 | C | **Excluded samples** | **only when something was lost** — the dominant fault class, then the samples by name |
@@ -108,10 +113,10 @@ section is a consequence of that sentence.
 A sample the run-health gate excluded is **not** a third outcome: it left the population before any
 claim was answered (§1.2).
 
-And one more, about *when* the counting is judged rather than what is counted: a claim **records, it
-does not raise**. `assert_*` states the case's claim and answers it for every sample; whether a rate
-is a **failure** is the recorded floor's job (§8). That is what makes "run it, read it, then lock
-it" possible at all.
+And one more, about *who* judges the count rather than what is counted: a claim **records, it does
+not raise**. `assert_*` states the case's claim and answers it for every sample, and the run reports
+the total — it never goes red on a miss and never stops a run. **Whether a number is a failure is a
+person's call**, made against the coloured summary.
 
 ### The closed list
 
@@ -132,6 +137,13 @@ the fabrication launder itself.
 **A sample is hermetic** — its own database, its own conversation, its own pages — and every claim
 resolves against the world *that sample* was given. A model that ignores the page and emits a
 plausible value fails the `STORE` claim on whichever world it was handed.
+
+**A claim read out of model prose is noisier than a structural one — know this before you write
+one.** Measured across two runs of identical code, on the same commit and the same model: a
+reply-content rate moved by **3 samples** where every structural claim moved by **at most 1** (over
+18 samples, so ±17 points; wider still at the 15 a case pools). The claim is legal and worth making
+— `PROVENANCE`'s reply half is one — but read a few points of movement in its rate as the ordinary
+noise of reading prose, not as a change in behaviour.
 
 ### The non-negotiables
 
@@ -226,7 +238,7 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
         ask=<THE ASK>,                                  # one request …
         also_phrased=<FOUR MORE WORDINGS>,              # … in five wordings of the SAME ask
         samples_per_phrasing=3,                         # 5 × 3 = 15 pooled
-        min_pass_rate=None,                             # report-only until the owner locks it
+        min_pass_rate=None,                             # assertions are never floored — §8
         family=<FAMILY>,
     )
     # A · LANDED
@@ -380,34 +392,22 @@ signature of a *system* defect rather than a model one, and it is only visible b
 
 ---
 
-## 8 · Thresholds — proposed, never silently locked
+## 8 · Ceilings — proposed, never silently locked
 
-A floor or a ceiling is **proposed by a report** and **accepted by the code owner**. A ported case
-lands `min_pass_rate=None` and reports its numbers.
+**Gating is the variance side's job.** Assertions carry no threshold at all — they are expected to
+run at 100%, so the report states the count and colours it, and a person reads it (§1). A ported
+case lands `min_pass_rate=None` and stays there.
 
-| | recorded as | regression is |
-|---|---|---|
-| **floor** (section A) | `(claim, N, rate)` | the rate **fell below** it |
-| **ceiling** (section B) | `(feature, model, N, value)` | the variance **rose above** it |
+A ceiling is **proposed by a report** and **accepted by the code owner**. It is recorded as
+`(feature, model, N, value)` and it is **one-sided**: a regression is the variance having **risen
+above** it.
 
-Both qualifiers on a ceiling are load-bearing, and a comparison across either is **refused** rather
-than answered:
+Both qualifiers are load-bearing, and a comparison across either is **refused** rather than
+answered:
 
 - **N** — normalised entropy is biased upward at small N: the same behaviour reads **0.527 at N=32
   and 0.605 at N=15**.
 - **model** — see §7.
-
-**Gated ≠ held.** A claim read out of **model prose** is *reported and not floored at this N* —
-**even at full marks**. Across two runs of identical code, on the same commit and the same model, a
-reply-content rate moved by **3 samples** where every structural claim moved by at most 1 —
-measured over 18 samples, so ±17 points, and wider still at the 15 a case pools. A floor tight
-enough to catch a real regression there would flap on an ordinary re-run, and one loose enough not
-to flap would catch nothing. **A prose-read claim must not be counted as a failure in the
-headline.**
-
-A claim that does *not* hold on every sample is also not floored — for the opposite reason. The
-misses are the naming work, and recording a floor underneath them would bless the defect as the
-contract. The two reasons must never be blurred in the report.
 
 **A saturated feature carries no ceiling.** The margin is a fixed +0.10, so a feature already near
 the top of its range gets a ceiling with nothing above it. Measured: `routine name` reads **0.768**,
@@ -496,7 +496,7 @@ Two other scope rules that come from the same place:
   return deliberately — each one probes a named temptation, so re-read its docstring rather than
   reinventing the reason it existed.
 - **Completion is not "everything is ported."** It is **two consecutive full-suite runs, on both
-  models, whose numbers agree.** One run gives thresholds that might be that run's noise.
+  models, whose numbers agree.** One run gives ceilings that might be that run's noise.
 
 ---
 
@@ -504,7 +504,7 @@ Two other scope rules that come from the same place:
 
 | file | holds |
 |---|---|
-| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_floor`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
+| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes` |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
