@@ -275,30 +275,27 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 # asserts end state and measures model output at all is `cohort.py`; what a claim means is
 # `assertions.py`.  What is here is what is true of THIS case:
 #
-# PHRASINGS and the CONTROL are different mechanisms, and reading one as the other is the
-# mistake this case exists to prevent:
-#   * phrasings — same world, different words → VARIANCE, pooled into one score
-#   * control   — same words, different world → an ASSERTION, never pooled
-# Wording variation cannot do the control's job: if Penny were pattern-completing from the
-# shape of the request, every phrasing would name the same player and every one would be right.
+# ═══ The ported learn round — `transition-elicit-to-learn`, in the cohort structure ═══════
 #
-# NOT HERE: the single-source variant of this ask.  One page instead of two is a different
-# SCENARIO — what the store must hold is a different claim — so it is a different case.
-
-_LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
-
-# ═══ The ported learn case — `transition-elicit-to-learn`, in the new structure ═══════
-#
-# The turns, the world and the claims are that case's, taken rather than derived: it scores
-# mean 1.0 with 24/30 modal on tool sequence, and a case that already lands where we want to
-# land IS the specification.  What the new structure adds on top is the cohort — five wordings
-# pooled, a control world for directed change, and the tool calls measured instead of asserted.
+# The turns, the world and the claims are that case's, taken rather than derived: it scores mean
+# 1.0 with 24/30 modal on tool sequence, and a case that already lands where we want to land IS
+# the specification.
 #
 # ONE source and PROSE, both deliberate.  The two-source world and its numbered demonstration
-# stay with `memory-two-source-teach` below, in the old format; two-source can become its own
+# stay with `memory-two-source-teach` above, in the old format; two-source can become its own
 # case when it is wanted, and it is not what this prototypes.
+#
+# What the cohort adds on top, and the canonical case has no equivalent for:
+#
+#   * PHRASINGS and the CONTROL, which are different mechanisms — reading one as the other is
+#     the mistake this case exists to prevent.  Phrasings are same world, different words, and
+#     POOL into one variance score; a control is same words, different world, and serves an
+#     ASSERTION.  Wording variation cannot do the control's job: if Penny were pattern-completing
+#     from the shape of the demonstration, every phrasing would name the same price and every one
+#     would be right.
+#   * the tool calls MEASURED rather than asserted, because many routes reach one end state.
 
-_LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
+_DEMONSTRATED_ROUND_CASE_ID = "learn-demonstrated-round"
 
 
 @pytest.fixture
@@ -313,7 +310,7 @@ def standing_elicit_round() -> Seeder:
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_the_learn_close_states_the_steps_it_captured(
+async def test_a_demonstrated_round_is_enacted_learned_and_reported(
     chat_eval: ChatEval, model: str, standing_elicit_round: Seeder
 ) -> None:
     """Story 15, the learn close: one demonstrated round, and the reply that closes it tells the
@@ -323,7 +320,7 @@ async def test_the_learn_close_states_the_steps_it_captured(
     REPORT-ONLY: the floors and ceilings this run proposes are the code owner's to accept once
     the numbers have been read."""
     cohort = await chat_eval(
-        case_id=_LEARN_CLOSE_CASE_ID,
+        case_id=_DEMONSTRATED_ROUND_CASE_ID,
         model=model,
         seed=standing_elicit_round,
         world=AURORA_LISTING,
@@ -352,7 +349,7 @@ async def test_the_learn_close_states_the_steps_it_captured(
     # A SECOND VISIBLE DRIVE, beside the claim it serves: an assertion that quietly made three
     # more model calls would be a nasty surprise.
     control = await chat_eval(
-        case_id=_LEARN_CLOSE_CASE_ID,
+        case_id=_DEMONSTRATED_ROUND_CASE_ID,
         model=model,
         seed=standing_elicit_round,
         world=AURORA_LISTING_CONTROL,
