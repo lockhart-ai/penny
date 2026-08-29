@@ -14,10 +14,14 @@ from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    FIELD_UNSET,
     REPLY_SPREAD,
     ROUTINE_SHAPE,
+    TOOL_SEQUENCE,
     AssertionRow,
     AssertionSummary,
+    OutputField,
     RoutineRecord,
     SampleObservation,
     SpecCategory,
@@ -27,6 +31,7 @@ from penny.tests.eval.utils.cohort import (
     compare_to_ceiling,
     feature_variance,
     normalised_entropy,
+    output_field,
     per_sample_cost,
     pool,
     proposed_ceiling,
@@ -571,3 +576,100 @@ def test_a_case_that_measured_nothing_has_no_reading():
     empty = variance_headline([])
     assert not empty.has_reading
     assert (empty.varying, empty.total) == (0, 0)
+
+
+# ── A feature that read NOTHING is not a feature in agreement (#2017) ────────
+#
+# The two are the same 0.000 and opposite findings, and telling them apart is the whole of
+# the measurement-blindness guard: total agreement is the best result a feature can report,
+# while reading nothing on every sample is a feature that CANNOT report an outlier.
+
+
+def test_a_feature_that_read_nothing_on_every_sample_is_blind_not_agreed():
+    """The concrete trap: a non-chat fixture whose tool-sequence reader is filtered to the
+    chat agent's rows comes back empty on every sample.  Entropy is 0.000 either way, so
+    without this the report files a blindfold beside a cohort in perfect agreement."""
+    blind = feature_variance(
+        TOOL_SEQUENCE, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+    )
+    assert blind.entropy == 0.0
+    assert blind.blind, "every sample read TOOL_SEQUENCE's absent value"
+
+    seen = feature_variance(
+        TOOL_SEQUENCE,
+        [_sample(f"s{index}", "p1", "shape", tool_sequence=["browse"]) for index in range(6)],
+    )
+    assert seen.entropy == 0.0
+    assert not seen.blind, "an agreed READING is agreement, not blindness"
+
+
+def test_a_blind_feature_proposes_no_ceiling():
+    """A ceiling recorded on a feature that read nothing locks the blindness in as the
+    expected behaviour, and the guard it prints could never fire."""
+    blind = feature_variance(
+        TOOL_SEQUENCE, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+    )
+    assert proposed_ceiling(blind, _MODEL) is None
+
+    seen = feature_variance(
+        TOOL_SEQUENCE,
+        [_sample(f"s{index}", "p1", "shape", tool_sequence=["browse"]) for index in range(6)],
+    )
+    assert proposed_ceiling(seen, _MODEL) is not None, "an agreed reading still proposes"
+
+
+def test_a_feature_declaring_no_absent_reading_is_never_blind():
+    """Only the feature knows what its own "saw nothing" reading looks like, so one that
+    declares none cannot be blind however uniform it is."""
+    entries = feature_variance(
+        ENTRIES_STORED, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+    )
+    assert entries.distinct == 1 and not entries.blind
+
+
+# ── A single-call context: structured output, no store, no reply (#2017) ─────
+def test_a_draws_structured_output_is_read_by_field_and_measured_by_field():
+    """What a micro-context case asserts and what it measures are the same values: the
+    fields of the typed result the draw returned."""
+    sample = SampleObservation(
+        name="s1",
+        phrasing="the ask",
+        output=[
+            OutputField(name="outcome", value="extracted"),
+            OutputField(name="value", value="84 zorkmids"),
+        ],
+    )
+    assert sample.field("outcome") == "extracted"
+    assert sample.field("value") == "84 zorkmids"
+    assert sample.output_text == "outcome extracted value 84 zorkmids"
+
+    feature = output_field("outcome")
+    assert feature.read(sample) == "extracted"
+
+
+def test_a_field_the_draw_never_returned_reads_unset_rather_than_blank():
+    """A real reading, not a missing one: a draw that answered with the wrong shape genuinely
+    has nothing there, so a claim about that field is FALSE of the sample rather than unasked
+    — and the variance table gets a word rather than an empty cell."""
+    sample = SampleObservation(name="s1", phrasing="the ask")
+    assert sample.field("outcome") == FIELD_UNSET
+    assert output_field("outcome").absent == FIELD_UNSET
+
+
+def test_a_single_call_sample_pools_even_though_it_has_no_reply_and_no_store():
+    """The completeness gate is per FIXTURE.  A micro-context sample has no reply at all, and
+    chat's own "no reply" condition applied here would void every sample and refuse the run —
+    so a sample carrying only its structured answer must pool as the complete sample it is."""
+    samples = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            output=[OutputField(name="outcome", value="extracted")],
+        )
+        for index in range(4)
+    ]
+    variance = pool(samples, [output_field("outcome")])
+    assert variance.pooled == 4
+    assert variance.excluded == []
+    assert variance.features[0].distinct == 1
+    assert not variance.features[0].blind

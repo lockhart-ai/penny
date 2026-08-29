@@ -45,7 +45,24 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.tests.eval.conftest import ExtractorEval, FieldExpectation
+from penny.tests.eval.conftest import (
+    EVAL_MODELS,
+    EXTRACT_OUTCOME,
+    EXTRACT_REASON,
+    EXTRACT_VALUE,
+    ExtractorEval,
+    FieldExpectation,
+)
+from penny.tests.eval.utils.assertions import Answer, WorldClaim
+from penny.tests.eval.utils.cohort import (
+    Consequence,
+    SampleObservation,
+    SpecCategory,
+    output_field,
+    unsourced_specifics,
+)
+from penny.tests.eval.utils.worlds import World
+from penny.tools.micro_context import MicroExtractOutcome, spoken_form
 
 pytestmark = pytest.mark.eval
 
@@ -155,6 +172,13 @@ async def test_a_page_that_answers_everything_still_answers_everything(
 
 # ── Case 2: the instruction allows a thing to be absent, and it is ────────────
 
+# The two things this page DOES supply, named once: the deterministic coherence probe holds
+# them against the page, the unported fixtures state them as expectations, and the ported
+# case's provenance claims read the same two strings.  One source of truth, so a page edit
+# cannot leave a claim asserting a span the page no longer carries.
+_HEADLINE_ANCHOR = "Lantern festival draws a record crowd to the old quarter"
+_LINK_ANCHOR = "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
+
 _PARTLY_PRESENT = ExtractFixture(
     case_id="extract-fields-partly-present",
     url=_HOMEPAGE_URL,
@@ -163,23 +187,131 @@ _PARTLY_PRESENT = ExtractFixture(
         "the headlines and their links, with a one-line summary of each where the page gives one"
     ),
     expectations=(
-        FieldExpectation("headline", "Lantern festival draws a record crowd to the old quarter"),
-        FieldExpectation(
-            "link", "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
-        ),
+        FieldExpectation("headline", _HEADLINE_ANCHOR),
+        FieldExpectation("link", _LINK_ANCHOR),
         FieldExpectation("summary"),
     ),
 )
 
 
-@pytest.mark.asyncio
+# ── The ported case: five wordings of that one instruction ────────────────────
+#
+# The arm here is the ``extract`` instruction, and it is PENNY's own text — production
+# writes it as the ``extract`` argument of a browse call, at the call site, by whatever
+# agent made the call.  So these five are not five ways a person might ask; they are five
+# ways the CALLING DRAW might have worded the same request, which is variation that happens
+# in production today and that nothing measures.
+#
+# Two of them hedge ("where the page gives one", "if there is one") and three do not, which
+# is deliberate: whether the answer degrades per field is decided by what the PAGE carries,
+# never by whether the instruction was worded to expect a gap.  That is the claim
+# ``extract-fields-partly-present-unhedged`` makes with a second page, and pooling both
+# wordings into one cohort states it as a variance reading over one world instead.
+_PARTLY_PRESENT_PHRASINGS = (
+    "the headline of each story, the link to it, and a one-line summary if there is one",
+    "for every story: its title, its url, and a short summary",
+    "each headline with its link and a one-sentence summary",
+    "pull out the story titles, the links they point at, and a brief summary of each",
+)
+
+
+def _carries(anchor: str) -> WorldClaim:
+    """A claim that the answer carries one thing the PAGE supplies.
+
+    One claim per supplied thing rather than one over all of them, because an instruction
+    naming several things degrades one thing at a time and a single combined claim would
+    report "some of it arrived" as a total failure.
+
+    Compared through the shipped ``spoken_form``, so a value passes whether or not the draw
+    kept the punctuation or the article in front of it — deliberately not an equality, since
+    which words carry a fact has a little play in it and a scorer demanding one exact string
+    would be answering for the draw."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        value = sample.field(EXTRACT_VALUE)
+        carried = spoken_form(anchor) in spoken_form(value)
+        return carried, f"not in the extracted value: {value!r}"
+
+    return answer
+
+
+def _read_the_page(sample: SampleObservation, _world: World) -> Answer:
+    """The decisive one: a page carrying SOME of what was asked for is a read.
+
+    ``NOT_PRESENT`` here is the regression itself — the answer that cost a whole round its
+    headlines and links because the page was short of the third thing."""
+    outcome = sample.field(EXTRACT_OUTCOME)
+    return outcome == MicroExtractOutcome.EXTRACTED.value, f"came back {outcome}"
+
+
+def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
+    """Every specific value in the answer traces to what the draw was GIVEN.
+
+    The extractor's own failure mode, and the strongest claim available to it: ``value`` is
+    free text lifted off the page and production validates none of it, so a plausible headline
+    the page never carried reaches the caller verbatim and is written down as read."""
+    invented = unsourced_specifics(sample.output_text, sample.given)
+    return not invented, f"not on the page: {invented}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
-    extractor_eval: ExtractorEval,
+    extractor_eval: ExtractorEval, model: str
 ) -> None:
-    """The regression itself: the page has two of the three things named and the third
-    is genuinely not on it.  The read has to come back with the two, not answer as though
-    the page were empty — that answer cost a whole round its headlines and links."""
-    await _run_case(extractor_eval, _PARTLY_PRESENT)
+    """The regression itself: the page has two of the three things named and the third is
+    genuinely not on it.  The read has to come back with the two, not answer as though the
+    page were empty.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    nothing to any store — so there is no store claim to make.  The empty section says the
+    shape has nothing to store, not that nobody ran the checklist.
+    """
+    cohort = await extractor_eval(
+        case_id=_PARTLY_PRESENT.case_id,
+        model=model,
+        url=_PARTLY_PRESENT.url,
+        page=_PARTLY_PRESENT.page,
+        instruction=_PARTLY_PRESENT.instruction,
+        also_instructed=_PARTLY_PRESENT_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — which of the closed outcomes the draw committed to
+    cohort.claim(
+        "state: the draw read the page rather than reporting it empty",
+        _read_the_page,
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — what the page supplies arrived, and nothing else did
+    cohort.claim(
+        "state: the answer carries the headline the page supplies",
+        _carries(_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the link the page supplies",
+        _carries(_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: every specific value in the answer is on the page",
+        _nothing_invented,
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — the same structured fields, compared across the cohort.  No tool
+    # sequence and no reply spread: a single call makes neither, and measuring one would
+    # print a feature that cannot see an outlier.
+    cohort.measure(
+        output_field(EXTRACT_OUTCOME),
+        output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+    )
 
 
 # ── Case 3: the same, with an instruction that hedges nothing ─────────────────

@@ -227,6 +227,26 @@ class Cohort:
         """Declare the axes this case MEASURES — never asserted, one-sided ceiling."""
         self.features += [feature for feature in features if feature not in self.features]
 
+    # ── a claim only this case makes ─────────────────────────────────────────
+    def claim(
+        self,
+        label: str,
+        answer: WorldClaim,
+        category: SpecCategory,
+        kind: str = "state",
+    ) -> None:
+        """Declare a claim this case makes and no other, as a local function in the case.
+
+        The design doc's rule needs a door: a claim graduates into this module at the SECOND
+        customer, which means the first customer has to be able to state it where it lives.
+        Without this every one-off claim would either be pushed in here early — growing a
+        shared vocabulary out of single cases — or written as a bare ``assert``, which raises
+        instead of recording and takes the run down on one sample.
+
+        Answered exactly like a named claim: over every complete sample, counted, never
+        gated."""
+        self._claim(label, answer, category, kind=kind)
+
     # ── internals ────────────────────────────────────────────────────────────
     def _claim(
         self,

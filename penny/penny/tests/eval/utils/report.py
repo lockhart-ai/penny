@@ -324,8 +324,12 @@ def cost_glyph(cost: cohort.SampleCost | None) -> str:
 
 def variance_glyph(feature: cohort.VarianceFeature) -> str:
     """A feature's colour.  No ceiling has been ACCEPTED anywhere yet — every one this report
-    prints is proposed — so the honest answer is grey until one is."""
-    return UNGATED_GLYPH
+    prints is proposed — so the honest answer is grey until one is.
+
+    A BLIND feature is the exception, and it is RED: it read nothing on every sample, so its
+    serene 0.000 is the absence of a measurement rather than a cohort in agreement.  Grey
+    would file it beside the honest readings, which is exactly the confusion it causes."""
+    return FAIL_GLYPH if feature.blind else UNGATED_GLYPH
 
 
 # ── The three sections a case reports ────────────────────────────────────────
@@ -404,6 +408,10 @@ _NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
 # implies a guard that can never trip.  The reading itself still renders — it is the
 # diagnostic, and on a distinctness statistic it is usually the most interesting row.
 _NO_CEILING = "— diagnostic reading; too spread to gate"
+# What the ceiling column says for a feature that read NOTHING.  It occupies the ceiling
+# column because that is where a reader looks to decide whether a number can be trusted, and
+# the answer here is that the number is not a reading at all.
+_BLIND_FEATURE = "— READ NOTHING on every sample; not a reading"
 _COST_LEAD = "**Cost, per sample.**"
 
 # What the assertion side is, said where its table ends: a reading, not a gate.  Stated rather
@@ -767,11 +775,12 @@ def _assertion_row(row: cohort.AssertionRow) -> str:
 
 def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
     ceiling = cohort.proposed_ceiling(feature, model)
-    proposal = (
-        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n}"
-        if ceiling is not None
-        else _NO_CEILING
-    )
+    if feature.blind:
+        proposal = _BLIND_FEATURE
+    elif ceiling is not None:
+        proposal = f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n}"
+    else:
+        proposal = _NO_CEILING
     return (
         f"| {variance_glyph(feature)} | `{feature.name}` | {feature.distinct} | "
         f"{feature.modal}/{feature.n} ({feature.modal_share:.2f}) | {feature.entropy:.3f} | "

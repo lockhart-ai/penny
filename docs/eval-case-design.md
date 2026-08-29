@@ -264,6 +264,20 @@ and never as a fact about one sample.
 Measuring something derived instead attributes the spread to code with no discretion, and points the
 fix at something that cannot be fixed.
 
+### A feature that read nothing is not a feature in agreement
+
+A feature whose every sample reads its **absent** value — no tool call, no routine, a field the
+draw never returned — scores `0.000`, which is the same number a cohort in perfect agreement
+scores and the opposite finding. So a feature declares the reading that means it saw nothing
+(`Feature.absent`), the pooler marks the case **blind**, and the report renders it red with no
+proposed ceiling. A variance feature that cannot see an outlier is worse than an absent one:
+the table prints a number either way, and only one of them is a measurement.
+
+What this catches concretely: a non-chat fixture reusing a reader filtered to the chat agent's
+own rows comes back empty on every sample. That is why each fixture writes **its own**
+observation and **its own** completeness gate — chat's "no reply" condition applied to a
+single-call context would void every sample and refuse the run.
+
 **Report per-phrasing rows beside the pooled score.** Phrasings are a *coverage* mechanism, not a
 variance one — model stochasticity carries essentially all the spread (~0.05 of it is phrasing; one
 model produced 4.8 distinct routine shapes inside a *single* phrasing), which is what justifies
@@ -292,6 +306,13 @@ machinery: **not scored by an assertion, and not a reply in the variance spread.
 The line that matters is phrasing versus scenario: five wordings of one ask pool into one number,
 while a different ask is a different case — folding it in would average two behaviours into one
 score and call the result instability.
+
+**An arm is one wording of the natural-language input the behaviour is answered from** — not
+always the user's. For chat it is the ask. For a browse extraction it is the `extract`
+instruction, and for a collector it is the collection's `extraction_prompt`: both are **Penny's
+own words**, written upstream by the draw that made the call or by the apply turn that stood the
+job up. Both vary in production today, unattended, so a cohort over them measures something
+nothing else does. What stays fixed is everything else the case declares.
 
 The world a case declares is **fixed across its cohort**. A case that varies it does so as a second
 **input** axis, pooled exactly like phrasing — and **within** the 15, never as samples added beside
@@ -406,7 +427,7 @@ Two other scope rules that come from the same place:
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes` |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
-| `penny/penny/tests/eval/conftest.py` | the `chat_eval` driver: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` |
+| `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat, `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
 
 A `World`'s `keeps` is one token set **per source** — tokens appearing only on that page, so a
 stored copy says which page it came from and an invented one matches neither. They identify the

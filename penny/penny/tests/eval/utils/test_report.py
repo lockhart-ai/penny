@@ -554,6 +554,24 @@ def test_the_variance_section_reports_the_spread_and_names_the_wording_that_move
     assert "`browse → browse`" in rendered, "the wording that produced a value no other did"
 
 
+def test_a_feature_that_read_nothing_renders_red_and_says_so_rather_than_as_agreement():
+    """A blind feature and a cohort in perfect agreement both compute to 0.000, and one is the
+    best result a feature can report while the other is the absence of a measurement.
+
+    So it is RED and the ceiling column says what happened — grey would file it beside the
+    honest readings, which is exactly the confusion it causes.  The case's own line goes red
+    with it: measurement blindness should be visible from the run header, not on the third
+    click."""
+    samples = [_observation(f"c-{n} (phrasing 1)", "phrasing 1", []) for n in (1, 2, 3)]
+    rendered = report.CaseSections(
+        case_id="c", model="gpt", variance=cohort.pool(samples, [cohort.TOOL_SEQUENCE])
+    ).render()
+
+    assert "| 🔴 | `tool sequence` | 1 | 3/3 (1.00) | 0.000 | " in rendered
+    assert "READ NOTHING on every sample; not a reading" in rendered
+    assert "@ gpt N=3" not in rendered, "a blind feature proposes no ceiling"
+
+
 def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
     """Read FIRST even though it renders last: a cohort that lost half its samples makes the
     other two sections a description of whatever survived.

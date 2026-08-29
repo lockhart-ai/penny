@@ -1062,16 +1062,25 @@ def outgoing_replies(db: Database) -> list[str]:
     return [entry.content for entry in entries]
 
 
-def chat_run_tool_sequences(db: Database) -> list[list[str]]:
-    """Tool names per CHAT run, in chronological run order — one list per user turn
-    of a scripted conversation.  The per-run split is what lets a multi-turn
+def chat_run_tool_sequences(
+    db: Database, agent_name: str = PennyConstants.CHAT_AGENT_NAME
+) -> list[list[str]]:
+    """Tool names per run of ``agent_name``, in chronological run order — one list per user
+    turn of a scripted conversation.  The per-run split is what lets a multi-turn
     contract assert phase discipline (an elicitation turn must not enact; the
     demonstration turn must carry the call spine) — ``tool_call_sequence`` flattens
     the whole sample into one list.  Micro-context calls (browse-extract, skill
     naming) carry no tool calls and other agents' rows are excluded, so each list
-    is exactly one chat turn's calls, in emission order."""
+    is exactly one turn's calls, in emission order.
+
+    The agent is a PARAMETER because the filter is otherwise a silent blindfold on every
+    non-chat reader: a collector cycle's calls are logged under the collector's name, so a
+    fixture reusing the chat default reads an empty sequence on every sample and its tool
+    feature pools to a serene 0.000 — the same number a cohort in perfect agreement prints.
+    :attr:`cohort.VarianceFeature.blind` is the backstop that makes such a reading loud; this
+    is the fix that stops it happening."""
     rows = sorted(
-        (row for row in live_prompts(db) if row.agent_name == PennyConstants.CHAT_AGENT_NAME),
+        (row for row in live_prompts(db) if row.agent_name == agent_name),
         key=lambda row: row.timestamp,
     )
     order: list[str] = []
@@ -2271,6 +2280,7 @@ EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 # a sample's database exists from sample START, so a file is not evidence that anything ran.
 NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its seeded world"
 NO_REPLY = "the measured turn produced no reply"
+NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 
 # The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
 # design — a value Penny invents early in a turn rides into the message history and would
@@ -2421,9 +2431,15 @@ def _machine_walk(db: Database) -> str:
 def _observe_sample(
     db: Database, *, name: str, phrasing: str, reply: str, before: set[str]
 ) -> eval_cohort.SampleObservation:
-    """Read everything one sample left behind, while its database is still live.
+    """Read everything one CHAT sample left behind, while its database is still live.
 
     Gated for completeness FIRST, so a dead sample carries no facts to be pooled by accident.
+
+    Every read below is a CHAT read — the machine's walk, the registry, the collections, the
+    outgoing message the reply was embedded on, and a tool sequence filtered to the chat
+    agent's own rows.  A fixture driving another shape writes its OWN observer rather than
+    calling this one: reused elsewhere it returns a row that is structurally fine and
+    substantively empty (#2017).
     """
     exclusion = _exclusion(db, reply)
     if exclusion is not None:
@@ -2452,12 +2468,34 @@ def _observe_sample(
     )
 
 
+# The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every
+# shape shares — a sample's database exists from sample START, so a file is not a result — and
+# each gate adds whatever "this shape produced nothing" means for the shape it drives.
 def _exclusion(db: Database, reply: str) -> str | None:
-    """Why this sample cannot be counted, or ``None`` when it can."""
+    """Why a CHAT sample cannot be counted, or ``None`` when it can.
+
+    Chat's own second condition is an empty reply: the turn is a conversation and a turn that
+    said nothing produced no behaviour to read.  It is stated HERE rather than shared, because
+    it is false of every other shape — a micro-context sample has no reply at all, and a gate
+    that voided one for that would void the entire cohort and refuse the run (#2017)."""
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if not reply.strip():
         return NO_REPLY
+    return None
+
+
+def _draw_exclusion(db: Database, answer: str) -> str | None:
+    """Why a single-call sample cannot be counted, or ``None`` when it can.
+
+    A micro-context leaves no reply and writes no store, so the only thing that makes it
+    countable is that the draw reached the model and came back with a usable answer.  The
+    runner passes the parsed result's own marker as ``answer`` — empty exactly when the draw
+    failed whole after its rerolls."""
+    if not measured_turn_ran(db):
+        return NO_MEASURED_TURN
+    if not answer.strip():
+        return NO_DRAW
     return None
 
 
@@ -2480,6 +2518,60 @@ def _phrasing_label(phrasings: Sequence[str], sample_index: int, per_phrasing: i
     if len(phrasings) > 1:
         return f"phrasing {sample_index // per_phrasing + 1}"
     return "the ask"
+
+
+class _Arms(NamedTuple):
+    """A cohort's ARMS: one wording of the case's input per sample, and the wordings it drew
+    them from (#1994/#2017).
+
+    An arm is one wording of the natural-language input the behaviour is answered from.  For
+    chat that is the user's ask.  For a browse extraction it is the ``extract`` instruction —
+    PENNY's own words, written at the call site by whatever agent made the browse — and for a
+    collector it is the collection's ``extraction_prompt``, written by the apply turn.  Those
+    two vary in production today, unattended, so a cohort over them measures something nothing
+    else does.
+
+    Lifted out of ``chat_eval``'s closure because nothing about it is chat: it maps a sample
+    index to the wording that sample runs and nothing more.  The N is deliberately NOT scaled
+    by anything ambient — a recorded ceiling is ``(feature, model, N, value)`` and normalised
+    entropy is biased upward at small N, so an N that drifted with an environment variable
+    would silently make every recorded threshold incomparable."""
+
+    wordings: list[str]
+    spoken: list[str]
+    per_phrasing: int
+
+    @property
+    def driven(self) -> int:
+        return len(self.spoken)
+
+    def label(self, sample_index: int) -> str:
+        return _phrasing_label(self.wordings, sample_index, self.per_phrasing)
+
+    def rendered(self) -> list[tuple[str, str]]:
+        """``(label, text)`` per wording — what the report renders so a reader who sees
+        "phrasing 3 diverged" can read phrasing 3.  The text travels VERBATIM: a label with
+        no text beside it is a dead anchor, and the arm becomes unreadable exactly when a
+        reader needs it (#2017)."""
+        return [
+            (_phrasing_label(self.wordings, index * self.per_phrasing, self.per_phrasing), text)
+            for index, text in enumerate(self.wordings)
+        ]
+
+
+def _arms(
+    wording: str | None, also_worded: Sequence[str], per_phrasing: int, samples: int
+) -> _Arms:
+    """The arms a case drives: its one input in K wordings, each sampled ``per_phrasing``
+    times.  A ``wording`` of ``None`` means the case is not ported and takes its fixture's
+    old path, so the arms come back empty."""
+    wordings = [wording, *also_worded] if wording is not None else []
+    each = per_phrasing or samples
+    return _Arms(
+        wordings=list(wordings),
+        spoken=[one for one in wordings for _ in range(each)],
+        per_phrasing=each,
+    )
 
 
 # The world a case declares nothing about — a cohort still needs one for its claims to read, and
@@ -2906,15 +2998,10 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         set, which is what the variance statistics want and what a per-sample callback cannot
         see.  A case with no ``ask`` takes the ``score`` path unchanged."""
         eval_artifacts.begin_case(case_id)
-        phrasings = [ask, *also_phrased] if ask is not None else []
-        per_phrasing = samples_per_phrasing or samples
-        # A cohort's N is the sum of its phrasings' own counts.  Deliberately NOT scaled by
-        # anything ambient: a recorded ceiling is `(feature, model, N, value)` and normalised
-        # entropy is biased upward at small N, so an N that drifted with an environment
-        # variable would silently make every recorded threshold incomparable.
-        spoken = [phrase for phrase in phrasings for _ in range(per_phrasing)]
+        arms = _arms(ask, also_phrased, samples_per_phrasing, samples)
+        spoken = arms.spoken
         turns = [] if spoken else _conversation_turns(message, messages)
-        driven = len(spoken) if spoken else samples
+        driven = arms.driven if spoken else samples
         pages = list(world.pages) if world is not None else browse
 
         pending = (
@@ -2935,7 +3022,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         def _observe(
             sample_index: int,
         ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
-            phrasing = _phrasing_label(phrasings, sample_index, per_phrasing)
+            phrasing = arms.label(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
             return lambda db, reply, before: _observe_sample(
                 db, name=name, phrasing=phrasing, reply=reply, before=before
@@ -2990,10 +3077,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             model=model or _reporting_model(),
             world=world if world is not None else _NO_WORLD,
             samples=[r.observation for r in results if r.observation is not None],
-            phrasings=[
-                (_phrasing_label(phrasings, index * per_phrasing, per_phrasing), text)
-                for index, text in enumerate(phrasings)
-            ],
+            phrasings=arms.rendered(),
         )
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
@@ -5248,7 +5332,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Binder
 
 # ── Browse EXTRACTION: what a page half-carries (#1942) ───────────────────────
 
-ExtractorEval = Callable[..., Awaitable[None]]
+ExtractorEval = Callable[..., Awaitable["Cohort"]]
 
 
 class FieldExpectation(NamedTuple):
@@ -5350,8 +5434,82 @@ def _score_extraction(
     ]
 
 
+# The fields of a browse extraction's structured answer, named once.  A case asserts them
+# and measures them by these names, so the two halves of #2017's framing — deterministic and
+# variance — read the same value rather than two spellings of it.
+EXTRACT_OUTCOME = "outcome"
+EXTRACT_VALUE = "value"
+EXTRACT_REASON = "reason"
+
+# The outcomes that mean the draw never produced a usable answer at all.  A sample landing on
+# one of these is EXCLUDED rather than scored: it is the micro-context twin of a chat turn
+# that produced no reply, and grading it would report a failed contract for a contract nobody
+# exercised.
+_EXTRACT_FAILURES = frozenset(
+    {MicroExtractOutcome.EXTRACTION_FAILED, MicroExtractOutcome.POISON_REROLL_FAILED}
+)
+
+
+def _extraction_output(result: MicroContextResult) -> list[eval_cohort.OutputField]:
+    """One extraction draw's STRUCTURED ANSWER, field by field.
+
+    All three fields, always — including the empty one.  Which of ``value`` and ``reason`` is
+    populated is decided by the outcome, so carrying only the filled one would make the
+    cohort's field comparison read a different set of axes per sample and quietly turn "the
+    draw answered differently" into "the draw answered a different question"."""
+    return [
+        eval_cohort.OutputField(name=EXTRACT_OUTCOME, value=result.outcome.value),
+        eval_cohort.OutputField(name=EXTRACT_VALUE, value=result.value),
+        eval_cohort.OutputField(name=EXTRACT_REASON, value=result.reason),
+    ]
+
+
+def _observe_extraction(
+    db: Database,
+    result: MicroContextResult | None,
+    *,
+    name: str,
+    phrasing: str,
+    given: str,
+) -> eval_cohort.SampleObservation:
+    """Read what ONE extraction sample answered — its own observer, not the chat one.
+
+    A single-call context leaves no machine walk, no registry row, no collection entry and no
+    outgoing message, so every read ``_observe_sample`` makes would come back empty here and
+    the row would be structurally fine and substantively hollow.  What there IS to read is the
+    draw's typed result, and it is read directly rather than fished back out of the ledger.
+
+    ``given`` is the document plus the instruction — exactly what was handed to the draw, from
+    the call site rather than reconstructed — so a provenance claim compares the answer against
+    the real input."""
+    answer = "" if result is None or result.outcome in _EXTRACT_FAILURES else result.outcome.value
+    exclusion = _draw_exclusion(db, answer)
+    if result is None or exclusion is not None:
+        return eval_cohort.SampleObservation(
+            name=name, phrasing=phrasing, complete=False, exclusion=exclusion or NO_DRAW
+        )
+    return eval_cohort.SampleObservation(
+        name=name,
+        phrasing=phrasing,
+        given=given,
+        output=_extraction_output(result),
+    )
+
+
+def _extraction_world(url: str, page: str) -> World:
+    """The one page an extraction case is answered against, as a :class:`World`.
+
+    Built from the case's own ``url``/``page`` rather than declared separately, so there is one
+    source of truth for what the draw read and the report's world fold renders exactly the
+    document the draw was handed.  ``keeps``/``excludes`` are empty: those token sets exist for
+    claims about what a ROUND chose to store, and this shape stores nothing."""
+    return World(name=url, pages=(CannedPage(match=url, text=page),), keeps=(), excludes=())
+
+
 @pytest.fixture
-def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> ExtractorEval:
+def extractor_eval(
+    make_config: Callable[..., Config], tmp_path, request
+) -> Iterator[ExtractorEval]:
     """Drive the browse EXTRACTION micro-context (#1588/#1942) N times, and NOTHING else.
 
     The extraction's whole input is one fetched page's section and one instruction, so
@@ -5365,60 +5523,128 @@ def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> Ext
     INSTRUCTION are authored, never the prompt.
     """
 
+    _cohorts: dict[str, _PendingCase] = {}
+
     async def _run(
         *,
         case_id: str,
         url: str,
         page: str,
         instruction: str,
-        expectations: Sequence[FieldExpectation],
+        expectations: Sequence[FieldExpectation] = (),
+        also_instructed: Sequence[str] = (),
+        samples_per_phrasing: int = 0,
+        model: str = "",
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
         family: str | None = None,
-    ) -> None:
+    ) -> Cohort:
+        """Drive one page + instruction through the extraction draw and return its COHORT
+        (a ported case), or score each sample through ``expectations`` (a case not yet ported).
+
+        A PORTED case passes ``also_instructed`` — the other wordings of the SAME request —
+        and gets a :class:`Cohort` back to assert against.  The arm here is the ``extract``
+        instruction, which is PENNY's own text: production writes it at the browse call site,
+        so what the cohort measures is whether the answer survives how the calling draw
+        happened to word the request.  The page is FIXED across the arms; it is the world.
+        """
         eval_artifacts.begin_case(case_id)
+        arms = _arms(
+            instruction if also_instructed else None,
+            also_instructed,
+            samples_per_phrasing,
+            samples,
+        )
+        spoken = arms.spoken
+        driven = arms.driven if spoken else samples
         content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
+
+        pending = (
+            _cohorts.setdefault(
+                case_id,
+                _PendingCase(
+                    case_id=case_id,
+                    family=family,
+                    module=request.module.__name__,
+                    min_pass_rate=min_pass_rate,
+                    gate_pathology_excluded=False,
+                ),
+            )
+            if spoken
+            else None
+        )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
+            asked = spoken[sample_index] if spoken else instruction
             micro = MicroContext(penny.model_client)
+            extracted: MicroContextResult | None = None
             try:
                 extracted = await asyncio.wait_for(
-                    micro.extract(content, instruction, run_target=penny.chat_agent.name),
+                    micro.extract(content, asked, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                scored = _score_extraction(extracted, expectations)
+                # A ported case is graded from its cohort's CLAIMS, made after every sample has
+                # run, so the sample itself scores nothing at drive time.
+                scored = [] if spoken else _score_extraction(extracted, expectations)
                 result = _guarded_graded(list(scored), [])
                 result.fragile = result.passed and _extract_rerolled(penny.db)
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no extraction draw within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
+            if spoken:
+                phrasing = arms.label(sample_index)
+                result.observation = _observe_extraction(
+                    penny.db,
+                    extracted,
+                    name=f"{case_id}-{sample_index + 1} ({phrasing})",
+                    phrasing=phrasing,
+                    given=f"{content}\n{asked}",
+                )
             _write_classifier_report(
                 penny.db,
                 case_id,
                 sample_index,
                 result=result,
-                phrasing=instruction,
+                phrasing=asked,
                 agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
             )
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
         results, perf = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
-        eval_artifacts.record_case(
+        if not spoken:
+            _finish_case(
+                case_id,
+                family,
+                request.module.__name__,
+                results,
+                perf,
+                min_pass_rate,
+                False,
+                driven,
+                samples,
+            )
+            return Cohort(case_id=case_id, model=model, world=_NO_WORLD, samples=[])
+        cohort = Cohort(
             case_id=case_id,
-            family=family,
-            module=request.module.__name__,
-            results=results,
-            perf=perf,
-            min_pass_rate=min_pass_rate,
+            model=model or _reporting_model(),
+            world=_extraction_world(url, page),
+            samples=[r.observation for r in results if r.observation is not None],
+            phrasings=arms.rendered(),
         )
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
+        assert pending is not None
+        pending.add(cohort, results, perf, intended=driven)
+        return cohort
 
-    return _run
+    yield _run
+    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
+    # assembled here, once the body has had its say.
+    for pending in _cohorts.values():
+        pending.finish()
+    _cohorts.clear()

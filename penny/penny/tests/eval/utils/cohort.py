@@ -84,6 +84,29 @@ class StoredEntry(BaseModel):
         return " ".join(part for part in (self.key, self.content) if part)
 
 
+# What ``SampleObservation.field`` answers for a field the draw did not return.  A rendered
+# word rather than an empty string, because it travels into the variance table as a value and
+# a blank cell there reads as a rendering bug rather than as an absence.
+FIELD_UNSET = "unset"
+
+
+class OutputField(BaseModel):
+    """One field of the STRUCTURED OUTPUT a draw returned, as a string.
+
+    A single-call context (the classifier, the framer, the labeller, the binder, the browse
+    extractor) answers with a typed result and touches no store — so what a case asserts and
+    what it measures are the same thing: this result's fields.  They are carried as strings
+    for the reason every :class:`Feature` value is a string — what is being compared is
+    DISTINCTNESS, and two samples agree when they produced the same value.
+
+    Deliberately NOT folded into :class:`StoredEntry`: three claims already read ``entries``
+    as "an entry in one of Penny's collections", and a draw's fields arriving in that list
+    would silently put them inside every one of those answers."""
+
+    name: str
+    value: str
+
+
 class SampleObservation(BaseModel):
     """Everything one sample left behind, read while its database was still live.
 
@@ -114,11 +137,28 @@ class SampleObservation(BaseModel):
     # Collections this round created that carry a schedule or a notify flag.  Learning must not
     # INSTANTIATE, so this is empty on a correct round.
     scheduled: list[str] = Field(default_factory=list)
+    # The fields of the structured output this sample's draw returned — empty for a sample
+    # driven through the agent loop, which leaves its trail in the stores instead.
+    output: list[OutputField] = Field(default_factory=list)
 
     @property
     def stored_text(self) -> str:
         """Every entry this sample wrote, key and content together."""
         return " ".join(entry.text for entry in self.entries)
+
+    def field(self, name: str) -> str:
+        """This sample's value for one field of its draw's structured output.
+
+        :data:`FIELD_UNSET` where the draw returned no such field, which is a REAL reading and
+        not a missing one: a draw that answered with the wrong shape genuinely has nothing
+        there, and a claim about that field is false of the sample rather than unasked."""
+        return next((one.value for one in self.output if one.name == name), FIELD_UNSET)
+
+    @property
+    def output_text(self) -> str:
+        """Every field the draw returned, name and value together — what a provenance claim
+        over a structured answer reads."""
+        return " ".join(f"{one.name} {one.value}" for one in self.output)
 
 
 # ── What a case claims ───────────────────────────────────────────────────────
@@ -187,11 +227,20 @@ class Feature:
     name: str
     read: Callable[[SampleObservation], str]
     consequence: Consequence = Consequence.CONSEQUENTIAL
+    # The reading that means this feature saw NOTHING — what ``read`` returns for a sample
+    # that produced no value at all.  Declared so :func:`feature_variance` can tell "every
+    # sample agreed" from "this feature never read anything", which are the same 0.000 and
+    # opposite findings.  Empty means the feature has no such reading and can never be blind.
+    absent: str = ""
 
 
-TOOL_SEQUENCE = Feature("tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call")
+TOOL_SEQUENCE = Feature(
+    "tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call", absent="no call"
+)
 ROUTINE_SHAPE = Feature(
-    "routine shape", lambda o: " | ".join(r.shape for r in o.routines) or "no routine"
+    "routine shape",
+    lambda o: " | ".join(r.shape for r in o.routines) or "no routine",
+    absent="no routine",
 )
 # What the framer called the routine.  Measured DIRECTLY rather than through the container it
 # produces: a container name is `derive_collection_name(skill.name, [parameter values])`, and on
@@ -209,13 +258,27 @@ ROUTINE_NAME = Feature(
     "routine name",
     lambda o: ", ".join(sorted({r.name for r in o.routines})) or "none",
     consequence=Consequence.COSMETIC,
+    absent="none",
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
-TRANSITIONS = Feature("transitions", lambda o: o.walk)
+TRANSITIONS = Feature("transitions", lambda o: o.walk, absent="no move")
 
 # Reply spread is pairwise rather than per-sample, so it is a marker the pooler recognises
 # rather than a value any one sample carries.
 REPLY_SPREAD = Feature("reply text", lambda o: o.reply, consequence=Consequence.COSMETIC)
+
+
+def output_field(name: str, *, consequence: Consequence = Consequence.CONSEQUENTIAL) -> Feature:
+    """One field of a draw's STRUCTURED OUTPUT, as a measured axis.
+
+    A single-call context returns a typed result rather than leaving a trail through the
+    stores, so its variance axes are simply its own fields: the same values the case asserts,
+    compared across the cohort.  No new concept — this is :class:`Feature` reading
+    ``SampleObservation.output`` instead of a chat-shaped attribute.
+
+    ``absent`` is :data:`FIELD_UNSET`, so a field the draw never returned reads as blind
+    rather than as fifteen samples agreeing."""
+    return Feature(name, lambda o: o.field(name), consequence=consequence, absent=FIELD_UNSET)
 
 
 class ExcludedSample(BaseModel):
@@ -255,6 +318,14 @@ class VarianceFeature(BaseModel):
     modal: int
     entropy: float
     phrasings: list[PhrasingRow] = Field(default_factory=list)
+    # Every sample read this feature's ABSENT value, so it saw nothing at all.  Carried
+    # separately from the entropy because the two are the same 0.000 and opposite findings:
+    # total agreement is the best result a feature can report, and reading nothing on every
+    # sample is a feature that CANNOT report an outlier — which is worse than not measuring
+    # at all, since the table shows a number either way.  What this catches concretely: a
+    # non-chat fixture whose tool-sequence reader is filtered to the chat agent's rows comes
+    # back empty on every sample and pools to a serene 0.000.
+    blind: bool = False
 
     @property
     def modal_share(self) -> float:
@@ -437,7 +508,17 @@ def feature_variance(feature: Feature, samples: Sequence[SampleObservation]) -> 
         modal=max(counts.values()) if counts else 0,
         entropy=normalised_entropy(values),
         phrasings=_phrasing_rows(feature, samples),
+        blind=_is_blind(feature, values),
     )
+
+
+def _is_blind(feature: Feature, values: Sequence[str]) -> bool:
+    """Whether this feature read NOTHING on every sample it was pooled over.
+
+    Read off the feature's declared ``absent`` value rather than guessed from the shape of
+    the data: only the feature knows what its own "saw nothing" reading looks like, and a
+    feature that declares none can never be blind."""
+    return bool(feature.absent) and bool(values) and set(values) == {feature.absent}
 
 
 def text_spread(samples: Sequence[SampleObservation]) -> TextSpread | None:
@@ -497,8 +578,12 @@ def proposed_ceiling(
     feature is already too spread for one to mean anything.
 
     Proposed, never locked: a near-ceiling feature is a defect to fix first, not a threshold to
-    record, and proposing one anyway prints a guard that could not fire."""
-    if feature.saturated:
+    record, and proposing one anyway prints a guard that could not fire.
+
+    A BLIND feature is refused for the same reason from the other end: it reads its absent
+    value on every sample, so its entropy is 0.000 for want of any reading at all and a
+    ceiling recorded there would lock in the blindness as the expected behaviour."""
+    if feature.saturated or feature.blind:
         return None
     return RecordedCeiling(
         feature=feature.name,
