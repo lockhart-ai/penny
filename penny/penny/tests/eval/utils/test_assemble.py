@@ -433,7 +433,9 @@ _FAIL_SAMPLE_FOLDED = (
 
 
 def _mixed_run(
-    tmp_path: Path, expand_samples: list[int] | None = None
+    tmp_path: Path,
+    expand_samples: list[int] | None = None,
+    standing_counts: dict[str, int] | None = None,
 ) -> tuple[RunManifest, CaseArtifact]:
     """A single-case run whose ``.md`` holds a clean-pass sample (1) then a failure (2), both folded
     whole on disk — the fixture the fold-every-sample + ``.md``-parity tests share."""
@@ -455,6 +457,7 @@ def _mixed_run(
         pathology_excluded_mean=0.5,
         samples=2,
         expand_samples=expand_samples or [],
+        standing_counts=standing_counts or {},
         sample_scores=[1.0, 0.0],
         sample_causes=[None, FailureCause.BEHAVIORAL],
         sample_fragile=[False, False],
@@ -564,12 +567,12 @@ def test_only_the_nominated_sample_is_carried_in_full(tmp_path: Path) -> None:
     into it, so a case that named a representative carries THAT sample and counts the rest on one
     line. Seventeen collapsed stubs each saying "not expanded here" is seventeen folds that say
     nothing, and at a hundred cases it is seventeen hundred."""
-    _, artifact = _mixed_run(tmp_path, expand_samples=[1])
+    _, artifact = _mixed_run(tmp_path, expand_samples=[1], standing_counts={"typical": 1})
     comment = assemble_run_comment(tmp_path)
 
     assert report.REPRESENTATIVE_LABEL in comment, "the carried sample is labelled as such"
     assert "deepest lake?" in comment, "and carried whole"
-    assert report.other_samples_line(1) in comment, "the rest are one line"
+    assert "1 that matched it" in comment, "the rest are ACCOUNTED for on one line"
     assert "sample 2 — " not in comment, "not seventeen stubs"
     on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
     assert "sample 2 — " in on_disk, "the artifact keeps every sample regardless"
@@ -608,10 +611,22 @@ def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_pat
     assert "`chat`" in elided, "and the line names the context it dropped"
 
 
-def test_the_samples_the_comment_does_not_carry_are_one_line(tmp_path: Path) -> None:
-    """A count and where to find them is what a reader needs; which of them diverged is the
-    outlier section's job, and it says it far better than a stub can."""
-    line = report.other_samples_line(17)
-    assert "17 other samples agreed" in line
-    assert "artifact" in line
-    assert "<details>" not in line, "one line, not a fold"
+def test_the_samples_the_comment_does_not_carry_are_accounted_for() -> None:
+    """An accounting, never a claim. `17 other samples agreed with the representative` counted
+    fourteen outliers and three control samples and called all seventeen agreeing — on the same
+    page as fourteen blocks showing exactly how they differed.
+
+    The arithmetic closes the way the summary line's does: representative + matched + diverged =
+    pooled, with the control named separately because it never entered the cohort."""
+    consistent = report.samples_accounted(matched=12, diverged=2, control=3)
+    assert "Of 15 pooled samples" in consistent
+    assert "12 that matched it" in consistent and "2 that diverged" in consistent
+    assert "3 control" in consistent
+
+    # The end that mattered: when nothing agreed, say so rather than report it as a small number.
+    variant = report.samples_accounted(matched=0, diverged=14, control=3)
+    assert "**No pooled sample matched the representative**" in variant
+    assert "all 14 of the others diverged" in variant
+    assert "agreed" not in variant
+
+    assert "control" not in report.samples_accounted(matched=4, diverged=0, control=0)

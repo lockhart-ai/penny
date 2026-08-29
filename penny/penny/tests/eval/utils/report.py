@@ -992,9 +992,25 @@ def summarise_thinking(body: str) -> str:
     return _THINKING_BLOCK.sub(shorten, body)
 
 
-OTHER_SAMPLES_LINE = (
-    "_{count} other samples agreed with the representative — full transcripts in the run artifact._"
+# What the comment says about the samples it does NOT carry.  This was one sentence asserting
+# that they AGREED, written when the assumption was that most samples agree and a few stand out.
+# On a variant cohort that assumption is false and the sentence became a CLAIM: it counted every
+# sample the comment left out — outliers and control alike — and called all seventeen agreeing,
+# with fourteen outlier blocks rendering directly underneath saying exactly how they differed.
+#
+# It is an ACCOUNTING now, and its arithmetic closes the way the summary line's does:
+# representative + matched + diverged = pooled.  Two named cases, because "none of them agreed
+# with each other" is the most important thing this run can say and a template built for the
+# happy path renders it as a small number nobody reads.
+SAMPLES_ACCOUNTED = (
+    "_Of {pooled} pooled samples: the representative, {matched} that matched it, and "
+    "{diverged} that diverged (see Outliers){control}. Full transcripts in the run artifact._"
 )
+NONE_MATCHED = (
+    "_**No pooled sample matched the representative** — all {diverged} of the others diverged "
+    "(see Outliers){control}. Full transcripts in the run artifact._"
+)
+_CONTROL_CLAUSE = " · {count} control, which ran a different world"
 OTHER_PROMPTS_LINE = (
     "_The other {count} samples were each given their own {contexts} prompt — per-sample because "
     "the self-state header renders that sample's own minted names back into it. Full texts in "
@@ -1041,13 +1057,22 @@ def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
     return f"{pruned}\n\n{line}".strip()
 
 
-def other_samples_line(count: int) -> str:
-    """The samples the comment does not carry, as ONE line.
+def samples_accounted(*, matched: int, diverged: int, control: int) -> str:
+    """How the samples the comment does not carry are accounted for — never a claim about them.
 
-    Seventeen collapsed stubs each saying "not expanded here" is seventeen folds that say
-    nothing, and at a hundred cases it is seventeen hundred. What a reader needs is the count and
-    where the transcripts are; which of them diverged is the outlier section's job."""
-    return OTHER_SAMPLES_LINE.format(count=count)
+    `17 other samples agreed with the representative` was counting fourteen outliers and three
+    control samples and calling all seventeen agreeing, on the same page as fourteen blocks
+    showing how they differed. It degrades at both ends: a consistent cohort reports how many
+    matched, and one where nothing matched says so in as many words."""
+    control_clause = _CONTROL_CLAUSE.format(count=control) if control else ""
+    if matched == 0 and diverged:
+        return NONE_MATCHED.format(diverged=diverged, control=control_clause)
+    return SAMPLES_ACCOUNTED.format(
+        pooled=matched + diverged + 1,
+        matched=matched,
+        diverged=diverged,
+        control=control_clause,
+    )
 
 
 # The seam a sample block opens on — the folded form and the legacy bare heading. Public because

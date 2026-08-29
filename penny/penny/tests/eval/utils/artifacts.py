@@ -346,6 +346,10 @@ class CaseArtifact(BaseModel):
     # markdown would be the assembler guessing at what the case already knows.  Empty for a case
     # that drove no cohort, which then keeps every sample expanded exactly as before.
     expand_samples: list[int] = Field(default_factory=list)
+    # How many pooled samples matched the representative, diverged from it, or ran the
+    # control world — so the posted comment can ACCOUNT for the samples it does not carry
+    # rather than assert something about them.
+    standing_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class RunManifest(BaseModel):
@@ -459,6 +463,7 @@ def build_case_artifact(
     min_pass_rate: float | None = None,
     gate_pathology_excluded: bool = False,
     expand_samples: Sequence[int] = (),
+    standing_counts: Mapping[str, int] | None = None,
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -485,6 +490,7 @@ def build_case_artifact(
         min_pass_rate=min_pass_rate,
         gate_metric=metric,
         expand_samples=list(expand_samples),
+        standing_counts=dict(standing_counts or {}),
     )
 
 
@@ -711,6 +717,7 @@ def record_case(
     min_pass_rate: float | None = None,
     gate_pathology_excluded: bool = False,
     expand_samples: Sequence[int] = (),
+    standing_counts: Mapping[str, int] | None = None,
 ) -> None:
     """Append the case's ``results.jsonl`` record. No-op off-report. The gate the case ran under
     (``min_pass_rate`` + which score it compares, #1725) rides into the record for the gate line."""
@@ -726,5 +733,6 @@ def record_case(
         min_pass_rate=min_pass_rate,
         gate_pathology_excluded=gate_pathology_excluded,
         expand_samples=expand_samples,
+        standing_counts=standing_counts,
     )
     run.append_case(artifact)

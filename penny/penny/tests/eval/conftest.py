@@ -16,7 +16,15 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections import Counter
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -2450,6 +2458,7 @@ class _PendingCase:
             self.driven,
             self.intended,
             _expandable(standings),
+            Counter(standing.standing.value for standing in standings),
         )
 
     def _grade(self) -> None:
@@ -2489,6 +2498,7 @@ def _finish_case(
     driven: int,
     intended: int,
     expand_samples: Sequence[int] = (),
+    standing_counts: Mapping[str, int] | None = None,
 ) -> None:
     """Record the case's artifact, print its perf line, and apply its gate."""
     _record_unported_prompts(case_id, driven)
@@ -2501,6 +2511,7 @@ def _finish_case(
         min_pass_rate=min_pass_rate,
         gate_pathology_excluded=gate_pathology_excluded,
         expand_samples=expand_samples,
+        standing_counts=standing_counts,
     )
     perf.report(case_id, driven)
     _assert_threshold(

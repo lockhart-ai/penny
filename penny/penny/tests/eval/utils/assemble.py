@@ -37,7 +37,7 @@ Run it via ``python -m penny.tests.eval.utils.assemble <report_dir>``
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from penny.tests.eval.utils import cohort, comment_split, report
@@ -263,10 +263,14 @@ def _transcript_block(report_dir: Path, manifest: RunManifest, artifact: CaseArt
     transcript = text.strip()
     if not transcript:
         return NO_TRANSCRIPT
-    return _folded_transcript(transcript, artifact.expand_samples)
+    return _folded_transcript(transcript, artifact.expand_samples, artifact.standing_counts)
 
 
-def _folded_transcript(transcript: str, expand: Sequence[int] = ()) -> str:
+def _folded_transcript(
+    transcript: str,
+    expand: Sequence[int] = (),
+    artifact_counts: Mapping[str, int] | None = None,
+) -> str:
     """Order a case for the COMMENT: its scores, the sample it nominated with the prompts that
     sample was run with, then the case's own inputs and its outliers.
 
@@ -304,10 +308,20 @@ def _folded_transcript(transcript: str, expand: Sequence[int] = ()) -> str:
             )
         )
     if others:
-        blocks.append(report.other_samples_line(len(others)))
+        blocks.append(_accounting(artifact_counts))
     if tail:
         blocks.append(tail)
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
+
+
+def _accounting(counts: Mapping[str, int] | None) -> str:
+    """The one line standing in for the samples the comment does not carry."""
+    tally = counts or {}
+    return report.samples_accounted(
+        matched=tally.get(cohort.Standing.TYPICAL.value, 0),
+        diverged=tally.get(cohort.Standing.OUTLIER.value, 0),
+        control=tally.get(cohort.Standing.CONTROL.value, 0),
+    )
 
 
 def _split_case(transcript: str) -> tuple[str, str, str]:
