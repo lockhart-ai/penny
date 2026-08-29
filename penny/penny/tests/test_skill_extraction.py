@@ -101,6 +101,11 @@ _READ_OK = "You looked up your notes: (collection_read_latest result)\n(empty)"
 _BROWSE = ("browse", _BROWSE_ARGS, _BROWSE_OK, True)
 _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
 
+# What a backend that fails to parse the Harmony envelope leaks onto a tool-call NAME.
+# The live object strips it, so the call DISPATCHED and the entry landed; the raw name
+# reaches the ledger alone, which is where extraction reads it back from (#2013).
+_LEAKED_TOKEN = "<|channel|>commentary"
+
 # The SAME round, corrected: the user changes what the first step reads and leaves the
 # write alone, and the corrected turn re-runs the whole flow (which is what the measured
 # corrections do), so one round's second run is a complete demonstration of its own.
@@ -220,16 +225,28 @@ def _log_run(
 # ── Qualifies: read + write → a skill with the right holes/bindings ────────────
 
 
+@pytest.mark.parametrize(
+    "emitted_write_tool",
+    ["collection_write", f"collection_write{_LEAKED_TOKEN}"],
+    ids=["clean", "leaked-harmony-token"],
+)
 @pytest.mark.asyncio
-async def test_read_write_run_qualifies_and_distils_correctly(db):
+async def test_read_write_run_qualifies_and_distils_correctly(db, emitted_write_tool):
     """A browse (read) + collection_write (act) run is a routine: it qualifies and a
     skill is extracted with the query/extract as required holes, the write content
     bound to the browse result, and the leaf naming the collection an ATTACHMENT-marked
     placeholder — with a bare model there is no draw to describe it, so it falls back to
     the fixed string (#1777's constant, kept as exactly that fallback by #1783), and the
     demonstrated collection is never rendered.
-    The description is the run's bare utterance; the framework ``reasoning`` is gone."""
-    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+    The description is the run's bare utterance; the framework ``reasoning`` is gone.
+
+    Run twice over the write's EMITTED name, clean and carrying a leaked Harmony control
+    token (#2013): the routine is the same either way.  Read raw, the leaked name was a
+    member of no tool surface, so certification dropped the write and persisted a routine
+    that browses and keeps nothing — measured on 3 of 18 samples of one run, every one of
+    which had written its entry, with nothing anywhere reporting a failure."""
+    write = (emitted_write_tool, _WRITE_ARGS, _WRITE_OK, True)
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, write])
 
     result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 

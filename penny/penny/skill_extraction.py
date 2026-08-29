@@ -174,8 +174,12 @@ SkillExtractionResult = SkillExtracted | NoExtraction
 
 
 def _runnable_steps(projection: RunProjection) -> list[RunProjectionStep]:
-    """Every non-``done`` step of the run (the demonstration's real tool calls)."""
-    return [step for step in projection.steps if step.call.name != _DONE_TOOL]
+    """Every non-``done`` step of the run (the demonstration's real tool calls).
+
+    Reads ``call.tool`` — the dispatchable identifier — rather than the verbatim
+    logged ``call.name``, which a backend can leak Harmony control tokens into
+    (#2013); every name comparison in this module reads the same accessor."""
+    return [step for step in projection.steps if step.call.tool != _DONE_TOOL]
 
 
 def _leaf_at(arguments: dict, path: list[str | int]):
@@ -204,13 +208,18 @@ def _certified_steps(
 
     The list this returns feeds the last quantity gate: a learn run that captured
     nothing is ``NO_CERTIFIED_STEPS`` rather than an empty skill, which is what #1839's
-    honest learn-failure reply reads."""
+    honest learn-failure reply reads.
+
+    Both surface tests read ``call.tool``: the LOGGED name is verbatim, so a leaked
+    Harmony control token made ``collection_write<|channel|>commentary`` a member of
+    nothing, and the write step was dropped from a routine that had demonstrably
+    written — 3 of 18 samples in one measured run, every visible signal green (#2013)."""
     return [
         step
         for step in _runnable_steps(projection)
         if step.success is True
-        and step.call.name not in ORIENTATION_TOOLS
-        and step.call.name in collector_surface
+        and step.call.tool not in ORIENTATION_TOOLS
+        and step.call.tool in collector_surface
     ]
 
 
@@ -502,11 +511,16 @@ class SkillExtractor:
     ) -> list[DistillInput]:
         """One ``DistillInput`` per certified step — its ordinal, tool, verbatim
         arguments, and framed result (``distill_steps`` reads the result to infer
-        bindings; the ``reasoning`` strip lives inside it, #1659)."""
+        bindings; the ``reasoning`` strip lives inside it, #1659).
+
+        The ARGUMENTS are verbatim (the demonstrated values are the evidence), but the
+        tool is the dispatchable identifier: a skill step names a tool a collector has
+        to resolve later, so a leaked-token name persisted here would be a routine that
+        cannot run (#2013)."""
         return [
             DistillInput(
                 source_ordinal=step.ordinal,
-                tool=step.call.name,
+                tool=step.call.tool,
                 arguments=step.call.arguments,
                 result=projection.results.get(step.call_id, "") if step.call_id else "",
             )

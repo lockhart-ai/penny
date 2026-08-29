@@ -72,6 +72,7 @@ from penny.database.memory.types import (
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.database.mutation_store import EnumeratedDecision
+from penny.llm.models import strip_harmony_control_tokens
 from penny.text_validity import degenerate_reason, half_formed_send_reason
 from penny.validation.conditions import ConditionKey, run_flag_conditions
 
@@ -911,6 +912,23 @@ class LoggedToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     decision: EnumeratedDecision | None = None
 
+    @property
+    def tool(self) -> str:
+        """WHICH TOOL this call names — the dispatchable identifier, the thing to
+        compare against a registry, a surface, or a sentinel (#2013).
+
+        ``name`` is verbatim by design (the log never paraphrases the call), and a
+        backend that leaks Harmony control tokens makes that verbatim name unusable
+        as an identifier: ``collection_write<|channel|>commentary`` dispatched fine
+        on the LIVE object — ``LlmToolCallFunction`` strips at the read-off boundary
+        — but every consumer re-reading the LOG compared the leaked string and got
+        no match, which silently dropped the write step from a distilled routine on
+        3 of 18 measured samples.  So the repair lives here rather than in storage:
+        the record keeps the leak (it is a real diagnostic signal), and anything
+        asking *which tool was this* reads ``tool``.  Uses the production strip, so
+        the live object and the log agree on the answer by construction."""
+        return strip_harmony_control_tokens(self.name)
+
     @classmethod
     def from_function(cls, function: dict) -> LoggedToolCall:
         """Parse a stored/wire ``function`` dict into the canonical shape."""
@@ -926,11 +944,16 @@ class LoggedToolCall(BaseModel):
         return {"name": self.name, "arguments": json.dumps(self.arguments)}
 
     def render(self) -> str:
-        """The canonical one-line ``name(args)`` projection — call syntax, not
+        """The canonical one-line ``tool(args)`` projection — call syntax, not
         narration.  ``read_run_calls`` renders a run as this canonical projection
         (the prose is composed by the model from the in-context trace); the
-        first-person ``to_result_narration`` is a separate projection."""
-        return render_tool_call(self.name, self.arguments)
+        first-person ``to_result_narration`` is a separate projection.
+
+        Renders the ``tool``, not the verbatim ``name``: this is an ANCHOR the model
+        reads and then addresses (n≤1 reachability, #1560), so a leaked-token name
+        here would render an identifier that resolves nowhere.  The verbatim name
+        stays in ``promptlog.response``, which the addon's prompt view renders raw."""
+        return render_tool_call(self.tool, self.arguments)
 
 
 def _run_logged_steps(prompts: list[PromptLog]) -> list[tuple[str | None, LoggedToolCall]]:
@@ -962,7 +985,12 @@ def _run_outcome(prompts: list[PromptLog]) -> tuple[str | None, str | None, str 
 
 
 def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
-    """Ordered (name, arguments) for every tool call across the run's prompts."""
+    """Ordered (tool, arguments) for every tool call across the run's prompts.
+
+    The name is the DISPATCHABLE identifier, not the verbatim one — every caller
+    below tallies, classifies or renders by tool, and a leaked Harmony control token
+    on the logged name matches none of them (#2013).  ``?`` stands in when the call
+    named no tool at all, so a nameless call still occupies its place in the run."""
     calls: list[tuple[str, object]] = []
     for prompt in prompts:
         response = json.loads(prompt.response) if prompt.response else {}
@@ -970,7 +998,8 @@ def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
             message = choice.get("message") or {}
             for tool_call in message.get("tool_calls") or []:
                 function = tool_call.get("function") or {}
-                calls.append((function.get("name") or "?", _parse_tool_args(function)))
+                tool = strip_harmony_control_tokens(function.get("name") or "")
+                calls.append((tool or "?", _parse_tool_args(function)))
     return calls
 
 
@@ -1497,7 +1526,7 @@ def render_run_calls(prompts: list[PromptLog]) -> str:
     results = _tool_results_by_id(prompts)
     lines = [_run_header(prompts), _run_origin(prompts)]
     for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1):
-        if call.name == "done":
+        if call.tool == "done":
             continue  # consumes the coordinate (gap, never renumber), not shown
         lines.append(_step_line(index, call, results.get(call_id) if call_id else None))
     conclusion = _run_conclusion(prompts)
