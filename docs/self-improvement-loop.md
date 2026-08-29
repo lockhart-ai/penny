@@ -67,9 +67,9 @@ never editing the PR body, never overwriting a prior comment. The comment stream
   review, and each round is mirrored into a comment (the feedback → the change →
   the result → the transcript).
 
-What a **ported** case's report says is **`docs/eval-case-design.md`** (#1994): three
-sections per case — end-state assertions in four categories, everything the model
-emitted measured as variance, and the harness samples too broken to count. The
+What a **ported** case's report says is **`docs/eval-case-design.md`** (#1994):
+end-state assertions in four categories, everything the model emitted measured as
+variance, and a run-health gate under both. The
 paragraph below describes the pre-#1994 grading format un-ported cases still render,
 retained in `docs/eval-report-format.md`'s appendix while the port is in flight.
 

@@ -3,10 +3,11 @@
 > ## ⚠ Superseded, in part — read this first
 >
 > **The shape of a case's report is now [`docs/eval-case-design.md`](eval-case-design.md)**
-> (#1994): three sections per case — deterministic **assertions** on end state, **variance** on
-> everything the model emitted, and the **harness** samples too broken to count. That document is
-> the authority for anything written from now on, and it is required reading before a case is
-> written or ported.
+> (#1994): deterministic **assertions** on end state, **variance** on everything the model
+> emitted, and a **run-health gate** that excludes broken samples before pooling and fails a
+> mostly-dead cohort. That document is the authority for anything written from now on, and it is
+> required reading before a case is written or ported — it carries the inventory of the folds a
+> case's report renders.
 >
 > **What is still current, and still lives here:** how a run gets *posted* — the `make eval-report`
 > one-shot, the `.posted` marker, the unreviewed-run banner, the 64K comment split, cell hygiene,

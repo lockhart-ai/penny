@@ -29,18 +29,66 @@ Run the same request many times and look at the spread.
   model output exactly as a sentence is. Many routes reach one end state, so a route is measured,
   never asserted.
 
-A case therefore reports **three sections**, and its verdict is computed from them:
+A case therefore makes **three different kinds of claim**, which must never be mixed — was Penny
+**correct**, was she **stable**, and can the run be **believed at all**:
 
-| section | what it holds | how it is judged |
+| | the claim | how it is judged |
 |---|---|---|
 | **A · assertions** | end state only — the four categories in §2 | a **pass-rate floor** (a fall below is a regression) |
 | **B · variance** | model output — tool sequence, routine shape, names, reply text | a **one-sided ceiling** (only a *rise* is a regression) |
-| **C · harness** | samples too broken to count | gated **before** pooling, every exclusion named |
+| **C · run health** | how much of the cohort actually ran, and what killed the rest | a **gate**: broken samples are excluded *before* pooling, and a mostly-dead cohort **fails the run** |
 
-Section C is not optional bookkeeping. A prototype run silently produced 17 dead samples of 31,
-which would have reported as wild behavioural variance; across 5,452 harvested replies, 429 ended
-with an infrastructure error as the measured reply and 248 of those had reply checks scored
-*passed* (#1994 §1).
+**C is read first even though it renders last**, and it is not a section a healthy case renders —
+it is a gate plus an accounting clause (§1.2).
+
+### 1.1 · What a case's report actually renders
+
+A/B/C above is the *design's* decomposition. What you will read back after a run is this, in this
+order — one line, then folds:
+
+| | fold | carries |
+|---|---|---|
+| — | **the summary line** | both scores plus the whole sample accounting: `15 pooled + 3 control + 0 excluded = 18 driven` |
+| A | **Assertions** | one table per spec category, and **a category nobody wrote a claim for renders as a visible gap** |
+| B | **Variance** | per-feature entropy, proposed ceilings, the per-phrasing rows |
+| B | **Cost** | input/output tokens per sample and their proposed ceilings (§5) |
+| C | **Excluded samples** | **only when something was lost** — the dominant fault class, then the samples by name |
+| — | **Representative sample** | the one sample you are asked to read: its prompts and its whole transcript, with a **Rejected draws** fold inside it (§5) |
+| — | **Test inputs** | the ask in its K wordings, and the seeded world |
+| — | **Outliers** | the samples that diverged **consequentially**, each with the feature and value that made it one |
+
+### 1.2 · Run health — the gate under all of it
+
+A degraded run used to look exactly like a healthy one. `6 passed, EXIT=0` was printed by a run in
+which **34 of 48 samples never produced their measured turn**, every one killed by the same thing
+188 times — a gateway answering HTTP 200 with an empty `choices` array until the client's retries
+were gone. Another drew 325 rate limits and said nothing. Neither named a number, so the only way
+to find out was to read per-sample logs by hand; and the only way to prove *which member of a
+routing pool* had poisoned a run was to run the whole suite again with a pin. Historically this is
+also how **429 of 5,452 harvested replies ended with an infrastructure error as the measured reply,
+248 of them with reply checks scored *passed*** (#1994 §1).
+
+So the run reports on itself, from values it counted rather than sentences it matched:
+
+| | what it does | why it is not optional |
+|---|---|---|
+| **cohort accounting** | each case records how many samples it **intended** and how many produced their **measured turn** | a sample's `.db` exists from the moment the sample **starts**, so a file is not a result. One prototype run pooled 17 dead samples of 31 and it read as wild behavioural variance |
+| **a fault tally by class *and* serving provider** | read from structured fields on every model-call attempt — never grepped from prose | a run can be silently poisoned by **one member of a routing pool**, and artifacts that record the model but not the provider cannot name it |
+| **a verdict that fails the run** | the bar is per case: it must complete a **strict majority** of the samples it intended | a mostly-dead cohort is **not a smaller cohort — it is not a result** |
+
+**Why a strict majority, and not "noisier with fewer samples".** Dead samples are not missing at
+random: the faults that kill them **correlate with the work** — the long turn, the one that made the
+most calls, the one that spent the most tokens is the one most likely to draw the bad provider or
+hit the rate limit. So the survivors skew to the *short* samples, and their mean measures a
+selection effect rather than the case. The bar sits where the surviving cohort can still be read as
+the case. It is a judgement, not a derivation, which is why it is printed in the refusal rather than
+buried in a constant — and why a run that squeaks past it still says so.
+
+**The counts must add up.** Three unexplained samples on the surface that says whether a run can be
+believed is how 288 infrastructure failures came to be booked as behavioural. That is why the
+accounting rides on the summary line of every case — including the healthy ones, where it is one
+clause — and the harness fold materialises only when there is something to name. A section that
+renders as a stub every time is a section people learn to skip.
 
 ---
 
@@ -72,7 +120,7 @@ phrasing would be right; only a different world can tell reading apart from comp
 | **Never assert a route.** Assert a *property* of the routine ("it has a write step", "it names somewhere to act"), never its shape or its tool names. | Many routes reach one end state, and a skill is an arbitrary tool sequence — a name-keyed rule simply will not fire for a shape nobody enumerated. | #1993: three different tools all correctly reached the run record; the check had pinned one. |
 | **A judgement call in the fixture is variance, not an assertion.** | Asserting a count asserts one reading of an ambiguous world. | Whether an appointment counts as a "signing" is genuinely ambiguous. |
 | **An assertion about the store reads the WHOLE entry** — key *and* content. | A fact in the key and a blurb in the body is a perfectly good way to store it. | A prototype reported a 25/32 model failure that was entirely its own bug: it read content only. |
-| **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | 17 dead samples of 31 in one prototype run. |
+| **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | the machinery that closes this, and what it cost before it existed: §1.2 |
 | **Never match a phrasing.** A reply check looking for a token you guessed in advance is the thing this design replaces. | Measurably both too strict and too loose in the same suite. | 31 replies that stated the recorded cadence correctly were failed; elsewhere an infra error string and a raw thinking leak both scored *passed* (#1994 §1). |
 
 A claim **records, it does not raise**: `assert_*` states what the case claims and answers it for
@@ -122,6 +170,20 @@ route. The end-state form of that question is a `STORE` claim about what was kep
 sequence measured in section B — where a cohort that stopped browsing shows up as a variance rise
 rather than as one sample's failed check.
 
+### Two structural backstops — and what they do not cover
+
+The checklist has help now, and it is worth knowing exactly how much:
+
+- **The category is a required field from a closed enum** (`SpecCategory`, no default), so a check
+  that fits none of the four **cannot be declared**. That makes the *outward* column a fact the
+  code states rather than a review someone remembers to run.
+- **The assertions table groups by category and renders an empty one as a visible gap**, so a
+  missing `DIRECTED_CHANGE` claim shows as a hole in the report instead of as nothing at all.
+
+Neither one writes the claim for you. A gap you can see is still a gap until the inward column is
+run and something is written into it — and a claim can satisfy its enum while being the wrong claim.
+The backstops make the omission *visible*; the checklist is what closes it.
+
 ### Copying the reference port
 
 Sub-tickets say *copy the shape of `learn-demonstrated-round`*. Copy its **structure** — the
@@ -159,8 +221,7 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
 
     # A · DIRECTED_CHANGE — a SECOND VISIBLE DRIVE, beside the claim it serves.
     control = await chat_eval(..., world=<WORLD_CONTROL>, ask=<THE ASK>, samples_per_phrasing=3)
-    cohort.assert_facts_moved_with_the_world(control)   # the REPLY's facts moved
-    cohort.assert_<the store's facts moved too>()       # write it — nothing to copy
+    cohort.assert_facts_moved_with_the_world(control)   # store side (gated) + reply side (reported)
 
     # B · what is measured, never asserted
     cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS,
@@ -170,12 +231,18 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
 The four category comments are load-bearing: they are where the **inward** pass is run. A case with
 no `# A · DIRECTED_CHANGE` block is a case that skipped it.
 
-Note the second directed-change line, and that it has no helper to call. `DIRECTED_CHANGE` has two
-halves — the **reply's** facts move with the world, and the **store's** do — and only the first
-exists as a shared claim today, because the reference port needed only the first. Writing the
-second, per case, against the world your case declares, *is* the inward pass. If your case genuinely
-stores nothing, say so in a comment rather than leaving the block empty; an absent claim and a
-deliberately-absent claim look identical six weeks later.
+`assert_facts_moved_with_the_world` declares **both halves** of `DIRECTED_CHANGE` — that what the
+round **stored** moved with the world (`state: what it stored moved with the world`, always
+decidable, so it is the one half that can carry a floor) and that the **reply's** facts moved, in
+both directions (it names this world's facts, and none from the world it was not given; read out of
+model prose, so reported and never floored — §8).
+
+That second half is worth knowing the history of, because it is what this checklist is for. The
+reference port shipped with the reply side only, and no store-side claim at all — not because
+anyone judged it unnecessary, but because the case it was ported from had none to copy. **The
+inward pass is what found it**, and it exists as a shared claim today because that pass ran. Expect
+your case to have one of these: a category whose claim nobody could hand you, which only the
+inward column will surface.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
@@ -195,16 +262,18 @@ text is measured instead by `cosine_similarity` + `token_containment_ratio` over
 views because they fail differently (an embedding says two replies are *about* the same thing,
 which at fixed topic is nearly always true; containment says how much vocabulary they reuse).
 
-Every feature carries a **consequence class**, and it decides how the feature is *read*, not
-whether it is measured:
+Every feature carries a **consequence class**, declared on the feature and read at the `measure()`
+site. It decides how the feature is *read*, not whether it is measured:
 
 | class | means | features | rendering |
 |---|---|---|---|
-| **consequential** | a divergence implies a different end state | tool sequence, entries stored, routine shape | rendered individually in the outliers fold |
-| **cosmetic** | a divergence is a different word for the same outcome | container name, reply spread | measured and ceilinged, collapsed to a count line |
+| **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions | rendered individually in the outliers fold, with its evidence |
+| **cosmetic** | a divergence is a different word for the same outcome | container name, reply text | measured, entropy reported, ceiling proposed, collapsed to one count line |
 
 A feature not in that table is classified by the question, not by the list: **does a divergence here
-imply a different end state?**
+imply a different end state?** Getting it wrong is not cosmetic in either direction — misfiling
+container name as consequential once made 8 of 9 outlier rows container-name-only, reporting "60% of
+samples are outliers" where the true statement was "1 of 15 diverged consequentially".
 
 Container naming is unconstrained at **0.90 entropy in both measured models** — a value that does
 not separate the models is a **system-level** finding for the variance table, never a per-sample
@@ -218,6 +287,15 @@ pooling at all. But the pooled number hides what phrasings are for: four phrasin
 `H = 0.00, 0.52, 0.00, 0.00` — three perfectly deterministic, one that destabilised the case
 completely — and pooled to `0.18`. The pooled number is the gate; the rows are the diagnostic
 saying which wording moved it.
+
+### Rejected draws are machinery, not output
+
+A re-rolled draw is persisted whole in the promptlog, so a transcript built naively from it renders
+every discarded attempt as a reply indistinguishable from the one the user received. **A text draw
+renders as a reply only if it was delivered**; the rest go behind their own fold, labelled as
+rejected draws. They are **never scored** — not by an assertion, not as a reply in the variance
+spread. If your case's sample count and its rendered reply count disagree, this is the first thing
+to check.
 
 ### Cost is a locked metric too
 
@@ -357,10 +435,11 @@ Two other scope rules that come from the same place:
 
 | file | holds |
 |---|---|
-| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `Feature`, `normalised_entropy`, `pool`, `proposed_floor`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
+| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed four), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_floor`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes` |
-| `penny/penny/tests/eval/utils/report.py` | the three sections as a document — it renders and never computes |
+| `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
+| `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
 | `penny/penny/tests/eval/conftest.py` | the `chat_eval` driver: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` |
 
 A `World`'s `keeps` is one token set **per source** — tokens appearing only on that page, so a
