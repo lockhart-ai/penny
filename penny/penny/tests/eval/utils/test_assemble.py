@@ -62,7 +62,9 @@ def _write_run(
 
 
 def _footer(report_dir: Path) -> str:
+    """The run-level tail: the glyph legend once, then the pointer back to the raw evidence."""
     return (
+        f"{report.GLYPH_KEY}\n\n"
         f"_artifacts (local, never committed): `{report_dir}` · per-sample DBs beside them · "
         f"re-render: `EVAL_REPORT_DIR={report_dir} make assemble`_\n"
     )
@@ -77,9 +79,7 @@ def _browse_sample() -> str:
         report.Event(report.EventKind.REPLY, "Baikal 1642m", thinking="answer"),
     ]
     checks = [report.CheckView("C1", "browsed", "spine", True, False, True, anchor_index=1)]
-    banner = report.render_banner(
-        passed=True, score=1.0, passed_checks=1, total_checks=1, duration_s=45, calls=8
-    )
+    banner = report.render_banner(passed=True, duration_s=45, calls=8)
     sample = report.build_sample(
         number=1, banner=banner, events=events, checks=checks, run_close_score="1/1"
     )
@@ -87,20 +87,20 @@ def _browse_sample() -> str:
 
 
 _BROWSE_SAMPLE_FOLDED = (
-    "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 45s · 8 calls</summary>\n"
+    "<details><summary>sample 1 — ✅ pass · 45s · 8 calls</summary>\n"
     "\n"
     '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
     "|---|---|---|\n"
     "| expected | C1 [spine]⚖ browsed |  |\n"
-    "| 💭 | <details><summary>thinking</summary>verify</details> |  |\n"
+    "| 💭 | verify |  |\n"
     "| actual | 🔧 browse({...}) | ✅ C1 |\n"
-    "| 💭 | <details><summary>thinking</summary>answer</details> |  |\n"
+    "| 💭 | answer |  |\n"
     "| actual | 🤖 Baikal 1642m |  |\n"
     "\n"
     "</details>"
 )
 # The forbidden banner-only heading form — the assembler must NEVER emit it (#1759, compact gone).
-_BROWSE_SAMPLE_BANNER_ONLY = "#### sample 1 — ✅ pass · 1/1 (1.00) · 45s · 8 calls"
+_BROWSE_SAMPLE_BANNER_ONLY = "#### sample 1 — ✅ pass · 45s · 8 calls"
 
 
 def test_single_gated_case_whole_render(tmp_path: Path) -> None:
@@ -135,11 +135,8 @@ def test_single_gated_case_whole_render(tmp_path: Path) -> None:
     )
     _write_run(tmp_path, manifest, [artifact], {artifact.case_id: _browse_sample()})
     assert assemble_run_comment(tmp_path) == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=3 · "
-        "**lever:** framework baseline\n"
-        "**RESULT:** mean 0.67 · all-pass 2/3 · pathology-excluded 0.67 · causes — behavioral 0 · "
-        "pathology 0 · harness 1 · families: browse-answer 0.67 · 19 calls · 148s · "
-        "54.2K in / 5.9K out\n"
+        # A single-case run emits NO roll-up: the case names the report and its own table
+        # carries every number one would repeat.
         "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\n"
         "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)
@@ -193,9 +190,7 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
         report.Event(report.EventKind.USER, "hi"),
         report.Event(report.EventKind.REPLY, "hey", thinking=""),
     ]
-    banner = report.render_banner(
-        passed=True, score=1.0, passed_checks=1, total_checks=1, duration_s=10, calls=2
-    )
+    banner = report.render_banner(passed=True, duration_s=10, calls=2)
     hi_block = (
         report.render_sample(
             report.build_sample(
@@ -206,19 +201,25 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
     )
     _write_run(tmp_path, manifest, [alpha, beta], {alpha.case_id: hi_block})  # beta: no transcript
     assert assemble_run_comment(tmp_path) == (
-        "**run-20260720T090000Z-beef1234** · commit `beef1234` · gpt-oss:20b · N=2 · "
-        "**lever:** two families\n"
-        "**RESULT:** mean 0.75 · all-pass 3/4 · pathology-excluded 0.75 · causes — behavioral 1 · "
-        "pathology 0 · harness 0 · families: alpha 1.00 · beta 0.50 · 38 calls · 296s · "
-        "108.4K in / 11.8K out\n"
+        # TWO cases, so there is something to roll up — at `##`, outranking their `###`.
+        "## Eval run · `gpt-oss:20b`\n"
+        "\n"
+        "**no deterministic checks** — 2 cases · 4 samples · 0 excluded\n"
+        "\n"
+        "| measure | reading |\n"
+        "|---|---|\n"
+        "| commit | `beef1234` |\n"
+        "| provider | `http://localhost:11434` |\n"
+        "| embeddings | `embeddinggemma` |\n"
+        "| cost / sample | 27,100 in · 2,950 out · 9.5 calls · 74s |\n"
+        "| run | `run-20260720T090000Z-beef1234` |\n"
         "\n"
         "### `test_a.py::one` — alpha\n"
         "\n"
-        "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 10s · 2 calls</summary>\n"
+        "<details><summary>sample 1 — ✅ pass · 10s · 2 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "hi" |  |\n'
         "|---|---|---|\n"
-        "| 💭 | 💭 (empty) |  |\n"
         "| actual | 🤖 hey |  |\n"
         "\n"
         "</details>\n"
@@ -283,7 +284,7 @@ def test_diff_mode_flips_index_whole_render(
     _write_run(run, manifest, [artifact], {artifact.case_id: _browse_sample()})
     comment = assemble_run_comment(run)
     assert "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\nflips: browsed ✅→❌ (s3)\n" in comment
-    assert comment.startswith("**run-20260721T051017Z-abba710a** · commit `abba710a`")
+    assert comment.startswith("**gate:**"), "a single-case run leads with its gate, not a roll-up"
 
 
 def _hold_run(
@@ -366,16 +367,14 @@ def test_flips_index_from_durable_manifest_baseline(
     prior = tmp_path / "prior"
     run = tmp_path / "run"
     manifest = _hold_run(run, prior, recorded_baseline=str(prior))
-    header = assemble_run_comment(run).split("\n\n", 1)[0]
-    assert header == (
-        f"**{manifest.run_id}** · commit `d1429159` · gpt-oss:20b · N=10 · "
-        "**lever:** beat 2 baseline\n"
-        "**RESULT:** mean 0.80 · all-pass 8/10 · pathology-excluded 0.80 · "
-        "causes — behavioral 2 · pathology 0 · harness 0 · families: state-classifier 0.80 · "
-        "19 calls · 148s · 54.2K in / 5.9K out\n"
-        "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)\n"
-        "flips: decided idle ✅→❌ (s7, s10)"
-    )
+    comment = assemble_run_comment(run)
+    # The FLIPS index is what this test is about; the header's layout is pinned whole by the
+    # two render tests above, and re-pinning it here would make them one change apart.
+    assert "flips: decided idle ✅→❌ (s7, s10)" in comment
+    assert "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)" in comment
+    # A single-case run has no roll-up table for the run id to sit in; its identity lives in
+    # the case's own table, which the per-case document renders.
+    assert manifest.run_id
 
 
 def test_flips_index_absent_without_a_baseline_reference(
@@ -412,9 +411,6 @@ def _fail_sample() -> str:
     ]
     banner = report.render_banner(
         passed=False,
-        score=0.0,
-        passed_checks=0,
-        total_checks=1,
         cause="behavioral",
         duration_s=60,
         calls=3,
@@ -426,19 +422,23 @@ def _fail_sample() -> str:
 
 
 _FAIL_SAMPLE_FOLDED = (
-    "<details><summary>sample 2 — ❌ fail · 0/1 (0.00) · behavioral · 60s · 3 calls</summary>\n"
+    "<details><summary>sample 2 — ❌ fail · behavioral · 60s · 3 calls</summary>\n"
     "\n"
     '| step 1 · 👤 | "add a reminder" | ❌ |\n'
     "|---|---|---|\n"
     "| expected | C1 [state]⚖ reminder set |  |\n"
-    "| 💭 | <details><summary>thinking</summary>skip it</details> |  |\n"
+    "| 💭 | skip it |  |\n"
     "| actual | 🤖 done! | ❌ C1 — no cadence written · behavioral |\n"
     "\n"
     "</details>"
 )
 
 
-def _mixed_run(tmp_path: Path) -> tuple[RunManifest, CaseArtifact]:
+def _mixed_run(
+    tmp_path: Path,
+    expand_samples: list[int] | None = None,
+    standing_counts: dict[str, int] | None = None,
+) -> tuple[RunManifest, CaseArtifact]:
     """A single-case run whose ``.md`` holds a clean-pass sample (1) then a failure (2), both folded
     whole on disk — the fixture the fold-every-sample + ``.md``-parity tests share."""
     manifest = build_manifest(
@@ -458,6 +458,8 @@ def _mixed_run(tmp_path: Path) -> tuple[RunManifest, CaseArtifact]:
         all_pass_rate=0.5,
         pathology_excluded_mean=0.5,
         samples=2,
+        expand_samples=expand_samples or [],
+        standing_counts=standing_counts or {},
         sample_scores=[1.0, 0.0],
         sample_causes=[None, FailureCause.BEHAVIORAL],
         sample_fragile=[False, False],
@@ -477,14 +479,7 @@ def test_every_sample_folds_whole_in_the_comment(tmp_path: Path) -> None:
     _mixed_run(tmp_path)
     comment = assemble_run_comment(tmp_path)
     assert comment == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=2 · "
-        "**lever:** mixed run\n"
-        "**RESULT:** mean 0.50 · all-pass 1/2 · pathology-excluded 0.50 · causes — behavioral 1 · "
-        "pathology 0 · harness 0 · families: browse-answer 0.50 · 19 calls · 148s · "
-        "54.2K in / 5.9K out\n"
-        "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
-        "\n" + _FAIL_SAMPLE_FOLDED + "\n"
-        "\n" + _footer(tmp_path)
+        _BROWSE_SAMPLE_FOLDED + "\n\n" + _FAIL_SAMPLE_FOLDED + "\n\n" + _footer(tmp_path)
     )
 
 
@@ -504,9 +499,9 @@ def test_a_case_level_preamble_reaches_the_comment_verbatim(tmp_path: Path) -> N
 
 
 def test_md_and_comment_render_every_sample_identically(tmp_path: Path) -> None:
-    """The ``.md`` and the comment are the SAME rendering now (#1759): the on-disk ``<case_id>.md``
-    keeps every sample's full folded body (the footer's audit target), and the comment carries the
-    exact same folded bodies — the forbidden banner-only heading form appears in NEITHER."""
+    """A case that nominated no sample reproduces every one of them: the on-disk ``.md`` holds
+    every sample's full folded body, and the comment carries the same bodies. Only a case whose
+    cohort named a representative is indexed rather than reproduced (below)."""
     _, artifact = _mixed_run(tmp_path)
     on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
     assert _BROWSE_SAMPLE_FOLDED in on_disk
@@ -560,3 +555,69 @@ def test_cli_writes_comment_and_reports_errors(
     assert capsys.readouterr().err.strip() == USAGE
     assert main([str(tmp_path / "does-not-exist")]) == 1
     assert "manifest.json" in capsys.readouterr().err
+
+
+def test_only_the_nominated_sample_is_carried_in_full(tmp_path: Path) -> None:
+    """The scaling fix (#1997): the artifact is the complete record and the comment is an INDEX
+    into it, so a case that named a representative carries THAT sample and counts the rest on one
+    line. Seventeen collapsed stubs each saying "not expanded here" is seventeen folds that say
+    nothing, and at a hundred cases it is seventeen hundred."""
+    _, artifact = _mixed_run(tmp_path, expand_samples=[1], standing_counts={"typical": 1})
+    comment = assemble_run_comment(tmp_path)
+
+    assert report.REPRESENTATIVE_LABEL in comment, "the carried sample is labelled as such"
+    assert "deepest lake?" in comment, "and carried whole"
+    assert "1 that matched it" in comment, "the rest are ACCOUNTED for on one line"
+    assert "sample 2 — " not in comment, "not seventeen stubs"
+    on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
+    assert "sample 2 — " in on_disk, "the artifact keeps every sample regardless"
+
+
+def test_a_long_thinking_trace_is_shortened_only_in_the_comment(tmp_path: Path) -> None:
+    """Thinking was 68% of every sample — the single biggest lever — so the comment carries its
+    head; the label already states the length, so shortening changes only the body. The trace is
+    never touched on disk, and a SHORT trace is left alone: rewriting it would add nothing and
+    cost bytes."""
+    long_body = report.thinking_row("x" * 900).render()
+    shortened = report.summarise_thinking(long_body)
+
+    assert "thinking — 900 chars" in shortened, "the label states the real length either way"
+    assert "x" * 900 not in shortened, "the trace itself is not restated in the index"
+    assert len(shortened) < len(long_body) // 3
+    short_body = report.thinking_row("brief").render()
+    assert report.summarise_thinking(short_body) == short_body, "nothing to save, nothing rewritten"
+
+
+def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_path: Path) -> None:
+    """`chat` has one distinct text PER sample — the self-state header feeds each its own minted
+    names back — so carrying all of them means carrying the cohort many times over to show a text
+    that differs in three lines. The comment keeps what every sample shared and what the sample it
+    actually carries was given; the rest point at the artifact that holds them."""
+    shared = report.PromptVariant(context="framer", text="F" * 400, samples=["sample 1"], total=1)
+    mine = report.PromptVariant(context="chat", text="M" * 400, samples=["sample 1"], total=2)
+    theirs = report.PromptVariant(context="chat", text="T" * 400, samples=["sample 2"], total=2)
+    rendered = report.render_prompt_variants([shared, mine, theirs])
+
+    elided = report.elide_unused_prompts(rendered, ["sample 1"])
+    assert "F" * 400 in elided, "a prompt every sample shared is kept"
+    assert "M" * 400 in elided, "and so is the one the carried sample was run with"
+    assert "T" * 400 not in elided, "another sample's wording is not restated in the index"
+    assert "other 1 samples" in elided
+    assert "`chat`" in elided, "and the line names the context it dropped"
+
+
+def test_the_samples_the_comment_does_not_carry_are_accounted_for() -> None:
+    """An accounting, never a claim that the samples it left out AGREED — on a variant cohort
+    that claim is false, and it renders directly above the blocks showing how they differed.
+
+    The arithmetic closes the way the summary line's does: representative + matched +
+    diverged = pooled."""
+    consistent = report.samples_accounted(matched=12, diverged=2)
+    assert "Of 15 pooled samples" in consistent
+    assert "12 that matched it" in consistent and "2 that diverged" in consistent
+
+    # The end that mattered: when nothing agreed, say so rather than report it as a small number.
+    variant = report.samples_accounted(matched=0, diverged=14)
+    assert "**No pooled sample matched the representative**" in variant
+    assert "all 14 of the others diverged" in variant
+    assert "agreed" not in variant

@@ -16,7 +16,15 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections import Counter
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -33,6 +41,7 @@ from penny.config import Config
 from penny.constants import ChannelType, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
+    RoundFraming,
     StateClassifier,
     StateDecision,
     build_snapshot,
@@ -47,13 +56,20 @@ from penny.database.skills import (
     SkillDraft,
     SkillParameter,
     SkillStep,
+    SkillSubKind,
     build_binding_content,
     derive_collection_name,
     distill_steps,
     render_spoken_turns,
 )
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import (
+    LlmMessage,
+    LlmResponse,
+    LlmToolCall,
+    LlmToolCallFunction,
+    strip_harmony_control_tokens,
+)
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.responses import PennyResponse
@@ -318,17 +334,6 @@ class _Perf:
     output_chars: int = 0
     reasoning_tokens: int = 0
 
-    def merge(self, other: _Perf) -> None:
-        """Fold another drive's totals in — a ported case drives its cohort and its control,
-        and the cost it reports is the CASE's."""
-        self.calls += other.calls
-        self.duration_ms += other.duration_ms
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
-        self.thinking_chars += other.thinking_chars
-        self.output_chars += other.output_chars
-        self.reasoning_tokens += other.reasoning_tokens
-
     def add(self, perf: PromptPerf) -> None:
         self.calls += perf.calls
         self.duration_ms += perf.duration_ms
@@ -578,7 +583,7 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
     record of what the model did, not a harness-side spy.
     """
     return any(
-        any(call.get("function", {}).get("name") == tool_name for call in _response_tool_calls(row))
+        any(tool_call_name(call) == tool_name for call in _response_tool_calls(row))
         for row in live_prompts(db)
     )
 
@@ -603,7 +608,7 @@ def count_tool_calls(db: Database, tool_name: str) -> int:
         1
         for row in live_prompts(db)
         for call in _response_tool_calls(row)
-        if call.get("function", {}).get("name") == tool_name
+        if tool_call_name(call) == tool_name
     )
 
 
@@ -858,7 +863,7 @@ def last_tool_args(db: Database, tool_name: str) -> dict | None:
     "done")`` is ``{}`` when it closed.)"""
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
-            if call.get("function", {}).get("name") == tool_name:
+            if tool_call_name(call) == tool_name:
                 try:
                     return json.loads(call.get("function", {}).get("arguments") or "{}")
                 except json.JSONDecodeError, TypeError:
@@ -876,7 +881,7 @@ def tool_call_keys(db: Database, tool_name: str) -> list[str]:
     keys: list[str] = []
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
-            if call.get("function", {}).get("name") != tool_name:
+            if tool_call_name(call) != tool_name:
                 continue
             try:
                 args = json.loads(call.get("function", {}).get("arguments") or "{}")
@@ -899,8 +904,8 @@ def tool_call_sequence(db: Database) -> list[str]:
     names: list[str] = []
     for row in reversed(live_prompts(db)):
         for call in _response_tool_calls(row):
-            name = call.get("function", {}).get("name")
-            if isinstance(name, str):
+            name = tool_call_name(call)
+            if name:
                 names.append(name)
     return names
 
@@ -1079,9 +1084,7 @@ def chat_run_tool_sequences(db: Database) -> list[list[str]]:
             order.append(run_id)
             sequences[run_id] = []
         sequences[run_id] += [
-            name
-            for call in _response_tool_calls(row)
-            if isinstance(name := call.get("function", {}).get("name"), str)
+            name for call in _response_tool_calls(row) if (name := tool_call_name(call))
         ]
     return [sequences[run_id] for run_id in order]
 
@@ -1105,7 +1108,7 @@ def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
     values: list[str] = []
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
-            if call.get("function", {}).get("name") != tool_name:
+            if tool_call_name(call) != tool_name:
                 continue
             try:
                 args = json.loads(call.get("function", {}).get("arguments") or "{}")
@@ -1144,7 +1147,7 @@ def bracket_wrapped_key_calls(db: Database) -> list[str]:
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
             function = call.get("function", {})
-            if function.get("name") not in _KEY_BEARING_TOOLS:
+            if tool_call_name(call) not in _KEY_BEARING_TOOLS:
                 continue
             try:
                 args = json.loads(function.get("arguments") or "{}")
@@ -1168,6 +1171,23 @@ def looks_numbered(text: str) -> bool:
     instruction/tool-call recipe, not flowing prose.
     """
     return len(_NUMBERED_LINE.findall(text)) >= 2
+
+
+def tool_call_name(call: dict) -> str:
+    """One logged call's tool name, normalised the way PRODUCTION normalises it.
+
+    Every read of a tool name off the promptlog goes through here, because the raw name can
+    carry leaked Harmony control tokens (`collection_write<|channel|>commentary`, seen on two
+    samples of one run).  Production strips them at the boundary where the name is read off the
+    model response — ``LlmToolCallFunction.name``, via ``strip_harmony_control_tokens`` — so
+    registry lookup, done-detection, dedup and result framing all see the clean identifier, and
+    the eval reading the raw one was the single exception.
+
+    What it cost while it was the exception: `tool_was_called`, `count_tool_calls` and the
+    sequence readers silently missed a call the store proves ran, which converted a correct
+    sample into an outlier for a divergence that never happened.  Every case in the suite that
+    counts or detects a tool call was exposed to it, not just the one that surfaced it."""
+    return strip_harmony_control_tokens((call.get("function") or {}).get("name") or "")
 
 
 def _response_tool_calls(prompt_log) -> list[dict]:
@@ -1428,7 +1448,10 @@ def _render_call(function: dict) -> str:
 
 
 def _sample_turns(
-    rows: list[PromptLog], reply: str, driven: Sequence[str] = ()
+    rows: list[PromptLog],
+    reply: str,
+    driven: Sequence[str] = (),
+    delivered: Sequence[str] = (),
 ) -> list[tuple[str, str]]:
     """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
     multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
@@ -1447,11 +1470,22 @@ def _sample_turns(
     drove — so without this the transcript opened a step for a message nobody sent this
     sample, and the classifier, anchored to the first turn head, rendered under it instead of
     under the message it actually judged.  Seeded turns are context, not steps: they are in
-    the system prompt, the classifier's own slice, and the DB.  Empty ``driven`` keeps the
-    old behaviour, so a case that seeds nothing renders byte-identically."""
+    the system prompt, the classifier's own slice, and the DB.  An empty ``driven`` names
+    nothing to filter against, so every user message in the rows opens a step.
+
+    ``delivered`` is what Penny actually SENT.  A discarded draw is persisted whole (#1839 keeps
+    the ledger honest by re-rolling on the unchanged context and logging both attempts), and the
+    transcript is built from the promptlog — so every re-rolled text draw rendered as a 🤖 reply,
+    indistinguishable from the message the user received.  Measured on the reference run, all 18
+    samples carry exactly TWO outgoing messages and the report showed three: Penny sends one
+    message, the report claimed she sent two.  Rerolls are working machinery and must not appear
+    anywhere they can be read as output, so a text draw renders as a reply only if it was
+    delivered; the rest are collected by ``rejected_draws`` for their own fold.  An empty
+    ``delivered`` names nothing to exclude, so every draw renders as a reply."""
     turns: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     pushed = {content.strip() for content in driven}
+    sent = {content.strip() for content in delivered}
 
     def emit(actor: str, content: str) -> None:
         if content and (actor, content) not in seen:
@@ -1470,9 +1504,39 @@ def _sample_turns(
             elif role == "assistant":
                 for call in message.get("tool_calls") or []:
                     emit(_ACTOR["call"], _render_call(call.get("function", {})))
-                emit(_ACTOR["penny"], content)
+                if not sent or content.strip() in sent:
+                    emit(_ACTOR["penny"], content)
     emit(_ACTOR["penny"], reply.strip())
     return turns
+
+
+def _delivered_replies(db: Database) -> list[str]:
+    """What Penny actually SENT this sample, or nothing when the message log is absent.
+
+    Empty means "do not filter" — the pre-#1997 rendering — so a bare-schema database with no
+    `penny-messages` facade renders exactly as it always did rather than failing."""
+    if db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG) is None:
+        return []
+    return outgoing_replies(db)
+
+
+def rejected_draws(rows: list[PromptLog], delivered: Sequence[str]) -> list[str]:
+    """Every text draw this sample produced that was never sent.
+
+    Kept for diagnosis and rendered behind its own fold, labelled as a rejected draw — never in
+    the reply stream, where it reads as a message the user received."""
+    sent = {content.strip() for content in delivered}
+    if not sent:
+        return []
+    drawn: list[str] = []
+    for row in rows:
+        for message in _row_turns(row):
+            if message.get("role") != "assistant" or message.get("tool_calls"):
+                continue
+            content = (message.get("content") or "").strip()
+            if content and content not in sent and content not in drawn:
+                drawn.append(content)
+    return drawn
 
 
 # A check whose `anchor` is this sentinel is about the final NL reply itself (not a tool
@@ -1954,19 +2018,17 @@ def _scored_counts(result: SampleResult) -> tuple[int, int]:
 
 
 def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> str:
-    """The per-sample banner tail from the sample's promptlog perf + its scored result."""
+    """The per-sample banner tail from the sample's promptlog perf and its scored result.
+
+    No per-sample RATE: the cohort is the unit of scoring, so a sample carries only what is true
+    of it alone — whether it reached an answer, whether it got there shakily, what it cost."""
     perf = live_prompt_perf(db)
-    passed_checks, total = _scored_counts(result)
     return report.render_banner(
         passed=result.passed,
-        score=result.score,
-        passed_checks=passed_checks,
-        total_checks=total,
         cause=_cause_word(result.cause),
         fragile=result.fragile,
         duration_s=round(perf.duration_ms / 1000),
         calls=perf.calls,
-        checks_evaluated=evaluated,
     )
 
 
@@ -1998,6 +2060,7 @@ def _build_transcript(
     baseline: Baseline | None,
     case_id: str,
     sample_index: int,
+    delivered: Sequence[str] = (),
 ) -> report.SampleTranscript:
     """Assemble the ``report.SampleTranscript`` for one sample from its turns + scored result."""
     if not turns:
@@ -2012,14 +2075,32 @@ def _build_transcript(
     turn_of_check = {id(check): turn for turn, checks in placed.items() for check in checks}
     checks = _build_check_views(result, turn_of_check, turn_to_event, baseline, case_id)
     passed_checks, total = _scored_counts(result)
+    _record_case_prompts(case_id, sample_index, _system_prompts(rows))
     return report.build_sample(
         number=sample_index + 1,
         banner=_sample_banner(db, result, evaluated=True),
         events=events,
         checks=checks,
         run_close_score=f"{passed_checks}/{total}",
-        system_prompts=_system_prompts(rows),
+        rejected=rejected_draws(main_rows, delivered),
     )
+
+
+# Every sample's system prompts, held per case until the case document renders them.
+#
+# A cohort's samples are handed the SAME prompts, so the document states each distinct one once
+# rather than eighteen times (#1997) — but "distinct" is a fact about the whole case, and a
+# sample can only be read while its own database is live.  So each sample deposits what it was
+# given, keyed by the name the report knows it by, and the grouping happens at case close.
+_case_prompts: dict[str, list[tuple[str, report.SystemPrompt]]] = {}
+
+
+def _record_case_prompts(
+    case_id: str, sample_index: int, prompts: Sequence[report.SystemPrompt]
+) -> None:
+    """Hold one sample's system prompts until its case closes."""
+    label = f"{report.SAMPLE_ROW} {sample_index + 1}"
+    _case_prompts.setdefault(case_id, []).extend((label, prompt) for prompt in prompts)
 
 
 # Rendered sample blocks, held per case and written in SAMPLE order when the case closes.
@@ -2075,9 +2156,10 @@ def _write_sample_report(
     baseline = baseline_from_env()
     # Stamp fragile (same EVAL_REPORT_DIR gate as the artifact write) so it rides into the artifact.
     result.fragile = result.passed and sample_is_fragile(db)
-    turns = _sample_turns(main_rows, reply, driven)
+    delivered = _delivered_replies(db)
+    turns = _sample_turns(main_rows, reply, driven, delivered)
     transcript = _build_transcript(
-        db, result, turns, main_rows, rows, baseline, case_id, sample_index
+        db, result, turns, main_rows, rows, baseline, case_id, sample_index, delivered
     )
     _record_sample_block(case_id, sample_index, transcript)
 
@@ -2113,7 +2195,6 @@ async def _run_samples(
     drive: SampleDriver,
     attempts: int = 1,
     model: str = "",
-    index_offset: int = 0,
 ) -> tuple[list[SampleResult], _Perf]:
     """Drive ``samples`` hermetic samples of one case; return their results and perf.
 
@@ -2157,13 +2238,7 @@ async def _run_samples(
                     await server.stop()
         return None
 
-    # Sample indices continue across a case's DRIVES (its cohort, then its control): a
-    # sample's DB path and its report name are both keyed on the index, and nothing deletes a
-    # sample's DB — so restarting at 0 for the second drive would re-seed over the first
-    # drive's rows and inherit its promptlog, scoring the control against the cohort's turn.
-    driven = await asyncio.gather(
-        *(_sample(index) for index in range(index_offset, index_offset + samples))
-    )
+    driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
     _flush_sample_blocks(case_id)
     results = [result for result in driven if result is not None]
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
@@ -2251,6 +2326,14 @@ def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
         eval_cohort.RoutineRecord(
             name=skill.name,
             shape=render_skill_shape(skill),
+            open_parameters=sorted(
+                {
+                    substitution.parameter
+                    for step in steps_from_json(skill.steps)
+                    for substitution in step.substitutions
+                    if substitution.kind == SkillSubKind.HOLE and substitution.parameter is not None
+                }
+            ),
             names_a_destination=any(
                 substitution.attachment
                 for step in steps_from_json(skill.steps)
@@ -2287,6 +2370,48 @@ def _written_by_a_live_run(entry) -> bool:
     return any(stamp is not None and not is_seeded_run(stamp) for stamp in stamps)
 
 
+def _framed_container(db: Database) -> str | None:
+    """The container the round was framed on, read off the move that settled it.
+
+    From the MACHINE rather than guessed from the collections that appeared, because the claim
+    is whether the write landed where the turn was told to put it, and only the framing says
+    where that was."""
+    latest = db.machine.latest_transition()
+    if latest is None or latest.skill_frame is None:
+        return None
+    return RoundFraming.model_validate_json(latest.skill_frame).container
+
+
+def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
+    """Collections this round created that carry a schedule or a notify flag.
+
+    Scored against what the turn PRODUCED rather than the whole store: a seeded collection's own
+    cadence predates the round, and failing on it would report the fixtures as her doing."""
+    return sorted(
+        row.name
+        for row in db.memories.list_all()
+        if row.name not in before and (row.schedule is not None or row.notify)
+    )
+
+
+def _enacting_name(call: str) -> str | None:
+    """One logged call's enacting-tool name, or ``None`` where it enacted nothing.
+
+    The name is normalised through ``strip_harmony_control_tokens`` — the SAME function
+    production uses, not a second spelling of it.  That sanitiser runs at the boundary where a
+    tool name is read off the model response (``LlmToolCallFunction.name``), so every downstream
+    consumer — registry lookup, done-detection, dedup, result framing — already sees the clean
+    identifier.  This eval was the only consumer reading the raw one.
+
+    What that cost: two samples in one run logged `collection_write<|channel|>commentary`.  The
+    runtime dispatched them fine and their entries are in the store, but a membership test on the
+    raw name read them as a tool nobody has heard of and dropped them, so the sequence rendered
+    as `browse` alone and a correct sample was reported as an outlier for a divergence that never
+    happened.  Re-implementing the strip here would leave the eval measuring a normalisation
+    production does not do the moment either spelling changed."""
+    return name if (name := strip_harmony_control_tokens(call)) in ENACTING_TOOLS else None
+
+
 def _machine_walk(db: Database) -> str:
     """The machine's walk this sample, oldest move first — ``idle→learn, learn→apply``."""
     moves = reversed(db.machine.recent_transitions(limit=20))
@@ -2294,7 +2419,7 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, world: str, reply: str
+    db: Database, *, name: str, phrasing: str, reply: str, before: set[str]
 ) -> eval_cohort.SampleObservation:
     """Read everything one sample left behind, while its database is still live.
 
@@ -2303,23 +2428,27 @@ def _observe_sample(
     exclusion = _exclusion(db, reply)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, world=world, complete=False, exclusion=exclusion
+            name=name, phrasing=phrasing, complete=False, exclusion=exclusion
         )
     landed = db.machine.latest_transition()
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
-        world=world,
         landed=landed.to_state if landed else None,
         walk=_machine_walk(db),
         routines=_routine_records(db),
         entries=_stored_entries(db),
         tool_sequence=[
-            tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS
+            tool
+            for run in chat_run_tool_sequences(db)
+            for tool in (_enacting_name(call) for call in run)
+            if tool is not None
         ],
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
         given=given_to_the_model(db),
+        container=_framed_container(db),
+        scheduled=_scheduled_by_this_round(db, before),
     )
 
 
@@ -2346,34 +2475,24 @@ def _no_scorer(db: Database, before: set[str], reply: str) -> list[Check]:
     return []
 
 
-def _phrasing_label(
-    phrasings: Sequence[str], local_index: int, per_phrasing: int, world: str
-) -> str:
-    """What this sample is called in the report.
-
-    A CONTROL sample is named for its job rather than given a phrasing number: it is the same
-    words against a different world, so numbering it alongside the wordings would read as a
-    sixth phrasing — the exact confusion the control/phrasing split exists to prevent."""
-    if world != eval_cohort.BASE_WORLD:
-        return world
+def _phrasing_label(phrasings: Sequence[str], sample_index: int, per_phrasing: int) -> str:
+    """What this sample is called in the report — which of the case's wordings it ran."""
     if len(phrasings) > 1:
-        return f"phrasing {local_index // per_phrasing + 1}"
+        return f"phrasing {sample_index // per_phrasing + 1}"
     return "the ask"
 
 
-# The world a case declares nothing about — a cohort still needs one to compare a control
-# against, and this one matches nothing, so a claim made against it is vacuous rather than wrong.
+# The world a case declares nothing about — a cohort still needs one for its claims to read, and
+# this one matches nothing, so a claim made against it is vacuous rather than wrong.
 _NO_WORLD = World(name="unspecified", pages=(), keeps=(), excludes=())
 
 
 @dataclass
 class _PendingCase:
-    """One CASE's drives, waiting for the test body to make its claims.
+    """One CASE's drive, waiting for the test body to make its claims.
 
-    A ported case drives more than once — the cohort, then its control — and both belong to ONE
-    case: one artifact, one report, one gate.  The report also cannot be written when a drive
-    returns, since the claims are made after it in the case body.  So the drives accumulate here
-    and the case is finished at fixture teardown."""
+    The report cannot be written when the drive returns, since the claims are made after it in
+    the case body.  So the drive is parked here and the case is finished at fixture teardown."""
 
     case_id: str
     family: str | None
@@ -2381,7 +2500,7 @@ class _PendingCase:
     min_pass_rate: float | None
     gate_pathology_excluded: bool
     intended: int = 0
-    cohorts: list[Cohort] = field(default_factory=list)
+    cohort: Cohort | None = None
     results: list[SampleResult] = field(default_factory=list)
     perf: _Perf = field(default_factory=_Perf)
     driven: int = 0
@@ -2389,34 +2508,29 @@ class _PendingCase:
     def add(
         self, cohort: Cohort, results: Sequence[SampleResult], perf: _Perf, *, intended: int
     ) -> None:
-        """Fold one drive into the case.
-
-        A case's sample names must be DISTINCT across its drives, and it fails here if they are
-        not: names are how the cohort's claims are dealt back out to the samples that answered
-        them, so a collision would silently grade one sample against another's turn.  The same
-        index also keys the sample's database file, and nothing deletes those — a second drive
-        landing on the first drive's indices re-seeds over its rows and inherits its promptlog.
-        Caught loudly rather than read as a surprising number later."""
-        clash = {s.name for s in cohort.samples} & {s.name for s in self._observations()}
-        assert not clash, f"{self.case_id}: two drives produced the same sample name: {clash}"
-        self.cohorts.append(cohort)
+        """Park the case's drive until its body has made its claims."""
+        assert self.cohort is None, f"{self.case_id}: a case drives its cohort exactly once"
+        self.cohort = cohort
         self.results += results
-        self.perf.merge(perf)
+        self.perf = perf
         self.driven += len(results)
-        # What the CASE asked for is the sum over its drives — a case that drives a cohort and a
-        # control asked for both, so a dead-cohort refusal counts against the whole case.
         self.intended += intended
 
     @property
-    def primary(self) -> Cohort:
-        """The case's OWN cohort — the first drive.  A control absorbs its claims into this one,
-        so this is where the case's assertions and measured features live."""
-        return self.cohorts[0]
+    def driven_cohort(self) -> Cohort:
+        """The cohort this case drove — where its assertions and measured features live."""
+        assert self.cohort is not None, f"{self.case_id}: finished without a drive"
+        return self.cohort
 
     def finish(self) -> None:
         """Deal the claims back out to their samples, record, report, and gate."""
         self._grade()
-        _record_case_report(self.primary, self._observations(), self.perf, self.driven)
+        observations = self._observations()
+        # Computed ONCE and used by both halves: the document renders the standings, and the
+        # ASSEMBLER needs to know which sample to expand in the posted comment.  Deriving them
+        # twice would let the map and the expanded sample disagree about which one is modal.
+        standings = eval_cohort.standings(observations, self.driven_cohort.features)
+        _record_case_report(self.driven_cohort, observations, standings, self.perf, self.driven)
         _finish_case(
             self.case_id,
             self.family,
@@ -2427,24 +2541,48 @@ class _PendingCase:
             self.gate_pathology_excluded,
             self.driven,
             self.intended,
+            _expandable(standings),
+            Counter(standing.standing.value for standing in standings),
+            _variance_readings(observations, self.driven_cohort.features),
         )
 
     def _grade(self) -> None:
-        """Every claim any of the case's cohorts answered, redistributed to the sample that
-        answered it — the one seam where cohort-level claims meet per-sample grading."""
-        by_sample: dict[str, list[Check]] = {}
-        for cohort in self.cohorts:
-            for sample, checks in _cohort_checks(cohort).items():
-                by_sample.setdefault(sample, []).extend(checks)
+        """Every claim the cohort answered, redistributed to the sample that answered it — the
+        one seam where cohort-level claims meet per-sample grading."""
+        by_sample = _cohort_checks(self.driven_cohort)
         for result in self.results:
             if result.observation is not None:
                 result.adopt(by_sample.get(result.observation.name, []))
 
     def _observations(self) -> list[eval_cohort.SampleObservation]:
-        """Every sample the case drove, cohort and control alike.  Pooling narrows to the case's
-        own world; the harness section counts them all, because a control sample that died is a
-        sample this case drove and lost."""
-        return [cohort_sample for cohort in self.cohorts for cohort_sample in cohort.samples]
+        """Every sample the case drove."""
+        return list(self.driven_cohort.samples)
+
+
+def _variance_readings(
+    samples: Sequence[eval_cohort.SampleObservation], features: Sequence[eval_cohort.Feature]
+) -> list[eval_artifacts.VarianceReading]:
+    """What the case MEASURED, in the record, so the run header can roll a spread up across
+    cases — the per-case document computes this from the cohort, but the assembler runs as its
+    own process over the report dir and has no cohort to read."""
+    pooled = eval_cohort.pool(samples, features)
+    return [
+        eval_artifacts.VarianceReading(
+            name=feature.name,
+            entropy=feature.entropy,
+            saturated=feature.saturated,
+            distinct=feature.distinct,
+        )
+        for feature in pooled.features
+    ]
+
+
+def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
+    """The 1-based positions of the samples the posted comment carries in full.
+
+    Only the representative: an outlier is communicated by its DIVERGENCE, which is a few rows,
+    and a typical sample by the fact that it agreed.  Every sample stays whole in the artifact."""
+    return [index + 1 for index, s in enumerate(standings) if s.worth_opening]
 
 
 def _finish_case(
@@ -2457,8 +2595,12 @@ def _finish_case(
     gate_pathology_excluded: bool,
     driven: int,
     intended: int,
+    expand_samples: Sequence[int] = (),
+    standing_counts: Mapping[str, int] | None = None,
+    variance: Sequence[eval_artifacts.VarianceReading] = (),
 ) -> None:
     """Record the case's artifact, print its perf line, and apply its gate."""
+    _record_unported_prompts(case_id, driven)
     eval_artifacts.record_case(
         case_id=case_id,
         family=family,
@@ -2467,6 +2609,9 @@ def _finish_case(
         perf=perf,
         min_pass_rate=min_pass_rate,
         gate_pathology_excluded=gate_pathology_excluded,
+        expand_samples=expand_samples,
+        standing_counts=standing_counts,
+        variance=variance,
     )
     perf.report(case_id, driven)
     _assert_threshold(
@@ -2475,6 +2620,22 @@ def _finish_case(
         min_pass_rate,
         intended=intended,
         gate_pathology_excluded=gate_pathology_excluded,
+    )
+
+
+def _record_unported_prompts(case_id: str, driven: int) -> None:
+    """A case with no cohort still states its system prompts once. No-op off-report.
+
+    A ported case has already popped its prompts into the case document by the time this runs,
+    so this writes only for a case that never built one — which is what keeps the shared-once
+    rendering true of the whole suite rather than only of the part that has been ported."""
+    prompts = _case_prompts.pop(case_id, [])
+    if not prompts:
+        return
+    eval_artifacts.record_case_report(
+        case_id,
+        "",
+        report.render_prompt_variants(report.prompt_variants(prompts, total=driven)),
     )
 
 
@@ -2499,29 +2660,63 @@ def _cohort_checks(cohort: Cohort) -> dict[str, list[Check]]:
     return by_sample
 
 
+def _run_facts() -> report.RunFacts:
+    """Where this run came from, for the case's own table — empty off-report, where there is no
+    run to describe and the provenance rows are omitted rather than rendered blank."""
+    run = eval_artifacts.active_run()
+    if run is None:
+        return report.RunFacts()
+    manifest = run.manifest
+    return report.RunFacts(
+        commit=manifest.commit[:8],
+        provider=manifest.provider or "",
+        embeddings=manifest.embedding_model,
+        run_id=manifest.run_id,
+    )
+
+
 def _record_case_report(
     cohort: Cohort,
     samples: Sequence[eval_cohort.SampleObservation],
+    standings: Sequence[eval_cohort.SampleStanding],
     perf: _Perf,
     driven: int,
 ) -> None:
-    """Assemble and write the case's three-section report. No-op off-report."""
+    """Assemble and write the case's document — its three sections, then everything its samples
+    SHARE: the one ask in its several wordings, the one world, the system prompts, and the map
+    saying which samples to open. No-op off-report.
+
+    Assembled HERE rather than in the report layer because this is where the three halves meet:
+    the claims come from the case body, the pooled variance from the observations, and the
+    prompts from what each sample was handed while its database was live."""
+    variance = eval_cohort.pool(samples, cohort.features)
+    sections = report.CaseSections(
+        case_id=cohort.case_id,
+        model=cohort.model,
+        assertions=eval_assertions.assertion_rows(cohort.claims),
+        variance=variance,
+        cost=eval_cohort.per_sample_cost(
+            samples=driven,
+            calls=perf.calls,
+            duration_ms=perf.duration_ms,
+            input_tokens=perf.input_tokens,
+            output_tokens=perf.output_tokens,
+            reasoning_tokens=perf.reasoning_tokens,
+        ),
+        run=_run_facts(),
+    ).render()
+    prompts = _case_prompts.pop(cohort.case_id, [])
     eval_artifacts.record_case_report(
         cohort.case_id,
-        eval_cohort.CaseReport(
-            case_id=cohort.case_id,
-            model=cohort.model,
-            assertions=eval_assertions.assertion_rows(cohort.claims),
-            variance=eval_cohort.pool(samples, cohort.features, world=cohort.world.name),
-            cost=eval_cohort.per_sample_cost(
-                samples=driven,
-                calls=perf.calls,
-                duration_ms=perf.duration_ms,
-                input_tokens=perf.input_tokens,
-                output_tokens=perf.output_tokens,
-                reasoning_tokens=perf.reasoning_tokens,
-            ),
-        ).render(),
+        sections,
+        report.render_prompt_variants(report.prompt_variants(prompts, total=len(samples))),
+        report.render_case_tail(
+            phrasings=cohort.phrasings,
+            world=cohort.world.render(),
+            world_facts=report.WorldFacts(*cohort.world.counts),
+            outliers=list(enumerate(standings, start=1)),
+            everywhere_distinct=eval_cohort.everywhere_distinct(samples, cohort.features),
+        ),
     )
 
 
@@ -2614,7 +2809,7 @@ async def _drive_sample(
     wrap_client: Callable[[LlmClient], _InjectingClient] | None,
     timeout: float,
     retryable: bool,
-    observe: Callable[[Database, str], eval_cohort.SampleObservation] | None = None,
+    observe: Callable[[Database, str, set[str]], eval_cohort.SampleObservation] | None = None,
 ) -> SampleResult:
     """ONE attempt at one sample against an already-seeded Penny: drive the turns,
     score them, write the sample's report block and dump its thinking.
@@ -2648,7 +2843,7 @@ async def _drive_sample(
     # moment what the round left behind is available at all.  A timed-out sample reaches this
     # line too, so it is EXCLUDED by name rather than silently absent from the pool.
     if observe is not None:
-        result.observation = observe(penny.db, reply)
+        result.observation = observe(penny.db, reply, before)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
@@ -2720,7 +2915,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         spoken = [phrase for phrase in phrasings for _ in range(per_phrasing)]
         turns = [] if spoken else _conversation_turns(message, messages)
         driven = len(spoken) if spoken else samples
-        world_name = world.name if world is not None else eval_cohort.BASE_WORLD
         pages = list(world.pages) if world is not None else browse
 
         pending = (
@@ -2737,20 +2931,14 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             if spoken
             else None
         )
-        offset = pending.driven if pending is not None else 0
 
-        # A sample has TWO positions and confusing them is a real bug that has bitten twice: the
-        # GLOBAL index keys its database file and its report name (continuing across the case's
-        # drives, so the second drive cannot land on the first drive's files), while the LOCAL
-        # position says which of THIS drive's wordings it ran.  Converted once, here.
-        def _local(sample_index: int) -> int:
-            return sample_index - offset
-
-        def _observe(sample_index: int) -> Callable[[Database, str], eval_cohort.SampleObservation]:
-            phrasing = _phrasing_label(phrasings, _local(sample_index), per_phrasing, world_name)
+        def _observe(
+            sample_index: int,
+        ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
+            phrasing = _phrasing_label(phrasings, sample_index, per_phrasing)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, reply: _observe_sample(
-                db, name=name, phrasing=phrasing, world=world_name, reply=reply
+            return lambda db, reply, before: _observe_sample(
+                db, name=name, phrasing=phrasing, reply=reply, before=before
             )
 
         async def _drive(
@@ -2764,7 +2952,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 server,
                 case_id=case_id,
                 sample_index=sample_index,
-                turns=[spoken[_local(sample_index)]] if spoken else turns,
+                turns=[spoken[sample_index]] if spoken else turns,
                 score=score or _no_scorer,
                 wrap_client=wrap_client,
                 timeout=timeout,
@@ -2780,7 +2968,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             drive=_drive,
             attempts=_MODEL_CALL_ATTEMPTS,
             model=model,
-            index_offset=offset,
         )
         if not spoken:
             # A case that has not been ported is driven and gated inline, exactly as before, and
@@ -2803,6 +2990,10 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             model=model or _reporting_model(),
             world=world if world is not None else _NO_WORLD,
             samples=[r.observation for r in results if r.observation is not None],
+            phrasings=[
+                (_phrasing_label(phrasings, index * per_phrasing, per_phrasing), text)
+                for index, text in enumerate(phrasings)
+            ],
         )
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
@@ -3027,7 +3218,7 @@ def _ordered_calls(rows: list[PromptLog]) -> list[CycleCall]:
     with, decoded from the JSON string the wire stores them as."""
     return [
         CycleCall(
-            tool=call.get("function", {}).get("name", ""),
+            tool=tool_call_name(call),
             arguments=_decoded_arguments(call.get("function", {}).get("arguments")),
         )
         for row in sorted(rows, key=lambda row: row.timestamp)
@@ -3960,7 +4151,6 @@ def _write_classifier_report(
             events=events,
             checks=checks,
             run_close_score=f"{passed_checks}/{total}",
-            system_prompts=_system_prompts(rows),
         )
     _record_sample_block(case_id, sample_index, transcript)
 

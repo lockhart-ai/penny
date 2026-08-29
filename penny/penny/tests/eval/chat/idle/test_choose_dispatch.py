@@ -52,6 +52,7 @@ from penny.tests.eval.conftest import (
     live_prompts,
     new_collections,
     routing_clean,
+    tool_call_name,
     tool_call_sequence,
 )
 from penny.tests.eval.utils.dispatch_world import assert_dispatch_world
@@ -144,7 +145,7 @@ def _choose_calls(db: Database) -> list[dict]:
     for row in live_prompts(db):
         for call in _row_tool_calls(row):
             function = call.get("function", {})
-            if function.get("name") != _CHOOSE_TOOL:
+            if tool_call_name(call) != _CHOOSE_TOOL:
                 continue
             try:
                 calls.append(json.loads(function.get("arguments") or "{}"))

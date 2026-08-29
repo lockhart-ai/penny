@@ -23,6 +23,7 @@ from penny.tests.eval.conftest import (
     is_seeded_run,
     routing_clean,
 )
+from penny.tests.eval.utils.worlds import FOXES_URL, SEALS_URL
 
 # The enacting-tool set is read from the suite's shared fixtures, not restated here: the
 # state machine's elicitation edge asks the same question of a turn (nothing acted on
@@ -37,10 +38,6 @@ from penny.tests.eval.conftest import (
 # for.  What a probe asserts is the seed it stands beside, so the honest cost of not
 # widening a neighbour's fixture type is one restated probe, named here rather than left
 # for a reader to notice.
-from penny.tests.eval.utils.worlds import (
-    FOXES_URL,
-    SEALS_URL,
-)
 
 _FAMILY = "chat-memory"
 
@@ -156,6 +153,16 @@ def _routing_advisory(db: Database) -> Check:
 
 # Tokens that exist ONLY on one page, so a stored copy names which source it came from
 # and a fabricated entry matches neither.
+# The two-source watch ask, as `memory-writes-landed-source-down` has always asked it.  It stays
+# in the conversational register that case was written and measured against — it scores a reply
+# about a source being unreachable, not the shape of a demonstrated round, so the register work
+# on the learn case does not apply to it and changing it here would move an unrelated number.
+TWO_SOURCE_ASK = (
+    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
+    "each, and keep the headline plus a short blurb in a team news list for me"
+)
+
+
 _FOXES_TOKENS = ("brandt", "aurelio", "goalie")
 _SEALS_TOKENS = ("volk", "petra", "player development")
 
@@ -164,13 +171,3 @@ def _carries(db: Database, tokens: tuple[str, ...]) -> bool:
     """Whether any entry this run wrote carries one of a page's own tokens."""
     written = [_entry_text(entry) for _, entry in _entries_this_run_wrote(db)]
     return any(token in text for text in written for token in tokens)
-
-
-# ONE request in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
-# model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE
-# mechanism — measured, four scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides
-# the one that came apart.
-LEARN_CLOSE_ASK = (
-    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
-    "each, and keep the headline plus a short blurb in a team news list for me"
-)

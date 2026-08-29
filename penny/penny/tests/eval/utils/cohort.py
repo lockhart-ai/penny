@@ -2,8 +2,8 @@
 and what it MEASURES (#1994/#1995).
 
 **Asserted** is the state the round LEFT BEHIND: where the machine landed, what the store
-holds, that every specific value in the reply traces to something the model was given, and
-that the reply's facts move when the world moves.  Deterministic reads with a pass-rate floor.
+holds, and that every specific value in the reply traces to something the model was given.
+Deterministic reads with a pass-rate floor.
 
 **Measured** is everything the model CHOSE: which tools it called and in what order, the shape
 of the routine it recorded, the names it picked, the words it replied with.  Many routes reach
@@ -26,9 +26,8 @@ Two properties of the statistic decide how it may be read, both measured rather 
   every feature also carries a :class:`PhrasingRow`, reporting the weaker honest signal at
   n=3: a wording that produced a value **no other wording did**.
 
-A **control** is not a cohort arm.  Phrasings are *same world, different words* and are pooled;
-a control is *same words, different world* and is an ASSERTION.  It never enters the cohort
-sizing, and the driver keeps it a separate cohort so nothing can quietly average the two.
+A cohort's samples are HERMETIC — own database, own conversation, own pages — and every one of
+them was driven against the same world, so the spread is measured within the pool.
 """
 
 from __future__ import annotations
@@ -38,12 +37,10 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
-
-BASE_WORLD = "base"
-CONTROL_WORLD = "control"
 
 # How far above the observed spread a proposed ceiling sits.  Measured: subsampling real
 # 32-sample cohorts down to 15 puts the sampling noise on normalised entropy at ~±0.11, so a
@@ -65,6 +62,10 @@ class RoutineRecord(BaseModel):
     name: str
     shape: str
     names_a_destination: bool
+    # Spots the labelling draw left as leaf parameters.  A named spot stops being a parameter,
+    # and the labeller names every spot unconditionally — so a leftover one means the draw FELL
+    # BACK and the routine kept its arg-derived names.
+    open_parameters: list[str] = Field(default_factory=list)
 
 
 class StoredEntry(BaseModel):
@@ -96,7 +97,6 @@ class SampleObservation(BaseModel):
 
     name: str
     phrasing: str
-    world: str = BASE_WORLD
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
@@ -107,6 +107,13 @@ class SampleObservation(BaseModel):
     reply: str = ""
     reply_embedding: list[float] | None = None
     given: str = ""
+    # The container the round was FRAMED on, read off the move that settled it — the same anchor
+    # the turn's instruction rendered.  A write that landed anywhere else invented a destination
+    # over one it was given.
+    container: str | None = None
+    # Collections this round created that carry a schedule or a notify flag.  Learning must not
+    # INSTANTIATE, so this is empty on a correct round.
+    scheduled: list[str] = Field(default_factory=list)
 
     @property
     def stored_text(self) -> str:
@@ -131,6 +138,7 @@ class Claim(BaseModel):
     numbers instead of going red on the first miss."""
 
     label: str
+    category: SpecCategory
     kind: str = "state"
     outcomes: list[ClaimOutcome] = Field(default_factory=list)
 
@@ -153,9 +161,24 @@ class Claim(BaseModel):
 
 
 # ── What a case measures ─────────────────────────────────────────────────────
+class Consequence(StrEnum):
+    """What a divergence on this feature COSTS — declared where the case measures it.
+
+    Two classes, because there are two answers a reader needs and no more.  CONSEQUENTIAL means
+    a different value implies a different END STATE, so the sample is worth looking at
+    individually.  COSMETIC means it is measured, its entropy reported and its ceiling proposed,
+    and it says nothing about any one sample: container naming is unconstrained in BOTH measured
+    models at 0.90 entropy, which makes it a system-level finding for the variance table rather
+    than fifteen per-sample findings."""
+
+    CONSEQUENTIAL = "consequential"
+    COSMETIC = "cosmetic"
+
+
 @dataclass(frozen=True)
 class Feature:
-    """One measured axis: a name, and how to read one sample's value for it.
+    """One measured axis: a name, how to read one sample's value for it, and what a divergence
+    on it costs.
 
     A string, because what is being measured is DISTINCTNESS — two samples agree when they
     produced the same value, and every feature answers that the same way whatever it is
@@ -163,21 +186,36 @@ class Feature:
 
     name: str
     read: Callable[[SampleObservation], str]
+    consequence: Consequence = Consequence.CONSEQUENTIAL
 
 
 TOOL_SEQUENCE = Feature("tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call")
 ROUTINE_SHAPE = Feature(
     "routine shape", lambda o: " | ".join(r.shape for r in o.routines) or "no routine"
 )
-CONTAINER_NAME = Feature(
-    "container name", lambda o: ", ".join(sorted({e.collection for e in o.entries})) or "none"
+# What the framer called the routine.  Measured DIRECTLY rather than through the container it
+# produces: a container name is `derive_collection_name(skill.name, [parameter values])`, and on
+# the reference run the parameter half was byte-identical across all 18 samples — so measuring
+# the container measured the routine name through a slug function, under a label that hid what
+# it was.  Nothing about the naming MECHANISM is loose: `round_framing.container_name` is fully
+# deterministic and public precisely so a fixture cannot grow a second copy of the scheme.  What
+# varies is the framer's output, upstream of it.
+#
+# COSMETIC because the end state is equivalent whichever name is drawn — `watch_price` and
+# `monitor_listing_price` leave the same round, the same write and the same container shape
+# behind — so its spread belongs in the variance table as the FRAMER's naming spread, never as
+# a fact about one sample.
+ROUTINE_NAME = Feature(
+    "routine name",
+    lambda o: ", ".join(sorted({r.name for r in o.routines})) or "none",
+    consequence=Consequence.COSMETIC,
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
 TRANSITIONS = Feature("transitions", lambda o: o.walk)
 
 # Reply spread is pairwise rather than per-sample, so it is a marker the pooler recognises
 # rather than a value any one sample carries.
-REPLY_SPREAD = Feature("reply text", lambda o: o.reply)
+REPLY_SPREAD = Feature("reply text", lambda o: o.reply, consequence=Consequence.COSMETIC)
 
 
 class ExcludedSample(BaseModel):
@@ -222,6 +260,27 @@ class VarianceFeature(BaseModel):
     def modal_share(self) -> float:
         return self.modal / self.n if self.n else NO_SPREAD
 
+    @property
+    def saturated(self) -> bool:
+        """Whether this feature is too spread for a ceiling to mean anything.
+
+        A ceiling catches a RISE, and normalised entropy is bounded at 1.0 — so a feature already
+        near the top of its range gets a ceiling it could never breach, which prints a guard that
+        cannot fire.
+
+        The boundary is NO MAJORITY BEHAVIOUR: the modal value is not shared by even half
+        the samples (exactly half still counts as a majority).  Chosen over "most values are
+        distinct" because that reads the wrong quantity at small N — two distinct values in
+        three samples is ordinary spread, not saturation, and it would have silenced ceilings
+        on cohorts that plainly deserve one.  Measured on the reference run this separates the
+        real cases cleanly: the framer's naming sits at modal 5/15 and proposes nothing, while
+        tool sequence at 13/15 and routine shape at 15/15 both propose.
+
+        It needs no new constant — "half" is the same majority notion standing decides on — and
+        it is read off the two numbers the table already shows.  A judgement about where to stop
+        PROPOSING; nothing is gated on it and nothing fails because of it."""
+        return self.n > 0 and self.modal * 2 < self.n
+
 
 class TextSpread(BaseModel):
     """How far the cohort's REPLIES stand apart, via the shared similarity primitives rather
@@ -245,6 +304,56 @@ class CohortVariance(BaseModel):
     excluded: list[ExcludedSample] = Field(default_factory=list)
     features: list[VarianceFeature] = Field(default_factory=list)
     text: TextSpread | None = None
+
+    @property
+    def dominant_exclusion(self) -> tuple[str, int] | None:
+        """The reason that cost this case the most samples, or ``None`` when it lost none.
+
+        Read off the exclusions this cohort ALREADY named rather than from the run-level fault
+        tally: that tally is per PROCESS and cannot say which case a fault landed in, and a
+        second accounting of the same samples is a second number to disagree with the first.
+        Ties break on the reason so a re-render reads identically."""
+        if not self.excluded:
+            return None
+        counts = Counter(sample.reason for sample in self.excluded)
+        reason, count = max(counts.items(), key=lambda item: (item[1], item[0]))
+        return (reason, count)
+
+
+class VarianceHeadline(BaseModel):
+    """What varies MOST right now, and how much of the case varies at all.
+
+    Max entropy over EVERY feature — no gateable filter.  Surfacing and gating are different
+    jobs and saturation belongs only to the second: a ceiling exists to catch a RISE, so a
+    feature with no majority behaviour can carry none, and ``proposed_ceiling`` still refuses
+    one.  The headline answers a different question — *which aspect of this case is most
+    variant* — and excluding a saturated feature from it hides exactly the answer.  If the
+    framer's naming is the most variant thing here, that is true, and it is a finding about the
+    system rather than noise.
+
+    ``varying`` is the shape beside the magnitude, because "a bunch at zero and one high" and
+    "everything wobbling" are different findings that one maximum cannot tell apart.  Counted
+    STRUCTURALLY — more than one distinct value — so no magnitude threshold enters."""
+
+    feature: str | None = None
+    entropy: float = NO_SPREAD
+    varying: int = 0
+    total: int = 0
+
+    @property
+    def has_reading(self) -> bool:
+        return self.feature is not None
+
+
+def variance_headline(features: Sequence[VarianceFeature]) -> VarianceHeadline:
+    """The most variant feature across ``features``, and how many of them vary at all."""
+    top = max(features, key=lambda feature: feature.entropy, default=None)
+    return VarianceHeadline(
+        feature=top.name if top is not None else None,
+        entropy=top.entropy if top is not None else NO_SPREAD,
+        varying=sum(1 for feature in features if feature.distinct > 1),
+        total=len(features),
+    )
 
 
 class RecordedCeiling(BaseModel):
@@ -359,25 +468,18 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else NO_SPREAD
 
 
-def pool(
-    samples: Sequence[SampleObservation], features: Sequence[Feature], world: str = BASE_WORLD
-) -> CohortVariance:
+def pool(samples: Sequence[SampleObservation], features: Sequence[Feature]) -> CohortVariance:
     """Gate for completeness, THEN pool — the order is the point.
 
     Nothing is measured over a sample that did not run, and what is excluded is NAMED rather
     than subtracted, so a run that lost half its cohort reads as one that lost half its cohort
-    instead of as a suspiciously tidy one.
-
-    Only samples from the case's OWN world are pooled.  A control drives the same ask against
-    different facts to serve an ASSERTION, so folding its samples into the spread would report
-    a deliberate difference as instability — the exclusion is structural here rather than a
-    flag a case has to remember to set."""
+    instead of as a suspiciously tidy one."""
     excluded = [
         ExcludedSample(name=s.name, reason=s.exclusion or "the measured turn never ran")
         for s in samples
-        if not s.complete and s.world == world
+        if not s.complete
     ]
-    kept = [sample for sample in samples if sample.complete and sample.world == world]
+    kept = [sample for sample in samples if sample.complete]
     structural = [feature for feature in features if feature is not REPLY_SPREAD]
     return CohortVariance(
         pooled=len(kept),
@@ -390,9 +492,14 @@ def pool(
 
 def proposed_ceiling(
     feature: VarianceFeature, model: str, margin: float = CEILING_MARGIN
-) -> RecordedCeiling:
-    """The ceiling this run PROPOSES — observed plus the sampling margin.  Proposed, never
-    locked: a near-ceiling feature is a defect to fix first, not a threshold to record."""
+) -> RecordedCeiling | None:
+    """The ceiling this run PROPOSES — observed plus the sampling margin — or ``None`` where the
+    feature is already too spread for one to mean anything.
+
+    Proposed, never locked: a near-ceiling feature is a defect to fix first, not a threshold to
+    record, and proposing one anyway prints a guard that could not fire."""
+    if feature.saturated:
+        return None
     return RecordedCeiling(
         feature=feature.name,
         model=model,
@@ -476,13 +583,51 @@ def per_sample_cost(
     )
 
 
-# ── The case's own three-section report ──────────────────────────────────────
+# ── What a case's three sections are computed FROM ───────────────────────────
+#
+# The numbers live here; the document that renders them is ``report.py``.  The split is the
+# one the fan-out depends on: a case's arithmetic is written once and every future port
+# inherits it, while how a reader meets it is free to change without touching a single case.
+
+
+class SpecCategory(StrEnum):
+    """Which of the design's three kinds of deterministic assertion a claim is.
+
+    The list is CLOSED and the field is REQUIRED, which is the whole point: a check that fits no
+    category cannot be declared, so the audit is a fact the code states rather than a review
+    somebody has to remember to run.  A list kept in prose does not stop anything being written.
+
+    The rules themselves live in #1994 §A and #2011; they are deliberately not restated here,
+    because a third copy is a third thing to drift.
+
+    Distinct from ``kind`` (``state`` / ``reply`` / ``spine`` / ``proc``), which is a
+    render-and-gating class: ``kind`` decides how a claim renders and whether it can carry a
+    floor, ``category`` says which part of the design it satisfies.  Neither is derivable from
+    the other — PROVENANCE has both a gated store-side claim and an ungated reply-side one."""
+
+    LANDED = "landed"
+    STORE = "store"
+    PROVENANCE = "provenance"
+
+
+# A claim read out of PROSE THE MODEL WROTE, as against one read out of the machine, the
+# registry or the store.  It decides how a claim RENDERS and how its per-sample check is
+# anchored; it does not decide anything about gating, because assertions are not gated.
+REPLY_KIND = "reply"
+
+
 class AssertionRow(BaseModel):
-    """One claim's aggregate across the cohort — the section-A row."""
+    """One claim's aggregate across the cohort — the section-A row.
+
+    ``kind`` rides along because it says where the claim was read FROM, which is what anchors
+    its per-sample check; it no longer sorts claims into gated and ungated, because nothing on
+    this side is gated."""
 
     label: str
     passed: int
     total: int
+    category: SpecCategory
+    kind: str = "state"
     rationales: list[str] = Field(default_factory=list)
 
     @property
@@ -494,178 +639,221 @@ class AssertionRow(BaseModel):
         return self.total > 0 and self.passed == self.total
 
 
-class ProposedFloor(BaseModel):
-    """A claim's floor as it would be RECORDED, and whether it is worth recording.
+class AssertionSummary(BaseModel):
+    """Every deterministic check the case made, counted once — the case's assertion number.
 
-    A claim that already holds on every sample proposes itself as its own floor.  One that does
-    not is NOT proposed: the misses are naming work, and recording a floor underneath them
-    would bless the defect as the contract."""
+    ASSERTIONS ARE NOT GATED.  A deterministic check is a thing expected to be strictly true of
+    the run, and we expect them at 100%, so a floor under one adds nothing a reader could act
+    on: it would either sit at 1.00 and never fire, or sit below and bless the defect as the
+    contract.  What replaces it is this single reading, coloured on the ordinary scale and
+    REPORTED — nothing on the assertion side fails a run.
 
-    label: str
-    n: int
-    value: float
-    lockable: bool
-    note: str = ""
+    Counted as TOTAL CHECKS PASSED over TOTAL CHECKS — 9 claims x 15 samples = 135 — rather
+    than as a mean of per-claim rates.  While every claim shares a denominator the two are the
+    same number; they diverge the moment one does not, and the sum stays the direct reading of
+    "how many of the things that had to be true were" where the mean silently reweights a claim
+    that fewer samples answered."""
+
+    passed: int
+    total: int
+
+    @property
+    def rate(self) -> float:
+        return self.passed / self.total if self.total else NO_SPREAD
+
+    @property
+    def at_full(self) -> bool:
+        return self.total > 0 and self.passed == self.total
 
 
-def _missed_note(row: AssertionRow) -> str:
-    return f"{row.total - row.passed} of {row.total} missed — read those first"
-
-
-def proposed_floor(row: AssertionRow) -> ProposedFloor:
-    return ProposedFloor(
-        label=row.label,
-        n=row.total,
-        value=round(row.pass_rate, 3),
-        lockable=row.at_full,
-        note="" if row.at_full else _missed_note(row),
+def assertion_summary(rows: Sequence[AssertionRow]) -> AssertionSummary:
+    """The case's one assertion number, over every claim and every sample that answered it."""
+    return AssertionSummary(
+        passed=sum(row.passed for row in rows), total=sum(row.total for row in rows)
     )
 
 
-class CaseReport(BaseModel):
-    """One case's whole result: what was asserted, what was measured, what was thrown out.
+# ── Which samples a reader should open ───────────────────────────────────────
+#
+# The workflow has a human read ONE sample once the cohort is consistent, and that reading is
+# sound precisely BECAUSE the samples agree.  So the document hands them the right one rather
+# than making them choose — and when the cohort is still variant, the outliers are where the
+# work is.
 
-    Three different KINDS of claim, never mixed.  A reader who wants to know whether Penny is
-    correct reads A; one who wants to know whether she is stable reads B; one who wants to know
-    whether the run can be believed at all reads C — and C is read FIRST, because a cohort that
-    lost half its samples makes the other two a description of whatever survived."""
 
-    case_id: str
-    model: str = ""
-    assertions: list[AssertionRow] = Field(default_factory=list)
-    variance: CohortVariance = Field(default_factory=CohortVariance)
-    cost: SampleCost | None = None
+class Standing(StrEnum):
+    """What one sample is FOR, to a reader deciding where to look."""
 
-    def render(self) -> str:
-        """The summary method: the three sections, in the order they are read."""
-        return "\n\n".join(
-            [
-                f"#### `{self.case_id}` — end-state assertions, variance, harness",
-                self._assertions_section(),
-                self._variance_section(),
-                self._harness_section(),
-            ]
+    MODAL = "modal"
+    OUTLIER = "outlier"
+    TYPICAL = "typical"
+    DEAD = "dead"
+
+
+class FeatureDivergence(BaseModel):
+    """One feature on which a sample did something the representative did not.
+
+    This — not the sample's transcript — is what makes an outlier legible.  A sample is outlying
+    on a SPECIFIC feature, so rendering 19,000 characters of prose to say "its routine shape was
+    `browse → browse` where the representative's was `browse → log_read → collection_write`" is
+    the wrong thing by three orders of magnitude.  Show the divergence and its evidence; the
+    whole transcript is in the artifact for a reader who then wants it."""
+
+    feature: str
+    value: str
+    modal: str
+    consequence: Consequence = Consequence.CONSEQUENTIAL
+
+
+class SampleStanding(BaseModel):
+    """One sample's place in the cohort: which wording it ran, and whether to open it."""
+
+    name: str
+    phrasing: str
+    standing: Standing
+    shape: str
+    divergences: list[FeatureDivergence] = Field(default_factory=list)
+
+    @property
+    def worth_opening(self) -> bool:
+        """The one sample a reader is asked to READ.  An outlier is not opened — it is summarised
+        by what it did differently, which is a few rows rather than a whole transcript."""
+        return self.standing == Standing.MODAL
+
+
+def telling_features(
+    pooled: Sequence[SampleObservation], features: Sequence[Feature]
+) -> list[Feature]:
+    """The features that can say something about an INDIVIDUAL sample.
+
+    A feature whose every pooled value is distinct carries no information about any one of them:
+    if all fifteen samples differ, differing is not a divergence, and "this sample named the
+    container differently" is true by construction of all fifteen.  That fact belongs to the
+    FEATURE and is already stated once in the variance table as `15 distinct` — restating it
+    fifteen times as a per-sample finding is how a section meant to name the samples worth
+    looking at came to name every one of them.
+
+    Derived, not tuned: the condition is that no two samples agree, which is exactly the point at
+    which agreement stops being able to group anything.  A feature that is merely NEARLY that
+    variant still survives here, and the honest fix for that is the naming defect itself rather
+    than a threshold picked to hide it."""
+    structural = [f for f in features if f is not REPLY_SPREAD]
+    # Below three samples "no two agree" is not a degeneracy, it is the ordinary case: with two
+    # samples there is ONE pair, and their disagreeing carries exactly as much information as
+    # anything else does.  The rule targets "every sample invented its own value", which cannot
+    # be told apart from ordinary disagreement until a third sample can join a group.
+    if len(pooled) < 3:
+        return structural
+    return [
+        feature
+        for feature in structural
+        if max(Counter(feature.read(s) for s in pooled).values()) > 1
+    ]
+
+
+def everywhere_distinct(
+    samples: Sequence[SampleObservation], features: Sequence[Feature]
+) -> list[str]:
+    """The features every pooled sample gave a different value — named so the report can say it
+    ONCE instead of repeating it under every sample."""
+    pooled = [s for s in samples if s.complete]
+    telling = {feature.name for feature in telling_features(pooled, features)}
+    return [
+        feature.name
+        for feature in features
+        if feature is not REPLY_SPREAD and feature.name not in telling
+    ]
+
+
+def sample_shape(sample: SampleObservation, features: Sequence[Feature]) -> str:
+    """One sample's whole measured shape — every feature's value at once.
+
+    The shape, not any single feature, is what makes a sample typical or not: a sample agreeing
+    on tool sequence while inventing its own routine shape is an outlier, and reading one feature
+    at a time would file it under the majority."""
+    return " · ".join(feature.read(sample) for feature in features if feature is not REPLY_SPREAD)
+
+
+def standings(
+    samples: Sequence[SampleObservation], features: Sequence[Feature]
+) -> list[SampleStanding]:
+    """Each sample's standing, in the order the samples were driven.
+
+    Exactly ONE sample is modal — the first to carry the majority shape — because the workflow
+    asks a human to read one, and naming eight equally would put the choice straight back on
+    them.  Its shape-mates are typical and fold; everything that did something else is an
+    outlier and opens.  A dead sample is neither: it has no shape to be typical of, and is the
+    harness section's business rather than a reading recommendation."""
+    pooled = [s for s in samples if s.complete]
+    # Only the features that can distinguish one sample from another decide standing.  Including a
+    # maximally-variant one makes every shape unique, so every sample becomes an outlier and the
+    # modal sample is whichever happened to be first — the section names everything and therefore
+    # nothing.
+    # Two sets, deliberately: SHAPE decides standing and reads only the consequential features,
+    # because a cosmetic divergence implies no different end state and must not make an outlier.
+    # DIVERGENCES record both, so the cosmetic ones can be counted on one line rather than
+    # vanishing — measured but unreported is the same blindness as unmeasured.
+    telling = telling_features(pooled, features)
+    shape_of = [f for f in telling if f.consequence is Consequence.CONSEQUENTIAL]
+    shapes = Counter(sample_shape(s, shape_of) for s in pooled)
+    modal_shape = shapes.most_common(1)[0][0] if shapes else ""
+    # Divergence is measured against the REPRESENTATIVE sample rather than against each feature's
+    # own mode, so the two halves of the report cannot disagree: the sample the reader is sent to
+    # read has, by construction, nothing in its own divergence list.
+    representative = next((s for s in pooled if sample_shape(s, shape_of) == modal_shape), None)
+    seen_modal = False
+    out: list[SampleStanding] = []
+    for sample in samples:
+        if not sample.complete:
+            # A dead sample has no shape to be typical of: it never ran its measured turn, and
+            # it is the harness section's business rather than a reading recommendation.
+            out.append(
+                SampleStanding(
+                    name=sample.name,
+                    phrasing=sample.phrasing,
+                    standing=Standing.DEAD,
+                    shape="",
+                )
+            )
+            continue
+        shape = sample_shape(sample, shape_of)
+        if shape != modal_shape:
+            standing = Standing.OUTLIER
+        elif seen_modal:
+            standing = Standing.TYPICAL
+        else:
+            standing, seen_modal = Standing.MODAL, True
+        out.append(
+            SampleStanding(
+                name=sample.name,
+                phrasing=sample.phrasing,
+                standing=standing,
+                shape=shape,
+                divergences=divergences(sample, representative, telling),
+            )
         )
+    return out
 
-    def _assertions_section(self) -> str:
-        if not self.assertions:
-            return f"{_SECTION_A}\n\n_(no assertions)_"
-        rows = "\n".join(_assertion_row(row) for row in self.assertions)
-        return f"{_SECTION_A}\n\n{_ASSERTION_HEAD}\n{rows}"
 
-    def _variance_section(self) -> str:
-        if not self.variance.features:
-            return f"{_SECTION_B}\n\n_(nothing pooled — see the harness section)_"
-        rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
-        note = _CEILING_NOTE.format(n=self.variance.pooled)
-        parts = [f"{_SECTION_B}\n\n{_VARIANCE_HEAD}\n{rows}", note, self._phrasing_block()]
-        if self.variance.text is not None:
-            parts.append(_text_line(self.variance.text))
-        if self.cost is not None:
-            parts.append(_cost_block(self.cost, self.model))
-        return "\n\n".join(parts)
-
-    def _phrasing_block(self) -> str:
-        """Only the FLAGGED rows render: an unflagged phrasing agreeing with its neighbours is
-        the ordinary case and says nothing a reader needs."""
-        flagged = [
-            (feature.name, row)
-            for feature in self.variance.features
-            for row in feature.phrasings
-            if row.flagged
-        ]
-        if not flagged:
-            return _NO_PHRASING_OUTLIERS
-        rows = "\n".join(
-            f"| `{name}` | {row.arm} | {row.distinct}/{row.n} | {_values(row.only_here)} |"
-            for name, row in flagged
+def divergences(
+    sample: SampleObservation,
+    representative: SampleObservation | None,
+    features: Sequence[Feature],
+) -> list[FeatureDivergence]:
+    """Every feature on which ``sample`` differs from the representative, with both values."""
+    if representative is None or sample.name == representative.name:
+        return []
+    return [
+        FeatureDivergence(
+            feature=feature.name,
+            value=mine,
+            modal=theirs,
+            consequence=feature.consequence,
         )
-        return f"{_PHRASING_LEAD}\n\n{_PHRASING_HEAD}\n{rows}"
-
-    def _harness_section(self) -> str:
-        excluded = self.variance.excluded
-        counts = (
-            f"{self.variance.pooled} pooled of {self.variance.driven} driven · "
-            f"{len(excluded)} excluded"
-        )
-        if not excluded:
-            return f"{_SECTION_C}\n\n{counts} — every sample ran its measured turn."
-        named = "\n".join(f"- `{s.name}` — {s.reason}" for s in excluded)
-        return f"{_SECTION_C}\n\n{counts}\n\n{named}"
-
-
-_SECTION_A = "**A. Deterministic assertions — end state only.**"
-_SECTION_B = "**B. Variance — model output.**"
-_SECTION_C = "**C. Harness — samples too broken to count.**"
-_ASSERTION_HEAD = "| assertion | held | rate | proposed floor |\n|---|---|---|---|"
-_VARIANCE_HEAD = (
-    "| feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|"
-)
-_PHRASING_HEAD = "| feature | phrasing | distinct | only under this wording |\n|---|---|---|---|"
-_PHRASING_LEAD = (
-    "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
-    "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
-    "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
-    "pooled number above hides exactly what they are for._"
-)
-_NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
-_CEILING_NOTE = (
-    "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
-    "Each is recorded as `(feature, model, N={n}, value)` and a comparison across either "
-    "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
-    "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
-    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
-)
-_COST_LEAD = "**Cost, per sample.**"
-_COST_HEAD = "| tokens | observed | proposed ceiling |\n|---|---|---|"
-_COST_NOTE = (
-    "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
-    "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
-    "MODEL's, so a rise on a fixed prompt is a model or config change. Both ceilings are "
-    "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
-    "number rather than a measured one._"
-)
-
-
-def _assertion_row(row: AssertionRow) -> str:
-    floor = proposed_floor(row)
-    proposal = f"`{floor.value:.2f}`" if floor.lockable else f"— {floor.note}"
-    return f"| {row.label} | {row.passed}/{row.total} | {row.pass_rate:.2f} | {proposal} |"
-
-
-def _variance_row(feature: VarianceFeature, model: str) -> str:
-    ceiling = proposed_ceiling(feature, model)
-    return (
-        f"| `{feature.name}` | {feature.distinct} | {feature.modal}/{feature.n} "
-        f"({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
-        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n} |"
-    )
-
-
-def _cost_block(cost: SampleCost, model: str) -> str:
-    rows = "\n".join(
-        f"| {label} | {observed:,.0f} | `{observed * (1 + COST_CEILING_MARGIN):,.0f}` @ {model} |"
-        for label, observed in (
-            ("input tokens (ours — prompt and context)", cost.input_tokens),
-            ("output tokens (the model's)", cost.output_tokens),
-        )
-    )
-    tail = (
-        f"Also per sample: {cost.calls:,.1f} calls · {cost.seconds:,.0f}s · "
-        f"{cost.reasoning_tokens:,.0f} reasoning tokens ({cost.reasoning_share:.0%} of output)."
-    )
-    return f"{_COST_LEAD}\n\n{_COST_HEAD}\n{rows}\n\n{tail}\n\n{_COST_NOTE}"
-
-
-def _text_line(text: TextSpread) -> str:
-    return (
-        f"Reply text over {text.pairs} pairs — cosine mean {text.cosine_mean:.3f} "
-        f"min {text.cosine_min:.3f} · containment mean {text.containment_mean:.3f}"
-    )
-
-
-def _values(values: Sequence[str]) -> str:
-    return ", ".join(f"`{value}`" for value in values) if values else "—"
+        for feature in features
+        if feature is not REPLY_SPREAD
+        and (mine := feature.read(sample)) != (theirs := feature.read(representative))
+    ]
 
 
 # ── Provenance: does a specific value trace to something the model was given? ──
@@ -680,11 +868,14 @@ def _values(values: Sequence[str]) -> str:
 # implementation.
 #
 # THE BLIND SPOTS, STATED: a single-word invention, and a recombination of two real names.
-# The cross-world form of each is already an assertion of its own — a reply naming the world it
-# was not given fails DIRECTED CHANGE — so what is uncovered is a value belonging to NEITHER
-# world, a narrower gap than the false-positive rate it buys off.
+# Nothing else in the suite covers them.  Tightening the rule to catch them is what the measured
+# false-positive rate above rules out, so the miss is the bought half of that trade.
 _NUMBER = r"\d[\d,.:%$]*"
-_URL = r"https?://\S+"
+# A URL runs to the first whitespace, MINUS any sentence mark it ran into: `\S+` alone captured
+# the full stop closing the sentence, and `…/aurora-deck-2.` matches no world.  Only `.,;:!?` are
+# refused as the LAST character, so a url legitimately ending in a bracket, a slash or a dash —
+# `…/Foo_(bar)`, `…/news/` — keeps it.
+_URL = r"https?://\S*[^\s.,;:!?]"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"
 _NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
 _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
@@ -693,20 +884,45 @@ _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
 # not built across them — otherwise a clause boundary glues two sentences into one "name".
 _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 
+# ONE folding, used by every probe on both sides of every comparison.  A semantic check defeated
+# by cosmetics is a scorer bug, and two spellings of "fold the typography" drift apart: measured,
+# a reply citing the URL it was given — with U+2011 non-breaking hyphens for its dashes — read as
+# an INVENTION here while the claim next door folded that dash and agreed the value was sourced.
+#
 # The model emits whichever apostrophe its tokenizer prefers; not folding them reported `I’ve`
 # and `Brandt’s` as inventions.
 _APOSTROPHES = "’‘`´"
+# Dashes it draws instead of a hyphen — in a URL, in a name, anywhere.
+_DASHES = "‐‑‒–—−"
+# Spaces that are not the space key, including the zero-width one that glues two words together.
+_SPACES = " ​  "
+_QUOTES = (("“", '"'), ("”", '"'))
+# Markdown emphasis wrapped around a value: `**$499**` is the value `$499`.
+_DROPPED = "*"
 
 
-def _fold(text: str) -> str:
+def fold_typography(text: str) -> str:
+    """Fold the typography the model sprinkles into its output so a SEMANTIC probe is not
+    defeated by cosmetics.  A 0/N from an un-normalised probe is a scorer bug.
+
+    The ONE definition: every probe on either side of any comparison folds through here, so a
+    dash the store claim tolerates cannot be an invention to the provenance claim."""
     for mark in _APOSTROPHES:
         text = text.replace(mark, "'")
+    for dash in _DASHES:
+        text = text.replace(dash, "-")
+    for space in _SPACES:
+        text = text.replace(space, " ")
+    for source, target in _QUOTES:
+        text = text.replace(source, target)
+    for mark in _DROPPED:
+        text = text.replace(mark, "")
     return text.casefold()
 
 
 def _bare(token: str) -> str:
     """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``."""
-    folded = _fold(token)
+    folded = fold_typography(token)
     return folded[:-2] if folded.endswith("'s") else folded
 
 
@@ -750,7 +966,7 @@ def unsourced_specifics(text: str, given: str) -> list[str]:
     An empty list is the claim holding.  Matching folds apostrophes and drops possessives on
     both sides, because a value is usually said in a different shape from the one it arrived
     in — comparing raw forms reported the model's own grammar as an invention."""
-    haystack = " ".join(_bare(word) for word in _fold(given).split())
+    haystack = " ".join(_bare(word) for word in fold_typography(given).split())
     return [token for token in specifics(text) if _phrase_key(token) not in haystack]
 
 

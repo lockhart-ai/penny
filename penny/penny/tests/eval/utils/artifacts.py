@@ -36,6 +36,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from penny.tests.eval.utils import report as report_grammar
+
 # ── Environment contract (forwarded by the Makefile `eval` target) ───────────
 EVAL_REPORT_DIR_ENV = "EVAL_REPORT_DIR"
 EVAL_LEVER_ENV = "EVAL_LEVER"
@@ -318,6 +320,21 @@ class CaseTimings(BaseModel):
     reasoning_tokens: int = 0
 
 
+class VarianceReading(BaseModel):
+    """One measured feature as the RECORD keeps it — enough to roll a run's headline up.
+
+    The raw per-feature reading rather than the case's computed headline: a headline is a
+    JUDGEMENT about which features can carry a ceiling, and storing the judgement would mean a
+    later change to it could not re-render a run that is already on disk."""
+
+    name: str
+    entropy: float
+    saturated: bool
+    # How many values the feature took. Whether it VARIES is read structurally — more than one —
+    # so the run header needs no magnitude threshold to say how much of a case moved at all.
+    distinct: int = 1
+
+
 class CaseArtifact(BaseModel):
     """One case's line in ``results.jsonl`` — the mechanically-diffable record."""
 
@@ -338,6 +355,20 @@ class CaseArtifact(BaseModel):
     # ("mean" | "pathology-excluded mean"). Both None for a report-only case.
     min_pass_rate: float | None = None
     gate_metric: str | None = None
+    # Which samples the POSTED COMMENT carries in full (1-based), decided at case close where the
+    # cohort's standings exist.  It rides in the record because the assembler runs as its own
+    # process over the report dir and has no cohort — and re-deriving it from the rendered
+    # markdown would be the assembler guessing at what the case already knows.  Empty for a case
+    # that drove no cohort, which then keeps every sample expanded exactly as before.
+    expand_samples: list[int] = Field(default_factory=list)
+    # How many pooled samples matched the representative and how many diverged from it — so the
+    # posted comment can ACCOUNT for the samples it does not carry rather than assert something
+    # about them.
+    standing_counts: dict[str, int] = Field(default_factory=dict)
+    # What the case MEASURED, so the run header can roll a spread up across cases. Defaulted, so
+    # a record written before this field decodes as a run with no variance to report rather than
+    # failing to load at all.
+    variance: list[VarianceReading] = Field(default_factory=list)
 
 
 class RunManifest(BaseModel):
@@ -450,6 +481,9 @@ def build_case_artifact(
     timings: CaseTimings,
     min_pass_rate: float | None = None,
     gate_pathology_excluded: bool = False,
+    expand_samples: Sequence[int] = (),
+    standing_counts: Mapping[str, int] | None = None,
+    variance: Sequence[VarianceReading] = (),
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -475,6 +509,9 @@ def build_case_artifact(
         timings=timings,
         min_pass_rate=min_pass_rate,
         gate_metric=metric,
+        expand_samples=list(expand_samples),
+        standing_counts=dict(standing_counts or {}),
+        variance=list(variance),
     )
 
 
@@ -597,19 +634,23 @@ class EvalRun:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report.write_text(render_manifest_header(self.manifest) + "\n")
 
-    def write_case_report(self, case_id: str, rendered: str) -> None:
-        """Insert a case's own three-section report between the manifest header and its
-        sample transcripts (#1995).
+    def write_case_report(self, case_id: str, head: str, prompts: str = "", tail: str = "") -> None:
+        """Wrap this case's samples: scores ABOVE them, prompts and setup BELOW, each behind its
+        own marker so the assembler can order them around the sample it carries.
 
-        Inserted rather than appended: the sections summarise the case, so a reader meets
-        them before the samples they summarise — and the assembler passes everything above
-        the first sample fold through verbatim, so the on-disk report and the posted comment
-        carry ONE rendering rather than two that can disagree."""
+        The prompts are written apart from the setup because they belong to the SAMPLE rather than
+        to the case — the assembler folds them into the representative, where a reader following
+        one turn needs them."""
         report = self.report_dir / f"{case_id}.md"
         header = render_manifest_header(self.manifest) + "\n"
         body = report.read_text() if report.exists() else header
         rest = body[len(header) :] if body.startswith(header) else body
-        report.write_text(f"{header}{rendered}\n\n{rest.lstrip()}")
+        closing = ""
+        if prompts:
+            closing += f"\n\n{report_grammar.CASE_PROMPTS_MARKER}\n\n{prompts}"
+        if tail:
+            closing += f"\n\n{report_grammar.CASE_TAIL_MARKER}\n\n{tail}"
+        report.write_text(f"{header}{head}\n\n{rest.lstrip()}{closing}")
 
     def append_case(self, artifact: CaseArtifact) -> None:
         """Append one case's record to THIS process's results file."""
@@ -680,11 +721,11 @@ def begin_case(case_id: str) -> None:
         run.write_case_header(case_id)
 
 
-def record_case_report(case_id: str, rendered: str) -> None:
-    """Per-case entry point for the three-section report. No-op off-report."""
+def record_case_report(case_id: str, head: str, prompts: str = "", tail: str = "") -> None:
+    """Per-case entry point for the case document. No-op off-report."""
     run = active_run()
     if run is not None:
-        run.write_case_report(case_id, rendered)
+        run.write_case_report(case_id, head, prompts, tail)
 
 
 def record_case(
@@ -696,6 +737,9 @@ def record_case(
     perf: PerfTotals,
     min_pass_rate: float | None = None,
     gate_pathology_excluded: bool = False,
+    expand_samples: Sequence[int] = (),
+    standing_counts: Mapping[str, int] | None = None,
+    variance: Sequence[VarianceReading] = (),
 ) -> None:
     """Append the case's ``results.jsonl`` record. No-op off-report. The gate the case ran under
     (``min_pass_rate`` + which score it compares, #1725) rides into the record for the gate line."""
@@ -710,5 +754,8 @@ def record_case(
         timings=timings_from_perf(perf),
         min_pass_rate=min_pass_rate,
         gate_pathology_excluded=gate_pathology_excluded,
+        expand_samples=expand_samples,
+        standing_counts=standing_counts,
+        variance=variance,
     )
     run.append_case(artifact)

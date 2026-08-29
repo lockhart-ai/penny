@@ -8,6 +8,9 @@ variable's name, and what to write in it.
 from __future__ import annotations
 
 import json
+import pathlib
+import re
+import subprocess
 
 import pytest
 
@@ -121,3 +124,66 @@ class TestWhatTheRecipeReads:
 
         # A stray argument is a usage error, distinct from an unconfigured roster.
         assert main(["a", "b"]) == 2
+
+
+# ── What the Makefile actually hands this parser (#1997) ─────────────────────
+#
+# The roster is configuration, and configuration is read from the primary checkout's `.env` by
+# the Makefile's own `from_env` helper — so a JSON value passes through a shell unquoter written
+# for scalars like `LLM_API_KEY="abc"`.  That transformation is what these tests guard.
+#
+# VALIDATE THE SEAM, not either end.  Checking the FILE says it parses; checking the PARSER says
+# it accepts JSON; neither exercises what happens between them.  And an agent passing
+# `EVAL_MODELS` through the environment takes the other branch of `$${EVAL_MODELS:-...}` and
+# never touches the helper at all — so the path that breaks is the one a human uses, and it is
+# the one no other test covers.
+#
+# The guard runs the REAL helper, lifted out of the Makefile text rather than reimplemented here:
+# a reimplementation is a second copy of the logic, and a second copy drifts.
+
+
+def _from_env_helper(env_file: pathlib.Path) -> str:
+    """The `from_env` shell function, verbatim from the Makefile that defines it."""
+    for parent in pathlib.Path(__file__).resolve().parents:
+        makefile = parent / "Makefile"
+        if not makefile.is_file():
+            continue
+        text = makefile.read_text()
+        match = re.search(r"^\s*(from_env\(\) \{.*?\};)", text, re.M)
+        if match is None:
+            continue
+        # Make's own escaping is the only thing undone: `$$` is how a recipe spells a shell `$`,
+        # and the env path is a make variable.  The pipeline itself is carried over untouched.
+        return match.group(1).replace("$$", "$").replace("$(EVAL_PRIMARY_ENV)", str(env_file))
+    raise AssertionError("no Makefile defining from_env() above this test")
+
+
+def _resolve_through_the_makefile(tmp_path: pathlib.Path, name: str, line: str) -> str:
+    """What `from_env <name>` yields for a `.env` holding ``line`` — run in a real shell."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(line + "\n")
+    helper = _from_env_helper(env_file)
+    done = subprocess.run(
+        ["sh", "-c", f"{helper} from_env {name}"], capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+class TestTheMakefileHandsTheRosterWhatIsConfigured:
+    """A roster that parses in `.env` and not after the Makefile has read it is not configured."""
+
+    def test_a_json_roster_survives_being_read_out_of_the_env_file(self, tmp_path) -> None:
+        """A roster that parses in `.env` and not after the Makefile has read it is not
+        configured — the value must survive the read byte for byte."""
+        resolved = _resolve_through_the_makefile(
+            tmp_path, EVAL_MODELS_ENV, f"{EVAL_MODELS_ENV}={_ROSTER}"
+        )
+        assert resolved == _ROSTER, "the Makefile mangled the roster on its way to the parser"
+        assert len(parse_roster(resolved)) == MINIMUM_MODELS, "and the parser still accepts it"
+
+    def test_a_quoted_scalar_still_arrives_unquoted(self, tmp_path) -> None:
+        """The paired over-correction guard: the helper exists to unquote a credential, and a
+        fix that stopped doing that would trade this bug for an unusable API key."""
+        assert _resolve_through_the_makefile(tmp_path, "LLM_API_KEY", 'LLM_API_KEY="abc"') == "abc"
+        assert _resolve_through_the_makefile(tmp_path, "LLM_API_KEY", "LLM_API_KEY='abc'") == "abc"
+        assert _resolve_through_the_makefile(tmp_path, "LLM_API_KEY", "LLM_API_KEY=abc") == "abc"

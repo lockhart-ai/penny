@@ -2,9 +2,11 @@
 
 This is the PURE renderer for one sample's transcript: it turns a structured
 ``SampleTranscript`` (built from the persisted promptlog by ``conftest.py``) into the
-per-step markdown tables the format spec (``docs/eval-report-format.md``) defines. No
-model, no git, no DB — a hand-built ``SampleTranscript`` renders identically to one
-extracted from a real run, which is what makes the whole-render tests possible.
+per-step markdown tables. There is no format document: the format is what this module
+renders and what ``test_report.py`` pins as whole-render literals, so a prose description
+of it would be a third copy free to drift from both. No model, no git, no DB — a
+hand-built ``SampleTranscript`` renders identically to one extracted from a real run,
+which is what makes the whole-render tests possible.
 
 The grammar (one fixed form per row type, used identically everywhere):
 
@@ -25,10 +27,12 @@ verdicts on their own ``expected`` rows in a trailing ``run-close`` table.
 
 from __future__ import annotations
 
-import difflib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from penny.tests.eval.utils import cohort
 
 # ── Actor glyphs (the transcript-event vocabulary) ───────────────────────────
 ACTOR_USER = "👤"
@@ -70,12 +74,14 @@ ROW_NOTE = "note"
 
 RUN_CLOSE_LABEL = "run-close"
 RUN_CLOSE_TITLE = "whole-conversation contracts"
-EMPTY_THINKING = "💭 (empty)"
+NO_USER_TURN = "_(seeded round — no user turn)_"
 NO_TURNS_PLACEHOLDER = (
     "_(no completed turns recorded — the sample produced no finished model call, "
     "e.g. a harness timeout)_"
 )
 TABLE_DIVIDER = "|---|---|---|"
+# A markdown code fence is three backticks at minimum; a longer one is grown per text.
+_MIN_FENCE = 3
 CELL_TRUNCATE_LIMIT = 500  # an actual cell over this collapses into a single <details> (#1759)
 
 # ── Sample-block grammar (the uniform-collapse skeleton, #1753) ───────────────
@@ -83,6 +89,24 @@ SAMPLE_ROW = "sample"  # every sample banner opens ``sample N — <banner>``
 
 
 # ── Deterministic cell hygiene ───────────────────────────────────────────────
+def fenced(text: str) -> str:
+    """Literal text, VERBATIM — quoted as a code block rather than rendered as markdown.
+
+    A prompt is text the model RECEIVED, not prose this document is asserting. Rendering it
+    would show a reader something different from what the model was handed: `#` becomes a
+    heading, `**bold**` becomes bold, backticks vanish into code spans, `- ` becomes a bullet.
+    Every one of those is the report quietly editing its own evidence, and for a document whose
+    whole job is to show what happened that is a fidelity failure. Polluting the outline — a
+    quoted `## Penny's current state` outranking the case heading — is only its most visible
+    symptom.
+
+    The fence is grown longer than the longest backtick run inside, so text that itself contains
+    a code fence still closes where it should instead of ending the block early."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(_MIN_FENCE, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
 def escape_cell(text: str) -> str:
     """One table cell: escape ``|`` and render newlines as ``<br>`` so a multi-line body
     stays inside its cell (the cell-escaping rule)."""
@@ -154,27 +178,36 @@ class Row:
 
 
 def thinking_row(thinking: str) -> Row:
-    """A 💭 row — an always-collapsed ``<details>`` above the action it produced. Empty
-    thinking renders as ``💭 (empty)`` (an empty thought before a degenerate act is signal)."""
-    body = EMPTY_THINKING if not thinking.strip() else _thinking_details(thinking)
-    return Row(ROW_THINKING, body, escape=False)
+    """A 💭 row — an always-collapsed ``<details>`` above the action it produced."""
+    return Row(ROW_THINKING, _thinking_details(thinking), escape=False)
 
 
 def micro_thinking_row(thinking: str, context: str | None = None) -> Row:
-    """A 💭 row for a micro-context call — labelled ``thinking (<context>)`` so the sub-model's
-    reasoning is attributed to the actor that produced it (#1773); an event naming no context
-    keeps the generic ``thinking (micro-context)``."""
-    if not thinking.strip():
-        return Row(ROW_THINKING, EMPTY_THINKING, escape=False)
-    body = _thinking_details(thinking, summary=f"thinking ({context or MICRO_CONTEXT_LABEL})")
-    return Row(ROW_THINKING, body, escape=False)
+    """A 💭 row for a micro-context call — labelled with the actor whose reasoning it is (#1773),
+    so a sub-model's thinking is never read as the main loop's."""
+    return Row(
+        ROW_THINKING,
+        _thinking_details(thinking, context=context or MICRO_CONTEXT_LABEL),
+        escape=False,
+    )
 
 
-def _thinking_details(thinking: str, summary: str = "thinking") -> str:
-    """The collapsed ``<details>`` markup for a thinking trace (newlines collapsed to spaces so
-    the whole trace stays inside one table cell)."""
+def _thinking_details(thinking: str, context: str = "") -> str:
+    """The markup for a thinking trace: a collapsed fold, or the trace itself when folding it
+    would cost more than it saves.
+
+    A fold whose contents are shorter than its own summary is pure overhead — `thinking — 12
+    chars` wrapping twelve characters asks for a click to reveal less text than the click target.
+    Derived, not tuned: the saving has to be real."""
     body = escape_cell(thinking.strip()).replace("<br>", " ")
-    return f"<details><summary>{summary}</summary>{body}</details>"
+    label = _thinking_label(context, len(thinking.strip()))
+    if len(body) <= len(label):
+        return f"{label}: {body}" if context else body
+    return f"<details><summary>{label}</summary>{body}</details>"
+
+
+def _thinking_label(context: str, chars: int) -> str:
+    return THINKING_LABEL.format(context=f" ({context})" if context else "", chars=chars)
 
 
 # ── A step (a user turn and everything it produced) ──────────────────────────
@@ -190,8 +223,16 @@ class Step:
     rows: list[Row]
 
     def render(self) -> str:
-        msg = escape_cell(self.user_message)
-        header = f'| step {self.number} · {ACTOR_USER} | "{msg}" | {self.verdict} |'
+        """A step opens on its user turn — or says it had none, rather than quoting nothing.
+
+        The opening step of a seeded round has no user message (the round was laid down before
+        the measured turn), and `| step 1 · 👤 | "" |` renders that as a turn where the user said
+        the empty string."""
+        if self.user_message.strip():
+            opener = f'{ACTOR_USER} | "{escape_cell(self.user_message)}"'
+        else:
+            opener = f"| {NO_USER_TURN}"
+        header = f"| step {self.number} · {opener} | {self.verdict} |"
         return "\n".join([header, TABLE_DIVIDER, *[row.render() for row in self.rows]])
 
 
@@ -223,161 +264,870 @@ class SystemPrompt:
 
     def render(self) -> str:
         summary = f"{SYSTEM_PROMPT_LABEL} — {self.context} ({len(self.text)} chars)"
-        return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
+        return f"<details><summary>{summary}</summary>\n\n{fenced(self.text)}\n\n</details>"
 
 
-# ── Hoisting the SHARED part of a case's system prompts (#1763) ─────────────
-SHARED_PROMPT_HEADING = "#### Shared system prompt"
-SHARED_PROMPT_MARKER = "_[shared block — see **Shared system prompt** above]_"
-_CASE_HEADING = re.compile(r"^### `[^`]+` — .*$", re.MULTILINE)
-_SYSTEM_PROMPT_BLOCK = re.compile(
-    rf"<details><summary>{re.escape(SYSTEM_PROMPT_LABEL)} — "
-    r"(?P<context>[^(]+) \((?P<size>\d+) chars\)</summary>\n\n(?P<text>.*?)\n\n</details>",
-    re.DOTALL,
+# ── How a case reads at a glance ─────────────────────────────────────────────
+#
+# The default view of a run is ONE LINE PER CASE.  Everything else is behind a fold, so ~100
+# cases is ~100 lines a person can page through, and any case opens to its full detail.
+#
+# The scale is a THRESHOLD scale, not a set of states: a rate of 0.61 should look like a warning
+# at a glance rather than sharing a glyph with 0.05.  Colour is reserved for what is GATED —
+# grey means measured with no threshold behind it, which is most of the report today and must
+# never read as passing.  A reply-content claim at 1.00 is grey for exactly that reason: it has
+# no floor and cannot carry one at this N, so a green tick would re-imply the gate the noise
+# measurement says does not exist.
+
+PASS_GLYPH = "🟢"
+WARN_GLYPH = "🟡"
+FAIL_GLYPH = "🔴"
+UNGATED_GLYPH = "⚪"
+
+PASS_ABOVE = 0.90
+WARN_ABOVE = 0.50
+
+GLYPH_KEY = (
+    f"_{PASS_GLYPH} >90% · {WARN_GLYPH} 50–90% · {FAIL_GLYPH} <50% · "
+    f"{UNGATED_GLYPH} measured, no threshold accepted_"
+)
+
+# Worst-first, so the one line a reader scans carries the problem rather than the average.
+_SEVERITY = {FAIL_GLYPH: 3, WARN_GLYPH: 2, UNGATED_GLYPH: 1, PASS_GLYPH: 0}
+
+
+def worst_glyph(glyphs: Sequence[str]) -> str:
+    """The most serious state among ``glyphs`` — what the case's one line carries."""
+    return max(glyphs, key=lambda g: _SEVERITY[g], default=PASS_GLYPH)
+
+
+def rate_glyph(rate: float) -> str:
+    """Where a pass rate falls on the scale."""
+    if rate > PASS_ABOVE:
+        return PASS_GLYPH
+    return WARN_GLYPH if rate >= WARN_ABOVE else FAIL_GLYPH
+
+
+def assertion_glyph(row: cohort.AssertionRow) -> str:
+    """A claim's colour, read off its rate.
+
+    Every claim colours the same way now: with no floors there is no gated/ungated split to
+    make one grey, and a claim read out of model prose is counted like any other."""
+    return rate_glyph(row.pass_rate)
+
+
+def cost_glyph(cost: cohort.SampleCost | None) -> str:
+    """Cost carries a one-sided ceiling per model, proposed and not yet accepted anywhere — so it
+    is grey under the same rule as variance, and grey is not a paler green."""
+    return UNGATED_GLYPH
+
+
+def variance_glyph(feature: cohort.VarianceFeature) -> str:
+    """A feature's colour.  No ceiling has been ACCEPTED anywhere yet — every one this report
+    prints is proposed — so the honest answer is grey until one is."""
+    return UNGATED_GLYPH
+
+
+# ── The three sections a case reports ────────────────────────────────────────
+#
+# A case reports three things, and they are three different KINDS of claim that must never be
+# mixed: whether Penny was CORRECT (A), whether she was STABLE (B), and whether the run can be
+# believed at all (C).  C is read FIRST even though it renders last.
+#
+# Everything here RENDERS; nothing computes.  The numbers, the proposed floors and ceilings, the
+# standings and the divergences are the cohort's, so a reader comparing the document against the
+# data compares one arithmetic to one rendering rather than two.
+
+# Declarative labels.  A heading NAMES the thing; the explanation belongs in the body, or
+# nowhere — a reader scanning a hundred cases reads labels, not prose.
+SECTION_A = "Assertions"
+SECTION_B = "Variance"
+SECTION_COST = "Cost"
+SECTION_C = "Excluded samples"
+
+# A collapsed section states what is INSIDE it, not just where to click — the point of a folded
+# document is deciding what to open without opening it.  `Label — facts` is still a label: a noun
+# phrase with counts attached, never a sentence.
+# ASSERTIONS ARE NOT GATED, so the headline is one reading over every check the case made
+# rather than a count of claims that could carry a threshold.
+_A_SUMMARY = "{passed}/{total} checks · {rate:.0%}{lowest}"
+_A_LOWEST = " · lowest {rate:.2f} `{claim}`"
+_B_SUMMARY = "{features} · {spread}"
+_B_EMPTY = "nothing pooled"
+_COST_SUMMARY = (
+    "{input:,.0f} in · {output:,.0f} out{thinking} · {calls:,.1f} calls · {seconds:,.0f}s"
+)
+_COST_THINKING = " ({share:.0%} thinking)"
+_C_SUMMARY = "{count} of {driven} · dominant: {reason}"
+
+# The case NAMES the report: what was run is the first thing a reader needs, and with one case
+# a run-level header above it would state the same numbers twice.  It OUTRANKS its own sections
+# (`###` against their `####`) — a section rendering larger than the case containing it reads as
+# though the nesting ran the other way.
+_CASE_HEADING = "### {glyph} `{case_id}`"
+_CASE_HEADING_MODEL = "### {glyph} `{case_id}` — `{model}`"
+# The topline scores are the TABLE, not a sentence above it.  Real column headers, because an
+# empty `| | |` renders as a blank band across the top of the table.
+_MEASURE_HEAD = "| measure | reading |\n|---|---|"
+_MEASURE_ROW = "| **{measure}** | {reading} |"
+_M_CHECKS = "{glyph} {passed} / {total} · {rate:.0%}{lowest}"
+_M_VARIANCE = "{glyph} {spread}"
+_M_COMMIT = "`{commit}`{provider} · `{embeddings}`"
+# The SAME reading the run header carries, so a reader can see how a case contributed to the
+# total: what varies MOST, and how much of the case varies at all.  Magnitude alone cannot tell
+# "one aspect spiking" from "everything wobbling", and those are different findings.
+_SPREAD = "max H {entropy:.3f} `{feature}`"
+_SPREAD_SHAPE = " · {varying} of {total} features vary"
+_LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
+# The harness accounting lives HERE rather than in a section of its own: on a healthy run it is
+# one line, and a section that renders as a stub every time is one people learn to skip.  The
+# counts must still ADD UP: this is the surface that says whether a run can be believed, and a
+# sample it cannot account for is how infrastructure failure gets read as behaviour.
+_COUNTS = "{pooled} pooled + {excluded} excluded = {driven} driven"
+_NO_VARIANCE = "nothing pooled"
+
+_ASSERTION_HEAD = "|  | assertion | held | rate |\n|---|---|---|---|"
+_CATEGORY_HEADING = "**{category}**"
+# A category with no claims renders as a GAP rather than as an absence nobody notices: a case
+# that checks nothing of one kind is a finding, and a blank says nothing.
+_CATEGORY_GAP = "**{category}** — _no claim. This case asserts nothing in this category._"
+_VARIANCE_HEAD = (
+    "|  | feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|---|"
+)
+_PHRASING_HEAD = "| feature | phrasing | distinct | only under this wording |\n|---|---|---|---|"
+_COST_HEAD = "| tokens | observed | proposed ceiling |\n|---|---|---|"
+
+_NO_ASSERTIONS = "_(no assertions)_"
+_NOTHING_POOLED = "_(nothing pooled — see the harness section)_"
+_NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
+# A feature already so spread that a ceiling could not fire proposes none: printing one
+# implies a guard that can never trip.  The reading itself still renders — it is the
+# diagnostic, and on a distinctness statistic it is usually the most interesting row.
+_NO_CEILING = "— diagnostic reading; too spread to gate"
+_COST_LEAD = "**Cost, per sample.**"
+
+# What the assertion side is, said where its table ends: a reading, not a gate.  Stated rather
+# than left to be inferred, because "nothing here can fail the run" is exactly the kind of fact a
+# reader would otherwise assume the opposite of.
+_FLOOR_NOTE = (
+    "_These are DETERMINISTIC checks — things expected to be strictly true of the run — so they "
+    "carry no floors and none is proposed: a threshold under something expected at 100% either "
+    "never fires, or sits below the observed rate and blesses the defect as the contract. The "
+    "reading above is REPORTED, not enforced, and nothing on the assertion side fails a run. "
+    "VARIANCE is what gates, under one-sided ceilings; a dead cohort still fails on run health._"
+)
+_CEILING_NOTE = (
+    "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
+    "Each is recorded as `(feature, model, N={n}, value)` and a comparison across either "
+    "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
+    "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
+    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
+)
+_PHRASING_LEAD = (
+    "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
+    "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
+    "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
+    "pooled number above hides exactly what they are for._"
+)
+_COST_NOTE = (
+    "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
+    "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
+    "MODEL's, so a rise on a fixed prompt is a model or config change. Both ceilings are "
+    "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
+    "number rather than a measured one._"
+)
+
+_DOMINANT = "Dominant failure class: **{reason}** ({count} of {total})."
+
+
+def plural(count: int, noun: str) -> str:
+    """``3 features`` / ``1 feature`` — a summary that says `1 features` reads as a bug."""
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def fold(summary: str, body: str) -> str:
+    """One collapsible block.  The default view is every summary line and no body."""
+    return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
+
+
+def titled_fold(heading: str, summary: str, body: str) -> str:
+    """A TOP-LEVEL section: a markdown heading, then the collapsible block under it.
+
+    TWO JOBS, SPLIT.  The heading NAMES the section and carries its colour, because that glyph
+    is what a reader scans down a page of them.  The ``<summary>`` states the FINDING — the
+    numbers that decide whether opening it is worth it.  Both are visible while the fold is
+    closed, so the split says more than one combined line did, not less.
+
+    The heading has to sit ABOVE the fold: GitHub does not parse markdown block elements inside
+    ``<summary>``, so a `###` written there renders as literal text.  The ``<details>`` pair
+    stays — a collapsible section has no markdown equivalent.
+
+    Nested folds keep plain ``fold``: a heading marks a section, not every disclosure on the
+    page."""
+    return f"#### {heading}\n\n{fold(summary, body)}"
+
+
+@dataclass(frozen=True)
+class RunFacts:
+    """What identifies the RUN a case belongs to — provenance, not a finding.
+
+    Carried into the case table rather than a header of its own: with one case, a run-level
+    header states the same numbers a second time, and provenance is what a reviewer checks
+    unprompted rather than something to fold away."""
+
+    commit: str = ""
+    provider: str = ""
+    embeddings: str = ""
+    run_id: str = ""
+
+    @property
+    def stated(self) -> bool:
+        return bool(self.commit or self.run_id)
+
+
+@dataclass(frozen=True)
+class CaseSections:
+    """One case's three sections, rendered from what the cohort computed.
+
+    ``model`` rides along because a proposed ceiling is meaningless without it — two models
+    differ several-fold on the same feature, so a ceiling that did not name which one it was
+    measured on could be read against the other and answer a question nobody asked."""
+
+    case_id: str
+    model: str = ""
+    assertions: Sequence[cohort.AssertionRow] = ()
+    variance: cohort.CohortVariance = field(default_factory=cohort.CohortVariance)
+    cost: cohort.SampleCost | None = None
+    run: RunFacts = field(default_factory=RunFacts)
+
+    def render(self) -> str:
+        """The summary method: the case's heading, its measures, then the sections behind
+        folds."""
+        blocks = [
+            self.heading(),
+            self.measures(),
+            titled_fold(
+                f"{self._assertions_glyph()} {SECTION_A}",
+                self._assertions_summary(),
+                self._assertions(),
+            ),
+            titled_fold(
+                f"{self._variance_glyph()} {SECTION_B}",
+                self._variance_summary(),
+                self._variance(),
+            ),
+        ]
+        if self.cost is not None:
+            blocks.append(
+                titled_fold(
+                    f"{cost_glyph(self.cost)} {SECTION_COST}",
+                    self._cost_summary(),
+                    self._cost(),
+                )
+            )
+        # Only when something was actually lost.  A clean run says so on the summary line and
+        # spends no section on it; a degraded one gets the names and the dominant class.
+        if self.variance.excluded:
+            blocks.append(
+                titled_fold(f"{FAIL_GLYPH} {SECTION_C}", self._excluded_summary(), self._excluded())
+            )
+        return "\n\n".join(blocks)
+
+    # ── What each fold says while it is still closed ─────────────────────
+    #
+    # The NUMBERS only.  Its section is named by the heading above it, so repeating the noun
+    # here would print the same word twice on two adjacent lines.
+    def _assertions_summary(self) -> str:
+        summary = self._assertion_summary()
+        worst = self._worst_claim()
+        lowest = "" if worst is None else _A_LOWEST.format(rate=worst.pass_rate, claim=worst.label)
+        return _A_SUMMARY.format(
+            passed=summary.passed, total=summary.total, rate=summary.rate, lowest=lowest
+        )
+
+    def _variance_summary(self) -> str:
+        """The spread reading its case line carries — read while the fold is CLOSED, so it holds
+        the finding rather than the noun."""
+        if not self.variance.features:
+            return _B_EMPTY
+        return _B_SUMMARY.format(
+            features=plural(len(self.variance.features), "feature"), spread=self._spread()
+        )
+
+    def _cost_summary(self) -> str:
+        assert self.cost is not None
+        thinking = (
+            _COST_THINKING.format(share=self.cost.reasoning_share)
+            if self.cost.reasoning_tokens
+            else ""
+        )
+        return _COST_SUMMARY.format(
+            input=self.cost.input_tokens,
+            output=self.cost.output_tokens,
+            thinking=thinking,
+            calls=self.cost.calls,
+            seconds=self.cost.seconds,
+        )
+
+    def _excluded_summary(self) -> str:
+        dominant = self.variance.dominant_exclusion
+        return _C_SUMMARY.format(
+            count=len(self.variance.excluded),
+            driven=self.variance.driven,
+            reason=dominant[0] if dominant else "unknown",
+        )
+
+    # ── The one line a reader sees by default ────────────────────────────
+    def heading(self) -> str:
+        """The case NAMES the report — what was run, behind the worst glyph in it."""
+        if not self.model:
+            return _CASE_HEADING.format(glyph=self.glyph(), case_id=self.case_id)
+        return _CASE_HEADING_MODEL.format(
+            glyph=self.glyph(), case_id=self.case_id, model=self.model
+        )
+
+    def measures(self) -> str:
+        """The topline readings as a TABLE — every measure one row, no sentence restating it.
+
+        The lowest claim rides in the `checks` row rather than on a line of its own: it says
+        where to look first, which belongs beside the number it qualifies."""
+        summary = self._assertion_summary()
+        rows = [
+            (
+                "checks",
+                _M_CHECKS.format(
+                    glyph=self._assertions_glyph(),
+                    passed=summary.passed,
+                    total=summary.total,
+                    rate=summary.rate,
+                    lowest=self._lowest(),
+                ),
+            ),
+            ("variance", _M_VARIANCE.format(glyph=self._variance_glyph(), spread=self._spread())),
+            (
+                "samples",
+                _COUNTS.format(
+                    pooled=self.variance.pooled,
+                    excluded=len(self.variance.excluded),
+                    driven=self.variance.driven,
+                ),
+            ),
+        ]
+        if self.cost is not None:
+            rows.append(("cost / sample", self._cost_summary()))
+        rows += self._provenance_rows()
+        body = "\n".join(_MEASURE_ROW.format(measure=name, reading=text) for name, text in rows)
+        return f"{_MEASURE_HEAD}\n{body}"
+
+    def _provenance_rows(self) -> list[tuple[str, str]]:
+        """Where this run came from — omitted entirely when the case was rendered without it,
+        rather than printed as empty cells."""
+        if not self.run.stated:
+            return []
+        provider = f" · {self.run.provider}" if self.run.provider else ""
+        return [
+            (
+                "commit",
+                _M_COMMIT.format(
+                    commit=self.run.commit, provider=provider, embeddings=self.run.embeddings
+                ),
+            ),
+            ("run", f"`{self.run.run_id}`"),
+        ]
+
+    def glyph(self) -> str:
+        """The case's worst state — what someone paging ~100 one-line entries reads."""
+        lost = [FAIL_GLYPH] if self.variance.excluded else []
+        return worst_glyph([self._assertions_glyph(), self._variance_glyph(), *lost])
+
+    def _assertions_glyph(self) -> str:
+        return worst_glyph([assertion_glyph(row) for row in self.assertions])
+
+    def _variance_glyph(self) -> str:
+        return worst_glyph([variance_glyph(f) for f in self.variance.features])
+
+    def _spread(self) -> str:
+        """This case's spread reading: what varies MOST, and how much varies at all.
+
+        Every feature counts toward the maximum, saturated ones included. Saturation decides
+        whether a CEILING is proposed — a guard against a rise — and that is a different job
+        from saying which aspect is most variant right now. Excluding a saturated feature here
+        would hide the very thing worth surfacing."""
+        headline = cohort.variance_headline(self.variance.features)
+        if not headline.has_reading:
+            return _NO_VARIANCE
+        magnitude = _SPREAD.format(entropy=headline.entropy, feature=headline.feature)
+        shape = _SPREAD_SHAPE.format(varying=headline.varying, total=headline.total)
+        return magnitude + shape
+
+    def _assertion_summary(self) -> cohort.AssertionSummary:
+        """The case's one assertion number — every check, over every sample that answered."""
+        return cohort.assertion_summary(self.assertions)
+
+    def _worst_claim(self) -> cohort.AssertionRow | None:
+        """The claim a reader should look at first, or ``None`` when every one is at full."""
+        answered = [row for row in self.assertions if row.total]
+        worst = min(answered, key=lambda row: row.pass_rate, default=None)
+        return None if worst is None or worst.at_full else worst
+
+    def _lowest(self) -> str:
+        """The lowest claim, named on the summary line so the number carries a subject."""
+        worst = self._worst_claim()
+        if worst is None:
+            return ""
+        return _LOWEST.format(glyph=assertion_glyph(worst), rate=worst.pass_rate, label=worst.label)
+
+    # ── A ────────────────────────────────────────────────────────────────
+    def _assertions(self) -> str:
+        """Grouped by SPEC CATEGORY, with every category rendered — including the empty ones.
+
+        The design permits exactly three kinds of deterministic assertion, and a category nobody
+        wrote a claim for is a finding rather than a blank: it says this case checks nothing of
+        that kind, which is exactly what a reader porting the next case needs to see."""
+        if not self.assertions:
+            return _NO_ASSERTIONS
+        blocks: list[str] = []
+        for category in cohort.SpecCategory:
+            rows = [row for row in self.assertions if row.category is category]
+            if not rows:
+                blocks.append(_CATEGORY_GAP.format(category=category.value))
+                continue
+            table = "\n".join(_assertion_row(row) for row in rows)
+            blocks.append(
+                f"{_CATEGORY_HEADING.format(category=category.value)}\n\n{_ASSERTION_HEAD}\n{table}"
+            )
+        return "\n\n".join([*blocks, _FLOOR_NOTE])
+
+    # ── B ────────────────────────────────────────────────────────────────
+    def _variance(self) -> str:
+        if not self.variance.features:
+            return _NOTHING_POOLED
+        rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
+        parts = [
+            f"{_VARIANCE_HEAD}\n{rows}",
+            _CEILING_NOTE.format(n=self.variance.pooled),
+            self._phrasing_rows(),
+        ]
+        if self.variance.text is not None:
+            parts.append(_text_spread_line(self.variance.text))
+        return "\n\n".join(parts)
+
+    def _cost(self) -> str:
+        """What one SAMPLE spends, never what the run did — a total is not comparable across
+        cohort sizes, the same trap the entropy denominator is."""
+        assert self.cost is not None
+        return _cost_block(self.cost, self.model)
+
+    def _phrasing_rows(self) -> str:
+        """Only the FLAGGED rows render: an unflagged phrasing agreeing with its neighbours is
+        the ordinary case and says nothing a reader needs."""
+        flagged = [
+            (feature.name, row)
+            for feature in self.variance.features
+            for row in feature.phrasings
+            if row.flagged
+        ]
+        if not flagged:
+            return _NO_PHRASING_OUTLIERS
+        rows = "\n".join(
+            f"| `{name}` | {row.arm} | {row.distinct}/{row.n} | {_value_list(row.only_here)} |"
+            for name, row in flagged
+        )
+        return f"{_PHRASING_LEAD}\n\n{_PHRASING_HEAD}\n{rows}"
+
+    # ── C ────────────────────────────────────────────────────────────────
+    def _excluded(self) -> str:
+        """The samples too broken to count, by name, under the class that cost the most.
+
+        Rendered ONLY when there are some — the accounting itself rides on the summary line,
+        where it is one clause on a healthy run instead of a section that always says nothing."""
+        named = "\n".join(
+            f"- `{sample.name}` — {sample.reason}" for sample in self.variance.excluded
+        )
+        return f"{self._dominant()}\n\n{named}"
+
+    def _dominant(self) -> str:
+        """What cost this case its samples, named — so a reader meets the class before the list.
+
+        A per-CASE view of the same event the run-health block counts per RUN; it is computed
+        from this cohort's own exclusions rather than from that tally, which cannot say which
+        case a fault landed in."""
+        dominant = self.variance.dominant_exclusion
+        if dominant is None:
+            return ""
+        reason, count = dominant
+        return _DOMINANT.format(reason=reason, count=count, total=len(self.variance.excluded))
+
+
+def _assertion_row(row: cohort.AssertionRow) -> str:
+    return (
+        f"| {assertion_glyph(row)} | {row.label} | {row.passed}/{row.total} | {row.pass_rate:.2f} |"
+    )
+
+
+def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
+    ceiling = cohort.proposed_ceiling(feature, model)
+    proposal = (
+        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n}"
+        if ceiling is not None
+        else _NO_CEILING
+    )
+    return (
+        f"| {variance_glyph(feature)} | `{feature.name}` | {feature.distinct} | "
+        f"{feature.modal}/{feature.n} ({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
+        f"{proposal} |"
+    )
+
+
+def _cost_block(cost: cohort.SampleCost, model: str) -> str:
+    rows = "\n".join(
+        f"| {label} | {observed:,.0f} | "
+        f"`{observed * (1 + cohort.COST_CEILING_MARGIN):,.0f}` @ {model} |"
+        for label, observed in (
+            ("input tokens (ours — prompt and context)", cost.input_tokens),
+            ("output tokens (the model's)", cost.output_tokens),
+        )
+    )
+    tail = (
+        f"Also per sample: {cost.calls:,.1f} calls · {cost.seconds:,.0f}s · "
+        f"{cost.reasoning_tokens:,.0f} reasoning tokens ({cost.reasoning_share:.0%} of output)."
+    )
+    return f"{_COST_LEAD}\n\n{_COST_HEAD}\n{rows}\n\n{tail}\n\n{_COST_NOTE}"
+
+
+def _text_spread_line(text: cohort.TextSpread) -> str:
+    return (
+        f"Reply text over {text.pairs} pairs — cosine mean {text.cosine_mean:.3f} "
+        f"min {text.cosine_min:.3f} · containment mean {text.containment_mean:.3f}"
+    )
+
+
+def _value_list(values: Sequence[str]) -> str:
+    return ", ".join(f"`{value}`" for value in values) if values else "—"
+
+
+# ── The case document: what every sample shares, stated ONCE ─────────────────
+#
+# Sharing is DECLARED, not discovered.  A cohort's samples share one world, one seed set and K
+# wordings of one ask, so prompts are grouped by EXACT TEXT: each distinct one renders once,
+# verbatim, naming the samples that used it.  Nothing computes which LINES two prompts happen to
+# have in common.
+#
+# Measured on the reference port's own 18-sample run, four of the five contexts are
+# byte-identical across every sample (state-classifier, skill-framer, skill-namer and
+# browse-extract: 125,586 characters collapsing to 6,977), so declared sharing costs nothing
+# where sharing is real.  The fifth is the finding, and it is only visible because each text
+# renders whole: `chat` has 18 distinct texts because the self-state header feeds each sample its
+# OWN minted collection and routine names back into its prompt — which is the cohort's
+# `container name` feature, showing up in the prompt.
+#
+# The rule this keeps that the diff could not: every prompt renders VERBATIM.  A reader opening
+# a sample's prompt reads what the model read, never a reconstruction assembled from two places.
+
+PROMPT_VARIANTS_LABEL = "System prompts — {contexts} contexts · {shared} shared by every sample"
+PHRASINGS_LABEL = "Phrasings — {count} of one ask"
+WORLD_LABEL = "Seeded pages — {pages} · {keeps} must-keep, {excludes} must-not"
+OUTLIERS_HEADING = "Outliers"
+OUTLIERS_SUMMARY = "{count} of {driven} samples · diverging on {features}"
+_EVERYWHERE_DISTINCT = (
+    "_All {count} pooled samples chose a distinct {features} — a property of the "
+    "FEATURE, reported once in Variance, not a finding about any one sample. It is "
+    "excluded from the divergences below, and from what makes a sample an outlier._"
+)
+TEST_INPUTS_HEADING = "Test inputs"
+TEST_INPUTS_SUMMARY = "{phrasings} · {pages}"
+REPRESENTATIVE_LABEL = "Representative sample"
+REPRESENTATIVE_HEADING = "Representative sample"
+REPRESENTATIVE_SUMMARY = "{turns} · {banner}"
+# Per-sample verdicts, stripped from a banner.  A claim holds across the cohort or it does not,
+# so `✅ pass` on one sample is `1/1 (1.00)` in a different spelling, and whether the sample ran
+# at all is the summary line's harness accounting.
+_VERDICTS = ("✅ pass · ", "❌ fail · ", "✅ pass", "❌ fail")
+
+_ALL_SAMPLES = "every sample"
+_PROMPT_SUMMARY = "{label} — {chars:,} chars · {used}"
+_PHRASING_HEAD_ROW = "| # | ask |\n|---|---|"
+_OUTLIER_HEAD = "| feature | this sample | the representative |\n|---|---|---|"
+_OUTLIER_LEAD = (
+    "_An outlier is outlying on a SPECIFIC feature, so what renders here is the divergence and "
+    "not the sample: the feature, this sample's value, and the representative's. The whole "
+    "transcript is in the run artifact for a reader who wants it after seeing what changed._"
+)
+_NO_OUTLIERS = "_No sample diverged consequentially._"
+_COSMETIC_LINE = (
+    "_{count} samples differ on {features} — measured, entropy reported in "
+    "Variance, and not a finding about any one sample._"
 )
 
 
-def shared_lines(texts: list[str]) -> set[int]:
-    """Indices (into the FIRST text's lines) of every line present, in order, in
-    all the others — not just the longest contiguous run of them.
+@dataclass(frozen=True)
+class PromptVariant:
+    """One DISTINCT system prompt, and the samples that were given it.
 
-    A case's chat prompts differ at both ends (a timestamp opens them, the live
-    self-state closes them) and often in the MIDDLE too, where a sample that
-    created a collection gains a line the others lack.  Taking only the longest
-    run left half the prompt inline on exactly those cases; taking every shared
-    line leaves each sample a median of ~120 bytes of genuinely its own."""
-    if len(texts) < 2:
-        return set()
-    base = texts[0].split("\n")
-    keep = set(range(len(base)))
-    for other in texts[1:]:
-        matched: set[int] = set()
-        for start, _, size in difflib.SequenceMatcher(
-            None, base, other.split("\n"), autojunk=False
-        ).get_matching_blocks():
-            matched.update(range(start, start + size))
-        keep &= matched
-        if not keep:
-            return set()
-    return keep
+    Distinct by exact text: two samples share a prompt when they were handed the same bytes,
+    which is a fact about the run rather than a judgement about how similar it is."""
+
+    context: str
+    text: str
+    samples: list[str]
+    total: int = 0
+
+    def render(self) -> str:
+        used = _ALL_SAMPLES if self.shared_by_all else ", ".join(self.samples)
+        summary = _PROMPT_SUMMARY.format(label=self.context, chars=len(self.text), used=used)
+        return fold(summary, fenced(self.text))
+
+    @property
+    def shared_by_all(self) -> bool:
+        """Whether every sample in the cohort was handed this exact text."""
+        return self.total > 0 and len(self.samples) == self.total
 
 
-def shared_block_text(texts: list[str]) -> str:
-    """The shared lines rendered in order as one block — what gets hoisted."""
-    base = texts[0].split("\n")
-    return "\n".join(base[index] for index in sorted(shared_lines(texts)))
+def prompt_variants(prompts: Sequence[tuple[str, SystemPrompt]], total: int) -> list[PromptVariant]:
+    """Group ``(sample, prompt)`` pairs into one variant per distinct ``(context, text)``.
+
+    Order is first-seen so a re-render reads identically, and a sample naming the same context
+    twice counts once — a context is an actor, and a sample is handed one prompt per actor."""
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for sample, prompt in prompts:
+        seen = grouped.setdefault((prompt.context, prompt.text), [])
+        if sample not in seen:
+            seen.append(sample)
+    return [
+        PromptVariant(context=context, text=text, samples=samples, total=total)
+        for (context, text), samples in grouped.items()
+    ]
 
 
-def unique_lines(text: str, shared: frozenset[str]) -> str:
-    """One sample's own lines — everything not in the hoisted block, in order,
-    with a marker standing where the shared text sits so the whole prompt is
-    still reconstructable rather than merely summarised."""
-    out: list[str] = []
-    for line in text.split("\n"):
-        if line in shared:
-            if not out or out[-1] != SHARED_PROMPT_MARKER:
-                out.append(SHARED_PROMPT_MARKER)
-        else:
-            out.append(line)
-    return "\n".join(out)
+@dataclass(frozen=True)
+class WorldFacts:
+    """What a closed `Seeded pages` fold states: how many pages, and how many tokens each way.
+
+    Passed as DATA rather than counted back out of the rendered table — deriving a summary from
+    the markdown it summarises is the same mistake as diffing rendered prompts."""
+
+    pages: int = 0
+    keeps: int = 0
+    excludes: int = 0
 
 
-def _worth_hoisting(block: str, count: int) -> bool:
-    """Hoist only when it actually shrinks the document: the block is stored once
-    plus a marker per use, against ``count`` copies today.  A derived condition,
-    not a tuned threshold — a tiny shared block loses to its own markup."""
-    return len(block) * count > len(block) + count * len(SHARED_PROMPT_MARKER)
-
-
-def hoist_shared_prompt_blocks(document: str) -> str:
-    """Render each case's shared system-prompt text ONCE under its heading, and
-    leave every sample only the part that is genuinely its own (#1763).
-
-    A chat beat's samples each carry a ~6K system prompt of which the great
-    majority is identical, and restating it per sample made one 4-case run 525K
-    against GitHub's 64K comment cap.  Per case, per context, the shared middle
-    is lifted to a collapsed block under the case heading; each sample keeps its
-    own head and tail with a marker where the shared part belongs.
-
-    **Nothing is dropped and nothing is summarised** — every prompt is still
-    reconstructable, verbatim, one click from where it applies (the
-    collapsed-never-means-removed rule; the failure this replaces was *selecting*
-    which samples to post, which is that rule broken in a new costume).  When the
-    shared block is the WHOLE prompt (a classifier run, byte-identical every
-    sample) the per-sample remainder is empty and the row is a pure reference —
-    the same mechanism, no special case.
-
-    Per CASE rather than per run, so a case's comment stays self-contained when
-    the document is split to fit the cap."""
-    # A single-case run renders no `### case` heading (the assembler omits it), so
-    # there is one section: the whole document.  Hoisting is about repetition
-    # across SAMPLES — a run with one case repeats its prompt just as hard.
-    bounds = [m.start() for m in _CASE_HEADING.finditer(document)]
-    spans = (
-        list(zip([0, *bounds], [*bounds, len(document)], strict=True))
-        if bounds
-        else [(0, len(document))]
+def render_prompt_variants(variants: Sequence[PromptVariant]) -> str:
+    """Every distinct prompt, once — the contexts every sample shared first."""
+    if not variants:
+        return ""
+    ordered = sorted(variants, key=lambda v: (not v.shared_by_all, v.context))
+    blocks = "\n\n".join(variant.render() for variant in ordered)
+    label = PROMPT_VARIANTS_LABEL.format(
+        contexts=len({v.context for v in variants}),
+        shared=sum(1 for v in variants if v.shared_by_all),
     )
-    return "".join(_hoist_one_case(document[a:b]) for a, b in spans)
+    return fold(label, blocks)
 
 
-def _hoist_one_case(section: str) -> str:
-    """One case section with its shared prompt blocks lifted under its heading."""
-    groups: dict[str, list[str]] = {}
-    for match in _SYSTEM_PROMPT_BLOCK.finditer(section):
-        groups.setdefault(match.group("context").strip(), []).append(match.group("text"))
-    shared = {
-        context: block
-        for context, texts in groups.items()
-        if (block := shared_block_text(texts)) and _worth_hoisting(block, len(texts))
-    }
-    if not shared:
-        return section
+def _cell(text: str) -> str:
+    """One table cell: pipes escaped and newlines flattened so a long ask stays in its row."""
+    return text.replace("|", "\\|").replace("\n", " ")
 
-    def replace(match: re.Match[str]) -> str:
-        context = match.group("context").strip()
-        block = shared.get(context)
-        text = match.group("text")
-        if block is None:
-            return match.group(0)
-        body = unique_lines(text, frozenset(block.split("\n")))
-        own = len(body.replace(SHARED_PROMPT_MARKER, ""))
-        summary = (
-            f"{SYSTEM_PROMPT_LABEL} — {context} ({len(text)} chars; {own} unique to this sample)"
+
+def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
+    """The K wordings of the one ask, as a table.
+
+    Tabular rather than a run of prose blocks: the wordings are a COVERAGE mechanism and the
+    reason they sit together is to be read AGAINST each other, which a column does and stacked
+    paragraphs do not."""
+    if not phrasings:
+        return ""
+    rows = "\n".join(f"| {label} | {_cell(text)} |" for label, text in phrasings)
+    return fold(
+        PHRASINGS_LABEL.format(count=plural(len(phrasings), "wording")),
+        f"{_PHRASING_HEAD_ROW}\n{rows}",
+    )
+
+
+def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
+    """The pages every sample was answered against, stated once."""
+    if not world.strip():
+        return ""
+    counts = facts or WorldFacts()
+    label = WORLD_LABEL.format(
+        pages=plural(counts.pages, "page"), keeps=counts.keeps, excludes=counts.excludes
+    )
+    return fold(label, world)
+
+
+def render_outliers(
+    rows: Sequence[tuple[int, cohort.SampleStanding]],
+    everywhere_distinct: Sequence[str] = (),
+    pooled_count: int = 0,
+) -> str:
+    """What each outlying sample did differently — the divergence, never the transcript.
+
+    Ranked by CONSEQUENCE, declared at the case's `measure()` site.  A consequential divergence
+    implies a different end state and is rendered individually with its evidence; a cosmetic one
+    is measured, reported in the variance table, and collapsed to a count here.  Without the
+    split, 8 of 9 outlier rows were container-name-only — reporting "60% of samples are outliers"
+    where the true statement was "1 of 15 diverged consequentially"."""
+    pooled = sum(
+        1
+        for _n, s in rows
+        if s.standing in (cohort.Standing.MODAL, cohort.Standing.TYPICAL, cohort.Standing.OUTLIER)
+    )
+    outliers = [
+        (number, s)
+        for number, s in rows
+        if s.standing == cohort.Standing.OUTLIER and _consequential(s)
+    ]
+    blocks = [
+        part for part in (_uniform_note(everywhere_distinct, pooled_count or pooled),) if part
+    ]
+    cosmetic = _cosmetic_line(rows)
+    if not outliers:
+        body = "\n\n".join([_NO_OUTLIERS, *blocks, *([cosmetic] if cosmetic else [])])
+        return titled_fold(
+            OUTLIERS_HEADING,
+            OUTLIERS_SUMMARY.format(count=0, driven=pooled, features=plural(0, "feature")),
+            body,
         )
-        return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
-
-    rewritten = _SYSTEM_PROMPT_BLOCK.sub(replace, section)
-    hoisted = "\n\n".join(
-        f"{SHARED_PROMPT_HEADING} — {context}\n\n"
-        f"<details><summary>{len(block)} chars, shared by every sample below</summary>"
-        f"\n\n{block}\n\n</details>"
-        for context, block in shared.items()
+    features = {d.feature for _n, s in outliers for d in _consequential(s)}
+    body = [_OUTLIER_LEAD, *blocks]
+    for number, standing in outliers:
+        table = "\n".join(
+            f"| `{d.feature}` | {_code(d.value)} | {_code(d.modal)} |"
+            for d in _consequential(standing)
+        )
+        body.append(f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{_OUTLIER_HEAD}\n{table}")
+    if cosmetic:
+        body.append(cosmetic)
+    summary = OUTLIERS_SUMMARY.format(
+        count=len(outliers), driven=pooled, features=plural(len(features), "feature")
     )
-    heading_end = rewritten.index("\n") if "\n" in rewritten else len(rewritten)
-    return f"{rewritten[:heading_end]}\n\n{hoisted}{rewritten[heading_end:]}"
+    return titled_fold(OUTLIERS_HEADING, summary, "\n\n".join(body))
+
+
+def _consequential(standing: cohort.SampleStanding) -> list[cohort.FeatureDivergence]:
+    """The divergences worth reading one sample for."""
+    return [d for d in standing.divergences if d.consequence is cohort.Consequence.CONSEQUENTIAL]
+
+
+def _cosmetic_line(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
+    """Every cosmetic divergence, as ONE count line naming the features it fell on."""
+    diverged = {
+        number
+        for number, s in rows
+        for d in s.divergences
+        if d.consequence is cohort.Consequence.COSMETIC
+    }
+    if not diverged:
+        return ""
+    features = sorted(
+        {
+            d.feature
+            for _n, s in rows
+            for d in s.divergences
+            if d.consequence is cohort.Consequence.COSMETIC
+        }
+    )
+    return _COSMETIC_LINE.format(
+        count=len(diverged), features=", ".join(f"`{name}`" for name in features)
+    )
+
+
+def _uniform_note(everywhere_distinct: Sequence[str], pooled: int) -> str:
+    if not everywhere_distinct:
+        return ""
+    return _EVERYWHERE_DISTINCT.format(
+        count=pooled, features=", ".join(f"`{name}`" for name in everywhere_distinct)
+    )
+
+
+def _code(value: str) -> str:
+    return f"`{value}`" if value else "—"
+
+
+# The seam between what a reader meets BEFORE the representative sample and what belongs after
+# it.  The sample is what they were sent to read, so it sits directly under the scores rather
+# than below the setup; the setup is reference material and reads last.
+CASE_TAIL_MARKER = "<!-- case tail -->"
+CASE_PROMPTS_MARKER = "<!-- case prompts -->"
+
+
+def render_case_tail(
+    *,
+    phrasings: Sequence[tuple[str, str]] = (),
+    world: str = "",
+    world_facts: WorldFacts | None = None,
+    outliers: Sequence[tuple[int, cohort.SampleStanding]] = (),
+    everywhere_distinct: Sequence[str] = (),
+) -> str:
+    """What closes a case: the inputs the CASE declares, then what the outlying samples did.
+
+    The system prompts are NOT here.  They are what a sample was actually run with, so they live
+    with the sample a reader is following — reading one turn should not mean jumping between two
+    sections.  What stays is the world the case declares: the wordings and the pages."""
+    inputs = "\n\n".join(
+        part
+        for part in (render_phrasings(phrasings), render_seeded_world(world, world_facts))
+        if part
+    )
+    facts = world_facts or WorldFacts()
+    summary = TEST_INPUTS_SUMMARY.format(
+        phrasings=plural(len(phrasings), "phrasing"),
+        pages=f"{plural(facts.pages, 'page')} · {facts.keeps} must-keep, {facts.excludes} must-not",
+    )
+    parts = [
+        titled_fold(TEST_INPUTS_HEADING, summary, inputs) if inputs else "",
+        render_outliers(outliers, everywhere_distinct) if outliers else "",
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+def render_representative(*, banner: str, number: int, prompts: str, transcript: str) -> str:
+    """The sample a reader was sent to read: what it cost, what it was given, what it did.
+
+    A LABEL like every other section — the banner's five pieces of metadata moved inside, where
+    they are read after deciding to open it rather than instead of the heading."""
+    meta = f"`{SAMPLE_ROW} {number}` · {banner}"
+    parts = [meta, FRAGILE_NOTE if "fragile" in banner else "", prompts, transcript]
+    return "\n\n".join(part for part in parts if part)
+
+
+def representative_summary(banner: str, turns: int) -> str:
+    """What the closed `Representative sample` fold says: how much turn there is, and its cost —
+    never a verdict, because a sample has none to give."""
+    return REPRESENTATIVE_SUMMARY.format(
+        turns=plural(turns, "turn"), banner=without_verdict(banner)
+    )
+
+
+def without_verdict(banner: str) -> str:
+    """A banner with its pass/fail dropped, keeping what is true of one sample on its own:
+    whether it got there shakily, and what it cost."""
+    for verdict in _VERDICTS:
+        if banner.startswith(verdict):
+            return banner[len(verdict) :]
+    return banner
 
 
 # ── The whole sample ─────────────────────────────────────────────────────────
 @dataclass
 class SampleTranscript:
-    """One sample rendered end-to-end: the banner, its system-prompt rows, step tables, and the
-    run-close table.
+    """One sample rendered end-to-end: the banner, its step tables, and the run-close table.
 
     ``banner`` is the full verdict tail after ``sample N — `` (verdict · k/n (score) · cause ·
-    fragile · duration · calls). ``system_prompts`` (#1759) are the distinct per-context system
-    prompts, rendered directly under the banner. **Every** sample block folds whole under its banner
-    summary — the uniform-collapse default (#1753), superseding the old density-follows-failure
-    split; the visible skeleton is the banner rows, everything below one click deep. ``placeholder``
-    (F2) replaces the body for a sample that produced no completed turn (a harness timeout), so the
-    report never silently omits it."""
+    fragile · duration · calls).  A sample renders only its OWN sequence — the turns it was given,
+    the calls it made, what came back, what it replied.  Its system prompts are not here: every
+    sample in a cohort is handed the same ones, so they are stated once on the case document
+    rather than restated eighteen times.  **Every** sample block folds whole under its banner
+    summary — the uniform-collapse default (#1753); the visible skeleton is the banner rows,
+    everything below one click deep.  ``placeholder`` (F2) replaces the body for a sample that
+    produced no completed turn (a harness timeout), so the report never silently omits it."""
 
     number: int
     banner: str
     steps: list[Step]
     run_close: RunClose | None = None
     placeholder: str | None = None
-    system_prompts: list[SystemPrompt] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         return fold_sample(self.number, self.banner, self._body())
@@ -385,8 +1135,10 @@ class SampleTranscript:
     def _body(self) -> str:
         if self.placeholder is not None:
             return self.placeholder
-        blocks = [prompt.render() for prompt in self.system_prompts]
-        blocks += [step.render() for step in self.steps]
+        blocks = [step.render() for step in self.steps]
+        rejected = render_rejected_draws(self.rejected)
+        if rejected:
+            blocks.append(rejected)
         if self.run_close is not None:
             blocks.append(self.run_close.render())
         return "\n\n".join(blocks)
@@ -405,10 +1157,139 @@ def fold_sample(number: int, banner: str, body: str) -> str:
     return f"<details><summary>{SAMPLE_ROW} {number} — {banner}</summary>\n\n{body}\n\n</details>"
 
 
+# ── What the posted COMMENT carries, against what the artifact keeps ─────────
+#
+# These two were one document until the cohort grew.  At 5 samples of a 4-case run that was
+# right: one rendering, on disk and in the comment, and nothing to disagree about.  At 18
+# samples across ~100 cases it stops being a document anyone reads — measured on the reference
+# port, ONE case is 787,681 chars, of which 68% of every sample is its thinking traces.
+#
+# So the split is now explicit and it runs in ONE direction:
+#
+#   the ARTIFACT (`<case_id>.md`) is the complete record — every sample, every trace, verbatim.
+#   the COMMENT is an INDEX into it — the score, the map, and the samples worth opening.
+#
+# Nothing is invented for the comment and nothing is summarised that the artifact does not hold
+# in full, so "collapsed never means removed" still binds where completeness is claimed.  What
+# changed is which document claims it.  Both transforms below therefore run at ASSEMBLY, on
+# markup this module itself emits, and neither can reach the artifact.
+
+THINKING_LABEL = "thinking{context} — {chars:,} chars"
+THINKING_TASTE = 160
+
+# The exact form `_thinking_details` emits, matched back at assembly.  A structural rewrite of
+# markup this module owns — the same idiom `split_case_transcript` and `parse_sample_block`
+# already use, and not the line-level DISCOVERY that #1997 deleted: nothing here compares two
+# samples to work out what they have in common.
+_THINKING_BLOCK = re.compile(
+    r"<details><summary>(?P<summary>thinking[^<]*)</summary>(?P<body>.*?)</details>"
+)
+
+
+def summarise_thinking(body: str) -> str:
+    """Shorten each thinking trace in a rendered sample body to its head.
+
+    The single biggest lever there is: a trace is what you want once you have DECIDED to read a
+    sample, and noise in the document whose job is to tell you which sample that is. The label
+    already carries the length, so shortening changes only the body — and the full text stays in
+    the artifact, one path away."""
+
+    def shorten(match: re.Match[str]) -> str:
+        trace = match.group("body")
+        # Nothing to save below the taste: rewriting a short trace to say it had been shortened
+        # makes the document bigger.  Derived, not tuned.
+        if len(trace) <= THINKING_TASTE:
+            return match.group(0)
+        return (
+            f"<details><summary>{match.group('summary')}</summary>"
+            f"{trace[:THINKING_TASTE]}…</details>"
+        )
+
+    return _THINKING_BLOCK.sub(shorten, body)
+
+
+# What the comment says about the samples it does NOT carry: an ACCOUNTING, never a claim that
+# they agreed — on a variant cohort that claim is false, and it would render directly above the
+# outlier blocks saying how they differed.  Its arithmetic closes the way the summary line's
+# does: representative + matched + diverged = pooled.  Two named cases, because "none of them
+# agreed with each other" is the most important thing such a run can say and a template built
+# for the happy path renders it as a small number nobody reads.
+SAMPLES_ACCOUNTED = (
+    "_Of {pooled} pooled samples: the representative, {matched} that matched it, and "
+    "{diverged} that diverged (see Outliers). Full transcripts in the run artifact._"
+)
+NONE_MATCHED = (
+    "_**No pooled sample matched the representative** — all {diverged} of the others diverged "
+    "(see Outliers). Full transcripts in the run artifact._"
+)
+OTHER_PROMPTS_LINE = (
+    "_The other {count} samples were each given their own {contexts} prompt — per-sample because "
+    "the self-state header renders that sample's own minted names back into it. Full texts in "
+    "the run artifact._"
+)
+
+# The prompt fold this module emits, matched back at assembly.  A structural transform on markup
+# report.py owns — the same idiom `split_case_transcript` and `parse_sample_block` already use.
+_PROMPT_FOLD = re.compile(
+    r"<details><summary>(?P<label>[^<\n]*? \u2014 [\d,]+ chars \u00b7 (?P<used>[^<\n]*?))</summary>"
+    r"\n\n(?P<body>.*?)\n\n</details>",
+    re.S,
+)
+
+
+def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
+    """Keep the prompts every sample shared and the one the carried sample was run with; replace
+    the rest with a single line saying how many there are and why they differ.
+
+    Eighteen near-identical 7.4K folds is the "seventeen stubs" defect wearing a prompt costume.
+    Measured on the reference port, `chat` has one distinct text PER sample — 83 lines of which
+    3-4 differ, because the self-state header renders each sample's OWN minted names back into
+    its prompt. That is one line's worth of fact and 134,365 characters' worth of folds.
+
+    What this does NOT do is diff two prompts to find where they differ. Every prompt it keeps is
+    verbatim and the ones it drops are COUNTED, never reconstructed: a block assembled out of
+    what several prompts have in common is a block no sample was ever given."""
+    dropped: list[re.Match[str]] = []
+
+    def prune(match: re.Match[str]) -> str:
+        used = match.group("used")
+        if used == _ALL_SAMPLES or any(label in used.split(", ") for label in keep):
+            return match.group(0)
+        dropped.append(match)
+        return ""
+
+    pruned = _PROMPT_FOLD.sub(prune, text).strip()
+    if not dropped:
+        return pruned
+    contexts = sorted({m.group("label").split(" \u2014 ")[0] for m in dropped})
+    line = OTHER_PROMPTS_LINE.format(
+        count=len(dropped), contexts=", ".join(f"`{c}`" for c in contexts)
+    )
+    return f"{pruned}\n\n{line}".strip()
+
+
+def samples_accounted(*, matched: int, diverged: int) -> str:
+    """How the samples the comment does not carry are accounted for — never a claim about them.
+
+    It degrades at both ends: a consistent cohort reports how many matched, and one where
+    nothing matched says so in as many words rather than as a small number nobody reads."""
+    if matched == 0 and diverged:
+        return NONE_MATCHED.format(diverged=diverged)
+    return SAMPLES_ACCOUNTED.format(
+        pooled=matched + diverged + 1, matched=matched, diverged=diverged
+    )
+
+
 # The seam a sample block opens on — the folded form and the legacy bare heading. Public because
 # it is also the ONLY place a run comment may be cut when it exceeds GitHub's comment cap (#1808):
 # one definition of "a sample starts here", shared by the re-normalizer and the splitter.
-SAMPLE_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
+# A sample fold opens on one of these.  The representative carries a LABEL rather than a
+# banner — every other section is a label, and this one was a sentence holding five pieces of
+# metadata — but it is still a sample block, so the splitter keeps its seam here.
+SAMPLE_BLOCK_START = (
+    rf"(?:<details><summary>(?:{SAMPLE_ROW} \d+ — |{REPRESENTATIVE_LABEL}</summary>)"
+    rf"|#### {SAMPLE_ROW} \d+ — )"
+)
 
 
 # ── Internal seams: a sample too big to post as one fold (#1917) ─────────────
@@ -434,7 +1315,7 @@ SAMPLE_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d
 # byte for byte (asserted by ``test_report.py``).  And the guard still REFUSES what cannot
 # be split losslessly: when one STEP alone exceeds the cap there is no seam inside it, and
 # ``comment_split.unsplittable_reason`` says so rather than posting something cut.
-_BODY_BLOCK_START = rf"(?:\| step |\| {RUN_CLOSE_LABEL} |<details><summary>{SYSTEM_PROMPT_LABEL} )"
+_BODY_BLOCK_START = rf"(?:\| step |\| {RUN_CLOSE_LABEL} )"
 _BODY_BOUNDARY = re.compile(rf"\n\n(?={_BODY_BLOCK_START})")
 
 # What a part's banner gains so a reader knows the sample continues.  It rides INSIDE the
@@ -561,27 +1442,54 @@ def parse_sample_block(block: str) -> tuple[int, str, str]:
 def render_banner(
     *,
     passed: bool,
-    score: float,
-    passed_checks: int,
-    total_checks: int,
     cause: str | None = None,
     fragile: bool = False,
     duration_s: int,
     calls: int,
-    checks_evaluated: bool = True,
 ) -> str:
-    """The per-sample banner tail (#1725 Final-additions #1): ``verdict · k/n (score) · cause ·
-    fragile · duration · calls``. A timeout sample (``checks_evaluated=False``) omits ``k/n`` —
-    its scorer never ran; a clean pass carries no cause; a fragile pass carries ``fragile``."""
+    """The per-sample banner tail: ``verdict · fragile · cause · duration · calls``.
+
+    NO per-sample rate.  Under the cohort design a sample has no score of its own — the cohort is
+    the unit of scoring, which is the entire point — so a `k/n (score)` here re-implied the
+    per-sample scoring model that design replaced, and answered a question nobody could ask of it
+    ("1/1 of what?").  What survives is what is true of one sample on its own: whether it reached
+    an answer, whether it got there shakily, and what it cost."""
     parts = ["✅ pass" if passed else "❌ fail"]
-    if checks_evaluated:
-        parts.append(f"{passed_checks}/{total_checks} ({score:.2f})")
     if fragile:
         parts.append("fragile")
     if cause:
         parts.append(cause)
     parts += [f"{duration_s}s", f"{calls} calls"]
     return " · ".join(parts)
+
+
+REJECTED_DRAWS_LABEL = "Rejected draws — {count} discarded before the reply was sent"
+REJECTED_DRAWS_LEAD = (
+    "_These were never sent. The loop discarded each one and re-drew on the unchanged context, "
+    "so they are working machinery rather than output — kept here for diagnosis, and never in "
+    "the reply stream where they read as messages the user received._"
+)
+
+
+def render_rejected_draws(draws: Sequence[str]) -> str:
+    """Every text draw the loop threw away, behind its own labelled fold."""
+    if not draws:
+        return ""
+    body = "\n\n".join(
+        [
+            REJECTED_DRAWS_LEAD,
+            # Model output, verbatim: a draw is text the loop PRODUCED, and `escape_cell` would
+            # both render its markdown and flatten its newlines into `<br>`.
+            *(f"**{index}.**\n\n{fenced(draw)}" for index, draw in enumerate(draws, 1)),
+        ]
+    )
+    return fold(REJECTED_DRAWS_LABEL.format(count=len(draws)), body)
+
+
+FRAGILE_NOTE = (
+    "_`fragile` — the sample reached its result, but only after a rejected or refused tool call "
+    "or a framework recovery nudge: real, and not robust._"
+)
 
 
 # ── The event stream the extraction hands the builder ────────────────────────
@@ -717,11 +1625,14 @@ def _event_rows(event: Event, verdicts: list[Verdict]) -> list[Row]:
     """The rows for one event: its 💭 (above an ACTION), then the ``actual`` row with its verdicts.
     A nudge's verdict is the fixed ``⚠ recovery event`` mark (the caller passes it)."""
     rows: list[Row] = []
-    if event.kind in _ACTIONS and event.thinking is not None:
+    # An action with no captured thinking renders NO thinking row.  A `💭 (empty)` row states an
+    # absence in a slot whose emptiness already states it, and a clean sample carried twelve of
+    # them; the absence is still visible as the missing row above the action.
+    if event.kind in _ACTIONS and (event.thinking or "").strip():
         if event.kind == EventKind.MICRO_OUT:
-            rows.append(micro_thinking_row(event.thinking, event.context))
+            rows.append(micro_thinking_row(event.thinking or "", event.context))
         else:
-            rows.append(thinking_row(event.thinking))
+            rows.append(thinking_row(event.thinking or ""))
     rows.append(Row(ROW_ACTUAL, event.actual_body(), verdicts))
     return rows
 
@@ -734,14 +1645,13 @@ def build_sample(
     checks: list[CheckView],
     run_close_score: str,
     placeholder: str | None = None,
-    system_prompts: list[SystemPrompt] | None = None,
+    rejected: Sequence[str] = (),
 ) -> SampleTranscript:
     """Assemble a sample from its extracted events + resolved checks (the pure builder).
 
     Steps segment on ``USER`` events. A check anchored to an event renders its ``expected`` row
     atop that event's step and its verdict on that event's ``actual`` row; a check with no anchor
-    event falls to the run-close table. A nudge event renders ``⚠ recovery event``.
-    ``system_prompts`` (#1759) render as collapsed rows directly under the banner. Every sample
+    event falls to the run-close table. A nudge event renders ``⚠ recovery event``. Every sample
     folds whole at render (#1753) — the builder no longer decides fold-or-not."""
     if placeholder is not None:
         return SampleTranscript(number, banner, [], placeholder=placeholder)
@@ -754,9 +1664,7 @@ def build_sample(
             by_event.setdefault(check.anchor_index, []).append(check)
     steps = _build_steps(events, by_event)
     run_close = _build_run_close(run_close_checks, run_close_score) if run_close_checks else None
-    return SampleTranscript(
-        number, banner, steps, run_close=run_close, system_prompts=system_prompts or []
-    )
+    return SampleTranscript(number, banner, steps, run_close=run_close, rejected=list(rejected))
 
 
 def _build_steps(events: list[Event], by_event: dict[int, list[CheckView]]) -> list[Step]:

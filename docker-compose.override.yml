@@ -5,3 +5,13 @@ services:
       - ./penny/pyproject.toml:/penny/pyproject.toml
       - ./github_api:/shared/github_api:ro
       - ./similarity:/shared/similarity:ro
+      # The eval config is read out of `.env` by the Makefile's own `from_env` helper, and a
+      # guard that reimplemented that helper would drift back into the bug it catches — so
+      # the test reads the real Makefile, which has to be visible from inside the container.
+      - ./Makefile:/penny/Makefile:ro
+      # Credentials live once, in the primary checkout: `data/private` is gitignored, so a
+      # linked worktree has none and `make token` dies reading the GitHub App key. A symlink
+      # cannot fix it — `./data` is bind-mounted, so an absolute link points at a host path
+      # the container has no view of. Mapping the primary checkout's copy in directly is what
+      # lets an agent mint a token, and post its own eval report, from its worktree.
+      - ${PENNY_PRIMARY_CHECKOUT:-.}/data/private:/penny/data/private:ro

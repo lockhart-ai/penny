@@ -82,6 +82,7 @@ from penny.tests.eval.conftest import (
     outgoing_replies,
     routing_clean,
     seeded_run_id,
+    tool_call_name,
     tool_not_called,
     tool_was_called,
 )
@@ -2065,7 +2066,7 @@ def assert_round_calls_logged(db: Database, case: _ApplyCase) -> None:
     """One round's demonstrated calls, read back off its OWN run — the half that holds
     however many rounds a world carries, since a run id scopes the read."""
     calls = [
-        call.get("function", {}).get("name")
+        tool_call_name(call)
         for row in db.messages.get_run_prompts(case.runs.learn_turn)
         for call in _row_tool_calls(row)
     ]
@@ -3120,7 +3121,7 @@ def _assert_every_round_is_in_the_ledger(db: Database, journeys: tuple[_Journey,
         assert_round_calls_logged(db, case)
         assert_round_rows_cite_their_run(db, case)
         calls = [
-            call.get("function", {}).get("name")
+            tool_call_name(call)
             for row in db.messages.get_run_prompts(case.runs.apply_turn)
             for call in _row_tool_calls(row)
         ]

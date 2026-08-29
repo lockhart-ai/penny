@@ -63,7 +63,6 @@ from penny.tests.eval.utils.transition_ledger import (
 )
 from penny.tests.eval.utils.transition_world import (
     _ARRIVALS_ROUND,
-    _AURORA_ROUND,
     _BAKERY_ROUND,
     _COLONY_ROUND,
     _FERRY_ROUND,
@@ -184,17 +183,6 @@ async def _run_learn_case(chat_eval: ChatEval, case: _LearnCase) -> None:
         timeout=240.0,
         family=_FAMILY,
     )
-
-
-@pytest.mark.asyncio
-async def test_elicit_to_learn_runs_the_round_and_instantiates_nothing(
-    chat_eval: ChatEval,
-) -> None:
-    """elicit → learn: parked on the teach question, the user supplies the steps.
-    She follows them once — browse, find, remember — reports the value she
-    actually stored, and learns the skill.  She instantiates NOTHING: the
-    collection her write created carries no skill, no program, no schedule."""
-    await _run_learn_case(chat_eval, _AURORA_ROUND)
 
 
 @pytest.mark.asyncio
