@@ -110,13 +110,6 @@ COMMENT_BODY := body.md
 # eval-report's single logical recipe line also posts a PR comment + writes a marker — side
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
-# Minting the token is the ONE step that must run against the primary checkout: only it holds a
-# real `.env` with the GitHub App credentials. Everything else in the recipe must run against the
-# CURRENT tree, because that is where the code being reported on lives. Coupling both to one
-# directory made `make eval-report` impossible from a worktree in either direction — minting
-# empty from here, and running `main`'s assembler against a rebuilt report format from there.
-# `-C` splits them: primary-checkout credentials, worktree code.
-MINT_TOKEN := $(SUBMAKE) -C "$(EVAL_PRIMARY_CHECKOUT)"
 
 .PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fmt lint fix typecheck check pytest eval eval-remote eval-report assemble token migrate-test migrate-validate
 
@@ -508,17 +501,9 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: could not prepare $$run for posting" >&2; \
 		exit 1; \
 	fi; \
-	if [ -z "$(EVAL_PRIMARY_CHECKOUT)" ]; then \
-		echo "eval-report: could not locate the primary checkout — 'git rev-parse --git-common-dir' resolved nothing, and the GitHub App credentials live there rather than in this tree" >&2; \
-		exit 1; \
-	fi; \
-	if [ ! -f "$(EVAL_PRIMARY_ENV)" ]; then \
-		echo "eval-report: no .env at $(EVAL_PRIMARY_ENV) — the token is minted from the primary checkout, which must carry GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH and GITHUB_APP_INSTALLATION_ID" >&2; \
-		exit 1; \
-	fi; \
-	tok="$$($(MINT_TOKEN) token)"; \
+	tok="$$($(SUBMAKE) token)"; \
 	if [ -z "$$tok" ]; then \
-		echo "eval-report: 'make -C $(EVAL_PRIMARY_CHECKOUT) token' returned empty — check the GitHub App entries in $(EVAL_PRIMARY_ENV)" >&2; \
+		echo "eval-report: make token returned empty — run from the primary checkout with a real .env" >&2; \
 		exit 1; \
 	fi; \
 	first=""; \
