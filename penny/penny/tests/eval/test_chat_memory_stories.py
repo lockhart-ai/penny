@@ -74,9 +74,7 @@ from penny.tests.conftest import TEST_SENDER, require_memory
 # state machine's elicitation edge asks the same question of a turn (nothing acted on
 # before it was taught), and one policy in two copies is two contracts.
 from penny.tests.eval.cohort import (
-    BASE_WORLD,
     CONTAINER_NAME,
-    CONTROL_WORLD,
     ENTRIES_STORED,
     REPLY_SPREAD,
     ROUTINE_SHAPE,
@@ -120,7 +118,14 @@ from penny.tests.eval.seeds import Seeder, round_parked_in_elicit
 # for.  What a probe asserts is the seed it stands beside, so the honest cost of not
 # widening a neighbour's fixture type is one restated probe, named here rather than left
 # for a reader to notice.
-from penny.tests.eval.worlds import World
+from penny.tests.eval.worlds import (
+    FOXES_NEWS,
+    FOXES_URL,
+    SEALS_NEWS,
+    SEALS_URL,
+    TWO_TEAM_NEWS,
+    TWO_TEAM_NEWS_CONTROL,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -1145,40 +1150,14 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval) -> None:
 # kept for: everything else in the estate demonstrates against one source, so nothing
 # else measures a round that has to visit both and keep both.
 
-_FOXES_URL = "https://www.ridgelinefoxes.com/news"
-_SEALS_URL = "https://www.harborseals.com/news"
-
-_FOXES_NEWS_PAGE = CannedPage(
-    match="ridgelinefoxes",
-    text=(
-        "Title: Ridgeline Foxes | Official Site — Team News\n"
-        f"{_FOXES_URL}\n\n"
-        "Foxes sign veteran goalie Aurelio Brandt to a two-year deal — the club "
-        "confirmed the signing Thursday morning.\n"
-        "Final score: Foxes 3, Rovers 2 (overtime).\n"
-        "Training camp opens next month at Ridgeline Arena.\n"
-    ),
-)
-
-_SEALS_NEWS_PAGE = CannedPage(
-    match="harborseals",
-    text=(
-        "Title: Harbor Seals | Official Site — Team News\n"
-        f"{_SEALS_URL}\n\n"
-        "Seals name Petra Volk head of player development after a lengthy search.\n"
-        "Final score: Seals 1, Gulls 4.\n"
-        "Season ticket renewals open Friday.\n"
-    ),
-)
-
 # The FUSED ask both story-15 cases open on — sources + filter + schedule, no imperative,
 # the field shape verbatim.  Named rather than left as a position in the turns list below,
 # because the learn close reads it as the ask its seeded round is anchored to: a turn
 # inserted at the head of that list would silently re-seed a case two hundred lines away.
 _TWO_SOURCE_SETUP_ASK = (
     "hey can you set up news alerts for my favourite teams? the ridgeline "
-    f"foxes and the harbor seals — their news pages are {_FOXES_URL} and "
-    f"{_SEALS_URL}. check them twice a day, and alert me about "
+    f"foxes and the harbor seals — their news pages are {FOXES_URL} and "
+    f"{SEALS_URL}. check them twice a day, and alert me about "
     "notable stuff like trades, signings, and injuries — not game scores."
 )
 
@@ -1325,7 +1304,7 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
     await chat_eval(
         case_id="memory-two-source-teach",
         messages=_TWO_SOURCE_TURNS,
-        browse=[_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE],
+        browse=[FOXES_NEWS, SEALS_NEWS],
         score=_score_two_source_teach,
         min_pass_rate=None,
         family=_FAMILY,
@@ -1333,116 +1312,65 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
     )
 
 
-# ── Story 15, the learn close: end-state assertions plus variance (#1994/#1995) ──
+# ── Story 15, the learn close (#1994/#1995) ──────────────────────────────────
 #
-# THE REFERENCE IMPLEMENTATION — every other case is ported against this shape, so it is
-# arranged to be COPIED: fixtures say what is TRUE before the turn, the body TRIGGERS the
-# action once, and the claims say what the round must have left behind.  Everything those
-# three are handed to is shared (`cohort.py` · `assertions.py` · `worlds.py` · `seeds.py`);
-# nothing below is harness.
+# THE REFERENCE IMPLEMENTATION — every other case is ported against this shape.  Why a case
+# asserts end state and measures model output at all is `cohort.py`; what a claim means is
+# `assertions.py`.  What is here is what is true of THIS case:
 #
-# WHY it is shaped this way rather than scored on phrasings somebody guessed: a reply check
-# written as a token list is measurably too strict and too loose AT ONCE — across 161 samples
-# of one claim, 31 replies that stated the recorded cadence correctly were FAILED by a token
-# list, while on another case an infrastructure error string, a narration of a FAILED search,
-# and a raw thinking leak all PASSED a verb alternation on the word "search".  So the line
-# drawn here is between what the round LEFT BEHIND, which is asserted, and what the model
-# CHOSE, which is measured.
-#
-# PHRASINGS and the CONTROL are two different mechanisms, and the naming says so:
+# PHRASINGS and the CONTROL are different mechanisms, and reading one as the other is the
+# mistake this case exists to prevent:
 #   * phrasings — same world, different words → VARIANCE, pooled into one score
 #   * control   — same words, different world → an ASSERTION, never pooled
 # Wording variation cannot do the control's job: if Penny were pattern-completing from the
-# shape of the request, every phrasing would name the same player and every phrasing would be
-# right.  The control is a SECOND VISIBLE DRIVE in the body — an assertion that quietly made
-# three more model calls would be a nasty surprise.
+# shape of the request, every phrasing would name the same player and every one would be right.
 #
-# NOT HERE AT ALL: the single-source variant of this ask.  One page instead of two is a
-# different SCENARIO — what the store must hold is a different claim — so it is a different
-# case, not a sixth phrasing.
+# NOT HERE: the single-source variant of this ask.  One page instead of two is a different
+# SCENARIO — what the store must hold is a different claim — so it is a different case.
 
 _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 
-# ── The request, asked five ways ─────────────────────────────────────────────
-#
-# ONE request — read these two named pages, take the trades and signings, keep a headline and
-# a blurb in a team news list — worded as five different people would word it.  They pool:
-# phrasing was measured to contribute ~0.05 of the spread while model stochasticity carries
-# the rest, so a pooled number estimates the underlying variance rather than blending five
-# things.  They are still FIVE because phrasings are a COVERAGE mechanism — measured, four
-# scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides the one that came apart.
-
+# ONE request in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
+# model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE
+# mechanism — measured, four scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides
+# the one that came apart.
 LEARN_CLOSE_ASK = (
-    f"go to {_FOXES_URL} and {_SEALS_URL}, pull out the trades and signings from "
+    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
     "each, and keep the headline plus a short blurb in a team news list for me"
 )
 
 LEARN_CLOSE_PHRASINGS = (
     (
-        f"have a look at both of these — {_FOXES_URL} and {_SEALS_URL} — find "
+        f"have a look at both of these — {FOXES_URL} and {SEALS_URL} — find "
         "whichever players got traded or signed, and put each headline with a "
         "one-line summary into a list of team news for me"
     ),
     (
-        f"check {_FOXES_URL} and {_SEALS_URL}, grab any trade or signing news off "
+        f"check {FOXES_URL} and {SEALS_URL}, grab any trade or signing news off "
         "each one, and save the headline and a short summary into a team news list"
     ),
     (
-        f"read through {_FOXES_URL} and {_SEALS_URL}, pick out the trades and the "
+        f"read through {FOXES_URL} and {SEALS_URL}, pick out the trades and the "
         "signings, and store each headline along with a brief note in a list of "
         "team news for me"
     ),
     (
-        f"open {_FOXES_URL}, then {_SEALS_URL}. anything about a player being traded "
+        f"open {FOXES_URL}, then {SEALS_URL}. anything about a player being traded "
         "or signed, keep the headline and a sentence about it in a team news list."
     ),
 )
 
-# The fused ask the round opens on, and Penny's answer to it — she splits teaching from
-# setting a job running, which is the reply that leaves the machine parked in elicit.
 _LEARN_CLOSE_TEACH_QUESTION = (
     "happy to set that up — but i don't have a routine for it yet. can you walk me "
     "through one pass in a single message? which pages should i read, what counts as "
     "notable, and what should i keep for each one?"
 )
 
-# ── The control world ────────────────────────────────────────────────────────
-#
-# The same SHAPE as the base world: each page carries one signing-or-trade, one game score the
-# setup ask excludes word for word, and one piece of club housekeeping.  Every proper noun and
-# every fact is replaced and nothing else is, which is what makes "the reply's facts moved with
-# the world" a read rather than a judgement.
 
-_FOXES_CONTROL_PAGE = CannedPage(
-    match="ridgelinefoxes",
-    text=(
-        "Title: Ridgeline Foxes | Official Site — Team News\n"
-        f"{_FOXES_URL}\n\n"
-        "Foxes trade defenceman Wilhelmina Roux to the Rovers for a third-round "
-        "pick — the deal was filed Tuesday afternoon.\n"
-        "Final score: Foxes 1, Rovers 5.\n"
-        "Training camp opens next month at Ridgeline Arena.\n"
-    ),
-)
-
-_SEALS_CONTROL_PAGE = CannedPage(
-    match="harborseals",
-    text=(
-        "Title: Harbor Seals | Official Site — Team News\n"
-        f"{_SEALS_URL}\n\n"
-        "Seals sign winger Casimir Oyelaran to a one-year contract ahead of the "
-        "autumn window.\n"
-        "Final score: Seals 6, Gulls 2.\n"
-        "Season ticket renewals open Friday.\n"
-    ),
-)
-
-
-# ── The priors, the worlds, and the request: fixtures ────────────────────────
 @pytest.fixture
 def standing_elicit_round() -> Seeder:
-    """The round the measured turn closes: the user asked for the job, Penny asked to be
-    taught one pass, and the machine is parked in ``elicit`` on that ask.
+    """The round the measured turn closes: the user asked for the job, Penny asked to be taught
+    one pass, and the machine is parked in ``elicit`` on that ask.
 
     Seeded rather than hoped for (#1989) — the ask is an imperative about now, which idle's own
     definition claims, so on a cold machine both measured models drew idle on 10 of 10 samples
@@ -1450,51 +1378,21 @@ def standing_elicit_round() -> Seeder:
     return round_parked_in_elicit(_TWO_SOURCE_SETUP_ASK, _LEARN_CLOSE_TEACH_QUESTION)
 
 
-@pytest.fixture
-def two_team_news() -> World:
-    """Both team news pages: one trade-or-signing each, among distractors the ask excludes
-    (a final score, a training camp date, ticket renewals)."""
-    return World(
-        name=BASE_WORLD,
-        pages=(_FOXES_NEWS_PAGE, _SEALS_NEWS_PAGE),
-        keeps=(("brandt", "aurelio"), ("volk", "petra")),
-        excludes=("rovers 2", "gulls 4"),
-    )
-
-
-@pytest.fixture
-def two_team_news_control() -> World:
-    """The same world with every proper noun and every fact replaced.
-
-    A CONTROL, not a cohort arm: it is what makes "she read the page" decidable instead of
-    assumed."""
-    return World(
-        name=CONTROL_WORLD,
-        pages=(_FOXES_CONTROL_PAGE, _SEALS_CONTROL_PAGE),
-        keeps=(("roux", "wilhelmina"), ("oyelaran", "casimir")),
-        excludes=("rovers 5", "gulls 2"),
-    )
-
-
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_the_learn_close_states_the_steps_it_captured(
-    chat_eval: ChatEval,
-    model: str,
-    standing_elicit_round: Seeder,
-    two_team_news: World,
-    two_team_news_control: World,
+    chat_eval: ChatEval, model: str, standing_elicit_round: Seeder
 ) -> None:
     """Story 15, the learn close: one demonstrated round, and the reply that closes it tells the
     user what the routine will RUN — so a step it captured by accident is visible to the only
     person who can tell that it does not belong.
 
-    REPORT-ONLY, deliberately: the floors and ceilings this run proposes are the code owner's
-    to accept once the numbers have been read."""
+    REPORT-ONLY: the floors and ceilings this run proposes are the code owner's to accept once
+    the numbers have been read."""
     cohort = await chat_eval(
         case_id=_LEARN_CLOSE_CASE_ID,
         model=model,
         seed=standing_elicit_round,
-        world=two_team_news,
+        world=TWO_TEAM_NEWS,
         ask=LEARN_CLOSE_ASK,
         also_phrased=LEARN_CLOSE_PHRASINGS,
         samples_per_phrasing=3,
@@ -1502,8 +1400,6 @@ async def test_the_learn_close_states_the_steps_it_captured(
         family=_FAMILY,
         timeout=240.0,
     )
-
-    # ── what the round left behind ───────────────────────────────────────────
     cohort.assert_machine_landed(ConversationState.LEARN)
     cohort.assert_a_routine_reached_the_registry()
     cohort.assert_the_routine_names_a_destination()
@@ -1513,12 +1409,13 @@ async def test_the_learn_close_states_the_steps_it_captured(
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    # ── that the answer was READ, not recalled ───────────────────────────────
+    # A SECOND VISIBLE DRIVE, beside the claim it serves: an assertion that quietly made three
+    # more model calls would be a nasty surprise.
     control = await chat_eval(
         case_id=_LEARN_CLOSE_CASE_ID,
         model=model,
         seed=standing_elicit_round,
-        world=two_team_news_control,
+        world=TWO_TEAM_NEWS_CONTROL,
         ask=LEARN_CLOSE_ASK,
         samples_per_phrasing=3,
         min_pass_rate=None,
@@ -1527,7 +1424,6 @@ async def test_the_learn_close_states_the_steps_it_captured(
     )
     cohort.assert_facts_moved_with_the_world(control)
 
-    # ── measured, never asserted ─────────────────────────────────────────────
     cohort.measure(
         TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
     )
@@ -1683,7 +1579,7 @@ async def test_a_demonstration_reports_what_landed_when_a_source_is_down(
         message=LEARN_CLOSE_ASK,
         # The unreachable source FIRST: ``install_browse`` answers with the first page whose
         # match is in the url, so the order is what decides which source is down.
-        browse=[_SEALS_UNREACHABLE, _FOXES_NEWS_PAGE],
+        browse=[_SEALS_UNREACHABLE, FOXES_NEWS],
         score=_score_half_the_sources_landed,
         min_pass_rate=None,
         family=_FAMILY,

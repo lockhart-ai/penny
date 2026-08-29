@@ -45,3 +45,80 @@ class World(BaseModel):
         """Every keepable name in this world, flattened — what a reply drawing on this world
         will carry, and what a reply drawing on another world must not."""
         return tuple(token for source in self.keeps for token in source)
+
+
+# ── The two-team news world, and its control ─────────────────────────────────
+#
+# Declared here rather than in the case that first needed it: tokens, excluded content and
+# pages describe the WORLD, not the case, so a second case reading these pages inherits them
+# instead of restating them and drifting.
+
+FOXES_URL = "https://www.ridgelinefoxes.com/news"
+SEALS_URL = "https://www.harborseals.com/news"
+
+FOXES_NEWS = CannedPage(
+    match="ridgelinefoxes",
+    text=(
+        "Title: Ridgeline Foxes | Official Site — Team News\n"
+        f"{FOXES_URL}\n\n"
+        "Foxes sign veteran goalie Aurelio Brandt to a two-year deal — the club "
+        "confirmed the signing Thursday morning.\n"
+        "Final score: Foxes 3, Rovers 2 (overtime).\n"
+        "Training camp opens next month at Ridgeline Arena.\n"
+    ),
+)
+
+SEALS_NEWS = CannedPage(
+    match="harborseals",
+    text=(
+        "Title: Harbor Seals | Official Site — Team News\n"
+        f"{SEALS_URL}\n\n"
+        "Seals name Petra Volk head of player development after a lengthy search.\n"
+        "Final score: Seals 1, Gulls 4.\n"
+        "Season ticket renewals open Friday.\n"
+    ),
+)
+
+FOXES_NEWS_CONTROL = CannedPage(
+    match="ridgelinefoxes",
+    text=(
+        "Title: Ridgeline Foxes | Official Site — Team News\n"
+        f"{FOXES_URL}\n\n"
+        "Foxes trade defenceman Wilhelmina Roux to the Rovers for a third-round "
+        "pick — the deal was filed Tuesday afternoon.\n"
+        "Final score: Foxes 1, Rovers 5.\n"
+        "Training camp opens next month at Ridgeline Arena.\n"
+    ),
+)
+
+SEALS_NEWS_CONTROL = CannedPage(
+    match="harborseals",
+    text=(
+        "Title: Harbor Seals | Official Site — Team News\n"
+        f"{SEALS_URL}\n\n"
+        "Seals sign winger Casimir Oyelaran to a one-year contract ahead of the "
+        "autumn window.\n"
+        "Final score: Seals 6, Gulls 2.\n"
+        "Season ticket renewals open Friday.\n"
+    ),
+)
+
+# One trade-or-signing per page, among distractors the ask excludes in as many words (a final
+# score) and ones it merely does not ask for (a training camp date, ticket renewals).  Only the
+# score is an EXCLUSION: whether a training-camp date is notable is a judgement, and asserting
+# it would assert one reading of the ask.
+TWO_TEAM_NEWS = World(
+    name="base",
+    pages=(FOXES_NEWS, SEALS_NEWS),
+    keeps=(("brandt", "aurelio"), ("volk", "petra")),
+    excludes=("rovers 2", "gulls 4"),
+)
+
+# The same world with every proper noun and every fact replaced and nothing else changed.  The
+# excluded tokens differ too, so a stored score is still decidable in either world.
+TWO_TEAM_NEWS_CONTROL = World(
+    name="control",
+    pages=(FOXES_NEWS_CONTROL, SEALS_NEWS_CONTROL),
+    keeps=(("roux", "wilhelmina"), ("oyelaran", "casimir")),
+    excludes=("rovers 5", "gulls 2"),
+)
