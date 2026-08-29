@@ -79,9 +79,7 @@ def _browse_sample() -> str:
         report.Event(report.EventKind.REPLY, "Baikal 1642m", thinking="answer"),
     ]
     checks = [report.CheckView("C1", "browsed", "spine", True, False, True, anchor_index=1)]
-    banner = report.render_banner(
-        passed=True, score=1.0, passed_checks=1, total_checks=1, duration_s=45, calls=8
-    )
+    banner = report.render_banner(passed=True, duration_s=45, calls=8)
     sample = report.build_sample(
         number=1, banner=banner, events=events, checks=checks, run_close_score="1/1"
     )
@@ -89,20 +87,20 @@ def _browse_sample() -> str:
 
 
 _BROWSE_SAMPLE_FOLDED = (
-    "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 45s · 8 calls</summary>\n"
+    "<details><summary>sample 1 — ✅ pass · 45s · 8 calls</summary>\n"
     "\n"
     '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
     "|---|---|---|\n"
     "| expected | C1 [spine]⚖ browsed |  |\n"
-    "| 💭 | <details><summary>thinking</summary>verify</details> |  |\n"
+    "| 💭 | <details><summary>thinking — 6 chars</summary>verify</details> |  |\n"
     "| actual | 🔧 browse({...}) | ✅ C1 |\n"
-    "| 💭 | <details><summary>thinking</summary>answer</details> |  |\n"
+    "| 💭 | <details><summary>thinking — 6 chars</summary>answer</details> |  |\n"
     "| actual | 🤖 Baikal 1642m |  |\n"
     "\n"
     "</details>"
 )
 # The forbidden banner-only heading form — the assembler must NEVER emit it (#1759, compact gone).
-_BROWSE_SAMPLE_BANNER_ONLY = "#### sample 1 — ✅ pass · 1/1 (1.00) · 45s · 8 calls"
+_BROWSE_SAMPLE_BANNER_ONLY = "#### sample 1 — ✅ pass · 45s · 8 calls"
 
 
 def test_single_gated_case_whole_render(tmp_path: Path) -> None:
@@ -137,11 +135,11 @@ def test_single_gated_case_whole_render(tmp_path: Path) -> None:
     )
     _write_run(tmp_path, manifest, [artifact], {artifact.case_id: _browse_sample()})
     assert assemble_run_comment(tmp_path) == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=3 · "
+        "**run-20260721T051017Z-abba710a** · commit `abba710a`\n"
+        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
+        "**embeddings:** `embeddinggemma`\n"
         "**lever:** framework baseline\n"
-        "**RESULT:** mean 0.67 · all-pass 2/3 · pathology-excluded 0.67 · causes — behavioral 0 · "
-        "pathology 0 · harness 1 · families: browse-answer 0.67 · 19 calls · 148s · "
-        "54.2K in / 5.9K out\n"
+        "**cost/sample:** 18,067 in / 1,967 out · 6.3 calls · 49s  _over 3 samples_\n"
         "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\n"
         "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)
@@ -195,9 +193,7 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
         report.Event(report.EventKind.USER, "hi"),
         report.Event(report.EventKind.REPLY, "hey", thinking=""),
     ]
-    banner = report.render_banner(
-        passed=True, score=1.0, passed_checks=1, total_checks=1, duration_s=10, calls=2
-    )
+    banner = report.render_banner(passed=True, duration_s=10, calls=2)
     hi_block = (
         report.render_sample(
             report.build_sample(
@@ -208,19 +204,18 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
     )
     _write_run(tmp_path, manifest, [alpha, beta], {alpha.case_id: hi_block})  # beta: no transcript
     assert assemble_run_comment(tmp_path) == (
-        "**run-20260720T090000Z-beef1234** · commit `beef1234` · gpt-oss:20b · N=2 · "
+        "**run-20260720T090000Z-beef1234** · commit `beef1234`\n"
+        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
+        "**embeddings:** `embeddinggemma`\n"
         "**lever:** two families\n"
-        "**RESULT:** mean 0.75 · all-pass 3/4 · pathology-excluded 0.75 · causes — behavioral 1 · "
-        "pathology 0 · harness 0 · families: alpha 1.00 · beta 0.50 · 38 calls · 296s · "
-        "108.4K in / 11.8K out\n"
+        "**cost/sample:** 27,100 in / 2,950 out · 9.5 calls · 74s  _over 4 samples_\n"
         "\n"
         "### `test_a.py::one` — alpha\n"
         "\n"
-        "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 10s · 2 calls</summary>\n"
+        "<details><summary>sample 1 — ✅ pass · 10s · 2 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "hi" |  |\n'
         "|---|---|---|\n"
-        "| 💭 | 💭 (empty) |  |\n"
         "| actual | 🤖 hey |  |\n"
         "\n"
         "</details>\n"
@@ -370,11 +365,11 @@ def test_flips_index_from_durable_manifest_baseline(
     manifest = _hold_run(run, prior, recorded_baseline=str(prior))
     header = assemble_run_comment(run).split("\n\n", 1)[0]
     assert header == (
-        f"**{manifest.run_id}** · commit `d1429159` · gpt-oss:20b · N=10 · "
+        f"**{manifest.run_id}** · commit `d1429159`\n"
+        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
+        "**embeddings:** `embeddinggemma`\n"
         "**lever:** beat 2 baseline\n"
-        "**RESULT:** mean 0.80 · all-pass 8/10 · pathology-excluded 0.80 · "
-        "causes — behavioral 2 · pathology 0 · harness 0 · families: state-classifier 0.80 · "
-        "19 calls · 148s · 54.2K in / 5.9K out\n"
+        "**cost/sample:** 5,420 in / 590 out · 1.9 calls · 15s  _over 10 samples_\n"
         "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)\n"
         "flips: decided idle ✅→❌ (s7, s10)"
     )
@@ -414,9 +409,6 @@ def _fail_sample() -> str:
     ]
     banner = report.render_banner(
         passed=False,
-        score=0.0,
-        passed_checks=0,
-        total_checks=1,
         cause="behavioral",
         duration_s=60,
         calls=3,
@@ -428,12 +420,12 @@ def _fail_sample() -> str:
 
 
 _FAIL_SAMPLE_FOLDED = (
-    "<details><summary>sample 2 — ❌ fail · 0/1 (0.00) · behavioral · 60s · 3 calls</summary>\n"
+    "<details><summary>sample 2 — ❌ fail · behavioral · 60s · 3 calls</summary>\n"
     "\n"
     '| step 1 · 👤 | "add a reminder" | ❌ |\n'
     "|---|---|---|\n"
     "| expected | C1 [state]⚖ reminder set |  |\n"
-    "| 💭 | <details><summary>thinking</summary>skip it</details> |  |\n"
+    "| 💭 | <details><summary>thinking — 7 chars</summary>skip it</details> |  |\n"
     "| actual | 🤖 done! | ❌ C1 — no cadence written · behavioral |\n"
     "\n"
     "</details>"
@@ -482,11 +474,11 @@ def test_every_sample_folds_whole_in_the_comment(tmp_path: Path) -> None:
     _mixed_run(tmp_path)
     comment = assemble_run_comment(tmp_path)
     assert comment == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=2 · "
+        "**run-20260721T051017Z-abba710a** · commit `abba710a`\n"
+        "**model:** `gpt-oss:20b` · `http://localhost:11434` · "
+        "**embeddings:** `embeddinggemma`\n"
         "**lever:** mixed run\n"
-        "**RESULT:** mean 0.50 · all-pass 1/2 · pathology-excluded 0.50 · causes — behavioral 1 · "
-        "pathology 0 · harness 0 · families: browse-answer 0.50 · 19 calls · 148s · "
-        "54.2K in / 5.9K out\n"
+        "**cost/sample:** 27,100 in / 2,950 out · 9.5 calls · 74s  _over 2 samples_\n"
         "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _FAIL_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)
@@ -585,17 +577,17 @@ def test_only_the_nominated_sample_is_carried_in_full(tmp_path: Path) -> None:
 
 def test_a_long_thinking_trace_is_shortened_only_in_the_comment(tmp_path: Path) -> None:
     """Thinking was 68% of every sample — the single biggest lever — so the comment carries its
-    head and its length. The trace itself is never touched on disk, and a SHORT trace is left
-    alone: rewriting it would add a pointer to text already shorter than the pointer."""
-    trace = "x" * 900
-    body = f"| 💭 | <details><summary>thinking</summary>{trace}</details> |  |"
-    shortened = report.summarise_thinking(body)
+    head; the label already states the length, so shortening changes only the body. The trace is
+    never touched on disk, and a SHORT trace is left alone: rewriting it would add nothing and
+    cost bytes."""
+    long_body = report.thinking_row("x" * 900).render()
+    shortened = report.summarise_thinking(long_body)
 
-    assert "900 chars, in full in the artifact" in shortened
-    assert trace not in shortened, "the trace is not restated in the index"
-    assert len(shortened) < len(body) // 3
-    short = "| 💭 | <details><summary>thinking</summary>brief</details> |  |"
-    assert report.summarise_thinking(short) == short, "nothing to save, nothing rewritten"
+    assert "thinking — 900 chars" in shortened, "the label states the real length either way"
+    assert "x" * 900 not in shortened, "the trace itself is not restated in the index"
+    assert len(shortened) < len(long_body) // 3
+    short_body = report.thinking_row("brief").render()
+    assert report.summarise_thinking(short_body) == short_body, "nothing to save, nothing rewritten"
 
 
 def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_path: Path) -> None:
@@ -612,8 +604,8 @@ def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_pat
     assert "F" * 400 in elided, "a prompt every sample shared is kept"
     assert "M" * 400 in elided, "and so is the one the carried sample was run with"
     assert "T" * 400 not in elided, "another sample's wording is not restated in the index"
-    assert report.PROMPT_IN_ARTIFACT in elided
-    assert "chat — 400 chars · sample 2" in elided, "but its summary still names it"
+    assert "other 1 samples" in elided
+    assert "`chat`" in elided, "and the line names the context it dropped"
 
 
 def test_the_samples_the_comment_does_not_carry_are_one_line(tmp_path: Path) -> None:

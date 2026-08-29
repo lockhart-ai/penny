@@ -1517,7 +1517,7 @@ def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) ->
     _write_sample_report(db, "guard-case", 0, result=result, reply="saved")
     text = _sample_report_text(tmp_path, "guard-case")
     # the guard failed → 1/2
-    assert text.startswith("<details><summary>sample 1 — ❌ fail · 1/2 (0.50) ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail ·")
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert (
         "| expected | G1 [guard]⚖ forced bail fired — contract exercised | "
@@ -1548,7 +1548,7 @@ def test_report_renders_rationale_and_ignored(tmp_path, monkeypatch) -> None:
     )
     _write_sample_report(db, "rationale-case", 0, result=result, reply="saved")
     text = _sample_report_text(tmp_path, "rationale-case")
-    assert text.startswith("<details><summary>sample 1 — ❌ fail · 1/2 (0.50) ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail ·")
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert "| expected | C2 ⚖ read count | ❌ C2 — expected 3 reads, saw 1 |" in text
     assert "| expected | C3 browse branch | ➖ n/a — no browse this sample |" in text
@@ -1570,7 +1570,7 @@ def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
     _write_sample_report(db, "fragile-case", 0, result=SampleResult.binary([]), reply="found it")
     text = _sample_report_text(tmp_path, "fragile-case")
     # fragile still folds whole now (#1753); banner carries the fragile flag
-    assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
+    assert text.startswith("<details><summary>sample 1 — ✅ pass · fragile ·")
     assert "| actual | 🔧 browse({}) |" in text
     assert "| actual | 📥 You tried to use `browse` but it didn't work: down |" in text
 
@@ -1644,7 +1644,7 @@ def test_report_renders_the_terminal_call_and_result_from_the_run_tail(
 
 def test_report_banner_and_verdict_carry_the_failure_cause(tmp_path, monkeypatch) -> None:
     # The banner + the failed check's verdict carry the structural cause (#1725): a behavioral
-    # miss reads ``❌ fail · 0/1 (0.00) · behavioral`` on the banner and ``· behavioral`` on the
+    # miss reads ``❌ fail · behavioral`` on the banner and ``· behavioral`` on the
     # done-turn verdict, so a reader triages before unfolding.
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
@@ -1656,9 +1656,9 @@ def test_report_banner_and_verdict_carry_the_failure_cause(tmp_path, monkeypatch
     result.cause = FailureCause.BEHAVIORAL  # the runner stamps this before _write_sample_report
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
     text = _sample_report_text(tmp_path, "watch-fern")
-    assert text.startswith("<details><summary>sample 1 — ❌ fail · 0/1 (0.00) · behavioral ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail · behavioral ·")
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 · behavioral |" in text
-    assert "<details><summary>thinking</summary>The entry is already written" in text
+    assert "<details><summary>thinking — 75 chars</summary>The entry is already written" in text
 
 
 def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) -> None:
@@ -2018,10 +2018,10 @@ def test_report_marks_regressed_and_renders_thinking(tmp_path, monkeypatch) -> N
     )
     _write_sample_report(db, "watch-fern", 2, result=result, reply="")
     text = _sample_report_text(tmp_path, "watch-fern")
-    assert text.startswith("<details><summary>sample 3 — ❌ fail · 0/1 (0.00) ·")
+    assert text.startswith("<details><summary>sample 3 — ❌ fail ·")
     assert '| step 1 · 👤 | "run the fern watch" | ✅→❌ |' in text  # the flip on the step header
     assert "| actual | 🔧 done({}) | ✅→❌ **REGRESSED** C1 — expected 1 send, saw 0 |" in text
-    assert "<details><summary>thinking</summary>The entry is already written" in text
+    assert "<details><summary>thinking — 75 chars</summary>The entry is already written" in text
 
 
 def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatch) -> None:
@@ -2034,9 +2034,9 @@ def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatc
     )
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
     text = _sample_report_text(tmp_path, "watch-fern")
-    assert text.startswith("<details><summary>sample 1 — ❌ fail · 0/1 (0.00) ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail ·")
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 |" in text
-    assert "<details><summary>thinking</summary>The entry is already written" in text
+    assert "<details><summary>thinking — 75 chars</summary>The entry is already written" in text
     assert "REGRESSED" not in text  # first run — nothing to flip against
 
 
@@ -2087,8 +2087,8 @@ def test_thinking_attaches_across_compact_and_pretty_serializations(tmp_path, mo
     # The thinking sits directly ABOVE the browse call (attached, not the silent 💭 (empty) the key
     # mismatch produced), and the arg renders as a real ``é`` — not a ``\uXXXX`` escape.
     assert (
-        "| 💭 | <details><summary>thinking</summary>Search the web for the café's opening "
-        "hours.</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 44 chars</summary>"
+        "Search the web for the café's opening hours.</details> |  |\n"
         '| actual | 🔧 browse({"queries": ["café hours"]}) | ✅ C1 |'
     ) in text
     assert "💭 (empty)" not in text
@@ -2114,7 +2114,7 @@ def test_report_renders_fragile_via_user_turn_nudge(tmp_path, monkeypatch) -> No
     _write_sample_report(db, "nudge-fragile", 0, result=SampleResult.binary([]), reply="saved")
     text = _sample_report_text(tmp_path, "nudge-fragile")
     # fragile still folds whole now (#1753)
-    assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
+    assert text.startswith("<details><summary>sample 1 — ✅ pass · fragile ·")
     assert "| actual | 👤 *(nudge)* Please provide your response. | ⚠ recovery event |" in text
 
 
@@ -2138,9 +2138,10 @@ def test_report_renders_thinking_for_every_action(tmp_path, monkeypatch) -> None
     # including a passing one (in its own collapsed <details> above the action). A clean pass
     # folds the whole block into a <details>.
     text = _sample_report_text(tmp_path, "pass-case")
-    assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) ·")
+    assert text.startswith("<details><summary>sample 1 — ✅ pass ·")
     assert (
-        "| 💭 | <details><summary>thinking</summary>Writing the entry now.</details> |  |" in text
+        "| 💭 | <details><summary>thinking — 22 chars</summary>"
+        "Writing the entry now.</details> |  |" in text
     )
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert "REGRESSED" not in text
@@ -2240,27 +2241,31 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
     ], "every actor's prompt reaches the case document, none render under the sample"
 
     assert _sample_report_text(tmp_path, "micro-actors") == (
-        "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 0s · 5 calls</summary>\n"
+        "<details><summary>sample 1 — ✅ pass · 0s · 5 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
         "|---|---|---|\n"
         "| expected | C1 [spine]⚖ browsed |  |\n"
         "| actual | 🧩 state-classifier ← user turn: current: idle · newest message: "
         "deepest lake? |  |\n"
-        "| 💭 | <details><summary>thinking (state-classifier)</summary>a question, not a task"
+        "| 💭 | <details><summary>thinking (state-classifier) — 22 chars</summary>"
+        "a question, not a task"
         "</details> |  |\n"
         "| actual | 🧩 state-classifier → STATE: idle |  |\n"
-        "| 💭 | <details><summary>thinking</summary>check a source</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 14 chars</summary>check a source</details> |  |\n"
         '| actual | 🔧 browse({"queries": ["lake"], "extract": "depth"}) | ✅ C1 |\n'
         "| actual | 🧩 browse-extract ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
-        "| 💭 | <details><summary>thinking (browse-extract)</summary>the value is right there"
+        "| 💭 | <details><summary>thinking (browse-extract) — 24 chars</summary>"
+        "the value is right there"
         "</details> |  |\n"
         "| actual | 🧩 browse-extract → EXTRACTED: 1642 |  |\n"
         "| actual | 📥 You opened the page (browse result) · 1642 |  |\n"
-        "| 💭 | <details><summary>thinking</summary>the source says 1,642 m</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 23 chars</summary>"
+        "the source says 1,642 m</details> |  |\n"
         '| actual | 🤖 "Lake Baikal — 1,642 m." |  |\n'
         "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
-        "| 💭 | <details><summary>thinking (skill-namer)</summary>a generic name</details> |  |\n"
+        "| 💭 | <details><summary>thinking (skill-namer) — 14 chars</summary>"
+        "a generic name</details> |  |\n"
         "| actual | 🧩 skill-namer → NAME: look-up-lake-depth |  |\n"
         "\n"
         "</details>\n"

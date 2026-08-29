@@ -70,9 +70,7 @@ def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> Non
         report.CheckView("C1", "browsed", "spine", True, False, True, anchor_index=3),
         report.CheckView("C2", "reply names the fact", "reply", True, False, True, anchor_index=7),
     ]
-    banner = report.render_banner(
-        passed=True, score=1.0, passed_checks=2, total_checks=2, duration_s=45, calls=8
-    )
+    banner = report.render_banner(passed=True, duration_s=45, calls=8)
     sample = report.build_sample(
         number=1,
         banner=banner,
@@ -81,26 +79,28 @@ def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> Non
         run_close_score="2/2",
     )
     assert report.render_sample(sample) == (
-        "<details><summary>sample 1 — ✅ pass · 2/2 (1.00) · 45s · 8 calls</summary>\n"
+        "<details><summary>sample 1 — ✅ pass · 45s · 8 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
         "|---|---|---|\n"
         "| expected | C1 [spine]⚖ browsed |  |\n"
         "| expected | C2 [reply]⚖ reply names the fact |  |\n"
         "| actual | 🧩 state-classifier ← user turn: newest message: deepest lake? |  |\n"
-        "| 💭 | <details><summary>thinking (state-classifier)</summary>a question, no task"
+        "| 💭 | <details><summary>thinking (state-classifier) — 19 chars</summary>"
+        "a question, no task"
         "</details> |  |\n"
         "| actual | 🧩 state-classifier → STATE: idle |  |\n"
-        "| 💭 | <details><summary>thinking</summary>verify with source</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 18 chars</summary>verify with source</details> |  |\n"
         '| actual | 🔧 browse({"queries":["x"],"extract":"depth"}) | ✅ C1 |\n'
         "| actual | 🧩 browse-extract ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
-        "| 💭 | <details><summary>thinking (browse-extract)</summary>value present</details> |  |\n"
+        "| 💭 | <details><summary>thinking (browse-extract) — 13 chars</summary>"
+        "value present</details> |  |\n"
         "| actual | 🧩 browse-extract → EXTRACTED: 1642 |  |\n"
         "| actual | 📥 You opened wiki (browse result) · 1642 |  |\n"
-        "| 💭 | 💭 (empty) |  |\n"
         "| actual | 🤖 Lake Baikal, 1,642 m. | ✅ C2 |\n"
         "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
-        "| 💭 | <details><summary>thinking (skill-namer)</summary>generic name</details> |  |\n"
+        "| 💭 | <details><summary>thinking (skill-namer) — 12 chars</summary>"
+        "generic name</details> |  |\n"
         "| actual | 🧩 skill-namer → NAME: look-up-a-lake-depth |  |\n"
         "\n"
         "</details>"
@@ -156,9 +156,6 @@ def test_failed_sample_with_nudge_run_close_and_na() -> None:
     ]
     banner = report.render_banner(
         passed=False,
-        score=0.5,
-        passed_checks=1,
-        total_checks=2,
         cause="behavioral",
         duration_s=120,
         calls=13,
@@ -167,16 +164,17 @@ def test_failed_sample_with_nudge_run_close_and_na() -> None:
         number=3, banner=banner, events=events, checks=checks, run_close_score="1/2"
     )
     assert report.render_sample(sample) == (
-        "<details><summary>sample 3 — ❌ fail · 1/2 (0.50) · "
+        "<details><summary>sample 3 — ❌ fail · "
         "behavioral · 120s · 13 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "drop the read step" | ❌ |\n'
         "|---|---|---|\n"
         "| expected | C7 [state]⚖ remove: read gone |  |\n"
-        "| 💭 | <details><summary>thinking</summary>fold in once confirmed</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 22 chars</summary>"
+        "fold in once confirmed</details> |  |\n"
         "| actual | 🤖 I'll ditch that. Just to... |  |\n"
         "| actual | 👤 *(nudge)* Please provide your response. | ⚠ recovery event |\n"
-        "| 💭 | <details><summary>thinking</summary>restate</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 7 chars</summary>restate</details> |  |\n"
         "| actual | 🤖 Updated plan. | ❌ C7 — read still in recipe · behavioral |\n"
         "\n"
         "| run-close | whole-conversation contracts | 1/2 |\n"
@@ -194,13 +192,9 @@ def test_timeout_sample_renders_placeholder() -> None:
     never silently omitted (F2). The banner omits ``k/n`` (the scorer never ran)."""
     banner = report.render_banner(
         passed=False,
-        score=0.0,
-        passed_checks=0,
-        total_checks=0,
         cause="harness",
         duration_s=118,
         calls=13,
-        checks_evaluated=False,
     )
     sample = report.build_sample(
         number=3,
@@ -245,9 +239,6 @@ def test_diff_mode_regressed_flip_with_baseline_row() -> None:
     ]
     banner = report.render_banner(
         passed=False,
-        score=0.75,
-        passed_checks=3,
-        total_checks=4,
         cause="behavioral",
         duration_s=60,
         calls=5,
@@ -256,13 +247,13 @@ def test_diff_mode_regressed_flip_with_baseline_row() -> None:
         number=1, banner=banner, events=events, checks=checks, run_close_score="3/4"
     )
     assert report.render_sample(sample) == (
-        "<details><summary>sample 1 — ❌ fail · 3/4 (0.75) · behavioral · 60s · 5 calls</summary>\n"
+        "<details><summary>sample 1 — ❌ fail · behavioral · 60s · 5 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "stop notifying me" | ✅→❌ |\n'
         "|---|---|---|\n"
         "| expected | C8 [state]⚖ notify off |  |\n"
         '| baseline | 🔧 collection_set({"notify":false}) → confirmed | ✅ C8 *(prior run)* |\n'
-        "| 💭 | <details><summary>thinking</summary>defer</details> |  |\n"
+        "| 💭 | <details><summary>thinking — 5 chars</summary>defer</details> |  |\n"
         "| actual | 🤖 Turning it off | ✅→❌ **REGRESSED** C8 — notify still on · behavioral |\n"
         "\n"
         "</details>"
@@ -294,9 +285,6 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
     ]
     banner = report.render_banner(
         passed=True,
-        score=1.0,
-        passed_checks=1,
-        total_checks=1,
         fragile=True,
         duration_s=30,
         calls=4,
@@ -305,13 +293,12 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
         number=2, banner=banner, events=events, checks=checks, run_close_score="1/1"
     )
     assert report.render_sample(sample) == (
-        "<details><summary>sample 2 — ✅ pass · 1/1 (1.00) · fragile · 30s · 4 calls</summary>\n"
+        "<details><summary>sample 2 — ✅ pass · fragile · 30s · 4 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "add game and remind me friday" | ✅ |\n'
         "|---|---|---|\n"
         "| expected | C1 [state]⚖ entry written |  |\n"
         "| expected | C2 [spine]ℹ single-write efficiency |  |\n"
-        "| 💭 | 💭 (empty) |  |\n"
         '| actual | 🔧 collection_write("games") | ✅ C1 · ✅ C2 |\n'
         "\n"
         "| run-close | whole-conversation contracts | 1/1 |\n"
@@ -345,13 +332,11 @@ def test_fold_and_parse_round_trip() -> None:
     recovers ``(number, banner, body)`` from BOTH the folded form and the legacy ``#### `` heading
     (so a re-assembled prior run's unfolded failures fold uniformly too)."""
     body = '| step 1 · 👤 | "hi" |  |\n|---|---|---|\n| actual | 🤖 hey |  |'
-    folded = report.fold_sample(2, "✅ pass · 1/1 (1.00) · 10s · 2 calls", body)
+    folded = report.fold_sample(2, "✅ pass · 10s · 2 calls", body)
     assert folded == (
-        "<details><summary>sample 2 — ✅ pass · 1/1 (1.00) · 10s · 2 calls</summary>\n"
-        f"\n{body}\n\n"
-        "</details>"
+        f"<details><summary>sample 2 — ✅ pass · 10s · 2 calls</summary>\n\n{body}\n\n</details>"
     )
-    assert report.parse_sample_block(folded) == (2, "✅ pass · 1/1 (1.00) · 10s · 2 calls", body)
+    assert report.parse_sample_block(folded) == (2, "✅ pass · 10s · 2 calls", body)
     heading = f"#### sample 3 — ❌ fail · behavioral · 120s · 5 calls\n\n{body}"
     assert report.parse_sample_block(heading) == (3, "❌ fail · behavioral · 120s · 5 calls", body)
 
@@ -359,7 +344,7 @@ def test_fold_and_parse_round_trip() -> None:
 def test_split_sample_blocks_separates_mixed_forms() -> None:
     """``split_sample_blocks`` splits a case transcript into its per-sample blocks in order, across
     a folded block followed by a legacy unfolded ``#### `` block (the re-assembly case)."""
-    folded = report.fold_sample(1, "✅ pass · 1/1 (1.00) · 8s · 2 calls", "| a | b |  |")
+    folded = report.fold_sample(1, "✅ pass · 8s · 2 calls", "| a | b |  |")
     heading = "#### sample 2 — ❌ fail · harness · 120s · 3 calls\n\n_(no completed turns)_"
     transcript = f"{folded}\n\n{heading}\n\n"
     assert report.split_sample_blocks(transcript) == [folded, heading]
@@ -372,7 +357,7 @@ def test_a_case_level_preamble_is_split_off_rather_than_parsed_as_a_sample() -> 
     PREAMBLE, verbatim and unparsed — nothing here has to know what a case says about
     itself — and a transcript that opens straight onto sample 1 reports no preamble at all,
     which is what it did before case sections existed."""
-    folded = report.fold_sample(1, "✅ pass · 1/1 (1.00) · 8s · 2 calls", "| a | b |  |")
+    folded = report.fold_sample(1, "✅ pass · 8s · 2 calls", "| a | b |  |")
     sections = "#### `case` — end-state assertions, variance, harness\n\n**A.** …"
     assert report.split_case_transcript(f"{sections}\n\n{folded}\n\n") == (sections, [folded])
     assert report.split_case_transcript(f"{folded}\n\n") == ("", [folded])
@@ -484,17 +469,17 @@ def test_the_tail_states_the_inputs_and_what_the_outliers_did():
         divergences=[cohort.FeatureDivergence(feature="tool sequence", value="a", modal="b")],
     )
     tail = report.render_case_tail(
-        prompts=report.prompt_variants(_pairs(("sample 1", "chat", "prompt text")), total=1),
         phrasings=[("phrasing 1", "watch the two pages"), ("phrasing 2", "keep an eye on them")],
         world="| # | page | must be kept |\n|---|---|---|\n| 1 | `foxes` | `brandt` |",
+        world_facts=report.WorldFacts(pages=1, keeps=1, excludes=0),
         outliers=[(3, outlier)],
     )
 
-    assert "<summary>Test inputs</summary>" in tail
-    assert "<summary>Phrasings (2)</summary>" in tail
+    assert "<summary>Test inputs — 2 phrasings · 1 page · 1 must-keep, 0 must-not</summary>" in tail
+    assert "<summary>Phrasings — 2 wordings of one ask</summary>" in tail
     assert "| # | ask |" in tail, "the wordings are a table, not stacked paragraphs"
     assert "| phrasing 1 | watch the two pages |" in tail
-    assert "<summary>Outliers (1)</summary>" in tail
+    assert "<summary>Outliers — 1 of 1 samples · diverging on 1 feature</summary>" in tail
     assert "| `tool sequence` | `a` | `b` |" in tail
     assert "Which samples to read" not in tail, "the outlier section already indexes the work"
 
@@ -740,7 +725,8 @@ def test_the_three_sections_render_whole():
             "variance ⚪ max H 0.579 `routine shape` · "
             "3 pooled + 0 control + 1 excluded = 4 driven",
             report.fold(
-                "⚪ Assertions",
+                "⚪ Assertions — 1 of 2 held · lowest 0.67 "
+                "`reply: every specific value in it is sourced`",
                 "\n\n".join(
                     [
                         "\n".join(
@@ -760,7 +746,7 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.fold(
-                "⚪ Variance",
+                "⚪ Variance — 1 feature · max H 0.579 `routine shape` · none gated",
                 "\n\n".join(
                     [
                         "\n".join(
@@ -786,6 +772,13 @@ def test_the_three_sections_render_whole():
                         ),
                         "Reply text over 3 pairs — cosine mean 0.000 min 0.000 · "
                         "containment mean 1.000",
+                    ]
+                ),
+            ),
+            report.fold(
+                "⚪ Cost — 40,000 in / 10,000 out per sample · 200s",
+                "\n\n".join(
+                    [
                         "**Cost, per sample.**",
                         "\n".join(
                             [
@@ -804,7 +797,7 @@ def test_the_three_sections_render_whole():
                 ),
             ),
             report.fold(
-                "🔴 Excluded samples",
+                "🔴 Excluded samples — 1 of 4 · dominant: the measured turn never ran",
                 "\n\n".join(
                     [
                         "Dominant failure class: **the measured turn never ran** (1 of 1).",
@@ -850,7 +843,7 @@ def _oversized_sample() -> tuple[int, str, str]:
         for index in range(1, 41)
     ]
     body = report.BLOCK_SEPARATOR.join(step.render() for step in steps)
-    return 3, "❌ fail · 1/2 (0.50) · behavioral · 206s · 31 calls", body
+    return 3, "❌ fail · behavioral · 206s · 31 calls", body
 
 
 def test_an_oversized_sample_renders_as_folds_the_splitter_can_cut_between() -> None:

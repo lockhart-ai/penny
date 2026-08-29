@@ -607,18 +607,22 @@ class EvalRun:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report.write_text(render_manifest_header(self.manifest) + "\n")
 
-    def write_case_report(self, case_id: str, head: str, tail: str = "") -> None:
-        """Wrap this case's samples: the scores go ABOVE them, the setup and outliers BELOW.
+    def write_case_report(self, case_id: str, head: str, prompts: str = "", tail: str = "") -> None:
+        """Wrap this case's samples: scores ABOVE them, prompts and setup BELOW, each behind its
+        own marker so the assembler can order them around the sample it carries.
 
-        The representative sample is what a reader was sent to read, so it sits directly under
-        the scores rather than below the reference material. The tail is separated by a marker
-        the assembler splits on, so the posted comment can order the two around the sample it
-        carries without either document guessing where the boundary is."""
+        The prompts are written apart from the setup because they belong to the SAMPLE rather than
+        to the case — the assembler folds them into the representative, where a reader following
+        one turn needs them."""
         report = self.report_dir / f"{case_id}.md"
         header = render_manifest_header(self.manifest) + "\n"
         body = report.read_text() if report.exists() else header
         rest = body[len(header) :] if body.startswith(header) else body
-        closing = f"\n\n{report_grammar.CASE_TAIL_MARKER}\n\n{tail}" if tail else ""
+        closing = ""
+        if prompts:
+            closing += f"\n\n{report_grammar.CASE_PROMPTS_MARKER}\n\n{prompts}"
+        if tail:
+            closing += f"\n\n{report_grammar.CASE_TAIL_MARKER}\n\n{tail}"
         report.write_text(f"{header}{head}\n\n{rest.lstrip()}{closing}")
 
     def append_case(self, artifact: CaseArtifact) -> None:
@@ -690,11 +694,11 @@ def begin_case(case_id: str) -> None:
         run.write_case_header(case_id)
 
 
-def record_case_report(case_id: str, head: str, tail: str = "") -> None:
+def record_case_report(case_id: str, head: str, prompts: str = "", tail: str = "") -> None:
     """Per-case entry point for the case document. No-op off-report."""
     run = active_run()
     if run is not None:
-        run.write_case_report(case_id, head, tail)
+        run.write_case_report(case_id, head, prompts, tail)
 
 
 def record_case(

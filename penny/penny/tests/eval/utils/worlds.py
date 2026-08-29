@@ -61,8 +61,9 @@ class World(BaseModel):
             for index, page in enumerate(self.pages)
         )
         bodies = "\n\n".join(
-            f"<details><summary>page {index + 1} — `{page.match}` "
-            f"({len(page.text):,} chars)</summary>\n\n```\n{page.text}\n```\n\n</details>"
+            f"<details><summary>Page {index + 1} — `{page.match}` · {len(page.text):,} chars · "
+            f"keeps {_tokens(self._keeps_for(index)) or '—'}</summary>"
+            f"\n\n```\n{page.text}\n```\n\n</details>"
             for index, page in enumerate(self.pages)
         )
         parts = [f"{_PAGE_HEAD}\n{rows}"]
@@ -70,6 +71,13 @@ class World(BaseModel):
             parts.append(f"**Must not be kept, from any page** — {_tokens(self.excludes)}")
         parts.append(bodies)
         return "\n\n".join(parts)
+
+    @property
+    def facts(self):
+        """The counts a closed fold states, from the world itself rather than from its render."""
+        from penny.tests.eval.utils.report import WorldFacts
+
+        return WorldFacts(pages=len(self.pages), keeps=len(self.names), excludes=len(self.excludes))
 
     def _keeps_for(self, index: int) -> tuple[str, ...]:
         """The tokens this page contributes, or empty where the case named none for it."""

@@ -72,7 +72,7 @@ ROW_NOTE = "note"
 
 RUN_CLOSE_LABEL = "run-close"
 RUN_CLOSE_TITLE = "whole-conversation contracts"
-EMPTY_THINKING = "💭 (empty)"
+NO_USER_TURN = "_(seeded round — no user turn)_"
 NO_TURNS_PLACEHOLDER = (
     "_(no completed turns recorded — the sample produced no finished model call, "
     "e.g. a harness timeout)_"
@@ -156,27 +156,33 @@ class Row:
 
 
 def thinking_row(thinking: str) -> Row:
-    """A 💭 row — an always-collapsed ``<details>`` above the action it produced. Empty
-    thinking renders as ``💭 (empty)`` (an empty thought before a degenerate act is signal)."""
-    body = EMPTY_THINKING if not thinking.strip() else _thinking_details(thinking)
-    return Row(ROW_THINKING, body, escape=False)
+    """A 💭 row — an always-collapsed ``<details>`` above the action it produced."""
+    return Row(ROW_THINKING, _thinking_details(thinking), escape=False)
 
 
 def micro_thinking_row(thinking: str, context: str | None = None) -> Row:
-    """A 💭 row for a micro-context call — labelled ``thinking (<context>)`` so the sub-model's
-    reasoning is attributed to the actor that produced it (#1773); an event naming no context
-    keeps the generic ``thinking (micro-context)``."""
-    if not thinking.strip():
-        return Row(ROW_THINKING, EMPTY_THINKING, escape=False)
-    body = _thinking_details(thinking, summary=f"thinking ({context or MICRO_CONTEXT_LABEL})")
-    return Row(ROW_THINKING, body, escape=False)
+    """A 💭 row for a micro-context call — labelled with the actor whose reasoning it is (#1773),
+    so a sub-model's thinking is never read as the main loop's."""
+    return Row(
+        ROW_THINKING,
+        _thinking_details(thinking, context=context or MICRO_CONTEXT_LABEL),
+        escape=False,
+    )
 
 
-def _thinking_details(thinking: str, summary: str = "thinking") -> str:
-    """The collapsed ``<details>`` markup for a thinking trace (newlines collapsed to spaces so
-    the whole trace stays inside one table cell)."""
+def _thinking_details(thinking: str, context: str = "") -> str:
+    """The collapsed markup for a thinking trace.
+
+    ONE label shape everywhere — ``thinking (context) — N chars`` — so the same thing does not
+    read two ways depending on how long it happens to be; the assembler shortens the BODY for the
+    posted comment and leaves the label alone."""
     body = escape_cell(thinking.strip()).replace("<br>", " ")
-    return f"<details><summary>{summary}</summary>{body}</details>"
+    label = _thinking_label(context, len(thinking.strip()))
+    return f"<details><summary>{label}</summary>{body}</details>"
+
+
+def _thinking_label(context: str, chars: int) -> str:
+    return THINKING_LABEL.format(context=f" ({context})" if context else "", chars=chars)
 
 
 # ── A step (a user turn and everything it produced) ──────────────────────────
@@ -192,8 +198,16 @@ class Step:
     rows: list[Row]
 
     def render(self) -> str:
-        msg = escape_cell(self.user_message)
-        header = f'| step {self.number} · {ACTOR_USER} | "{msg}" | {self.verdict} |'
+        """A step opens on its user turn — or says it had none, rather than quoting nothing.
+
+        The opening step of a seeded round has no user message (the round was laid down before
+        the measured turn), and `| step 1 · 👤 | "" |` renders that as a turn where the user said
+        the empty string."""
+        if self.user_message.strip():
+            opener = f'{ACTOR_USER} | "{escape_cell(self.user_message)}"'
+        else:
+            opener = f"| {NO_USER_TURN}"
+        header = f"| step {self.number} · {opener} | {self.verdict} |"
         return "\n".join([header, TABLE_DIVIDER, *[row.render() for row in self.rows]])
 
 
@@ -276,6 +290,12 @@ def assertion_glyph(row: cohort.AssertionRow) -> str:
     return rate_glyph(row.pass_rate)
 
 
+def cost_glyph(cost: cohort.SampleCost | None) -> str:
+    """Cost carries a one-sided ceiling per model, proposed and not yet accepted anywhere — so it
+    is grey under the same rule as variance, and grey is not a paler green."""
+    return UNGATED_GLYPH
+
+
 def variance_glyph(feature: cohort.VarianceFeature) -> str:
     """A feature's colour.  No ceiling has been ACCEPTED anywhere yet — every one this report
     prints is proposed — so the honest answer is grey until one is."""
@@ -298,7 +318,18 @@ def variance_glyph(feature: cohort.VarianceFeature) -> str:
 # to be headings, and a reader scanning a hundred cases reads labels, not prose.
 SECTION_A = "Assertions"
 SECTION_B = "Variance"
+SECTION_COST = "Cost"
 SECTION_C = "Excluded samples"
+
+# A collapsed section states what is INSIDE it, not just where to click — the point of a folded
+# document is deciding what to open without opening it.  `Label — facts` is still a label: a noun
+# phrase with counts attached, never a sentence.
+_A_SUMMARY = "{label} — {held} of {total} held{lowest}"
+_A_LOWEST = " · lowest {rate:.2f} `{claim}`"
+_B_SUMMARY = "{label} — {features} · max H {entropy:.3f} `{feature}` · none gated"
+_B_EMPTY = "{label} — nothing pooled"
+_COST_SUMMARY = "{label} — {input:,.0f} in / {output:,.0f} out per sample · {seconds:,.0f}s"
+_C_SUMMARY = "{label} — {count} of {driven} · dominant: {reason}"
 
 _SUMMARY_LINE = (
     "{glyph} **`{case_id}`** — assertions {held}/{claims}{lowest} · "
@@ -357,6 +388,11 @@ _COST_NOTE = (
 _DOMINANT = "Dominant failure class: **{reason}** ({count} of {total})."
 
 
+def plural(count: int, noun: str) -> str:
+    """``3 features`` / ``1 feature`` — a summary that says `1 features` reads as a bug."""
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
 def fold(summary: str, body: str) -> str:
     """One collapsible block.  The default view is every summary line and no body."""
     return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
@@ -381,14 +417,63 @@ class CaseSections:
         sections behind folds."""
         blocks = [
             self.summary_line(),
-            fold(f"{self._assertions_glyph()} {SECTION_A}", self._assertions()),
-            fold(f"{self._variance_glyph()} {SECTION_B}", self._variance()),
+            fold(self._assertions_summary(), self._assertions()),
+            fold(self._variance_summary(), self._variance()),
         ]
+        if self.cost is not None:
+            blocks.append(fold(self._cost_summary(), self._cost()))
         # Only when something was actually lost.  A clean run says so on the summary line and
         # spends no section on it; a degraded one gets the names and the dominant class.
         if self.variance.excluded:
-            blocks.append(fold(f"{FAIL_GLYPH} {SECTION_C}", self._excluded()))
+            blocks.append(fold(self._excluded_summary(), self._excluded()))
         return "\n\n".join(blocks)
+
+    # ── What each fold says while it is still closed ─────────────────────
+    def _assertions_summary(self) -> str:
+        worst = min(
+            (row for row in self.assertions if row.total), key=lambda r: r.pass_rate, default=None
+        )
+        lowest = (
+            ""
+            if worst is None or worst.at_full
+            else _A_LOWEST.format(rate=worst.pass_rate, claim=worst.label)
+        )
+        return _A_SUMMARY.format(
+            label=f"{self._assertions_glyph()} {SECTION_A}",
+            held=sum(1 for row in self.assertions if row.at_full),
+            total=len(self.assertions),
+            lowest=lowest,
+        )
+
+    def _variance_summary(self) -> str:
+        label = f"{self._variance_glyph()} {SECTION_B}"
+        top = self._top_feature()
+        if top is None:
+            return _B_EMPTY.format(label=label)
+        return _B_SUMMARY.format(
+            label=label,
+            features=plural(len(self.variance.features), "feature"),
+            entropy=top.entropy,
+            feature=top.name,
+        )
+
+    def _cost_summary(self) -> str:
+        assert self.cost is not None
+        return _COST_SUMMARY.format(
+            label=f"{cost_glyph(self.cost)} {SECTION_COST}",
+            input=self.cost.input_tokens,
+            output=self.cost.output_tokens,
+            seconds=self.cost.seconds,
+        )
+
+    def _excluded_summary(self) -> str:
+        dominant = self.variance.dominant_exclusion
+        return _C_SUMMARY.format(
+            label=f"{FAIL_GLYPH} {SECTION_C}",
+            count=len(self.variance.excluded),
+            driven=self.variance.driven,
+            reason=dominant[0] if dominant else "unknown",
+        )
 
     # ── The one line a reader sees by default ────────────────────────────
     def summary_line(self) -> str:
@@ -453,9 +538,13 @@ class CaseSections:
         ]
         if self.variance.text is not None:
             parts.append(_text_spread_line(self.variance.text))
-        if self.cost is not None:
-            parts.append(_cost_block(self.cost, self.model))
         return "\n\n".join(parts)
+
+    def _cost(self) -> str:
+        """What one SAMPLE spends, never what the run did — a total is not comparable across
+        cohort sizes, the same trap the entropy denominator is."""
+        assert self.cost is not None
+        return _cost_block(self.cost, self.model)
 
     def _phrasing_rows(self) -> str:
         """Only the FLAGGED rows render: an unflagged phrasing agreeing with its neighbours is
@@ -562,12 +651,13 @@ def _value_list(values: Sequence[str]) -> str:
 # The rule this keeps that the diff could not: every prompt renders VERBATIM.  A reader opening
 # a sample's prompt reads what the model read, never a reconstruction assembled from two places.
 
-PROMPT_VARIANTS_LABEL = "System prompts"
-PHRASINGS_LABEL = "Phrasings ({count})"
-WORLD_LABEL = "Seeded pages"
-OUTLIERS_LABEL = "Outliers ({count})"
-TEST_INPUTS_LABEL = "Test inputs"
+PROMPT_VARIANTS_LABEL = "System prompts — {contexts} contexts · {shared} shared by every sample"
+PHRASINGS_LABEL = "Phrasings — {count} of one ask"
+WORLD_LABEL = "Seeded pages — {pages} · {keeps} must-keep, {excludes} must-not"
+OUTLIERS_LABEL = "Outliers — {count} of {driven} samples · diverging on {features}"
+TEST_INPUTS_LABEL = "Test inputs — {phrasings} · {pages}"
 REPRESENTATIVE_LABEL = "Representative sample"
+REPRESENTATIVE_SUMMARY = "Representative sample — {turns} · {banner}"
 
 _ALL_SAMPLES = "every sample"
 _PROMPT_SUMMARY = "{label} — {chars:,} chars · {used}"
@@ -621,13 +711,34 @@ def prompt_variants(prompts: Sequence[tuple[str, SystemPrompt]], total: int) -> 
     ]
 
 
+@dataclass(frozen=True)
+class WorldFacts:
+    """What a closed `Seeded pages` fold states: how many pages, and how many tokens each way.
+
+    Passed as DATA rather than counted back out of the rendered table — deriving a summary from
+    the markdown it summarises is the same mistake as diffing rendered prompts."""
+
+    pages: int = 0
+    keeps: int = 0
+    excludes: int = 0
+
+
 def render_prompt_variants(variants: Sequence[PromptVariant]) -> str:
     """Every distinct prompt, once — the contexts every sample shared first."""
     if not variants:
         return ""
     ordered = sorted(variants, key=lambda v: (not v.shared_by_all, v.context))
     blocks = "\n\n".join(variant.render() for variant in ordered)
-    return fold(PROMPT_VARIANTS_LABEL, blocks)
+    label = PROMPT_VARIANTS_LABEL.format(
+        contexts=len({v.context for v in variants}),
+        shared=sum(1 for v in variants if v.shared_by_all),
+    )
+    return fold(label, blocks)
+
+
+def _cell(text: str) -> str:
+    """One table cell: pipes escaped and newlines flattened so a long ask stays in its row."""
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
@@ -639,17 +750,21 @@ def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
     if not phrasings:
         return ""
     rows = "\n".join(f"| {label} | {_cell(text)} |" for label, text in phrasings)
-    return fold(PHRASINGS_LABEL.format(count=len(phrasings)), f"{_PHRASING_HEAD_ROW}\n{rows}")
+    return fold(
+        PHRASINGS_LABEL.format(count=plural(len(phrasings), "wording")),
+        f"{_PHRASING_HEAD_ROW}\n{rows}",
+    )
 
 
-def _cell(text: str) -> str:
-    """One table cell: pipes escaped and newlines flattened so a long ask stays in its row."""
-    return text.replace("|", "\\|").replace("\n", " ")
-
-
-def render_seeded_world(world: str) -> str:
-    """The world every sample was answered against, stated once."""
-    return fold(WORLD_LABEL, world) if world.strip() else ""
+def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
+    """The pages every sample was answered against, stated once."""
+    if not world.strip():
+        return ""
+    counts = facts or WorldFacts()
+    label = WORLD_LABEL.format(
+        pages=plural(counts.pages, "page"), keeps=counts.keeps, excludes=counts.excludes
+    )
+    return fold(label, world)
 
 
 def render_outliers(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
@@ -659,8 +774,13 @@ def render_outliers(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
     communicate one changed feature is three orders of magnitude of the wrong thing, and it is
     what made a single case's report 787,681 characters."""
     outliers = [(number, s) for number, s in rows if s.standing == cohort.Standing.OUTLIER]
+    driven = len(rows)
     if not outliers:
-        return fold(OUTLIERS_LABEL.format(count=0), _NO_OUTLIERS)
+        return fold(
+            OUTLIERS_LABEL.format(count=0, driven=driven, features=plural(0, "feature")),
+            _NO_OUTLIERS,
+        )
+    features = {d.feature for _n, s in outliers for d in s.divergences}
     blocks = [_OUTLIER_LEAD]
     for number, standing in outliers:
         table = "\n".join(
@@ -668,7 +788,10 @@ def render_outliers(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
         )
         body = f"{_OUTLIER_HEAD}\n{table}" if table else "_(no feature diverged)_"
         blocks.append(f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{body}")
-    return fold(OUTLIERS_LABEL.format(count=len(outliers)), "\n\n".join(blocks))
+    label = OUTLIERS_LABEL.format(
+        count=len(outliers), driven=driven, features=plural(len(features), "feature")
+    )
+    return fold(label, "\n\n".join(blocks))
 
 
 def _code(value: str) -> str:
@@ -679,32 +802,51 @@ def _code(value: str) -> str:
 # it.  The sample is what they were sent to read, so it sits directly under the scores rather
 # than below the setup; the setup is reference material and reads last.
 CASE_TAIL_MARKER = "<!-- case tail -->"
+CASE_PROMPTS_MARKER = "<!-- case prompts -->"
 
 
 def render_case_tail(
     *,
-    prompts: Sequence[PromptVariant] = (),
     phrasings: Sequence[tuple[str, str]] = (),
     world: str = "",
+    world_facts: WorldFacts | None = None,
     outliers: Sequence[tuple[int, cohort.SampleStanding]] = (),
 ) -> str:
-    """What closes a case: the inputs it was given, then what the outlying samples did.
+    """What closes a case: the inputs the CASE declares, then what the outlying samples did.
 
-    Every part is optional, so a case declaring none of them closes with nothing at all."""
+    The system prompts are NOT here.  They are what a sample was actually run with, so they live
+    with the sample a reader is following — reading one turn should not mean jumping between two
+    sections.  What stays is the world the case declares: the wordings and the pages."""
     inputs = "\n\n".join(
         part
-        for part in (
-            render_phrasings(phrasings),
-            render_seeded_world(world),
-            render_prompt_variants(prompts),
-        )
+        for part in (render_phrasings(phrasings), render_seeded_world(world, world_facts))
         if part
     )
+    facts = world_facts or WorldFacts()
+    label = TEST_INPUTS_LABEL.format(
+        phrasings=plural(len(phrasings), "phrasing"),
+        pages=f"{plural(facts.pages, 'page')} · {facts.keeps} must-keep, {facts.excludes} must-not",
+    )
     parts = [
-        fold(TEST_INPUTS_LABEL, inputs) if inputs else "",
+        fold(label, inputs) if inputs else "",
         render_outliers(outliers) if outliers else "",
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+def render_representative(*, banner: str, number: int, prompts: str, transcript: str) -> str:
+    """The sample a reader was sent to read: what it cost, what it was given, what it did.
+
+    A LABEL like every other section — the banner's five pieces of metadata moved inside, where
+    they are read after deciding to open it rather than instead of the heading."""
+    meta = f"`{SAMPLE_ROW} {number}` · {banner}"
+    parts = [meta, FRAGILE_NOTE if "fragile" in banner else "", prompts, transcript]
+    return "\n\n".join(part for part in parts if part)
+
+
+def representative_summary(banner: str, turns: int) -> str:
+    """What the closed `Representative sample` fold says: how much turn there is, and its cost."""
+    return REPRESENTATIVE_SUMMARY.format(turns=plural(turns, "turn"), banner=banner)
 
 
 # ── The whole sample ─────────────────────────────────────────────────────────
@@ -769,7 +911,7 @@ def fold_sample(number: int, banner: str, body: str) -> str:
 # changed is which document claims it.  Both transforms below therefore run at ASSEMBLY, on
 # markup this module itself emits, and neither can reach the artifact.
 
-THINKING_SUMMARY_HEAD = "thinking — {chars:,} chars, in full in the artifact"
+THINKING_LABEL = "thinking{context} — {chars:,} chars"
 THINKING_TASTE = 160
 
 # The exact form `_thinking_details` emits, matched back at assembly.  A structural rewrite of
@@ -782,23 +924,23 @@ _THINKING_BLOCK = re.compile(
 
 
 def summarise_thinking(body: str) -> str:
-    """Replace each thinking trace in a rendered sample body with its head and its length.
+    """Shorten each thinking trace in a rendered sample body to its head.
 
     The single biggest lever there is: a trace is what you want once you have DECIDED to read a
-    sample, and noise in the document whose job is to tell you which sample that is.  The full
-    text stays in the artifact, one path away, so this shortens the index and never the record."""
+    sample, and noise in the document whose job is to tell you which sample that is. The label
+    already carries the length, so shortening changes only the body — and the full text stays in
+    the artifact, one path away."""
 
     def shorten(match: re.Match[str]) -> str:
         trace = match.group("body")
-        # A trace no longer than the taste is left exactly as it is: rewriting it would add a
-        # length and a pointer to text already shorter than both, making the document bigger to
-        # say it had been shortened.  Derived, not tuned — the saving has to be real.
+        # Nothing to save below the taste: rewriting a short trace to say it had been shortened
+        # makes the document bigger.  Derived, not tuned.
         if len(trace) <= THINKING_TASTE:
             return match.group(0)
-        summary = match.group("summary")
-        label = THINKING_SUMMARY_HEAD.format(chars=len(trace))
-        context = summary[len("thinking") :]
-        return f"<details><summary>{label}{context}</summary>{trace[:THINKING_TASTE]}…</details>"
+        return (
+            f"<details><summary>{match.group('summary')}</summary>"
+            f"{trace[:THINKING_TASTE]}…</details>"
+        )
 
     return _THINKING_BLOCK.sub(shorten, body)
 
@@ -806,38 +948,50 @@ def summarise_thinking(body: str) -> str:
 OTHER_SAMPLES_LINE = (
     "_{count} other samples agreed with the representative — full transcripts in the run artifact._"
 )
+OTHER_PROMPTS_LINE = (
+    "_The other {count} samples were each given their own {contexts} prompt — per-sample because "
+    "the self-state header renders that sample's own minted names back into it. Full texts in "
+    "the run artifact._"
+)
 
-# The prompt fold this module emits, matched back at assembly.  Same idiom as the thinking
-# rewrite: a structural transform on markup report.py owns, never a comparison between samples.
+# The prompt fold this module emits, matched back at assembly.  A structural transform on markup
+# report.py owns — the same idiom `split_case_transcript` and `parse_sample_block` already use.
 _PROMPT_FOLD = re.compile(
     r"<details><summary>(?P<label>[^<\n]*? \u2014 [\d,]+ chars \u00b7 (?P<used>[^<\n]*?))</summary>"
     r"\n\n(?P<body>.*?)\n\n</details>",
     re.S,
 )
-PROMPT_IN_ARTIFACT = "_This wording's prompt is in the run artifact._"
 
 
 def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
-    """Keep the prompts every sample shared and the ones the representative was given; point the
-    rest at the artifact.
+    """Keep the prompts every sample shared and the one the carried sample was run with; replace
+    the rest with a single line saying how many there are and why they differ.
 
-    The comment is an index, and the index needs the context the sample it carries was actually
-    run with.  Measured on the reference port this is the difference between 141,342 characters
-    of prompt and about 15,000: `chat` has one distinct text PER SAMPLE, because the self-state
-    header feeds each its own minted names back, so carrying all of them means carrying the
-    cohort eighteen times over to show a text that differs in three lines."""
+    Eighteen near-identical 7.4K folds is the "seventeen stubs" defect wearing a prompt costume.
+    Measured on the reference port, `chat` has one distinct text PER sample — 83 lines of which
+    3-4 differ, because the self-state header renders each sample's OWN minted names back into
+    its prompt. That is one line's worth of fact and 134,365 characters' worth of folds.
+
+    What this does NOT do is diff two prompts to find where they differ. Every prompt it keeps is
+    verbatim and the ones it drops are COUNTED, never reconstructed — the line-level hoisting
+    this replaced built a shared block no sample was ever given."""
+    dropped: list[re.Match[str]] = []
 
     def prune(match: re.Match[str]) -> str:
         used = match.group("used")
-        wanted = used == _ALL_SAMPLES or any(label in used.split(", ") for label in keep)
-        if wanted:
+        if used == _ALL_SAMPLES or any(label in used.split(", ") for label in keep):
             return match.group(0)
-        return (
-            f"<details><summary>{match.group('label')}</summary>"
-            f"\n\n{PROMPT_IN_ARTIFACT}\n\n</details>"
-        )
+        dropped.append(match)
+        return ""
 
-    return _PROMPT_FOLD.sub(prune, text)
+    pruned = _PROMPT_FOLD.sub(prune, text).strip()
+    if not dropped:
+        return pruned
+    contexts = sorted({m.group("label").split(" \u2014 ")[0] for m in dropped})
+    line = OTHER_PROMPTS_LINE.format(
+        count=len(dropped), contexts=", ".join(f"`{c}`" for c in contexts)
+    )
+    return f"{pruned}\n\n{line}".strip()
 
 
 def other_samples_line(count: int) -> str:
@@ -852,7 +1006,13 @@ def other_samples_line(count: int) -> str:
 # The seam a sample block opens on — the folded form and the legacy bare heading. Public because
 # it is also the ONLY place a run comment may be cut when it exceeds GitHub's comment cap (#1808):
 # one definition of "a sample starts here", shared by the re-normalizer and the splitter.
-SAMPLE_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
+# A sample fold opens on one of these.  The representative carries a LABEL rather than a
+# banner — every other section is a label, and this one was a sentence holding five pieces of
+# metadata — but it is still a sample block, so the splitter keeps its seam here.
+SAMPLE_BLOCK_START = (
+    rf"(?:<details><summary>(?:{SAMPLE_ROW} \d+ — |{REPRESENTATIVE_LABEL}</summary>)"
+    rf"|#### {SAMPLE_ROW} \d+ — )"
+)
 
 
 # ── Internal seams: a sample too big to post as one fold (#1917) ─────────────
@@ -1005,27 +1165,31 @@ def parse_sample_block(block: str) -> tuple[int, str, str]:
 def render_banner(
     *,
     passed: bool,
-    score: float,
-    passed_checks: int,
-    total_checks: int,
     cause: str | None = None,
     fragile: bool = False,
     duration_s: int,
     calls: int,
-    checks_evaluated: bool = True,
 ) -> str:
-    """The per-sample banner tail (#1725 Final-additions #1): ``verdict · k/n (score) · cause ·
-    fragile · duration · calls``. A timeout sample (``checks_evaluated=False``) omits ``k/n`` —
-    its scorer never ran; a clean pass carries no cause; a fragile pass carries ``fragile``."""
+    """The per-sample banner tail: ``verdict · fragile · cause · duration · calls``.
+
+    NO per-sample rate.  Under the cohort design a sample has no score of its own — the cohort is
+    the unit of scoring, which is the entire point — so a `k/n (score)` here re-implied the
+    per-sample scoring model that design replaced, and answered a question nobody could ask of it
+    ("1/1 of what?").  What survives is what is true of one sample on its own: whether it reached
+    an answer, whether it got there shakily, and what it cost."""
     parts = ["✅ pass" if passed else "❌ fail"]
-    if checks_evaluated:
-        parts.append(f"{passed_checks}/{total_checks} ({score:.2f})")
     if fragile:
         parts.append("fragile")
     if cause:
         parts.append(cause)
     parts += [f"{duration_s}s", f"{calls} calls"]
     return " · ".join(parts)
+
+
+FRAGILE_NOTE = (
+    "_`fragile` — the sample reached its result, but only after a rejected or refused tool call "
+    "or a framework recovery nudge: real, and not robust._"
+)
 
 
 # ── The event stream the extraction hands the builder ────────────────────────
@@ -1161,11 +1325,14 @@ def _event_rows(event: Event, verdicts: list[Verdict]) -> list[Row]:
     """The rows for one event: its 💭 (above an ACTION), then the ``actual`` row with its verdicts.
     A nudge's verdict is the fixed ``⚠ recovery event`` mark (the caller passes it)."""
     rows: list[Row] = []
-    if event.kind in _ACTIONS and event.thinking is not None:
+    # An action with no captured thinking renders NO thinking row.  A `💭 (empty)` row states an
+    # absence in a slot whose emptiness already states it, and a clean sample carried twelve of
+    # them; the absence is still visible as the missing row above the action.
+    if event.kind in _ACTIONS and (event.thinking or "").strip():
         if event.kind == EventKind.MICRO_OUT:
-            rows.append(micro_thinking_row(event.thinking, event.context))
+            rows.append(micro_thinking_row(event.thinking or "", event.context))
         else:
-            rows.append(thinking_row(event.thinking))
+            rows.append(thinking_row(event.thinking or ""))
     rows.append(Row(ROW_ACTUAL, event.actual_body(), verdicts))
     return rows
 

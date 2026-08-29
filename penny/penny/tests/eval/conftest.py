@@ -1954,19 +1954,17 @@ def _scored_counts(result: SampleResult) -> tuple[int, int]:
 
 
 def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> str:
-    """The per-sample banner tail from the sample's promptlog perf + its scored result."""
+    """The per-sample banner tail from the sample's promptlog perf and its scored result.
+
+    No per-sample RATE: the cohort is the unit of scoring, so a sample carries only what is true
+    of it alone — whether it reached an answer, whether it got there shakily, what it cost."""
     perf = live_prompt_perf(db)
-    passed_checks, total = _scored_counts(result)
     return report.render_banner(
         passed=result.passed,
-        score=result.score,
-        passed_checks=passed_checks,
-        total_checks=total,
         cause=_cause_word(result.cause),
         fragile=result.fragile,
         duration_s=round(perf.duration_ms / 1000),
         calls=perf.calls,
-        checks_evaluated=evaluated,
     )
 
 
@@ -2526,7 +2524,7 @@ def _record_unported_prompts(case_id: str, driven: int) -> None:
     eval_artifacts.record_case_report(
         case_id,
         "",
-        report.render_case_tail(prompts=report.prompt_variants(prompts, total=driven)),
+        report.render_prompt_variants(report.prompt_variants(prompts, total=driven)),
     )
 
 
@@ -2584,10 +2582,11 @@ def _record_case_report(
     eval_artifacts.record_case_report(
         cohort.case_id,
         sections,
+        report.render_prompt_variants(report.prompt_variants(prompts, total=len(samples))),
         report.render_case_tail(
-            prompts=report.prompt_variants(prompts, total=len(samples)),
             phrasings=cohort.phrasings,
             world=cohort.world.render(),
+            world_facts=cohort.world.facts,
             outliers=list(enumerate(standings, start=1)),
         ),
     )
@@ -2605,7 +2604,7 @@ def _record_unported_prompts(case_id: str, driven: int) -> None:
     eval_artifacts.record_case_report(
         case_id,
         "",
-        report.render_case_tail(prompts=report.prompt_variants(prompts, total=driven)),
+        report.render_prompt_variants(report.prompt_variants(prompts, total=driven)),
     )
 
 
@@ -2663,8 +2662,8 @@ def _record_case_report(
     eval_artifacts.record_case_report(
         cohort.case_id,
         sections,
+        report.render_prompt_variants(report.prompt_variants(prompts, total=len(samples))),
         report.render_case_tail(
-            prompts=report.prompt_variants(prompts, total=len(samples)),
             phrasings=cohort.phrasings,
             world=cohort.world.render(),
             outliers=list(enumerate(standings, start=1)),

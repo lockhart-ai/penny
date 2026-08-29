@@ -40,26 +40,21 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from penny.tests.eval.utils import comment_split, report
+from penny.tests.eval.utils import cohort, comment_split, report
 from penny.tests.eval.utils.artifacts import (
     MANIFEST_FILENAME,
     CaseArtifact,
     CheckCell,
     FailureCause,
     RunManifest,
-    count_causes,
     load_results_lines,
-    pathology_excluded,
     render_manifest_header,
 )
 from penny.tests.eval.utils.baseline import Baseline, resolve_baseline
 
 # ── Section literals (no magic strings) ──────────────────────────────────────
-RESULT_LABEL = "**RESULT:**"
 GATE_LABEL = "**gate:**"
 FLIPS_LABEL = "flips:"
-FAMILIES_LABEL = "families:"
-CAUSES_LABEL = "causes —"
 NO_TRANSCRIPT = "_(no transcript recorded)_"
 SECTION_SEPARATOR = "\n\n"
 
@@ -129,14 +124,28 @@ def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
 def render_run_header(
     manifest: RunManifest, artifacts: list[CaseArtifact], baseline: Baseline | None
 ) -> str:
-    """The run header: the identity line, the RESULT line, a gate line per gated case, and (in
-    diff mode) the flips index."""
+    """The run header: what was run and what it cost, a gate line per gated case, and (in diff
+    mode) the flips index.
+
+    There is no RESULT line any more (#1997).  Every number on it belonged to the design #1994
+    replaced — `mean` and `all-pass` are aggregates of PER-SAMPLE scores, and a sample has no
+    score now; `pathology-excluded` and the behavioural/pathology/harness tally are the
+    three-cause taxonomy that assertions, variance and harness supersede.  It sat ABOVE the new
+    per-case summary line and contradicted it, so a reader met the obsolete summary first.
+
+    The fields still live in ``results.jsonl``, where the per-case gate line and the baseline
+    diff read them; what is gone is presenting them as the run's headline."""
     dirty = " (dirty)" if manifest.dirty else ""
+    provider = f" via `{manifest.provider}`" if manifest.provider else ""
     lines = [
-        f"**{manifest.run_id}** · commit `{_short(manifest.commit)}`{dirty} · {manifest.model} · "
-        f"N={manifest.samples} · **lever:** {manifest.lever}",
-        f"{RESULT_LABEL} {render_result_line(artifacts)}",
+        f"**{manifest.run_id}** · commit `{_short(manifest.commit)}`{dirty}",
+        f"**model:** `{manifest.model}` · `{manifest.endpoint}`{provider} · "
+        f"**embeddings:** `{manifest.embedding_model}`",
+        f"**lever:** {manifest.lever}",
     ]
+    cost = render_run_cost(artifacts)
+    if cost:
+        lines.append(cost)
     lines += render_gate_lines(artifacts)
     flips = render_flips_line(artifacts, baseline)
     if flips:
@@ -149,62 +158,36 @@ def _short(commit: str) -> str:
     return commit if commit == UNKNOWN_COMMIT else commit[:8]
 
 
-def render_result_line(artifacts: list[CaseArtifact]) -> str:
-    """The run-level RESULT line: the dual metrics, the pathology-excluded mean, the cause tally,
-    the per-family rollup, and the summed timings — one skimmable line."""
-    scores, causes = _flatten(artifacts)
-    total = len(scores)
-    mean = sum(scores) / total if total else 0.0
-    all_pass = sum(1 for cause in causes if cause is None)
-    excluded_mean, _kept = pathology_excluded(scores, causes)
-    counts = count_causes(causes)
-    parts = [
-        f"mean {mean:.2f}",
-        f"all-pass {all_pass}/{total}",
-        f"pathology-excluded {excluded_mean:.2f}",
-        f"{CAUSES_LABEL} behavioral {counts.behavioral} · pathology {counts.pathology} · "
-        f"harness {counts.harness}",
-        _family_rollup(artifacts),
-    ]
-    timings = _timings(artifacts)
-    if timings:
-        parts.append(timings)
-    return " · ".join(parts)
+def render_run_cost(artifacts: list[CaseArtifact]) -> str:
+    """What the run spent, PER SAMPLE — never as a total (#1994 §4a).
 
-
-def _family_rollup(artifacts: list[CaseArtifact]) -> str:
-    """``families: <fam> <mean> [(<n> cases)] · …`` — each family's mean over its samples, with a
-    case count only when the family spans more than one case."""
-    groups: dict[str, list[CaseArtifact]] = {}
-    for artifact in artifacts:
-        groups.setdefault(artifact.family, []).append(artifact)
-    parts = []
-    for family, group in groups.items():
-        scores, _causes = _flatten(group)
-        mean = sum(scores) / len(scores) if scores else 0.0
-        suffix = f" ({len(group)} cases)" if len(group) > 1 else ""
-        parts.append(f"{family} {mean:.2f}{suffix}")
-    return f"{FAMILIES_LABEL} {' · '.join(parts)}"
-
-
-def _timings(artifacts: list[CaseArtifact]) -> str:
-    """The summed run timings — ``<calls> calls · <s>s · <in>K in / <out>K out`` (empty when no
-    model call was logged)."""
+    A total is not comparable across cohort sizes, the same trap the entropy denominator is, and
+    the figure that decides a model for local hardware is what one sample costs: measured on the
+    same fixtures, gpt-oss spends ~39,600 in / 5,200 out against gemma's ~39,800 / 13,200. Input
+    is OURS — prompt and context design, so a rise is what a prompt edit regresses; output is the
+    MODEL's, so a rise on a fixed prompt is a model or config change."""
+    samples = sum(artifact.samples for artifact in artifacts)
     calls = sum(artifact.timings.calls for artifact in artifacts)
-    if not calls:
+    if not samples or not calls:
         return ""
-    duration_ms = sum(artifact.timings.duration_ms for artifact in artifacts)
-    input_tokens = sum(artifact.timings.input_tokens for artifact in artifacts)
-    reasoning_tokens = sum(artifact.timings.reasoning_tokens for artifact in artifacts)
-    # Only when the provider reported it: an absent count renders as no clause rather than
-    # as a confident zero.
-    reasoning_clause = f" ({reasoning_tokens / 1000:.1f}K thinking)" if reasoning_tokens else ""
-
-    output_tokens = sum(artifact.timings.output_tokens for artifact in artifacts)
+    per = cohort.per_sample_cost(
+        samples=samples,
+        calls=calls,
+        duration_ms=sum(a.timings.duration_ms for a in artifacts),
+        input_tokens=sum(a.timings.input_tokens for a in artifacts),
+        output_tokens=sum(a.timings.output_tokens for a in artifacts),
+        reasoning_tokens=sum(a.timings.reasoning_tokens for a in artifacts),
+    )
+    if per is None:
+        return ""
+    thinking = (
+        f" ({per.reasoning_tokens:,.0f} thinking, {per.reasoning_share:.0%})"
+        if per.reasoning_tokens
+        else ""
+    )
     return (
-        f"{calls} calls · {duration_ms / 1000:.0f}s · "
-        f"{input_tokens / 1000:.1f}K in / {output_tokens / 1000:.1f}K out"
-        f"{reasoning_clause}"
+        f"**cost/sample:** {per.input_tokens:,.0f} in / {per.output_tokens:,.0f} out{thinking} · "
+        f"{per.calls:,.1f} calls · {per.seconds:,.0f}s  _over {samples} samples_"
     )
 
 
@@ -284,14 +267,15 @@ def _transcript_block(report_dir: Path, manifest: RunManifest, artifact: CaseArt
 
 
 def _folded_transcript(transcript: str, expand: Sequence[int] = ()) -> str:
-    """Order a case for the COMMENT: its scores, the sample it nominated, then its setup.
+    """Order a case for the COMMENT: its scores, the sample it nominated with the prompts that
+    sample was run with, then the case's own inputs and its outliers.
 
     The two SIZE transforms live here and nowhere else (#1997), because the artifact on disk is
     the complete record and this is the index into it: a sample the case did not nominate is
-    named on one line, and an expanded sample has its thinking traces shortened to their head and
-    their length. Measured on the reference port, thinking was 68% of every sample and one case
-    ran to 787,681 characters. Neither transform can reach the ``.md``, so nothing is lost."""
-    head, tail = _split_tail(transcript)
+    counted on one line, and an expanded sample has its thinking traces shortened to their head
+    and their length. Measured on the reference port, thinking was 68% of every sample and one
+    case ran to 787,681 characters. Neither transform can reach the ``.md``."""
+    head, prompts, tail = _split_case(transcript)
     preamble, sample_blocks = report.split_case_transcript(head)
     nominated = set(expand)
     kept = [f"{report.SAMPLE_ROW} {number}" for number in sorted(nominated)]
@@ -303,22 +287,38 @@ def _folded_transcript(transcript: str, expand: Sequence[int] = ()) -> str:
             others.append(number)
             continue
         folded = report.summarise_thinking(body)
-        labelled = f"{report.REPRESENTATIVE_LABEL} · {banner}" if nominated else banner
-        blocks.append(report.fold_sample_parts(number, labelled, folded, SAMPLE_FOLD_BUDGET))
+        if not nominated:
+            # A case that named no representative keeps every sample in its own banner form —
+            # the unported path, unchanged.
+            blocks.append(report.fold_sample_parts(number, banner, folded, SAMPLE_FOLD_BUDGET))
+            continue
+        blocks.append(
+            report.fold(
+                report.representative_summary(banner, body.count("| step ")),
+                report.render_representative(
+                    banner=banner,
+                    number=number,
+                    prompts=report.elide_unused_prompts(prompts, kept),
+                    transcript=folded,
+                ),
+            )
+        )
     if others:
         blocks.append(report.other_samples_line(len(others)))
     if tail:
-        blocks.append(report.elide_unused_prompts(tail, kept))
+        blocks.append(tail)
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
 
 
-def _split_tail(transcript: str) -> tuple[str, str]:
-    """Split a case's document on the marker its own renderer wrote."""
-    marker = report.CASE_TAIL_MARKER
-    if marker not in transcript:
-        return transcript, ""
-    head, _, tail = transcript.partition(marker)
-    return head.rstrip(), tail.strip()
+def _split_case(transcript: str) -> tuple[str, str, str]:
+    """Split a case's document on the markers its own renderer wrote: what precedes the samples,
+    the prompts they were run with, and what closes the case."""
+    head, _, rest = transcript.partition(report.CASE_PROMPTS_MARKER)
+    prompts, _, tail = rest.partition(report.CASE_TAIL_MARKER)
+    if not rest:
+        head, _, tail = transcript.partition(report.CASE_TAIL_MARKER)
+        return head.rstrip(), "", tail.strip()
+    return head.rstrip(), prompts.strip(), tail.strip()
 
 
 def render_footer(report_dir: Path) -> str:
