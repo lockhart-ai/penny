@@ -27,6 +27,7 @@ verdicts on their own ``expected`` rows in a trailing ``run-close`` table.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -83,6 +84,14 @@ TABLE_DIVIDER = "|---|---|---|"
 # A markdown code fence is three backticks at minimum; a longer one is grown per text.
 _MIN_FENCE = 3
 CELL_TRUNCATE_LIMIT = 500  # an actual cell over this collapses into a single <details> (#1759)
+# How much of ONE measured value a table cell shows before it is cut and digested.  Smaller than
+# the cell limit above because several of these are comma-joined into a single cell, and the
+# column's job is to let a reader tell values apart at a glance rather than to reproduce them —
+# the whole value is in the sample fold for a reader who wants it.
+FEATURE_CELL_LIMIT = 120
+# A newline inside a cell, made visible.  A row ENDS at a raw newline, and a value that spans
+# lines is a different value from one that does not, so it is marked rather than dropped.
+_NEWLINE_MARK = " ⏎ "
 
 # ── Sample-block grammar (the uniform-collapse skeleton, #1753) ───────────────
 SAMPLE_ROW = "sample"  # every sample banner opens ``sample N — <banner>``
@@ -123,6 +132,55 @@ def truncate_cell(text: str, limit: int = CELL_TRUNCATE_LIMIT) -> str:
     first_line = escape_cell(text.split("\n", 1)[0])
     full = escape_cell(text)
     return f"<details><summary>{first_line} … ({len(text)} chars)</summary>{full}</details>"
+
+
+def feature_cell(value: str) -> str:
+    r"""ONE measured value, rendered safe and legible inside a markdown table cell.
+
+    A feature value is arbitrary MODEL OUTPUT.  Any of them can carry a newline, a pipe or a
+    backtick, and the next fixture will produce a shape nobody enumerated — so this holds for a
+    feature that does not exist yet rather than for the ones that exist now.  What went wrong
+    without it: the browse extractor's ``value`` is a whole multi-line extraction, and a raw
+    newline ENDS THE ROW — the first line rendered as the cell, the rest fell out of the table
+    as loose text, and the trailing pipe was left orphaned.
+
+    Four things, in order, each answering a different way the cell can break:
+
+    * ``⏎`` for a newline — the one thing that ends a row.  A visible marker rather than a
+      space, because a value that spans lines and one that does not are different values, and
+      silently joining them would make the column claim they are the same.
+    * ``\|`` for a pipe — the other cell terminator.
+    * a code span grown longer than the longest backtick run inside, padded when the value
+      starts or ends with one, so a value containing backticks still closes where it should.
+    * truncation, with a short digest of the WHOLE value appended.  Telling values apart is the
+      entire job of this column, and two long values sharing a prefix would otherwise render
+      identically — the digest is what keeps distinct values distinct once the text is cut."""
+    if not value:
+        return "—"
+    flat = value.replace("\r\n", "\n").replace("\n", _NEWLINE_MARK).replace("|", "\\|")
+    if len(flat) > FEATURE_CELL_LIMIT:
+        flat = f"{flat[:FEATURE_CELL_LIMIT]}… +{_value_digest(value)}"
+    return _code_span(flat)
+
+
+def _code_span(text: str) -> str:
+    """``text`` as a markdown code span that closes where it should.
+
+    The fence is one longer than the longest backtick run inside, and the content is padded
+    when it starts or ends with a backtick — both are what the CommonMark code-span rules
+    require, and both are reachable from a model that wrote a backtick into a value."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _value_digest(value: str) -> str:
+    """Six hex characters of the whole value — what keeps two truncated values distinguishable.
+
+    Deterministic, so a rendered report is reproducible from its data, and short enough that it
+    reads as a disambiguator rather than as part of the value."""
+    return hashlib.blake2s(value.encode("utf-8"), digest_size=3).hexdigest()
 
 
 # ── The score-cell verdict (one check's outcome, rendered) ───────────────────
@@ -826,7 +884,7 @@ def _text_spread_line(text: cohort.TextSpread) -> str:
 
 
 def _value_list(values: Sequence[str]) -> str:
-    return ", ".join(f"`{value}`" for value in values) if values else "—"
+    return ", ".join(feature_cell(value) for value in values) if values else "—"
 
 
 # ── The case document: what every sample shares, stated ONCE ─────────────────
@@ -1090,7 +1148,7 @@ def _uniform_note(everywhere_distinct: Sequence[str], pooled: int) -> str:
 
 
 def _code(value: str) -> str:
-    return f"`{value}`" if value else "—"
+    return feature_cell(value)
 
 
 # The seam between what a reader meets BEFORE the representative sample and what belongs after

@@ -580,6 +580,46 @@ def test_a_feature_that_read_nothing_renders_red_and_says_so_rather_than_as_agre
     assert "@ gpt N=3" not in rendered, "a blind feature proposes no ceiling"
 
 
+def test_a_feature_value_carrying_a_newline_a_pipe_and_a_backtick_stays_inside_its_cell():
+    """A feature value is arbitrary MODEL OUTPUT, so the table has to survive any of them.
+
+    The one that broke it: the browse extractor's `value` is a whole multi-line extraction, and
+    a raw newline ENDS THE ROW — the first line rendered as the cell, the remaining lines fell
+    out of the table as loose text, and the trailing pipe was left orphaned. It read as
+    "misformatted, different values in each column", which is exactly what it was.
+
+    Pinned WHOLE, on a value carrying all three cell-breaking characters at once, because the
+    property has to hold for a feature nobody has written yet rather than for the one that
+    surfaced it."""
+    hostile = "Title: A | B\nuse `browse` here"
+    samples = [
+        cohort.SampleObservation(name="c-1 (a)", phrasing="a", reply=hostile),
+        cohort.SampleObservation(name="c-2 (b)", phrasing="b", reply="plain"),
+    ]
+    # A plain structural feature reading the reply — REPLY_SPREAD itself is the pairwise
+    # marker the pooler recognises, so it never reaches the per-phrasing table.
+    answered = cohort.Feature("answer", lambda observation: observation.reply)
+    rendered = report.CaseSections(
+        case_id="c", model="m", variance=cohort.pool(samples, [answered])
+    ).render()
+
+    row = [line for line in rendered.splitlines() if "Title: A" in line]
+    assert len(row) == 1, "the whole value stays on ONE row"
+    assert row[0] == ("| `answer` | a | 1/1 | ``Title: A \\| B ⏎ use `browse` here`` |")
+    assert row[0].startswith("|") and row[0].endswith("|"), "the row's cells are all closed"
+    assert "\n" not in row[0]
+
+
+def test_two_long_values_sharing_a_prefix_do_not_render_identically():
+    """Telling values apart is the ENTIRE job of that column, so truncation may not collapse
+    two distinct values into one cell.  The digest of the whole value is what keeps them apart
+    once the visible text is cut."""
+    shared = "Title: " + "A" * 200
+    other = shared[:-1] + "B"
+    assert report.feature_cell(shared) != report.feature_cell(other)
+    assert len(report.feature_cell(shared)) < len(shared)
+
+
 def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
     """Read FIRST even though it renders last: a cohort that lost half its samples makes the
     other two sections a description of whatever survived.
