@@ -94,7 +94,9 @@ def assemble_run_comment(report_dir: Path) -> str:
     # its own document, at the moment they are read off the run, so the assembler composes
     # sections that are already deduplicated rather than diffing finished markdown to discover
     # what they had in common.
-    return SECTION_SEPARATOR.join(sections) + "\n"
+    # An EMPTY section is dropped rather than joined: a single-case run emits no roll-up, and
+    # separating nothing from the first case would open the comment on a blank band.
+    return SECTION_SEPARATOR.join(part for part in sections if part) + "\n"
 
 
 # ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──
@@ -126,8 +128,11 @@ def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
 # `key: value` lines.  Run-level facts are stated ONCE, in a table, because this has to scale:
 # at ~33 cases the commit and the provider must not repeat per case, and each case becomes a
 # scannable `####` line underneath.
-_RUN_HEADING = "### Eval run · `{model}`"
-_RUN_TABLE_HEAD = "| | |\n|---|---|"
+# A run-level roll-up OUTRANKS the cases it summarises (`##` against their `###`).
+_RUN_HEADING = "## Eval run · `{model}`"
+# What a roll-up is FOR: summarising more than one thing.
+_ROLLS_UP = 2
+_RUN_TABLE_HEAD = "| measure | reading |\n|---|---|"
 # What the roll-up AGGREGATES, said rather than implied: one number over several cases must not
 # read as though it covered a single one.
 _RUN_VERDICT = "**{glyph} {passed} / {total} checks · {rate:.0%}**{variance} — {scope}"
@@ -137,28 +142,33 @@ _RUN_VERDICT = "**{glyph} {passed} / {total} checks · {rate:.0%}**{variance} �
 # shape rides beside the magnitude, because "one aspect spiking" and "everything wobbling" are
 # different findings that a maximum alone cannot separate.
 _RUN_VARIANCE = "  ·  **{glyph} variance max H {entropy:.3f}** `{feature}` · {varying}/{total} vary"
-_RUN_LEVER = "**Lever** — {lever}"
 
 
 def render_run_header(
     manifest: RunManifest, artifacts: list[CaseArtifact], baseline: Baseline | None
 ) -> str:
-    """The run header: the verdict first, then the run's identity as a table, then the lever.
+    """The run's ROLL-UP — and only when there is something to roll up.
 
-    There is no RESULT line any more (#1997).  Every number on it belonged to the design #1994
+    A single-case run has none: the case names the report and its table already carries every
+    number a run header would repeat, so printing one states the same figures twice under two
+    headings. Several cases genuinely need a total, and it sits at `##` ABOVE them, outranking
+    the `###` each case takes.
+
+    Keyed on the case count rather than special-cased at one: the rule is "a roll-up summarises
+    more than one thing", which is true at every N.
+
+    There is no RESULT line any more (#1997). Every number on it belonged to the design #1994
     replaced — `mean` and `all-pass` are aggregates of PER-SAMPLE scores, and a sample has no
-    score now; `pathology-excluded` and the behavioural/pathology/harness tally are the
-    three-cause taxonomy that assertions, variance and harness supersede.
-
-    The COMMIT stays in the table rather than behind a fold: it is the provenance a reviewer
-    checks unprompted.  The LEVER stays visible below it for the same reason in reverse —
-    folded, every report in a series looks interchangeable."""
-    lines = [_RUN_HEADING.format(model=manifest.model), "", render_run_verdict(artifacts), ""]
-    lines += [_RUN_TABLE_HEAD, *_run_rows(manifest, artifacts), ""]
-    lines.append(_RUN_LEVER.format(lever=manifest.lever))
+    score now.  There is no LEVER line either: it described the CODE CHANGE under test, which is
+    changelog rather than result, and the commit and the PR carry that already.  What a run is
+    testing, when it needs saying, belongs in plain language beside the report."""
     gates = render_gate_lines(artifacts)
     flips = render_flips_line(artifacts, baseline)
     extra = [*gates, *([flips] if flips else [])]
+    if len(artifacts) < _ROLLS_UP:
+        return "\n".join(extra)
+    lines = [_RUN_HEADING.format(model=manifest.model), "", render_run_verdict(artifacts), ""]
+    lines += [_RUN_TABLE_HEAD, *_run_rows(manifest, artifacts)]
     if extra:
         lines += ["", *extra]
     return "\n".join(lines)

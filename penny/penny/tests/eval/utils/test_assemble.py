@@ -135,20 +135,8 @@ def test_single_gated_case_whole_render(tmp_path: Path) -> None:
     )
     _write_run(tmp_path, manifest, [artifact], {artifact.case_id: _browse_sample()})
     assert assemble_run_comment(tmp_path) == (
-        "### Eval run · `gpt-oss:20b`\n"
-        "\n"
-        "**🟡 2 / 3 checks · 67%** — 1 case · 3 samples · 0 excluded\n"
-        "\n"
-        "| | |\n"
-        "|---|---|\n"
-        "| commit | `abba710a` |\n"
-        "| provider | `http://localhost:11434` |\n"
-        "| embeddings | `embeddinggemma` |\n"
-        "| cost / sample | 18,067 in · 1,967 out · 6.3 calls · 49s |\n"
-        "| run | `run-20260721T051017Z-abba710a` |\n"
-        "\n"
-        "**Lever** — framework baseline\n"
-        "\n"
+        # A single-case run emits NO roll-up: the case names the report and its own table
+        # carries every number one would repeat.
         "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\n"
         "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)
@@ -213,19 +201,18 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
     )
     _write_run(tmp_path, manifest, [alpha, beta], {alpha.case_id: hi_block})  # beta: no transcript
     assert assemble_run_comment(tmp_path) == (
-        "### Eval run · `gpt-oss:20b`\n"
+        # TWO cases, so there is something to roll up — at `##`, outranking their `###`.
+        "## Eval run · `gpt-oss:20b`\n"
         "\n"
         "**no deterministic checks** — 2 cases · 4 samples · 0 excluded\n"
         "\n"
-        "| | |\n"
+        "| measure | reading |\n"
         "|---|---|\n"
         "| commit | `beef1234` |\n"
         "| provider | `http://localhost:11434` |\n"
         "| embeddings | `embeddinggemma` |\n"
         "| cost / sample | 27,100 in · 2,950 out · 9.5 calls · 74s |\n"
         "| run | `run-20260720T090000Z-beef1234` |\n"
-        "\n"
-        "**Lever** — two families\n"
         "\n"
         "### `test_a.py::one` — alpha\n"
         "\n"
@@ -297,7 +284,7 @@ def test_diff_mode_flips_index_whole_render(
     _write_run(run, manifest, [artifact], {artifact.case_id: _browse_sample()})
     comment = assemble_run_comment(run)
     assert "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\nflips: browsed ✅→❌ (s3)\n" in comment
-    assert comment.startswith("### Eval run · `gpt-oss:20b`")
+    assert comment.startswith("**gate:**"), "a single-case run leads with its gate, not a roll-up"
 
 
 def _hold_run(
@@ -385,7 +372,9 @@ def test_flips_index_from_durable_manifest_baseline(
     # two render tests above, and re-pinning it here would make them one change apart.
     assert "flips: decided idle ✅→❌ (s7, s10)" in comment
     assert "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)" in comment
-    assert f"| run | `{manifest.run_id}` |" in comment
+    # A single-case run has no roll-up table for the run id to sit in; its identity lives in
+    # the case's own table, which the per-case document renders.
+    assert manifest.run_id
 
 
 def test_flips_index_absent_without_a_baseline_reference(
@@ -490,22 +479,7 @@ def test_every_sample_folds_whole_in_the_comment(tmp_path: Path) -> None:
     _mixed_run(tmp_path)
     comment = assemble_run_comment(tmp_path)
     assert comment == (
-        "### Eval run · `gpt-oss:20b`\n"
-        "\n"
-        "**🟡 1 / 2 checks · 50%** — 1 case · 2 samples · 0 excluded\n"
-        "\n"
-        "| | |\n"
-        "|---|---|\n"
-        "| commit | `abba710a` |\n"
-        "| provider | `http://localhost:11434` |\n"
-        "| embeddings | `embeddinggemma` |\n"
-        "| cost / sample | 27,100 in · 2,950 out · 9.5 calls · 74s |\n"
-        "| run | `run-20260721T051017Z-abba710a` |\n"
-        "\n"
-        "**Lever** — mixed run\n"
-        "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
-        "\n" + _FAIL_SAMPLE_FOLDED + "\n"
-        "\n" + _footer(tmp_path)
+        _BROWSE_SAMPLE_FOLDED + "\n\n" + _FAIL_SAMPLE_FOLDED + "\n\n" + _footer(tmp_path)
     )
 
 

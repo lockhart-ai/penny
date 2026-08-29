@@ -78,6 +78,8 @@ NO_TURNS_PLACEHOLDER = (
     "e.g. a harness timeout)_"
 )
 TABLE_DIVIDER = "|---|---|---|"
+# A markdown code fence is three backticks at minimum; a longer one is grown per text.
+_MIN_FENCE = 3
 CELL_TRUNCATE_LIMIT = 500  # an actual cell over this collapses into a single <details> (#1759)
 
 # ── Sample-block grammar (the uniform-collapse skeleton, #1753) ───────────────
@@ -85,6 +87,24 @@ SAMPLE_ROW = "sample"  # every sample banner opens ``sample N — <banner>``
 
 
 # ── Deterministic cell hygiene ───────────────────────────────────────────────
+def fenced(text: str) -> str:
+    """Literal text, VERBATIM — quoted as a code block rather than rendered as markdown.
+
+    A prompt is text the model RECEIVED, not prose this document is asserting. Rendering it
+    would show a reader something different from what the model was handed: `#` becomes a
+    heading, `**bold**` becomes bold, backticks vanish into code spans, `- ` becomes a bullet.
+    Every one of those is the report quietly editing its own evidence, and for a document whose
+    whole job is to show what happened that is a fidelity failure. Polluting the outline — a
+    quoted `## Penny's current state` outranking the case heading — is only its most visible
+    symptom.
+
+    The fence is grown longer than the longest backtick run inside, so text that itself contains
+    a code fence still closes where it should instead of ending the block early."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(_MIN_FENCE, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
 def escape_cell(text: str) -> str:
     """One table cell: escape ``|`` and render newlines as ``<br>`` so a multi-line body
     stays inside its cell (the cell-escaping rule)."""
@@ -242,7 +262,7 @@ class SystemPrompt:
 
     def render(self) -> str:
         summary = f"{SYSTEM_PROMPT_LABEL} — {self.context} ({len(self.text)} chars)"
-        return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
+        return f"<details><summary>{summary}</summary>\n\n{fenced(self.text)}\n\n</details>"
 
 
 # ── How a case reads at a glance ─────────────────────────────────────────────
@@ -332,20 +352,25 @@ _A_SUMMARY = "{passed}/{total} checks · {rate:.0%}{lowest}"
 _A_LOWEST = " · lowest {rate:.2f} `{claim}`"
 _B_SUMMARY = "{features} · {spread}"
 _B_EMPTY = "nothing pooled"
-_COST_SUMMARY = "{input:,.0f} in / {output:,.0f} out per sample · {seconds:,.0f}s"
+_COST_SUMMARY = (
+    "{input:,.0f} in · {output:,.0f} out{thinking} · {calls:,.1f} calls · {seconds:,.0f}s"
+)
+_COST_THINKING = " ({share:.0%} thinking)"
 _C_SUMMARY = "{count} of {driven} · dominant: {reason}"
 
-# The case's own heading and reading, under the run header's table.  A heading rather than a
-# bolded id, because at ~33 cases this is the line a reader scans for and headings are what a
-# document is navigated by; the run-level facts are stated once above and never repeat here.
-#
-# It OUTRANKS its own sections (`###` against their `####`): a case contains them, and a section
-# rendering larger than the case it belongs to reads as though the nesting ran the other way.
+# The case NAMES the report: what was run is the first thing a reader needs, and with one case
+# a run-level header above it would state the same numbers twice.  It OUTRANKS its own sections
+# (`###` against their `####`) — a section rendering larger than the case containing it reads as
+# though the nesting ran the other way.
 _CASE_HEADING = "### {glyph} `{case_id}`"
-_SUMMARY_LINE = (
-    "**assertions** {passed}/{total} · {rate:.0%}{lowest} · "
-    "**variance** {var_glyph} {spread} · {counts}"
-)
+_CASE_HEADING_MODEL = "### {glyph} `{case_id}` — `{model}`"
+# The topline scores are the TABLE, not a sentence above it.  Real column headers, because an
+# empty `| | |` renders as a blank band across the top of the table.
+_MEASURE_HEAD = "| measure | reading |\n|---|---|"
+_MEASURE_ROW = "| **{measure}** | {reading} |"
+_M_CHECKS = "{glyph} {passed} / {total} · {rate:.0%}{lowest}"
+_M_VARIANCE = "{glyph} {spread}"
+_M_COMMIT = "`{commit}`{provider} · `{embeddings}`"
 # The SAME reading the run header carries, so a reader can see how a case contributed to the
 # total: what varies MOST, and how much of the case varies at all.  Magnitude alone cannot tell
 # "one aspect spiking" from "everything wobbling", and those are different findings.
@@ -441,6 +466,24 @@ def titled_fold(heading: str, summary: str, body: str) -> str:
 
 
 @dataclass(frozen=True)
+class RunFacts:
+    """What identifies the RUN a case belongs to — provenance, not a finding.
+
+    Carried into the case table rather than a header of its own: with one case, a run-level
+    header states the same numbers a second time, and provenance is what a reviewer checks
+    unprompted rather than something to fold away."""
+
+    commit: str = ""
+    provider: str = ""
+    embeddings: str = ""
+    run_id: str = ""
+
+    @property
+    def stated(self) -> bool:
+        return bool(self.commit or self.run_id)
+
+
+@dataclass(frozen=True)
 class CaseSections:
     """One case's three sections, rendered from what the cohort computed.
 
@@ -453,12 +496,14 @@ class CaseSections:
     assertions: Sequence[cohort.AssertionRow] = ()
     variance: cohort.CohortVariance = field(default_factory=cohort.CohortVariance)
     cost: cohort.SampleCost | None = None
+    run: RunFacts = field(default_factory=RunFacts)
 
     def render(self) -> str:
-        """The summary method: one line that carries the case's worst state, then the three
-        sections behind folds."""
+        """The summary method: the case's heading, its measures, then the sections behind
+        folds."""
         blocks = [
-            self.summary_line(),
+            self.heading(),
+            self.measures(),
             titled_fold(
                 f"{self._assertions_glyph()} {SECTION_A}",
                 self._assertions_summary(),
@@ -509,9 +554,16 @@ class CaseSections:
 
     def _cost_summary(self) -> str:
         assert self.cost is not None
+        thinking = (
+            _COST_THINKING.format(share=self.cost.reasoning_share)
+            if self.cost.reasoning_tokens
+            else ""
+        )
         return _COST_SUMMARY.format(
             input=self.cost.input_tokens,
             output=self.cost.output_tokens,
+            thinking=thinking,
+            calls=self.cost.calls,
             seconds=self.cost.seconds,
         )
 
@@ -524,24 +576,62 @@ class CaseSections:
         )
 
     # ── The one line a reader sees by default ────────────────────────────
-    def summary_line(self) -> str:
-        """The case's heading and its two readings, behind the worst glyph in the case."""
-        summary = self._assertion_summary()
-        heading = _CASE_HEADING.format(glyph=self.glyph(), case_id=self.case_id)
-        reading = _SUMMARY_LINE.format(
-            passed=summary.passed,
-            total=summary.total,
-            rate=summary.rate,
-            lowest=self._lowest(),
-            var_glyph=self._variance_glyph(),
-            spread=self._spread(),
-            counts=_COUNTS.format(
-                pooled=self.variance.pooled,
-                excluded=len(self.variance.excluded),
-                driven=self.variance.driven,
-            ),
+    def heading(self) -> str:
+        """The case NAMES the report — what was run, behind the worst glyph in it."""
+        if not self.model:
+            return _CASE_HEADING.format(glyph=self.glyph(), case_id=self.case_id)
+        return _CASE_HEADING_MODEL.format(
+            glyph=self.glyph(), case_id=self.case_id, model=self.model
         )
-        return f"{heading}\n\n{reading}"
+
+    def measures(self) -> str:
+        """The topline readings as a TABLE — every measure one row, no sentence restating it.
+
+        The lowest claim rides in the `checks` row rather than on a line of its own: it says
+        where to look first, which belongs beside the number it qualifies."""
+        summary = self._assertion_summary()
+        rows = [
+            (
+                "checks",
+                _M_CHECKS.format(
+                    glyph=self._assertions_glyph(),
+                    passed=summary.passed,
+                    total=summary.total,
+                    rate=summary.rate,
+                    lowest=self._lowest(),
+                ),
+            ),
+            ("variance", _M_VARIANCE.format(glyph=self._variance_glyph(), spread=self._spread())),
+            (
+                "samples",
+                _COUNTS.format(
+                    pooled=self.variance.pooled,
+                    excluded=len(self.variance.excluded),
+                    driven=self.variance.driven,
+                ),
+            ),
+        ]
+        if self.cost is not None:
+            rows.append(("cost / sample", self._cost_summary()))
+        rows += self._provenance_rows()
+        body = "\n".join(_MEASURE_ROW.format(measure=name, reading=text) for name, text in rows)
+        return f"{_MEASURE_HEAD}\n{body}"
+
+    def _provenance_rows(self) -> list[tuple[str, str]]:
+        """Where this run came from — omitted entirely when the case was rendered without it,
+        rather than printed as empty cells."""
+        if not self.run.stated:
+            return []
+        provider = f" · {self.run.provider}" if self.run.provider else ""
+        return [
+            (
+                "commit",
+                _M_COMMIT.format(
+                    commit=self.run.commit, provider=provider, embeddings=self.run.embeddings
+                ),
+            ),
+            ("run", f"`{self.run.run_id}`"),
+        ]
 
     def glyph(self) -> str:
         """The case's worst state — what someone paging ~100 one-line entries reads."""
@@ -783,7 +873,7 @@ class PromptVariant:
     def render(self) -> str:
         used = _ALL_SAMPLES if self.shared_by_all else ", ".join(self.samples)
         summary = _PROMPT_SUMMARY.format(label=self.context, chars=len(self.text), used=used)
-        return fold(summary, self.text)
+        return fold(summary, fenced(self.text))
 
     @property
     def shared_by_all(self) -> bool:
@@ -1386,7 +1476,9 @@ def render_rejected_draws(draws: Sequence[str]) -> str:
     body = "\n\n".join(
         [
             REJECTED_DRAWS_LEAD,
-            *(f"{index}. {escape_cell(draw)}" for index, draw in enumerate(draws, 1)),
+            # Model output, verbatim: a draw is text the loop PRODUCED, and `escape_cell` would
+            # both render its markdown and flatten its newlines into `<br>`.
+            *(f"**{index}.**\n\n{fenced(draw)}" for index, draw in enumerate(draws, 1)),
         ]
     )
     return fold(REJECTED_DRAWS_LABEL.format(count=len(draws)), body)

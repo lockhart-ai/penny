@@ -2660,6 +2660,21 @@ def _cohort_checks(cohort: Cohort) -> dict[str, list[Check]]:
     return by_sample
 
 
+def _run_facts() -> report.RunFacts:
+    """Where this run came from, for the case's own table — empty off-report, where there is no
+    run to describe and the provenance rows are omitted rather than rendered blank."""
+    run = eval_artifacts.active_run()
+    if run is None:
+        return report.RunFacts()
+    manifest = run.manifest
+    return report.RunFacts(
+        commit=manifest.commit[:8],
+        provider=manifest.provider or "",
+        embeddings=manifest.embedding_model,
+        run_id=manifest.run_id,
+    )
+
+
 def _record_case_report(
     cohort: Cohort,
     samples: Sequence[eval_cohort.SampleObservation],
@@ -2688,6 +2703,7 @@ def _record_case_report(
             output_tokens=perf.output_tokens,
             reasoning_tokens=perf.reasoning_tokens,
         ),
+        run=_run_facts(),
     ).render()
     prompts = _case_prompts.pop(cohort.case_id, [])
     eval_artifacts.record_case_report(

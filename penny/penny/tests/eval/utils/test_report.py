@@ -723,14 +723,22 @@ def test_the_three_sections_render_whole():
 
     assert rendered == "\n\n".join(
         [
-            # The case's own HEADING, then both readings.  The assertion side is ONE number
-            # over every check the case made — 5 of 6 — since none of them is gated.
-            "### 🔴 `memory-learn-close-shape`\n"
-            "\n"
-            "**assertions** 5/6 · 83% "
-            "(lowest 🟡 0.67 `reply: every specific value in it is sourced`) · "
-            "**variance** ⚪ max H 0.579 `routine shape` · 1 of 1 features vary · "
-            "3 pooled + 1 excluded = 4 driven",
+            # The case NAMES the report, and the topline readings are the TABLE under it —
+            # no sentence restating what the rows already say. The assertion side is ONE
+            # number over every check the case made, 5 of 6, since none of them is gated.
+            "### 🔴 `memory-learn-close-shape` — `openai/gpt-oss-20b`",
+            "\n".join(
+                [
+                    "| measure | reading |",
+                    "|---|---|",
+                    "| **checks** | 🟡 5 / 6 · 83% "
+                    "(lowest 🟡 0.67 `reply: every specific value in it is sourced`) |",
+                    "| **variance** | ⚪ max H 0.579 `routine shape` · 1 of 1 features vary |",
+                    "| **samples** | 3 pooled + 1 excluded = 4 driven |",
+                    "| **cost / sample** | 40,000 in · 10,000 out (80% thinking) · "
+                    "12.0 calls · 200s |",
+                ]
+            ),
             report.titled_fold(
                 "🟡 Assertions",
                 "5/6 checks · 83% · lowest 0.67 `reply: every specific value in it is sourced`",
@@ -795,7 +803,7 @@ def test_the_three_sections_render_whole():
             ),
             report.titled_fold(
                 "⚪ Cost",
-                "40,000 in / 10,000 out per sample · 200s",
+                "40,000 in · 10,000 out (80% thinking) · 12.0 calls · 200s",
                 "\n\n".join(
                     [
                         "**Cost, per sample.**",
@@ -1092,3 +1100,45 @@ def test_a_cosmetic_divergence_never_makes_an_outlier():
     assert "No sample diverged consequentially" in rendered
     assert "2 samples differ on `routine name`" in rendered
     assert "entropy reported in Variance" in rendered
+
+
+# ── Quoted content is EVIDENCE, never structure ──────────────────────────────
+_HOSTILE_PROMPT = (
+    "## Penny's current state\n"
+    "### Active mechanisms\n"
+    "**bold** and `code` and - a bullet\n"
+    "1. a numbered line"
+)
+
+
+def test_a_quoted_prompt_cannot_inject_a_heading_into_the_document():
+    """A prompt is text the model RECEIVED, so rendering it shows the reader something the
+    model was never handed — and its headings land in the report's own outline.
+
+    Measured on a real run: `## Penny's current state` from the system prompt OUTRANKED the
+    case heading, so the document's structure was written by the content it quotes."""
+    rendered = report.SystemPrompt(context="chat", text=_HOSTILE_PROMPT).render()
+    # Everything the fence encloses is literal; only what is OUTSIDE it can become structure.
+    outside = rendered.split("```")[0] + rendered.split("```")[-1]
+    assert not any(line.startswith("#") for line in outside.splitlines())
+    for line in _HOSTILE_PROMPT.splitlines():
+        assert line in rendered, "and every character survives, byte for byte"
+
+
+def test_a_prompt_containing_a_code_fence_still_closes_where_it_should():
+    """The fence is grown past the longest backtick run inside, so quoted markup that itself
+    contains a fence cannot end the block early and spill into the document."""
+    fenced = report.fenced("before\n```\ninside\n```\nafter")
+    assert fenced.startswith("````") and fenced.endswith("````")
+    assert "```\ninside\n```" in fenced
+
+
+def test_a_rejected_draw_is_quoted_verbatim_rather_than_rendered():
+    """A draw is model output the loop threw away. It was previously run through the CELL
+    escaper, which both rendered its markdown and flattened its newlines into `<br>` — so the
+    one surface kept for diagnosis showed something other than what the model produced."""
+    rendered = report.render_rejected_draws(["## a heading\nline two"])
+    assert "<br>" not in rendered, "newlines survive"
+    assert "\n## a heading\nline two\n" in rendered, "and the text is verbatim"
+    outside_fence = rendered.split("```")[0]
+    assert "## a heading" not in outside_fence
