@@ -613,20 +613,17 @@ def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_pat
 
 def test_the_samples_the_comment_does_not_carry_are_accounted_for() -> None:
     """An accounting, never a claim. `17 other samples agreed with the representative` counted
-    fourteen outliers and three control samples and called all seventeen agreeing — on the same
-    page as fourteen blocks showing exactly how they differed.
+    fourteen outliers and called all seventeen agreeing — on the same page as fourteen blocks
+    showing exactly how they differed.
 
-    The arithmetic closes the way the summary line's does: representative + matched + diverged =
-    pooled, with the control named separately because it never entered the cohort."""
-    consistent = report.samples_accounted(matched=12, diverged=2, control=3)
+    The arithmetic closes the way the summary line's does: representative + matched +
+    diverged = pooled."""
+    consistent = report.samples_accounted(matched=12, diverged=2)
     assert "Of 15 pooled samples" in consistent
     assert "12 that matched it" in consistent and "2 that diverged" in consistent
-    assert "3 control" in consistent
 
     # The end that mattered: when nothing agreed, say so rather than report it as a small number.
-    variant = report.samples_accounted(matched=0, diverged=14, control=3)
+    variant = report.samples_accounted(matched=0, diverged=14)
     assert "**No pooled sample matched the representative**" in variant
     assert "all 14 of the others diverged" in variant
     assert "agreed" not in variant
-
-    assert "control" not in report.samples_accounted(matched=4, diverged=0, control=0)

@@ -346,9 +346,9 @@ class CaseArtifact(BaseModel):
     # markdown would be the assembler guessing at what the case already knows.  Empty for a case
     # that drove no cohort, which then keeps every sample expanded exactly as before.
     expand_samples: list[int] = Field(default_factory=list)
-    # How many pooled samples matched the representative, diverged from it, or ran the
-    # control world — so the posted comment can ACCOUNT for the samples it does not carry
-    # rather than assert something about them.
+    # How many pooled samples matched the representative and how many diverged from it — so the
+    # posted comment can ACCOUNT for the samples it does not carry rather than assert something
+    # about them.
     standing_counts: dict[str, int] = Field(default_factory=dict)
 
 

@@ -334,17 +334,6 @@ class _Perf:
     output_chars: int = 0
     reasoning_tokens: int = 0
 
-    def merge(self, other: _Perf) -> None:
-        """Fold another drive's totals in — a ported case drives its cohort and its control,
-        and the cost it reports is the CASE's."""
-        self.calls += other.calls
-        self.duration_ms += other.duration_ms
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
-        self.thinking_chars += other.thinking_chars
-        self.output_chars += other.output_chars
-        self.reasoning_tokens += other.reasoning_tokens
-
     def add(self, perf: PromptPerf) -> None:
         self.calls += perf.calls
         self.duration_ms += perf.duration_ms
@@ -2206,7 +2195,6 @@ async def _run_samples(
     drive: SampleDriver,
     attempts: int = 1,
     model: str = "",
-    index_offset: int = 0,
 ) -> tuple[list[SampleResult], _Perf]:
     """Drive ``samples`` hermetic samples of one case; return their results and perf.
 
@@ -2250,13 +2238,7 @@ async def _run_samples(
                     await server.stop()
         return None
 
-    # Sample indices continue across a case's DRIVES (its cohort, then its control): a
-    # sample's DB path and its report name are both keyed on the index, and nothing deletes a
-    # sample's DB — so restarting at 0 for the second drive would re-seed over the first
-    # drive's rows and inherit its promptlog, scoring the control against the cohort's turn.
-    driven = await asyncio.gather(
-        *(_sample(index) for index in range(index_offset, index_offset + samples))
-    )
+    driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
     _flush_sample_blocks(case_id)
     results = [result for result in driven if result is not None]
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
@@ -2437,7 +2419,7 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, world: str, reply: str, before: set[str]
+    db: Database, *, name: str, phrasing: str, reply: str, before: set[str]
 ) -> eval_cohort.SampleObservation:
     """Read everything one sample left behind, while its database is still live.
 
@@ -2446,13 +2428,12 @@ def _observe_sample(
     exclusion = _exclusion(db, reply)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, world=world, complete=False, exclusion=exclusion
+            name=name, phrasing=phrasing, complete=False, exclusion=exclusion
         )
     landed = db.machine.latest_transition()
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
-        world=world,
         landed=landed.to_state if landed else None,
         walk=_machine_walk(db),
         routines=_routine_records(db),
@@ -2494,34 +2475,24 @@ def _no_scorer(db: Database, before: set[str], reply: str) -> list[Check]:
     return []
 
 
-def _phrasing_label(
-    phrasings: Sequence[str], local_index: int, per_phrasing: int, world: str
-) -> str:
-    """What this sample is called in the report.
-
-    A CONTROL sample is named for its job rather than given a phrasing number: it is the same
-    words against a different world, so numbering it alongside the wordings would read as a
-    sixth phrasing — the exact confusion the control/phrasing split exists to prevent."""
-    if world != eval_cohort.BASE_WORLD:
-        return world
+def _phrasing_label(phrasings: Sequence[str], sample_index: int, per_phrasing: int) -> str:
+    """What this sample is called in the report — which of the case's wordings it ran."""
     if len(phrasings) > 1:
-        return f"phrasing {local_index // per_phrasing + 1}"
+        return f"phrasing {sample_index // per_phrasing + 1}"
     return "the ask"
 
 
-# The world a case declares nothing about — a cohort still needs one to compare a control
-# against, and this one matches nothing, so a claim made against it is vacuous rather than wrong.
+# The world a case declares nothing about — a cohort still needs one for its claims to read, and
+# this one matches nothing, so a claim made against it is vacuous rather than wrong.
 _NO_WORLD = World(name="unspecified", pages=(), keeps=(), excludes=())
 
 
 @dataclass
 class _PendingCase:
-    """One CASE's drives, waiting for the test body to make its claims.
+    """One CASE's drive, waiting for the test body to make its claims.
 
-    A ported case drives more than once — the cohort, then its control — and both belong to ONE
-    case: one artifact, one report, one gate.  The report also cannot be written when a drive
-    returns, since the claims are made after it in the case body.  So the drives accumulate here
-    and the case is finished at fixture teardown."""
+    The report cannot be written when the drive returns, since the claims are made after it in
+    the case body.  So the drive is parked here and the case is finished at fixture teardown."""
 
     case_id: str
     family: str | None
@@ -2529,7 +2500,7 @@ class _PendingCase:
     min_pass_rate: float | None
     gate_pathology_excluded: bool
     intended: int = 0
-    cohorts: list[Cohort] = field(default_factory=list)
+    cohort: Cohort | None = None
     results: list[SampleResult] = field(default_factory=list)
     perf: _Perf = field(default_factory=_Perf)
     driven: int = 0
@@ -2537,29 +2508,19 @@ class _PendingCase:
     def add(
         self, cohort: Cohort, results: Sequence[SampleResult], perf: _Perf, *, intended: int
     ) -> None:
-        """Fold one drive into the case.
-
-        A case's sample names must be DISTINCT across its drives, and it fails here if they are
-        not: names are how the cohort's claims are dealt back out to the samples that answered
-        them, so a collision would silently grade one sample against another's turn.  The same
-        index also keys the sample's database file, and nothing deletes those — a second drive
-        landing on the first drive's indices re-seeds over its rows and inherits its promptlog.
-        Caught loudly rather than read as a surprising number later."""
-        clash = {s.name for s in cohort.samples} & {s.name for s in self._observations()}
-        assert not clash, f"{self.case_id}: two drives produced the same sample name: {clash}"
-        self.cohorts.append(cohort)
+        """Park the case's drive until its body has made its claims."""
+        assert self.cohort is None, f"{self.case_id}: a case drives its cohort exactly once"
+        self.cohort = cohort
         self.results += results
-        self.perf.merge(perf)
+        self.perf = perf
         self.driven += len(results)
-        # What the CASE asked for is the sum over its drives — a case that drives a cohort and a
-        # control asked for both, so a dead-cohort refusal counts against the whole case.
         self.intended += intended
 
     @property
-    def primary(self) -> Cohort:
-        """The case's OWN cohort — the first drive.  A control absorbs its claims into this one,
-        so this is where the case's assertions and measured features live."""
-        return self.cohorts[0]
+    def driven_cohort(self) -> Cohort:
+        """The cohort this case drove — where its assertions and measured features live."""
+        assert self.cohort is not None, f"{self.case_id}: finished without a drive"
+        return self.cohort
 
     def finish(self) -> None:
         """Deal the claims back out to their samples, record, report, and gate."""
@@ -2568,10 +2529,8 @@ class _PendingCase:
         # Computed ONCE and used by both halves: the document renders the standings, and the
         # ASSEMBLER needs to know which sample to expand in the posted comment.  Deriving them
         # twice would let the map and the expanded sample disagree about which one is modal.
-        standings = eval_cohort.standings(
-            observations, self.primary.features, self.primary.world.name
-        )
-        _record_case_report(self.primary, observations, standings, self.perf, self.driven)
+        standings = eval_cohort.standings(observations, self.driven_cohort.features)
+        _record_case_report(self.driven_cohort, observations, standings, self.perf, self.driven)
         _finish_case(
             self.case_id,
             self.family,
@@ -2587,21 +2546,16 @@ class _PendingCase:
         )
 
     def _grade(self) -> None:
-        """Every claim any of the case's cohorts answered, redistributed to the sample that
-        answered it — the one seam where cohort-level claims meet per-sample grading."""
-        by_sample: dict[str, list[Check]] = {}
-        for cohort in self.cohorts:
-            for sample, checks in _cohort_checks(cohort).items():
-                by_sample.setdefault(sample, []).extend(checks)
+        """Every claim the cohort answered, redistributed to the sample that answered it — the
+        one seam where cohort-level claims meet per-sample grading."""
+        by_sample = _cohort_checks(self.driven_cohort)
         for result in self.results:
             if result.observation is not None:
                 result.adopt(by_sample.get(result.observation.name, []))
 
     def _observations(self) -> list[eval_cohort.SampleObservation]:
-        """Every sample the case drove, cohort and control alike.  Pooling narrows to the case's
-        own world; the harness section counts them all, because a control sample that died is a
-        sample this case drove and lost."""
-        return [cohort_sample for cohort in self.cohorts for cohort_sample in cohort.samples]
+        """Every sample the case drove."""
+        return list(self.driven_cohort.samples)
 
 
 def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
@@ -2699,7 +2653,7 @@ def _record_case_report(
     Assembled HERE rather than in the report layer because this is where the three halves meet:
     the claims come from the case body, the pooled variance from the observations, and the
     prompts from what each sample was handed while its database was live."""
-    variance = eval_cohort.pool(samples, cohort.features, world=cohort.world.name)
+    variance = eval_cohort.pool(samples, cohort.features)
     sections = report.CaseSections(
         case_id=cohort.case_id,
         model=cohort.model,
@@ -2724,9 +2678,7 @@ def _record_case_report(
             world=cohort.world.render(),
             world_facts=report.WorldFacts(*cohort.world.counts),
             outliers=list(enumerate(standings, start=1)),
-            everywhere_distinct=eval_cohort.everywhere_distinct(
-                samples, cohort.features, cohort.world.name
-            ),
+            everywhere_distinct=eval_cohort.everywhere_distinct(samples, cohort.features),
         ),
     )
 
@@ -2926,7 +2878,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         spoken = [phrase for phrase in phrasings for _ in range(per_phrasing)]
         turns = [] if spoken else _conversation_turns(message, messages)
         driven = len(spoken) if spoken else samples
-        world_name = world.name if world is not None else eval_cohort.BASE_WORLD
         pages = list(world.pages) if world is not None else browse
 
         pending = (
@@ -2943,22 +2894,14 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             if spoken
             else None
         )
-        offset = pending.driven if pending is not None else 0
-
-        # A sample has TWO positions and confusing them is a real bug that has bitten twice: the
-        # GLOBAL index keys its database file and its report name (continuing across the case's
-        # drives, so the second drive cannot land on the first drive's files), while the LOCAL
-        # position says which of THIS drive's wordings it ran.  Converted once, here.
-        def _local(sample_index: int) -> int:
-            return sample_index - offset
 
         def _observe(
             sample_index: int,
         ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
-            phrasing = _phrasing_label(phrasings, _local(sample_index), per_phrasing, world_name)
+            phrasing = _phrasing_label(phrasings, sample_index, per_phrasing)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
             return lambda db, reply, before: _observe_sample(
-                db, name=name, phrasing=phrasing, world=world_name, reply=reply, before=before
+                db, name=name, phrasing=phrasing, reply=reply, before=before
             )
 
         async def _drive(
@@ -2972,7 +2915,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 server,
                 case_id=case_id,
                 sample_index=sample_index,
-                turns=[spoken[_local(sample_index)]] if spoken else turns,
+                turns=[spoken[sample_index]] if spoken else turns,
                 score=score or _no_scorer,
                 wrap_client=wrap_client,
                 timeout=timeout,
@@ -2988,7 +2931,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             drive=_drive,
             attempts=_MODEL_CALL_ATTEMPTS,
             model=model,
-            index_offset=offset,
         )
         if not spoken:
             # A case that has not been ported is driven and gated inline, exactly as before, and
@@ -3012,7 +2954,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             world=world if world is not None else _NO_WORLD,
             samples=[r.observation for r in results if r.observation is not None],
             phrasings=[
-                (_phrasing_label(phrasings, index * per_phrasing, per_phrasing, world_name), text)
+                (_phrasing_label(phrasings, index * per_phrasing, per_phrasing), text)
                 for index, text in enumerate(phrasings)
             ],
         )

@@ -10,19 +10,14 @@ from __future__ import annotations
 
 import math
 
-from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import _phrasing_label
-from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.cohort import (
-    BASE_WORLD,
-    CONTROL_WORLD,
     REPLY_SPREAD,
     ROUTINE_SHAPE,
     AssertionRow,
     RoutineRecord,
     SampleObservation,
     SpecCategory,
-    StoredEntry,
     VarianceFeature,
     compare_to_ceiling,
     feature_variance,
@@ -34,7 +29,6 @@ from penny.tests.eval.utils.cohort import (
     specifics,
     unsourced_specifics,
 )
-from penny.tests.eval.utils.worlds import World
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
@@ -132,19 +126,6 @@ def test_a_dead_sample_is_excluded_by_name_before_anything_is_pooled():
         ("s3", "the measured turn never ran")
     ]
     assert variance.features[0].n == 2
-
-
-def test_a_control_is_measured_by_nothing_but_still_counts_as_driven():
-    """A control drives the same ask against different facts to serve an ASSERTION, so folding
-    its samples into the spread would report a deliberate difference as instability — and the
-    harness section still counts it, because a control sample is one the case drove."""
-    samples = [
-        _sample("s1", "p1", "browse → write"),
-        _sample("s2", "the ask", "browse → browse → write", world="control"),
-    ]
-    variance = pool(samples, [ROUTINE_SHAPE])
-    assert (variance.pooled, variance.driven, variance.excluded) == (1, 2, [])
-    assert variance.features[0].distinct == 1
 
 
 def test_reply_spread_reads_the_embeddings_the_replies_already_carry():
@@ -262,11 +243,11 @@ def test_a_claim_read_out_of_model_prose_proposes_no_floor_even_at_full_marks():
     established the spread landed there itself."""
     prose = proposed_floor(
         AssertionRow(
-            label="reply: it names the world",
+            label="reply: every specific value in it is sourced",
             passed=4,
             total=4,
             kind="reply",
-            category=SpecCategory.DIRECTED_CHANGE,
+            category=SpecCategory.PROVENANCE,
         )
     )
     assert not prose.lockable, "full marks on model prose is still not a lockable floor"
@@ -321,9 +302,9 @@ def test_a_capitalised_label_against_a_name_is_not_a_fabrication():
 
 
 def test_a_single_word_invention_is_the_stated_blind_spot():
-    """Stated rather than discovered later: a bare invented surname is NOT caught here.  The
-    cross-world half of it is an assertion of its own — a reply naming the world it was not
-    given fails directed change — so what is uncovered is a value belonging to NEITHER world."""
+    """Stated rather than discovered later: a bare invented surname is NOT caught here, and
+    nothing else in the suite covers it.  The strict form of this rule failed 15 of 18 samples
+    on ordinary English, so the miss is the honest half of a measured trade."""
     assert unsourced_specifics("the Oyelaran signing", "Aurelio Brandt signed") == []
 
 
@@ -359,97 +340,20 @@ def test_entropy_matches_the_shannon_definition_it_claims_to_be():
     assert normalised_entropy(values) == expected
 
 
-# ── Naming across a case's two drives ────────────────────────────────────────
-def test_a_control_sample_is_named_for_its_job_not_given_a_phrasing_number():
-    """A control is the same words against a different world, so numbering it alongside the
-    wordings would read as a sixth phrasing — the exact confusion the split exists to prevent.
-
-    The names also have to be DISTINCT across a case's two drives: they are how the cohort's
-    claims are dealt back out to the samples that answered them, and the same index keys the
-    sample's database file, which nothing deletes."""
-    assert _phrasing_label(["a", "b"], 0, 3, BASE_WORLD) == "phrasing 1"
-    assert _phrasing_label(["a", "b"], 4, 3, BASE_WORLD) == "phrasing 2"
-    assert _phrasing_label(["a"], 0, 3, BASE_WORLD) == "the ask"
-    assert _phrasing_label(["a"], 0, 3, CONTROL_WORLD) == CONTROL_WORLD
+# ── Naming a sample ──────────────────────────────────────────────────────────
+def test_a_sample_is_named_for_the_wording_it_ran():
+    """The report's rows and the sample's own name are keyed on the phrasing LABEL, which is
+    read off the sample's position in the drive: three samples per wording, in order."""
+    assert _phrasing_label(["a", "b"], 0, 3) == "phrasing 1"
+    assert _phrasing_label(["a", "b"], 4, 3) == "phrasing 2"
+    assert _phrasing_label(["a"], 0, 3) == "the ask"
 
 
-def test_a_samples_global_and_local_positions_are_not_the_same_number():
-    """The bug this pins, twice over: a sample's GLOBAL index keys its database file and report
-    name and continues across a case's drives, while its LOCAL position says which of THIS
-    drive's wordings it ran.  Reading the wordings at the global index walks off the end of the
-    second drive's list; naming from the local one collides with the first drive's names."""
-    cohort_wordings = ["p1", "p2", "p3", "p4", "p5"] * 3
-    control_wordings = ["ask"] * 3
-    cohort = [(index, index - 0) for index in range(0, 15)]
-    control = [(index, index - 15) for index in range(15, 18)]
-
-    assert [g for g, _ in control] == [15, 16, 17]
-    assert [local for _, local in control] == [0, 1, 2]
-    assert all(local < len(control_wordings) for _, local in control)
-    assert all(local < len(cohort_wordings) for _, local in cohort)
-
-    names = [
-        f"case-{g + 1} ({_phrasing_label(['a', 'b'], loc, 3, BASE_WORLD)})" for g, loc in cohort
-    ]
-    names += [
-        f"case-{g + 1} ({_phrasing_label(['a'], loc, 3, CONTROL_WORLD)})" for g, loc in control
-    ]
-    assert len(set(names)) == len(names), "a case's two drives must not share a sample name"
-    assert names[-3:] == ["case-16 (control)", "case-17 (control)", "case-18 (control)"]
-
-
-# ── A control's samples answer the case's claims too ─────────────────────────
-def _world(name: str, keep: str, exclude: str) -> World:
-    return World(name=name, pages=(), keeps=((keep,),), excludes=(exclude,))
-
-
-def _observed(name: str, world: str, stored: str, reply: str) -> SampleObservation:
-    return SampleObservation(
-        name=name,
-        phrasing=world,
-        world=world,
-        landed="learn",
-        routines=[RoutineRecord(name="r", shape="s", names_a_destination=True)],
-        entries=[StoredEntry(collection="c", key=None, content=stored)],
-        reply=reply,
-        given=stored + " " + reply,
-    )
-
-
-def test_every_claim_covers_the_control_samples_too():
-    """The bug this pins: claims answered over the primary cohort ALONE silently shrank every
-    denominator from 18 to 15, because a control's three samples stopped answering anything but
-    directed change.  A control is a real drive of the same ask — it lands a state, mints a
-    routine and writes entries — so its end state is as assertable as the cohort's."""
-    base, control_world = _world("base", "brandt", "gulls 4"), _world("control", "roux", "gulls 2")
-    cohort = Cohort(
-        "case", "m", base, [_observed(f"b{i}", "base", "brandt", "brandt") for i in range(3)]
-    )
-    control = Cohort("case", "m", control_world, [_observed("c1", "control", "roux", "roux")])
-
-    cohort.assert_machine_landed(ConversationState.LEARN)
-    cohort.assert_something_from_each_page_was_written()
-    cohort.assert_facts_moved_with_the_world(control)
-
-    totals = {claim.label: (claim.passed, claim.total) for claim in cohort.claims}
-    assert all(total == 4 for _, total in totals.values()), totals
-    # Each sample is judged against ITS OWN world: the control kept `roux`, which is its world's
-    # fact and not the cohort's, and both read as kept.
-    assert totals["state: something from each page was written down"] == (4, 4)
-    assert totals["reply: it names what this world says"] == (4, 4)
-    assert totals["reply: it names nothing from the world it was not given"] == (4, 4)
-
-
-def test_a_control_graded_against_the_cohorts_world_would_fail_every_claim():
-    """The paired over-correction guard: if the world were closed over at declaration time
-    instead of resolved per sample, the control's samples would be judged against the cohort's
-    facts — which is the same defect wearing the opposite sign."""
-    base, control_world = _world("base", "brandt", "gulls 4"), _world("control", "roux", "gulls 2")
-    cohort = Cohort("case", "m", base, [_observed("b1", "base", "brandt", "brandt")])
-    control = Cohort("case", "m", control_world, [_observed("c1", "control", "roux", "roux")])
-    cohort.assert_something_from_each_page_was_written()
-    cohort.assert_facts_moved_with_the_world(control)
-    kept = {claim.label: claim for claim in cohort.claims}[
-        "state: something from each page was written down"
-    ]
-    assert [outcome.ok for outcome in kept.outcomes] == [True, True]
+def test_a_cases_sample_names_are_distinct():
+    """Names are how the cohort's claims are dealt back out to the samples that answered them,
+    and the same index keys the sample's database file, which nothing deletes — so a collision
+    would silently grade one sample against another's turn."""
+    names = [f"case-{i + 1} ({_phrasing_label(['a', 'b'], i, 3)})" for i in range(6)]
+    assert len(set(names)) == len(names)
+    assert names[:2] == ["case-1 (phrasing 1)", "case-2 (phrasing 1)"]
+    assert names[-1] == "case-6 (phrasing 2)"

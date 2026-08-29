@@ -45,7 +45,6 @@ from penny.tests.eval.utils.artifacts import (
     MANIFEST_FILENAME,
     CaseArtifact,
     CheckCell,
-    FailureCause,
     RunManifest,
     load_results_lines,
     render_manifest_header,
@@ -227,16 +226,6 @@ def render_flips_line(artifacts: list[CaseArtifact], baseline: Baseline | None) 
     return f"{FLIPS_LABEL} {' · '.join(entries)}" if entries else ""
 
 
-def _flatten(artifacts: list[CaseArtifact]) -> tuple[list[float], list[FailureCause | None]]:
-    """Every case's per-sample scores and causes concatenated — the run-totals denominator."""
-    scores: list[float] = []
-    causes: list[FailureCause | None] = []
-    for artifact in artifacts:
-        scores.extend(artifact.sample_scores)
-        causes.extend(artifact.sample_causes)
-    return scores, causes
-
-
 # ── Per-case section + footer ────────────────────────────────────────────────
 def _case_section(
     report_dir: Path, manifest: RunManifest, artifact: CaseArtifact, multi: bool
@@ -320,7 +309,6 @@ def _accounting(counts: Mapping[str, int] | None) -> str:
     return report.samples_accounted(
         matched=tally.get(cohort.Standing.TYPICAL.value, 0),
         diverged=tally.get(cohort.Standing.OUTLIER.value, 0),
-        control=tally.get(cohort.Standing.CONTROL.value, 0),
     )
 
 

@@ -2,8 +2,8 @@
 and what it MEASURES (#1994/#1995).
 
 **Asserted** is the state the round LEFT BEHIND: where the machine landed, what the store
-holds, that every specific value in the reply traces to something the model was given, and
-that the reply's facts move when the world moves.  Deterministic reads with a pass-rate floor.
+holds, and that every specific value in the reply traces to something the model was given.
+Deterministic reads with a pass-rate floor.
 
 **Measured** is everything the model CHOSE: which tools it called and in what order, the shape
 of the routine it recorded, the names it picked, the words it replied with.  Many routes reach
@@ -26,9 +26,9 @@ Two properties of the statistic decide how it may be read, both measured rather 
   every feature also carries a :class:`PhrasingRow`, reporting the weaker honest signal at
   n=3: a wording that produced a value **no other wording did**.
 
-A **control** is not a cohort arm.  Phrasings are *same world, different words* and are pooled;
-a control is *same words, different world* and is an ASSERTION.  It never enters the cohort
-sizing, and the driver keeps it a separate cohort so nothing can quietly average the two.
+A cohort's samples are HERMETIC — own database, own conversation, own pages — and every one
+of them was driven against the same world.  So nothing here compares two cohorts: a claim
+resolves the one world its sample was given, and the spread is measured within the pool.
 """
 
 from __future__ import annotations
@@ -42,9 +42,6 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
-
-BASE_WORLD = "base"
-CONTROL_WORLD = "control"
 
 # How far above the observed spread a proposed ceiling sits.  Measured: subsampling real
 # 32-sample cohorts down to 15 puts the sampling noise on normalised entropy at ~±0.11, so a
@@ -101,7 +98,6 @@ class SampleObservation(BaseModel):
 
     name: str
     phrasing: str
-    world: str = BASE_WORLD
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
@@ -306,10 +302,6 @@ class CohortVariance(BaseModel):
 
     pooled: int = 0
     driven: int = 0
-    # Samples this case drove in ANOTHER world — its control.  Counted rather than merely absent,
-    # because "15 pooled of 18 driven · 0 excluded" is arithmetic that does not close, and a
-    # section whose job is to make a run believable must not be the thing raising the question.
-    control: int = 0
     excluded: list[ExcludedSample] = Field(default_factory=list)
     features: list[VarianceFeature] = Field(default_factory=list)
     text: TextSpread | None = None
@@ -441,30 +433,22 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else NO_SPREAD
 
 
-def pool(
-    samples: Sequence[SampleObservation], features: Sequence[Feature], world: str = BASE_WORLD
-) -> CohortVariance:
+def pool(samples: Sequence[SampleObservation], features: Sequence[Feature]) -> CohortVariance:
     """Gate for completeness, THEN pool — the order is the point.
 
     Nothing is measured over a sample that did not run, and what is excluded is NAMED rather
     than subtracted, so a run that lost half its cohort reads as one that lost half its cohort
-    instead of as a suspiciously tidy one.
-
-    Only samples from the case's OWN world are pooled.  A control drives the same ask against
-    different facts to serve an ASSERTION, so folding its samples into the spread would report
-    a deliberate difference as instability — the exclusion is structural here rather than a
-    flag a case has to remember to set."""
+    instead of as a suspiciously tidy one."""
     excluded = [
         ExcludedSample(name=s.name, reason=s.exclusion or "the measured turn never ran")
         for s in samples
-        if not s.complete and s.world == world
+        if not s.complete
     ]
-    kept = [sample for sample in samples if sample.complete and sample.world == world]
+    kept = [sample for sample in samples if sample.complete]
     structural = [feature for feature in features if feature is not REPLY_SPREAD]
     return CohortVariance(
         pooled=len(kept),
         driven=len(samples),
-        control=sum(1 for s in samples if s.world != world and s.complete),
         excluded=excluded,
         features=[feature_variance(feature, kept) for feature in structural],
         text=text_spread(kept) if REPLY_SPREAD in features else None,
@@ -572,12 +556,22 @@ def per_sample_cost(
 
 
 class SpecCategory(StrEnum):
-    """Which of the design's four kinds of deterministic assertion a claim is.
+    """Which of the design's three kinds of deterministic assertion a claim is.
 
     The list is CLOSED and the field is REQUIRED, which is the whole point: a check that fits no
     category cannot be declared, so the audit is a fact the code states rather than a review
     somebody has to remember to run.  In prose the list existed already, and this branch shipped
     a route assertion and a phrasing match anyway — nothing stopped them being written.
+
+    THREE, not four: a fourth category asserted that a reply's facts MOVED when the world moved,
+    against a second drive of the same ask in another world.  It was withdrawn (#2002).  Samples
+    are hermetic — own database, own conversation, own pages — so a sample was never shown the
+    other world's fact, and "it names nothing from the world it was not given" asserted the
+    absence of something with no cause; it read 18/18 every run and always would.  It was also
+    redundant: PROVENANCE already catches a fabricated value, and catches every invention rather
+    than one foreign token.  The pattern-completion defence it was for survives without it — a
+    model that ignored the page and emitted a plausible value fails the STORE claim on whichever
+    world it guessed wrong, which needs the world to VARY and not two cohorts to compare.
 
     The rules themselves live in #1994 §A and #2011; they are deliberately not restated here,
     because a third copy is a third thing to drift.
@@ -585,13 +579,11 @@ class SpecCategory(StrEnum):
     Distinct from ``kind`` (``state`` / ``reply`` / ``spine`` / ``proc``), which is a
     render-and-gating class: ``kind`` decides how a claim renders and whether it can carry a
     floor, ``category`` says which part of the design it satisfies.  Neither is derivable from
-    the other — a DIRECTED_CHANGE claim has both a gated store-side half and an ungated
-    reply-side one."""
+    the other — PROVENANCE has both a gated store-side claim and an ungated reply-side one."""
 
     LANDED = "landed"
     STORE = "store"
     PROVENANCE = "provenance"
-    DIRECTED_CHANGE = "directed change"
 
 
 # A claim read out of PROSE THE MODEL WROTE, as against one read out of the machine, the
@@ -688,7 +680,6 @@ class Standing(StrEnum):
     MODAL = "modal"
     OUTLIER = "outlier"
     TYPICAL = "typical"
-    CONTROL = "control"
     DEAD = "dead"
 
 
@@ -754,13 +745,11 @@ def telling_features(
 
 
 def everywhere_distinct(
-    samples: Sequence[SampleObservation],
-    features: Sequence[Feature],
-    world: str = BASE_WORLD,
+    samples: Sequence[SampleObservation], features: Sequence[Feature]
 ) -> list[str]:
     """The features every pooled sample gave a different value — named so the report can say it
     ONCE instead of repeating it under every sample."""
-    pooled = [s for s in samples if s.complete and s.world == world]
+    pooled = [s for s in samples if s.complete]
     telling = {feature.name for feature in telling_features(pooled, features)}
     return [
         feature.name
@@ -779,9 +768,7 @@ def sample_shape(sample: SampleObservation, features: Sequence[Feature]) -> str:
 
 
 def standings(
-    samples: Sequence[SampleObservation],
-    features: Sequence[Feature],
-    world: str = BASE_WORLD,
+    samples: Sequence[SampleObservation], features: Sequence[Feature]
 ) -> list[SampleStanding]:
     """Each sample's standing, in the order the samples were driven.
 
@@ -790,7 +777,7 @@ def standings(
     them.  Its shape-mates are typical and fold; everything that did something else is an
     outlier and opens.  A dead sample is neither: it has no shape to be typical of, and is the
     harness section's business rather than a reading recommendation."""
-    pooled = [s for s in samples if s.complete and s.world == world]
+    pooled = [s for s in samples if s.complete]
     # Only the features that can distinguish one sample from another decide standing.  Including a
     # maximally-variant one makes every shape unique, so every sample becomes an outlier and the
     # modal sample is whichever happened to be first — the section names everything and therefore
@@ -810,17 +797,14 @@ def standings(
     seen_modal = False
     out: list[SampleStanding] = []
     for sample in samples:
-        if sample.world != world or not sample.complete:
+        if not sample.complete:
+            # A dead sample has no shape to be typical of: it never ran its measured turn, and
+            # it is the harness section's business rather than a reading recommendation.
             out.append(
                 SampleStanding(
                     name=sample.name,
                     phrasing=sample.phrasing,
-                    # A CONTROL is not a dead sample and must never be labelled one: it ran its
-                    # measured turn, and it is out of the cohort because it answers an ASSERTION
-                    # against different facts, not because anything broke.  Calling it dead put
-                    # the map in contradiction with the harness section on the same page —
-                    # three samples "too broken to count" beside "0 excluded".
-                    standing=Standing.DEAD if not sample.complete else Standing.CONTROL,
+                    standing=Standing.DEAD,
                     shape="",
                 )
             )
@@ -877,9 +861,9 @@ def divergences(
 # implementation.
 #
 # THE BLIND SPOTS, STATED: a single-word invention, and a recombination of two real names.
-# The cross-world form of each is already an assertion of its own — a reply naming the world it
-# was not given fails DIRECTED CHANGE — so what is uncovered is a value belonging to NEITHER
-# world, a narrower gap than the false-positive rate it buys off.
+# Nothing else in the suite covers them, and the trade is deliberate — the strict form of this
+# rule failed 15 of 18 samples on ordinary English, so a rule that misses a bare invented
+# surname is the honest half of the choice rather than an oversight nobody noticed.
 _NUMBER = r"\d[\d,.:%$]*"
 _URL = r"https?://\S+"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"

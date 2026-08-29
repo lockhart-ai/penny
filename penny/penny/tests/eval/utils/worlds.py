@@ -6,22 +6,16 @@ fixture and hands it to the driver; the assertions then read the world rather th
 of tokens restated at each call site, so "she kept what the page said" is one claim about
 two objects instead of a comparison somebody has to keep in sync by hand.
 
-The second world a case declares is its **control** — the same ask against different facts.
-That is what makes "she read the page" decidable instead of assumed, and it is a different
-mechanism from paraphrasing the ask: if Penny were pattern-completing from the shape of the
-request, every phrasing would name the same player and every phrasing would be right.
+A case declares ONE world, and its samples are hermetic — own database, own conversation, own
+pages — so a claim resolves the one world its sample was given.  Varying the pages would be a
+second INPUT axis, like phrasing, and not a control arm: nothing here compares two cohorts.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from penny.tests.eval.utils.fixtures import (
-    AURORA_LISTING_499,
-    AURORA_LISTING_549,
-    LISTING_URL,
-    CannedPage,
-)
+from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, LISTING_URL, CannedPage
 
 
 class World(BaseModel):
@@ -54,8 +48,7 @@ class World(BaseModel):
 
     @property
     def names(self) -> tuple[str, ...]:
-        """Every keepable name in this world, flattened — what a reply drawing on this world
-        will carry, and what a reply drawing on another world must not."""
+        """Every keepable token in this world, flattened — what the closed fold counts."""
         return tuple(token for source in self.keeps for token in source)
 
     def render(self) -> str:
@@ -102,7 +95,7 @@ def _tokens(tokens: tuple[str, ...]) -> str:
     return ", ".join(f"`{token}`" for token in tokens)
 
 
-# ── The two-team news world, and its control ─────────────────────────────────
+# ── The two-team news world ──────────────────────────────────────────────────
 #
 # Declared here rather than in the case that first needed it: tokens, excluded content and
 # pages describe the WORLD, not the case, so a second case reading these pages inherits them
@@ -134,30 +127,6 @@ SEALS_NEWS = CannedPage(
     ),
 )
 
-FOXES_NEWS_CONTROL = CannedPage(
-    match="ridgelinefoxes",
-    text=(
-        "Title: Ridgeline Foxes | Official Site — Team News\n"
-        f"{FOXES_URL}\n\n"
-        "Foxes trade defenceman Wilhelmina Roux to the Rovers for a third-round "
-        "pick — the deal was filed Tuesday afternoon.\n"
-        "Final score: Foxes 1, Rovers 5.\n"
-        "Training camp opens next month at Ridgeline Arena.\n"
-    ),
-)
-
-SEALS_NEWS_CONTROL = CannedPage(
-    match="harborseals",
-    text=(
-        "Title: Harbor Seals | Official Site — Team News\n"
-        f"{SEALS_URL}\n\n"
-        "Seals sign winger Casimir Oyelaran to a one-year contract ahead of the "
-        "autumn window.\n"
-        "Final score: Seals 6, Gulls 2.\n"
-        "Season ticket renewals open Friday.\n"
-    ),
-)
-
 # One trade-or-signing per page, among distractors the ask excludes in as many words (a final
 # score) and ones it merely does not ask for (a training camp date, ticket renewals).  Only the
 # score is an EXCLUSION: whether a training-camp date is notable is a judgement, and asserting
@@ -169,36 +138,16 @@ TWO_TEAM_NEWS = World(
     excludes=("rovers 2", "gulls 4"),
 )
 
-# The same world with every proper noun and every fact replaced and nothing else changed.  The
-# excluded tokens differ too, so a stored score is still decidable in either world.
-TWO_TEAM_NEWS_CONTROL = World(
-    name="control",
-    pages=(FOXES_NEWS_CONTROL, SEALS_NEWS_CONTROL),
-    keeps=(("roux", "wilhelmina"), ("oyelaran", "casimir")),
-    excludes=("rovers 5", "gulls 2"),
-)
-
-
-# ── The listing world, and its control ───────────────────────────────────────
+# ── The listing world ────────────────────────────────────────────────────────
 #
 # ONE source, because that is what the learn state's canonical case watches and what every
 # consistently-passing learn case in the suite uses.  The page has exactly one controllable
-# field, its price, so "she read the page" is decidable from a single token and the control
-# moves that token and nothing else.
+# field, its price, so "she kept what the page said" is decidable from a single token.
 
 AURORA_LISTING = World(
     name="base",
     pages=(AURORA_LISTING_499,),
     keeps=(("499",),),
-    excludes=(),
-)
-
-# The same listing, one field moved.  A reply naming 549 read THIS page; one naming 499 read
-# the other, which is what makes directed change decidable rather than assumed.
-AURORA_LISTING_CONTROL = World(
-    name="control",
-    pages=(AURORA_LISTING_549,),
-    keeps=(("549",),),
     excludes=(),
 )
 
@@ -238,8 +187,3 @@ LISTING_DEMO_PHRASINGS = (
     f"yep — read {LISTING_URL}, pull the current price off it, and remember that",
     f"just visit {LISTING_URL}, note the price it's at now, and hang on to it",
 )
-
-# The value that page carries and nothing else does — what "she read it" is decided on, and
-# what the control moves.
-LISTING_FACT = "499"
-LISTING_CONTROL_FACT = "549"

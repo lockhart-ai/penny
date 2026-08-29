@@ -348,14 +348,14 @@ _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
 # one line, and a section that renders as a stub every time is one people learn to skip.  The
 # counts must still ADD UP — three unexplained samples on the surface that says whether a run can
 # be believed is how 288 infrastructure failures came to be booked as behavioural.
-_COUNTS = "{pooled} pooled + {control} control + {excluded} excluded = {driven} driven"
+_COUNTS = "{pooled} pooled + {excluded} excluded = {driven} driven"
 _NO_VARIANCE = "nothing pooled"
 
 _ASSERTION_HEAD = "|  | assertion | held | rate | proposed floor |\n|---|---|---|---|---|"
 _CATEGORY_HEADING = "**{category}**"
 # A category with no claims renders as a GAP rather than as an absence nobody notices.  The
-# reference port had no store-side directed-change claim purely because the case it was ported
-# from had none to copy, and nothing in the document showed the hole.
+# reference port asserted nothing about PROVENANCE at first, purely because the case it was
+# ported from had no such claim to copy, and nothing in the document showed the hole.
 _CATEGORY_GAP = "**{category}** — _no claim. This case asserts nothing in this category._"
 _VARIANCE_HEAD = (
     "|  | feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|---|"
@@ -511,7 +511,6 @@ class CaseSections:
             feature=top.name if top else _NO_VARIANCE,
             counts=_COUNTS.format(
                 pooled=self.variance.pooled,
-                control=self.variance.control,
                 excluded=len(self.variance.excluded),
                 driven=self.variance.driven,
             ),
@@ -543,7 +542,7 @@ class CaseSections:
     def _assertions(self) -> str:
         """Grouped by SPEC CATEGORY, with every category rendered — including the empty ones.
 
-        The design permits exactly four kinds of deterministic assertion, and a category nobody
+        The design permits exactly three kinds of deterministic assertion, and a category nobody
         wrote a claim for is a finding rather than a blank: it says this case checks nothing of
         that kind, which is exactly what a reader porting the next case needs to see."""
         if not self.assertions:
@@ -722,7 +721,6 @@ _COSMETIC_LINE = (
     "_{count} samples differ on {features} — measured, entropy reported in "
     "Variance, and not a finding about any one sample._"
 )
-_SAMPLE_MAP_LEAD = "_The index into the section above — `modal` is the one to read._"
 
 
 @dataclass(frozen=True)
@@ -1074,8 +1072,8 @@ def summarise_thinking(body: str) -> str:
 # What the comment says about the samples it does NOT carry.  This was one sentence asserting
 # that they AGREED, written when the assumption was that most samples agree and a few stand out.
 # On a variant cohort that assumption is false and the sentence became a CLAIM: it counted every
-# sample the comment left out — outliers and control alike — and called all seventeen agreeing,
-# with fourteen outlier blocks rendering directly underneath saying exactly how they differed.
+# sample the comment left out and called all seventeen agreeing, with fourteen outlier blocks
+# rendering directly underneath saying exactly how they differed.
 #
 # It is an ACCOUNTING now, and its arithmetic closes the way the summary line's does:
 # representative + matched + diverged = pooled.  Two named cases, because "none of them agreed
@@ -1083,13 +1081,12 @@ def summarise_thinking(body: str) -> str:
 # happy path renders it as a small number nobody reads.
 SAMPLES_ACCOUNTED = (
     "_Of {pooled} pooled samples: the representative, {matched} that matched it, and "
-    "{diverged} that diverged (see Outliers){control}. Full transcripts in the run artifact._"
+    "{diverged} that diverged (see Outliers). Full transcripts in the run artifact._"
 )
 NONE_MATCHED = (
     "_**No pooled sample matched the representative** — all {diverged} of the others diverged "
-    "(see Outliers){control}. Full transcripts in the run artifact._"
+    "(see Outliers). Full transcripts in the run artifact._"
 )
-_CONTROL_CLAUSE = " · {count} control, which ran a different world"
 OTHER_PROMPTS_LINE = (
     "_The other {count} samples were each given their own {contexts} prompt — per-sample because "
     "the self-state header renders that sample's own minted names back into it. Full texts in "
@@ -1136,21 +1133,17 @@ def elide_unused_prompts(text: str, keep: Sequence[str]) -> str:
     return f"{pruned}\n\n{line}".strip()
 
 
-def samples_accounted(*, matched: int, diverged: int, control: int) -> str:
+def samples_accounted(*, matched: int, diverged: int) -> str:
     """How the samples the comment does not carry are accounted for — never a claim about them.
 
-    `17 other samples agreed with the representative` was counting fourteen outliers and three
-    control samples and calling all seventeen agreeing, on the same page as fourteen blocks
-    showing how they differed. It degrades at both ends: a consistent cohort reports how many
-    matched, and one where nothing matched says so in as many words."""
-    control_clause = _CONTROL_CLAUSE.format(count=control) if control else ""
+    `17 other samples agreed with the representative` was counting fourteen outliers and calling
+    all seventeen agreeing, on the same page as fourteen blocks showing how they differed. It
+    degrades at both ends: a consistent cohort reports how many matched, and one where nothing
+    matched says so in as many words."""
     if matched == 0 and diverged:
-        return NONE_MATCHED.format(diverged=diverged, control=control_clause)
+        return NONE_MATCHED.format(diverged=diverged)
     return SAMPLES_ACCOUNTED.format(
-        pooled=matched + diverged + 1,
-        matched=matched,
-        diverged=diverged,
-        control=control_clause,
+        pooled=matched + diverged + 1, matched=matched, diverged=diverged
     )
 
 

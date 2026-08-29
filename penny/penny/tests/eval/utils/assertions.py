@@ -38,9 +38,9 @@ from penny.tests.eval.utils.worlds import World
 
 # How one sample answers one claim: ``(ok, rationale)``.
 Answer = tuple[bool, str | None]
-# How one sample answers one claim, judged against the world THAT SAMPLE was given — never a
-# world closed over at declaration time, or a control's samples would be graded against the
-# cohort's facts.
+# How one sample answers one claim, judged against the world the cohort was driven against.
+# The world is a parameter rather than a closure so a claim stays a pure function of the sample
+# and the ground it was given — readable, and testable without building a cohort.
 WorldClaim = Callable[[SampleObservation, World], Answer]
 
 
@@ -51,10 +51,10 @@ class Cohort:
     needs is over the COMPLETE set — the variance statistics are cohort-level by definition,
     and a per-sample callback cannot see the cohort it belongs to.
 
-    A cohort is one request at one model.  A CONTROL is a separate cohort, never an arm of this
-    one: phrasings are *same world, different words* and pool into this cohort's score, while a
-    control is *same words, different world* and serves an assertion.  Keeping them separate
-    objects is what stops the control quietly entering the cohort sizing.
+    A cohort is one request at one model, against ONE world.  Its samples are hermetic — own
+    database, own conversation, own pages — so they are weighed against each other and never
+    against another cohort: a claim about a sample resolves the only world that sample was
+    given, and there is nothing to compare it to.
     """
 
     def __init__(
@@ -75,26 +75,14 @@ class Cohort:
         self.phrasings = list(phrasings)
         self.features: list[Feature] = []
         # A claim is DECLARED here and answered at report time, over every sample the case
-        # drove.  Declaring rather than answering immediately is what lets a control adopted
-        # AFTER the claims were made still answer them: the case body reads claims-then-control,
-        # and a claim evaluated on the spot would have covered only the samples driven so far.
+        # drove.  Declaring rather than answering immediately is what keeps the case body
+        # readable as `<priors> / <trigger> / <assertions>`: the claims are written where
+        # they belong even though the numbers only exist once every sample has run.
         self._declared: list[tuple[str, str, SpecCategory, WorldClaim]] = []
-        self._adopted: list[SampleObservation] = []
-        self._worlds: dict[str, World] = {world.name: world}
-
-    @property
-    def covered(self) -> list[SampleObservation]:
-        """Every sample this case's claims are answered over — its own and any control's.
-
-        A control is a real drive of the same ask: it lands a machine state, mints a routine
-        and writes entries exactly as the cohort does, so its end state is as assertable.  What
-        differs is the WORLD each sample is judged against, which is why a claim resolves the
-        sample's own world rather than closing over one."""
-        return [*self.samples, *self._adopted]
 
     @property
     def claims(self) -> list[Claim]:
-        """Every declared claim, answered over every covered sample against its own world."""
+        """Every declared claim, answered over every sample the cohort drove."""
         return [
             Claim(label=label, kind=kind, category=category, outcomes=self._answer(answer))
             for label, kind, category, answer in self._declared
@@ -102,12 +90,12 @@ class Cohort:
 
     def _answer(self, answer: WorldClaim) -> list[ClaimOutcome]:
         outcomes = []
-        for sample in self.covered:
+        for sample in self.samples:
             # An incomplete sample answers nothing: it never ran its measured turn, so grading
             # it would report a failed contract for a contract nobody exercised.
             if not sample.complete:
                 continue
-            ok, rationale = answer(sample, self._worlds[sample.world])
+            ok, rationale = answer(sample, self.world)
             outcomes.append(
                 ClaimOutcome(sample=sample.name, ok=ok, rationale=None if ok else rationale)
             )
@@ -235,41 +223,6 @@ class Cohort:
             kind="reply",
         )
 
-    def assert_facts_moved_with_the_world(self, control: Cohort) -> None:
-        """DIRECTED CHANGE, both directions, against a control drive of the same ask.
-
-        Perturb the world and the reply's facts must move with it: a reply that says the same
-        thing over a different world was never reading the world.  This is the claim wording
-        variation cannot make — if Penny were pattern-completing from the shape of the request,
-        every phrasing would name the same player and every phrasing would be right.
-
-        The control is a cohort the CASE drove and passed in, not a hidden extra drive: an
-        assertion that quietly makes three more model calls is a nasty surprise."""
-        assert control.world.name != self.world.name, (
-            "a control must be a DIFFERENT world from the one it controls"
-        )
-        # The control's samples come under this case's claims — every one of them, not just
-        # these two: a control is a real drive of the same ask, and its end state is as
-        # assertable as the cohort's.
-        self._adopt(control)
-        # The STORE-side half, and the only one of the two that can carry a floor.  It is
-        # decidable on every sample — measured, the base world's samples stored $499 and the
-        # control's stored $549 — and it is squarely end state, so directed change gets a gated
-        # form without asserting anything about prose.  The reply-side half below stays REPORTED:
-        # it reads model text, whose rate moves +/-3 of 18 between two runs of identical code.
-        self._claim(_STORE_MOVED, _store_reads, SpecCategory.DIRECTED_CHANGE)
-        self._claim(_READS_ITS_WORLD, _reply_reads, SpecCategory.DIRECTED_CHANGE, kind="reply")
-        self._claim(
-            _AVOIDS_THE_OTHER,
-            _reply_avoids(self._other_worlds),
-            SpecCategory.DIRECTED_CHANGE,
-            kind="reply",
-        )
-
-    def _other_worlds(self, sample: SampleObservation) -> list[World]:
-        """Every world this case drove EXCEPT the one this sample was given."""
-        return [world for name, world in self._worlds.items() if name != sample.world]
-
     # ── what is measured ─────────────────────────────────────────────────────
     def measure(self, *features: Feature) -> None:
         """Declare the axes this case MEASURES — never asserted, one-sided ceiling."""
@@ -283,29 +236,9 @@ class Cohort:
         category: SpecCategory,
         kind: str = "state",
     ) -> None:
-        """Declare one claim.  It is answered at report time over every covered sample."""
+        """Declare one claim.  It is answered at report time over every sample."""
         flavour = "reply" if label.startswith("reply:") else kind
         self._declared.append((label, flavour, category, answer))
-
-    def _adopt(self, control: Cohort) -> None:
-        """Take a control's samples under this case's claims.
-
-        Every claim the case makes — declared before this call or after it — is then answered
-        over the control's samples too, each against the control's own world.  That is what the
-        per-sample scorer it replaces did, and dropping it silently shrank every denominator
-        from 18 to 15."""
-        self._worlds[control.world.name] = control.world
-        self._adopted += control.samples
-        control._declared.clear()
-
-
-# The two directed-change labels, named once because each is written twice — once for the
-# cohort and once for its control.  A label is what a report is read by and what a baseline
-# diff keys on, so the two sides must be the same string rather than two spellings of one
-# intention.
-_READS_ITS_WORLD = "reply: it names what this world says"
-_AVOIDS_THE_OTHER = "reply: it names nothing from the world it was not given"
-_STORE_MOVED = "state: what it stored moved with the world"
 
 
 # ── The claims themselves, as pure functions over one sample ─────────────────
@@ -341,18 +274,6 @@ def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
     return bool(sample.routines) and not asking, f"still a leaf parameter: {asking}"
 
 
-def _store_reads(sample: SampleObservation, world: World) -> Answer:
-    """Directed change read off the STORE: what this sample wrote carries THIS world's fact.
-
-    The half of directed change that is always decidable — a value is in the store or it is
-    not — which is what makes it the half that can carry a floor."""
-    stored = _normalise(sample.stored_text)
-    missing = [name for name in world.names if name.lower() not in stored]
-    if not sample.entries:
-        return False, "nothing was stored"
-    return not missing, f"stored nothing this world says ({missing})"
-
-
 def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
     stored = _normalise(sample.stored_text)
     landed = [token for token in world.excludes if token in stored]
@@ -373,26 +294,6 @@ def _store_is_sourced(sample: SampleObservation, _world: World) -> Answer:
 def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
     invented = unsourced_specifics(sample.reply, sample.given)
     return not invented, f"unsourced: {invented}"
-
-
-def _reply_reads(sample: SampleObservation, world: World) -> Answer:
-    """Half of DIRECTED CHANGE: the reply carries the facts of the world THIS sample was given."""
-    named = [token for token in world.names if token in _normalise(sample.reply)]
-    return bool(named), "named none of this world's facts"
-
-
-def _reply_avoids(others: Callable[[SampleObservation], list[World]]) -> WorldClaim:
-    """The other half: nothing from the world this sample was NOT given.
-
-    The other worlds are resolved per sample rather than closed over, so the cohort and its
-    control are judged by one claim in both directions instead of two spellings of it."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        reply = _normalise(sample.reply)
-        leaked = [token for other in others(sample) for token in other.names if token in reply]
-        return not leaked, f"leaked {leaked}"
-
-    return answer
 
 
 def _normalise(text: str) -> str:

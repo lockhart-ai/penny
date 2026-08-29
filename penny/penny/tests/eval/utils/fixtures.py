@@ -118,22 +118,6 @@ AURORA_LISTING_499 = CannedPage(
     ),
 )
 
-# The SAME listing with only its price moved — the control the directed-change assertion
-# needs.  One field differs, so a reply naming $549 read this page and a reply naming $499
-# read the other; anything else about the two is identical on purpose.
-AURORA_LISTING_549 = CannedPage(
-    match="aurora-deck-2",
-    text=(
-        "Title: Aurora Deck 2 — handheld console | faux-market\n"
-        f"{LISTING_URL}\n"
-        "\n"
-        "Aurora Deck 2 (open box, tested). Ships from a fictional warehouse.\n"
-        "Price: $549\n"
-        f"[Aurora Deck 2 listing]({LISTING_URL})\n"
-        "Seller: nebula_resale (4.9 stars). Listing updated daily.\n"
-    ),
-)
-
 
 BOARD_GAMES = SynthCollection(
     "board-games",

@@ -567,7 +567,7 @@ def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
     )
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
 
-    assert "1 pooled + 0 control + 2 excluded = 3 driven" in rendered
+    assert "1 pooled + 2 excluded = 3 driven" in rendered
     assert "Dominant failure class: **no turn** (2 of 2)." in rendered
     assert "- `c-2 (phrasing 1)` — no turn" in rendered
     assert "- `c-3 (phrasing 1)` — no turn" in rendered
@@ -585,22 +585,18 @@ def test_one_modal_sample_is_named_and_every_other_shape_is_an_outlier():
         _observation("c-2 (a)", "a", ["browse"]),
         _observation("c-3 (b)", "b", ["browse", "write"]),
         cohort.SampleObservation(name="c-4 (b)", phrasing="b", complete=False, exclusion="no turn"),
-        cohort.SampleObservation(
-            name="c-5 (control)", phrasing="control", world="control", tool_sequence=["browse"]
-        ),
     ]
     standings = cohort.standings(samples, [cohort.TOOL_SEQUENCE])
 
-    # A CONTROL ran its measured turn and is out of the cohort by design, so it is never DEAD:
-    # labelling it so put the map in contradiction with the harness section's "0 excluded".
+    # A DEAD sample has no shape to be typical of — it is the harness section's business rather
+    # than a reading recommendation, so it is never offered as one.
     assert [s.standing for s in standings] == [
         cohort.Standing.MODAL,
         cohort.Standing.TYPICAL,
         cohort.Standing.OUTLIER,
         cohort.Standing.DEAD,
-        cohort.Standing.CONTROL,
     ]
-    assert [s.worth_opening for s in standings] == [True, False, False, False, False]
+    assert [s.worth_opening for s in standings] == [True, False, False, False]
 
 
 def test_a_sample_agreeing_on_one_feature_and_not_another_is_an_outlier():
@@ -730,7 +726,7 @@ def test_the_three_sections_render_whole():
             # rather than as a miss — it stood at 2/3 and can carry no floor at this N.
             "🔴 **`memory-learn-close-shape`** — assertions 1/1 gated · 1 ungated · "
             "variance ⚪ max H 0.579 `routine shape` · "
-            "3 pooled + 0 control + 1 excluded = 4 driven",
+            "3 pooled + 1 excluded = 4 driven",
             report.fold(
                 "⚪ Assertions — 1 of 1 gated held · 1 ungated",
                 "\n\n".join(
@@ -758,8 +754,6 @@ def test_the_three_sections_render_whole():
                                 "prose |",
                             ]
                         ),
-                        "**directed change** — _no claim. This case asserts nothing in this "
-                        "category._",
                         _FLOOR_NOTE,
                     ]
                 ),
@@ -840,7 +834,7 @@ def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_t
         ),
     ).render()
     assert "_No phrasing produced a value the others did not._" in rendered
-    assert "3 pooled + 0 control + 0 excluded = 3 driven" in rendered
+    assert "3 pooled + 0 excluded = 3 driven" in rendered
     assert "_(no assertions)_" in rendered
 
 
@@ -941,24 +935,21 @@ def test_a_single_block_over_budget_keeps_its_own_fold_for_the_guard_to_refuse()
     assert report.BLOCK_SEPARATOR.join(report.parse_sample_block(part)[2] for part in parts) == body
 
 
-def test_the_harness_counts_add_up_including_the_control_drive():
-    """The arithmetic must CLOSE. `15 pooled of 18 driven · 0 excluded` left three samples
-    unexplained on the one surface whose job is to say whether the run can be believed — and a
-    section that raises a question it does not answer is one people learn to skip, which is how
-    288 infrastructure failures came to be booked as behavioural."""
+def test_the_harness_counts_add_up():
+    """The arithmetic must CLOSE. A pooled count short of the driven one with nothing to explain
+    the gap left samples unaccounted for on the one surface whose job is to say whether the run
+    can be believed — and a section that raises a question it does not answer is one people
+    learn to skip, which is how 288 infrastructure failures came to be booked as behavioural."""
     samples = [
         _observation("c-1 (a)", "a", ["browse"]),
         _observation("c-2 (a)", "a", ["browse"]),
-        cohort.SampleObservation(
-            name="c-3 (control)", phrasing="control", world="control", tool_sequence=["browse"]
-        ),
+        cohort.SampleObservation(name="c-3 (a)", phrasing="a", complete=False, exclusion="no turn"),
     ]
     variance = cohort.pool(samples, [cohort.TOOL_SEQUENCE])
-    assert (variance.pooled, variance.control, variance.driven) == (2, 1, 3)
+    assert (variance.pooled, variance.driven) == (2, 3)
 
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
-    assert "2 pooled + 1 control + 0 excluded = 3 driven" in rendered
-    assert report.SECTION_C not in rendered, "a clean run spends no section on it"
+    assert "2 pooled + 1 excluded = 3 driven" in rendered
 
 
 def test_the_seeded_world_states_its_own_counts_not_its_renders():
@@ -1048,8 +1039,8 @@ def test_every_spec_category_renders_including_the_empty_ones():
     """The design permits exactly FOUR kinds of deterministic assertion, and a category nobody
     wrote a claim for is a FINDING rather than a blank.
 
-    The reference port had no store-side directed-change claim purely because the case it was
-    ported from had none to copy, and nothing in the document showed the hole."""
+    The reference port asserted nothing about PROVENANCE at first, purely because the case it
+    was ported from had no such claim to copy, and nothing in the document showed the hole."""
     rendered = report.CaseSections(
         case_id="c",
         model="m",
@@ -1064,7 +1055,7 @@ def test_every_spec_category_renders_including_the_empty_ones():
     ).render()
 
     assert "**landed**" in rendered
-    for missing in ("store", "provenance", "directed change"):
+    for missing in ("store", "provenance"):
         assert f"**{missing}** — _no claim." in rendered, f"{missing} must render as a gap"
 
 

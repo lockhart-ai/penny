@@ -83,7 +83,6 @@ from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
 # for a reader to notice.
 from penny.tests.eval.utils.worlds import (
     AURORA_LISTING,
-    AURORA_LISTING_CONTROL,
     FOXES_NEWS,
     FOXES_URL,
     LISTING_DEMO,
@@ -287,13 +286,19 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 #
 # What the cohort adds on top, and the canonical case has no equivalent for:
 #
-#   * PHRASINGS and the CONTROL, which are different mechanisms — reading one as the other is
-#     the mistake this case exists to prevent.  Phrasings are same world, different words, and
-#     POOL into one variance score; a control is same words, different world, and serves an
-#     ASSERTION.  Wording variation cannot do the control's job: if Penny were pattern-completing
-#     from the shape of the demonstration, every phrasing would name the same price and every one
-#     would be right.
+#   * PHRASINGS — the same request in five wordings, POOLED into one variance score.  Wording is
+#     an INPUT axis: what varies is how a person says three things in a sentence, and what is
+#     scored is that the end state does not move with it.
 #   * the tool calls MEASURED rather than asserted, because many routes reach one end state.
+#
+# ONE WORLD, one drive.  A fourth claim family once drove the same ask against a second world
+# and asserted the reply's facts moved with it (#2002).  Samples are hermetic — own database,
+# own conversation, own page — so a sample was never shown the other world's fact, and "it
+# names nothing from the world it was not given" asserted the absence of something with no
+# cause; it read 18/18 every run and always would.  The pattern-completion worry it was for is
+# already covered: a model ignoring the page and emitting a plausible price fails the STORE
+# claim on whichever world it guessed wrong.  That needs the world to VARY, not two cohorts to
+# compare, and the world stays fixed for now.
 
 _DEMONSTRATED_ROUND_CASE_ID = "learn-demonstrated-round"
 
@@ -343,21 +348,6 @@ async def test_a_demonstrated_round_is_enacted_learned_and_reported(
     cohort.assert_the_routine_names_a_destination()
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
-
-    # A SECOND VISIBLE DRIVE, beside the claim it serves: an assertion that quietly made three
-    # more model calls would be a nasty surprise.
-    control = await chat_eval(
-        case_id=_DEMONSTRATED_ROUND_CASE_ID,
-        model=model,
-        seed=standing_elicit_round,
-        world=AURORA_LISTING_CONTROL,
-        ask=LISTING_DEMO,
-        samples_per_phrasing=3,
-        min_pass_rate=None,
-        family=_FAMILY,
-        timeout=240.0,
-    )
-    cohort.assert_facts_moved_with_the_world(control)
 
     cohort.measure(
         TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
