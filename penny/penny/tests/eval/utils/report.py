@@ -267,7 +267,7 @@ WARN_ABOVE = 0.50
 
 GLYPH_KEY = (
     f"_{PASS_GLYPH} >90% · {WARN_GLYPH} 50–90% · {FAIL_GLYPH} <50% · "
-    f"{UNGATED_GLYPH} ungated (measured, no threshold accepted)_"
+    f"{UNGATED_GLYPH} measured, no threshold accepted_"
 )
 
 # Worst-first, so the one line a reader scans carries the problem rather than the average.
@@ -287,9 +287,10 @@ def rate_glyph(rate: float) -> str:
 
 
 def assertion_glyph(row: cohort.AssertionRow) -> str:
-    """A claim's colour, or grey where no floor can be accepted at this N."""
-    if row.reads_model_prose:
-        return UNGATED_GLYPH
+    """A claim's colour, read off its rate.
+
+    Every claim colours the same way now: with no floors there is no gated/ungated split to
+    make one grey, and a claim read out of model prose is counted like any other."""
     return rate_glyph(row.pass_rate)
 
 
@@ -325,11 +326,9 @@ SECTION_C = "Excluded samples"
 # A collapsed section states what is INSIDE it, not just where to click — the point of a folded
 # document is deciding what to open without opening it.  `Label — facts` is still a label: a noun
 # phrase with counts attached, never a sentence.
-# GATED != HELD.  Whether a claim can carry a floor is a fact about the THRESHOLD, not about the
-# run, so an ungated claim is never counted as a miss: the headline counts what CAN be gated, and
-# says separately how many are measured without one.
-_A_SUMMARY = "{label} — {held} of {gated} gated held{ungated}{lowest}"
-_A_UNGATED = " · {count} ungated"
+# ASSERTIONS ARE NOT GATED, so the headline is one reading over every check the case made
+# rather than a count of claims that could carry a threshold.
+_A_SUMMARY = "{label} — {passed}/{total} checks · {rate:.0%}{lowest}"
 _A_LOWEST = " · lowest {rate:.2f} `{claim}`"
 _B_SUMMARY = "{label} — {features} · max H {entropy:.3f} `{feature}` · none gated"
 _B_EMPTY = "{label} — nothing pooled"
@@ -337,7 +336,7 @@ _COST_SUMMARY = "{label} — {input:,.0f} in / {output:,.0f} out per sample · {
 _C_SUMMARY = "{label} — {count} of {driven} · dominant: {reason}"
 
 _SUMMARY_LINE = (
-    "{glyph} **`{case_id}`** — assertions {held}/{gated} gated{ungated}{lowest} · "
+    "{glyph} **`{case_id}`** — assertions {passed}/{total} checks {rate:.0%}{lowest} · "
     "variance {var_glyph} max H {entropy:.3f} `{feature}` · {counts}"
 )
 _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
@@ -348,7 +347,7 @@ _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
 _COUNTS = "{pooled} pooled + {excluded} excluded = {driven} driven"
 _NO_VARIANCE = "nothing pooled"
 
-_ASSERTION_HEAD = "|  | assertion | held | rate | proposed floor |\n|---|---|---|---|---|"
+_ASSERTION_HEAD = "|  | assertion | held | rate |\n|---|---|---|---|"
 _CATEGORY_HEADING = "**{category}**"
 # A category with no claims renders as a GAP rather than as an absence nobody notices: a case
 # that checks nothing of one kind is a finding, and a blank says nothing.
@@ -368,14 +367,15 @@ _NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
 _NO_CEILING = "— diagnostic reading; too spread to gate"
 _COST_LEAD = "**Cost, per sample.**"
 
+# What the assertion side is, said where its table ends: a reading, not a gate.  Stated rather
+# than left to be inferred, because "nothing here can fail the run" is exactly the kind of fact a
+# reader would otherwise assume the opposite of.
 _FLOOR_NOTE = (
-    "_Floors are PROPOSED, never locked — accepting one is the code owner's act. A claim read "
-    "out of the machine, the registry or the store can carry one; a claim read out of prose the "
-    "model wrote is REPORTED and not floored at this N. That split is measured rather than a "
-    "matter of taste: across two runs of identical code — same commit, same model, same upstream "
-    "— a reply-content rate moved by 3 samples of 18 while every structural one moved by at most "
-    "1, and ±3 of 18 is ±17 points, so a floor tight enough to catch a regression would flap and "
-    "one loose enough not to would catch nothing._"
+    "_These are DETERMINISTIC checks — things expected to be strictly true of the run — so they "
+    "carry no floors and none is proposed: a threshold under something expected at 100% either "
+    "never fires, or sits below the observed rate and blesses the defect as the contract. The "
+    "reading above is REPORTED, not enforced, and nothing on the assertion side fails a run. "
+    "VARIANCE is what gates, under one-sided ceilings; a dead cohort still fails on run health._"
 )
 _CEILING_NOTE = (
     "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
@@ -443,19 +443,14 @@ class CaseSections:
 
     # ── What each fold says while it is still closed ─────────────────────
     def _assertions_summary(self) -> str:
-        gated = [row for row in self.assertions if not row.reads_model_prose]
-        ungated = len(self.assertions) - len(gated)
-        worst = min((row for row in gated if row.total), key=lambda r: r.pass_rate, default=None)
-        lowest = (
-            ""
-            if worst is None or worst.at_full
-            else _A_LOWEST.format(rate=worst.pass_rate, claim=worst.label)
-        )
+        summary = self._assertion_summary()
+        worst = self._worst_claim()
+        lowest = "" if worst is None else _A_LOWEST.format(rate=worst.pass_rate, claim=worst.label)
         return _A_SUMMARY.format(
             label=f"{self._assertions_glyph()} {SECTION_A}",
-            held=sum(1 for row in gated if row.at_full),
-            gated=len(gated),
-            ungated=_A_UNGATED.format(count=ungated) if ungated else "",
+            passed=summary.passed,
+            total=summary.total,
+            rate=summary.rate,
             lowest=lowest,
         )
 
@@ -492,15 +487,14 @@ class CaseSections:
     # ── The one line a reader sees by default ────────────────────────────
     def summary_line(self) -> str:
         """Both scores and the whole sample accounting, behind the worst glyph in the case."""
-        gated = [row for row in self.assertions if not row.reads_model_prose]
-        ungated = len(self.assertions) - len(gated)
+        summary = self._assertion_summary()
         top = self._top_feature()
         return _SUMMARY_LINE.format(
             glyph=self.glyph(),
             case_id=self.case_id,
-            held=sum(1 for row in gated if row.at_full),
-            gated=len(gated),
-            ungated=f" · {ungated} ungated" if ungated else "",
+            passed=summary.passed,
+            total=summary.total,
+            rate=summary.rate,
             lowest=self._lowest(),
             var_glyph=self._variance_glyph(),
             entropy=top.entropy if top else 0.0,
@@ -526,11 +520,20 @@ class CaseSections:
     def _top_feature(self) -> cohort.VarianceFeature | None:
         return max(self.variance.features, key=lambda f: f.entropy, default=None)
 
+    def _assertion_summary(self) -> cohort.AssertionSummary:
+        """The case's one assertion number — every check, over every sample that answered."""
+        return cohort.assertion_summary(self.assertions)
+
+    def _worst_claim(self) -> cohort.AssertionRow | None:
+        """The claim a reader should look at first, or ``None`` when every one is at full."""
+        answered = [row for row in self.assertions if row.total]
+        worst = min(answered, key=lambda row: row.pass_rate, default=None)
+        return None if worst is None or worst.at_full else worst
+
     def _lowest(self) -> str:
-        """The lowest GATED claim — an ungated one has no floor to fall below."""
-        scored = [row for row in self.assertions if row.total and not row.reads_model_prose]
-        worst = min(scored, key=lambda row: row.pass_rate, default=None)
-        if worst is None or worst.at_full:
+        """The lowest claim, named on the summary line so the number carries a subject."""
+        worst = self._worst_claim()
+        if worst is None:
             return ""
         return _LOWEST.format(glyph=assertion_glyph(worst), rate=worst.pass_rate, label=worst.label)
 
@@ -617,11 +620,8 @@ class CaseSections:
 
 
 def _assertion_row(row: cohort.AssertionRow) -> str:
-    floor = cohort.proposed_floor(row)
-    proposal = f"`{floor.value:.2f}`" if floor.lockable else f"— {floor.note}"
     return (
-        f"| {assertion_glyph(row)} | {row.label} | {row.passed}/{row.total} | "
-        f"{row.pass_rate:.2f} | {proposal} |"
+        f"| {assertion_glyph(row)} | {row.label} | {row.passed}/{row.total} | {row.pass_rate:.2f} |"
     )
 
 

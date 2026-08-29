@@ -575,15 +575,17 @@ class SpecCategory(StrEnum):
 
 
 # A claim read out of PROSE THE MODEL WROTE, as against one read out of the machine, the
-# registry or the store.  The distinction is empirical, not editorial — see ``proposed_floor``.
+# registry or the store.  It decides how a claim RENDERS and how its per-sample check is
+# anchored; it does not decide anything about gating, because assertions are not gated.
 REPLY_KIND = "reply"
 
 
 class AssertionRow(BaseModel):
     """One claim's aggregate across the cohort — the section-A row.
 
-    ``kind`` rides along because it decides whether a rate is LOCKABLE at all, and that is a
-    property of where the claim is read FROM rather than of how well it did."""
+    ``kind`` rides along because it says where the claim was read FROM, which is what anchors
+    its per-sample check; it no longer sorts claims into gated and ungated, because nothing on
+    this side is gated."""
 
     label: str
     passed: int
@@ -591,10 +593,6 @@ class AssertionRow(BaseModel):
     category: SpecCategory
     kind: str = "state"
     rationales: list[str] = Field(default_factory=list)
-
-    @property
-    def reads_model_prose(self) -> bool:
-        return self.kind == REPLY_KIND
 
     @property
     def pass_rate(self) -> float:
@@ -605,52 +603,37 @@ class AssertionRow(BaseModel):
         return self.total > 0 and self.passed == self.total
 
 
-class ProposedFloor(BaseModel):
-    """A claim's floor as it would be RECORDED, and whether it is worth recording.
+class AssertionSummary(BaseModel):
+    """Every deterministic check the case made, counted once — the case's assertion number.
 
-    A claim that already holds on every sample proposes itself as its own floor.  One that does
-    not is NOT proposed: the misses are naming work, and recording a floor underneath them
-    would bless the defect as the contract."""
+    ASSERTIONS ARE NOT GATED.  A deterministic check is a thing expected to be strictly true of
+    the run, and we expect them at 100%, so a floor under one adds nothing a reader could act
+    on: it would either sit at 1.00 and never fire, or sit below and bless the defect as the
+    contract.  What replaces it is this single reading, coloured on the ordinary scale and
+    REPORTED — nothing on the assertion side fails a run.
 
-    label: str
-    n: int
-    value: float
-    lockable: bool
-    note: str = ""
+    Counted as TOTAL CHECKS PASSED over TOTAL CHECKS — 9 claims x 15 samples = 135 — rather
+    than as a mean of per-claim rates.  While every claim shares a denominator the two are the
+    same number; they diverge the moment one does not, and the sum stays the direct reading of
+    "how many of the things that had to be true were" where the mean silently reweights a claim
+    that fewer samples answered."""
+
+    passed: int
+    total: int
+
+    @property
+    def rate(self) -> float:
+        return self.passed / self.total if self.total else NO_SPREAD
+
+    @property
+    def at_full(self) -> bool:
+        return self.total > 0 and self.passed == self.total
 
 
-def _missed_note(row: AssertionRow) -> str:
-    return f"{row.total - row.passed} of {row.total} missed — read those first"
-
-
-# Two runs of IDENTICAL code — same commit, same clean tree, same model, same upstream — moved a
-# reply-content pass rate by 3 samples of 18 while every structural claim moved by at most 1.
-# So the two halves have different noise floors, and ±3 of 18 is ±17 points: a floor tight
-# enough to catch a real regression there would flap on a re-run, and one loose enough not to
-# flap would catch nothing.  The rule is empirical and it is why ``kind`` is on the row.
-UNLOCKABLE_AT_THIS_N = "reported, not floored at this N — it reads model prose"
-
-
-def proposed_floor(row: AssertionRow) -> ProposedFloor:
-    """The floor this run PROPOSES for one claim, and whether it may be locked at all.
-
-    Two independent reasons a rate is not lockable, and the report must not blur them: the claim
-    does not hold on every sample yet (the misses are the work), or it is read out of model prose
-    at an N where the noise is wider than any useful floor."""
-    if row.reads_model_prose:
-        return ProposedFloor(
-            label=row.label,
-            n=row.total,
-            value=round(row.pass_rate, 3),
-            lockable=False,
-            note=UNLOCKABLE_AT_THIS_N,
-        )
-    return ProposedFloor(
-        label=row.label,
-        n=row.total,
-        value=round(row.pass_rate, 3),
-        lockable=row.at_full,
-        note="" if row.at_full else _missed_note(row),
+def assertion_summary(rows: Sequence[AssertionRow]) -> AssertionSummary:
+    """The case's one assertion number, over every claim and every sample that answered it."""
+    return AssertionSummary(
+        passed=sum(row.passed for row in rows), total=sum(row.total for row in rows)
     )
 
 

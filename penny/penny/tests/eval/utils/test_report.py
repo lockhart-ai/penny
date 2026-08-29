@@ -506,13 +506,12 @@ def _observation(name: str, arm: str, tools: list[str], reply: str = "ok"):
     )
 
 
-def test_a_structural_claim_proposes_a_floor_and_a_reply_claim_never_does():
-    """The assertion half splits in two, and the split is EMPIRICAL rather than editorial.
+def test_every_claim_renders_the_same_way_and_none_carries_a_floor():
+    """Assertions are DETERMINISTIC checks, so none of them is gated and none proposes a floor.
 
-    Across two runs of identical code — same commit, same model, same upstream — a
-    reply-content pass rate moved by 3 samples of 18 while every structural one moved by at most
-    1.  ±3 of 18 is ±17 points, so a floor there would either flap or catch nothing; a claim read
-    out of the machine, the registry or the store is what can carry one."""
+    A reply claim is no longer a special case: the gated/ungated split existed only to decide
+    which claims could carry a threshold, so with none to carry it renders and colours exactly
+    like a claim read out of the store."""
     rendered = report.CaseSections(
         case_id="c",
         model="m",
@@ -523,11 +522,17 @@ def test_a_structural_claim_proposes_a_floor_and_a_reply_claim_never_does():
         ),
     ).render()
 
-    assert "| state: the machine landed in learn | 3/3 | 1.00 | `1.00` |" in rendered
-    assert "| state: nothing excluded was stored | 2/3 | 0.67 | — 1 of 3 missed" in rendered
-    assert "| reply: it names what this world says | 3/3 | 1.00 | — reported, not floored" in (
-        rendered
-    ), "full marks on model prose still proposes no floor at this N"
+    assert "|  | assertion | held | rate |" in rendered, "the floor column is gone"
+    assert "proposed floor" not in rendered
+    assert "| 🟢 | state: the machine landed in learn | 3/3 | 1.00 |" in rendered
+    assert "| 🟡 | state: nothing excluded was stored | 2/3 | 0.67 |" in rendered
+    assert "| 🟢 | reply: it names what this world says | 3/3 | 1.00 |" in rendered, (
+        "a reply claim colours on its own rate like any other"
+    )
+    assert "8/9 checks · 89%" in rendered, "one reading over every check the case made"
+    assert "nothing on the assertion side fails a run" in rendered, (
+        "the report must SAY it is reported rather than enforced"
+    )
 
 
 def test_the_variance_section_reports_the_spread_and_names_the_wording_that_moved_it():
@@ -632,13 +637,11 @@ def test_a_sample_agreeing_on_one_feature_and_not_another_is_an_outlier():
 
 _MODEL = "openai/gpt-oss-20b"
 _FLOOR_NOTE = (
-    "_Floors are PROPOSED, never locked — accepting one is the code owner's act. A claim read "
-    "out of the machine, the registry or the store can carry one; a claim read out of prose the "
-    "model wrote is REPORTED and not floored at this N. That split is measured rather than a "
-    "matter of taste: across two runs of identical code — same commit, same model, same upstream "
-    "— a reply-content rate moved by 3 samples of 18 while every structural one moved by at most "
-    "1, and ±3 of 18 is ±17 points, so a floor tight enough to catch a regression would flap and "
-    "one loose enough not to would catch nothing._"
+    "_These are DETERMINISTIC checks — things expected to be strictly true of the run — so they "
+    "carry no floors and none is proposed: a threshold under something expected at 100% either "
+    "never fires, or sits below the observed rate and blesses the defect as the contract. The "
+    "reading above is REPORTED, not enforced, and nothing on the assertion side fails a run. "
+    "VARIANCE is what gates, under one-sided ceilings; a dead cohort still fails on run health._"
 )
 _CEILING_NOTE = (
     "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
@@ -720,15 +723,16 @@ def test_the_three_sections_render_whole():
 
     assert rendered == "\n\n".join(
         [
-            # The whole default view: one line, carrying the case's WORST state (⚠️ — a sample
-            # was lost) and both scores at once.
-            # GATED vs HELD: the reply claim is measured and reported, so it counts as ungated
-            # rather than as a miss — it stood at 2/3 and can carry no floor at this N.
-            "🔴 **`memory-learn-close-shape`** — assertions 1/1 gated · 1 ungated · "
+            # The whole default view: one line, carrying the case's WORST state (a sample was
+            # lost) and both readings at once.  The assertion side is ONE number over every
+            # check the case made — 5 of 6 — since none of them is gated.
+            "🔴 **`memory-learn-close-shape`** — assertions 5/6 checks 83% "
+            "(lowest 🟡 0.67 `reply: every specific value in it is sourced`) · "
             "variance ⚪ max H 0.579 `routine shape` · "
             "3 pooled + 1 excluded = 4 driven",
             report.fold(
-                "⚪ Assertions — 1 of 1 gated held · 1 ungated",
+                "🟡 Assertions — 5/6 checks · 83% · lowest 0.67 "
+                "`reply: every specific value in it is sourced`",
                 "\n\n".join(
                     [
                         # A category nobody wrote a claim for renders as a GAP, not a blank —
@@ -737,21 +741,20 @@ def test_the_three_sections_render_whole():
                         "**store**",
                         "\n".join(
                             [
-                                "|  | assertion | held | rate | proposed floor |",
-                                "|---|---|---|---|---|",
-                                "| 🟢 | state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
+                                "|  | assertion | held | rate |",
+                                "|---|---|---|---|",
+                                "| 🟢 | state: the round taught a routine | 3/3 | 1.00 |",
                             ]
                         ),
                         "**provenance**",
                         "\n".join(
                             [
-                                "|  | assertion | held | rate | proposed floor |",
-                                "|---|---|---|---|---|",
-                                # Model prose is never green: it is observed and NOT gated, and
-                                # a tick here would re-imply the floor it cannot carry.
-                                "| ⚪ | reply: every specific value in it is sourced | 2/3 | "
-                                "0.67 | — reported, not floored at this N — it reads model "
-                                "prose |",
+                                "|  | assertion | held | rate |",
+                                "|---|---|---|---|",
+                                # A reply claim is counted and coloured like every other now:
+                                # 2 of 3 is amber on the ordinary scale, not grey.
+                                "| 🟡 | reply: every specific value in it is sourced | 2/3 | "
+                                "0.67 |",
                             ]
                         ),
                         _FLOOR_NOTE,

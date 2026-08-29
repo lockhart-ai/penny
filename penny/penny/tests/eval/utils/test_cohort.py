@@ -17,18 +17,19 @@ from penny.tests.eval.utils.cohort import (
     REPLY_SPREAD,
     ROUTINE_SHAPE,
     AssertionRow,
+    AssertionSummary,
     RoutineRecord,
     SampleObservation,
     SpecCategory,
     StoredEntry,
     VarianceFeature,
+    assertion_summary,
     compare_to_ceiling,
     feature_variance,
     normalised_entropy,
     per_sample_cost,
     pool,
     proposed_ceiling,
-    proposed_floor,
     specifics,
     unsourced_specifics,
 )
@@ -226,37 +227,43 @@ def test_a_ceiling_refuses_to_be_compared_across_models_or_cohort_sizes():
     assert not other_size.comparable and "N=3" in other_size.note
 
 
-def test_an_assertion_that_did_not_hold_proposes_no_floor():
-    """Recording a floor underneath the misses would bless the defect as the contract."""
-    assert proposed_floor(
-        AssertionRow(label="held", passed=4, total=4, category=SpecCategory.STORE)
-    ).lockable
-    partial = proposed_floor(
-        AssertionRow(label="missed", passed=3, total=4, category=SpecCategory.STORE)
+def test_the_assertion_number_counts_every_check_not_every_claim():
+    """One reading over all deterministic checks, since none of them is gated.
+
+    TOTAL PASSED over TOTAL, not a mean of per-claim rates: while every claim shares a
+    denominator the two agree, and they part the moment one does not — a claim fewer samples
+    answered would otherwise weigh as heavily as one they all did."""
+    rows = [
+        AssertionRow(label="a", passed=15, total=15, category=SpecCategory.STORE),
+        AssertionRow(label="b", passed=15, total=15, category=SpecCategory.STORE),
+        AssertionRow(label="c", passed=10, total=15, category=SpecCategory.PROVENANCE),
+    ]
+    summary = assertion_summary(rows)
+    assert (summary.passed, summary.total) == (40, 45)
+    assert summary.rate == 40 / 45
+    assert not summary.at_full
+
+
+def test_a_claim_read_out_of_model_prose_is_counted_like_every_other():
+    """The gated/ungated split existed only to decide which claims could carry a floor.
+
+    With no floors it has nothing left to decide, so a reply claim is one more claim: it enters
+    the same total and colours on its own rate rather than rendering grey."""
+    prose = AssertionRow(
+        label="reply: every specific value in it is sourced",
+        passed=13,
+        total=15,
+        kind="reply",
+        category=SpecCategory.PROVENANCE,
     )
-    assert not partial.lockable and partial.note == "1 of 4 missed — read those first"
+    structural = AssertionRow(label="s", passed=15, total=15, category=SpecCategory.STORE)
+    assert assertion_summary([structural, prose]) == AssertionSummary(passed=28, total=30)
 
 
-def test_a_claim_read_out_of_model_prose_proposes_no_floor_even_at_full_marks():
-    """The assertion half has its OWN noise floor, and it is wider than the variance one.
-
-    Measured across two runs of IDENTICAL code — same commit, same clean tree, same model, same
-    upstream — a reply-content pass rate moved by 3 samples of 18 while every structural claim
-    moved by at most 1.  ±3 of 18 is ±17 points, so such a rate is REPORTED and never floored at
-    this N; and 18/18 on one run is not evidence of stability, since one of the two runs that
-    established the spread landed there itself."""
-    prose = proposed_floor(
-        AssertionRow(
-            label="reply: every specific value in it is sourced",
-            passed=4,
-            total=4,
-            kind="reply",
-            category=SpecCategory.PROVENANCE,
-        )
-    )
-    assert not prose.lockable, "full marks on model prose is still not a lockable floor"
-    assert prose.value == 1.0, "the observed rate is still reported"
-    assert prose.note == "reported, not floored at this N — it reads model prose"
+def test_an_empty_case_reads_zero_rather_than_dividing_by_nothing():
+    summary = assertion_summary([])
+    assert (summary.passed, summary.total, summary.rate) == (0, 0, 0.0)
+    assert not summary.at_full, "a case that asserted nothing has not passed everything"
 
 
 # ── Provenance ───────────────────────────────────────────────────────────────
