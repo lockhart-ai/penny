@@ -1470,8 +1470,8 @@ def _sample_turns(
     drove — so without this the transcript opened a step for a message nobody sent this
     sample, and the classifier, anchored to the first turn head, rendered under it instead of
     under the message it actually judged.  Seeded turns are context, not steps: they are in
-    the system prompt, the classifier's own slice, and the DB.  Empty ``driven`` keeps the
-    old behaviour, so a case that seeds nothing renders byte-identically.
+    the system prompt, the classifier's own slice, and the DB.  An empty ``driven`` names
+    nothing to filter against, so every user message in the rows opens a step.
 
     ``delivered`` is what Penny actually SENT.  A discarded draw is persisted whole (#1839 keeps
     the ledger honest by re-rolling on the unchanged context and logging both attempts), and the
