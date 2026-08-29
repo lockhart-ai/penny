@@ -835,7 +835,11 @@ def divergences(
 # Nothing else in the suite covers them.  Tightening the rule to catch them is what the measured
 # false-positive rate above rules out, so the miss is the bought half of that trade.
 _NUMBER = r"\d[\d,.:%$]*"
-_URL = r"https?://\S+"
+# A URL runs to the first whitespace, MINUS any sentence mark it ran into: `\S+` alone captured
+# the full stop closing the sentence, and `…/aurora-deck-2.` matches no world.  Only `.,;:!?` are
+# refused as the LAST character, so a url legitimately ending in a bracket, a slash or a dash —
+# `…/Foo_(bar)`, `…/news/` — keeps it.
+_URL = r"https?://\S*[^\s.,;:!?]"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"
 _NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
 _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
@@ -844,20 +848,45 @@ _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
 # not built across them — otherwise a clause boundary glues two sentences into one "name".
 _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 
+# ONE folding, used by every probe on both sides of every comparison.  A semantic check defeated
+# by cosmetics is a scorer bug, and two spellings of "fold the typography" drift apart: measured,
+# a reply citing the URL it was given — with U+2011 non-breaking hyphens for its dashes — read as
+# an INVENTION here while the claim next door folded that dash and agreed the value was sourced.
+#
 # The model emits whichever apostrophe its tokenizer prefers; not folding them reported `I’ve`
 # and `Brandt’s` as inventions.
 _APOSTROPHES = "’‘`´"
+# Dashes it draws instead of a hyphen — in a URL, in a name, anywhere.
+_DASHES = "‐‑‒–—−"
+# Spaces that are not the space key, including the zero-width one that glues two words together.
+_SPACES = " ​  "
+_QUOTES = (("“", '"'), ("”", '"'))
+# Markdown emphasis wrapped around a value: `**$499**` is the value `$499`.
+_DROPPED = "*"
 
 
-def _fold(text: str) -> str:
+def fold_typography(text: str) -> str:
+    """Fold the typography the model sprinkles into its output so a SEMANTIC probe is not
+    defeated by cosmetics.  A 0/N from an un-normalised probe is a scorer bug.
+
+    The ONE definition: every probe on either side of any comparison folds through here, so a
+    dash the store claim tolerates cannot be an invention to the provenance claim."""
     for mark in _APOSTROPHES:
         text = text.replace(mark, "'")
+    for dash in _DASHES:
+        text = text.replace(dash, "-")
+    for space in _SPACES:
+        text = text.replace(space, " ")
+    for source, target in _QUOTES:
+        text = text.replace(source, target)
+    for mark in _DROPPED:
+        text = text.replace(mark, "")
     return text.casefold()
 
 
 def _bare(token: str) -> str:
     """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``."""
-    folded = _fold(token)
+    folded = fold_typography(token)
     return folded[:-2] if folded.endswith("'s") else folded
 
 
@@ -901,7 +930,7 @@ def unsourced_specifics(text: str, given: str) -> list[str]:
     An empty list is the claim holding.  Matching folds apostrophes and drops possessives on
     both sides, because a value is usually said in a different shape from the one it arrived
     in — comparing raw forms reported the model's own grammar as an invention."""
-    haystack = " ".join(_bare(word) for word in _fold(given).split())
+    haystack = " ".join(_bare(word) for word in fold_typography(given).split())
     return [token for token in specifics(text) if _phrase_key(token) not in haystack]
 
 

@@ -32,6 +32,7 @@ from penny.tests.eval.utils.cohort import (
     Feature,
     SampleObservation,
     SpecCategory,
+    fold_typography,
     unsourced_specifics,
 )
 from penny.tests.eval.utils.worlds import World
@@ -306,17 +307,11 @@ def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
     return not invented, f"unsourced: {invented}"
 
 
-def _normalise(text: str) -> str:
-    """Fold the typography the model sprinkles into its output so a SEMANTIC probe is not
-    defeated by cosmetics.  A 0/N from an un-normalised probe is a scorer bug."""
-    folded = text.lower()
-    for dash in ("‐", "‑", "‒", "–", "—", "−"):
-        folded = folded.replace(dash, "-")
-    for space in ("\xa0", "​", " ", " "):
-        folded = folded.replace(space, " ")
-    for source, target in (("’", "'"), ("“", '"'), ("”", '"'), ("*", "")):
-        folded = folded.replace(source, target)
-    return folded
+# The state claims fold through the SAME definition the provenance ones do.  Two spellings of
+# one intention drift, and this pair already had: the dash folding here was missing there, so a
+# URL written with a non-breaking hyphen was tolerated by one claim and called an invention by
+# the other on the same reply.
+_normalise = fold_typography
 
 
 def assertion_rows(claims: Sequence[Claim]) -> list[AssertionRow]:

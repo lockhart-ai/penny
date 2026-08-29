@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 from penny.conversation_machine import ConversationState
-from penny.tests.eval.conftest import _phrasing_label
+from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.cohort import (
     REPLY_SPREAD,
@@ -426,3 +426,73 @@ def test_an_unframed_round_fails_the_only_claim_that_reads_the_framing():
 
     assert (claim.passed, claim.total) == (0, 1)
     assert claim.rationales == ["no round was framed, so no write could land in its container"]
+
+
+# ── Typography is folded ONCE, on both sides of every comparison ─────────────
+_GIVEN = "browse: https://faux-market.example/aurora-deck-2 says Price: $499"
+
+
+def test_a_url_written_with_a_non_breaking_hyphen_is_the_url_it_was_given():
+    """MEASURED: a sample cited the page it read, drawing its dashes as U+2011, and the probe
+    called the URL an invention — while the store claim beside it folded that same dash and
+    agreed the value was sourced. One folding now serves both."""
+    drawn = "https://faux\u2011market.example/aurora\u2011deck\u20112"
+    assert unsourced_specifics(f"saved the price from {drawn}", _GIVEN) == []
+
+
+def test_a_url_ending_a_sentence_does_not_swallow_the_full_stop():
+    """MEASURED on both of one model's misses: `\\S+` ran the sentence mark into the URL, so
+    `…/aurora-deck-2.` matched no world and a correctly cited page read as invented."""
+    assert unsourced_specifics("i read https://faux-market.example/aurora-deck-2.", _GIVEN) == []
+    assert unsourced_specifics("see https://faux-market.example/aurora-deck-2, then", _GIVEN) == []
+
+
+def test_a_url_that_legitimately_ends_in_punctuation_keeps_it():
+    """The paired over-correction guard: only `.,;:!?` are refused as the LAST character, so a
+    bracket, a slash or a dash that is genuinely part of the address survives."""
+    assert specifics("https://en.wikipedia.org/wiki/Foo_(bar)") == [
+        "https://en.wikipedia.org/wiki/Foo_(bar)"
+    ]
+    assert specifics("https://example.com/news/") == ["https://example.com/news/"]
+
+
+def test_an_invented_url_is_still_caught():
+    """The probe must not be loosened into uselessness by either fix."""
+    assert unsourced_specifics("see https://other.example/nope.", _GIVEN) == [
+        "https://other.example/nope"
+    ]
+
+
+# ── Every deterministic check is scored, counted and coloured ────────────────
+def test_no_claim_can_opt_out_of_being_scored():
+    """Deterministic checks are ALWAYS scored — there is no advisory claim on this side.
+
+    The per-sample scorer path has ``scored=False`` for spine and proc flavour; nothing
+    equivalent exists here, and this pins that a claim cannot acquire one. A claim that could
+    render without counting is a claim that could hold a case's number up while failing."""
+    world = World(name="base", pages=(), keeps=(("499",),), excludes=())
+    samples = [
+        SampleObservation(name=f"s{i}", phrasing="the ask", landed="learn", reply="x", given="x")
+        for i in range(2)
+    ]
+    cohort = Cohort("case", "m", world, samples)
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    checks = _cohort_checks(cohort)
+    assert set(checks) == {"s0", "s1"}
+    every = [check for sample_checks in checks.values() for check in sample_checks]
+    assert len(every) == 4, "both claims reach both samples"
+    assert all(check.scored for check in every), "no cohort claim is advisory"
+    assert not any(check.ignored for check in every), "no cohort claim is out of the denominator"
+
+
+def test_the_summary_counts_a_reply_claim_exactly_like_a_state_one():
+    """One reading over every check, with no claim able to sit outside it."""
+    rows = [
+        AssertionRow(label="state: x", passed=15, total=15, category=SpecCategory.STORE),
+        AssertionRow(
+            label="reply: y", passed=13, total=15, kind="reply", category=SpecCategory.PROVENANCE
+        ),
+    ]
+    assert assertion_summary(rows) == AssertionSummary(passed=28, total=30)
