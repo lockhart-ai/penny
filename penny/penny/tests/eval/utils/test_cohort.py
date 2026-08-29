@@ -19,7 +19,6 @@ from penny.tests.eval.utils.cohort import (
     REPLY_SPREAD,
     ROUTINE_SHAPE,
     AssertionRow,
-    CaseReport,
     RoutineRecord,
     SampleObservation,
     StoredEntry,
@@ -202,6 +201,22 @@ def test_an_assertion_that_did_not_hold_proposes_no_floor():
     assert not partial.lockable and partial.note == "1 of 4 missed — read those first"
 
 
+def test_a_claim_read_out_of_model_prose_proposes_no_floor_even_at_full_marks():
+    """The assertion half has its OWN noise floor, and it is wider than the variance one.
+
+    Measured across two runs of IDENTICAL code — same commit, same clean tree, same model, same
+    upstream — a reply-content pass rate moved by 3 samples of 18 while every structural claim
+    moved by at most 1.  ±3 of 18 is ±17 points, so such a rate is REPORTED and never floored at
+    this N; and 18/18 on one run is not evidence of stability, since one of the two runs that
+    established the spread landed there itself."""
+    prose = proposed_floor(
+        AssertionRow(label="reply: it names the world", passed=4, total=4, kind="reply")
+    )
+    assert not prose.lockable, "full marks on model prose is still not a lockable floor"
+    assert prose.value == 1.0, "the observed rate is still reported"
+    assert prose.note == "reported, not floored at this N — it reads model prose"
+
+
 # ── Provenance ───────────────────────────────────────────────────────────────
 def test_an_ordinary_capitalised_word_is_not_a_specific_value():
     """The measured scorer bug this rule is a correction of: counting every capital as a name
@@ -277,129 +292,6 @@ def test_cost_is_reported_per_sample_because_a_total_is_not_comparable():
         )
         is None
     )
-
-
-# ── The three-section render ─────────────────────────────────────────────────
-#
-# Whole-render, because what a reader takes a threshold from is the rendered document — and a
-# number that renders without the model and the N it was measured at is a number somebody will
-# compare across both.
-
-_CEILING_NOTE = (
-    "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
-    "Each is recorded as `(feature, model, N=3, value)` and a comparison across either "
-    "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
-    "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
-    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
-)
-_PHRASING_LEAD = (
-    "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
-    "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
-    "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
-    "pooled number above hides exactly what they are for._"
-)
-_COST_NOTE = (
-    "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
-    "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
-    "MODEL's, so a rise on a fixed prompt is a model or config change. Both ceilings are "
-    "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
-    "number rather than a measured one._"
-)
-
-
-def test_the_case_report_renders_its_three_sections_whole():
-    samples = [
-        _sample("case-1 (phrasing 1)", "phrasing 1", "browse → write"),
-        _sample("case-2 (phrasing 1)", "phrasing 1", "browse → write"),
-        _sample("case-3 (phrasing 2)", "phrasing 2", "browse → browse → write"),
-        SampleObservation(
-            name="case-4 (phrasing 2)",
-            phrasing="phrasing 2",
-            complete=False,
-            exclusion="the measured turn never ran",
-        ),
-    ]
-    rendered = CaseReport(
-        case_id="memory-learn-close-shape",
-        model=_MODEL,
-        assertions=[
-            AssertionRow(label="state: the round taught a routine", passed=3, total=3),
-            AssertionRow(label="reply: every specific value in it is sourced", passed=2, total=3),
-        ],
-        variance=pool(samples, [ROUTINE_SHAPE, REPLY_SPREAD]),
-        cost=per_sample_cost(
-            samples=4,
-            calls=48,
-            duration_ms=800_000,
-            input_tokens=160_000,
-            output_tokens=40_000,
-            reasoning_tokens=32_000,
-        ),
-    ).render()
-    assert rendered == "\n\n".join(
-        [
-            "#### `memory-learn-close-shape` — end-state assertions, variance, harness",
-            "**A. Deterministic assertions — end state only.**",
-            "\n".join(
-                [
-                    "| assertion | held | rate | proposed floor |",
-                    "|---|---|---|---|",
-                    "| state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
-                    "| reply: every specific value in it is sourced | 2/3 | 0.67 | "
-                    "— 1 of 3 missed — read those first |",
-                ]
-            ),
-            "**B. Variance — model output.**",
-            "\n".join(
-                [
-                    "| feature | distinct | modal | entropy | proposed ceiling |",
-                    "|---|---|---|---|---|",
-                    "| `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
-                    "`0.68` @ openai/gpt-oss-20b N=3 |",
-                ]
-            ),
-            _CEILING_NOTE,
-            _PHRASING_LEAD,
-            "\n".join(
-                [
-                    "| feature | phrasing | distinct | only under this wording |",
-                    "|---|---|---|---|",
-                    # BOTH wordings are flagged, and symmetrically so: each produced a value
-                    # the other did not, which is exactly the finding the pooled 0.579 hides.
-                    "| `routine shape` | phrasing 1 | 1/2 | `browse → write` |",
-                    "| `routine shape` | phrasing 2 | 1/1 | `browse → browse → write` |",
-                ]
-            ),
-            "**Cost, per sample.**",
-            "\n".join(
-                [
-                    "| tokens | observed | proposed ceiling |",
-                    "|---|---|---|",
-                    "| input tokens (ours — prompt and context) | 40,000 | "
-                    "`44,000` @ openai/gpt-oss-20b |",
-                    "| output tokens (the model's) | 10,000 | `11,000` @ openai/gpt-oss-20b |",
-                ]
-            ),
-            "Also per sample: 12.0 calls · 200s · 8,000 reasoning tokens (80% of output).",
-            _COST_NOTE,
-            "**C. Harness — samples too broken to count.**",
-            "3 pooled of 4 driven · 1 excluded",
-            "- `case-4 (phrasing 2)` — the measured turn never ran",
-        ]
-    )
-
-
-def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_table():
-    rendered = CaseReport(
-        case_id="quiet",
-        model=_MODEL,
-        variance=pool(
-            [_sample(f"s{i}", "phrasing 1", "browse → write") for i in range(3)], [ROUTINE_SHAPE]
-        ),
-    ).render()
-    assert "_No phrasing produced a value the others did not._" in rendered
-    assert "3 pooled of 3 driven · 0 excluded — every sample ran its measured turn." in rendered
-    assert "_(no assertions)_" in rendered
 
 
 def test_entropy_matches_the_shannon_definition_it_claims_to_be():

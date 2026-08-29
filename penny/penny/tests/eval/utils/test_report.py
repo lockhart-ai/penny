@@ -2,10 +2,11 @@
 
 NOT eval-marked — they drive the PURE renderer over hand-built ``SampleTranscript``s (no DB, no
 model, no git), so they run inside ``make check`` and pin every form of the iteration-6 grammar
-as a WHOLE-RENDER literal (pr-review-guide §6). Every sample folds whole under its banner now
-(uniform collapse, #1753): the clean pass with per-context system-prompt rows (#1759) + all three
-named micro-context actors (#1773), the failure with a nudge + run-close + n/a, the harness-timeout
-placeholder, the diff-mode
+as a WHOLE-RENDER literal (pr-review-guide §6). Every sample folds whole under its banner
+(uniform collapse, #1753) carrying only its OWN sequence (#1997 — a cohort's shared system prompts
+are stated once on the case document, which has its own whole-render tests below): the clean pass
+with all three named micro-context actors (#1773), the failure with a nudge + run-close + n/a, the
+harness-timeout placeholder, the diff-mode
 regressed flip with a baseline row, and an advisory check + empty thinking on a fragile pass all
 render inside a ``<details>``; plus the deterministic cell hygiene (single-copy collapsed
 truncation + escaping, #1759) and the fold/parse seam the assembler's re-normalization rides on
@@ -14,16 +15,20 @@ truncation + escaping, #1759) and the fold/parse seam the assembler's re-normali
 
 from __future__ import annotations
 
-from penny.tests.eval.utils import report
+from penny.tests.eval.utils import cohort, report
 
 
-def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
-    """A clean pass folds into one ``<details>``: its distinct per-context system prompts (#1759)
-    render as always-collapsed rows directly under the banner (main agent then each micro-context),
-    then EVERY micro-context call renders inline as its own named actor (🧩 <context> ← user turn: /
-    →, #1759/#1773) with its own thinking — the state classifier at the head of the turn it decided,
-    the browse extraction after the call that spawned it, the run-end skill labeller closing the
-    turn — and an action with no captured thinking shows ``💭 (empty)``."""
+def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> None:
+    """A clean pass folds into one ``<details>`` carrying ONLY its own sequence — the turns it was
+    given, the calls it made, what came back, what it replied (#1997).
+
+    Its system prompts are NOT here: every sample in a cohort is handed the same ones, so the case
+    document states each distinct one once rather than eighteen times.  What stays per sample is
+    what only that sample did — so EVERY micro-context call renders inline as its own named actor
+    (🧩 <context> ← user turn: / →, #1759/#1773) with its own thinking (the state classifier at
+    the head of the turn it decided, the browse extraction after the call that spawned it, the
+    run-end skill labeller closing the turn), and an action with no captured thinking shows
+    ``💭 (empty)``."""
     events = [
         report.Event(report.EventKind.USER, "deepest lake?"),
         report.Event(
@@ -74,26 +79,9 @@ def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
         events=events,
         checks=checks,
         run_close_score="2/2",
-        system_prompts=[
-            report.SystemPrompt("chat", "You are Penny.\nAnswer from sources."),
-            report.SystemPrompt("browse-extract", "You extract one value."),
-        ],
     )
     assert report.render_sample(sample) == (
         "<details><summary>sample 1 — ✅ pass · 2/2 (1.00) · 45s · 8 calls</summary>\n"
-        "\n"
-        "<details><summary>system prompt — chat (35 chars)</summary>\n"
-        "\n"
-        "You are Penny.\n"
-        "Answer from sources.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-        "<details><summary>system prompt — browse-extract (22 chars)</summary>\n"
-        "\n"
-        "You extract one value.\n"
-        "\n"
-        "</details>\n"
         "\n"
         '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
         "|---|---|---|\n"
@@ -391,96 +379,414 @@ def test_a_case_level_preamble_is_split_off_rather_than_parsed_as_a_sample() -> 
     assert report.split_case_transcript("") == ("", [])
 
 
-# ── Hoisting a case's shared system-prompt block (#1763) ────────────────────
+# ── The case document: sharing DECLARED, not discovered (#1997) ─────────────
 
 
-def _prompt_block(context: str, text: str) -> str:
-    return report.SystemPrompt(context=context, text=text).render()
+def _prompt(context: str, text: str) -> report.SystemPrompt:
+    return report.SystemPrompt(context=context, text=text)
 
 
-_SHARED = "\n".join(f"shared line {n}" for n in range(40))
+def _pairs(*rows: tuple[str, str, str]) -> list[tuple[str, report.SystemPrompt]]:
+    return [(sample, _prompt(context, text)) for sample, context, text in rows]
 
 
-def _case(name: str, *blocks: str) -> str:
-    return f"### `{name}` — fam\n\n" + "\n\nsample\n\n".join(blocks)
+def test_a_prompt_every_sample_shared_renders_once_naming_them_all():
+    """The ordinary case, and the one the whole redesign rests on: a cohort is one world and
+    one seed set, so a context's prompt is usually byte-identical across every sample.
+
+    Measured on the reference port's own 18-sample run, four of five contexts are exactly this
+    — 125,586 characters of duplicated prompt collapsing to 6,977 — and the summary says `every
+    sample` rather than listing eighteen names, because the fact worth reading is that they
+    agreed."""
+    variants = report.prompt_variants(
+        _pairs(
+            ("sample 1", "state-classifier", "pick the state"),
+            ("sample 2", "state-classifier", "pick the state"),
+            ("sample 3", "state-classifier", "pick the state"),
+        ),
+        total=3,
+    )
+
+    assert len(variants) == 1, "one distinct text is one variant, however many samples read it"
+    rendered = report.render_prompt_variants(variants)
+    assert rendered.count("pick the state") == 1, "the text renders exactly once"
+    assert "every sample" in rendered
+    assert "sample 1" not in rendered, "naming them adds nothing when they all agree"
 
 
-def test_the_shared_text_is_hoisted_and_only_the_delta_stays():
-    """A case's chat prompts differ at BOTH ends — a timestamp opens them, the
-    live self-state closes them — so the shared part is a middle, not a prefix.
-    It renders once under the case heading; each sample keeps only the lines that
-    are genuinely its own, with a marker standing where the shared text sits, so
-    the whole prompt is still reconstructable and the DIFFERENCE is what you
-    read (median ~120 bytes on a real run, against a 6.4K wall before)."""
-    a = _prompt_block("chat", f"time A\n{_SHARED}\nstate A")
-    b = _prompt_block("chat", f"time B\n{_SHARED}\nstate B")
-    hoisted = report.hoist_shared_prompt_blocks(_case("beat0", a, b))
+def test_prompts_that_differ_each_render_verbatim_naming_their_own_samples():
+    """The finding the line-diffing hid.  A `chat` prompt carries the self-state header, which
+    feeds each sample its OWN minted collection name back — so on the reference port all 18 were
+    distinct, and that is the cohort's `container name` variance showing up in the prompt.
 
-    assert report.SHARED_PROMPT_HEADING in hoisted
-    assert hoisted.count(_SHARED) == 1, "the shared text renders exactly once"
-    assert hoisted.count(report.SHARED_PROMPT_MARKER) == 2, "each sample points at it"
-    for unique in ("time A", "time B", "state A", "state B"):
-        assert unique in hoisted, f"{unique} — a sample's own text is never dropped"
+    Each distinct text renders WHOLE, so a reader opening a sample's prompt reads what the model
+    read.  The machinery this replaced rebuilt a synthetic 'shared block' no sample was ever
+    given and left every prompt reconstructable-but-not-readable."""
+    variants = report.prompt_variants(
+        _pairs(
+            ("sample 1", "chat", "you are penny\ncollection: alpha"),
+            ("sample 2", "chat", "you are penny\ncollection: beta"),
+        ),
+        total=2,
+    )
 
-
-def test_an_identical_prompt_leaves_a_pure_reference():
-    """When the shared block IS the whole prompt — a classifier run, byte-identical
-    every sample — the remainder is empty and the row is just the marker.  Same
-    mechanism, no special case."""
-    block = _prompt_block("state-classifier", _SHARED)
-    hoisted = report.hoist_shared_prompt_blocks(_case("beat0", block, block, block))
-    assert hoisted.count(_SHARED) == 1
-    assert hoisted.count(report.SHARED_PROMPT_MARKER) == 3
+    rendered = report.render_prompt_variants(variants)
+    assert len(variants) == 2
+    assert "collection: alpha" in rendered and "collection: beta" in rendered
+    assert "sample 1" in rendered and "sample 2" in rendered
+    assert rendered.count("you are penny") == 2, "each prompt is whole, never a diff"
 
 
-def test_hoisting_is_per_case_so_a_case_section_stays_self_contained():
-    """Per CASE, not per run: a case's comment has to stand alone once the
-    document is split to fit the comment cap, so each case carries its own
-    shared block even when two cases happen to share the text."""
-    block = _prompt_block("chat", f"t\n{_SHARED}\ns")
-    document = _case("beat0-one", block, block) + "\n\n" + _case("beat0-two", block, block)
-    hoisted = report.hoist_shared_prompt_blocks(document)
-    assert hoisted.count(report.SHARED_PROMPT_HEADING) == 2
-    assert hoisted.count(_SHARED) == 2, "one per case — each section stands alone"
+def test_shared_prompts_sort_ahead_of_the_ones_that_differ():
+    """A reader meets what every sample had in common before what set them apart, whatever
+    order the samples happened to deposit their prompts in."""
+    rendered = report.render_prompt_variants(
+        report.prompt_variants(
+            _pairs(
+                ("sample 1", "chat", "own text one"),
+                ("sample 2", "chat", "own text two"),
+                ("sample 1", "framer", "identical"),
+                ("sample 2", "framer", "identical"),
+            ),
+            total=2,
+        )
+    )
+    assert rendered.index("identical") < rendered.index("own text one")
 
 
-def test_shared_lines_are_taken_wherever_they_fall_not_just_the_longest_run():
-    """Every shared line hoists, not merely the longest contiguous run of them.
-    A sample that gained a line mid-prompt (it created a collection, so its
-    self-state grew) splits the shared text in two — taking only the longest run
-    left the other half inline on exactly the cases that needed it most."""
-    head = "\n".join(f"top {n}" for n in range(20))
-    tail = "\n".join(f"bottom {n}" for n in range(20))
-    a = _prompt_block("chat", f"{head}\nONLY-A\n{tail}")
-    b = _prompt_block("chat", f"{head}\n{tail}")
-    hoisted = report.hoist_shared_prompt_blocks(_case("beat0", a, b))
-
-    assert hoisted.count("top 0") == 1, "the run before the gap hoists"
-    assert hoisted.count("bottom 0") == 1, "and so does the run after it"
-    assert "ONLY-A" in hoisted, "the line that made them differ stays with its sample"
-
-
-def test_a_single_sample_and_a_tiny_overlap_are_left_alone():
-    """Nothing to share (one sample) or nothing worth sharing (a block smaller
-    than the markup that would reference it) leaves the section byte-identical —
-    the saving has to be real, which is a derived condition, not a tuned number."""
-    lone = _case("beat0", _prompt_block("chat", f"only\n{_SHARED}"))
-    assert report.hoist_shared_prompt_blocks(lone) == lone
-
-    tiny = _case("beat0", _prompt_block("chat", "a\nx"), _prompt_block("chat", "b\nx"))
-    assert report.hoist_shared_prompt_blocks(tiny) == tiny
+def test_a_sample_naming_one_context_twice_is_counted_once():
+    """A context is an ACTOR, and a sample is handed one prompt per actor — so a repeated row
+    for the same text must not make a sample look like two, which would stop a genuinely shared
+    prompt from reading as shared."""
+    variants = report.prompt_variants(
+        _pairs(
+            ("sample 1", "chat", "same"),
+            ("sample 1", "chat", "same"),
+            ("sample 2", "chat", "same"),
+        ),
+        total=2,
+    )
+    assert variants[0].samples == ["sample 1", "sample 2"]
+    assert variants[0].shared_by_all, "two samples, both accounted for"
 
 
-def test_a_single_case_run_still_hoists():
-    """A single-case report renders no `### case` heading — the assembler omits
-    it — but its samples repeat their prompt just as hard, so the whole document
-    is one section and hoisting still applies."""
-    block = _prompt_block("chat", f"t\n{_SHARED}\ns")
-    document = f"run header line\n\n{block}\n\nsample one\n\n{block}\n\nsample two"
-    hoisted = report.hoist_shared_prompt_blocks(document)
-    assert report.SHARED_PROMPT_HEADING in hoisted
-    assert hoisted.count(_SHARED) == 1
-    assert hoisted.startswith("run header line"), "the header still opens the document"
+def test_the_document_states_the_ask_the_world_and_which_samples_to_read():
+    """The whole preamble, in the order a reader needs it: the score, the one ask in its several
+    wordings, the world it was asked against, the prompts, then the map into the samples.
+
+    The map is what makes the workflow's 'read ONE sample' step actionable — the modal sample
+    and the outliers are marked, everything else folds, and nothing is dropped."""
+    document = report.render_case_document(
+        sections="SECTIONS",
+        prompts=report.prompt_variants(_pairs(("sample 1", "chat", "prompt text")), total=1),
+        phrasings=[("phrasing 1", "watch the two pages"), ("phrasing 2", "keep an eye on them")],
+        world="two pages, one signing each",
+        sample_map=[
+            (1, "phrasing 1", "modal", True),
+            (2, "phrasing 1", "typical", False),
+            (3, "phrasing 2", "outlier", True),
+        ],
+    )
+
+    assert document.startswith("SECTIONS")
+    assert "#### The ask, phrased 2 ways" in document
+    assert "watch the two pages" in document and "keep an eye on them" in document
+    assert "two pages, one signing each" in document
+    assert "**sample 1**" in document and "**sample 3**" in document, "modal + outlier stand out"
+    assert "| sample 2 | phrasing 1 | typical |" in document, "and the rest still render"
+
+
+def test_a_case_declaring_nothing_shared_renders_only_its_sections():
+    """Every part of the document is optional, so an unported case — or one driven with a single
+    wording against no declared world — is exactly its three sections and nothing else."""
+    assert report.render_case_document(sections="SECTIONS") == "SECTIONS"
+
+
+# ── The three sections (#1997) ──────────────────────────────────────────────
+
+
+def _rows(*specs: tuple[str, int, int, str]) -> list[cohort.AssertionRow]:
+    return [
+        cohort.AssertionRow(label=label, passed=passed, total=total, kind=kind)
+        for label, passed, total, kind in specs
+    ]
+
+
+def _observation(name: str, arm: str, tools: list[str], reply: str = "ok"):
+    return cohort.SampleObservation(
+        name=name, phrasing=arm, landed="learn", tool_sequence=tools, reply=reply
+    )
+
+
+def test_a_structural_claim_proposes_a_floor_and_a_reply_claim_never_does():
+    """The assertion half splits in two, and the split is EMPIRICAL rather than editorial.
+
+    Across two runs of identical code — same commit, same model, same upstream — a
+    reply-content pass rate moved by 3 samples of 18 while every structural one moved by at most
+    1.  ±3 of 18 is ±17 points, so a floor there would either flap or catch nothing; a claim read
+    out of the machine, the registry or the store is what can carry one."""
+    rendered = report.CaseSections(
+        case_id="c",
+        model="m",
+        assertions=_rows(
+            ("state: the machine landed in learn", 3, 3, "state"),
+            ("state: nothing excluded was stored", 2, 3, "state"),
+            ("reply: it names what this world says", 3, 3, "reply"),
+        ),
+    ).render()
+
+    assert "| state: the machine landed in learn | 3/3 | 1.00 | `1.00` |" in rendered
+    assert "| state: nothing excluded was stored | 2/3 | 0.67 | — 1 of 3 missed" in rendered
+    assert "| reply: it names what this world says | 3/3 | 1.00 | — reported, not floored" in (
+        rendered
+    ), "full marks on model prose still proposes no floor at this N"
+
+
+def test_the_variance_section_reports_the_spread_and_names_the_wording_that_moved_it():
+    """The pooled number is the gate; the per-phrasing rows say which wording moved it.  Only a
+    FLAGGED row renders — a wording agreeing with its neighbours is the ordinary case."""
+    samples = [
+        _observation("c-1 (phrasing 1)", "phrasing 1", ["browse"]),
+        _observation("c-2 (phrasing 1)", "phrasing 1", ["browse"]),
+        _observation("c-3 (phrasing 2)", "phrasing 2", ["browse", "browse"]),
+    ]
+    rendered = report.CaseSections(
+        case_id="c",
+        model="gpt",
+        variance=cohort.pool(samples, [cohort.TOOL_SEQUENCE]),
+    ).render()
+
+    assert "| `tool sequence` | 2 | 2/3 (0.67) |" in rendered
+    assert "@ gpt N=3" in rendered, "a ceiling names the model and the N it was measured at"
+    assert "`browse → browse`" in rendered, "the wording that produced a value no other did"
+
+
+def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
+    """Read FIRST even though it renders last: a cohort that lost half its samples makes the
+    other two sections a description of whatever survived.
+
+    The dominant class is computed from THIS cohort's own exclusions — the run-level fault tally
+    is per process and cannot say which case a fault landed in, and a second accounting of the
+    same samples is a second number to disagree with the first."""
+    dead = [
+        cohort.SampleObservation(
+            name=f"c-{n} (phrasing 1)", phrasing="phrasing 1", complete=False, exclusion="no turn"
+        )
+        for n in (2, 3)
+    ]
+    variance = cohort.pool(
+        [_observation("c-1 (phrasing 1)", "phrasing 1", ["browse"]), *dead], [cohort.TOOL_SEQUENCE]
+    )
+    rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
+
+    assert "1 pooled of 3 driven · 2 excluded" in rendered
+    assert "Dominant failure class: **no turn** (2 of 2)." in rendered
+    assert "- `c-2 (phrasing 1)` — no turn" in rendered
+    assert "- `c-3 (phrasing 1)` — no turn" in rendered
+
+
+def test_one_modal_sample_is_named_and_every_other_shape_is_an_outlier():
+    """Exactly ONE sample is modal, because the workflow asks a human to read one and naming
+    eight equally puts the choice straight back on them.  Its shape-mates fold; anything that
+    did something else opens, which is where the work is when a cohort still disagrees."""
+    samples = [
+        _observation("c-1 (a)", "a", ["browse"]),
+        _observation("c-2 (a)", "a", ["browse"]),
+        _observation("c-3 (b)", "b", ["browse", "write"]),
+        cohort.SampleObservation(name="c-4 (b)", phrasing="b", complete=False, exclusion="no turn"),
+    ]
+    standings = cohort.standings(samples, [cohort.TOOL_SEQUENCE])
+
+    assert [s.standing for s in standings] == [
+        cohort.Standing.MODAL,
+        cohort.Standing.TYPICAL,
+        cohort.Standing.OUTLIER,
+        cohort.Standing.DEAD,
+    ]
+    assert [s.worth_opening for s in standings] == [True, False, True, False]
+
+
+def test_a_sample_agreeing_on_one_feature_and_not_another_is_an_outlier():
+    """Standing reads the sample's WHOLE shape, not any single feature — a sample matching the
+    majority tool sequence while minting its own routine shape did something else, and reading
+    one feature at a time would file it under the majority and fold it away."""
+    samples = [
+        cohort.SampleObservation(
+            name="c-1 (a)",
+            phrasing="a",
+            tool_sequence=["browse"],
+            routines=[cohort.RoutineRecord(name="r", shape="browse", names_a_destination=True)],
+        ),
+        cohort.SampleObservation(
+            name="c-2 (a)",
+            phrasing="a",
+            tool_sequence=["browse"],
+            routines=[cohort.RoutineRecord(name="r", shape="other", names_a_destination=True)],
+        ),
+    ]
+    features = [cohort.TOOL_SEQUENCE, cohort.ROUTINE_SHAPE]
+    assert [s.standing for s in cohort.standings(samples, features)] == [
+        cohort.Standing.MODAL,
+        cohort.Standing.OUTLIER,
+    ]
+
+
+# ── The three sections, whole ────────────────────────────────────────────────
+#
+# Whole-render, because what a reader takes a threshold from is the rendered document — and a
+# number that renders without the model and the N it was measured at is a number somebody will
+# compare across both.
+
+_MODEL = "openai/gpt-oss-20b"
+_FLOOR_NOTE = (
+    "_Floors are PROPOSED, never locked — accepting one is the code owner's act. A claim read "
+    "out of the machine, the registry or the store can carry one; a claim read out of prose the "
+    "model wrote is REPORTED and not floored at this N. That split is measured rather than a "
+    "matter of taste: across two runs of identical code — same commit, same model, same upstream "
+    "— a reply-content rate moved by 3 samples of 18 while every structural one moved by at most "
+    "1, and ±3 of 18 is ±17 points, so a floor tight enough to catch a regression would flap and "
+    "one loose enough not to would catch nothing._"
+)
+_CEILING_NOTE = (
+    "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
+    "Each is recorded as `(feature, model, N=3, value)` and a comparison across either "
+    "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
+    "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
+    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
+)
+_PHRASING_LEAD = (
+    "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
+    "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
+    "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
+    "pooled number above hides exactly what they are for._"
+)
+_COST_NOTE = (
+    "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
+    "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
+    "MODEL's, so a rise on a fixed prompt is a model or config change. Both ceilings are "
+    "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
+    "number rather than a measured one._"
+)
+
+
+def _shaped(name: str, arm: str, shape: str) -> cohort.SampleObservation:
+    return cohort.SampleObservation(
+        name=name,
+        phrasing=arm,
+        landed="learn",
+        routines=[cohort.RoutineRecord(name="r", shape=shape, names_a_destination=True)],
+        reply=f"done, {shape}",
+    )
+
+
+def test_the_three_sections_render_whole():
+    """Every part of the case's score, in the order it is read, as one literal."""
+    samples = [
+        _shaped("case-1 (phrasing 1)", "phrasing 1", "browse → write"),
+        _shaped("case-2 (phrasing 1)", "phrasing 1", "browse → write"),
+        _shaped("case-3 (phrasing 2)", "phrasing 2", "browse → browse → write"),
+        cohort.SampleObservation(
+            name="case-4 (phrasing 2)",
+            phrasing="phrasing 2",
+            complete=False,
+            exclusion="the measured turn never ran",
+        ),
+    ]
+    rendered = report.CaseSections(
+        case_id="memory-learn-close-shape",
+        model=_MODEL,
+        assertions=[
+            cohort.AssertionRow(label="state: the round taught a routine", passed=3, total=3),
+            cohort.AssertionRow(
+                label="reply: every specific value in it is sourced",
+                passed=2,
+                total=3,
+                kind="reply",
+            ),
+        ],
+        variance=cohort.pool(samples, [cohort.ROUTINE_SHAPE, cohort.REPLY_SPREAD]),
+        cost=cohort.per_sample_cost(
+            samples=4,
+            calls=48,
+            duration_ms=800_000,
+            input_tokens=160_000,
+            output_tokens=40_000,
+            reasoning_tokens=32_000,
+        ),
+    ).render()
+
+    assert rendered == "\n\n".join(
+        [
+            "#### `memory-learn-close-shape` — end-state assertions, variance, harness",
+            "**A. Deterministic assertions — end state only.**",
+            "\n".join(
+                [
+                    "| assertion | held | rate | proposed floor |",
+                    "|---|---|---|---|",
+                    "| state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
+                    # Full marks, and STILL no floor: it reads prose the model wrote, whose
+                    # rate moves ±3 of 18 between two runs of identical code.
+                    "| reply: every specific value in it is sourced | 2/3 | 0.67 | "
+                    "— reported, not floored at this N — it reads model prose |",
+                ]
+            ),
+            _FLOOR_NOTE,
+            "**B. Variance — model output.**",
+            "\n".join(
+                [
+                    "| feature | distinct | modal | entropy | proposed ceiling |",
+                    "|---|---|---|---|---|",
+                    "| `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
+                    "`0.68` @ openai/gpt-oss-20b N=3 |",
+                ]
+            ),
+            _CEILING_NOTE,
+            _PHRASING_LEAD,
+            "\n".join(
+                [
+                    "| feature | phrasing | distinct | only under this wording |",
+                    "|---|---|---|---|",
+                    # BOTH wordings are flagged, and symmetrically so: each produced a value
+                    # the other did not, which is exactly the finding the pooled 0.579 hides.
+                    "| `routine shape` | phrasing 1 | 1/2 | `browse → write` |",
+                    "| `routine shape` | phrasing 2 | 1/1 | `browse → browse → write` |",
+                ]
+            ),
+            "Reply text over 3 pairs — cosine mean 0.000 min 0.000 · containment mean 1.000",
+            "**Cost, per sample.**",
+            "\n".join(
+                [
+                    "| tokens | observed | proposed ceiling |",
+                    "|---|---|---|",
+                    "| input tokens (ours — prompt and context) | 40,000 | "
+                    "`44,000` @ openai/gpt-oss-20b |",
+                    "| output tokens (the model's) | 10,000 | `11,000` @ openai/gpt-oss-20b |",
+                ]
+            ),
+            "Also per sample: 12.0 calls · 200s · 8,000 reasoning tokens (80% of output).",
+            _COST_NOTE,
+            "**C. Harness — samples too broken to count.**",
+            "3 pooled of 4 driven · 1 excluded",
+            "Dominant failure class: **the measured turn never ran** (1 of 1).",
+            "- `case-4 (phrasing 2)` — the measured turn never ran",
+        ]
+    )
+
+
+def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_table():
+    """The quiet path: nothing excluded, no phrasing outlier, no assertions declared — each
+    absence stated in words rather than left as a table with no rows."""
+    rendered = report.CaseSections(
+        case_id="quiet",
+        model=_MODEL,
+        variance=cohort.pool(
+            [_shaped(f"s{i}", "phrasing 1", "browse → write") for i in range(3)],
+            [cohort.ROUTINE_SHAPE],
+        ),
+    ).render()
+    assert "_No phrasing produced a value the others did not._" in rendered
+    assert "3 pooled of 3 driven · 0 excluded — every sample ran its measured turn." in rendered
+    assert "_(no assertions)_" in rendered
 
 
 # ── Internal seams for an oversized sample fold (#1917) ──────────────────────

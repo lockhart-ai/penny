@@ -2012,14 +2012,31 @@ def _build_transcript(
     turn_of_check = {id(check): turn for turn, checks in placed.items() for check in checks}
     checks = _build_check_views(result, turn_of_check, turn_to_event, baseline, case_id)
     passed_checks, total = _scored_counts(result)
+    _record_case_prompts(case_id, sample_index, _system_prompts(rows))
     return report.build_sample(
         number=sample_index + 1,
         banner=_sample_banner(db, result, evaluated=True),
         events=events,
         checks=checks,
         run_close_score=f"{passed_checks}/{total}",
-        system_prompts=_system_prompts(rows),
     )
+
+
+# Every sample's system prompts, held per case until the case document renders them.
+#
+# A cohort's samples are handed the SAME prompts, so the document states each distinct one once
+# rather than eighteen times (#1997) — but "distinct" is a fact about the whole case, and a
+# sample can only be read while its own database is live.  So each sample deposits what it was
+# given, keyed by the name the report knows it by, and the grouping happens at case close.
+_case_prompts: dict[str, list[tuple[str, report.SystemPrompt]]] = {}
+
+
+def _record_case_prompts(
+    case_id: str, sample_index: int, prompts: Sequence[report.SystemPrompt]
+) -> None:
+    """Hold one sample's system prompts until its case closes."""
+    label = f"{report.SAMPLE_ROW} {sample_index + 1}"
+    _case_prompts.setdefault(case_id, []).extend((label, prompt) for prompt in prompts)
 
 
 # Rendered sample blocks, held per case and written in SAMPLE order when the case closes.
@@ -2459,6 +2476,7 @@ def _finish_case(
     intended: int,
 ) -> None:
     """Record the case's artifact, print its perf line, and apply its gate."""
+    _record_unported_prompts(case_id, driven)
     eval_artifacts.record_case(
         case_id=case_id,
         family=family,
@@ -2475,6 +2493,23 @@ def _finish_case(
         min_pass_rate,
         intended=intended,
         gate_pathology_excluded=gate_pathology_excluded,
+    )
+
+
+def _record_unported_prompts(case_id: str, driven: int) -> None:
+    """A case with no cohort still states its system prompts once. No-op off-report.
+
+    A ported case has already popped its prompts into the case document by the time this runs,
+    so this writes only for a case that never built one — which is what keeps the shared-once
+    rendering true of the whole suite rather than only of the part that has been ported."""
+    prompts = _case_prompts.pop(case_id, [])
+    if not prompts:
+        return
+    eval_artifacts.record_case_report(
+        case_id,
+        report.render_case_document(
+            sections="", prompts=report.prompt_variants(prompts, total=driven)
+        ),
     )
 
 
@@ -2505,24 +2540,54 @@ def _record_case_report(
     perf: _Perf,
     driven: int,
 ) -> None:
-    """Assemble and write the case's three-section report. No-op off-report."""
+    """Assemble and write the case's document — its three sections, then everything its samples
+    SHARE: the one ask in its several wordings, the one world, the system prompts, and the map
+    saying which samples to open. No-op off-report.
+
+    Assembled HERE rather than in the report layer because this is where the three halves meet:
+    the claims come from the case body, the pooled variance from the observations, and the
+    prompts from what each sample was handed while its database was live."""
+    variance = eval_cohort.pool(samples, cohort.features, world=cohort.world.name)
+    sections = report.CaseSections(
+        case_id=cohort.case_id,
+        model=cohort.model,
+        assertions=eval_assertions.assertion_rows(cohort.claims),
+        variance=variance,
+        cost=eval_cohort.per_sample_cost(
+            samples=driven,
+            calls=perf.calls,
+            duration_ms=perf.duration_ms,
+            input_tokens=perf.input_tokens,
+            output_tokens=perf.output_tokens,
+            reasoning_tokens=perf.reasoning_tokens,
+        ),
+    ).render()
+    prompts = _case_prompts.pop(cohort.case_id, [])
     eval_artifacts.record_case_report(
         cohort.case_id,
-        eval_cohort.CaseReport(
-            case_id=cohort.case_id,
-            model=cohort.model,
-            assertions=eval_assertions.assertion_rows(cohort.claims),
-            variance=eval_cohort.pool(samples, cohort.features, world=cohort.world.name),
-            cost=eval_cohort.per_sample_cost(
-                samples=driven,
-                calls=perf.calls,
-                duration_ms=perf.duration_ms,
-                input_tokens=perf.input_tokens,
-                output_tokens=perf.output_tokens,
-                reasoning_tokens=perf.reasoning_tokens,
-            ),
-        ).render(),
+        report.render_case_document(
+            sections=sections,
+            prompts=report.prompt_variants(prompts, total=len(samples)),
+            phrasings=cohort.phrasings,
+            world=cohort.world.render(),
+            sample_map=_sample_map(samples, cohort.features, cohort.world.name),
+        ),
     )
+
+
+def _sample_map(
+    samples: Sequence[eval_cohort.SampleObservation],
+    features: Sequence[eval_cohort.Feature],
+    world: str,
+) -> list[tuple[int, str, str, bool]]:
+    """Each sample's row in the reading map, numbered as the report numbers its folds.
+
+    The numbering is the sample's POSITION in the drive, which is what ``sample N`` counts and
+    what a sample's own name carries — so a row and the fold it points at cannot disagree."""
+    return [
+        (index + 1, standing.phrasing, standing.standing.value, standing.worth_opening)
+        for index, standing in enumerate(eval_cohort.standings(samples, features, world))
+    ]
 
 
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
@@ -2803,6 +2868,10 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             model=model or _reporting_model(),
             world=world if world is not None else _NO_WORLD,
             samples=[r.observation for r in results if r.observation is not None],
+            phrasings=[
+                (_phrasing_label(phrasings, index * per_phrasing, per_phrasing, world_name), text)
+                for index, text in enumerate(phrasings)
+            ],
         )
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
@@ -3960,7 +4029,6 @@ def _write_classifier_report(
             events=events,
             checks=checks,
             run_close_score=f"{passed_checks}/{total}",
-            system_prompts=_system_prompts(rows),
         )
     _record_sample_block(case_id, sample_index, transcript)
 

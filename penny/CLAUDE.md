@@ -998,11 +998,12 @@ above **every** model action (thinking for every call now, not only failed turns
 none), and an `actual` row per transcript event (`🔧`/`📥`/`🤖`/`👤 nudge`/`🧩 <context> ← user
 turn:` in / `🧩 <context> →` out — **every** micro-context sub-model is an official actor with its
 USER turn explicitly labelled, #1759/#1773) with the check verdict on its anchor row. Whole-run /
-missing-action checks fall to a trailing **run-close** table. **Per-context system-prompt rows
-(#1759):** directly under the banner, one always-collapsed `<details>` per DISTINCT system prompt
-among the sample's calls (main agent + each micro-context flavour, deduped by text) —
-`system prompt — <agent> (<n> chars)` summary, verbatim inside — so a micro-context's real system
-prompt is visible, not mistaken for its user turn. An over-long `actual` cell collapses into a
+missing-action checks fall to a trailing **run-close** table. **A sample renders only its OWN
+sequence (#1997)** — the turns it was given, the calls it made, what came back, what it replied.
+Its per-context system prompts moved OFF the sample and onto the case document, which states each
+distinct one once (see the case-document entry below); a micro-context's real system prompt is
+still visible and still never mistaken for its user turn, just not restated under every sample.
+An over-long `actual` cell collapses into a
 **single** `<details>` (first line + `… (<n> chars)` summary, full text inside — one copy, no
 visible head; #1759). Each sample opens with a **banner**
 (`verdict · k/n (score) · fragile · cause · duration · calls`); **every** sample block folds whole
@@ -1041,28 +1042,54 @@ those anchors, so a fourth customer is a row in `MICRO_CONTEXT_PLACEMENTS`, not 
 left unmatched renders at the end rather than vanishing (collapsed never means dropped, #1753).
 Deterministic — proven by whole-render tests over fixture promptlog rows, no GPU.
 
-**A case's shared system prompt hoists under its heading (#1763).** A run's samples each carry a
-system prompt, and restating every one inline made a chat beat's assembled comment 525K against
-GitHub's 64K comment cap — 11 comments for one 4-case run. `report.hoist_shared_prompt_blocks`
-(pure, applied by the assembler over the FINISHED document) lifts, per CASE and per CONTEXT, every
-line shared by ALL that group's prompts into one collapsed `#### Shared system prompt` block under
-the case heading; each sample keeps only the lines genuinely its own, with a
-`_[shared block — see **Shared system prompt** above]_` marker standing where the shared text sits.
-**Every shared LINE, not just the longest contiguous run** — a case's prompts differ at both ends (a
-timestamp opens them, the live self-state closes them) and often mid-prompt too (a sample that
-created a collection gained a line), and taking only the longest run left half the prompt inline on
-exactly the cases that needed it most. Hoisting is gated on a DERIVED condition (`_worth_hoisting`:
-the block stored once plus a marker per use must beat N copies), never a tuned threshold. Per case,
-not per run, so a case section stays self-contained once the document is split to fit the cap; a
-single-case run (no `### case` heading) treats the whole document as one section. **Nothing is
-dropped and nothing is summarised** — every prompt is reconstructable, verbatim, one click from
-where it applies (collapsed-never-means-removed, #1753/#1759; the failure this replaced was
-*selecting which samples to post*, which is that rule broken in a new costume). Measured on the
-beat-0 run: 525K → 266K, 11 comments → 6, and per-sample unique prompt text a **median of 125
-bytes** (max 1,329) against a 6.4K wall — so the sample's row now shows the DIFFERENCE, which is
-what a reader is actually checking. The floor is the rest: ~172K of thinking blocks and transcript
-tables, one per sample and all distinct, so ~3 comments is the minimum for a 32-sample run no matter
-what happens to prompts. Whole-render tests in `test_report.py`.
+**A case reports THREE SECTIONS, and states what its samples SHARE exactly once (#1997).**
+`report.py` was organised around `Verdict` — one pass/fail per check, rendered per sample as
+`expected`/`actual` rows — a shape that cannot express variance at all and reads the harness
+bucket as behavioural failure. Under #1994 a case reports **assertions** (pass counts against a
+floor), **variance** (entropy and textual spread against a ceiling) and **harness** (samples too
+broken to count), so `report.CaseSections` renders those three as the document's structure. It
+RENDERS and never computes: the numbers, the proposed floors and ceilings and the standings are
+all `cohort.py`'s, so a reader comparing document against data compares one arithmetic to one
+rendering. Two claims the sections make carefully: a **floor is proposed only for a STRUCTURAL
+claim** — one read out of the machine, the registry or the store — because across two runs of
+identical code a reply-content rate moved ±3 of 18 against ±1 for a structural one, so a
+reply-content claim is *reported and never floored at this N* even at full marks
+(`cohort.AssertionRow.kind` carries the distinction, `proposed_floor` enforces it); and the
+harness section names its **dominant failure class**, computed from the cohort's own exclusions
+rather than from `run_health`'s run-level tally, which is per process and cannot say which case a
+fault landed in.
+
+Around the sections, `report.render_case_document` states what every sample shares: **the ask in
+its K wordings** (listed once — a sample names which it used), **the seeded world**
+(`World.render`), **the system prompts**, and a **map saying which samples to open**. That map is
+what makes #1994's "read ONE sample" step actionable: `cohort.standings` marks exactly ONE sample
+MODAL (the first carrying the majority shape — naming eight equally puts the choice back on the
+reader), every sample whose whole shape differs an OUTLIER, the rest TYPICAL, and a dead sample
+DEAD. Standing reads the sample's WHOLE shape across every structural feature, so a sample
+agreeing on tool sequence while minting its own routine shape is an outlier rather than being
+folded away. Nothing is dropped — every sample still folds under its banner, one click deep.
+
+**Sharing is DECLARED, not discovered — the line-diffing machinery is GONE.**
+`hoist_shared_prompt_blocks` / `shared_lines` / `unique_lines` / `shared_block_text` /
+`_worth_hoisting` computed which LINES happened to be common across a case's prompts and rendered
+each sample as a diff against a synthesized block, because samples could not be assumed to share
+anything. Under the pooled cohort they do — one world, one seed set, K wordings of one ask — so
+prompts are grouped by **exact text** (`report.prompt_variants`) and each distinct one renders
+ONCE, verbatim, naming the samples that read it. Measured on the reference port's own 18-sample
+run: four of five contexts (state-classifier, skill-framer, skill-namer, browse-extract) are
+byte-identical across every sample, 125,586 characters collapsing to 6,977. The fifth is the
+finding the diff was hiding — `chat` had **18 distinct texts**, differing in 3–4 lines of 83,
+because the self-state header feeds each sample its own minted collection and routine names back
+into its prompt. That is the cohort's `container name` variance showing up in the prompt, and the
+old marker (`_[shared block — see above]_`) rendered it as an absence. The rule this keeps that a
+diff could not: **every prompt renders verbatim**, so a reader opening one reads what the model
+read rather than a reconstruction. A sample's own block therefore carries only its own sequence —
+inputs, tool calls, tool results, reply — and `SampleTranscript` no longer has a `system_prompts`
+field at all; `conftest` deposits each sample's prompts into the case accumulator while its
+database is live, and the case document groups them at close (a case with no cohort still gets
+its prompts stated once, so the rule holds across the whole suite and not only the ported part).
+`comment_split.py` is untouched — GitHub's cap has not moved, and a sample fold is still the only
+legal seam.
 
 **Durable local artifact home (#1734).** "Stays local" means the **primary checkout's
 `data/eval-artifacts/`**, not the running worktree's `data/`. The `./data` bind mount is relative
@@ -1106,7 +1133,7 @@ same `-v <primary>/data/eval-artifacts:/penny/eval-artifacts` mount from any wor
 **Past the 64K comment cap, a run posts as MANY comments (#1808).** GitHub refuses a comment body over
 65,536 characters, and `eval-report` had no split path — so an over-cap run could not be posted at all by
 the supported route (`GraphQL: Body is too long … (addComment)`), and one 8-sample chat beat assembles to
-~290K *after* #1763's hoisting. The recipe now stages the assembled body into `<run-dir>/comment/body.md`
+~290K even after the shared prompts were stated once. The recipe now stages the assembled body into `<run-dir>/comment/body.md`
 and cuts it with the pure, plain-tested `penny/tests/eval/utils/comment_split.py` (`sample_fold_segments` /
 `partition_on_sample_folds` / `render_parts` / `split_run_comment` + the two guards + a CLI): **the only
 legal seam is a sample-fold boundary** (`report.SAMPLE_BLOCK_START`, single-sourced with the assembler's

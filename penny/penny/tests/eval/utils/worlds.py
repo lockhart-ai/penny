@@ -46,6 +46,37 @@ class World(BaseModel):
         will carry, and what a reply drawing on another world must not."""
         return tuple(token for source in self.keeps for token in source)
 
+    def render(self) -> str:
+        """This world as a READER meets it: each page verbatim, then what the ask makes of it.
+
+        Every sample in a cohort is answered against these same pages, so the report states them
+        once beside the score rather than leaving a reader to infer the ground from transcripts.
+        The keep/exclude lists come last because they are the world read through the ASK — which
+        is what an assertion about a stored fact is actually comparing against."""
+        if not self.pages:
+            return ""
+        pages = "\n\n".join(
+            f"<details><summary>page matching `{page.match}` "
+            f"({len(page.text):,} chars)</summary>\n\n```\n{page.text}\n```\n\n</details>"
+            for page in self.pages
+        )
+        keeps = " · ".join(
+            f"source {index + 1}: {_tokens(source)}" for index, source in enumerate(self.keeps)
+        )
+        return "\n\n".join(
+            part
+            for part in (
+                pages,
+                f"**Must be kept** — {keeps}" if keeps else "",
+                f"**Must NOT be kept** — {_tokens(self.excludes)}" if self.excludes else "",
+            )
+            if part
+        )
+
+
+def _tokens(tokens: tuple[str, ...]) -> str:
+    return ", ".join(f"`{token}`" for token in tokens)
+
 
 # ── The two-team news world, and its control ─────────────────────────────────
 #

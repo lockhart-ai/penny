@@ -25,10 +25,12 @@ verdicts on their own ``expected`` rows in a trailing ``run-close`` table.
 
 from __future__ import annotations
 
-import difflib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from penny.tests.eval.utils import cohort
 
 # ── Actor glyphs (the transcript-event vocabulary) ───────────────────────────
 ACTOR_USER = "👤"
@@ -226,158 +228,361 @@ class SystemPrompt:
         return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
 
 
-# ── Hoisting the SHARED part of a case's system prompts (#1763) ─────────────
-SHARED_PROMPT_HEADING = "#### Shared system prompt"
-SHARED_PROMPT_MARKER = "_[shared block — see **Shared system prompt** above]_"
-_CASE_HEADING = re.compile(r"^### `[^`]+` — .*$", re.MULTILINE)
-_SYSTEM_PROMPT_BLOCK = re.compile(
-    rf"<details><summary>{re.escape(SYSTEM_PROMPT_LABEL)} — "
-    r"(?P<context>[^(]+) \((?P<size>\d+) chars\)</summary>\n\n(?P<text>.*?)\n\n</details>",
-    re.DOTALL,
+# ── The three sections a case reports ────────────────────────────────────────
+#
+# A case no longer reports "a list of checks that passed or failed".  It reports three things,
+# and they are three different KINDS of claim that must never be mixed: whether Penny was
+# CORRECT (A), whether she was STABLE (B), and whether the run can be believed at all (C).
+#
+# C is read FIRST even though it renders last, which is why its counts also head section B: a
+# cohort that lost half its samples makes the other two a description of whatever survived.
+#
+# Everything here RENDERS; nothing computes.  The numbers, the proposed floors and ceilings and
+# the standings are the cohort's (``cohort.py``), so a reader comparing the document against the
+# data is comparing one arithmetic against one rendering rather than two arithmetics.
+
+SECTION_A = "**A. Deterministic assertions — end state only.**"
+SECTION_B = "**B. Variance — model output.**"
+SECTION_C = "**C. Harness — samples too broken to count.**"
+
+_CASE_SECTIONS_HEADING = "#### `{case_id}` — end-state assertions, variance, harness"
+_ASSERTION_HEAD = "| assertion | held | rate | proposed floor |\n|---|---|---|---|"
+_VARIANCE_HEAD = (
+    "| feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|"
 )
+_PHRASING_HEAD = "| feature | phrasing | distinct | only under this wording |\n|---|---|---|---|"
+_COST_HEAD = "| tokens | observed | proposed ceiling |\n|---|---|---|"
+
+_NO_ASSERTIONS = "_(no assertions)_"
+_NOTHING_POOLED = "_(nothing pooled — see the harness section)_"
+_NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
+_COST_LEAD = "**Cost, per sample.**"
+
+_FLOOR_NOTE = (
+    "_Floors are PROPOSED, never locked — accepting one is the code owner's act. A claim read "
+    "out of the machine, the registry or the store can carry one; a claim read out of prose the "
+    "model wrote is REPORTED and not floored at this N. That split is measured rather than a "
+    "matter of taste: across two runs of identical code — same commit, same model, same upstream "
+    "— a reply-content rate moved by 3 samples of 18 while every structural one moved by at most "
+    "1, and ±3 of 18 is ±17 points, so a floor tight enough to catch a regression would flap and "
+    "one loose enough not to would catch nothing._"
+)
+_CEILING_NOTE = (
+    "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
+    "Each is recorded as `(feature, model, N={n}, value)` and a comparison across either "
+    "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
+    "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
+    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
+)
+_PHRASING_LEAD = (
+    "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
+    "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
+    "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
+    "pooled number above hides exactly what they are for._"
+)
+_COST_NOTE = (
+    "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
+    "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
+    "MODEL's, so a rise on a fixed prompt is a model or config change. Both ceilings are "
+    "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
+    "number rather than a measured one._"
+)
+_HARNESS_CLEAN = "{counts} — every sample ran its measured turn."
+_HARNESS_DOMINANT = "Dominant failure class: **{reason}** ({count} of {total})."
 
 
-def shared_lines(texts: list[str]) -> set[int]:
-    """Indices (into the FIRST text's lines) of every line present, in order, in
-    all the others — not just the longest contiguous run of them.
+@dataclass(frozen=True)
+class CaseSections:
+    """One case's three sections, rendered from what the cohort computed.
 
-    A case's chat prompts differ at both ends (a timestamp opens them, the live
-    self-state closes them) and often in the MIDDLE too, where a sample that
-    created a collection gains a line the others lack.  Taking only the longest
-    run left half the prompt inline on exactly those cases; taking every shared
-    line leaves each sample a median of ~120 bytes of genuinely its own."""
-    if len(texts) < 2:
-        return set()
-    base = texts[0].split("\n")
-    keep = set(range(len(base)))
-    for other in texts[1:]:
-        matched: set[int] = set()
-        for start, _, size in difflib.SequenceMatcher(
-            None, base, other.split("\n"), autojunk=False
-        ).get_matching_blocks():
-            matched.update(range(start, start + size))
-        keep &= matched
-        if not keep:
-            return set()
-    return keep
+    ``model`` rides along because a proposed ceiling is meaningless without it — two models
+    differ several-fold on the same feature, so a ceiling that did not name which one it was
+    measured on could be read against the other and answer a question nobody asked."""
 
+    case_id: str
+    model: str = ""
+    assertions: Sequence[cohort.AssertionRow] = ()
+    variance: cohort.CohortVariance = field(default_factory=cohort.CohortVariance)
+    cost: cohort.SampleCost | None = None
 
-def shared_block_text(texts: list[str]) -> str:
-    """The shared lines rendered in order as one block — what gets hoisted."""
-    base = texts[0].split("\n")
-    return "\n".join(base[index] for index in sorted(shared_lines(texts)))
-
-
-def unique_lines(text: str, shared: frozenset[str]) -> str:
-    """One sample's own lines — everything not in the hoisted block, in order,
-    with a marker standing where the shared text sits so the whole prompt is
-    still reconstructable rather than merely summarised."""
-    out: list[str] = []
-    for line in text.split("\n"):
-        if line in shared:
-            if not out or out[-1] != SHARED_PROMPT_MARKER:
-                out.append(SHARED_PROMPT_MARKER)
-        else:
-            out.append(line)
-    return "\n".join(out)
-
-
-def _worth_hoisting(block: str, count: int) -> bool:
-    """Hoist only when it actually shrinks the document: the block is stored once
-    plus a marker per use, against ``count`` copies today.  A derived condition,
-    not a tuned threshold — a tiny shared block loses to its own markup."""
-    return len(block) * count > len(block) + count * len(SHARED_PROMPT_MARKER)
-
-
-def hoist_shared_prompt_blocks(document: str) -> str:
-    """Render each case's shared system-prompt text ONCE under its heading, and
-    leave every sample only the part that is genuinely its own (#1763).
-
-    A chat beat's samples each carry a ~6K system prompt of which the great
-    majority is identical, and restating it per sample made one 4-case run 525K
-    against GitHub's 64K comment cap.  Per case, per context, the shared middle
-    is lifted to a collapsed block under the case heading; each sample keeps its
-    own head and tail with a marker where the shared part belongs.
-
-    **Nothing is dropped and nothing is summarised** — every prompt is still
-    reconstructable, verbatim, one click from where it applies (the
-    collapsed-never-means-removed rule; the failure this replaces was *selecting*
-    which samples to post, which is that rule broken in a new costume).  When the
-    shared block is the WHOLE prompt (a classifier run, byte-identical every
-    sample) the per-sample remainder is empty and the row is a pure reference —
-    the same mechanism, no special case.
-
-    Per CASE rather than per run, so a case's comment stays self-contained when
-    the document is split to fit the cap."""
-    # A single-case run renders no `### case` heading (the assembler omits it), so
-    # there is one section: the whole document.  Hoisting is about repetition
-    # across SAMPLES — a run with one case repeats its prompt just as hard.
-    bounds = [m.start() for m in _CASE_HEADING.finditer(document)]
-    spans = (
-        list(zip([0, *bounds], [*bounds, len(document)], strict=True))
-        if bounds
-        else [(0, len(document))]
-    )
-    return "".join(_hoist_one_case(document[a:b]) for a, b in spans)
-
-
-def _hoist_one_case(section: str) -> str:
-    """One case section with its shared prompt blocks lifted under its heading."""
-    groups: dict[str, list[str]] = {}
-    for match in _SYSTEM_PROMPT_BLOCK.finditer(section):
-        groups.setdefault(match.group("context").strip(), []).append(match.group("text"))
-    shared = {
-        context: block
-        for context, texts in groups.items()
-        if (block := shared_block_text(texts)) and _worth_hoisting(block, len(texts))
-    }
-    if not shared:
-        return section
-
-    def replace(match: re.Match[str]) -> str:
-        context = match.group("context").strip()
-        block = shared.get(context)
-        text = match.group("text")
-        if block is None:
-            return match.group(0)
-        body = unique_lines(text, frozenset(block.split("\n")))
-        own = len(body.replace(SHARED_PROMPT_MARKER, ""))
-        summary = (
-            f"{SYSTEM_PROMPT_LABEL} — {context} ({len(text)} chars; {own} unique to this sample)"
+    def render(self) -> str:
+        """The summary method: the three sections, in the order they are read."""
+        return "\n\n".join(
+            [
+                _CASE_SECTIONS_HEADING.format(case_id=self.case_id),
+                self._assertions(),
+                self._variance(),
+                self._harness(),
+            ]
         )
-        return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
 
-    rewritten = _SYSTEM_PROMPT_BLOCK.sub(replace, section)
-    hoisted = "\n\n".join(
-        f"{SHARED_PROMPT_HEADING} — {context}\n\n"
-        f"<details><summary>{len(block)} chars, shared by every sample below</summary>"
-        f"\n\n{block}\n\n</details>"
-        for context, block in shared.items()
+    # ── A ────────────────────────────────────────────────────────────────
+    def _assertions(self) -> str:
+        if not self.assertions:
+            return f"{SECTION_A}\n\n{_NO_ASSERTIONS}"
+        rows = "\n".join(_assertion_row(row) for row in self.assertions)
+        return f"{SECTION_A}\n\n{_ASSERTION_HEAD}\n{rows}\n\n{_FLOOR_NOTE}"
+
+    # ── B ────────────────────────────────────────────────────────────────
+    def _variance(self) -> str:
+        if not self.variance.features:
+            return f"{SECTION_B}\n\n{_NOTHING_POOLED}"
+        rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
+        parts = [
+            f"{SECTION_B}\n\n{_VARIANCE_HEAD}\n{rows}",
+            _CEILING_NOTE.format(n=self.variance.pooled),
+            self._phrasing_rows(),
+        ]
+        if self.variance.text is not None:
+            parts.append(_text_spread_line(self.variance.text))
+        if self.cost is not None:
+            parts.append(_cost_block(self.cost, self.model))
+        return "\n\n".join(parts)
+
+    def _phrasing_rows(self) -> str:
+        """Only the FLAGGED rows render: an unflagged phrasing agreeing with its neighbours is
+        the ordinary case and says nothing a reader needs."""
+        flagged = [
+            (feature.name, row)
+            for feature in self.variance.features
+            for row in feature.phrasings
+            if row.flagged
+        ]
+        if not flagged:
+            return _NO_PHRASING_OUTLIERS
+        rows = "\n".join(
+            f"| `{name}` | {row.arm} | {row.distinct}/{row.n} | {_value_list(row.only_here)} |"
+            for name, row in flagged
+        )
+        return f"{_PHRASING_LEAD}\n\n{_PHRASING_HEAD}\n{rows}"
+
+    # ── C ────────────────────────────────────────────────────────────────
+    def _harness(self) -> str:
+        excluded = self.variance.excluded
+        counts = (
+            f"{self.variance.pooled} pooled of {self.variance.driven} driven · "
+            f"{len(excluded)} excluded"
+        )
+        if not excluded:
+            return f"{SECTION_C}\n\n{_HARNESS_CLEAN.format(counts=counts)}"
+        named = "\n".join(f"- `{sample.name}` — {sample.reason}" for sample in excluded)
+        return f"{SECTION_C}\n\n{counts}\n\n{self._dominant()}\n\n{named}"
+
+    def _dominant(self) -> str:
+        """What cost this case its samples, named — so a reader meets the class before the list.
+
+        A per-CASE view of the same event the run-health block counts per RUN; it is computed
+        from this cohort's own exclusions rather than from that tally, which cannot say which
+        case a fault landed in."""
+        dominant = self.variance.dominant_exclusion
+        if dominant is None:
+            return ""
+        reason, count = dominant
+        return _HARNESS_DOMINANT.format(
+            reason=reason, count=count, total=len(self.variance.excluded)
+        )
+
+
+def _assertion_row(row: cohort.AssertionRow) -> str:
+    floor = cohort.proposed_floor(row)
+    proposal = f"`{floor.value:.2f}`" if floor.lockable else f"— {floor.note}"
+    return f"| {row.label} | {row.passed}/{row.total} | {row.pass_rate:.2f} | {proposal} |"
+
+
+def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
+    ceiling = cohort.proposed_ceiling(feature, model)
+    return (
+        f"| `{feature.name}` | {feature.distinct} | {feature.modal}/{feature.n} "
+        f"({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
+        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n} |"
     )
-    heading_end = rewritten.index("\n") if "\n" in rewritten else len(rewritten)
-    return f"{rewritten[:heading_end]}\n\n{hoisted}{rewritten[heading_end:]}"
+
+
+def _cost_block(cost: cohort.SampleCost, model: str) -> str:
+    rows = "\n".join(
+        f"| {label} | {observed:,.0f} | "
+        f"`{observed * (1 + cohort.COST_CEILING_MARGIN):,.0f}` @ {model} |"
+        for label, observed in (
+            ("input tokens (ours — prompt and context)", cost.input_tokens),
+            ("output tokens (the model's)", cost.output_tokens),
+        )
+    )
+    tail = (
+        f"Also per sample: {cost.calls:,.1f} calls · {cost.seconds:,.0f}s · "
+        f"{cost.reasoning_tokens:,.0f} reasoning tokens ({cost.reasoning_share:.0%} of output)."
+    )
+    return f"{_COST_LEAD}\n\n{_COST_HEAD}\n{rows}\n\n{tail}\n\n{_COST_NOTE}"
+
+
+def _text_spread_line(text: cohort.TextSpread) -> str:
+    return (
+        f"Reply text over {text.pairs} pairs — cosine mean {text.cosine_mean:.3f} "
+        f"min {text.cosine_min:.3f} · containment mean {text.containment_mean:.3f}"
+    )
+
+
+def _value_list(values: Sequence[str]) -> str:
+    return ", ".join(f"`{value}`" for value in values) if values else "—"
+
+
+# ── The case document: what every sample shares, stated ONCE ─────────────────
+#
+# Sharing is DECLARED, not discovered.  What stood here computed which LINES happened to be
+# common across a case's prompts and rendered each sample as a diff against them — machinery
+# that existed because samples could not be assumed to share anything.  Under the pooled cohort
+# they do: one world, one seed set, K wordings of one ask.
+#
+# So prompts are grouped by EXACT TEXT and each distinct one renders once, verbatim, naming the
+# samples that used it.  Measured on the reference port's own 18-sample run, four of the five
+# contexts are byte-identical across every sample (state-classifier, skill-framer, skill-namer
+# and browse-extract: 125,586 characters collapsing to 6,977), so declared sharing costs nothing
+# where sharing is real.  The fifth is the finding: `chat` has 18 distinct texts because the
+# self-state header feeds each sample its OWN minted collection and routine names back into its
+# prompt — which is the cohort's `container name` feature, showing up in the prompt.  A line
+# diff hid exactly that behind a marker, and it is the kind of thing a reader must see.
+#
+# The rule this keeps that the diff could not: every prompt renders VERBATIM.  A reader opening
+# a sample's prompt reads what the model read, never a reconstruction assembled from two places.
+
+PROMPT_VARIANTS_HEADING = "#### System prompts, shared once"
+PHRASINGS_HEADING = "#### The ask, phrased {count} ways"
+SAMPLE_MAP_HEADING = "#### Which samples to read"
+
+_ALL_SAMPLES = "every sample"
+_PROMPT_SUMMARY = "{label} — {chars:,} chars · {used}"
+_SAMPLE_MAP_HEAD = "| sample | phrasing | standing |\n|---|---|---|"
+_PHRASING_ROW = "**{label}** — {text}"
+_NO_PHRASINGS = "_(the ask was put one way)_"
+_SEEDED_WORLD_HEADING = "#### The seeded world"
+
+
+@dataclass(frozen=True)
+class PromptVariant:
+    """One DISTINCT system prompt, and the samples that were given it.
+
+    Distinct by exact text: two samples share a prompt when they were handed the same bytes,
+    which is a fact about the run rather than a judgement about how similar it is."""
+
+    context: str
+    text: str
+    samples: list[str]
+    total: int = 0
+
+    def render(self) -> str:
+        used = _ALL_SAMPLES if self.shared_by_all else ", ".join(self.samples)
+        summary = _PROMPT_SUMMARY.format(label=self.context, chars=len(self.text), used=used)
+        return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
+
+    @property
+    def shared_by_all(self) -> bool:
+        """Whether every sample in the cohort was handed this exact text."""
+        return self.total > 0 and len(self.samples) == self.total
+
+
+def prompt_variants(prompts: Sequence[tuple[str, SystemPrompt]], total: int) -> list[PromptVariant]:
+    """Group ``(sample, prompt)`` pairs into one variant per distinct ``(context, text)``.
+
+    Order is first-seen so a re-render reads identically, and a sample naming the same context
+    twice counts once — a context is an actor, and a sample is handed one prompt per actor."""
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for sample, prompt in prompts:
+        seen = grouped.setdefault((prompt.context, prompt.text), [])
+        if sample not in seen:
+            seen.append(sample)
+    return [
+        PromptVariant(context=context, text=text, samples=samples, total=total)
+        for (context, text), samples in grouped.items()
+    ]
+
+
+def render_prompt_variants(variants: Sequence[PromptVariant]) -> str:
+    """Every distinct prompt, once — the contexts every sample shared first."""
+    if not variants:
+        return ""
+    ordered = sorted(variants, key=lambda v: (not v.shared_by_all, v.context))
+    blocks = "\n\n".join(variant.render() for variant in ordered)
+    return f"{PROMPT_VARIANTS_HEADING}\n\n{blocks}"
+
+
+def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
+    """The K wordings of the one ask, listed once.
+
+    A sample names which it used in the map below rather than reprinting it, which is the whole
+    point of listing them here: the wordings are a COVERAGE mechanism, so they belong together
+    where they can be read against each other."""
+    if not phrasings:
+        return ""
+    heading = PHRASINGS_HEADING.format(count=len(phrasings))
+    if len(phrasings) == 1:
+        label, text = phrasings[0]
+        return f"{heading}\n\n{_PHRASING_ROW.format(label=label, text=text)}"
+    rows = "\n\n".join(_PHRASING_ROW.format(label=label, text=text) for label, text in phrasings)
+    return f"{heading}\n\n{rows}"
+
+
+def render_seeded_world(world: str) -> str:
+    """The world every sample was answered against, stated once."""
+    return f"{_SEEDED_WORLD_HEADING}\n\n{world}" if world.strip() else ""
+
+
+def render_sample_map(rows: Sequence[tuple[int, str, str, bool]]) -> str:
+    """Which sample to open, and why — ``(number, phrasing, standing, worth_opening)``.
+
+    The reader is asked to read ONE sample once the cohort is consistent, so the document hands
+    them the modal one rather than making them choose, and names the outliers beside it because
+    a cohort that still disagrees is one whose work is in exactly those samples."""
+    if not rows:
+        return ""
+    body = "\n".join(
+        f"| {'**' if open_it else ''}{SAMPLE_ROW} {number}{'**' if open_it else ''} "
+        f"| {phrasing} | {standing} |"
+        for number, phrasing, standing, open_it in rows
+    )
+    return f"{SAMPLE_MAP_HEADING}\n\n{_SAMPLE_MAP_HEAD}\n{body}"
+
+
+def render_case_document(
+    *,
+    sections: str,
+    prompts: Sequence[PromptVariant] = (),
+    phrasings: Sequence[tuple[str, str]] = (),
+    world: str = "",
+    sample_map: Sequence[tuple[int, str, str, bool]] = (),
+) -> str:
+    """A case's whole preamble: its three sections, then everything its samples SHARE.
+
+    The order is what a reader needs first — the score, then the one ask and the one world it
+    was asked against, then the map into the samples below.  Every part is optional, so a case
+    that declares none of them renders exactly its sections and nothing else."""
+    parts = [
+        sections,
+        render_phrasings(phrasings),
+        render_seeded_world(world),
+        render_prompt_variants(prompts),
+        render_sample_map(sample_map),
+    ]
+    return "\n\n".join(part for part in parts if part)
 
 
 # ── The whole sample ─────────────────────────────────────────────────────────
 @dataclass
 class SampleTranscript:
-    """One sample rendered end-to-end: the banner, its system-prompt rows, step tables, and the
-    run-close table.
+    """One sample rendered end-to-end: the banner, its step tables, and the run-close table.
 
     ``banner`` is the full verdict tail after ``sample N — `` (verdict · k/n (score) · cause ·
-    fragile · duration · calls). ``system_prompts`` (#1759) are the distinct per-context system
-    prompts, rendered directly under the banner. **Every** sample block folds whole under its banner
-    summary — the uniform-collapse default (#1753), superseding the old density-follows-failure
-    split; the visible skeleton is the banner rows, everything below one click deep. ``placeholder``
-    (F2) replaces the body for a sample that produced no completed turn (a harness timeout), so the
-    report never silently omits it."""
+    fragile · duration · calls).  A sample renders only its OWN sequence — the turns it was given,
+    the calls it made, what came back, what it replied.  Its system prompts are not here: every
+    sample in a cohort is handed the same ones, so they are stated once on the case document
+    rather than restated eighteen times.  **Every** sample block folds whole under its banner
+    summary — the uniform-collapse default (#1753); the visible skeleton is the banner rows,
+    everything below one click deep.  ``placeholder`` (F2) replaces the body for a sample that
+    produced no completed turn (a harness timeout), so the report never silently omits it."""
 
     number: int
     banner: str
     steps: list[Step]
     run_close: RunClose | None = None
     placeholder: str | None = None
-    system_prompts: list[SystemPrompt] = field(default_factory=list)
 
     def render(self) -> str:
         return fold_sample(self.number, self.banner, self._body())
@@ -385,8 +590,7 @@ class SampleTranscript:
     def _body(self) -> str:
         if self.placeholder is not None:
             return self.placeholder
-        blocks = [prompt.render() for prompt in self.system_prompts]
-        blocks += [step.render() for step in self.steps]
+        blocks = [step.render() for step in self.steps]
         if self.run_close is not None:
             blocks.append(self.run_close.render())
         return "\n\n".join(blocks)
@@ -434,7 +638,7 @@ SAMPLE_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d
 # byte for byte (asserted by ``test_report.py``).  And the guard still REFUSES what cannot
 # be split losslessly: when one STEP alone exceeds the cap there is no seam inside it, and
 # ``comment_split.unsplittable_reason`` says so rather than posting something cut.
-_BODY_BLOCK_START = rf"(?:\| step |\| {RUN_CLOSE_LABEL} |<details><summary>{SYSTEM_PROMPT_LABEL} )"
+_BODY_BLOCK_START = rf"(?:\| step |\| {RUN_CLOSE_LABEL} )"
 _BODY_BOUNDARY = re.compile(rf"\n\n(?={_BODY_BLOCK_START})")
 
 # What a part's banner gains so a reader knows the sample continues.  It rides INSIDE the
@@ -734,14 +938,12 @@ def build_sample(
     checks: list[CheckView],
     run_close_score: str,
     placeholder: str | None = None,
-    system_prompts: list[SystemPrompt] | None = None,
 ) -> SampleTranscript:
     """Assemble a sample from its extracted events + resolved checks (the pure builder).
 
     Steps segment on ``USER`` events. A check anchored to an event renders its ``expected`` row
     atop that event's step and its verdict on that event's ``actual`` row; a check with no anchor
-    event falls to the run-close table. A nudge event renders ``⚠ recovery event``.
-    ``system_prompts`` (#1759) render as collapsed rows directly under the banner. Every sample
+    event falls to the run-close table. A nudge event renders ``⚠ recovery event``. Every sample
     folds whole at render (#1753) — the builder no longer decides fold-or-not."""
     if placeholder is not None:
         return SampleTranscript(number, banner, [], placeholder=placeholder)
@@ -754,9 +956,7 @@ def build_sample(
             by_event.setdefault(check.anchor_index, []).append(check)
     steps = _build_steps(events, by_event)
     run_close = _build_run_close(run_close_checks, run_close_score) if run_close_checks else None
-    return SampleTranscript(
-        number, banner, steps, run_close=run_close, system_prompts=system_prompts or []
-    )
+    return SampleTranscript(number, banner, steps, run_close=run_close)
 
 
 def _build_steps(events: list[Event], by_event: dict[int, list[CheckView]]) -> list[Step]:

@@ -57,12 +57,21 @@ class Cohort:
     """
 
     def __init__(
-        self, case_id: str, model: str, world: World, samples: list[SampleObservation]
+        self,
+        case_id: str,
+        model: str,
+        world: World,
+        samples: list[SampleObservation],
+        phrasings: Sequence[tuple[str, str]] = (),
     ) -> None:
         self.case_id = case_id
         self.model = model
         self.world = world
         self.samples = samples
+        # The wordings this cohort was driven with, as ``(label, text)``.  A sample carries only
+        # its phrasing's LABEL, which is what the report's rows and its own name are keyed on —
+        # so the texts live here, listed once, rather than reprinted under every sample.
+        self.phrasings = list(phrasings)
         self.features: list[Feature] = []
         # A claim is DECLARED here and answered at report time, over every sample the case
         # drove.  Declaring rather than answering immediately is what lets a control adopted
@@ -291,12 +300,17 @@ def _normalise(text: str) -> str:
 
 
 def assertion_rows(claims: Sequence[Claim]) -> list[AssertionRow]:
-    """Project claims onto the report's section-A rows."""
+    """Project claims onto the report's section-A rows.
+
+    ``kind`` travels with the row because it decides whether the rate is LOCKABLE at all — a
+    claim read out of model prose has a noise floor several times wider than a structural one —
+    and dropping it here is what would silently offer a floor nothing could hold to."""
     return [
         AssertionRow(
             label=claim.label,
             passed=claim.passed,
             total=claim.total,
+            kind=claim.kind,
             rationales=claim.rationales,
         )
         for claim in claims

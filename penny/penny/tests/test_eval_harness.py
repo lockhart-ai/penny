@@ -132,6 +132,7 @@ from penny.tests.eval.conftest import (
     SampleResult,
     _assert_threshold,
     _bail_fired_check,
+    _case_prompts,
     _cycle_recovered_check,
     _flush_sample_blocks,
     _frame_attributes_to,
@@ -2216,38 +2217,30 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
     # micro-contexts now render as named actors at the anchor their placement declares: the
     # classifier at the head of the turn it decided, the browse extraction after the call that
     # spawned it (unchanged FIFO pairing), the labeller closing the turn.  Whole-render literal.
+    #
+    # #1997: the sample carries only its OWN sequence.  Each actor's SYSTEM PROMPT is deposited
+    # for the case document, which states each distinct one once instead of restating four of
+    # them under every sample — so the second half of this test is that the extraction still
+    # captures all four, at the one moment the sample's database is live to be read.
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     db = _make_db(tmp_path)
     _three_micro_context_ledger(db)
     result = SampleResult.graded([Check("browsed", ok=True, anchor="browse(", kind="spine")])
+    _case_prompts.pop("micro-actors", None)
     _write_sample_report(db, "micro-actors", 0, result=result, reply=_REPLY_TEXT)
+
+    assert [
+        (sample, prompt.context, prompt.text) for sample, prompt in _case_prompts["micro-actors"]
+    ] == [
+        ("sample 1", "state-classifier", "Pick one state."),
+        ("sample 1", "", "You are Penny."),
+        ("sample 1", "browse-extract", "Extract one value."),
+        ("sample 1", "skill-namer", "Name the routine."),
+    ], "every actor's prompt reaches the case document, none render under the sample"
+
     assert _sample_report_text(tmp_path, "micro-actors") == (
         "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 0s · 5 calls</summary>\n"
-        "\n"
-        "<details><summary>system prompt — state-classifier (15 chars)</summary>\n"
-        "\n"
-        "Pick one state.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-        "<details><summary>system prompt —  (14 chars)</summary>\n"
-        "\n"
-        "You are Penny.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-        "<details><summary>system prompt — browse-extract (18 chars)</summary>\n"
-        "\n"
-        "Extract one value.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-        "<details><summary>system prompt — skill-namer (17 chars)</summary>\n"
-        "\n"
-        "Name the routine.\n"
-        "\n"
-        "</details>\n"
         "\n"
         '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
         "|---|---|---|\n"

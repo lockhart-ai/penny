@@ -38,6 +38,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
@@ -245,6 +246,20 @@ class CohortVariance(BaseModel):
     excluded: list[ExcludedSample] = Field(default_factory=list)
     features: list[VarianceFeature] = Field(default_factory=list)
     text: TextSpread | None = None
+
+    @property
+    def dominant_exclusion(self) -> tuple[str, int] | None:
+        """The reason that cost this case the most samples, or ``None`` when it lost none.
+
+        Read off the exclusions this cohort ALREADY named rather than from the run-level fault
+        tally: that tally is per PROCESS and cannot say which case a fault landed in, and a
+        second accounting of the same samples is a second number to disagree with the first.
+        Ties break on the reason so a re-render reads identically."""
+        if not self.excluded:
+            return None
+        counts = Counter(sample.reason for sample in self.excluded)
+        reason, count = max(counts.items(), key=lambda item: (item[1], item[0]))
+        return (reason, count)
 
 
 class RecordedCeiling(BaseModel):
@@ -476,14 +491,32 @@ def per_sample_cost(
     )
 
 
-# ── The case's own three-section report ──────────────────────────────────────
+# ── What a case's three sections are computed FROM ───────────────────────────
+#
+# The numbers live here; the document that renders them is ``report.py``.  The split is the
+# one the fan-out depends on: a case's arithmetic is written once and every future port
+# inherits it, while how a reader meets it is free to change without touching a single case.
+
+# A claim read out of PROSE THE MODEL WROTE, as against one read out of the machine, the
+# registry or the store.  The distinction is empirical, not editorial — see ``proposed_floor``.
+REPLY_KIND = "reply"
+
+
 class AssertionRow(BaseModel):
-    """One claim's aggregate across the cohort — the section-A row."""
+    """One claim's aggregate across the cohort — the section-A row.
+
+    ``kind`` rides along because it decides whether a rate is LOCKABLE at all, and that is a
+    property of where the claim is read FROM rather than of how well it did."""
 
     label: str
     passed: int
     total: int
+    kind: str = "state"
     rationales: list[str] = Field(default_factory=list)
+
+    @property
+    def reads_model_prose(self) -> bool:
+        return self.kind == REPLY_KIND
 
     @property
     def pass_rate(self) -> float:
@@ -512,7 +545,28 @@ def _missed_note(row: AssertionRow) -> str:
     return f"{row.total - row.passed} of {row.total} missed — read those first"
 
 
+# Two runs of IDENTICAL code — same commit, same clean tree, same model, same upstream — moved a
+# reply-content pass rate by 3 samples of 18 while every structural claim moved by at most 1.
+# So the two halves have different noise floors, and ±3 of 18 is ±17 points: a floor tight
+# enough to catch a real regression there would flap on a re-run, and one loose enough not to
+# flap would catch nothing.  The rule is empirical and it is why ``kind`` is on the row.
+UNLOCKABLE_AT_THIS_N = "reported, not floored at this N — it reads model prose"
+
+
 def proposed_floor(row: AssertionRow) -> ProposedFloor:
+    """The floor this run PROPOSES for one claim, and whether it may be locked at all.
+
+    Two independent reasons a rate is not lockable, and the report must not blur them: the claim
+    does not hold on every sample yet (the misses are the work), or it is read out of model prose
+    at an N where the noise is wider than any useful floor."""
+    if row.reads_model_prose:
+        return ProposedFloor(
+            label=row.label,
+            n=row.total,
+            value=round(row.pass_rate, 3),
+            lockable=False,
+            note=UNLOCKABLE_AT_THIS_N,
+        )
     return ProposedFloor(
         label=row.label,
         n=row.total,
@@ -522,150 +576,87 @@ def proposed_floor(row: AssertionRow) -> ProposedFloor:
     )
 
 
-class CaseReport(BaseModel):
-    """One case's whole result: what was asserted, what was measured, what was thrown out.
+# ── Which samples a reader should open ───────────────────────────────────────
+#
+# The workflow has a human read ONE sample once the cohort is consistent, and that reading is
+# sound precisely BECAUSE the samples agree.  So the document hands them the right one rather
+# than making them choose — and when the cohort is still variant, the outliers are where the
+# work is.
 
-    Three different KINDS of claim, never mixed.  A reader who wants to know whether Penny is
-    correct reads A; one who wants to know whether she is stable reads B; one who wants to know
-    whether the run can be believed at all reads C — and C is read FIRST, because a cohort that
-    lost half its samples makes the other two a description of whatever survived."""
 
-    case_id: str
-    model: str = ""
-    assertions: list[AssertionRow] = Field(default_factory=list)
-    variance: CohortVariance = Field(default_factory=CohortVariance)
-    cost: SampleCost | None = None
+class Standing(StrEnum):
+    """What one sample is FOR, to a reader deciding where to look."""
 
-    def render(self) -> str:
-        """The summary method: the three sections, in the order they are read."""
-        return "\n\n".join(
-            [
-                f"#### `{self.case_id}` — end-state assertions, variance, harness",
-                self._assertions_section(),
-                self._variance_section(),
-                self._harness_section(),
-            ]
+    MODAL = "modal"
+    OUTLIER = "outlier"
+    TYPICAL = "typical"
+    DEAD = "dead"
+
+
+class SampleStanding(BaseModel):
+    """One sample's place in the cohort: which wording it ran, and whether to open it."""
+
+    name: str
+    phrasing: str
+    standing: Standing
+    shape: str
+
+    @property
+    def worth_opening(self) -> bool:
+        """The modal sample to read, and every sample that did something else."""
+        return self.standing in (Standing.MODAL, Standing.OUTLIER)
+
+
+def sample_shape(sample: SampleObservation, features: Sequence[Feature]) -> str:
+    """One sample's whole measured shape — every structural feature's value at once.
+
+    The shape, not any single feature, is what makes a sample typical or not: a sample agreeing
+    on tool sequence while inventing its own routine shape is an outlier, and reading one
+    feature at a time would file it under the majority."""
+    return " · ".join(feature.read(sample) for feature in features if feature is not REPLY_SPREAD)
+
+
+def standings(
+    samples: Sequence[SampleObservation],
+    features: Sequence[Feature],
+    world: str = BASE_WORLD,
+) -> list[SampleStanding]:
+    """Each sample's standing, in the order the samples were driven.
+
+    Exactly ONE sample is modal — the first to carry the majority shape — because the workflow
+    asks a human to read one, and naming eight equally would put the choice straight back on
+    them.  Its shape-mates are typical and fold; everything that did something else is an
+    outlier and opens.  A dead sample is neither: it has no shape to be typical of, and is the
+    harness section's business rather than a reading recommendation."""
+    pooled = [s for s in samples if s.complete and s.world == world]
+    shapes = Counter(sample_shape(s, features) for s in pooled)
+    modal_shape = shapes.most_common(1)[0][0] if shapes else ""
+    seen_modal = False
+    out: list[SampleStanding] = []
+    for sample in samples:
+        if not (sample.complete and sample.world == world):
+            out.append(
+                SampleStanding(
+                    name=sample.name,
+                    phrasing=sample.phrasing,
+                    standing=Standing.DEAD,
+                    shape="",
+                )
+            )
+            continue
+        shape = sample_shape(sample, features)
+        if shape != modal_shape:
+            standing = Standing.OUTLIER
+        elif seen_modal:
+            standing = Standing.TYPICAL
+        else:
+            standing, seen_modal = Standing.MODAL, True
+        out.append(
+            SampleStanding(
+                name=sample.name, phrasing=sample.phrasing, standing=standing, shape=shape
+            )
         )
-
-    def _assertions_section(self) -> str:
-        if not self.assertions:
-            return f"{_SECTION_A}\n\n_(no assertions)_"
-        rows = "\n".join(_assertion_row(row) for row in self.assertions)
-        return f"{_SECTION_A}\n\n{_ASSERTION_HEAD}\n{rows}"
-
-    def _variance_section(self) -> str:
-        if not self.variance.features:
-            return f"{_SECTION_B}\n\n_(nothing pooled — see the harness section)_"
-        rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
-        note = _CEILING_NOTE.format(n=self.variance.pooled)
-        parts = [f"{_SECTION_B}\n\n{_VARIANCE_HEAD}\n{rows}", note, self._phrasing_block()]
-        if self.variance.text is not None:
-            parts.append(_text_line(self.variance.text))
-        if self.cost is not None:
-            parts.append(_cost_block(self.cost, self.model))
-        return "\n\n".join(parts)
-
-    def _phrasing_block(self) -> str:
-        """Only the FLAGGED rows render: an unflagged phrasing agreeing with its neighbours is
-        the ordinary case and says nothing a reader needs."""
-        flagged = [
-            (feature.name, row)
-            for feature in self.variance.features
-            for row in feature.phrasings
-            if row.flagged
-        ]
-        if not flagged:
-            return _NO_PHRASING_OUTLIERS
-        rows = "\n".join(
-            f"| `{name}` | {row.arm} | {row.distinct}/{row.n} | {_values(row.only_here)} |"
-            for name, row in flagged
-        )
-        return f"{_PHRASING_LEAD}\n\n{_PHRASING_HEAD}\n{rows}"
-
-    def _harness_section(self) -> str:
-        excluded = self.variance.excluded
-        counts = (
-            f"{self.variance.pooled} pooled of {self.variance.driven} driven · "
-            f"{len(excluded)} excluded"
-        )
-        if not excluded:
-            return f"{_SECTION_C}\n\n{counts} — every sample ran its measured turn."
-        named = "\n".join(f"- `{s.name}` — {s.reason}" for s in excluded)
-        return f"{_SECTION_C}\n\n{counts}\n\n{named}"
-
-
-_SECTION_A = "**A. Deterministic assertions — end state only.**"
-_SECTION_B = "**B. Variance — model output.**"
-_SECTION_C = "**C. Harness — samples too broken to count.**"
-_ASSERTION_HEAD = "| assertion | held | rate | proposed floor |\n|---|---|---|---|"
-_VARIANCE_HEAD = (
-    "| feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|"
-)
-_PHRASING_HEAD = "| feature | phrasing | distinct | only under this wording |\n|---|---|---|---|"
-_PHRASING_LEAD = (
-    "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
-    "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
-    "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
-    "pooled number above hides exactly what they are for._"
-)
-_NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
-_CEILING_NOTE = (
-    "_Ceilings are PROPOSED, not locked, and are one-sided — only a rise is a regression. "
-    "Each is recorded as `(feature, model, N={n}, value)` and a comparison across either "
-    "qualifier is REFUSED: normalised entropy is biased upward at small N (the same behaviour "
-    "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
-    "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
-)
-_COST_LEAD = "**Cost, per sample.**"
-_COST_HEAD = "| tokens | observed | proposed ceiling |\n|---|---|---|"
-_COST_NOTE = (
-    "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
-    "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
-    "MODEL's, so a rise on a fixed prompt is a model or config change. Both ceilings are "
-    "one-sided, per model, and PROPOSED — and unlike the variance margin this band is a round "
-    "number rather than a measured one._"
-)
-
-
-def _assertion_row(row: AssertionRow) -> str:
-    floor = proposed_floor(row)
-    proposal = f"`{floor.value:.2f}`" if floor.lockable else f"— {floor.note}"
-    return f"| {row.label} | {row.passed}/{row.total} | {row.pass_rate:.2f} | {proposal} |"
-
-
-def _variance_row(feature: VarianceFeature, model: str) -> str:
-    ceiling = proposed_ceiling(feature, model)
-    return (
-        f"| `{feature.name}` | {feature.distinct} | {feature.modal}/{feature.n} "
-        f"({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
-        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n} |"
-    )
-
-
-def _cost_block(cost: SampleCost, model: str) -> str:
-    rows = "\n".join(
-        f"| {label} | {observed:,.0f} | `{observed * (1 + COST_CEILING_MARGIN):,.0f}` @ {model} |"
-        for label, observed in (
-            ("input tokens (ours — prompt and context)", cost.input_tokens),
-            ("output tokens (the model's)", cost.output_tokens),
-        )
-    )
-    tail = (
-        f"Also per sample: {cost.calls:,.1f} calls · {cost.seconds:,.0f}s · "
-        f"{cost.reasoning_tokens:,.0f} reasoning tokens ({cost.reasoning_share:.0%} of output)."
-    )
-    return f"{_COST_LEAD}\n\n{_COST_HEAD}\n{rows}\n\n{tail}\n\n{_COST_NOTE}"
-
-
-def _text_line(text: TextSpread) -> str:
-    return (
-        f"Reply text over {text.pairs} pairs — cosine mean {text.cosine_mean:.3f} "
-        f"min {text.cosine_min:.3f} · containment mean {text.containment_mean:.3f}"
-    )
-
-
-def _values(values: Sequence[str]) -> str:
-    return ", ".join(f"`{value}`" for value in values) if values else "—"
+    return out
 
 
 # ── Provenance: does a specific value trace to something the model was given? ──

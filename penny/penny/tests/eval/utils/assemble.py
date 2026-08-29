@@ -4,7 +4,8 @@ postable PR comment — the durable record of the iteration.
 The per-run artifacts and per-case report blocks all exist after a ``make eval`` run —
 ``manifest.json`` + ``results.jsonl`` (``artifacts.py``) and one ``<case_id>.md``
 transcript per case (``conftest.py``'s ``_write_sample_report``, now the iteration-6
-transcript-integrated blocks rendered by ``report.py``) — but no step composes them into
+transcript-integrated blocks rendered by ``report.py``, under the case document its own
+three sections and shared prompts render into) — but no step composes them into
 the ONE markdown document the format spec (``docs/eval-report-format.md``) specifies. This
 module is that step.
 
@@ -78,7 +79,11 @@ def assemble_run_comment(report_dir: Path) -> str:
     header, one section per case (heading only when multi-case), and the local-artifacts footer.
 
     EVERY sample block folds whole under its banner — collapsed by default, its full body always a
-    click away, identical to the on-disk ``.md`` (#1753/#1759, the one and only rendering)."""
+    click away, identical to the on-disk ``.md`` (#1753/#1759, the one and only rendering).
+
+    A case's preamble — its three sections plus everything its samples share — is carried through
+    verbatim from the ``.md``, so the document the assembler posts and the one on disk are one
+    rendering rather than two that can disagree."""
     manifest = load_manifest(report_dir)
     artifacts = load_case_artifacts(report_dir)
     # The flips index reads the run's DURABLE baseline reference (recorded in the manifest at eval
@@ -90,12 +95,11 @@ def assemble_run_comment(report_dir: Path) -> str:
     sections = [render_run_header(manifest, artifacts, baseline)]
     sections += [_case_section(report_dir, manifest, artifact, multi) for artifact in artifacts]
     sections.append(render_footer(report_dir))
-    # A case's samples each carry a ~6K system prompt that is mostly the same text,
-    # and restating it per sample made one 4-case run 525K against a 64K comment cap
-    # (#1763).  Lift each case's shared block under its heading; samples keep only
-    # what is genuinely theirs.  Nothing is dropped — every prompt stays
-    # reconstructable, verbatim, one click from where it applies.
-    return report.hoist_shared_prompt_blocks(SECTION_SEPARATOR.join(sections)) + "\n"
+    # Nothing is lifted here any more (#1997): a case states its shared system prompts ONCE on
+    # its own document, at the moment they are read off the run, so the assembler composes
+    # sections that are already deduplicated rather than diffing finished markdown to discover
+    # what they had in common.
+    return SECTION_SEPARATOR.join(sections) + "\n"
 
 
 # ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──
