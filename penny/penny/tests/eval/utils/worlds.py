@@ -36,6 +36,19 @@ class World(BaseModel):
 
     ``excludes`` are tokens that appear ONLY on a line the ask rules out, which is what makes a
     stored exclusion a read rather than a matter of taste.
+
+    ``answers`` is ``keeps``' REPLY-SIDE counterpart, and it asks the other question.  ``keeps``
+    is soundness about the store — did anything from this page get written.  ``answers`` is
+    COMPLETENESS about the reply — is the thing the ask asked for actually in it.  Nothing else
+    in the design asks that: a reply carrying no values at all passes every provenance claim
+    vacuously, because there is nothing in it to be unsourced.
+
+    ALL of them must appear, where ``keeps`` needs any one token per source — the two are
+    different quantifiers because they answer different questions.  Tokens are chosen to be
+    invariant under the model's own formatting, so the claim reads the VALUE and not its
+    rendering; where a figure is grouped differently by different models, the token is the part
+    they share.  An empty tuple makes no claim, which is right for an ask that has no answer to
+    state — a correction, say, rather than a question.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -44,6 +57,7 @@ class World(BaseModel):
     pages: tuple[CannedPage, ...]
     keeps: tuple[tuple[str, ...], ...]
     excludes: tuple[str, ...]
+    answers: tuple[str, ...] = ()
 
     @property
     def says(self) -> str:
@@ -213,9 +227,17 @@ DEEPEST_LAKE_PHRASINGS = (
     "i'm curious — what lake has the greatest depth of any lake?",
 )
 
+# `keeps` is empty because the turn answers a question and stores nothing, so a keeps set
+# would state a contract the ask never made.  `answers` is the question the REPLY has to
+# answer, and it is not that contract read twice: the page's own figure is what says the
+# answer came off the page rather than out of the model, which is the whole behaviour these
+# cases are named for.  `642` rather than `1,642` because the models group the digits three
+# different ways in observed replies — `1,642`, `1642` and `1 642` — and the bare group is
+# the part all three share, so the claim reads the value and not the formatting.
 DEEPEST_LAKE = World(
     name="base",
     pages=TOPIC_PAGES,
     keeps=(),
     excludes=(),
+    answers=("baikal", "642"),
 )

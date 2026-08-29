@@ -17,6 +17,9 @@ answered, out of the page, and nothing unusable reaches the user.
     #2018: the sabotage fires after the model's first tool call, so a turn that answered
     without reading anything leaves here too — and that turn is one this case's provenance
     claim would have failed.
+  * THE FAULT IS AIMED AT THE CHAT TURN.  An agent's model client is shared with every
+    microcontext built from it, so the sabotage is confined to the chat agent by name —
+    without that, the bail lands in `browse-extract` and the turn under test runs clean.
   * the tool calls MEASURED rather than asserted — many routes reach one end state, and a
     recovery route is exactly where they differ.
 
@@ -34,6 +37,7 @@ from __future__ import annotations
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, _InjectTextBail
 from penny.tests.eval.utils.cohort import (
@@ -79,7 +83,9 @@ async def test_call_as_text_is_caught_and_the_turn_still_completes(
         ask=DEEPEST_LAKE_ASK,
         also_phrased=DEEPEST_LAKE_PHRASINGS,
         samples_per_phrasing=3,
-        wrap_client=lambda real: _InjectTextBail(real, _CALL_AS_TEXT),
+        wrap_client=lambda real: _InjectTextBail(
+            real, _CALL_AS_TEXT, target_agent=PennyConstants.CHAT_AGENT_NAME
+        ),
         min_pass_rate=None,
         family=_FAMILY,
         timeout=240.0,
@@ -90,6 +96,7 @@ async def test_call_as_text_is_caught_and_the_turn_still_completes(
     # STORE
     cohort.assert_no_delivered_message_is_an_unusable_draw()
     cohort.assert_every_delivered_message_is_whole()
+    cohort.assert_the_reply_answers_the_ask()
 
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()

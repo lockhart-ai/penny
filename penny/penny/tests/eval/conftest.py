@@ -3816,11 +3816,29 @@ class _InjectingClient(LlmClient):
     wrapped client.  Holds ``bail_injected`` (a declared attribute, so callers read
     ``wrapper.bail_injected`` directly — no ``getattr`` probing); ``chat`` is
     overridden by subclasses and every other attribute (e.g. ``model``) forwards to
-    the real client."""
+    the real client.
 
-    def __init__(self, real: LlmClient) -> None:
+    ``target_agent`` CONFINES the sabotage to one caller's turns.  An agent's model client
+    is shared with everything built from it — the browse tool and, through it, every
+    microcontext (``browse-extract``, ``state-classifier``) — so wrapping
+    ``chat_agent._model_client`` does NOT confine the fault to the chat turn: the next
+    ``chat()`` after the turn's browse call is the extractor's, and the bail lands there.
+    Measured on the first ported run, that is where it landed on 12 of 15 gpt-oss samples
+    and 15 of 15 gemma ones: the microcontext discarded it, re-rolled, and the turn under
+    test was never broken — while ``bail_injected`` said the contract had been exercised.
+    Both call sites already pass ``agent_name``, so the caller is a value the client is
+    GIVEN rather than one an injector has to infer.  ``None`` fires on any caller, which is
+    what a collector runner wants, where the cycle itself is the thing being broken.
+    """
+
+    def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
         self._real = real
+        self._target_agent = target_agent
         self.bail_injected = False
+
+    def targets(self, **kwargs) -> bool:
+        """Whether this call belongs to the turn the case is about."""
+        return self._target_agent is None or kwargs.get("agent_name") == self._target_agent
 
     async def chat(self, messages, tools=None, *args, **kwargs):
         raise NotImplementedError
@@ -3836,19 +3854,25 @@ class _InjectAfterToolCall(_InjectingClient):
     ``_InjectDoneBail`` doesn't share this trigger — its bail is the cycle's very
     FIRST response, before any real tool call."""
 
-    def __init__(self, real: LlmClient) -> None:
-        super().__init__(real)
+    def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
+        super().__init__(real, target_agent=target_agent)
         self._saw_tool = False
 
     def _bail_response(self) -> LlmResponse:
         raise NotImplementedError
 
     async def chat(self, messages, tools=None, *args, **kwargs):
-        if self._saw_tool and not self.bail_injected:
+        """Delegate until the TARGET's first tool call lands, then bail on its next call.
+
+        Both halves are gated on the caller: another agent's tool call must not arm the
+        trigger and must not receive the bail, or the fault is spent on a turn the case is
+        not about — which is exactly what happened before the gate existed."""
+        mine = self.targets(**kwargs)
+        if mine and self._saw_tool and not self.bail_injected:
             self.bail_injected = True
             return self._bail_response()
         response = await self._real.chat(messages, *args, tools=tools, **kwargs)
-        if response.has_tool_calls:
+        if mine and response.has_tool_calls:
             self._saw_tool = True
         return response
 
@@ -3864,8 +3888,8 @@ class _InjectTextBail(_InjectAfterToolCall):
     scenario actually fired (else the contract test would be vacuous).
     """
 
-    def __init__(self, real, bail_text: str) -> None:
-        super().__init__(real)
+    def __init__(self, real, bail_text: str, *, target_agent: str | None = None) -> None:
+        super().__init__(real, target_agent=target_agent)
         self._bail_text = bail_text
 
     def _bail_response(self) -> LlmResponse:

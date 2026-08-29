@@ -495,6 +495,13 @@ def _delivered(*messages: str) -> Cohort:
     return Cohort("case", _MODEL, _NO_WORLD, [sample])
 
 
+def _reply_sample(reply: str) -> SampleObservation:
+    """A sample that delivered exactly this reply."""
+    return SampleObservation(
+        name="s0", phrasing="the ask", landed="idle", reply=reply, delivered=[reply]
+    )
+
+
 def _answered(cohort: Cohort) -> tuple[int, int]:
     claim = cohort.claims[0]
     return claim.passed, claim.total
@@ -556,6 +563,43 @@ def test_a_delivered_message_is_whole_by_the_rule_the_send_path_refuses_by():
         cohort.assert_every_delivered_message_is_whole()
         assert _answered(cohort) == (0, 1), f"{half_formed!r} is not a message to deliver"
         assert cohort.claims[0].rationales, "and production's own reason is the rationale"
+
+
+def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
+    """The claim the rest of the set cannot make.
+
+    A reply carrying no values passes every other claim vacuously — it lands in the right
+    state, it is a complete message, and it has nothing in it to be unsourced.  The first
+    text here is the real one that did: it was its cohort's REPRESENTATIVE sample, marked
+    pass at 5 of 5, on a turn whose extractor had already returned the answer.
+
+    Both directions, and the second is the one that keeps the claim honest: a reply that
+    answers is not failed for how it groups the digits."""
+    world = World(name="base", pages=(), keeps=(), excludes=(), answers=("baikal", "642"))
+
+    empty_handed = "Sounds like you're surprised! Bath! What else do you want to hear about it?"
+    cohort = Cohort("case", _MODEL, world, [_reply_sample(empty_handed)])
+    cohort.assert_the_reply_answers_the_ask()
+    assert (cohort.claims[0].passed, cohort.claims[0].total) == (0, 1)
+    assert cohort.claims[0].rationales, "and it names what the reply never stated"
+
+    for answered in (
+        "Lake Baikal, 1,642 metres deep.",
+        "lake baikal is about 1642 m deep",
+        "Lake Baikal — 1 642 metres.",  # the groupings the models actually emit
+    ):
+        answering = Cohort("case", _MODEL, world, [_reply_sample(answered)])
+        answering.assert_the_reply_answers_the_ask()
+        assert (answering.claims[0].passed, answering.claims[0].total) == (1, 1), answered
+
+
+def test_a_world_naming_no_answer_makes_no_completeness_claim():
+    """An ask with nothing to state — a correction rather than a question — declares no
+    answer tokens, and the claim is then true rather than unasked."""
+    world = World(name="base", pages=(), keeps=(), excludes=())
+    cohort = Cohort("case", _MODEL, world, [_reply_sample("done — updated it.")])
+    cohort.assert_the_reply_answers_the_ask()
+    assert (cohort.claims[0].passed, cohort.claims[0].total) == (1, 1)
 
 
 # ── Every deterministic check is scored, counted and coloured ────────────────

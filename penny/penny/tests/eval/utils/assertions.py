@@ -280,6 +280,30 @@ class Cohort:
             SpecCategory.STORE,
         )
 
+    def assert_the_reply_answers_the_ask(self) -> None:
+        """The reply states what the ask asked for, in the world's own terms.
+
+        The only COMPLETENESS claim in the set.  Everything else here is soundness — where
+        the machine landed, what the store holds, that nothing was invented — and a reply
+        that answers nothing at all satisfies all of it: it lands in the right state, it
+        delivers a complete message, and it carries no unsourced value because it carries
+        no value.  Measured: a sample whose extractor had returned the answer replied
+        "Sounds like you're surprised! Bath! What else do you want to hear about Lake
+        Baikal?" and passed 5 of 5 claims as the cohort's REPRESENTATIVE sample.
+
+        Read off the world, never off a guessed phrasing: ``World.answers`` holds tokens
+        taken from the page the ask is answered against, so this is the same containment
+        read ``keeps`` makes about the store, pointed at the reply.  It is a STORE claim
+        because the delivered message is a record the sample's database holds, and it is
+        the reply KIND because it reads prose — which carries a wider noise floor than a
+        structural claim and must never be offered a floor as if it did not."""
+        self.claim(
+            "reply: it states the answer the world carries",
+            _reply_answers_the_ask,
+            SpecCategory.STORE,
+            kind="reply",
+        )
+
     def assert_every_stored_entry_traces_to_the_world(self) -> None:
         """An entry naming something nobody's page mentions was invented — and once it is in a
         collection, a collector re-reads it for ever."""
@@ -430,6 +454,17 @@ def _delivered_messages_are_whole(sample: SampleObservation, _world: World) -> A
         if (reason := half_formed_send_reason(message)) is not None
     ]
     return not half_formed, f"{len(half_formed)} of {len(sample.delivered)} — {half_formed}"
+
+
+def _reply_answers_the_ask(sample: SampleObservation, world: World) -> Answer:
+    """Every token the world says an answer carries is in the reply, folded through the ONE
+    typography definition so a no-break space or a curly dash cannot fail a correct answer.
+
+    A world naming no answer tokens makes no claim and is true — that is an ask with nothing
+    to state, not a claim that went unasked."""
+    said = fold_typography(sample.reply)
+    missing = [token for token in world.answers if fold_typography(token) not in said]
+    return not missing, f"the reply never states {missing}"
 
 
 def _store_is_sourced(sample: SampleObservation, _world: World) -> Answer:

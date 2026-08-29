@@ -44,6 +44,7 @@ from penny.database.skills import (
 )
 from penny.llm.models import (
     LlmMessage,
+    LlmResponse,
     LlmToolCall,
     LlmToolCallFunction,
     strip_harmony_control_tokens,
@@ -1529,6 +1530,62 @@ def test_bail_fired_and_cycle_recovered_guard_checks() -> None:
     assert recovered.ok and recovered.rationale is None
     stalled = _cycle_recovered_check(False)
     assert not stalled.ok and stalled.rationale is not None
+
+
+class _RecordingClient:
+    """A real client's stand-in: records who called, answers with a tool call once."""
+
+    def __init__(self) -> None:
+        self.callers: list[str | None] = []
+
+    async def chat(self, messages=None, tools=None, *args, **kwargs):
+        self.callers.append(kwargs.get("agent_name"))
+        function = LlmToolCallFunction(name="browse", arguments={})
+        call = LlmToolCall(id="call-1", function=function)
+        return LlmResponse(message=LlmMessage(role="assistant", content="", tool_calls=[call]))
+
+
+async def test_the_forced_fault_is_confined_to_the_turn_the_case_is_about() -> None:
+    """An agent's model client is SHARED with every microcontext built from it, so an
+    injector installed on ``chat_agent._model_client`` sees the extractor's calls too.
+
+    Both halves of the trigger are gated on the caller, and both matter.  If another
+    agent's tool call can ARM it, the bail is aimed one call early; if another agent's
+    call can RECEIVE it, the fault is spent on a turn the case is not about and the turn
+    under test runs clean — while ``bail_injected`` reports the contract exercised.  That
+    is not hypothetical: on the first ported run the bail landed in ``browse-extract`` on
+    12 of 15 gpt-oss samples and 15 of 15 gemma ones, and both cohorts were read as
+    recoveries.  A collector runner passes no target and keeps the old any-caller
+    behaviour, because there the cycle itself is what is being broken."""
+    real = _RecordingClient()
+    injector = _InjectTextBail(real, "{}", target_agent=PennyConstants.CHAT_AGENT_NAME)
+
+    # A microcontext's tool-calling response must not arm the trigger...
+    await injector.chat([], agent_name="browse-extract")
+    assert not injector.bail_injected
+    # ...and once the TARGET has made its tool call, the next microcontext call is still
+    # the real model's, not the bail's.
+    await injector.chat([], agent_name=PennyConstants.CHAT_AGENT_NAME)
+    micro = await injector.chat([], agent_name="browse-extract")
+    assert micro.has_tool_calls, "the extractor got the real model, not the sabotage"
+    assert not injector.bail_injected, "the fault is still unspent"
+
+    bailed = await injector.chat([], agent_name=PennyConstants.CHAT_AGENT_NAME)
+    assert injector.bail_injected and bailed.message.content == "{}"
+    assert real.callers == ["browse-extract", "chat", "browse-extract"], (
+        "every call but the sabotaged one reached the real model"
+    )
+
+
+async def test_an_untargeted_injector_still_fires_on_any_caller() -> None:
+    """The collector runners install their injector on the CYCLE's client and name no
+    target, so the trigger keeps its any-caller behaviour — this pins that the confinement
+    is opt-in and changes nothing for a case that did not ask for it."""
+    real = _RecordingClient()
+    injector = _InjectTextBail(real, "Done.")
+    await injector.chat([], agent_name="collector")
+    bailed = await injector.chat([], agent_name="browse-extract")
+    assert injector.bail_injected and bailed.message.content == "Done."
 
 
 def test_a_misfired_injection_is_a_named_exclusion_and_never_also_a_failed_check() -> None:

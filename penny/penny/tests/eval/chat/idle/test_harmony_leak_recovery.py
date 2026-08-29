@@ -20,6 +20,9 @@ pooling them would average two mechanisms into one score.
     turn and leaves the cohort as a named exclusion, never as a behavioural failure — at
     the cost #2018 records, since the leak fires after the first tool call and a turn that
     read nothing leaves here rather than failing the provenance claim.
+  * THE FAULT IS AIMED AT THE CHAT TURN.  An agent's model client is shared with every
+    microcontext built from it, so the sabotage is confined to the chat agent by name —
+    without that, the bail lands in `browse-extract` and the turn under test runs clean.
   * the tool calls MEASURED rather than asserted.
 
 REPORT-ONLY (``min_pass_rate=None``).  Nothing here is the user's: the ask is a
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, _InjectTextBail
 from penny.tests.eval.utils.cohort import (
@@ -76,7 +80,9 @@ async def test_a_leaked_envelope_is_caught_and_the_turn_is_answered_cleanly(
         ask=DEEPEST_LAKE_ASK,
         also_phrased=DEEPEST_LAKE_PHRASINGS,
         samples_per_phrasing=3,
-        wrap_client=lambda real: _InjectTextBail(real, _HARMONY_LEAK),
+        wrap_client=lambda real: _InjectTextBail(
+            real, _HARMONY_LEAK, target_agent=PennyConstants.CHAT_AGENT_NAME
+        ),
         min_pass_rate=None,
         family=_FAMILY,
         timeout=240.0,
@@ -87,6 +93,7 @@ async def test_a_leaked_envelope_is_caught_and_the_turn_is_answered_cleanly(
     # STORE
     cohort.assert_no_delivered_message_is_an_unusable_draw()
     cohort.assert_every_delivered_message_is_whole()
+    cohort.assert_the_reply_answers_the_ask()
 
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
