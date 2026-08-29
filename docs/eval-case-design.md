@@ -276,7 +276,7 @@ discretion at all. Measured across a run it holds exactly, and the bound-value h
 byte-identical in every sample — so a feature reading the *container* name is reading the **routine
 name through a slug function**, under a label that hides what it is.
 
-What varies is the framer's output, upstream: **eleven distinct routine names for one routine** in
+What varies is the framer's output, upstream: **ten distinct routine names for one routine** in
 fifteen samples. So `ROUTINE_NAME` is the feature, read straight off the registry, and it is
 **cosmetic** — `watch_price` and `monitor_listing_price` leave the same round, the same write and
 the same container behind, so the spread belongs in the variance table as the framer's naming spread
@@ -384,22 +384,22 @@ than answered:
 **Gated ≠ held.** A claim read out of **model prose** is *reported and not floored at this N* —
 **even at full marks**. Across two runs of identical code, on the same commit and the same model, a
 reply-content rate moved by **3 samples** where every structural claim moved by at most 1 —
-measured over the 18 samples a case covered then, so ±17 points, and wider still at the 15 a case
-pools now. A floor tight enough to catch a real regression there would flap on an ordinary re-run,
-and one loose enough not to flap would catch nothing. **A prose-read claim must
-not be counted as a failure in the headline.**
+measured over 18 samples, so ±17 points, and wider still at the 15 a case pools. A floor tight
+enough to catch a real regression there would flap on an ordinary re-run, and one loose enough not
+to flap would catch nothing. **A prose-read claim must not be counted as a failure in the
+headline.**
 
 A claim that does *not* hold on every sample is also not floored — for the opposite reason. The
 misses are the naming work, and recording a floor underneath them would bless the defect as the
 contract. The two reasons must never be blurred in the report.
 
 **A saturated feature carries no ceiling.** The margin is a fixed +0.10, so a feature already near
-the top of its range gets a ceiling with nothing above it. Measured: one read **0.761**, which the
-margin turned into a proposed ceiling of **0.86** — on a statistic that tops out at 1.0. It has
-almost nowhere left to rise, so that ceiling could never fire, and printing it implies a guard that
-does not exist. **A threshold that cannot be crossed is worse than no threshold, because it reads as
-protection.** So report the value, propose no ceiling, and **say why**: such a feature is a
-**diagnostic reading, not a gate**, and usually a defect to fix rather than a number to record.
+the top of its range gets a ceiling with nothing above it. Measured: `routine name` reads **0.768**,
+which the margin would turn into a ceiling of **0.87** — on a statistic that tops out at 1.0. It has
+almost nowhere left to rise, so that ceiling could never fire, and printing it would imply a guard
+that does not exist. **A threshold that cannot be crossed is worse than no threshold, because it
+reads as protection.** So report the value, propose no ceiling, and **say why**: such a feature is
+a **diagnostic reading, not a gate**, and usually a defect to fix rather than a number to record.
 
 **The boundary is NO MAJORITY BEHAVIOUR** — the modal value is not shared by even half the samples.
 Exactly half still counts as a majority:
@@ -442,11 +442,11 @@ This is why the report names one sample **modal** and hands it to the reader rat
 them choose.
 
 **A worked example, and an honest cost.** A known defect — the learn close reporting the *write
-record* instead of the value it stored, seen on 8 samples of 18 (#2010) — is measured by **nothing**
-in this design. It is not a `STORE` miss: the right value is in the store. It is not `PROVENANCE`:
-the record it names is real. And reading it out of the reply text is the phrasing match §2 forbids.
-It is exactly the third row — wrong-but-stable, catchable only by a human reading one sample — and
-the finding lives on its ticket rather than in a check.
+record* instead of the value it stored, seen on roughly half the samples (#2010) — is measured by
+**nothing** in this design. It is not a `STORE` miss: the right value is in the store. It is not
+`PROVENANCE`: the record it names is real. And reading it out of the reply text is the phrasing
+match §2 forbids. It is exactly the third row — wrong-but-stable, catchable only by a human reading
+one sample — and the finding lives on its ticket rather than in a check.
 
 **Do not invent a category or a special case to keep it measured.** A category added to preserve one
 measurement is how a closed list stops being closed, and the list being closed is what makes the
