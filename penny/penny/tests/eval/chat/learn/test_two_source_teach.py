@@ -1,36 +1,27 @@
-"""Story 15, the two-source teach — the fused ask, and the learn round's close.
+"""Story 15, the two-source teach — the fused ask, decomposed and stood up.
 
 The estate's only two-page routine: one message asks for something that keeps running
 over TWO sources, and the turn has to decompose it, demonstrate it once, and set it
-running.  Two cases, sharing one setup ask:
+running.
 
-  * the fused ask becomes a running routine — decomposed into its two sources,
-    demonstrated, and stood up
-  * the learn close states the steps it CAPTURED — the reply that ends the round says
-    what the routine it just learned will RUN, for the one person who can tell a
-    captured step from a stray one (#1943)
+It is here rather than with the memory stories because of where the machine goes: its
+``state_transition`` rows walk idle → elicit → learn → apply, while every genuine memory
+story is idle → idle.  The turn being scored is a LEARN turn, composed from
+``Prompt.LEARN_INSTRUCTION``, so learn is the microcontext under test.
 
-They are here rather than with the memory stories because of where the machine goes:
-their ``state_transition`` rows walk idle → elicit → learn (and on to apply for the
-first), while every genuine memory story is idle → idle.  The turn being scored is a
-LEARN turn, composed from ``Prompt.LEARN_INSTRUCTION``, so learn is the microcontext
-under test.
-
-The worlds are the CURRENT runtime's — nothing is pre-seeded (migration 0108), so the
+The world is the CURRENT runtime's — nothing is pre-seeded (migration 0108), so the
 round is parked in elicit the way the user's own earlier turn would have parked it.
 
 Check labels carry one of three prefixes — ``state:`` (end DB facts), ``reply:``
 (what Penny said, against what she did), ``calls:`` (call provenance).  State and
 reply checks are SCORED; the call spine and the loop-health verdict are ADVISORY
-(``scored=False``) — except the learn close's LANDING, which is scored, since a story
-about the reply that ends a learn round has no subject at all outside that state
-(#1989).  Where a scored claim only exists in a state a sample never reached, it reads
-``Check.na(...)`` rather than ❌: a precondition nobody met is not a contract anybody
-failed.
+(``scored=False``).  Where a scored claim only exists in a state a sample never reached,
+it reads ``Check.na(...)`` rather than ❌: a precondition nobody met is not a contract
+anybody failed.
 
-Both cases are REPORT-ONLY (``min_pass_rate=None``): the thresholds are the code
-owner's to set once the numbers are read.  All content is synthetic — invented teams,
-invented markets — because the repo is public.
+REPORT-ONLY (``min_pass_rate=None``): the thresholds are the code owner's to set once
+the numbers are read.  All content is synthetic — invented teams — because the repo is
+public.
 """
 
 from __future__ import annotations
@@ -41,24 +32,11 @@ from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.models import MemoryRow
 from penny.tests.eval.conftest import (
-    EVAL_MODELS,
     ChatEval,
     Check,
     asked_for_page_structure,
     new_collections,
     outgoing_replies,
-)
-
-# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
-# state machine's elicitation edge asks the same question of a turn (nothing acted on
-# before it was taught), and one policy in two copies is two contracts.
-from penny.tests.eval.utils.cohort import (
-    ENTRIES_STORED,
-    REPLY_SPREAD,
-    ROUTINE_NAME,
-    ROUTINE_SHAPE,
-    TOOL_SEQUENCE,
-    TRANSITIONS,
 )
 from penny.tests.eval.utils.memory_world import (
     _FAMILY,
@@ -69,29 +47,7 @@ from penny.tests.eval.utils.memory_world import (
     _pages_fetched,
     _routing_advisory,
 )
-from penny.tests.eval.utils.seeds import Seeder, round_parked_in_elicit
-
-# Standing a ROUND up before the measured turn is the transition suite's idiom, read from
-# where that suite declares it rather than restated here: a seeded machine state, a seeded
-# conversation turn and a seeded ledger row are one shape, and a second copy of it would be
-# a second contract free to drift from the one every edge case is measured against.
-#
-# Its PROBES are deliberately restated instead (``_assert_parked_in_elicit`` below): that
-# suite's are keyed to its own ``_ElicitRound`` case type, which this file has no shape
-# for.  What a probe asserts is the seed it stands beside, so the honest cost of not
-# widening a neighbour's fixture type is one restated probe, named here rather than left
-# for a reader to notice.
-from penny.tests.eval.utils.worlds import (
-    AURORA_LISTING,
-    FOXES_NEWS,
-    FOXES_URL,
-    LISTING_DEMO,
-    LISTING_DEMO_PHRASINGS,
-    LISTING_SETUP_ASK,
-    LISTING_TEACH_QUESTION,
-    SEALS_NEWS,
-    SEALS_URL,
-)
+from penny.tests.eval.utils.worlds import FOXES_NEWS, FOXES_URL, SEALS_NEWS, SEALS_URL
 
 pytestmark = pytest.mark.eval
 
@@ -113,14 +69,11 @@ def _fetched(db: Database, token: str) -> bool:
 # reply is the imperative the round fires on, and the closing schedule intent stands
 # the job up.
 #
-# It is the only story in this file whose routine reads TWO pages, which is what it is
-# kept for: everything else in the estate demonstrates against one source, so nothing
-# else measures a round that has to visit both and keep both.
+# It is the only case in the estate whose routine reads TWO pages, which is what it is
+# kept for: everything else demonstrates against one source, so nothing else measures a
+# round that has to visit both and keep both.
 
-# The FUSED ask both story-15 cases open on — sources + filter + schedule, no imperative,
-# the field shape verbatim.  Named rather than left as a position in the turns list below,
-# because the learn close reads it as the ask its seeded round is anchored to: a turn
-# inserted at the head of that list would silently re-seed a case two hundred lines away.
+# The FUSED ask — sources + filter + schedule, no imperative, the field shape verbatim.
 _TWO_SOURCE_SETUP_ASK = (
     "hey can you set up news alerts for my favourite teams? the ridgeline "
     f"foxes and the harbor seals — their news pages are {FOXES_URL} and "
@@ -265,75 +218,4 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
         min_pass_rate=None,
         family=_FAMILY,
         timeout=300.0,  # three turns: decompose, then the round, then standing it up
-    )
-
-
-# ── Story 15, the learn close (#1994/#1995) ──────────────────────────────────
-#
-# THE REFERENCE IMPLEMENTATION — every other case is ported against this shape.  Why a case
-# asserts end state and measures model output at all is `cohort.py`; what a claim means is
-# `assertions.py`.  What is here is what is true of THIS case:
-#
-# ONE source and PROSE, both deliberate.  `memory-two-source-teach` above is the two-source
-# case; this one demonstrates three actions against a single page, said as a sentence rather
-# than as a numbered procedure.  Its turns and world are `transition-elicit-to-learn`'s.
-#
-#   * PHRASINGS — the same request in five wordings, POOLED into one variance score.  Wording is
-#     an INPUT axis: what varies is how a person says three things in a sentence, and what is
-#     scored is that the end state does not move with it.
-#   * the tool calls MEASURED rather than asserted, because many routes reach one end state.
-
-_DEMONSTRATED_ROUND_CASE_ID = "learn-demonstrated-round"
-
-
-@pytest.fixture
-def standing_elicit_round() -> Seeder:
-    """The round the measured turn closes: the user asked for the job, Penny asked to be taught
-    one pass, and the machine is parked in ``elicit`` on that ask.
-
-    Seeded rather than hoped for (#1989) — the ask is an imperative about now, which idle's own
-    definition claims, so on a cold machine both measured models drew idle on 10 of 10 samples
-    and every reply check failed for a reply nobody had been asked to write."""
-    return round_parked_in_elicit(LISTING_SETUP_ASK, LISTING_TEACH_QUESTION)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_demonstrated_round_is_enacted_learned_and_reported(
-    chat_eval: ChatEval, model: str, standing_elicit_round: Seeder
-) -> None:
-    """Story 15, the learn close: one demonstrated round, and the reply that closes it tells the
-    user what the routine will RUN — so a step it captured by accident is visible to the only
-    person who can tell that it does not belong.
-
-    REPORT-ONLY: the floors and ceilings this run proposes are the code owner's to accept once
-    the numbers have been read."""
-    cohort = await chat_eval(
-        case_id=_DEMONSTRATED_ROUND_CASE_ID,
-        model=model,
-        seed=standing_elicit_round,
-        world=AURORA_LISTING,
-        ask=LISTING_DEMO,
-        also_phrased=LISTING_DEMO_PHRASINGS,
-        samples_per_phrasing=3,
-        min_pass_rate=None,
-        family=_FAMILY,
-        timeout=240.0,
-    )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.LEARN)
-
-    # STORE
-    cohort.assert_something_from_each_page_was_written()
-    cohort.assert_the_write_landed_in_the_round_container()
-    cohort.assert_a_routine_reached_the_registry()
-    cohort.assert_nothing_was_scheduled()
-    cohort.assert_every_spot_is_a_placeholder()
-    cohort.assert_the_routine_names_a_destination()
-
-    # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
-    cohort.assert_every_value_in_the_reply_is_sourced()
-
-    cohort.measure(
-        TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD
     )
