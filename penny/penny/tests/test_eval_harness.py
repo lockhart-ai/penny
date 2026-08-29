@@ -49,6 +49,7 @@ from penny.llm.models import (
     strip_harmony_control_tokens,
 )
 from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
+from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
@@ -126,6 +127,21 @@ from penny.tests.eval.collector.test_collector_enactment import (
     seed_applied_job,
     seed_gate_world,
 )
+from penny.tests.eval.collector.test_watch_cycles import (
+    _CONTAINER as WATCH_CONTAINER,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _PROGRAM_CALLS as WATCH_PROGRAM_CALLS,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    LISTINGS as WATCH_LISTINGS,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _arm as watch_arm,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _program as watch_program,
+)
 from penny.tests.eval.conftest import (
     PENNY_LOGGER,
     BoundExpectation,
@@ -172,6 +188,7 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
 from penny.tests.eval.utils.artifacts import (
     CaseArtifact,
@@ -180,7 +197,9 @@ from penny.tests.eval.utils.artifacts import (
     CheckOutcome,
     FailureCause,
 )
+from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import load_baseline
+from penny.tests.eval.utils.cohort import SampleObservation
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import BOARD_GAMES
 from penny.tests.eval.utils.transition_world import (
@@ -2561,6 +2580,66 @@ def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> No
     assert [one.parameter for one in fixture.expectations] == [
         parameter.name for parameter in fixture.parameters
     ]
+
+
+@pytest.mark.parametrize("listing", WATCH_LISTINGS, ids=lambda one: one.token)
+def test_each_watch_arm_lays_down_the_same_program_over_its_own_listing(listing) -> None:
+    """The collector arms are five instances of ONE theme, and this is what says so (#2017).
+
+    Every arm's stored program must read back as the SAME calls under the strict rendered
+    dialect, carry its own listing url, and name the shared container — the byte-fixed-shape
+    half of "five listings, one program".  An arm whose program parsed to something else would
+    be a different routine, therefore a different behaviour, and pooling it with the others
+    would average two behaviours into one score.
+
+    In ``make check`` rather than in the seeder alone: a program the strict parser cannot read
+    leaves the cycle holding only its terminator, and a cycle with no browse writes nothing for
+    the most boring reason there is — the exact shape of a passing sample."""
+    program = watch_program(listing)
+    parsed = tuple(call.tool for call in program_calls(program, frozenset(WATCH_PROGRAM_CALLS)))
+    assert parsed == WATCH_PROGRAM_CALLS, f"program: {program!r}"
+    assert listing.url in program, "the runtime join must fill the browse leaf with this url"
+    assert f"'{WATCH_CONTAINER}'" in program, "the attachment must bind to the shared container"
+
+
+def test_the_watch_arms_each_bring_their_own_world() -> None:
+    """The generalisation this case exists to exercise: a collector's arms do NOT share a
+    world, so a claim must be answered against the ground its own sample read.
+
+    Five arms, five distinct worlds, and each one's page carries only its own listing — an arm
+    answered against a neighbour's page would grade a reading the model was never shown."""
+    arms = [watch_arm(listing) for listing in WATCH_LISTINGS]
+    assert len({arm.world.name for arm in arms}) == len(WATCH_LISTINGS)
+    for arm, listing in zip(arms, WATCH_LISTINGS, strict=True):
+        assert listing.url in arm.world.says
+        others = [one.url for one in WATCH_LISTINGS if one.token != listing.token]
+        assert not [url for url in others if url in arm.world.says]
+        assert len(arm.cycles) == 3, "baseline, quiet, change"
+
+
+def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
+    """The per-arm world, end to end: two arms with different ground, and a claim that reads
+    the world it is handed answers each sample against its OWN arm.
+
+    This is the requirement that could not be met by widening the observation record — a
+    per-arm world cannot be bolted onto a per-cohort field."""
+    ground = [watch_arm(listing).world for listing in WATCH_LISTINGS[:2]]
+    arms = [
+        eval_cohort.Arm(label=f"phrasing {index + 1}", text=world.name, world=world)
+        for index, world in enumerate(ground)
+    ]
+    samples = [
+        SampleObservation(name=f"s{index}", phrasing=arm.label) for index, arm in enumerate(arms)
+    ]
+    cohort = Cohort("case", "m", samples, arms)
+    seen: list[str] = []
+    cohort.claim(
+        "state: the claim saw its own arm's world",
+        lambda _sample, world: (bool(seen.append(world.name)) or True, None),
+        eval_cohort.SpecCategory.STORE,
+    )
+    assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
+    assert seen == [WATCH_LISTINGS[0].token, WATCH_LISTINGS[1].token]
 
 
 @pytest.mark.parametrize("fixture", EXTRACT_FIELD_FIXTURES, ids=lambda f: f.case_id)

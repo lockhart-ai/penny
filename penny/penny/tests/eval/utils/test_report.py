@@ -15,7 +15,8 @@ truncation + escaping, #1759) and the fold/parse seam the assembler's re-normali
 
 from __future__ import annotations
 
-from penny.tests.eval.utils import cohort, report
+from penny.tests.eval.utils import cohort, report, worlds
+from penny.tests.eval.utils.fixtures import CannedPage
 
 
 def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> None:
@@ -466,10 +467,17 @@ def test_the_tail_states_the_inputs_and_what_the_outliers_did():
         shape="x",
         divergences=[cohort.FeatureDivergence(feature="tool sequence", value="a", modal="b")],
     )
+    ground = worlds.World(
+        name="one page",
+        pages=(CannedPage(match="foxes", text="Title: Foxes\nBrandt signs.\n"),),
+        keeps=(("brandt",),),
+        excludes=(),
+    )
     tail = report.render_case_tail(
-        phrasings=[("phrasing 1", "watch the two pages"), ("phrasing 2", "keep an eye on them")],
-        world="| # | page | must be kept |\n|---|---|---|\n| 1 | `foxes` | `brandt` |",
-        world_facts=report.WorldFacts(pages=1, keeps=1, excludes=0),
+        arms=[
+            cohort.Arm(label="phrasing 1", text="watch the two pages", world=ground),
+            cohort.Arm(label="phrasing 2", text="keep an eye on them", world=ground),
+        ],
         outliers=[(3, outlier)],
     )
 
@@ -992,9 +1000,7 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
 
     assert TWO_TEAM_NEWS.counts == (2, 6, 2)
     tail = report.render_case_tail(
-        phrasings=[("phrasing 1", "watch them")],
-        world=TWO_TEAM_NEWS.render(),
-        world_facts=report.WorldFacts(*TWO_TEAM_NEWS.counts),
+        arms=[cohort.Arm(label="phrasing 1", text="watch them", world=TWO_TEAM_NEWS)]
     )
     assert (
         "#### Test inputs\n\n"

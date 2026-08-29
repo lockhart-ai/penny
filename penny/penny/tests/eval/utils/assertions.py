@@ -26,22 +26,29 @@ from collections.abc import Callable, Sequence
 
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.utils.cohort import (
+    Arm,
     AssertionRow,
     Claim,
     ClaimOutcome,
     Feature,
     SampleObservation,
     SpecCategory,
+    distinct_worlds,
     fold_typography,
     unsourced_specifics,
 )
 from penny.tests.eval.utils.worlds import World
 
+# The ground a claim is answered against when the sample's arm cannot be found.  Matches
+# nothing, so a claim made against it is vacuous rather than answered on another arm's pages.
+_NO_GROUND = World(name="unknown arm", pages=(), keeps=(), excludes=())
+
 # How one sample answers one claim: ``(ok, rationale)``.
 Answer = tuple[bool, str | None]
-# How one sample answers one claim, judged against the world the cohort was driven against.
-# The world is a parameter rather than a closure so a claim stays a pure function of the sample
-# and the ground it was given — testable without building a cohort.
+# How one sample answers one claim, judged against the world ITS OWN ARM ran against.  The
+# world is a parameter rather than a closure so a claim stays a pure function of the sample and
+# the ground it was given — testable without building a cohort, and correct for a cohort whose
+# arms do not share one.
 WorldClaim = Callable[[SampleObservation, World], Answer]
 
 
@@ -52,26 +59,29 @@ class Cohort:
     needs is over the COMPLETE set — the variance statistics are cohort-level by definition,
     and a per-sample callback cannot see the cohort it belongs to.
 
-    A cohort is one request at one model, against ONE world.  Its samples are hermetic — own
-    database, own conversation, own pages — and a claim reads that one world.
+    A cohort is one behaviour at one model, driven across its ARMS.  An arm carries the input
+    it ran AND the world it ran against, so a claim reads the world of the arm that produced
+    the sample it is answering about — never one world shared by the whole cohort.
+
+    Chat is the special case where every arm's world is the same object (one page set, five
+    wordings of one ask).  A collector is not: its arms vary the job's own inputs, so each
+    carries its own pages.  Both are the same seam because the world sits on the arm.
     """
 
     def __init__(
         self,
         case_id: str,
         model: str,
-        world: World,
         samples: list[SampleObservation],
-        phrasings: Sequence[tuple[str, str]] = (),
+        arms: Sequence[Arm] = (),
     ) -> None:
         self.case_id = case_id
         self.model = model
-        self.world = world
         self.samples = samples
-        # The wordings this cohort was driven with, as ``(label, text)``.  A sample carries only
-        # its phrasing's LABEL, which is what the report's rows and its own name are keyed on —
-        # so the texts live here, listed once, rather than reprinted under every sample.
-        self.phrasings = list(phrasings)
+        # The arms this cohort was driven across.  A sample carries only its arm's LABEL —
+        # what the report's rows and its own name are keyed on — so the texts and the worlds
+        # live here, listed once, rather than reprinted under every sample.
+        self.arms = list(arms)
         self.features: list[Feature] = []
         # A claim is DECLARED here and answered at report time, over every sample the case
         # drove.  Declaring rather than answering immediately is what keeps the case body
@@ -87,6 +97,21 @@ class Cohort:
             for label, kind, category, answer in self._declared
         ]
 
+    @property
+    def worlds(self) -> list[World]:
+        """The DISTINCT worlds this cohort's arms ran against, in arm order."""
+        return distinct_worlds(self.arms)
+
+    def _world_for(self, sample: SampleObservation) -> World:
+        """The world the arm that produced this sample ran against.
+
+        Keyed on the arm LABEL, which is the same anchor the sample's own name carries, so the
+        lookup needs no index arithmetic and no second ordering to keep in step.  A sample
+        whose arm is unknown answers against an empty world rather than against another arm's
+        — a claim made on the wrong ground is worse than one made on none."""
+        arm = next((one for one in self.arms if one.label == sample.phrasing), None)
+        return arm.world if arm is not None else _NO_GROUND
+
     def _answer(self, answer: WorldClaim) -> list[ClaimOutcome]:
         outcomes = []
         for sample in self.samples:
@@ -94,7 +119,7 @@ class Cohort:
             # it would report a failed contract for a contract nobody exercised.
             if not sample.complete:
                 continue
-            ok, rationale = answer(sample, self.world)
+            ok, rationale = answer(sample, self._world_for(sample))
             outcomes.append(
                 ClaimOutcome(sample=sample.name, ok=ok, rationale=None if ok else rationale)
             )

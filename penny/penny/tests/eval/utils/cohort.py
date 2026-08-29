@@ -39,8 +39,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
+
+from penny.tests.eval.utils.worlds import World
 
 # How far above the observed spread a proposed ceiling sits.  Measured: subsampling real
 # 32-sample cohorts down to 15 puts the sampling noise on normalised entropy at ~±0.11, so a
@@ -82,6 +84,46 @@ class StoredEntry(BaseModel):
     @property
     def text(self) -> str:
         return " ".join(part for part in (self.key, self.content) if part)
+
+
+class Arm(BaseModel):
+    """ONE arm of a cohort: the input this arm ran, and the world it ran against.
+
+    An arm is the general unit, and "one world in five wordings" is its special case — five
+    arms whose ``world`` happens to be the same object.  Chat is that case; a collector is
+    not, because its arms vary the job's own inputs (the bound values and the pages that
+    answer them together), so each carries its own world by construction.
+
+    Carrying the world HERE rather than on the cohort is what makes the two expressible by one
+    seam.  A per-cohort world cannot be narrowed to an arm afterwards, so a cohort holding one
+    would force every non-chat shape into a special case at the point a claim is answered —
+    which is the layer that must stay shape-agnostic.
+
+    ``label`` is the anchor: it names the arm in the report's rows and inside every sample's
+    own name, so a reader who sees "phrasing 3 diverged" has one thing to look up.  ``text``
+    is what that arm actually said, verbatim — a label with no text beside it is a dead
+    anchor, unreadable exactly when a reader needs it."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    label: str
+    text: str
+    world: World
+
+
+def distinct_worlds(arms: Sequence[Arm]) -> list[World]:
+    """The distinct worlds a set of arms ran against, in arm order.
+
+    ONE entry is the chat and micro-context shape — every arm answered against the same
+    ground, which the report states once.  Several is a cohort whose arms each brought their
+    own, which is what varying a job's inputs looks like.  Defined once because three readers
+    ask it — the cohort, the world fold, and the fold's own counts — and three spellings of
+    "are these the same world" is three things to disagree."""
+    seen: list[World] = []
+    for arm in arms:
+        if arm.world not in seen:
+            seen.append(arm.world)
+    return seen
 
 
 # What ``SampleObservation.field`` answers for a field the draw did not return.  A rendered

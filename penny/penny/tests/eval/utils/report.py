@@ -836,6 +836,9 @@ def _value_list(values: Sequence[str]) -> str:
 PROMPT_VARIANTS_LABEL = "System prompts — {contexts} contexts · {shared} shared by every sample"
 PHRASINGS_LABEL = "Phrasings — {count} of one ask"
 WORLD_LABEL = "Seeded pages — {pages} · {keeps} must-keep, {excludes} must-not"
+# One arm's own ground, when the arms do not share one.  Named by the ARM so the fold, the
+# variance rows and the sample names all key on the same anchor.
+_ARM_WORLD_LABEL = "Seeded pages, {arm} — {pages}"
 OUTLIERS_HEADING = "Outliers"
 OUTLIERS_SUMMARY = "{count} of {driven} samples · diverging on {features}"
 _EVERYWHERE_DISTINCT = (
@@ -938,17 +941,17 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
-    """The K wordings of the one ask, as a table.
+def render_phrasings(arms: Sequence[cohort.Arm]) -> str:
+    """The cohort's arms, as a table — what each one said.
 
-    Tabular rather than a run of prose blocks: the wordings are a COVERAGE mechanism and the
+    Tabular rather than a run of prose blocks: the arms are a COVERAGE mechanism and the
     reason they sit together is to be read AGAINST each other, which a column does and stacked
     paragraphs do not."""
-    if not phrasings:
+    if not arms:
         return ""
-    rows = "\n".join(f"| {label} | {_cell(text)} |" for label, text in phrasings)
+    rows = "\n".join(f"| {arm.label} | {_cell(arm.text)} |" for arm in arms)
     return fold(
-        PHRASINGS_LABEL.format(count=plural(len(phrasings), "wording")),
+        PHRASINGS_LABEL.format(count=plural(len(arms), "wording")),
         f"{_PHRASING_HEAD_ROW}\n{rows}",
     )
 
@@ -962,6 +965,29 @@ def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
         pages=plural(counts.pages, "page"), keeps=counts.keeps, excludes=counts.excludes
     )
     return fold(label, world)
+
+
+def render_arm_worlds(arms: Sequence[cohort.Arm]) -> str:
+    """The ground the arms were answered against.
+
+    ONE fold when every arm shares a world — the chat shape, where the pages are a property of
+    the case and stating them per arm would print the same table five times.  One fold PER ARM
+    when they differ, which is what a cohort varying the job's own inputs looks like: the
+    fifth arm's page is the only place its bound values can be checked against what it read.
+    """
+    worlds = cohort.distinct_worlds(arms)
+    if not worlds:
+        return ""
+    if len(worlds) == 1:
+        return render_seeded_world(worlds[0].render(), WorldFacts(*worlds[0].counts))
+    return "\n\n".join(
+        fold(
+            _ARM_WORLD_LABEL.format(arm=arm.label, pages=plural(arm.world.counts[0], "page")),
+            arm.world.render(),
+        )
+        for arm in arms
+        if arm.world.pages
+    )
 
 
 def render_outliers(
@@ -1062,9 +1088,7 @@ CASE_PROMPTS_MARKER = "<!-- case prompts -->"
 
 def render_case_tail(
     *,
-    phrasings: Sequence[tuple[str, str]] = (),
-    world: str = "",
-    world_facts: WorldFacts | None = None,
+    arms: Sequence[cohort.Arm] = (),
     outliers: Sequence[tuple[int, cohort.SampleStanding]] = (),
     everywhere_distinct: Sequence[str] = (),
 ) -> str:
@@ -1072,15 +1096,11 @@ def render_case_tail(
 
     The system prompts are NOT here.  They are what a sample was actually run with, so they live
     with the sample a reader is following — reading one turn should not mean jumping between two
-    sections.  What stays is the world the case declares: the wordings and the pages."""
-    inputs = "\n\n".join(
-        part
-        for part in (render_phrasings(phrasings), render_seeded_world(world, world_facts))
-        if part
-    )
-    facts = world_facts or WorldFacts()
+    sections.  What stays is what the case declares: its arms and the ground each ran against."""
+    inputs = "\n\n".join(part for part in (render_phrasings(arms), render_arm_worlds(arms)) if part)
+    facts = _arm_world_facts(arms)
     summary = TEST_INPUTS_SUMMARY.format(
-        phrasings=plural(len(phrasings), "phrasing"),
+        phrasings=plural(len(arms), "phrasing"),
         pages=f"{plural(facts.pages, 'page')} · {facts.keeps} must-keep, {facts.excludes} must-not",
     )
     parts = [
@@ -1088,6 +1108,19 @@ def render_case_tail(
         render_outliers(outliers, everywhere_distinct) if outliers else "",
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+def _arm_world_facts(arms: Sequence[cohort.Arm]) -> WorldFacts:
+    """What the closed `Test inputs` fold states about the ground, summed over DISTINCT worlds.
+
+    Summed rather than taken from the first arm: a cohort whose arms each brought their own
+    pages really did seed five of them, and reporting one would describe a fifth of the run."""
+    counts = [world.counts for world in cohort.distinct_worlds(arms)]
+    return WorldFacts(
+        pages=sum(one[0] for one in counts),
+        keeps=sum(one[1] for one in counts),
+        excludes=sum(one[2] for one in counts),
+    )
 
 
 def render_representative(*, banner: str, number: int, prompts: str, transcript: str) -> str:

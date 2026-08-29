@@ -19,6 +19,7 @@ from penny.tests.eval.utils.cohort import (
     REPLY_SPREAD,
     ROUTINE_SHAPE,
     TOOL_SEQUENCE,
+    Arm,
     AssertionRow,
     AssertionSummary,
     OutputField,
@@ -43,6 +44,14 @@ from penny.tests.eval.utils.worlds import World
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
+
+
+def _one_arm(world: World) -> list[Arm]:
+    """The chat shape as arms: every sample ran "the ask" against one world.
+
+    The label matches ``_phrasing_label``'s single-wording answer, which is what a sample's
+    own ``phrasing`` carries — the anchor the claim's world lookup keys on."""
+    return [Arm(label="the ask", text="the ask", world=world)]
 
 
 def _sample(name: str, arm: str, shape: str, **kwargs) -> SampleObservation:
@@ -405,12 +414,12 @@ def test_a_sample_that_wrote_nothing_fails_the_claim_about_where_its_write_lande
     cohort = Cohort(
         "case",
         "m",
-        _ONE_SOURCE,
         [
             _round("wrote-into-it", container="round-box", wrote="499"),
             _round("wrote-elsewhere", container="other-box", wrote="499"),
             _round("wrote-nothing", container="round-box", wrote=None),
         ],
+        _one_arm(_ONE_SOURCE),
     )
     cohort.assert_the_write_landed_in_the_round_container()
     claim = cohort.claims[0]
@@ -426,7 +435,9 @@ def test_an_unframed_round_fails_the_only_claim_that_reads_the_framing():
 
     This is also the suite's ONLY reader of the round framing — no other claim mentions the
     container — so an unframed round is invisible unless this claim says so."""
-    cohort = Cohort("case", "m", _ONE_SOURCE, [_round("unframed", container=None, wrote="499")])
+    cohort = Cohort(
+        "case", "m", [_round("unframed", container=None, wrote="499")], _one_arm(_ONE_SOURCE)
+    )
     cohort.assert_the_write_landed_in_the_round_container()
     claim = cohort.claims[0]
 
@@ -481,7 +492,7 @@ def test_no_claim_can_opt_out_of_being_scored():
         SampleObservation(name=f"s{i}", phrasing="the ask", landed="learn", reply="x", given="x")
         for i in range(2)
     ]
-    cohort = Cohort("case", "m", world, samples)
+    cohort = Cohort("case", "m", samples, _one_arm(world))
     cohort.assert_machine_landed(ConversationState.LEARN)
     cohort.assert_every_value_in_the_reply_is_sourced()
 
