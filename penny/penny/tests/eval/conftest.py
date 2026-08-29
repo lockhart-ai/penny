@@ -612,13 +612,6 @@ def count_tool_calls(db: Database, tool_name: str) -> int:
     )
 
 
-_GAVE_UP = re.compile(
-    r"\b(sorry|apolog\w+)\b.{0,50}"
-    r"\b(wasn't|was not|couldn't|could not|can't|cannot|unable|not able)\b",
-    re.IGNORECASE,
-)
-
-
 def _row_turns(row: PromptLog) -> list[dict]:
     """One promptlog row's conversation: the turns it CARRIED (``messages``) followed by the
     turns the run appended after it (``trailing_messages`` — the tail no later call carried,
@@ -842,15 +835,6 @@ def _cycle_recovered_check(success: bool) -> Check:
         rationale=None
         if success
         else "the cycle did not recover to a successful close after the nudge",
-    )
-
-
-def gave_up_mid_run(db: Database) -> bool:
-    """Did any assistant reply apologise for a failure it should have recovered from — a
-    defeatist give-up ("Sorry, I wasn't able to get results right now") instead of a retry?"""
-    return any(
-        message.get("role") == "assistant" and _GAVE_UP.search(message.get("content") or "")
-        for message in _iter_prompt_messages(db)
     )
 
 
@@ -2299,6 +2283,17 @@ NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its 
 NO_REPLY = "the measured turn produced no reply"
 NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
+# A RECOVERY case forces its fault; the injector reports whether it actually fired.  A sample
+# it never fired on answered an unbroken turn, so there was no recovery to observe and its end
+# state says nothing about the behaviour the case is named for.  That is HARNESS debris, not a
+# model failure — a distinction with teeth, since the sabotage misfires in practice.
+#
+# THE COST, STATED (#2018): `bail_injected` does not say the fault could not be APPLIED, it
+# says the turn took a route the injector WATCHES.  A turn that took an unwatched route leaves
+# the cohort here, and whatever else it did goes unjudged with it.  Named per sample and
+# counted in the report's harness section rather than absorbed, so the rate is readable;
+# whether an unwatched route belongs in the cohort at all is #2018's to decide.
+INJECTION_NEVER_FIRED = "the forced fault never fired — the turn ran unbroken, so no recovery"
 
 # The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
 # design — a value Penny invents early in a turn rides into the message history and would
@@ -2309,6 +2304,12 @@ NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world th
 # laundering risk an assistant turn does — framework-rendered from the registry and the
 # ledger, and rendered BEFORE the turn acts, so it cannot contain anything this turn invented.
 _GIVEN_ROLES = frozenset({"user", "tool", "system"})
+
+
+# How a ported case reads one sample: its live database, the reply it produced, the
+# collections that existed before it, and — for a case that forced a fault — whether the
+# injector actually fired.  ``None`` for the injector arm means the case installed none.
+Observer = Callable[[Database, str, set[str], bool | None], eval_cohort.SampleObservation]
 
 
 def measured_turn_ran(db: Database) -> bool:
@@ -2391,6 +2392,28 @@ def _stored_entries(db: Database) -> list[eval_cohort.StoredEntry]:
     return written
 
 
+def _held_entries(db: Database) -> list[eval_cohort.StoredEntry]:
+    """Every entry the store HOLDS at the end of the sample, whoever wrote it.
+
+    The counterpart to ``_stored_entries``, which reads only what this round WROTE — and
+    the same ``StoredEntry`` shape, because it is the same three facts about the same rows.
+    A claim about what a round left ALONE cannot be answered from a list of its writes:
+    there, an entry it never touched and an entry it deleted are both simply absent.
+    Collections only, for the same reason ``_stored_entries`` is: a log is keyless and
+    append-only, so it holds nothing a round could have left in a different state."""
+    held: list[eval_cohort.StoredEntry] = []
+    for row in db.memories.list_all():
+        if row.type != MemoryType.COLLECTION:
+            continue
+        memory = db.memory(row.name)
+        entries = memory.read_all() if memory is not None else []
+        held += [
+            eval_cohort.StoredEntry(collection=row.name, key=entry.key, content=entry.content)
+            for entry in entries
+        ]
+    return held
+
+
 def _written_by_a_live_run(entry) -> bool:
     """Whether THIS sample put an entry's current value there — created by a live run, or last
     rewritten by one.  Both stamps, because an edit of a seeded entry moves only the second."""
@@ -2447,7 +2470,14 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, arm: int, reply: str, before: set[str]
+    db: Database,
+    *,
+    name: str,
+    phrasing: str,
+    arm: int,
+    reply: str,
+    before: set[str],
+    injected: bool | None,
 ) -> eval_cohort.SampleObservation:
     """Read everything one CHAT sample left behind, while its database is still live.
 
@@ -2459,7 +2489,7 @@ def _observe_sample(
     calling this one: reused elsewhere it returns a row that is structurally fine and
     substantively empty (#2017).
     """
-    exclusion = _exclusion(db, reply)
+    exclusion = _exclusion(db, reply, injected)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
@@ -2473,6 +2503,8 @@ def _observe_sample(
         walk=_machine_walk(db),
         routines=_routine_records(db),
         entries=_stored_entries(db),
+        held=_held_entries(db),
+        delivered=outgoing_replies(db),
         tool_sequence=[
             tool
             for run in chat_run_tool_sequences(db)
@@ -2490,17 +2522,23 @@ def _observe_sample(
 # The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every
 # shape shares — a sample's database exists from sample START, so a file is not a result — and
 # each gate adds whatever "this shape produced nothing" means for the shape it drives.
-def _exclusion(db: Database, reply: str) -> str | None:
+def _exclusion(db: Database, reply: str, injected: bool | None) -> str | None:
     """Why a CHAT sample cannot be counted, or ``None`` when it can.
 
     Chat's own second condition is an empty reply: the turn is a conversation and a turn that
     said nothing produced no behaviour to read.  It is stated HERE rather than shared, because
     it is false of every other shape — a micro-context sample has no reply at all, and a gate
-    that voided one for that would void the entire cohort and refuse the run (#2017)."""
+    that voided one for that would void the entire cohort and refuse the run (#2017).
+
+    ``injected`` is the injector's own account of whether it fired, and ``None`` for a case
+    that installs none — so the third condition is asked only of a case that forced a fault.
+    """
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if not reply.strip():
         return NO_REPLY
+    if injected is False:
+        return INJECTION_NEVER_FIRED
     return None
 
 
@@ -2941,6 +2979,21 @@ def _scored_sample(
     return SampleResult.binary(fails)
 
 
+def _guarded_injector(
+    wrapper: _InjectingClient | None, observe: Observer | None
+) -> _InjectingClient | None:
+    """The injector whose misfire is reported as a failed guard CHECK, or ``None``.
+
+    ONE fact — the sabotage never fired — told to whichever half of the report can carry
+    it, and told exactly once.  A case that is OBSERVED reports it as a named exclusion on
+    the observation (``INJECTION_NEVER_FIRED``), because an unbroken turn exercises no
+    recovery and is harness debris rather than the model getting anything wrong; a case
+    scored by a callback has no exclusions section, so the guard Check is where its
+    contract is stated.  Told to both, the same misfire would count twice — once as debris
+    and once as a behavioural failure."""
+    return None if observe is not None else wrapper
+
+
 async def _drive_sample(
     penny: Penny,
     server: MockSignalServer,
@@ -2952,7 +3005,7 @@ async def _drive_sample(
     wrap_client: Callable[[LlmClient], _InjectingClient] | None,
     timeout: float,
     retryable: bool,
-    observe: Callable[[Database, str, set[str]], eval_cohort.SampleObservation] | None = None,
+    observe: Observer | None = None,
 ) -> SampleResult:
     """ONE attempt at one sample against an already-seeded Penny: drive the turns,
     score them, write the sample's report block and dump its thinking.
@@ -2973,7 +3026,7 @@ async def _drive_sample(
     reply = ""
     try:
         reply = await _drive_turns(server, turns, timeout=timeout, retryable=retryable)
-        result = _scored_sample(penny.db, before, reply, score, wrapper)
+        result = _scored_sample(penny.db, before, reply, score, _guarded_injector(wrapper, observe))
         _stamp_cause(penny.db, result)
         _write_sample_report(
             penny.db, case_id, sample_index, result=result, reply=reply, driven=turns
@@ -2986,7 +3039,8 @@ async def _drive_sample(
     # moment what the round left behind is available at all.  A timed-out sample reaches this
     # line too, so it is EXCLUDED by name rather than silently absent from the pool.
     if observe is not None:
-        result.observation = observe(penny.db, reply, before)
+        injected = wrapper.bail_injected if wrapper is not None else None
+        result.observation = observe(penny.db, reply, before, injected)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
@@ -3078,14 +3132,18 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             else None
         )
 
-        def _observe(
-            sample_index: int,
-        ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
+        def _observe(sample_index: int) -> Observer:
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, reply, before: _observe_sample(
-                db, name=name, phrasing=phrasing, arm=arm, reply=reply, before=before
+            return lambda db, reply, before, injected: _observe_sample(
+                db,
+                name=name,
+                phrasing=phrasing,
+                arm=arm,
+                reply=reply,
+                before=before,
+                injected=injected,
             )
 
         async def _drive(

@@ -175,9 +175,21 @@ class SampleObservation(BaseModel):
     walk: str = ""
     routines: list[RoutineRecord] = Field(default_factory=list)
     entries: list[StoredEntry] = Field(default_factory=list)
+    # Every entry the store HOLDS when the sample ends — the same ``StoredEntry`` shape as
+    # ``entries``, because it is the same three facts about the same rows and two shapes for
+    # one thing drift.  ``entries`` is the subset this round WROTE; this is everything left
+    # standing, and it is the only one that can answer a claim about what a round left
+    # ALONE: in a list of writes, an entry never touched and an entry deleted are both
+    # simply absent.
+    held: list[StoredEntry] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
+    # Every message the sample DELIVERED to the user, oldest first.  ``reply`` is only the
+    # last one, and a claim about what reached the user has to read them all: a turn that
+    # delivered two messages would otherwise be judged on one of them, which is how a
+    # discarded draw arriving first went unseen.
+    delivered: list[str] = Field(default_factory=list)
     given: str = ""
     # The container the round was FRAMED on, read off the move that settled it — the same anchor
     # the turn's instruction rendered.  A write that landed anywhere else invented a destination

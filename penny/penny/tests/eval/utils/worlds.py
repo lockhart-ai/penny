@@ -14,7 +14,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, LISTING_URL, CannedPage
+from penny.tests.eval.utils.fixtures import (
+    AURORA_LISTING_499,
+    LISTING_URL,
+    TOPIC_PAGES,
+    CannedPage,
+)
 
 
 class World(BaseModel):
@@ -185,4 +190,32 @@ LISTING_DEMO_PHRASINGS = (
     f"ok, head to {LISTING_URL}, check what the price is right now, and save it",
     f"yep — read {LISTING_URL}, pull the current price off it, and remember that",
     f"just visit {LISTING_URL}, note the price it's at now, and hang on to it",
+)
+
+
+# ── The lookup world (the recovery cases' ground) ────────────────────────────
+#
+# ONE page, carrying one fact with a number in it, because what a recovery case asks is
+# whether the answer that finally reaches the user came off the page — and a number is a
+# specific value a provenance claim can trace.  Nothing is meant to be KEPT: the turn
+# answers a question, so a `keeps` token set would state a contract the ask never made.
+
+DEEPEST_LAKE_ASK = "what's the deepest lake in the world?"
+
+# Four more wordings of that same question.  What varies is only how a person asks it —
+# which noun opens it, "deepest" or "greatest depth", whether it is put as a plain
+# question or as a request to look something up.  What does NOT vary is the fact being
+# asked for, the page that carries it, or the state the turn ends in.
+DEEPEST_LAKE_PHRASINGS = (
+    "which lake is the deepest on earth?",
+    "hey, do you know what the world's deepest lake is?",
+    "can you look up which lake is the deepest anywhere in the world?",
+    "i'm curious — what lake has the greatest depth of any lake?",
+)
+
+DEEPEST_LAKE = World(
+    name="base",
+    pages=TOPIC_PAGES,
+    keeps=(),
+    excludes=(),
 )

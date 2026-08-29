@@ -15,16 +15,25 @@ the model pasted verbatim into ``key="[key]"`` arguments, 225 times in the obser
     key-bearing call the run made.
 
   **forced recovery** — the model's first key-bearing call is sabotaged to carry a
-    bracket-wrapped key, so the memory-tool teaching rejection fires on every sample and
-    the live model has to recover to the bare key and land the mutation.  This is the only
-    exercise of ``_bracket_key_rejection`` under a guaranteed trigger; that the sabotage
-    actually fired is the framework's own guard Check, prepended by ``chat_eval``'s graded
-    path (#1718), so a run where it never fired cannot score green off this scorer alone.
+    bracket-wrapped key, so the memory-tool teaching rejection fires and the live model has
+    to recover to the bare key and land the mutation.  **Ported to the cohort structure
+    under #2009** (`docs/eval-case-design.md`): five wordings of the one correction, the
+    sabotage FIXED across them, end state asserted and route measured.  A sample the
+    sabotage never fired on is a HARNESS exclusion — it corrected an unbroken turn and
+    exercised no recovery — never a behavioural failure.  At the cost #2018 records: the
+    sabotage watches three tool names, so a turn that reached the entry any other way
+    leaves here rather than answering the claims below.
+
+The two are deliberately NOT one cohort: they are the same ask against the same world with
+and without a fault, which is two behaviours, and pooling them would average a recovery
+rate into a copy-through rate.  Copy-through stays on the scorer path, where its signal —
+what the model's CALLS carried — lives; a route is not something the cohort structure
+asserts.
 
 Both cases are MECHANISM guards — they pin a render form and its teaching rejection, not a
 user-facing story — so this module sits beside the other chat-recovery guards
-(``test_chat_call_recovery`` · ``test_key_not_found_recovery`` ·
-``test_harmony_leak_recovery`` · …) rather than with the NL-dispatch stories.
+(``test_chat_call_recovery`` · ``test_harmony_leak_recovery`` · …) rather than with the
+NL-dispatch stories.
 
 **The world is an INERT storage collection.**  The board-games fixture used to be seeded
 with a hand-authored ``extraction_prompt`` (terminal ``4. done().`` and all), an hourly
@@ -36,20 +45,21 @@ world actually contains, so the slim fixture is the honest one.  The loud probe 
 of that out loud rather than trusting it.
 
 Report-only (``min_pass_rate=None``): the thresholds are the code owner's to set once the
-numbers are read.
+numbers are read.  Nothing here is the user's: the collection is a fixture of published
+board-game titles, held for their multi-word keys, because the repo is public.
 """
 
 from __future__ import annotations
 
-from typing import NamedTuple
-
 import pytest
 
+from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory.types import render_key
 from penny.penny import Penny
 from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
+    EVAL_MODELS,
     ChatEval,
     Check,
     Preparer,
@@ -61,7 +71,17 @@ from penny.tests.eval.conftest import (
     tool_call_keys,
     tool_call_sequence,
 )
+from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
+    SampleObservation,
+    SpecCategory,
+)
 from penny.tests.eval.utils.fixtures import BOARD_GAMES
+from penny.tests.eval.utils.worlds import World
 from penny.tools.memory_tools import format_entries
 
 pytestmark = pytest.mark.eval
@@ -74,41 +94,41 @@ _FAMILY = "prompt-render"
 _TARGET_KEY = "Ark Nova"
 
 # What every seeded key maps to, derived from the fixture rather than restated: the
-# "nothing else was touched" check compares against it, so a fixture edit moves both the
+# "nothing else was touched" claim compares against it, so a fixture edit moves both the
 # world and its expectation together.
 _SEEDED = {entry.split(" — ")[0]: entry for entry in BOARD_GAMES.entries}
+
+_COPYTHROUGH_CASE_ID = "key-render-copythrough"
+_FORCED_RECOVERY_CASE_ID = "key-render-forced-recovery"
+
+# Both cases, for the ``make check`` probe that runs their shared world's assertions once
+# per case — so a fixture edit that broke either one's premise fails there rather than an
+# hour into a GPU run.
+BRACKET_KEY_CASES = (_COPYTHROUGH_CASE_ID, _FORCED_RECOVERY_CASE_ID)
 
 _UPDATE_MESSAGE = (
     "in my board games collection the Ark Nova entry is out of date — please fix it "
     "to say it plays 1-4 players and runs about 150 minutes."
 )
 
-
-class _BracketKeyCase(NamedTuple):
-    """One agreed turn, and whether its first key-bearing call is sabotaged.
-
-    ``sabotaged`` is the whole difference between the two cases — the same message against
-    the same world, once as the model writes it and once with the bracket habit forced —
-    so the world, the seed and the shared checks are declared once."""
-
-    case_id: str
-    message: str
-    sabotaged: bool
-
-
-_COPYTHROUGH = _BracketKeyCase(
-    case_id="key-render-copythrough",
-    message=_UPDATE_MESSAGE,
-    sabotaged=False,
+# Four more wordings of that same correction.  What varies is only how a person says it —
+# which clause opens it, "fix" or "update" or "correct", whether the two facts are read as
+# a list or as a sentence.  What does NOT vary is the entry named, the values it should end
+# up carrying, or the collection it lives in — those are what the case measures against.
+_UPDATE_PHRASINGS = (
+    "can you update the Ark Nova entry in my board games collection? it plays "
+    "1-4 players and runs about 150 minutes.",
+    "my board games collection has Ark Nova wrong — it should say 1-4 players and "
+    "about 150 minutes.",
+    "please correct Ark Nova in board games so it reads 1-4 players and roughly 150 minutes.",
+    "the Ark Nova entry in board games needs fixing: 1-4 players, around 150 minutes.",
 )
 
-_FORCED_RECOVERY = _BracketKeyCase(
-    case_id="key-render-forced-recovery",
-    message=_UPDATE_MESSAGE,
-    sabotaged=True,
-)
-
-BRACKET_KEY_CASES = (_COPYTHROUGH, _FORCED_RECOVERY)
+# The correction is a conversation about a collection, so the world carries no page and the
+# claims read what the turn was GIVEN.  Named for its EFFECT rather than for its emptiness:
+# a world with no pages still installs the canned-browse stub, so a browse this turn had no
+# business making comes back as the stub's no-results page rather than reaching anything.
+_EMPTY_BROWSE = World(name="board-games", pages=(), keeps=(), excludes=())
 
 
 def _seed_board_games(db: Database) -> None:
@@ -123,7 +143,7 @@ def _seed_board_games(db: Database) -> None:
 # ── The loud probe: the keys really are rendered in invocation form ───────────
 
 
-def assert_board_games_world(db: Database, case: _BracketKeyCase) -> None:
+def assert_board_games_world(db: Database, case_id: str) -> None:
     """Everything the seed is responsible for, asserted out loud.
 
     Three claims, and a drift in any of them would be read as the model failing: the
@@ -139,37 +159,37 @@ def assert_board_games_world(db: Database, case: _BracketKeyCase) -> None:
     fixture edit that breaks any of the three fails inside ``make check`` rather than an
     hour into a GPU run."""
     row = db.memories.get(BOARD_GAMES.name)
-    assert row is not None, f"{case.case_id}: the seeded collection must exist"
+    assert row is not None, f"{case_id}: the seeded collection must exist"
     job = {
         "extraction_prompt": row.extraction_prompt,
         "schedule": row.schedule,
         "notify": row.notify or None,
     }
     carried = {field: value for field, value in job.items() if value is not None}
-    assert not carried, f"{case.case_id}: the collection must be inert, it carries {carried}"
+    assert not carried, f"{case_id}: the collection must be inert, it carries {carried}"
 
     entries = collection_entries(db, BOARD_GAMES.name)
-    assert entries == _SEEDED, f"{case.case_id}: the collection must hold exactly {_SEEDED}"
+    assert entries == _SEEDED, f"{case_id}: the collection must hold exactly {_SEEDED}"
 
     rendered = format_entries(
         require_memory(db, BOARD_GAMES.name).read_all(), source=BOARD_GAMES.name
     )
     assert render_key(_TARGET_KEY) in rendered, (
-        f"{case.case_id}: the read surface must render {_TARGET_KEY!r} in invocation form "
+        f"{case_id}: the read surface must render {_TARGET_KEY!r} in invocation form "
         f"({render_key(_TARGET_KEY)!r}), it renders:\n{rendered}"
     )
 
 
-def _probe_board_games_world(case: _BracketKeyCase) -> Preparer:
+def _probe_board_games_world(case_id: str) -> Preparer:
     """The loud seed probe, run once the world is whole."""
 
     def prepare(penny: Penny) -> None:
-        assert_board_games_world(penny.db, case)
+        assert_board_games_world(penny.db, case_id)
 
     return prepare
 
 
-# ── Checks ────────────────────────────────────────────────────────────────────
+# ── The copy-through case's checks ────────────────────────────────────────────
 
 
 def _target_updated_check(db: Database) -> Check:
@@ -200,46 +220,16 @@ def _no_bracket_call_check(db: Database) -> Check:
 
     The load-bearing signal of the copy-through case, and the reason success alone is not
     enough: the teaching rejection can turn a bracket call into a retry that lands, so the
-    end state would look identical while the render was busy teaching the wrong thing."""
+    end state would look identical while the render was busy teaching the wrong thing.
+
+    It stays on THIS case and does not port to its sabotaged sibling: there, every sample's
+    first key-bearing call carries brackets because the harness put them there."""
     offenders = bracket_wrapped_key_calls(db)
     return Check(
         "calls: no bracket-wrapped key was pasted into an argument",
         not offenders,
         rationale=f"passed {offenders}" if offenders else None,
         kind="spine",
-    )
-
-
-def _recovered_to_the_bare_key_check(db: Database) -> Check:
-    """After the rejection, a key-bearing call went out carrying the BARE key — the
-    recovery itself, read as a call rather than inferred from the end state.
-
-    Its own check beside the end state because the two can disagree: a run that never
-    retried and a run that retried and failed to write both leave the entry untouched, and
-    only the calls say which happened."""
-    keys = tool_call_keys(db, "update_entry")
-    recovered = _TARGET_KEY in keys
-    return Check(
-        f"calls: a call went out carrying the bare key {_TARGET_KEY!r}",
-        recovered,
-        anchor="update_entry(",
-        rationale=None if recovered else f"the update keys it tried were {keys or 'none'}",
-        kind="spine",
-    )
-
-
-def _no_bracket_key_stored_check(db: Database) -> Check:
-    """No bracket-wrapped key SURVIVES in the collection — the recovery's end-state half.
-
-    Distinct from the intended entry landing: a run that recovered by writing the value
-    under ``[Ark Nova]`` as a fresh key would leave the target untouched and the display
-    form baked into the store, which is the render's own mistake made durable."""
-    stored = sorted(key for key in collection_entries(db, BOARD_GAMES.name) if key not in _SEEDED)
-    return Check(
-        "state: no bracket-wrapped key was stored",
-        not stored,
-        rationale=f"the collection gained {stored}" if stored else None,
-        kind="state",
     )
 
 
@@ -285,9 +275,6 @@ def _key_advisories(db: Database, reply: str) -> list[Check]:
     ]
 
 
-# ── Scorers ───────────────────────────────────────────────────────────────────
-
-
 def _score_copythrough(db: Database, before: set[str], reply: str) -> list[Check]:
     """The intended entry was updated by key, no bracket-wrapped key was ever passed, and
     the rest of the collection is as it was seeded."""
@@ -299,50 +286,101 @@ def _score_copythrough(db: Database, before: set[str], reply: str) -> list[Check
     ]
 
 
-def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The model recovered from the forced bracket key: a call went out carrying the bare
-    key, the intended entry landed under it, no bracketed key was stored, and the rest of
-    the collection is as it was seeded.
-
-    The "did the sabotage fire?" contract is the framework-injected guard ``chat_eval``'s
-    graded path PREPENDS on a ``wrap_client`` case (#1718), so a graded return cannot drop
-    it.  The raw response is persisted inside the real client BEFORE the injector mutates
-    it, so the promptlog never shows the injected bracket form and no scorer could probe
-    for it — hence the harness-side guard rather than a check here."""
-    return [
-        _recovered_to_the_bare_key_check(db),
-        _target_updated_check(db),
-        _no_bracket_key_stored_check(db),
-        _rest_untouched_check(db),
-        *_key_advisories(db, reply),
-    ]
-
-
-async def _run_bracket_key_case(chat_eval: ChatEval, case: _BracketKeyCase) -> None:
-    """Drive one bracket-key case: the inert collection seeded and probed, the injector
-    installed only where the case declares a sabotage, the scorer bound to the case.
-    Report-only — the thresholds are the code owner's to set once the numbers are read."""
-    await chat_eval(
-        case_id=case.case_id,
-        family=_FAMILY,
-        message=case.message,
-        seed=_seed_board_games,
-        prepare=_probe_board_games_world(case),
-        wrap_client=_InjectBracketKey if case.sabotaged else None,
-        score=_score_forced_recovery if case.sabotaged else _score_copythrough,
-        min_pass_rate=None,
-    )
-
-
 async def test_copythrough_update_by_key(chat_eval: ChatEval) -> None:
     """Read the rendered keys, update ONE entry by key, and paste no display brackets on
     the way — the standing proof that the invocation-form render does not teach the mistake
     the ``[key]`` render taught."""
-    await _run_bracket_key_case(chat_eval, _COPYTHROUGH)
+    await chat_eval(
+        case_id=_COPYTHROUGH_CASE_ID,
+        family=_FAMILY,
+        message=_UPDATE_MESSAGE,
+        seed=_seed_board_games,
+        prepare=_probe_board_games_world(_COPYTHROUGH_CASE_ID),
+        score=_score_copythrough,
+        min_pass_rate=None,
+    )
 
 
-async def test_forced_bracket_key_recovery(chat_eval: ChatEval) -> None:
+# ── The ported recovery case's own claims (inline: one customer each) ──────────
+
+
+def _target_rewritten_under_its_bare_key(sample: SampleObservation, _world: World) -> Answer:
+    """The mutation landed on the entry the ask named, under the key it is really filed
+    under — the recovery's whole point, read as END STATE.
+
+    Not "a call went out carrying the bare key": that is a ROUTE, and it was keyed to
+    ``update_entry`` on the case this ports, which failed a sample that recovered through
+    ``collection_write`` while the entry itself landed correctly.  What matters is which
+    key the store was left holding a new value under, and a value written under
+    ``[Ark Nova]`` satisfies none of this sentence."""
+    written = [
+        entry
+        for entry in sample.entries
+        if entry.collection == BOARD_GAMES.name and entry.key == _TARGET_KEY
+    ]
+    if not written:
+        wrote = sorted({f"{entry.collection}/{entry.key}" for entry in sample.entries})
+        return False, f"the round wrote {wrote or 'nothing'}, never {_TARGET_KEY!r}"
+    stale = [entry for entry in written if entry.content == _SEEDED[_TARGET_KEY]]
+    return not stale, f"{_TARGET_KEY!r} was rewritten with the value it already had"
+
+
+def _nothing_else_in_the_collection_moved(sample: SampleObservation, _world: World) -> Answer:
+    """Every other entry reads exactly as it was seeded, and the collection gained none.
+
+    Read off what the store HOLDS rather than off what the round wrote, because the two
+    ways this fails are invisible in a list of writes: an entry the round DELETED is simply
+    absent there, and so is one it never touched.  The gained-key arm is also where a
+    recovery that filed the value under ``[Ark Nova]`` as a fresh key surfaces — the
+    display form made durable, which is the render's own mistake outliving the turn."""
+    held = {
+        entry.key: entry.content
+        for entry in sample.held
+        if entry.collection == BOARD_GAMES.name and entry.key is not None
+    }
+    moved = sorted(
+        key for key, content in _SEEDED.items() if key != _TARGET_KEY and held.get(key) != content
+    )
+    gained = sorted(key for key in held if key not in _SEEDED)
+    return not (moved or gained), f"changed or lost {moved}; gained {gained}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_forced_bracket_key_recovery(chat_eval: ChatEval, model: str) -> None:
     """The first key-bearing call is sabotaged to carry a bracket-wrapped key, so the
-    teaching rejection fires on every sample; the live model must come back with the bare
-    key and land the mutation inside the run's step budget."""
-    await _run_bracket_key_case(chat_eval, _FORCED_RECOVERY)
+    teaching rejection fires; the live model must come back with the bare key and land the
+    mutation inside the run's step budget."""
+    cohort = await chat_eval(
+        case_id=_FORCED_RECOVERY_CASE_ID,
+        model=model,
+        world=_EMPTY_BROWSE,
+        ask=_UPDATE_MESSAGE,
+        also_phrased=_UPDATE_PHRASINGS,
+        samples_per_phrasing=3,
+        seed=_seed_board_games,
+        prepare=_probe_board_games_world(_FORCED_RECOVERY_CASE_ID),
+        wrap_client=_InjectBracketKey,
+        min_pass_rate=None,
+        family=_FAMILY,
+        timeout=240.0,
+    )
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.claim(
+        f"state: {_TARGET_KEY!r} was rewritten under its bare key",
+        _target_rewritten_under_its_bare_key,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: nothing else in the collection moved",
+        _nothing_else_in_the_collection_moved,
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

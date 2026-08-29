@@ -52,7 +52,7 @@ from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
-from penny.tests.conftest import TEST_SENDER
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
     IDLE_APPLY_CASES,
@@ -168,6 +168,9 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.conftest import (
     _ACTOR,
+    INJECTION_NEVER_FIRED,
+    NO_MEASURED_TURN,
+    NO_REPLY,
     PENNY_LOGGER,
     BoundExpectation,
     Check,
@@ -181,9 +184,13 @@ from penny.tests.eval.conftest import (
     _case_prompts,
     _cycle_recovered_check,
     _enacting_name,
+    _exclusion,
     _flush_sample_blocks,
     _frame_attributes_to,
     _guarded_graded,
+    _guarded_injector,
+    _held_entries,
+    _InjectTextBail,
     _labelling_input,
     _sample_turns,
     _score_binding,
@@ -193,8 +200,10 @@ from penny.tests.eval.conftest import (
     _scorer_is_graded,
     _stamp_cause,
     _turn_kind,
+    _stored_entries,
     _without_examples,
     _write_sample_report,
+    collection_entries,
     continue_nudge_fired,
     count_tool_calls,
     draw_rerolled,
@@ -1520,6 +1529,74 @@ def test_bail_fired_and_cycle_recovered_guard_checks() -> None:
     assert recovered.ok and recovered.rationale is None
     stalled = _cycle_recovered_check(False)
     assert not stalled.ok and stalled.rationale is not None
+
+
+def test_a_misfired_injection_is_a_named_exclusion_and_never_also_a_failed_check() -> None:
+    """A recovery case's forced fault reports its misfire ONCE, to whichever half of the
+    report can carry it (#2009).
+
+    A sample the sabotage never fired on answered an unbroken turn: it exercised no
+    recovery, so its end state says nothing about the behaviour the case is named for.  A
+    PORTED case says so as a named exclusion and the sample leaves before any claim is
+    answered; a case still on the scorer path has no exclusions section, so the guard Check
+    stays its carrier.  Pinned in both directions because telling BOTH would count one
+    misfire twice — as harness debris and as the model getting it wrong — which is exactly
+    the reading a recorded run produced, marking a sample behavioural while the entry it
+    was asked to correct had landed."""
+    wrapper = _InjectTextBail(object(), "{}")
+
+    def observe(db, reply, before, injected):  # a ported case's observer
+        raise AssertionError("not called here")
+
+    assert _guarded_injector(wrapper, None) is wrapper, "a scorer case keeps its guard"
+    assert _guarded_injector(wrapper, observe) is None, "an observed case reports it itself"
+    assert _guarded_injector(None, observe) is None, "a case that forced nothing has nothing"
+
+
+def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_path) -> None:
+    """``injected`` is the injector's own account of whether it fired, and ``None`` means the
+    case installed none — so the condition is asked only of a case that forced a fault.
+
+    The order matters and is pinned with it: a sample whose measured turn never ran, or that
+    produced no reply, is excluded for THAT rather than for the injector, because those are
+    the more fundamental facts and naming the injector for them would send a reader after the
+    wrong thing."""
+    db = _make_db(tmp_path)
+    assert _exclusion(db, "an answer", None) == NO_MEASURED_TURN, "no live turn outranks all"
+
+    _log_prompt(db, response=_content_response("an answer"))
+    assert _exclusion(db, "an answer", None) is None, "no injector, nothing to ask"
+    assert _exclusion(db, "an answer", True) is None, "the fault fired — a real sample"
+    assert _exclusion(db, "an answer", False) == INJECTION_NEVER_FIRED
+    assert _exclusion(db, "   ", False) == NO_REPLY, "an empty reply outranks the injector"
+
+
+def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path) -> None:
+    """``held`` and ``entries`` are two reads of the same rows, and a claim about what a
+    round left ALONE can only be answered by the first.
+
+    ``entries`` is stamped by run id, so it carries only what this round wrote — which makes
+    an entry the round never touched and an entry it DELETED look identical there, both
+    simply absent.  The bracket-key recovery case's "nothing else in the collection moved"
+    claim is answered against the seeded rows this round did not write, so it needs the read
+    that can see them."""
+    db = _make_db(tmp_path)
+    _seed_board_games(db)
+    seeded = collection_entries(db, BOARD_GAMES.name)
+
+    assert _stored_entries(db) == [], "a seeded row carries no run stamp, so no round wrote it"
+    assert {entry.key for entry in _held_entries(db)} == set(seeded), "the store holds them all"
+
+    require_memory(db, BOARD_GAMES.name).update(
+        key="Ark Nova", content="Ark Nova — now with a playtime.", author="chat", run_id="r1"
+    )
+    assert [(entry.key, entry.content) for entry in _stored_entries(db)] == [
+        ("Ark Nova", "Ark Nova — now with a playtime.")
+    ], "the round wrote exactly one entry"
+    held = {entry.key: entry.content for entry in _held_entries(db)}
+    assert set(held) == set(seeded), "and the collection still holds every key it was seeded with"
+    assert held["Ark Nova"] == "Ark Nova — now with a playtime."
+    assert held["Spirit Island"] == seeded["Spirit Island"], "an untouched row reads as seeded"
 
 
 def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:
