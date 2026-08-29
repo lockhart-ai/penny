@@ -149,46 +149,13 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
-from penny.tests.eval.test_state_transitions import (
-    APPLY_CASES,
-    BAIL_CASES,
-    CORRECTION_CASES,
-    IDLE_APPLY_CASES,
-    IDLE_LEARN_CASES,
-    IDLE_REQUEST_CASES,
-    JOURNEY_CONFIRMATIONS,
-    LAST_SPOKEN_TURNS,
-    REQUEST_APPLY_CASES,
-    SHAPE_DELTA_WITHOUT_RE_RUNNING,
-    SHAPE_RE_RAN_AND_APPLIED,
-    _asks_for_what_is_missing_check,
-    _claims_no_job_check,
-    _correction_shape,
-    _does_not_re_ask_check,
-    _interface_check,
-    _names_the_cadence_check,
-    _overlaps,
-    _round_reported_checks,
-    _said_back,
-    assert_composed_world,
-    assert_new_space_is_unknown,
-    assert_parked_in_request_world,
-    assert_round_cites_its_run,
-    assert_round_is_framed,
-    assert_seeded_ledger,
-    assert_the_correction_is_unsaid,
-    assert_the_round_built_what_it_claims,
-    assert_the_teach_is_new_to_the_world,
-    assert_the_teach_round_is_parked,
-    assert_values_are_new,
-    cadence_seconds,
-    parked_binding,
-    rule_parts,
-    seed_composed_world,
-    seed_corrected_round,
-    seed_learned_round,
-    seed_parked_in_request,
-)
+from penny.tests.eval.chat.apply.test_known_routine_new_space import IDLE_APPLY_CASES, assert_new_space_is_unknown
+from penny.tests.eval.chat.apply.test_missing_value_arrives import _names_the_cadence_check
+from penny.tests.eval.chat.idle.test_round_ends_in_idle import BAIL_CASES, _claims_no_job_check, assert_the_round_built_what_it_claims
+from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import CORRECTION_CASES, SHAPE_DELTA_WITHOUT_RE_RUNNING, SHAPE_RE_RAN_AND_APPLIED, _correction_shape, assert_the_correction_is_unsaid, assert_the_teach_round_is_parked, seed_corrected_round
+from penny.tests.eval.chat.learn.test_teach_arrives_whole import assert_the_teach_is_new_to_the_world
+from penny.tests.eval.chat.request.test_ask_is_one_value_short import _asks_for_what_is_missing_check, _does_not_re_ask_check
+from penny.tests.eval.utils.transition_world import APPLY_CASES, IDLE_LEARN_CASES, IDLE_REQUEST_CASES, JOURNEY_CONFIRMATIONS, LAST_SPOKEN_TURNS, REQUEST_APPLY_CASES, _interface_check, _overlaps, _round_reported_checks, _said_back, assert_composed_world, assert_parked_in_request_world, assert_round_cites_its_run, assert_round_is_framed, assert_seeded_ledger, assert_values_are_new, cadence_seconds, parked_binding, rule_parts, seed_composed_world, seed_learned_round, seed_parked_in_request
 from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.collection_instantiation import _LINE_ESCAPE

@@ -71,7 +71,7 @@ from penny.skill_extraction import (
     SkillExtracted,
     SkillExtractor,
 )
-from penny.tests.eval.test_state_transitions import learn_to_apply_fixture_skill
+from penny.tests.eval.utils.transition_world import learn_to_apply_fixture_skill
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface

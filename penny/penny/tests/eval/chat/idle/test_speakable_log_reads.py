@@ -75,7 +75,7 @@ from penny.tests.eval.chat.idle.test_standing_collection import (
     landed_state_check,
     seed_standing_jobs,
 )
-from penny.tests.eval.test_state_transitions import _seeded_response, _wire_tool_call
+from penny.tests.eval.utils.transition_ledger import _seeded_response, _wire_tool_call
 
 pytestmark = pytest.mark.eval
 
