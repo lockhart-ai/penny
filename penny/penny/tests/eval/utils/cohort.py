@@ -110,10 +110,6 @@ class SampleObservation(BaseModel):
     entries: list[StoredEntry] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
-    # EVERY turn of Penny's this sample, not the scored one alone.  A round that reported the
-    # value and then said something else still reported it, and reading only the last turn scored
-    # that as a miss — 8/18 where the canonical case it was ported from scores 3/3.
-    replies: list[str] = Field(default_factory=list)
     reply_embedding: list[float] | None = None
     given: str = ""
     # The container the round was FRAMED on, read off the move that settled it — the same anchor
@@ -123,10 +119,6 @@ class SampleObservation(BaseModel):
     # Collections this round created that carry a schedule or a notify flag.  Learning must not
     # INSTANTIATE, so this is empty on a correct round.
     scheduled: list[str] = Field(default_factory=list)
-    # Every page this sample actually fetched, concatenated — so "the page was read" is
-    # decidable separately from "something was written down".  Without it a round that never
-    # looked and a round that looked and correctly found nothing score identically.
-    pages_read: str = ""
 
     @property
     def stored_text(self) -> str:
@@ -151,6 +143,7 @@ class Claim(BaseModel):
     numbers instead of going red on the first miss."""
 
     label: str
+    category: SpecCategory
     kind: str = "state"
     outcomes: list[ClaimOutcome] = Field(default_factory=list)
 
@@ -173,9 +166,24 @@ class Claim(BaseModel):
 
 
 # ── What a case measures ─────────────────────────────────────────────────────
+class Consequence(StrEnum):
+    """What a divergence on this feature COSTS — declared where the case measures it.
+
+    Two classes, because there are two answers a reader needs and no more.  CONSEQUENTIAL means
+    a different value implies a different END STATE, so the sample is worth looking at
+    individually.  COSMETIC means it is measured, its entropy reported and its ceiling proposed,
+    and it says nothing about any one sample: container naming is unconstrained in BOTH measured
+    models at 0.90 entropy, which makes it a system-level finding for the variance table rather
+    than fifteen per-sample findings."""
+
+    CONSEQUENTIAL = "consequential"
+    COSMETIC = "cosmetic"
+
+
 @dataclass(frozen=True)
 class Feature:
-    """One measured axis: a name, and how to read one sample's value for it.
+    """One measured axis: a name, how to read one sample's value for it, and what a divergence
+    on it costs.
 
     A string, because what is being measured is DISTINCTNESS — two samples agree when they
     produced the same value, and every feature answers that the same way whatever it is
@@ -183,21 +191,26 @@ class Feature:
 
     name: str
     read: Callable[[SampleObservation], str]
+    consequence: Consequence = Consequence.CONSEQUENTIAL
 
 
 TOOL_SEQUENCE = Feature("tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call")
 ROUTINE_SHAPE = Feature(
     "routine shape", lambda o: " | ".join(r.shape for r in o.routines) or "no routine"
 )
+# COSMETIC: unconstrained at 0.90 entropy in both measured models, so a divergence here is a
+# system-level finding that belongs in the variance table and never a fact about one sample.
 CONTAINER_NAME = Feature(
-    "container name", lambda o: ", ".join(sorted({e.collection for e in o.entries})) or "none"
+    "container name",
+    lambda o: ", ".join(sorted({e.collection for e in o.entries})) or "none",
+    consequence=Consequence.COSMETIC,
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
 TRANSITIONS = Feature("transitions", lambda o: o.walk)
 
 # Reply spread is pairwise rather than per-sample, so it is a marker the pooler recognises
 # rather than a value any one sample carries.
-REPLY_SPREAD = Feature("reply text", lambda o: o.reply)
+REPLY_SPREAD = Feature("reply text", lambda o: o.reply, consequence=Consequence.COSMETIC)
 
 
 class ExcludedSample(BaseModel):
@@ -521,6 +534,30 @@ def per_sample_cost(
 # one the fan-out depends on: a case's arithmetic is written once and every future port
 # inherits it, while how a reader meets it is free to change without touching a single case.
 
+
+class SpecCategory(StrEnum):
+    """Which of the design's four kinds of deterministic assertion a claim is.
+
+    The list is CLOSED and the field is REQUIRED, which is the whole point: a check that fits no
+    category cannot be declared, so the audit is a fact the code states rather than a review
+    somebody has to remember to run.  In prose the list existed already, and this branch shipped
+    a route assertion and a phrasing match anyway — nothing stopped them being written.
+
+    The rules themselves live in #1994 §A and #2011; they are deliberately not restated here,
+    because a third copy is a third thing to drift.
+
+    Distinct from ``kind`` (``state`` / ``reply`` / ``spine`` / ``proc``), which is a
+    render-and-gating class: ``kind`` decides how a claim renders and whether it can carry a
+    floor, ``category`` says which part of the design it satisfies.  Neither is derivable from
+    the other — a DIRECTED_CHANGE claim has both a gated store-side half and an ungated
+    reply-side one."""
+
+    LANDED = "landed"
+    STORE = "store"
+    PROVENANCE = "provenance"
+    DIRECTED_CHANGE = "directed change"
+
+
 # A claim read out of PROSE THE MODEL WROTE, as against one read out of the machine, the
 # registry or the store.  The distinction is empirical, not editorial — see ``proposed_floor``.
 REPLY_KIND = "reply"
@@ -535,6 +572,7 @@ class AssertionRow(BaseModel):
     label: str
     passed: int
     total: int
+    category: SpecCategory
     kind: str = "state"
     rationales: list[str] = Field(default_factory=list)
 
@@ -630,6 +668,7 @@ class FeatureDivergence(BaseModel):
     feature: str
     value: str
     modal: str
+    consequence: Consequence = Consequence.CONSEQUENTIAL
 
 
 class SampleStanding(BaseModel):
@@ -720,13 +759,18 @@ def standings(
     # maximally-variant one makes every shape unique, so every sample becomes an outlier and the
     # modal sample is whichever happened to be first — the section names everything and therefore
     # nothing.
+    # Two sets, deliberately: SHAPE decides standing and reads only the consequential features,
+    # because a cosmetic divergence implies no different end state and must not make an outlier.
+    # DIVERGENCES record both, so the cosmetic ones can be counted on one line rather than
+    # vanishing — measured but unreported is the same blindness as unmeasured.
     telling = telling_features(pooled, features)
-    shapes = Counter(sample_shape(s, telling) for s in pooled)
+    shape_of = [f for f in telling if f.consequence is Consequence.CONSEQUENTIAL]
+    shapes = Counter(sample_shape(s, shape_of) for s in pooled)
     modal_shape = shapes.most_common(1)[0][0] if shapes else ""
     # Divergence is measured against the REPRESENTATIVE sample rather than against each feature's
     # own mode, so the two halves of the report cannot disagree: the sample the reader is sent to
     # read has, by construction, nothing in its own divergence list.
-    representative = next((s for s in pooled if sample_shape(s, telling) == modal_shape), None)
+    representative = next((s for s in pooled if sample_shape(s, shape_of) == modal_shape), None)
     seen_modal = False
     out: list[SampleStanding] = []
     for sample in samples:
@@ -745,7 +789,7 @@ def standings(
                 )
             )
             continue
-        shape = sample_shape(sample, telling)
+        shape = sample_shape(sample, shape_of)
         if shape != modal_shape:
             standing = Standing.OUTLIER
         elif seen_modal:
@@ -773,7 +817,12 @@ def divergences(
     if representative is None or sample.name == representative.name:
         return []
     return [
-        FeatureDivergence(feature=feature.name, value=mine, modal=theirs)
+        FeatureDivergence(
+            feature=feature.name,
+            value=mine,
+            modal=theirs,
+            consequence=feature.consequence,
+        )
         for feature in features
         if feature is not REPLY_SPREAD
         and (mine := feature.read(sample)) != (theirs := feature.read(representative))

@@ -493,7 +493,9 @@ def test_a_case_declaring_nothing_shared_closes_with_nothing():
 
 def _rows(*specs: tuple[str, int, int, str]) -> list[cohort.AssertionRow]:
     return [
-        cohort.AssertionRow(label=label, passed=passed, total=total, kind=kind)
+        cohort.AssertionRow(
+            label=label, passed=passed, total=total, kind=kind, category=cohort.SpecCategory.STORE
+        )
         for label, passed, total, kind in specs
     ]
 
@@ -695,12 +697,18 @@ def test_the_three_sections_render_whole():
         case_id="memory-learn-close-shape",
         model=_MODEL,
         assertions=[
-            cohort.AssertionRow(label="state: the round taught a routine", passed=3, total=3),
+            cohort.AssertionRow(
+                label="state: the round taught a routine",
+                passed=3,
+                total=3,
+                category=cohort.SpecCategory.STORE,
+            ),
             cohort.AssertionRow(
                 label="reply: every specific value in it is sourced",
                 passed=2,
                 total=3,
                 kind="reply",
+                category=cohort.SpecCategory.PROVENANCE,
             ),
         ],
         variance=cohort.pool(samples, [cohort.ROUTINE_SHAPE, cohort.REPLY_SPREAD]),
@@ -718,20 +726,31 @@ def test_the_three_sections_render_whole():
         [
             # The whole default view: one line, carrying the case's WORST state (⚠️ — a sample
             # was lost) and both scores at once.
-            "🔴 **`memory-learn-close-shape`** — assertions 1/2 "
-            "(lowest ⚪ 0.67 `reply: every specific value in it is sourced`) · "
+            # GATED vs HELD: the reply claim is measured and reported, so it counts as ungated
+            # rather than as a miss — it stood at 2/3 and can carry no floor at this N.
+            "🔴 **`memory-learn-close-shape`** — assertions 1/1 gated · 1 ungated · "
             "variance ⚪ max H 0.579 `routine shape` · "
             "3 pooled + 0 control + 1 excluded = 4 driven",
             report.fold(
-                "⚪ Assertions — 1 of 2 held · lowest 0.67 "
-                "`reply: every specific value in it is sourced`",
+                "⚪ Assertions — 1 of 1 gated held · 1 ungated",
                 "\n\n".join(
                     [
+                        # A category nobody wrote a claim for renders as a GAP, not a blank —
+                        # this case checks nothing of that kind, which is the finding.
+                        "**landed** — _no claim. This case asserts nothing in this category._",
+                        "**store**",
                         "\n".join(
                             [
                                 "|  | assertion | held | rate | proposed floor |",
                                 "|---|---|---|---|---|",
                                 "| 🟢 | state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
+                            ]
+                        ),
+                        "**provenance**",
+                        "\n".join(
+                            [
+                                "|  | assertion | held | rate | proposed floor |",
+                                "|---|---|---|---|---|",
                                 # Model prose is never green: it is observed and NOT gated, and
                                 # a tick here would re-imply the floor it cannot carry.
                                 "| ⚪ | reply: every specific value in it is sourced | 2/3 | "
@@ -739,6 +758,8 @@ def test_the_three_sections_render_whole():
                                 "prose |",
                             ]
                         ),
+                        "**directed change** — _no claim. This case asserts nothing in this "
+                        "category._",
                         _FLOOR_NOTE,
                     ]
                 ),
@@ -1021,3 +1042,55 @@ def test_a_thinking_trace_shorter_than_its_own_label_renders_inline():
     than the click target."""
     assert report.thinking_row("brief").render() == "| 💭 | brief |  |"
     assert "<details>" in report.thinking_row("x" * 200).render()
+
+
+def test_every_spec_category_renders_including_the_empty_ones():
+    """The design permits exactly FOUR kinds of deterministic assertion, and a category nobody
+    wrote a claim for is a FINDING rather than a blank.
+
+    The reference port had no store-side directed-change claim purely because the case it was
+    ported from had none to copy, and nothing in the document showed the hole."""
+    rendered = report.CaseSections(
+        case_id="c",
+        model="m",
+        assertions=[
+            cohort.AssertionRow(
+                label="state: the machine landed in learn",
+                passed=3,
+                total=3,
+                category=cohort.SpecCategory.LANDED,
+            )
+        ],
+    ).render()
+
+    assert "**landed**" in rendered
+    for missing in ("store", "provenance", "directed change"):
+        assert f"**{missing}** — _no claim." in rendered, f"{missing} must render as a gap"
+
+
+def test_a_cosmetic_divergence_never_makes_an_outlier():
+    """A feature unconstrained in BOTH measured models is a system-level finding for the
+    variance table, not fifteen per-sample findings. Without the split, 8 of 9 outlier rows were
+    container-name-only — reporting "60% of samples are outliers" where the true statement was
+    "1 of 15 diverged consequentially"."""
+    # Two samples share a container name, so the feature is INFORMATIVE (not everywhere-distinct)
+    # and reaches the consequence rule rather than being dropped before it.
+    samples = [
+        cohort.SampleObservation(
+            name=f"c-{n}",
+            phrasing="a",
+            tool_sequence=["browse"],
+            entries=[cohort.StoredEntry(collection=container, key="k", content="c")],
+        )
+        for n, container in enumerate(["alpha", "alpha", "beta", "gamma"])
+    ]
+    features = [cohort.CONTAINER_NAME, cohort.TOOL_SEQUENCE]
+    standings = cohort.standings(samples, features)
+
+    assert all(s.standing is not cohort.Standing.OUTLIER for s in standings), (
+        "naming the container differently is cosmetic — it makes no outlier"
+    )
+    rendered = report.render_outliers(list(enumerate(standings, start=1)))
+    assert "No sample diverged consequentially" in rendered
+    assert "2 samples differ on `container name`" in rendered
+    assert "entropy reported in Variance" in rendered

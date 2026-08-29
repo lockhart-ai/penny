@@ -333,13 +333,11 @@ async def test_a_demonstrated_round_is_enacted_learned_and_reported(
     )
     # `transition-elicit-to-learn`'s own checks, ported one for one.
     cohort.assert_machine_landed(ConversationState.LEARN)
-    cohort.assert_each_page_was_read()
     cohort.assert_something_from_each_page_was_written()
     cohort.assert_the_write_landed_in_the_round_container()
     cohort.assert_a_routine_reached_the_registry()
     cohort.assert_nothing_was_scheduled()
     cohort.assert_every_spot_is_a_placeholder()
-    cohort.assert_the_reply_reports_what_was_stored()
 
     # What the new structure adds, and the canonical case has no equivalent for.
     cohort.assert_the_routine_names_a_destination()

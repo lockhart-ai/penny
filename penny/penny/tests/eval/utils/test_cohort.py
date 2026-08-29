@@ -21,6 +21,7 @@ from penny.tests.eval.utils.cohort import (
     AssertionRow,
     RoutineRecord,
     SampleObservation,
+    SpecCategory,
     StoredEntry,
     compare_to_ceiling,
     feature_variance,
@@ -196,8 +197,12 @@ def test_a_ceiling_refuses_to_be_compared_across_models_or_cohort_sizes():
 
 def test_an_assertion_that_did_not_hold_proposes_no_floor():
     """Recording a floor underneath the misses would bless the defect as the contract."""
-    assert proposed_floor(AssertionRow(label="held", passed=4, total=4)).lockable
-    partial = proposed_floor(AssertionRow(label="missed", passed=3, total=4))
+    assert proposed_floor(
+        AssertionRow(label="held", passed=4, total=4, category=SpecCategory.STORE)
+    ).lockable
+    partial = proposed_floor(
+        AssertionRow(label="missed", passed=3, total=4, category=SpecCategory.STORE)
+    )
     assert not partial.lockable and partial.note == "1 of 4 missed — read those first"
 
 
@@ -210,7 +215,13 @@ def test_a_claim_read_out_of_model_prose_proposes_no_floor_even_at_full_marks():
     this N; and 18/18 on one run is not evidence of stability, since one of the two runs that
     established the spread landed there itself."""
     prose = proposed_floor(
-        AssertionRow(label="reply: it names the world", passed=4, total=4, kind="reply")
+        AssertionRow(
+            label="reply: it names the world",
+            passed=4,
+            total=4,
+            kind="reply",
+            category=SpecCategory.DIRECTED_CHANGE,
+        )
     )
     assert not prose.lockable, "full marks on model prose is still not a lockable floor"
     assert prose.value == 1.0, "the observed rate is still reported"

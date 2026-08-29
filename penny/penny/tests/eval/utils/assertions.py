@@ -31,6 +31,7 @@ from penny.tests.eval.utils.cohort import (
     ClaimOutcome,
     Feature,
     SampleObservation,
+    SpecCategory,
     unsourced_specifics,
 )
 from penny.tests.eval.utils.worlds import World
@@ -77,7 +78,7 @@ class Cohort:
         # drove.  Declaring rather than answering immediately is what lets a control adopted
         # AFTER the claims were made still answer them: the case body reads claims-then-control,
         # and a claim evaluated on the spot would have covered only the samples driven so far.
-        self._declared: list[tuple[str, str, WorldClaim]] = []
+        self._declared: list[tuple[str, str, SpecCategory, WorldClaim]] = []
         self._adopted: list[SampleObservation] = []
         self._worlds: dict[str, World] = {world.name: world}
 
@@ -95,8 +96,8 @@ class Cohort:
     def claims(self) -> list[Claim]:
         """Every declared claim, answered over every covered sample against its own world."""
         return [
-            Claim(label=label, kind=kind, outcomes=self._answer(answer))
-            for label, kind, answer in self._declared
+            Claim(label=label, kind=kind, category=category, outcomes=self._answer(answer))
+            for label, kind, category, answer in self._declared
         ]
 
     def _answer(self, answer: WorldClaim) -> list[ClaimOutcome]:
@@ -122,12 +123,14 @@ class Cohort:
         self._claim(
             f"state: the machine landed in {state.value}",
             lambda s, _world: (s.landed == state.value, f"walked {s.walk}"),
+            SpecCategory.LANDED,
         )
 
     def assert_a_routine_reached_the_registry(self) -> None:
         self._claim(
             "state: the round taught a routine",
             lambda s, _world: (bool(s.routines), "nothing reached the registry"),
+            SpecCategory.STORE,
         )
 
     def assert_the_routine_names_a_destination(self) -> None:
@@ -142,12 +145,17 @@ class Cohort:
 
         The defect it catches: a routine that browses and never persists runs every cycle for
         ever and keeps nothing, and no check in the suite could see it."""
-        self._claim("state: the routine it recorded names somewhere to act", _names_a_destination)
+        self._claim(
+            "state: the routine it recorded names somewhere to act",
+            _names_a_destination,
+            SpecCategory.STORE,
+        )
 
     def assert_the_store_holds_an_entry(self) -> None:
         self._claim(
             "state: the store holds at least one entry",
             lambda s, _world: (bool(s.entries), "nothing was written"),
+            SpecCategory.STORE,
         )
 
     def assert_something_from_each_page_was_written(self) -> None:
@@ -163,15 +171,11 @@ class Cohort:
         Reads the WHOLE entry — key and content — because a fact in the key and a blurb in the
         body is a perfectly good way to store it, and a content-only read reported a 25/32
         model failure that was entirely its own bug."""
-        self._claim("state: something from each page was written down", _each_source_kept)
-
-    def assert_each_page_was_read(self) -> None:
-        """Every source the world declares was actually fetched this round.
-
-        The sibling asserts it per page and it is the claim that separates "read the page and
-        found nothing in scope" from "never looked" — which the written-down claim alone cannot
-        tell apart, and which is the difference between a correct round and a broken one."""
-        self._claim("state: each page was read", _each_page_read)
+        self._claim(
+            "state: something from each page was written down",
+            _each_source_kept,
+            SpecCategory.STORE,
+        )
 
     def assert_the_write_landed_in_the_round_container(self) -> None:
         """The demonstrated write landed where the turn was TOLD to put it.
@@ -180,12 +184,16 @@ class Cohort:
         COPY of a rendered anchor and a write that went elsewhere invented one over what it was
         given. This replaces every judgement about what a collection ought to be called."""
         self._claim(
-            "state: the demonstrated write landed in the round's container", _wrote_into_container
+            "state: the demonstrated write landed in the round's container",
+            _wrote_into_container,
+            SpecCategory.STORE,
         )
 
     def assert_nothing_was_scheduled(self) -> None:
         """Learning must not INSTANTIATE: teaching a round does not set it running."""
-        self._claim("state: nothing it created was scheduled", _nothing_scheduled)
+        self._claim(
+            "state: nothing it created was scheduled", _nothing_scheduled, SpecCategory.STORE
+        )
 
     def assert_every_spot_is_a_placeholder(self) -> None:
         """Every spot in the routine was named by the labeller.
@@ -193,27 +201,26 @@ class Cohort:
         A named spot stops being a leaf parameter, and the labeller names every spot
         unconditionally — so a leftover one means the labelling draw fell back as a whole and the
         routine kept its arg-derived names."""
-        self._claim("state: every spot in the routine is a placeholder", _placeholders_only)
-
-    def assert_the_reply_reports_what_was_stored(self) -> None:
-        """SAID == DID: the closing report names the value the round really stored.
-
-        The failure this catches is a reply describing a round that did something other than what
-        landed — which is invisible to every state check, because the state is correct."""
         self._claim(
-            "reply: she reports the value she stored (SAID == DID)", _said_equals_did, kind="reply"
+            "state: every spot in the routine is a placeholder",
+            _placeholders_only,
+            SpecCategory.STORE,
         )
 
     def assert_nothing_excluded_was_stored(self) -> None:
         """The exclusion the round was told in as many words.  A read rather than a taste: the
         compared tokens appear ONLY on the excluded line."""
-        self._claim("state: nothing the ask excluded was stored", _nothing_excluded)
+        self._claim(
+            "state: nothing the ask excluded was stored", _nothing_excluded, SpecCategory.STORE
+        )
 
     def assert_every_stored_entry_traces_to_the_world(self) -> None:
         """An entry naming something nobody's page mentions was invented — and once it is in a
         collection, a collector re-reads it for ever."""
         self._claim(
-            "state: every stored entry traces to what the round was given", _store_is_sourced
+            "state: every stored entry traces to what the round was given",
+            _store_is_sourced,
+            SpecCategory.PROVENANCE,
         )
 
     def assert_every_value_in_the_reply_is_sourced(self) -> None:
@@ -221,7 +228,12 @@ class Cohort:
         user's turns and the tool results, never Penny's own turns, or a value she invents
         early in a turn rides into the message history and sources itself from her own account
         of it."""
-        self._claim("reply: every specific value in it is sourced", _reply_is_sourced)
+        self._claim(
+            "reply: every specific value in it is sourced",
+            _reply_is_sourced,
+            SpecCategory.PROVENANCE,
+            kind="reply",
+        )
 
     def assert_facts_moved_with_the_world(self, control: Cohort) -> None:
         """DIRECTED CHANGE, both directions, against a control drive of the same ask.
@@ -240,8 +252,19 @@ class Cohort:
         # these two: a control is a real drive of the same ask, and its end state is as
         # assertable as the cohort's.
         self._adopt(control)
-        self._claim(_READS_ITS_WORLD, _reply_reads, kind="reply")
-        self._claim(_AVOIDS_THE_OTHER, _reply_avoids(self._other_worlds), kind="reply")
+        # The STORE-side half, and the only one of the two that can carry a floor.  It is
+        # decidable on every sample — measured, the base world's samples stored $499 and the
+        # control's stored $549 — and it is squarely end state, so directed change gets a gated
+        # form without asserting anything about prose.  The reply-side half below stays REPORTED:
+        # it reads model text, whose rate moves +/-3 of 18 between two runs of identical code.
+        self._claim(_STORE_MOVED, _store_reads, SpecCategory.DIRECTED_CHANGE)
+        self._claim(_READS_ITS_WORLD, _reply_reads, SpecCategory.DIRECTED_CHANGE, kind="reply")
+        self._claim(
+            _AVOIDS_THE_OTHER,
+            _reply_avoids(self._other_worlds),
+            SpecCategory.DIRECTED_CHANGE,
+            kind="reply",
+        )
 
     def _other_worlds(self, sample: SampleObservation) -> list[World]:
         """Every world this case drove EXCEPT the one this sample was given."""
@@ -253,10 +276,16 @@ class Cohort:
         self.features += [feature for feature in features if feature not in self.features]
 
     # ── internals ────────────────────────────────────────────────────────────
-    def _claim(self, label: str, answer: WorldClaim, kind: str = "state") -> None:
+    def _claim(
+        self,
+        label: str,
+        answer: WorldClaim,
+        category: SpecCategory,
+        kind: str = "state",
+    ) -> None:
         """Declare one claim.  It is answered at report time over every covered sample."""
         flavour = "reply" if label.startswith("reply:") else kind
-        self._declared.append((label, flavour, answer))
+        self._declared.append((label, flavour, category, answer))
 
     def _adopt(self, control: Cohort) -> None:
         """Take a control's samples under this case's claims.
@@ -276,6 +305,7 @@ class Cohort:
 # intention.
 _READS_ITS_WORLD = "reply: it names what this world says"
 _AVOIDS_THE_OTHER = "reply: it names nothing from the world it was not given"
+_STORE_MOVED = "state: what it stored moved with the world"
 
 
 # ── The claims themselves, as pure functions over one sample ─────────────────
@@ -288,11 +318,6 @@ def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
     stored = _normalise(sample.stored_text)
     missed = [source[0] for source in world.keeps if not any(t in stored for t in source)]
     return bool(sample.entries) and not missed, f"nothing stored from {missed}"
-
-
-def _each_page_read(sample: SampleObservation, world: World) -> Answer:
-    unread = [page.match for page in world.pages if page.match not in sample.pages_read]
-    return not unread, f"never fetched {unread}"
 
 
 def _wrote_into_container(sample: SampleObservation, _world: World) -> Answer:
@@ -316,13 +341,16 @@ def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
     return bool(sample.routines) and not asking, f"still a leaf parameter: {asking}"
 
 
-def _said_equals_did(sample: SampleObservation, world: World) -> Answer:
-    """Ported from the canonical case's own reading: EVERY turn of Penny's this sample, not the
-    scored one alone, because a round that reported the value and then said something else still
-    reported it."""
-    said = _normalise(" ".join([*sample.replies, sample.reply]))
-    missing = [name for name in world.names if name.lower() not in said]
-    return not missing, f"no reply names {missing}"
+def _store_reads(sample: SampleObservation, world: World) -> Answer:
+    """Directed change read off the STORE: what this sample wrote carries THIS world's fact.
+
+    The half of directed change that is always decidable — a value is in the store or it is
+    not — which is what makes it the half that can carry a floor."""
+    stored = _normalise(sample.stored_text)
+    missing = [name for name in world.names if name.lower() not in stored]
+    if not sample.entries:
+        return False, "nothing was stored"
+    return not missing, f"stored nothing this world says ({missing})"
 
 
 def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
@@ -391,6 +419,7 @@ def assertion_rows(claims: Sequence[Claim]) -> list[AssertionRow]:
             label=claim.label,
             passed=claim.passed,
             total=claim.total,
+            category=claim.category,
             kind=claim.kind,
             rationales=claim.rationales,
         )

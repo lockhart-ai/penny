@@ -1438,7 +1438,10 @@ def _render_call(function: dict) -> str:
 
 
 def _sample_turns(
-    rows: list[PromptLog], reply: str, driven: Sequence[str] = ()
+    rows: list[PromptLog],
+    reply: str,
+    driven: Sequence[str] = (),
+    delivered: Sequence[str] = (),
 ) -> list[tuple[str, str]]:
     """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
     multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
@@ -1458,10 +1461,21 @@ def _sample_turns(
     sample, and the classifier, anchored to the first turn head, rendered under it instead of
     under the message it actually judged.  Seeded turns are context, not steps: they are in
     the system prompt, the classifier's own slice, and the DB.  Empty ``driven`` keeps the
-    old behaviour, so a case that seeds nothing renders byte-identically."""
+    old behaviour, so a case that seeds nothing renders byte-identically.
+
+    ``delivered`` is what Penny actually SENT.  A discarded draw is persisted whole (#1839 keeps
+    the ledger honest by re-rolling on the unchanged context and logging both attempts), and the
+    transcript is built from the promptlog — so every re-rolled text draw rendered as a 🤖 reply,
+    indistinguishable from the message the user received.  Measured on the reference run, all 18
+    samples carry exactly TWO outgoing messages and the report showed three: Penny sends one
+    message, the report claimed she sent two.  Rerolls are working machinery and must not appear
+    anywhere they can be read as output, so a text draw renders as a reply only if it was
+    delivered; the rest are collected by ``rejected_draws`` for their own fold.  Empty
+    ``delivered`` keeps the old behaviour."""
     turns: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     pushed = {content.strip() for content in driven}
+    sent = {content.strip() for content in delivered}
 
     def emit(actor: str, content: str) -> None:
         if content and (actor, content) not in seen:
@@ -1480,9 +1494,39 @@ def _sample_turns(
             elif role == "assistant":
                 for call in message.get("tool_calls") or []:
                     emit(_ACTOR["call"], _render_call(call.get("function", {})))
-                emit(_ACTOR["penny"], content)
+                if not sent or content.strip() in sent:
+                    emit(_ACTOR["penny"], content)
     emit(_ACTOR["penny"], reply.strip())
     return turns
+
+
+def _delivered_replies(db: Database) -> list[str]:
+    """What Penny actually SENT this sample, or nothing when the message log is absent.
+
+    Empty means "do not filter" — the pre-#1997 rendering — so a bare-schema database with no
+    `penny-messages` facade renders exactly as it always did rather than failing."""
+    if db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG) is None:
+        return []
+    return outgoing_replies(db)
+
+
+def rejected_draws(rows: list[PromptLog], delivered: Sequence[str]) -> list[str]:
+    """Every text draw this sample produced that was never sent.
+
+    Kept for diagnosis and rendered behind its own fold, labelled as a rejected draw — never in
+    the reply stream, where it reads as a message the user received."""
+    sent = {content.strip() for content in delivered}
+    if not sent:
+        return []
+    drawn: list[str] = []
+    for row in rows:
+        for message in _row_turns(row):
+            if message.get("role") != "assistant" or message.get("tool_calls"):
+                continue
+            content = (message.get("content") or "").strip()
+            if content and content not in sent and content not in drawn:
+                drawn.append(content)
+    return drawn
 
 
 # A check whose `anchor` is this sentinel is about the final NL reply itself (not a tool
@@ -2006,6 +2050,7 @@ def _build_transcript(
     baseline: Baseline | None,
     case_id: str,
     sample_index: int,
+    delivered: Sequence[str] = (),
 ) -> report.SampleTranscript:
     """Assemble the ``report.SampleTranscript`` for one sample from its turns + scored result."""
     if not turns:
@@ -2027,6 +2072,7 @@ def _build_transcript(
         events=events,
         checks=checks,
         run_close_score=f"{passed_checks}/{total}",
+        rejected=rejected_draws(main_rows, delivered),
     )
 
 
@@ -2100,9 +2146,10 @@ def _write_sample_report(
     baseline = baseline_from_env()
     # Stamp fragile (same EVAL_REPORT_DIR gate as the artifact write) so it rides into the artifact.
     result.fragile = result.passed and sample_is_fragile(db)
-    turns = _sample_turns(main_rows, reply, driven)
+    delivered = _delivered_replies(db)
+    turns = _sample_turns(main_rows, reply, driven, delivered)
     transcript = _build_transcript(
-        db, result, turns, main_rows, rows, baseline, case_id, sample_index
+        db, result, turns, main_rows, rows, baseline, case_id, sample_index, delivered
     )
     _record_sample_block(case_id, sample_index, transcript)
 
@@ -2320,18 +2367,6 @@ def _written_by_a_live_run(entry) -> bool:
     return any(stamp is not None and not is_seeded_run(stamp) for stamp in stamps)
 
 
-def _pages_read(db: Database) -> str:
-    """Every page this sample fetched, as one blob — the browse-results log's recent window.
-
-    Read here rather than inferred from the tool sequence: a `browse` call that failed, or one
-    whose extraction found nothing, still appears in the sequence, and "the page was read" has to
-    mean the page's own text came back."""
-    memory = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
-    if memory is None:
-        return ""
-    return "\n".join(entry.content for entry in memory.read_recent(window_seconds=3600, cap=None))
-
-
 def _framed_container(db: Database) -> str | None:
     """The container the round was framed on, read off the move that settled it.
 
@@ -2387,10 +2422,8 @@ def _observe_sample(
             tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS
         ],
         reply=reply,
-        replies=outgoing_replies(db),
         reply_embedding=reply_embedding(db, reply),
         given=given_to_the_model(db),
-        pages_read=_pages_read(db),
         container=_framed_container(db),
         scheduled=_scheduled_by_this_round(db, before),
     )

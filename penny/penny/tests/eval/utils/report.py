@@ -327,7 +327,12 @@ SECTION_C = "Excluded samples"
 # A collapsed section states what is INSIDE it, not just where to click — the point of a folded
 # document is deciding what to open without opening it.  `Label — facts` is still a label: a noun
 # phrase with counts attached, never a sentence.
-_A_SUMMARY = "{label} — {held} of {total} held{lowest}"
+# GATED != HELD.  Counting an ungated claim as not-held reported a check standing at 18/18 as
+# a miss, purely because no floor can be accepted for it at this N — which is a fact about the
+# threshold, not about the run.  So the headline counts what CAN be gated, and says separately
+# how many are measured without one.
+_A_SUMMARY = "{label} — {held} of {gated} gated held{ungated}{lowest}"
+_A_UNGATED = " · {count} ungated"
 _A_LOWEST = " · lowest {rate:.2f} `{claim}`"
 _B_SUMMARY = "{label} — {features} · max H {entropy:.3f} `{feature}` · none gated"
 _B_EMPTY = "{label} — nothing pooled"
@@ -335,7 +340,7 @@ _COST_SUMMARY = "{label} — {input:,.0f} in / {output:,.0f} out per sample · {
 _C_SUMMARY = "{label} — {count} of {driven} · dominant: {reason}"
 
 _SUMMARY_LINE = (
-    "{glyph} **`{case_id}`** — assertions {held}/{claims}{lowest} · "
+    "{glyph} **`{case_id}`** — assertions {held}/{gated} gated{ungated}{lowest} · "
     "variance {var_glyph} max H {entropy:.3f} `{feature}` · {counts}"
 )
 _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
@@ -347,6 +352,11 @@ _COUNTS = "{pooled} pooled + {control} control + {excluded} excluded = {driven} 
 _NO_VARIANCE = "nothing pooled"
 
 _ASSERTION_HEAD = "|  | assertion | held | rate | proposed floor |\n|---|---|---|---|---|"
+_CATEGORY_HEADING = "**{category}**"
+# A category with no claims renders as a GAP rather than as an absence nobody notices.  The
+# reference port had no store-side directed-change claim purely because the case it was ported
+# from had none to copy, and nothing in the document showed the hole.
+_CATEGORY_GAP = "**{category}** — _no claim. This case asserts nothing in this category._"
 _VARIANCE_HEAD = (
     "|  | feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|---|"
 )
@@ -433,9 +443,9 @@ class CaseSections:
 
     # ── What each fold says while it is still closed ─────────────────────
     def _assertions_summary(self) -> str:
-        worst = min(
-            (row for row in self.assertions if row.total), key=lambda r: r.pass_rate, default=None
-        )
+        gated = [row for row in self.assertions if not row.reads_model_prose]
+        ungated = len(self.assertions) - len(gated)
+        worst = min((row for row in gated if row.total), key=lambda r: r.pass_rate, default=None)
         lowest = (
             ""
             if worst is None or worst.at_full
@@ -443,8 +453,9 @@ class CaseSections:
         )
         return _A_SUMMARY.format(
             label=f"{self._assertions_glyph()} {SECTION_A}",
-            held=sum(1 for row in self.assertions if row.at_full),
-            total=len(self.assertions),
+            held=sum(1 for row in gated if row.at_full),
+            gated=len(gated),
+            ungated=_A_UNGATED.format(count=ungated) if ungated else "",
             lowest=lowest,
         )
 
@@ -481,13 +492,15 @@ class CaseSections:
     # ── The one line a reader sees by default ────────────────────────────
     def summary_line(self) -> str:
         """Both scores and the whole sample accounting, behind the worst glyph in the case."""
-        held = sum(1 for row in self.assertions if row.at_full)
+        gated = [row for row in self.assertions if not row.reads_model_prose]
+        ungated = len(self.assertions) - len(gated)
         top = self._top_feature()
         return _SUMMARY_LINE.format(
             glyph=self.glyph(),
             case_id=self.case_id,
-            held=held,
-            claims=len(self.assertions),
+            held=sum(1 for row in gated if row.at_full),
+            gated=len(gated),
+            ungated=f" · {ungated} ungated" if ungated else "",
             lowest=self._lowest(),
             var_glyph=self._variance_glyph(),
             entropy=top.entropy if top else 0.0,
@@ -515,8 +528,8 @@ class CaseSections:
         return max(self.variance.features, key=lambda f: f.entropy, default=None)
 
     def _lowest(self) -> str:
-        """The claim that held least often — the one a reader should look at first."""
-        scored = [row for row in self.assertions if row.total]
+        """The lowest GATED claim — an ungated one has no floor to fall below."""
+        scored = [row for row in self.assertions if row.total and not row.reads_model_prose]
         worst = min(scored, key=lambda row: row.pass_rate, default=None)
         if worst is None or worst.at_full:
             return ""
@@ -524,10 +537,24 @@ class CaseSections:
 
     # ── A ────────────────────────────────────────────────────────────────
     def _assertions(self) -> str:
+        """Grouped by SPEC CATEGORY, with every category rendered — including the empty ones.
+
+        The design permits exactly four kinds of deterministic assertion, and a category nobody
+        wrote a claim for is a finding rather than a blank: it says this case checks nothing of
+        that kind, which is exactly what a reader porting the next case needs to see."""
         if not self.assertions:
             return _NO_ASSERTIONS
-        rows = "\n".join(_assertion_row(row) for row in self.assertions)
-        return f"{_ASSERTION_HEAD}\n{rows}\n\n{_FLOOR_NOTE}"
+        blocks: list[str] = []
+        for category in cohort.SpecCategory:
+            rows = [row for row in self.assertions if row.category is category]
+            if not rows:
+                blocks.append(_CATEGORY_GAP.format(category=category.value))
+                continue
+            table = "\n".join(_assertion_row(row) for row in rows)
+            blocks.append(
+                f"{_CATEGORY_HEADING.format(category=category.value)}\n\n{_ASSERTION_HEAD}\n{table}"
+            )
+        return "\n\n".join([*blocks, _FLOOR_NOTE])
 
     # ── B ────────────────────────────────────────────────────────────────
     def _variance(self) -> str:
@@ -681,7 +708,11 @@ _OUTLIER_LEAD = (
     "not the sample: the feature, this sample's value, and the representative's. The whole "
     "transcript is in the run artifact for a reader who wants it after seeing what changed._"
 )
-_NO_OUTLIERS = "_Every pooled sample carried the representative's shape._"
+_NO_OUTLIERS = "_No sample diverged consequentially._"
+_COSMETIC_LINE = (
+    "_{count} samples differ on {features} — measured, entropy reported in "
+    "Variance, and not a finding about any one sample._"
+)
 _SAMPLE_MAP_LEAD = "_The index into the section above — `modal` is the one to read._"
 
 
@@ -787,45 +818,80 @@ def render_outliers(
 ) -> str:
     """What each outlying sample did differently — the divergence, never the transcript.
 
-    This is what makes a variant cohort readable at all.  Rendering each outlier's whole run to
-    communicate one changed feature is three orders of magnitude of the wrong thing, and it is
-    what made a single case's report 787,681 characters."""
+    Ranked by CONSEQUENCE, declared at the case's `measure()` site.  A consequential divergence
+    implies a different end state and is rendered individually with its evidence; a cosmetic one
+    is measured, reported in the variance table, and collapsed to a count here.  Without the
+    split, 8 of 9 outlier rows were container-name-only — reporting "60% of samples are outliers"
+    where the true statement was "1 of 15 diverged consequentially"."""
     pooled = sum(
         1
         for _n, s in rows
         if s.standing in (cohort.Standing.MODAL, cohort.Standing.TYPICAL, cohort.Standing.OUTLIER)
     )
     outliers = [
-        (number, s) for number, s in rows if s.standing == cohort.Standing.OUTLIER and s.divergences
+        (number, s)
+        for number, s in rows
+        if s.standing == cohort.Standing.OUTLIER and _consequential(s)
     ]
-    note = (
-        _EVERYWHERE_DISTINCT.format(
-            count=pooled_count or pooled,
-            features=", ".join(f"`{name}`" for name in everywhere_distinct),
-        )
-        if everywhere_distinct
-        else ""
-    )
+    blocks = [
+        part for part in (_uniform_note(everywhere_distinct, pooled_count or pooled),) if part
+    ]
+    cosmetic = _cosmetic_line(rows)
     if not outliers:
-        body = "\n\n".join(part for part in (_NO_OUTLIERS, note) if part)
+        body = "\n\n".join([_NO_OUTLIERS, *blocks, *([cosmetic] if cosmetic else [])])
         return fold(
             OUTLIERS_LABEL.format(count=0, driven=pooled, features=plural(0, "feature")), body
         )
-    features = {d.feature for _n, s in outliers for d in s.divergences}
-    blocks = [_OUTLIER_LEAD]
-    if note:
-        blocks.append(note)
+    features = {d.feature for _n, s in outliers for d in _consequential(s)}
+    body = [_OUTLIER_LEAD, *blocks]
     for number, standing in outliers:
         table = "\n".join(
-            f"| `{d.feature}` | {_code(d.value)} | {_code(d.modal)} |" for d in standing.divergences
+            f"| `{d.feature}` | {_code(d.value)} | {_code(d.modal)} |"
+            for d in _consequential(standing)
         )
-        blocks.append(
-            f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{_OUTLIER_HEAD}\n{table}"
-        )
+        body.append(f"**{SAMPLE_ROW} {number}** ({standing.phrasing})\n\n{_OUTLIER_HEAD}\n{table}")
+    if cosmetic:
+        body.append(cosmetic)
     label = OUTLIERS_LABEL.format(
         count=len(outliers), driven=pooled, features=plural(len(features), "feature")
     )
-    return fold(label, "\n\n".join(blocks))
+    return fold(label, "\n\n".join(body))
+
+
+def _consequential(standing: cohort.SampleStanding) -> list[cohort.FeatureDivergence]:
+    """The divergences worth reading one sample for."""
+    return [d for d in standing.divergences if d.consequence is cohort.Consequence.CONSEQUENTIAL]
+
+
+def _cosmetic_line(rows: Sequence[tuple[int, cohort.SampleStanding]]) -> str:
+    """Every cosmetic divergence, as ONE count line naming the features it fell on."""
+    diverged = {
+        number
+        for number, s in rows
+        for d in s.divergences
+        if d.consequence is cohort.Consequence.COSMETIC
+    }
+    if not diverged:
+        return ""
+    features = sorted(
+        {
+            d.feature
+            for _n, s in rows
+            for d in s.divergences
+            if d.consequence is cohort.Consequence.COSMETIC
+        }
+    )
+    return _COSMETIC_LINE.format(
+        count=len(diverged), features=", ".join(f"`{name}`" for name in features)
+    )
+
+
+def _uniform_note(everywhere_distinct: Sequence[str], pooled: int) -> str:
+    if not everywhere_distinct:
+        return ""
+    return _EVERYWHERE_DISTINCT.format(
+        count=pooled, features=", ".join(f"`{name}`" for name in everywhere_distinct)
+    )
 
 
 def _code(value: str) -> str:
@@ -915,6 +981,7 @@ class SampleTranscript:
     steps: list[Step]
     run_close: RunClose | None = None
     placeholder: str | None = None
+    rejected: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         return fold_sample(self.number, self.banner, self._body())
@@ -923,6 +990,9 @@ class SampleTranscript:
         if self.placeholder is not None:
             return self.placeholder
         blocks = [step.render() for step in self.steps]
+        rejected = render_rejected_draws(self.rejected)
+        if rejected:
+            blocks.append(rejected)
         if self.run_close is not None:
             blocks.append(self.run_close.render())
         return "\n\n".join(blocks)
@@ -1258,6 +1328,27 @@ def render_banner(
     return " · ".join(parts)
 
 
+REJECTED_DRAWS_LABEL = "Rejected draws — {count} discarded before the reply was sent"
+REJECTED_DRAWS_LEAD = (
+    "_These were never sent. The loop discarded each one and re-drew on the unchanged context, "
+    "so they are working machinery rather than output — kept here for diagnosis, and never in "
+    "the reply stream where they read as messages the user received._"
+)
+
+
+def render_rejected_draws(draws: Sequence[str]) -> str:
+    """Every text draw the loop threw away, behind its own labelled fold."""
+    if not draws:
+        return ""
+    body = "\n\n".join(
+        [
+            REJECTED_DRAWS_LEAD,
+            *(f"{index}. {escape_cell(draw)}" for index, draw in enumerate(draws, 1)),
+        ]
+    )
+    return fold(REJECTED_DRAWS_LABEL.format(count=len(draws)), body)
+
+
 FRAGILE_NOTE = (
     "_`fragile` — the sample reached its result, but only after a rejected or refused tool call "
     "or a framework recovery nudge: real, and not robust._"
@@ -1417,6 +1508,7 @@ def build_sample(
     checks: list[CheckView],
     run_close_score: str,
     placeholder: str | None = None,
+    rejected: Sequence[str] = (),
 ) -> SampleTranscript:
     """Assemble a sample from its extracted events + resolved checks (the pure builder).
 
@@ -1435,7 +1527,7 @@ def build_sample(
             by_event.setdefault(check.anchor_index, []).append(check)
     steps = _build_steps(events, by_event)
     run_close = _build_run_close(run_close_checks, run_close_score) if run_close_checks else None
-    return SampleTranscript(number, banner, steps, run_close=run_close)
+    return SampleTranscript(number, banner, steps, run_close=run_close, rejected=list(rejected))
 
 
 def _build_steps(events: list[Event], by_event: dict[int, list[CheckView]]) -> list[Step]:
