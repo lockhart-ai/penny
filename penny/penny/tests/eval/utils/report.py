@@ -350,6 +350,10 @@ _COST_NOTE = (
     "number rather than a measured one._"
 )
 _HARNESS_CLEAN = "{counts} — every sample ran its measured turn."
+_CONTROL_NOTE = (
+    " · {control} control (drove the same ask against different facts, so they answer the "
+    "directed-change assertion instead of entering the spread)"
+)
 _HARNESS_DOMINANT = "Dominant failure class: **{reason}** ({count} of {total})."
 
 
@@ -467,10 +471,19 @@ class CaseSections:
 
     # ── C ────────────────────────────────────────────────────────────────
     def _harness(self) -> str:
+        """Every sample the case drove, accounted for — pooled, control, or excluded.
+
+        The counts must ADD UP.  "15 pooled of 18 driven · 0 excluded" left three samples
+        unexplained on the one surface whose job is to say whether the run can be believed, and a
+        section that raises a question it does not answer is one people learn to skip past — which
+        is how 288 infrastructure failures came to be booked as behavioural."""
         excluded = self.variance.excluded
+        control = (
+            _CONTROL_NOTE.format(control=self.variance.control) if self.variance.control else ""
+        )
         counts = (
-            f"{self.variance.pooled} pooled of {self.variance.driven} driven · "
-            f"{len(excluded)} excluded"
+            f"{self.variance.pooled} pooled{control} · {len(excluded)} excluded "
+            f"= {self.variance.driven} driven"
         )
         if not excluded:
             return _HARNESS_CLEAN.format(counts=counts)

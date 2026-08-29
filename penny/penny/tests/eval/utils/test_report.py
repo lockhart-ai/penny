@@ -579,7 +579,7 @@ def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
     )
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
 
-    assert "1 pooled of 3 driven · 2 excluded" in rendered
+    assert "1 pooled · 2 excluded = 3 driven" in rendered
     assert "Dominant failure class: **no turn** (2 of 2)." in rendered
     assert "- `c-2 (phrasing 1)` — no turn" in rendered
     assert "- `c-3 (phrasing 1)` — no turn" in rendered
@@ -803,7 +803,7 @@ def test_the_three_sections_render_whole():
                 "⚠️ C. Harness — samples too broken to count",
                 "\n\n".join(
                     [
-                        "3 pooled of 4 driven · 1 excluded",
+                        "3 pooled · 1 excluded = 4 driven",
                         "Dominant failure class: **the measured turn never ran** (1 of 1).",
                         "- `case-4 (phrasing 2)` — the measured turn never ran",
                     ]
@@ -825,7 +825,7 @@ def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_t
         ),
     ).render()
     assert "_No phrasing produced a value the others did not._" in rendered
-    assert "3 pooled of 3 driven · 0 excluded — every sample ran its measured turn." in rendered
+    assert "3 pooled · 0 excluded = 3 driven — every sample ran its measured turn." in rendered
     assert "_(no assertions)_" in rendered
 
 
@@ -924,3 +924,24 @@ def test_a_single_block_over_budget_keeps_its_own_fold_for_the_guard_to_refuse()
     assert len(parts) == 2
     assert max(len(part) for part in parts) > 2000
     assert report.BLOCK_SEPARATOR.join(report.parse_sample_block(part)[2] for part in parts) == body
+
+
+def test_the_harness_counts_add_up_including_the_control_drive():
+    """The arithmetic must CLOSE. `15 pooled of 18 driven · 0 excluded` left three samples
+    unexplained on the one surface whose job is to say whether the run can be believed — and a
+    section that raises a question it does not answer is one people learn to skip, which is how
+    288 infrastructure failures came to be booked as behavioural."""
+    samples = [
+        _observation("c-1 (a)", "a", ["browse"]),
+        _observation("c-2 (a)", "a", ["browse"]),
+        cohort.SampleObservation(
+            name="c-3 (control)", phrasing="control", world="control", tool_sequence=["browse"]
+        ),
+    ]
+    variance = cohort.pool(samples, [cohort.TOOL_SEQUENCE])
+    assert (variance.pooled, variance.control, variance.driven) == (2, 1, 3)
+
+    rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
+    assert "2 pooled · 1 control" in rendered
+    assert "· 0 excluded = 3 driven" in rendered, "pooled + control + excluded == driven"
+    assert "directed-change assertion" in rendered, "and it says WHY they are not pooled"

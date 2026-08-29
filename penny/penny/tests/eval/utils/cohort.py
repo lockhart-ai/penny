@@ -243,6 +243,10 @@ class CohortVariance(BaseModel):
 
     pooled: int = 0
     driven: int = 0
+    # Samples this case drove in ANOTHER world — its control.  Counted rather than merely absent,
+    # because "15 pooled of 18 driven · 0 excluded" is arithmetic that does not close, and a
+    # section whose job is to make a run believable must not be the thing raising the question.
+    control: int = 0
     excluded: list[ExcludedSample] = Field(default_factory=list)
     features: list[VarianceFeature] = Field(default_factory=list)
     text: TextSpread | None = None
@@ -397,6 +401,7 @@ def pool(
     return CohortVariance(
         pooled=len(kept),
         driven=len(samples),
+        control=sum(1 for s in samples if s.world != world and s.complete),
         excluded=excluded,
         features=[feature_variance(feature, kept) for feature in structural],
         text=text_spread(kept) if REPLY_SPREAD in features else None,
