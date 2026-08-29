@@ -405,9 +405,32 @@ the top of its range gets a ceiling with nothing above it. Measured: one read **
 margin turned into a proposed ceiling of **0.86** — on a statistic that tops out at 1.0. It has
 almost nowhere left to rise, so that ceiling could never fire, and printing it implies a guard that
 does not exist. **A threshold that cannot be crossed is worse than no threshold, because it reads as
-protection.** So report the value, propose no ceiling, and **say why**. A feature up there is a
-**diagnostic reading, not a gate** — and it is usually a defect to fix rather than a number to
-record.
+protection.** So report the value, propose no ceiling, and **say why**: such a feature is a
+**diagnostic reading, not a gate**, and usually a defect to fix rather than a number to record.
+
+**The boundary is NO MAJORITY BEHAVIOUR** — the modal value is not shared by even half the samples.
+Exactly half still counts as a majority:
+
+```
+saturated  ⟺  modal × 2 < N
+```
+
+Two properties are why this line and not another. It needs **no new constant** — "half" is the same
+majority notion the standings already decide on — and it is read off **the two numbers the variance
+table already prints**, so you can apply it to any row by eye. It is a judgement about where to stop
+*proposing*; nothing is gated on it and nothing fails because of it.
+
+It was chosen over the obvious alternative, *"most values are distinct"*, which reads the wrong
+quantity at small N: two distinct values in three samples is ordinary spread, not saturation, and
+that rule would have silenced ceilings on cohorts that plainly deserve one.
+
+On the reference run it separates the real cases cleanly:
+
+| feature | modal | proposes a ceiling? |
+|---|---|---|
+| the framer's routine name | 5/15 | **no** — `10 < 15` |
+| tool sequence | 13/15 | yes |
+| routine shape | 15/15 | yes |
 
 ---
 
