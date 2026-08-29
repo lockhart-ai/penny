@@ -5,3 +5,7 @@ services:
       - ./penny/pyproject.toml:/penny/pyproject.toml
       - ./github_api:/shared/github_api:ro
       - ./similarity:/shared/similarity:ro
+      # The eval config is read out of `.env` by the Makefile's own `from_env` helper, and a
+      # guard that reimplemented that helper would drift back into the bug it catches — so
+      # the test reads the real Makefile, which has to be visible from inside the container.
+      - ./Makefile:/penny/Makefile:ro

@@ -325,7 +325,7 @@ eval: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"; \
 	banner="$$($(EVAL_RUN) python -m penny.tests.eval.utils.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
 	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
-	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | tr -d '"'; }; \
+	from_env() { sed -n "s/^$$1=//p" "$(EVAL_PRIMARY_ENV)" 2>/dev/null | tail -1 | sed -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"; }; \
 	case "$(EVAL_PROFILE)" in \
 		local)  url_default="$(LLM_LOCAL_ENDPOINT)"; model_default="$(EVAL_LOCAL_MODEL)"; \
 			workers_default=1; concurrency_default=1; key_var="" ;; \
