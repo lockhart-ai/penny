@@ -3,9 +3,9 @@
 How an eval case is built, and what it is allowed to claim. This is the contract for **writing
 or porting one case** — read it before you touch a case file, not after.
 
-The design was ratified in **#1994**, which carries the measurements behind every rule below.
-This document is its usable form: what you decide, in what order, and what makes a check legal.
-Where a rule needs its evidence, #1994 has it; it is cited rather than restated.
+**#1994** carries the measurements behind every rule below. This document is the usable form: what
+you decide, in what order, and what makes a check legal. Where a rule needs its evidence, #1994 has
+it; it is cited rather than restated.
 
 Read alongside:
 
@@ -108,22 +108,9 @@ renders as a stub every time is a section people learn to skip.
 rides into the message history, and a later check that treats the history as source material lets
 the fabrication launder itself.
 
-### Why there is no fourth category
-
-A `DIRECTED_CHANGE` category — perturb the world, re-run, the facts move with it — was ratified and
-then removed. The reasoning is recorded here so it is not reinstated on the strength of how good it
-sounds:
-
-| | |
-|---|---|
-| **Samples are hermetic** | own database, own conversation, own page. A sample was never shown another world's fact, so *"it names nothing from the world it was not given"* asserts the absence of something that has no cause. It read 18/18 every run and always would. |
-| **It was redundant** | `PROVENANCE` already catches a fabricated value on a single world — and catches **every** invention, not one specific foreign token. |
-| **The base/control framing did not fit** | treatment-vs-control assumes comparable arms differing by one manipulation. These are isolated runs, each of which saw exactly one world, and every claim already resolves the sample's **own** world. Nothing was being compared. |
-
-**The defence it was written for survives without it.** A model that ignored the page and emitted a
-plausible value fails the `STORE` claim on whichever world it guessed wrong. What that needs is
-**the world to vary** — not two cohorts to compare. Varying the page fact is a second *input* axis,
-like phrasing (§6), and it is not in use today.
+**A sample is hermetic** — its own database, its own conversation, its own pages — and every claim
+resolves against the world *that sample* was given. A model that ignores the page and emits a
+plausible value fails the `STORE` claim on whichever world it was handed.
 
 ### The non-negotiables
 
@@ -143,9 +130,9 @@ it, read it, then lock it" possible at all.
 
 ## 3 · The porting checklist — run it in BOTH directions
 
-This is the section that exists because of a real defect. The reference port was faithful to the
-canonical case it came from and violated this design in three ways at once. **Run both columns,
-every time, on every case.**
+A ported check is never inherited — it is re-derived. Fidelity to the case you are porting from is
+not fidelity to this design, and the two come apart in both directions. **Run both columns, every
+time, on every case.**
 
 > ### Outward — for each check on the source case
 >
@@ -187,7 +174,7 @@ rather than as one sample's failed check.
 
 ### Two structural backstops — and what they do not cover
 
-The checklist has help now, and it is worth knowing exactly how much:
+The checklist has structural help, and it is worth knowing exactly how much:
 
 - **The category is a required field from a closed enum** (`SpecCategory`, no default), so a check
   that fits none of the three **cannot be declared**. That makes the *outward* column a fact the
@@ -236,7 +223,7 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # B · what is measured, never asserted
-    cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, CONTAINER_NAME, ENTRIES_STORED, TRANSITIONS,
+    cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS,
                    REPLY_SPREAD)
 ```
 
@@ -269,34 +256,34 @@ site. It decides how the feature is *read*, not whether it is measured:
 | class | means | features | rendering |
 |---|---|---|---|
 | **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions | rendered individually in the outliers fold, with its evidence |
-| **cosmetic** | a divergence is a different word for the same outcome | container name, reply text | measured, entropy reported, a ceiling proposed only where one could fire (§8), collapsed to one count line |
+| **cosmetic** | a divergence is a different word for the same outcome | routine name, reply text | measured, entropy reported, a ceiling proposed only where one could fire (§8), collapsed to one count line |
 
 A feature not in that table is classified by the question, not by the list: **does a divergence here
-imply a different end state?** Getting it wrong is not cosmetic in either direction — misfiling
-container name as consequential once made 8 of 9 outlier rows container-name-only, reporting "60% of
-samples are outliers" where the true statement was "1 of 15 diverged consequentially".
+imply a different end state?** Getting it wrong is not cosmetic in either direction. File a
+maximally-spread feature as consequential and it makes almost every sample an outlier: measured, the
+naming feature accounted for 8 of 9 outlier rows, reporting "60% of samples are outliers" where the
+true statement was "1 of 15 diverged consequentially". **A value that does not separate the models
+is a system-level finding for the variance table, never a per-sample outlier.**
 
-**A value that does not separate the models is a system-level finding** for the variance table,
-never a per-sample outlier — repeating "this sample named the container differently" fifteen times
-is how a section meant to name the samples worth looking at came to name every one of them.
+### Measure the value, not something derived from it
 
-**But name the right system.** Container naming was read for a long time as "unconstrained", on a
-feature measuring **0.90 entropy in both models**. It is not unconstrained and never was: a
-container's name is `derive_collection_name(routine name, bound values)`, a pure function, exposed
-as `round_framing.container_name` precisely so a fixture cannot grow a second copy of the scheme.
-Checked across every sample of one run it holds exactly, and the bound-value half is **identical
-in all of them**. What varied was the **routine name the framer invents** — eleven distinct names
-for one routine across that run. The container name is a pure function of it, so it carried
-the framer's spread downstream and got the blame for it.
+> **When a value is varying, measure the thing it varies at — not something computed downstream
+> from it.**
 
-The lesson generalises past this feature, which is why it is here rather than in a ticket:
+A container's name is `derive_collection_name(routine name, bound values)`: a pure function, exposed
+as `round_framing.container_name` so a fixture cannot grow a second copy of the scheme. It has no
+discretion at all. Measured across a run it holds exactly, and the bound-value half is
+byte-identical in every sample — so a feature reading the *container* name is reading the **routine
+name through a slug function**, under a label that hides what it is.
 
-> **When a derived value is varying, name the thing it is derived FROM before calling anything
-> unconstrained.**
+What varies is the framer's output, upstream: **eleven distinct routine names for one routine** in
+fifteen samples. So `ROUTINE_NAME` is the feature, read straight off the registry, and it is
+**cosmetic** — `watch_price` and `monitor_listing_price` leave the same round, the same write and
+the same container behind, so the spread belongs in the variance table as the framer's naming spread
+and never as a fact about one sample.
 
-Measuring the derived value attributes the spread to a component with no discretion, and points the
-fix at code that cannot be fixed. The feature is being replaced by one that reads the routine name
-directly, for exactly that reason.
+Measuring something derived instead attributes the spread to code with no discretion, and points the
+fix at something that cannot be fixed.
 
 **Report per-phrasing rows beside the pooled score.** Phrasings are a *coverage* mechanism, not a
 variance one — model stochasticity carries essentially all the spread (~0.05 of it is phrasing; one
@@ -317,8 +304,8 @@ to check.
 
 ### Cost is a locked metric too
 
-Every run already captures it; nothing used to compare it, so a prompt change that doubled the
-context was invisible until someone noticed the bill.
+Every run captures it and both halves carry a ceiling — without one, a prompt change that doubles
+the context is invisible until someone notices the bill.
 
 | metric | whose it is | what a rise means |
 |---|---|---|
@@ -343,10 +330,9 @@ The line that matters is phrasing versus scenario: five wordings of one ask pool
 while a different ask is a different case — folding it in would average two behaviours into one
 score and call the result instability.
 
-A third axis exists on paper and is **not in use**: *same words, different world*. It is a second
-**input** axis and would pool exactly like phrasing; it is **not** a control, and nothing is
-compared against anything (§2). If it is ever turned on it must **not increase the total sample
-count** — the world would be varied *within* the 15, never added beside them.
+The world a case declares is **fixed across its cohort**. A case that varies it does so as a second
+**input** axis, pooled exactly like phrasing — and **within** the 15, never as samples added beside
+them.
 
 Why 15 and not fewer, measured by subsampling two real 32-sample cohorts:
 
@@ -435,7 +421,7 @@ On the reference run it separates the real cases cleanly:
 
 | feature | modal | proposes a ceiling? |
 |---|---|---|
-| the framer's routine name | 5/15 | **no** — `10 < 15` |
+| `routine name` | 5/15 | **no** — `10 < 15` |
 | tool sequence | 13/15 | yes |
 | routine shape | 15/15 | yes |
 
@@ -462,9 +448,9 @@ the record it names is real. And reading it out of the reply text is the phrasin
 It is exactly the third row — wrong-but-stable, catchable only by a human reading one sample — and
 the finding lives on its ticket rather than in a check.
 
-**Do not invent a category or a special case to keep it measured.** A fourth kind of assertion added
-to preserve one measurement is how a closed list stops being closed, and the list being closed is
-what makes the porting checklist decidable at all.
+**Do not invent a category or a special case to keep it measured.** A category added to preserve one
+measurement is how a closed list stops being closed, and the list being closed is what makes the
+porting checklist decidable at all.
 
 ### Alternatives measured and rejected — do not re-propose without new evidence
 
