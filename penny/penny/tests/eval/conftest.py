@@ -2181,15 +2181,16 @@ async def _run_samples(
 # assembled once every sample is in.  What is asserted and what is measured stay with the
 # CASE, so porting the next one is writing arms + fixtures + claims, never harness.
 
-# The models a ported case is measured on, one cohort each.  Defaults to the ONE model the
-# run is configured with, so an ordinary `make eval-remote` drives exactly what it always
-# did and the parametrize is a single id; `EVAL_MODELS=a,b` drives both in one run.  A
-# recorded threshold is per model, so which model produced a number is never a guess.
-EVAL_MODELS = [
-    name.strip()
-    for name in os.environ.get("EVAL_MODELS", os.environ.get("LLM_MODEL", "")).split(",")
-    if name.strip()
-] or [""]
+# The model a ported case is measured on — one cohort per id, so a case parametrized over it
+# produces one score and one threshold set per model, which is what a per-model ceiling needs.
+#
+# WHICH models exist is the ROSTER's business (`roster.py`, #1999): it is the one configured
+# list, it carries each model's preferred provider, and a remote run refuses to start unless it
+# names at least two.  Which of them a RUN measures is resolved before pytest starts and
+# arrives as `LLM_MODEL`, so this reads that rather than re-parsing `EVAL_MODELS` — the two
+# would be the same variable meaning two different things.  Two models is therefore two runs,
+# each self-describing in its own manifest.
+EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 
 # Why a sample is not counted.  The one structural completeness condition every case shares:
 # a sample's database exists from sample START, so a file is not evidence that anything ran.
