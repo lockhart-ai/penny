@@ -2586,7 +2586,7 @@ def _record_case_report(
         report.render_case_tail(
             phrasings=cohort.phrasings,
             world=cohort.world.render(),
-            world_facts=cohort.world.facts,
+            world_facts=report.WorldFacts(*cohort.world.counts),
             outliers=list(enumerate(standings, start=1)),
         ),
     )

@@ -940,3 +940,20 @@ def test_the_harness_counts_add_up_including_the_control_drive():
     rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
     assert "2 pooled + 1 control + 0 excluded = 3 driven" in rendered
     assert report.SECTION_C not in rendered, "a clean run spends no section on it"
+
+
+def test_the_seeded_world_states_its_own_counts_not_its_renders():
+    """The counts a closed fold shows come off the WORLD, so the label and the table it summarises
+    cannot disagree — a summary derived from the markdown it summarises is the same mistake as
+    diffing rendered prompts, and it silently read zero pages off a two-page world."""
+    from penny.tests.eval.utils.worlds import TWO_TEAM_NEWS
+
+    assert TWO_TEAM_NEWS.counts == (2, 4, 2)
+    tail = report.render_case_tail(
+        phrasings=[("phrasing 1", "watch them")],
+        world=TWO_TEAM_NEWS.render(),
+        world_facts=report.WorldFacts(*TWO_TEAM_NEWS.counts),
+    )
+    assert "Test inputs — 1 phrasing · 2 pages · 4 must-keep, 2 must-not" in tail
+    assert "Seeded pages — 2 pages · 4 must-keep, 2 must-not" in tail
+    assert "| 1 | `ridgelinefoxes` |" in tail, "and the table it labels is right there"

@@ -73,11 +73,10 @@ class World(BaseModel):
         return "\n\n".join(parts)
 
     @property
-    def facts(self):
-        """The counts a closed fold states, from the world itself rather than from its render."""
-        from penny.tests.eval.utils.report import WorldFacts
-
-        return WorldFacts(pages=len(self.pages), keeps=len(self.names), excludes=len(self.excludes))
+    def counts(self) -> tuple[int, int, int]:
+        """``(pages, must-keep tokens, must-not tokens)`` — what a closed fold states about this
+        world, read off the world itself rather than counted back out of its rendered table."""
+        return len(self.pages), len(self.names), len(self.excludes)
 
     def _keeps_for(self, index: int) -> tuple[str, ...]:
         """The tokens this page contributes, or empty where the case named none for it."""
