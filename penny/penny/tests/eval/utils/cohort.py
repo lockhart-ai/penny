@@ -590,7 +590,22 @@ class Standing(StrEnum):
     MODAL = "modal"
     OUTLIER = "outlier"
     TYPICAL = "typical"
+    CONTROL = "control"
     DEAD = "dead"
+
+
+class FeatureDivergence(BaseModel):
+    """One feature on which a sample did something the representative did not.
+
+    This — not the sample's transcript — is what makes an outlier legible.  A sample is outlying
+    on a SPECIFIC feature, so rendering 19,000 characters of prose to say "its routine shape was
+    `browse → browse` where the representative's was `browse → log_read → collection_write`" is
+    the wrong thing by three orders of magnitude.  Show the divergence and its evidence; the
+    whole transcript is in the artifact for a reader who then wants it."""
+
+    feature: str
+    value: str
+    modal: str
 
 
 class SampleStanding(BaseModel):
@@ -600,11 +615,13 @@ class SampleStanding(BaseModel):
     phrasing: str
     standing: Standing
     shape: str
+    divergences: list[FeatureDivergence] = Field(default_factory=list)
 
     @property
     def worth_opening(self) -> bool:
-        """The modal sample to read, and every sample that did something else."""
-        return self.standing in (Standing.MODAL, Standing.OUTLIER)
+        """The one sample a reader is asked to READ.  An outlier is not opened — it is summarised
+        by what it did differently, which is a few rows rather than a whole transcript."""
+        return self.standing == Standing.MODAL
 
 
 def sample_shape(sample: SampleObservation, features: Sequence[Feature]) -> str:
@@ -631,15 +648,24 @@ def standings(
     pooled = [s for s in samples if s.complete and s.world == world]
     shapes = Counter(sample_shape(s, features) for s in pooled)
     modal_shape = shapes.most_common(1)[0][0] if shapes else ""
+    # Divergence is measured against the REPRESENTATIVE sample rather than against each feature's
+    # own mode, so the two halves of the report cannot disagree: the sample the reader is sent to
+    # read has, by construction, nothing in its own divergence list.
+    representative = next((s for s in pooled if sample_shape(s, features) == modal_shape), None)
     seen_modal = False
     out: list[SampleStanding] = []
     for sample in samples:
-        if not (sample.complete and sample.world == world):
+        if sample.world != world or not sample.complete:
             out.append(
                 SampleStanding(
                     name=sample.name,
                     phrasing=sample.phrasing,
-                    standing=Standing.DEAD,
+                    # A CONTROL is not a dead sample and must never be labelled one: it ran its
+                    # measured turn, and it is out of the cohort because it answers an ASSERTION
+                    # against different facts, not because anything broke.  Calling it dead put
+                    # the map in contradiction with the harness section on the same page —
+                    # three samples "too broken to count" beside "0 excluded".
+                    standing=Standing.DEAD if not sample.complete else Standing.CONTROL,
                     shape="",
                 )
             )
@@ -653,10 +679,30 @@ def standings(
             standing, seen_modal = Standing.MODAL, True
         out.append(
             SampleStanding(
-                name=sample.name, phrasing=sample.phrasing, standing=standing, shape=shape
+                name=sample.name,
+                phrasing=sample.phrasing,
+                standing=standing,
+                shape=shape,
+                divergences=divergences(sample, representative, features),
             )
         )
     return out
+
+
+def divergences(
+    sample: SampleObservation,
+    representative: SampleObservation | None,
+    features: Sequence[Feature],
+) -> list[FeatureDivergence]:
+    """Every feature on which ``sample`` differs from the representative, with both values."""
+    if representative is None or sample.name == representative.name:
+        return []
+    return [
+        FeatureDivergence(feature=feature.name, value=mine, modal=theirs)
+        for feature in features
+        if feature is not REPLY_SPREAD
+        and (mine := feature.read(sample)) != (theirs := feature.read(representative))
+    ]
 
 
 # ── Provenance: does a specific value trace to something the model was given? ──

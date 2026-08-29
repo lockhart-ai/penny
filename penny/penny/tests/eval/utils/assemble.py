@@ -37,6 +37,7 @@ Run it via ``python -m penny.tests.eval.utils.assemble <report_dir>``
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from penny.tests.eval.utils import comment_split, report
@@ -279,10 +280,10 @@ def _transcript_block(report_dir: Path, manifest: RunManifest, artifact: CaseArt
     transcript = text.strip()
     if not transcript:
         return NO_TRANSCRIPT
-    return _folded_transcript(transcript)
+    return _folded_transcript(transcript, artifact.expand_samples)
 
 
-def _folded_transcript(transcript: str) -> str:
+def _folded_transcript(transcript: str, expand: Sequence[int] = ()) -> str:
     """Re-normalize a case's per-sample blocks for the comment: EVERY block folds whole under its
     banner — the one and only rendering (#1753/#1759). Re-folds an old unfolded ``#### `` block on
     the way, so a re-assembled prior run is uniform too. Collapsed by default, the full body always
@@ -293,20 +294,41 @@ def _folded_transcript(transcript: str) -> str:
     per-sample artifact on disk stays one fold — the seams belong to the comment, which is the only
     place a size cap exists.
 
-    A case-level PREAMBLE above the first sample fold (the three-section report, #1995) is carried
-    through verbatim — one rendering, on disk and in the comment."""
+    A case-level PREAMBLE above the first sample fold is carried through verbatim.
+
+    The two SIZE transforms live here and nowhere else (#1997), because the artifact on disk is
+    the complete record and this is the index into it: a sample the case did not nominate keeps
+    its banner and points at the artifact, and an expanded sample has its thinking traces
+    shortened to their head and their length. Measured on the reference port, thinking was 68% of
+    every sample and one case ran to 787,681 characters — which is not a document anyone reads.
+    Neither transform can reach the ``.md``, so nothing is lost anywhere."""
     preamble, sample_blocks = report.split_case_transcript(transcript)
-    blocks = [preamble] if preamble else []
+    nominated = set(expand)
+    kept = [f"{report.SAMPLE_ROW} {number}" for number in sorted(nominated)]
+    blocks = [report.elide_unused_prompts(preamble, kept)] if preamble else []
+    references: list[str] = []
     for block in sample_blocks:
         number, banner, body = report.parse_sample_block(block)
-        blocks.append(report.fold_sample_parts(number, banner, body, SAMPLE_FOLD_BUDGET))
+        if nominated and number not in nominated:
+            references.append(report.reference_sample(number, banner))
+            continue
+        folded = report.summarise_thinking(body)
+        blocks.append(report.fold_sample_parts(number, banner, folded, SAMPLE_FOLD_BUDGET))
+    grouped = report.group_references(references)
+    if grouped:
+        blocks.append(grouped)
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
 
 
 def render_footer(report_dir: Path) -> str:
-    """The n≤1 pointer from the comment back to the raw evidence — the LOCAL artifact directory
-    (nothing is committed, #1725 policy) and the ``make assemble`` re-render line."""
+    """What the glyphs mean, then the n≤1 pointer from the comment back to the raw evidence — the
+    LOCAL artifact directory (nothing is committed, #1725 policy) and the re-render line.
+
+    The legend rides on the RUN rather than on each case: at ~100 cases a per-case copy is a
+    hundred restatements of the same four glyphs, and the whole point of the one-line-per-case
+    default view is that a hundred of them fit on a page."""
     return (
+        f"{report.GLYPH_KEY}\n\n"
         f"_artifacts (local, never committed): `{report_dir}` · per-sample DBs beside them · "
         f"re-render: `EVAL_REPORT_DIR={report_dir} make assemble`_"
     )

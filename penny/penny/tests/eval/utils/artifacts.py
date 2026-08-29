@@ -338,6 +338,12 @@ class CaseArtifact(BaseModel):
     # ("mean" | "pathology-excluded mean"). Both None for a report-only case.
     min_pass_rate: float | None = None
     gate_metric: str | None = None
+    # Which samples the POSTED COMMENT carries in full (1-based), decided at case close where the
+    # cohort's standings exist.  It rides in the record because the assembler runs as its own
+    # process over the report dir and has no cohort — and re-deriving it from the rendered
+    # markdown would be the assembler guessing at what the case already knows.  Empty for a case
+    # that drove no cohort, which then keeps every sample expanded exactly as before.
+    expand_samples: list[int] = Field(default_factory=list)
 
 
 class RunManifest(BaseModel):
@@ -450,6 +456,7 @@ def build_case_artifact(
     timings: CaseTimings,
     min_pass_rate: float | None = None,
     gate_pathology_excluded: bool = False,
+    expand_samples: Sequence[int] = (),
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -475,6 +482,7 @@ def build_case_artifact(
         timings=timings,
         min_pass_rate=min_pass_rate,
         gate_metric=metric,
+        expand_samples=list(expand_samples),
     )
 
 
@@ -696,6 +704,7 @@ def record_case(
     perf: PerfTotals,
     min_pass_rate: float | None = None,
     gate_pathology_excluded: bool = False,
+    expand_samples: Sequence[int] = (),
 ) -> None:
     """Append the case's ``results.jsonl`` record. No-op off-report. The gate the case ran under
     (``min_pass_rate`` + which score it compares, #1725) rides into the record for the gate line."""
@@ -710,5 +719,6 @@ def record_case(
         timings=timings_from_perf(perf),
         min_pass_rate=min_pass_rate,
         gate_pathology_excluded=gate_pathology_excluded,
+        expand_samples=expand_samples,
     )
     run.append_case(artifact)

@@ -2433,7 +2433,14 @@ class _PendingCase:
     def finish(self) -> None:
         """Deal the claims back out to their samples, record, report, and gate."""
         self._grade()
-        _record_case_report(self.primary, self._observations(), self.perf, self.driven)
+        observations = self._observations()
+        # Computed ONCE and used by both halves: the document renders the standings, and the
+        # ASSEMBLER needs to know which sample to expand in the posted comment.  Deriving them
+        # twice would let the map and the expanded sample disagree about which one is modal.
+        standings = eval_cohort.standings(
+            observations, self.primary.features, self.primary.world.name
+        )
+        _record_case_report(self.primary, observations, standings, self.perf, self.driven)
         _finish_case(
             self.case_id,
             self.family,
@@ -2444,6 +2451,7 @@ class _PendingCase:
             self.gate_pathology_excluded,
             self.driven,
             self.intended,
+            _expandable(standings),
         )
 
     def _grade(self) -> None:
@@ -2464,6 +2472,14 @@ class _PendingCase:
         return [cohort_sample for cohort in self.cohorts for cohort_sample in cohort.samples]
 
 
+def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
+    """The 1-based positions of the samples the posted comment carries in full.
+
+    Only the representative: an outlier is communicated by its DIVERGENCE, which is a few rows,
+    and a typical sample by the fact that it agreed.  Every sample stays whole in the artifact."""
+    return [index + 1 for index, s in enumerate(standings) if s.worth_opening]
+
+
 def _finish_case(
     case_id: str,
     family: str | None,
@@ -2474,6 +2490,7 @@ def _finish_case(
     gate_pathology_excluded: bool,
     driven: int,
     intended: int,
+    expand_samples: Sequence[int] = (),
 ) -> None:
     """Record the case's artifact, print its perf line, and apply its gate."""
     _record_unported_prompts(case_id, driven)
@@ -2485,6 +2502,7 @@ def _finish_case(
         perf=perf,
         min_pass_rate=min_pass_rate,
         gate_pathology_excluded=gate_pathology_excluded,
+        expand_samples=expand_samples,
     )
     perf.report(case_id, driven)
     _assert_threshold(
@@ -2537,6 +2555,7 @@ def _cohort_checks(cohort: Cohort) -> dict[str, list[Check]]:
 def _record_case_report(
     cohort: Cohort,
     samples: Sequence[eval_cohort.SampleObservation],
+    standings: Sequence[eval_cohort.SampleStanding],
     perf: _Perf,
     driven: int,
 ) -> None:
@@ -2570,15 +2589,14 @@ def _record_case_report(
             prompts=report.prompt_variants(prompts, total=len(samples)),
             phrasings=cohort.phrasings,
             world=cohort.world.render(),
-            sample_map=_sample_map(samples, cohort.features, cohort.world.name),
+            sample_map=_sample_map(standings),
+            outliers=list(enumerate(standings, start=1)),
         ),
     )
 
 
 def _sample_map(
-    samples: Sequence[eval_cohort.SampleObservation],
-    features: Sequence[eval_cohort.Feature],
-    world: str,
+    standings: Sequence[eval_cohort.SampleStanding],
 ) -> list[tuple[int, str, str, bool]]:
     """Each sample's row in the reading map, numbered as the report numbers its folds.
 
@@ -2586,7 +2604,7 @@ def _sample_map(
     what a sample's own name carries — so a row and the fold it points at cannot disagree."""
     return [
         (index + 1, standing.phrasing, standing.standing.value, standing.worth_opening)
-        for index, standing in enumerate(eval_cohort.standings(samples, features, world))
+        for index, standing in enumerate(standings)
     ]
 
 

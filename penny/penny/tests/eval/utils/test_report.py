@@ -489,7 +489,7 @@ def test_the_document_states_the_ask_the_world_and_which_samples_to_read():
     )
 
     assert document.startswith("SECTIONS")
-    assert "#### The ask, phrased 2 ways" in document
+    assert "The ask, phrased 2 ways" in document
     assert "watch the two pages" in document and "keep an eye on them" in document
     assert "two pages, one signing each" in document
     assert "**sample 1**" in document and "**sample 3**" in document, "modal + outlier stand out"
@@ -587,23 +587,32 @@ def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
 
 def test_one_modal_sample_is_named_and_every_other_shape_is_an_outlier():
     """Exactly ONE sample is modal, because the workflow asks a human to read one and naming
-    eight equally puts the choice straight back on them.  Its shape-mates fold; anything that
-    did something else opens, which is where the work is when a cohort still disagrees."""
+    eight equally puts the choice straight back on them.
+
+    Only that one is OPENED.  An outlier is communicated by its divergence — the feature, its
+    value, the representative's — which is a few rows against a whole transcript; expanding
+    fifteen of them is what made one case's report 787,681 characters."""
     samples = [
         _observation("c-1 (a)", "a", ["browse"]),
         _observation("c-2 (a)", "a", ["browse"]),
         _observation("c-3 (b)", "b", ["browse", "write"]),
         cohort.SampleObservation(name="c-4 (b)", phrasing="b", complete=False, exclusion="no turn"),
+        cohort.SampleObservation(
+            name="c-5 (control)", phrasing="control", world="control", tool_sequence=["browse"]
+        ),
     ]
     standings = cohort.standings(samples, [cohort.TOOL_SEQUENCE])
 
+    # A CONTROL ran its measured turn and is out of the cohort by design, so it is never DEAD:
+    # labelling it so put the map in contradiction with the harness section's "0 excluded".
     assert [s.standing for s in standings] == [
         cohort.Standing.MODAL,
         cohort.Standing.TYPICAL,
         cohort.Standing.OUTLIER,
         cohort.Standing.DEAD,
+        cohort.Standing.CONTROL,
     ]
-    assert [s.worth_opening for s in standings] == [True, False, True, False]
+    assert [s.worth_opening for s in standings] == [True, False, False, False, False]
 
 
 def test_a_sample_agreeing_on_one_feature_and_not_another_is_an_outlier():
@@ -680,7 +689,11 @@ def _shaped(name: str, arm: str, shape: str) -> cohort.SampleObservation:
 
 
 def test_the_three_sections_render_whole():
-    """Every part of the case's score, in the order it is read, as one literal."""
+    """Every part of the case's score, in the order it is read, as one literal.
+
+    The DEFAULT view is the first line and nothing else — that is what makes ~100 cases a
+    document a person pages through — so the three sections are each behind a fold whose summary
+    carries that section's worst state."""
     samples = [
         _shaped("case-1 (phrasing 1)", "phrasing 1", "browse → write"),
         _shaped("case-2 (phrasing 1)", "phrasing 1", "browse → write"),
@@ -717,58 +730,85 @@ def test_the_three_sections_render_whole():
 
     assert rendered == "\n\n".join(
         [
-            "#### `memory-learn-close-shape` — end-state assertions, variance, harness",
-            "**A. Deterministic assertions — end state only.**",
-            "\n".join(
-                [
-                    "| assertion | held | rate | proposed floor |",
-                    "|---|---|---|---|",
-                    "| state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
-                    # Full marks, and STILL no floor: it reads prose the model wrote, whose
-                    # rate moves ±3 of 18 between two runs of identical code.
-                    "| reply: every specific value in it is sourced | 2/3 | 0.67 | "
-                    "— reported, not floored at this N — it reads model prose |",
-                ]
+            # The whole default view: one line, carrying the case's WORST state (⚠️ — a sample
+            # was lost) and both scores at once.
+            "⚠️ **`memory-learn-close-shape`** — assertions 1/2 held "
+            "(lowest 0.67 `reply: every specific value in it is sourced`) · "
+            "variance 👁 max H 0.579 `routine shape` · 3 pooled of 4",
+            report.fold(
+                "👁 A. Deterministic assertions — end state only",
+                "\n\n".join(
+                    [
+                        "\n".join(
+                            [
+                                "|  | assertion | held | rate | proposed floor |",
+                                "|---|---|---|---|---|",
+                                "| ✅ | state: the round taught a routine | 3/3 | 1.00 | `1.00` |",
+                                # Model prose is never green: it is observed and NOT gated, and
+                                # a tick here would re-imply the floor it cannot carry.
+                                "| 👁 | reply: every specific value in it is sourced | 2/3 | "
+                                "0.67 | — reported, not floored at this N — it reads model "
+                                "prose |",
+                            ]
+                        ),
+                        _FLOOR_NOTE,
+                    ]
+                ),
             ),
-            _FLOOR_NOTE,
-            "**B. Variance — model output.**",
-            "\n".join(
-                [
-                    "| feature | distinct | modal | entropy | proposed ceiling |",
-                    "|---|---|---|---|---|",
-                    "| `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
-                    "`0.68` @ openai/gpt-oss-20b N=3 |",
-                ]
+            report.fold(
+                "👁 B. Variance — model output",
+                "\n\n".join(
+                    [
+                        "\n".join(
+                            [
+                                "|  | feature | distinct | modal | entropy | proposed ceiling |",
+                                "|---|---|---|---|---|---|",
+                                "| 👁 | `routine shape` | 2 | 2/3 (0.67) | 0.579 | "
+                                "`0.68` @ openai/gpt-oss-20b N=3 |",
+                            ]
+                        ),
+                        _CEILING_NOTE,
+                        _PHRASING_LEAD,
+                        "\n".join(
+                            [
+                                "| feature | phrasing | distinct | only under this wording |",
+                                "|---|---|---|---|",
+                                # BOTH wordings are flagged, and symmetrically so: each produced
+                                # a value the other did not — the finding the pooled 0.579 hides.
+                                "| `routine shape` | phrasing 1 | 1/2 | `browse → write` |",
+                                "| `routine shape` | phrasing 2 | 1/1 | "
+                                "`browse → browse → write` |",
+                            ]
+                        ),
+                        "Reply text over 3 pairs — cosine mean 0.000 min 0.000 · "
+                        "containment mean 1.000",
+                        "**Cost, per sample.**",
+                        "\n".join(
+                            [
+                                "| tokens | observed | proposed ceiling |",
+                                "|---|---|---|",
+                                "| input tokens (ours — prompt and context) | 40,000 | "
+                                "`44,000` @ openai/gpt-oss-20b |",
+                                "| output tokens (the model's) | 10,000 | "
+                                "`11,000` @ openai/gpt-oss-20b |",
+                            ]
+                        ),
+                        "Also per sample: 12.0 calls · 200s · 8,000 reasoning tokens "
+                        "(80% of output).",
+                        _COST_NOTE,
+                    ]
+                ),
             ),
-            _CEILING_NOTE,
-            _PHRASING_LEAD,
-            "\n".join(
-                [
-                    "| feature | phrasing | distinct | only under this wording |",
-                    "|---|---|---|---|",
-                    # BOTH wordings are flagged, and symmetrically so: each produced a value
-                    # the other did not, which is exactly the finding the pooled 0.579 hides.
-                    "| `routine shape` | phrasing 1 | 1/2 | `browse → write` |",
-                    "| `routine shape` | phrasing 2 | 1/1 | `browse → browse → write` |",
-                ]
+            report.fold(
+                "⚠️ C. Harness — samples too broken to count",
+                "\n\n".join(
+                    [
+                        "3 pooled of 4 driven · 1 excluded",
+                        "Dominant failure class: **the measured turn never ran** (1 of 1).",
+                        "- `case-4 (phrasing 2)` — the measured turn never ran",
+                    ]
+                ),
             ),
-            "Reply text over 3 pairs — cosine mean 0.000 min 0.000 · containment mean 1.000",
-            "**Cost, per sample.**",
-            "\n".join(
-                [
-                    "| tokens | observed | proposed ceiling |",
-                    "|---|---|---|",
-                    "| input tokens (ours — prompt and context) | 40,000 | "
-                    "`44,000` @ openai/gpt-oss-20b |",
-                    "| output tokens (the model's) | 10,000 | `11,000` @ openai/gpt-oss-20b |",
-                ]
-            ),
-            "Also per sample: 12.0 calls · 200s · 8,000 reasoning tokens (80% of output).",
-            _COST_NOTE,
-            "**C. Harness — samples too broken to count.**",
-            "3 pooled of 4 driven · 1 excluded",
-            "Dominant failure class: **the measured turn never ran** (1 of 1).",
-            "- `case-4 (phrasing 2)` — the measured turn never ran",
         ]
     )
 

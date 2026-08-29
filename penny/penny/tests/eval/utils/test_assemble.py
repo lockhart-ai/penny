@@ -62,7 +62,9 @@ def _write_run(
 
 
 def _footer(report_dir: Path) -> str:
+    """The run-level tail: the glyph legend once, then the pointer back to the raw evidence."""
     return (
+        f"{report.GLYPH_KEY}\n\n"
         f"_artifacts (local, never committed): `{report_dir}` · per-sample DBs beside them · "
         f"re-render: `EVAL_REPORT_DIR={report_dir} make assemble`_\n"
     )
@@ -438,7 +440,9 @@ _FAIL_SAMPLE_FOLDED = (
 )
 
 
-def _mixed_run(tmp_path: Path) -> tuple[RunManifest, CaseArtifact]:
+def _mixed_run(
+    tmp_path: Path, expand_samples: list[int] | None = None
+) -> tuple[RunManifest, CaseArtifact]:
     """A single-case run whose ``.md`` holds a clean-pass sample (1) then a failure (2), both folded
     whole on disk — the fixture the fold-every-sample + ``.md``-parity tests share."""
     manifest = build_manifest(
@@ -458,6 +462,7 @@ def _mixed_run(tmp_path: Path) -> tuple[RunManifest, CaseArtifact]:
         all_pass_rate=0.5,
         pathology_excluded_mean=0.5,
         samples=2,
+        expand_samples=expand_samples or [],
         sample_scores=[1.0, 0.0],
         sample_causes=[None, FailureCause.BEHAVIORAL],
         sample_fragile=[False, False],
@@ -504,9 +509,9 @@ def test_a_case_level_preamble_reaches_the_comment_verbatim(tmp_path: Path) -> N
 
 
 def test_md_and_comment_render_every_sample_identically(tmp_path: Path) -> None:
-    """The ``.md`` and the comment are the SAME rendering now (#1759): the on-disk ``<case_id>.md``
-    keeps every sample's full folded body (the footer's audit target), and the comment carries the
-    exact same folded bodies — the forbidden banner-only heading form appears in NEITHER."""
+    """A case that nominated no sample keeps the old behaviour exactly: the on-disk ``.md`` holds
+    every sample's full folded body, and the comment carries the same bodies. Only a case whose
+    cohort named a representative is indexed rather than reproduced (below)."""
     _, artifact = _mixed_run(tmp_path)
     on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
     assert _BROWSE_SAMPLE_FOLDED in on_disk
@@ -560,3 +565,64 @@ def test_cli_writes_comment_and_reports_errors(
     assert capsys.readouterr().err.strip() == USAGE
     assert main([str(tmp_path / "does-not-exist")]) == 1
     assert "manifest.json" in capsys.readouterr().err
+
+
+def test_only_the_nominated_sample_is_carried_in_full(tmp_path: Path) -> None:
+    """The scaling fix (#1997): the artifact is the complete record and the comment is an INDEX
+    into it, so a case that named a representative carries THAT sample's body and references the
+    rest — each keeping its banner, so every sample is still visible and countable.
+
+    Measured on the reference port, expanding all 18 made one case 787,681 characters, which is
+    not a document anyone reads; an outlier is communicated by its divergence instead."""
+    _, artifact = _mixed_run(tmp_path, expand_samples=[1])
+    comment = assemble_run_comment(tmp_path)
+
+    assert _BROWSE_SAMPLE_FOLDED in comment, "the nominated sample is carried whole"
+    assert "sample 2 — " in comment, "and every other sample keeps its banner"
+    assert report.SAMPLE_IN_ARTIFACT in comment, "pointing at the record that holds it"
+    on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
+    assert report.SAMPLE_IN_ARTIFACT not in on_disk, "the artifact keeps every body regardless"
+
+
+def test_a_long_thinking_trace_is_shortened_only_in_the_comment(tmp_path: Path) -> None:
+    """Thinking was 68% of every sample — the single biggest lever — so the comment carries its
+    head and its length. The trace itself is never touched on disk, and a SHORT trace is left
+    alone: rewriting it would add a pointer to text already shorter than the pointer."""
+    trace = "x" * 900
+    body = f"| 💭 | <details><summary>thinking</summary>{trace}</details> |  |"
+    shortened = report.summarise_thinking(body)
+
+    assert "900 chars, in full in the artifact" in shortened
+    assert trace not in shortened, "the trace is not restated in the index"
+    assert len(shortened) < len(body) // 3
+    short = "| 💭 | <details><summary>thinking</summary>brief</details> |  |"
+    assert report.summarise_thinking(short) == short, "nothing to save, nothing rewritten"
+
+
+def test_the_comment_carries_the_prompts_its_representative_was_run_with(tmp_path: Path) -> None:
+    """`chat` has one distinct text PER sample — the self-state header feeds each its own minted
+    names back — so carrying all of them means carrying the cohort many times over to show a text
+    that differs in three lines. The comment keeps what every sample shared and what the sample it
+    actually carries was given; the rest point at the artifact that holds them."""
+    shared = report.PromptVariant(context="framer", text="F" * 400, samples=["sample 1"], total=1)
+    mine = report.PromptVariant(context="chat", text="M" * 400, samples=["sample 1"], total=2)
+    theirs = report.PromptVariant(context="chat", text="T" * 400, samples=["sample 2"], total=2)
+    rendered = report.render_prompt_variants([shared, mine, theirs])
+
+    elided = report.elide_unused_prompts(rendered, ["sample 1"])
+    assert "F" * 400 in elided, "a prompt every sample shared is kept"
+    assert "M" * 400 in elided, "and so is the one the carried sample was run with"
+    assert "T" * 400 not in elided, "another sample's wording is not restated in the index"
+    assert report.PROMPT_IN_ARTIFACT in elided
+    assert "chat — 400 chars · sample 2" in elided, "but its summary still names it"
+
+
+def test_the_samples_the_comment_does_not_carry_sit_under_one_fold(tmp_path: Path) -> None:
+    """Eighteen banner lines per case is eighteen hundred at a hundred cases, which is the default
+    view ceasing to be a page. They stay one click in, and nothing is dropped."""
+    refs = [report.reference_sample(n, f"✅ pass · {n}") for n in (2, 3, 4)]
+    grouped = report.group_references(refs)
+    assert grouped.startswith("<details><summary>Other samples — 3")
+    for ref in refs:
+        assert ref in grouped
+    assert report.group_references([]) == "", "a case carrying every sample adds no empty fold"
