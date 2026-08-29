@@ -252,10 +252,22 @@ def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
 
 
 def _wrote_into_container(sample: SampleObservation, _world: World) -> Answer:
-    if sample.container is None or not sample.entries:
-        # Nothing framed the round, or it wrote nothing at all — the second is already the
-        # durable-write claim's own miss, and grading it twice reports one failure as two.
-        return True, None
+    """Answers its own sentence — *the demonstrated write landed in the round's container* —
+    on every sample, including the ones where nothing happened.
+
+    With nothing written, or no round framed, no write landed there and the sentence is FALSE.
+    Not unasked: false.  A claim is a statement about end state and nothing else, so a sample
+    that did nothing genuinely fails every claim about what it should have done — five unmet
+    contracts, not one failure counted five times.  Answering TRUE to keep the failure report
+    tidy traded the truth of the check for the shape of its output, and printed 15/15 for a
+    cohort in which one sample wrote nothing at all.
+
+    The framing arm is also the suite's only reader of the round framing: no other claim
+    mentions the container, so an unframed round is invisible unless this one says so."""
+    if sample.container is None:
+        return False, "no round was framed, so no write could land in its container"
+    if not sample.entries:
+        return False, "nothing was written"
     elsewhere = sorted({e.collection for e in sample.entries if e.collection != sample.container})
     landed = any(e.collection == sample.container for e in sample.entries)
     return landed, f"wrote into {elsewhere} instead of {sample.container!r}"

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import math
 
+from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import _phrasing_label
+from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.cohort import (
     REPLY_SPREAD,
     ROUTINE_SHAPE,
@@ -18,6 +20,7 @@ from penny.tests.eval.utils.cohort import (
     RoutineRecord,
     SampleObservation,
     SpecCategory,
+    StoredEntry,
     VarianceFeature,
     compare_to_ceiling,
     feature_variance,
@@ -29,6 +32,7 @@ from penny.tests.eval.utils.cohort import (
     specifics,
     unsourced_specifics,
 )
+from penny.tests.eval.utils.worlds import World
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
@@ -357,3 +361,61 @@ def test_a_cases_sample_names_are_distinct():
     assert len(set(names)) == len(names)
     assert names[:2] == ["case-1 (phrasing 1)", "case-2 (phrasing 1)"]
     assert names[-1] == "case-6 (phrasing 2)"
+
+
+# ── A claim answers its own sentence ─────────────────────────────────────────
+_WROTE_INTO_CONTAINER = "state: the demonstrated write landed in the round's container"
+_ONE_SOURCE = World(name="base", pages=(), keeps=(("499",),), excludes=())
+
+
+def _round(name: str, *, container: str | None, wrote: str | None) -> SampleObservation:
+    entries = [StoredEntry(collection="round-box", key=None, content=wrote)] if wrote else []
+    return SampleObservation(
+        name=name,
+        phrasing="the ask",
+        landed=ConversationState.LEARN.value,
+        container=container,
+        entries=entries,
+        given=wrote or "",
+    )
+
+
+def test_a_sample_that_wrote_nothing_fails_the_claim_about_where_its_write_landed():
+    """A claim is a statement about END STATE and answers its own sentence on every sample.
+
+    With nothing written, `the demonstrated write landed in the round's container` is FALSE —
+    no write landed there. Answering TRUE to avoid reporting one broken sample as several
+    contract violations traded the truth of the check for the tidiness of its output, and
+    printed a perfect 3/3 for a cohort in which a sample wrote nothing at all.
+
+    A sample that did nothing genuinely fails every claim about what it should have done."""
+    cohort = Cohort(
+        "case",
+        "m",
+        _ONE_SOURCE,
+        [
+            _round("wrote-into-it", container="round-box", wrote="499"),
+            _round("wrote-elsewhere", container="other-box", wrote="499"),
+            _round("wrote-nothing", container="round-box", wrote=None),
+        ],
+    )
+    cohort.assert_the_write_landed_in_the_round_container()
+    claim = cohort.claims[0]
+
+    assert (claim.passed, claim.total) == (1, 3), "the denominator counts every sample"
+    verdicts = {outcome.sample: outcome.ok for outcome in claim.outcomes}
+    assert verdicts == {"wrote-into-it": True, "wrote-elsewhere": False, "wrote-nothing": False}
+    assert "nothing was written" in claim.rationales
+
+
+def test_an_unframed_round_fails_the_only_claim_that_reads_the_framing():
+    """No round framed means no container for a write to land in, so the sentence is false.
+
+    This is also the suite's ONLY reader of the round framing — no other claim mentions the
+    container — so an unframed round is invisible unless this claim says so."""
+    cohort = Cohort("case", "m", _ONE_SOURCE, [_round("unframed", container=None, wrote="499")])
+    cohort.assert_the_write_landed_in_the_round_container()
+    claim = cohort.claims[0]
+
+    assert (claim.passed, claim.total) == (0, 1)
+    assert claim.rationales == ["no round was framed, so no write could land in its container"]
