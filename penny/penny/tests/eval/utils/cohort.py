@@ -273,18 +273,13 @@ class VarianceFeature(BaseModel):
         near the top of its range gets a ceiling it could never breach, which prints a guard that
         cannot fire.
 
-        The boundary is NO MAJORITY BEHAVIOUR: the modal value is not shared by even half the
         The boundary is NO MAJORITY BEHAVIOUR: the modal value is not shared by even half
         the samples (exactly half still counts as a majority).  Chosen over "most values are
         distinct" because that reads the wrong quantity at small N — two distinct values in
         three samples is ordinary spread, not saturation, and it would have silenced ceilings
         on cohorts that plainly deserve one.  Measured on the reference run this separates the
-        real cases cleanly: the framer's naming sits at modal 4/15 and proposes nothing, while
-        tool sequence and routine shape at 13/15 both propose.
-        small N — two distinct values in three samples is ordinary spread, not saturation, and it
-        would have silenced ceilings on cohorts that plainly deserve one.  Measured on the
-        reference run this separates the real cases cleanly: the framer's naming sits at modal
-        4/15 and proposes nothing, while tool sequence and routine shape at 13/15 both propose.
+        real cases cleanly: the framer's naming sits at modal 5/15 and proposes nothing, while
+        tool sequence at 13/15 and routine shape at 15/15 both propose.
 
         It needs no new constant — "half" is the same majority notion standing decides on — and
         it is read off the two numbers the table already shows.  A judgement about where to stop
