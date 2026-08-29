@@ -63,7 +63,13 @@ from penny.database.skills import (
     render_spoken_turns,
 )
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import (
+    LlmMessage,
+    LlmResponse,
+    LlmToolCall,
+    LlmToolCallFunction,
+    strip_harmony_control_tokens,
+)
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.responses import PennyResponse
@@ -588,7 +594,7 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
     record of what the model did, not a harness-side spy.
     """
     return any(
-        any(call.get("function", {}).get("name") == tool_name for call in _response_tool_calls(row))
+        any(tool_call_name(call) == tool_name for call in _response_tool_calls(row))
         for row in live_prompts(db)
     )
 
@@ -613,7 +619,7 @@ def count_tool_calls(db: Database, tool_name: str) -> int:
         1
         for row in live_prompts(db)
         for call in _response_tool_calls(row)
-        if call.get("function", {}).get("name") == tool_name
+        if tool_call_name(call) == tool_name
     )
 
 
@@ -868,7 +874,7 @@ def last_tool_args(db: Database, tool_name: str) -> dict | None:
     "done")`` is ``{}`` when it closed.)"""
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
-            if call.get("function", {}).get("name") == tool_name:
+            if tool_call_name(call) == tool_name:
                 try:
                     return json.loads(call.get("function", {}).get("arguments") or "{}")
                 except json.JSONDecodeError, TypeError:
@@ -886,7 +892,7 @@ def tool_call_keys(db: Database, tool_name: str) -> list[str]:
     keys: list[str] = []
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
-            if call.get("function", {}).get("name") != tool_name:
+            if tool_call_name(call) != tool_name:
                 continue
             try:
                 args = json.loads(call.get("function", {}).get("arguments") or "{}")
@@ -909,8 +915,8 @@ def tool_call_sequence(db: Database) -> list[str]:
     names: list[str] = []
     for row in reversed(live_prompts(db)):
         for call in _response_tool_calls(row):
-            name = call.get("function", {}).get("name")
-            if isinstance(name, str):
+            name = tool_call_name(call)
+            if name:
                 names.append(name)
     return names
 
@@ -1089,9 +1095,7 @@ def chat_run_tool_sequences(db: Database) -> list[list[str]]:
             order.append(run_id)
             sequences[run_id] = []
         sequences[run_id] += [
-            name
-            for call in _response_tool_calls(row)
-            if isinstance(name := call.get("function", {}).get("name"), str)
+            name for call in _response_tool_calls(row) if (name := tool_call_name(call))
         ]
     return [sequences[run_id] for run_id in order]
 
@@ -1115,7 +1119,7 @@ def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
     values: list[str] = []
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
-            if call.get("function", {}).get("name") != tool_name:
+            if tool_call_name(call) != tool_name:
                 continue
             try:
                 args = json.loads(call.get("function", {}).get("arguments") or "{}")
@@ -1154,7 +1158,7 @@ def bracket_wrapped_key_calls(db: Database) -> list[str]:
     for row in live_prompts(db):
         for call in _response_tool_calls(row):
             function = call.get("function", {})
-            if function.get("name") not in _KEY_BEARING_TOOLS:
+            if tool_call_name(call) not in _KEY_BEARING_TOOLS:
                 continue
             try:
                 args = json.loads(function.get("arguments") or "{}")
@@ -1178,6 +1182,23 @@ def looks_numbered(text: str) -> bool:
     instruction/tool-call recipe, not flowing prose.
     """
     return len(_NUMBERED_LINE.findall(text)) >= 2
+
+
+def tool_call_name(call: dict) -> str:
+    """One logged call's tool name, normalised the way PRODUCTION normalises it.
+
+    Every read of a tool name off the promptlog goes through here, because the raw name can
+    carry leaked Harmony control tokens (`collection_write<|channel|>commentary`, seen on two
+    samples of one run).  Production strips them at the boundary where the name is read off the
+    model response — ``LlmToolCallFunction.name``, via ``strip_harmony_control_tokens`` — so
+    registry lookup, done-detection, dedup and result framing all see the clean identifier, and
+    the eval reading the raw one was the single exception.
+
+    What it cost while it was the exception: `tool_was_called`, `count_tool_calls` and the
+    sequence readers silently missed a call the store proves ran, which converted a correct
+    sample into an outlier for a divergence that never happened.  Every case in the suite that
+    counts or detects a tool call was exposed to it, not just the one that surfaced it."""
+    return strip_harmony_control_tokens((call.get("function") or {}).get("name") or "")
 
 
 def _response_tool_calls(prompt_log) -> list[dict]:
@@ -2394,16 +2415,19 @@ def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
 def _enacting_name(call: str) -> str | None:
     """One logged call's enacting-tool name, or ``None`` where it enacted nothing.
 
-    The name is NORMALISED first.  A leaked harmony control token glued to a tool name
-    (`collection_write<|channel|>commentary`) is the same call — the runtime executed it and the
-    entry is in the store — but a bare membership test read it as a tool nobody has heard of and
-    dropped it, so the sequence rendered as `browse` alone and the sample was reported as an
-    outlier for a divergence that never happened. Silently discarding a call the store can prove
-    ran is the worst of the three options; the other two are to keep it under its raw name (which
-    makes one call read as two distinct tools across samples) or to normalise, which is what the
-    runtime itself effectively did."""
-    name = call.split("<|", 1)[0].strip()
-    return name if name in ENACTING_TOOLS else None
+    The name is normalised through ``strip_harmony_control_tokens`` — the SAME function
+    production uses, not a second spelling of it.  That sanitiser runs at the boundary where a
+    tool name is read off the model response (``LlmToolCallFunction.name``), so every downstream
+    consumer — registry lookup, done-detection, dedup, result framing — already sees the clean
+    identifier.  This eval was the only consumer reading the raw one.
+
+    What that cost: two samples in one run logged `collection_write<|channel|>commentary`.  The
+    runtime dispatched them fine and their entries are in the store, but a membership test on the
+    raw name read them as a tool nobody has heard of and dropped them, so the sequence rendered
+    as `browse` alone and a correct sample was reported as an outlier for a divergence that never
+    happened.  Re-implementing the strip here would leave the eval measuring a normalisation
+    production does not do the moment either spelling changed."""
+    return name if (name := strip_harmony_control_tokens(call)) in ENACTING_TOOLS else None
 
 
 def _machine_walk(db: Database) -> str:
@@ -3215,7 +3239,7 @@ def _ordered_calls(rows: list[PromptLog]) -> list[CycleCall]:
     with, decoded from the JSON string the wire stores them as."""
     return [
         CycleCall(
-            tool=call.get("function", {}).get("name", ""),
+            tool=tool_call_name(call),
             arguments=_decoded_arguments(call.get("function", {}).get("arguments")),
         )
         for row in sorted(rows, key=lambda row: row.timestamp)

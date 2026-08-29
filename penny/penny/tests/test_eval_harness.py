@@ -42,7 +42,12 @@ from penny.database.skills import (
     render_spoken_turns,
     slug_skill_name,
 )
-from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import (
+    LlmMessage,
+    LlmToolCall,
+    LlmToolCallFunction,
+    strip_harmony_control_tokens,
+)
 from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
@@ -159,6 +164,7 @@ from penny.tests.eval.conftest import (
     sample_log_path,
     sample_logging,
     seeded_run_id,
+    tool_call_name,
     tool_call_rejected,
     tool_not_called,
     tool_was_called,
@@ -3214,6 +3220,23 @@ def test_the_duplicate_reply_read_fails_a_fresh_claim_not_a_neutral_one() -> Non
 
     fresh, claimed = _honest_about_the_duplicate("sea kayaking is officially on the radar 🛶")
     assert (fresh, claimed) == (False, "claimed 'officially on the radar'")
+
+
+def test_every_tool_name_read_is_sanitised_the_way_production_sanitises_it() -> None:
+    """One chokepoint, and it is production's own function rather than a second spelling of it.
+
+    `strip_harmony_control_tokens` runs where the name is read off the model response
+    (`LlmToolCallFunction.name`), so registry lookup, done-detection, dedup and result framing
+    all see the clean identifier — and the eval reading the raw name was the single exception.
+    Two spellings of one contract drift, and the eval would then measure a normalisation
+    production does not do."""
+    leaked = {"function": {"name": "collection_write<|channel|>commentary", "arguments": "{}"}}
+    assert tool_call_name(leaked) == "collection_write"
+    assert tool_call_name(leaked) == strip_harmony_control_tokens(leaked["function"]["name"]), (
+        "the eval must not re-implement the strip"
+    )
+    assert tool_call_name({"function": {"name": "browse"}}) == "browse"
+    assert tool_call_name({}) == "", "a malformed call reads as no tool, never as a crash"
 
 
 def test_a_leaked_control_token_does_not_hide_a_call_that_ran() -> None:

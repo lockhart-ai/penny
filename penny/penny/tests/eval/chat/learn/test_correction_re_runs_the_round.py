@@ -133,6 +133,7 @@ from penny.tests.eval.utils.transition_world import (
     _wrote_into_the_container_check,
     expected_conversation,
     seed_composed_world,
+    tool_call_name,
 )
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
@@ -796,7 +797,7 @@ def _assert_the_teach_round_is_in_the_ledger(db: Database, case: _CorrectionCase
     read one page more than the journeys did, and that extra page is the very one the
     correction sends the round back to."""
     calls = [
-        call.get("function", {}).get("name")
+        tool_call_name(call)
         for row in db.messages.get_run_prompts(case.runs.learn_turn)
         for call in _row_tool_calls(row)
     ]
@@ -938,7 +939,7 @@ def _call_queries(call: dict) -> list[str]:
     An undecodable argument blob reads as no addresses rather than raising, the same reading
     ``tool_call_arg_values`` makes: a malformed draw is a thing a live model produces, and a
     scorer that died on one would lose the whole sample rather than score it."""
-    if call.get("function", {}).get("name") != _BROWSE_TOOL:
+    if tool_call_name(call) != _BROWSE_TOOL:
         return []
     try:
         arguments = json.loads(call.get("function", {}).get("arguments") or "{}")
