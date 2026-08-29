@@ -822,8 +822,11 @@ def test_the_three_sections_render_whole():
                                 "`browse → browse → write` |",
                             ]
                         ),
-                        "Reply text over 3 pairs — cosine mean 0.000 min 0.000 · "
-                        "containment mean 1.000",
+                        # These replies carry no embeddings, so the cosine half is NAMED as
+                        # unmeasurable rather than printed as 0.000 — which in this table
+                        # would read as every pair being maximally dissimilar (#2017).
+                        "Reply text over 3 pairs — cosine NOT MEASURABLE (no reply carried "
+                        "an embedding) · containment mean 1.000",
                     ]
                 ),
             ),

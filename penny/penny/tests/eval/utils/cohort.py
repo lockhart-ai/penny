@@ -407,6 +407,18 @@ class TextSpread(BaseModel):
     cosine_mean: float
     cosine_min: float
     containment_mean: float
+    # How many of those pairs the COSINE half could actually be computed on.  Carried
+    # separately because a reply with no embedding contributes to containment and not to
+    # cosine, and ``_mean([])`` is 0.000 — which reads as "every pair maximally dissimilar"
+    # when the truth is "no pair was measurable".  A collector's notification is the standing
+    # case: a cycle ENQUEUES and the drainer is a separate schedule, so its text is usually
+    # absent from the outgoing messages the embeddings are read off (#2017).
+    cosine_pairs: int = 0
+
+    @property
+    def cosine_measurable(self) -> bool:
+        """Whether the cosine half is a reading at all."""
+        return self.cosine_pairs > 0
 
 
 class CohortVariance(BaseModel):
@@ -584,6 +596,7 @@ def text_spread(samples: Sequence[SampleObservation]) -> TextSpread | None:
         cosine_mean=_mean(cosines),
         cosine_min=min(cosines) if cosines else NO_SPREAD,
         containment_mean=_mean(containments),
+        cosine_pairs=len(cosines),
     )
 
 

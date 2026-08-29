@@ -37,6 +37,7 @@ from penny.tests.eval.utils.cohort import (
     pool,
     proposed_ceiling,
     specifics,
+    text_spread,
     unsourced_specifics,
     variance_headline,
 )
@@ -684,3 +685,33 @@ def test_a_single_call_sample_pools_even_though_it_has_no_reply_and_no_store():
     assert variance.excluded == []
     assert variance.features[0].distinct == 1
     assert not variance.features[0].blind
+
+
+def test_a_reply_spread_with_no_embeddings_says_so_rather_than_reading_zero():
+    """``_mean([])`` is 0.000, and in the spread table that reads as "every pair maximally
+    dissimilar" — the strongest possible finding — when what happened is that nothing could be
+    compared.  A collector's notification is the standing case: a cycle ENQUEUES and the
+    drainer is a separate schedule, so its text is usually absent from the outgoing messages
+    the embeddings are read off."""
+    unembedded = [
+        SampleObservation(name=f"s{index}", phrasing="the ask", reply="the price moved")
+        for index in range(3)
+    ]
+    spread = text_spread(unembedded)
+    assert spread is not None
+    assert spread.pairs == 3, "containment is computable over every pair"
+    assert spread.cosine_pairs == 0
+    assert not spread.cosine_measurable, "0.000 here is the absence of a reading"
+
+    embedded = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            reply="the price moved",
+            reply_embedding=[1.0, 0.0],
+        )
+        for index in range(3)
+    ]
+    measured = text_spread(embedded)
+    assert measured is not None and measured.cosine_measurable
+    assert measured.cosine_pairs == 3

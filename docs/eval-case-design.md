@@ -273,6 +273,10 @@ scores and the opposite finding. So a feature declares the reading that means it
 proposed ceiling. A variance feature that cannot see an outlier is worse than an absent one:
 the table prints a number either way, and only one of them is a measurement.
 
+The same rule covers a half-measure: a reply spread whose cosine half could be computed on no
+pair reports `0.000`, which in that table reads as *every pair maximally dissimilar* — the
+strongest possible finding — rather than as the absence of one. It says so instead.
+
 What this catches concretely: a non-chat fixture reusing a reader filtered to the chat agent's
 own rows comes back empty on every sample. That is why each fixture writes **its own**
 observation and **its own** completeness gate — chat's "no reply" condition applied to a
@@ -307,14 +311,33 @@ The line that matters is phrasing versus scenario: five wordings of one ask pool
 while a different ask is a different case — folding it in would average two behaviours into one
 score and call the result instability.
 
-**An arm is one wording of the natural-language input the behaviour is answered from** — not
-always the user's. For chat it is the ask. For a browse extraction it is the `extract`
-instruction, and for a collector it is the collection's `extraction_prompt`: both are **Penny's
-own words**, written upstream by the draw that made the call or by the apply turn that stood the
-job up. Both vary in production today, unattended, so a cohort over them measures something
-nothing else does. What stays fixed is everything else the case declares.
+**An arm is one input the behaviour is answered from, together with the world it is answered
+against** — and the input is not always the user's words.
 
-The world a case declares is **fixed across its cohort**. A case that varies it does so as a second
+- **Chat**: five wordings of one ask, one world.
+- **A microcontext**: five wordings of its instruction, one world. For the browse extractor that
+  instruction is the `extract` argument of a browse call — **Penny's own words**, written
+  upstream at the call site — so the cohort measures how stable the read is against how the
+  calling draw happened to word it, which nothing else measures.
+- **A collector**: no natural-language input exists. Its program is `render_skill(steps,
+  params)` — `N. tool(args)` lines, *"pure and deterministic"* — so **do not vary the
+  `extraction_prompt`**: hand-authoring programs the instantiation seam cannot emit measures a
+  render rather than a draw, which is §5's own trap one layer up. What varies is the job's
+  **inputs** — its bound values and the page content, together. Five instances of one theme on
+  one program: five listings, five urls, five prices, five matching pages. Five variations on a
+  theme, never five different jobs — a different program is a different behaviour and splits
+  rather than pools.
+
+A collector's arms therefore each carry **their own world**, which is why the world lives on the
+**arm** rather than on the cohort: *one world with five wordings* is the special case of *five
+`(input, world)` pairs where the world happens to be constant*. A claim is answered against the
+world of the arm that produced the sample it is answering about.
+
+Varying the job's inputs forces every claim to be a **shape claim**, which is the point: nothing
+may name a specific value, because no single value is true of the cohort. What survives is the
+contract itself — a write when the reading moves, silence when it does not.
+
+Within one arm, the world is **fixed across its samples**. A case that varies it does so as a second
 **input** axis, pooled exactly like phrasing — and **within** the 15, never as samples added beside
 them.
 
@@ -424,7 +447,7 @@ Two other scope rules that come from the same place:
 |---|---|
 | `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
-| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes` |
+| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes`; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
 | `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat, `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |

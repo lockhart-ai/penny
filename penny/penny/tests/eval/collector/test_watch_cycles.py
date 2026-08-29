@@ -15,14 +15,15 @@ value and the content it reads move.
 **That is what makes every claim below a SHAPE claim**, which is the point of driving it this
 way.  Nothing here may name a price, a url or an item, because no single one of them is true of
 the cohort.  What survives is the enactment contract itself, and it holds identically across
-all five: cycle 2 is silent because nothing moved, cycle 3 writes because something did, and
-exactly one notification is owed across the three.
+all five: cycle 2 is silent because nothing moved, cycle 3 writes because something did, and a
+notification is owed on exactly the cycles that moved the reading.
 
 **Three cycles, not two.**  A collection arrives empty, so its first observation is a new key —
 a baseline, and a first observation is news.  The write-gate STOP that makes no-news
 structurally silent fires only on a SECOND reading of the same value, so "stay quiet" has no
 cycle it can fire on until cycle 2 exists.  Cycle 3 is then the only place a notification is
-owed, which is what makes "exactly one" a measurement rather than a hope.
+owed on top of the baseline's, which is what makes "told on exactly the cycles that moved"
+a measurement rather than a hope.
 
 ``test_collector_enactment.py``'s fifteen cases are five jobs × three cycles plus their
 notify/quiet pairs — the same claim over five different PROGRAMS.  Those are different
@@ -357,14 +358,24 @@ def _moved_reading_was_written_and_told(sample: SampleObservation, _world: World
     return shape == "wrote+told", f"the change cycle was {shape!r}"
 
 
-def _told_exactly_once(sample: SampleObservation, _world: World) -> Answer:
-    """Across all three cycles, the user hears about it exactly once.
+def _told_on_exactly_the_cycles_that_moved(sample: SampleObservation, _world: World) -> Answer:
+    """The user is told on every cycle that moved the reading, and on no other.
 
-    Counted over the SEND QUEUE, which is what the user will actually receive — a cycle
-    enqueues and the drainer is a separate schedule, so a pending-only read of outgoing
-    messages reports a delivered notification as silence."""
-    told = sample.walk.count("told")
-    return told == 1, f"entered {told} notifications across the cycles: {sample.walk!r}"
+    NOT "exactly one notification across the three": the container arrives from apply EMPTY,
+    so cycle 1's first observation is a new key — a baseline, and a first observation is news.
+    Measured, the modal script is ``wrote+told, quiet, wrote+told``: two notifications, both
+    owed.  What is never owed is a notification on a cycle that moved nothing, which is the
+    other half of this sentence and what the quiet-cycle claim states on its own.
+
+    Read over the SEND QUEUE, which is what the user will actually receive — a cycle enqueues
+    and the drainer is a separate schedule, so a pending-only read of the outgoing messages
+    reports a delivered notification as silence."""
+    mismatched = [
+        shape
+        for shape in sample.walk.split(", ")
+        if shape and (("told" in shape) != ("wrote" in shape))
+    ]
+    return not mismatched, f"told and wrote disagree on {mismatched}: {sample.walk!r}"
 
 
 def _one_entry_under_one_key(sample: SampleObservation, _world: World) -> Answer:
@@ -411,8 +422,8 @@ async def test_the_watch_writes_only_when_the_reading_moves(
         "state: the watch keeps one fact, rewritten", _one_entry_under_one_key, SpecCategory.STORE
     )
     cohort.claim(
-        "state: the user was told exactly once across the cycles",
-        _told_exactly_once,
+        "state: the user was told on exactly the cycles that moved the reading",
+        _told_on_exactly_the_cycles_that_moved,
         SpecCategory.STORE,
     )
 

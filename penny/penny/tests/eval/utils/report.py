@@ -412,6 +412,9 @@ _NO_CEILING = "— diagnostic reading; too spread to gate"
 # column because that is where a reader looks to decide whether a number can be trusted, and
 # the answer here is that the number is not a reading at all.
 _BLIND_FEATURE = "— READ NOTHING on every sample; not a reading"
+# The cosine half over no measurable pairs.  Named rather than printed as 0.000, which in this
+# table would read as the strongest possible finding rather than as the absence of one.
+_NO_COSINE = "cosine NOT MEASURABLE (no reply carried an embedding)"
 _COST_LEAD = "**Cost, per sample.**"
 
 # What the assertion side is, said where its table ends: a reading, not a gate.  Stated rather
@@ -805,9 +808,20 @@ def _cost_block(cost: cohort.SampleCost, model: str) -> str:
 
 
 def _text_spread_line(text: cohort.TextSpread) -> str:
+    """The reply spread, with the cosine half NAMED as unmeasurable where it is.
+
+    A mean over no pairs is 0.000, which in this table reads as "every pair maximally
+    dissimilar" — the strongest possible finding — when what happened is that no reply
+    carried an embedding to compare.  Saying so is the difference between a reading and a
+    hole shaped like one."""
+    cosine = (
+        f"cosine mean {text.cosine_mean:.3f} min {text.cosine_min:.3f}"
+        if text.cosine_measurable
+        else _NO_COSINE
+    )
     return (
-        f"Reply text over {text.pairs} pairs — cosine mean {text.cosine_mean:.3f} "
-        f"min {text.cosine_min:.3f} · containment mean {text.containment_mean:.3f}"
+        f"Reply text over {text.pairs} pairs — {cosine} · "
+        f"containment mean {text.containment_mean:.3f}"
     )
 
 
