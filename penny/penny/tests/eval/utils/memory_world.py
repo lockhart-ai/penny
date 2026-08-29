@@ -37,10 +37,6 @@ from penny.tests.eval.conftest import (
 # for.  What a probe asserts is the seed it stands beside, so the honest cost of not
 # widening a neighbour's fixture type is one restated probe, named here rather than left
 # for a reader to notice.
-from penny.tests.eval.utils.worlds import (
-    FOXES_URL,
-    SEALS_URL,
-)
 
 _FAMILY = "chat-memory"
 
@@ -166,11 +162,25 @@ def _carries(db: Database, tokens: tuple[str, ...]) -> bool:
     return any(token in text for text in written for token in tokens)
 
 
-# ONE request in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
+# ONE demonstration in five wordings.  They pool: phrasing contributes ~0.05 of the spread while
 # model stochasticity carries the rest.  They are still five because phrasings are a COVERAGE
 # mechanism — measured, four scored H = 0.00, 0.52, 0.00, 0.00, which pools to 0.18 and hides
 # the one that came apart.
+#
+# A DEMONSTRATION, not a request, and that distinction is the whole case.  What stood here was a
+# flowing sentence with four requirements embedded in it — "go to X and Y, pull out the trades
+# and signings from each, and keep the headline plus a short blurb in a team news list for me" —
+# which asks the model to decide what the STEPS even are before it can enact them, and it decided
+# differently nearly every time: 13 distinct tool sequences in 18 samples against 60-80% modal
+# share on every one-source learn case in the suite.
+#
+# The turn is what a user actually says when asked to walk through one pass, and it answers the
+# three questions the seeded round asked, in order: which pages, what counts, what to keep.  It
+# references "those two news pages" rather than retyping the URLs, because a real user does not
+# repeat themselves and the referent is right there in the turn before.  Same shape as the
+# sibling two-source case's turn 2, which is where it came from.
 LEARN_CLOSE_ASK = (
-    f"go to {FOXES_URL} and {SEALS_URL}, pull out the trades and signings from "
-    "each, and keep the headline plus a short blurb in a team news list for me"
+    "sure: 1. go to those two news pages 2. pull out any trades, signings, "
+    "or injuries — skip game scores 3. remember the title plus a short "
+    "blurb for each"
 )

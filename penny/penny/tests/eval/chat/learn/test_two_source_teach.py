@@ -284,24 +284,35 @@ async def test_a_fused_two_source_ask_becomes_a_running_routine(chat_eval: ChatE
 
 _LEARN_CLOSE_CASE_ID = "memory-learn-close-shape"
 
+# Four more wordings of the SAME demonstration, and what varies is only how a person writes
+# three steps: numbered or dashed or spelled out, "skip" or "not" or "ignore", "remember" or
+# "keep" or "save", the filter before the destination or after it.  What does NOT vary is that
+# they wrote steps at all — the wordings this replaced were paraphrases of a conversational
+# request, so they varied the one thing that has to be held fixed and the case measured the
+# model's guess at the step boundaries rather than its enactment of them.
+#
+# None of them retypes the URLs.  The pages are "those two"/"both" because the referent is in
+# the seeded turn above, and a user who has just been asked to walk through one pass does not
+# paste the addresses back.
 LEARN_CLOSE_PHRASINGS = (
     (
-        f"have a look at both of these — {FOXES_URL} and {SEALS_URL} — find "
-        "whichever players got traded or signed, and put each headline with a "
-        "one-line summary into a list of team news for me"
+        "ok here's one pass: 1. open both of those news pages 2. grab the "
+        "trades, signings and injuries — not the game scores 3. keep the "
+        "headline and a one-line blurb for each"
     ),
     (
-        f"check {FOXES_URL} and {SEALS_URL}, grab any trade or signing news off "
-        "each one, and save the headline and a short summary into a team news list"
+        "sure — 1) read those two pages 2) find any trade, signing or injury "
+        "news, ignoring the game scores 3) save the title plus a short summary "
+        "for each one"
     ),
     (
-        f"read through {FOXES_URL} and {SEALS_URL}, pick out the trades and the "
-        "signings, and store each headline along with a brief note in a list of "
-        "team news for me"
+        "yep: - visit the two news pages - pick out trades, signings and "
+        "injuries, skipping scores - store each headline with a brief note"
     ),
     (
-        f"open {FOXES_URL}, then {SEALS_URL}. anything about a player being traded "
-        "or signed, keep the headline and a sentence about it in a team news list."
+        "of course. step 1: check both news pages. step 2: pull anything about "
+        "trades, signings or injuries — game scores don't count. step 3: keep "
+        "the title and a short blurb for each."
     ),
 )
 
