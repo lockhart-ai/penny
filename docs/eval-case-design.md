@@ -34,68 +34,19 @@ A case therefore makes **three different kinds of claim**, which must never be m
 
 | | the claim | how it is judged |
 |---|---|---|
-| **A · assertions** | end state only — the three categories in §2 | a **coloured summary** over every deterministic check — total passed of total checked, reported and never enforced |
+| **A · assertions** | end state only — the three categories in §2 | **counted, never gated** — total checks passed of total checked, reported for a person to read |
 | **B · variance** | model output — tool sequence, routine shape, names, reply text | a **one-sided ceiling** (only a *rise* is a regression) |
 | **C · run health** | how much of the cohort actually ran, and what killed the rest | a **gate**: broken samples are excluded *before* pooling, and a mostly-dead cohort **fails the run** |
 
-**C is read first even though it renders last**, and it is not a section a healthy case renders —
-it is a gate plus an accounting clause (§1.2).
+**C is read first, and you write nothing for it** — the harness gates completeness itself. Your one
+stake in it is the non-negotiable in §2: a sample's `.db` exists from sample **start**, so a file is
+not a result. Why a strict majority of intended samples is the bar is `run_health.py`'s module
+docstring, which is its fullest statement.
 
 **Nothing on the assertion side fails a run automatically.** Assertions are expected to run at 100%,
-so a floor under them adds nothing: the colour is the signal and a human reads it. What still fails
-a run on its own is **run health**, which refuses a dead cohort, and a **variance ceiling**, which
+so a floor under them adds nothing: the count is reported and a person reads it. What still fails a
+run on its own is **run health**, which refuses a dead cohort, and a **variance ceiling**, which
 catches a rise.
-
-### 1.1 · What a case's report actually renders
-
-A/B/C above is the *design's* decomposition. What you will read back after a run is this, in this
-order — one line, then folds:
-
-| | fold | carries |
-|---|---|---|
-| — | **the summary line** | both scores, plus the sample accounting — every sample driven is either pooled or named as excluded, and the arithmetic closes |
-| A | **Assertions** | the coloured summary — total checks passed of total checked (9 claims × 15 samples = 135 on the reference case) — then one table per spec category, with **a category nobody wrote a claim for rendered as a visible gap** |
-| B | **Variance** | per-feature entropy, proposed ceilings, the per-phrasing rows |
-| B | **Cost** | input/output tokens per sample and their proposed ceilings (§5) |
-| C | **Excluded samples** | **only when something was lost** — the dominant fault class, then the samples by name |
-| — | **Representative sample** | the one sample you are asked to read: its prompts and its whole transcript, with a **Rejected draws** fold inside it (§5) |
-| — | **Test inputs** | the ask in its K wordings, and the seeded world |
-| — | **Outliers** | the samples that diverged **consequentially**, each with the feature and value that made it one |
-
-### 1.2 · Run health — the gate under all of it
-
-A degraded run used to look exactly like a healthy one. `6 passed, EXIT=0` was printed by a run in
-which **34 of 48 samples never produced their measured turn**, every one killed by the same thing
-188 times — a gateway answering HTTP 200 with an empty `choices` array until the client's retries
-were gone. Another drew 325 rate limits and said nothing. Neither named a number, so the only way
-to find out was to read per-sample logs by hand; and the only way to prove *which member of a
-routing pool* had poisoned a run was to run the whole suite again with a pin. Historically this is
-also how **429 of 5,452 harvested replies ended with an infrastructure error as the measured reply,
-248 of them with reply checks scored *passed*** (#1994 §1).
-
-So the run reports on itself, from values it counted rather than sentences it matched:
-
-| | what it does | why it is not optional |
-|---|---|---|
-| **cohort accounting** | each case records how many samples it **intended** and how many produced their **measured turn** | a sample's `.db` exists from the moment the sample **starts**, so a file is not a result. One prototype run pooled 17 dead samples of 31 and it read as wild behavioural variance |
-| **a fault tally by class *and* serving provider** | read from structured fields on every model-call attempt — never grepped from prose | a run can be silently poisoned by **one member of a routing pool**, and artifacts that record the model but not the provider cannot name it |
-| **a verdict that fails the run** | the bar is per case: it must complete a **strict majority** of the samples it intended | a mostly-dead cohort is **not a smaller cohort — it is not a result** |
-
-**Why a strict majority, and not "noisier with fewer samples".** Dead samples are not missing at
-random: the faults that kill them **correlate with the work** — the long turn, the one that made the
-most calls, the one that spent the most tokens is the one most likely to draw the bad provider or
-hit the rate limit. So the survivors skew to the *short* samples, and their mean measures a
-selection effect rather than the case. The bar sits where the surviving cohort can still be read as
-the case. It is a judgement, not a derivation, which is why it is printed in the refusal rather than
-buried in a constant — and why a run that squeaks past it still says so.
-
-**The counts must add up.** Three unexplained samples on the surface that says whether a run can be
-believed is how 288 infrastructure failures came to be booked as behavioural. That is why the
-accounting rides on the summary line of every case — including the healthy ones, where it is one
-clause — and the harness fold materialises only when there is something to name. A section that
-renders as a stub every time is a section people learn to skip.
-
----
 
 ## 2 · Section A — what an assertion is
 
@@ -111,12 +62,12 @@ section is a consequence of that sentence.
 | **Unanswerable is not an assertion** | a statement that cannot be answered true-or-false of a run is not one. Rewrite the sentence so it can be, or it belongs in section B. |
 
 A sample the run-health gate excluded is **not** a third outcome: it left the population before any
-claim was answered (§1.2).
+claim was answered.
 
 And one more, about *who* judges the count rather than what is counted: a claim **records, it does
 not raise**. `assert_*` states the case's claim and answers it for every sample, and the run reports
 the total — it never goes red on a miss and never stops a run. **Whether a number is a failure is a
-person's call**, made against the coloured summary.
+person's call**, made against the reported count.
 
 ### The closed list
 
@@ -152,7 +103,7 @@ noise of reading prose, not as a change in behaviour.
 | **Never assert a route.** Assert a *property* of the routine ("it has a write step", "it names somewhere to act"), never its shape or its tool names. | Many routes reach one end state, and a skill is an arbitrary tool sequence — a name-keyed rule simply will not fire for a shape nobody enumerated. | #1993: three different tools all correctly reached the run record; the check had pinned one. |
 | **A judgement call in the fixture is variance, not an assertion.** | Asserting a count asserts one reading of an ambiguous world. | Whether an appointment counts as a "signing" is genuinely ambiguous. |
 | **An assertion about the store reads the WHOLE entry** — key *and* content. | A fact in the key and a blurb in the body is a perfectly good way to store it. | A prototype reported a 25/32 model failure that was entirely its own bug: it read content only. |
-| **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | the machinery that closes this, and what it cost before it existed: §1.2 |
+| **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | 17 dead samples of 31 in one prototype run; `run_health.py` is the machinery that closes it |
 | **Never match a phrasing.** A reply check looking for a token you guessed in advance is the thing this design replaces. | Measurably both too strict and too loose in the same suite. | 31 replies that stated the recorded cadence correctly were failed; elsewhere an infra error string and a raw thinking leak both scored *passed* (#1994 §1). |
 
 ---
@@ -281,10 +232,10 @@ which at fixed topic is nearly always true; containment says how much vocabulary
 Every feature carries a **consequence class**, declared on the feature and read at the `measure()`
 site. It decides how the feature is *read*, not whether it is measured:
 
-| class | means | features | rendering |
+| class | means | features | what it makes a divergence |
 |---|---|---|---|
-| **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions | rendered individually in the outliers fold, with its evidence |
-| **cosmetic** | a divergence is a different word for the same outcome | routine name, reply text | measured, entropy reported, a ceiling proposed only where one could fire (§8), collapsed to one count line |
+| **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions | a finding about **that sample** — worth looking at on its own |
+| **cosmetic** | a divergence is a different word for the same outcome | routine name, reply text | a finding about the **system** — measured and reported, never a fact about one sample |
 
 A feature not in that table is classified by the question, not by the list: **does a divergence here
 imply a different end state?** Getting it wrong is not cosmetic in either direction. File a
@@ -321,27 +272,11 @@ pooling at all. But the pooled number hides what phrasings are for: four phrasin
 completely — and pooled to `0.18`. The pooled number is the gate; the rows are the diagnostic
 saying which wording moved it.
 
-### Rejected draws are machinery, not output
+### Rejected draws are never scored
 
-A re-rolled draw is persisted whole in the promptlog, so a transcript built naively from it renders
-every discarded attempt as a reply indistinguishable from the one the user received. **A text draw
-renders as a reply only if it was delivered**; the rest go behind their own fold, labelled as
-rejected draws. They are **never scored** — not by an assertion, not as a reply in the variance
-spread. If your case's sample count and its rendered reply count disagree, this is the first thing
-to check.
-
-### Cost is a locked metric too
-
-Every run captures it and both halves carry a ceiling — without one, a prompt change that doubles
-the context is invisible until someone notices the bill.
-
-| metric | whose it is | what a rise means |
-|---|---|---|
-| **input tokens** | **ours** — prompt and context design | we made the envelope bigger. This is the one a prompt edit regresses. |
-| **output tokens** | the **model's** | on a fixed prompt, a model or config change |
-
-**Per sample, never per run** — a total is not comparable across cohort sizes, the same trap the
-entropy denominator is. Both carry a one-sided ceiling, per model.
+A re-rolled draw is persisted whole in the promptlog, so every discarded attempt is sitting there
+looking like a reply. Only the **delivered** one is Penny's output. A rejected draw is working
+machinery: **not scored by an assertion, and not a reply in the variance spread.**
 
 ---
 
@@ -392,56 +327,18 @@ signature of a *system* defect rather than a model one, and it is only visible b
 
 ---
 
-## 8 · Ceilings — proposed, never silently locked
+## 8 · Thresholds — not yours to set
 
-**Gating is the variance side's job.** Assertions carry no threshold at all — they are expected to
-run at 100%, so the report states the count and colours it, and a person reads it (§1). A ported
-case lands `min_pass_rate=None` and stays there.
+**Your case lands report-only** (`min_pass_rate=None`) and stays there.
 
-A ceiling is **proposed by a report** and **accepted by the code owner**. It is recorded as
-`(feature, model, N, value)` and it is **one-sided**: a regression is the variance having **risen
-above** it.
+- **Assertions carry no floor at all.** They are expected to run at 100%, so the run counts them and
+  a person reads the count (§1).
+- **Ceilings are the variance side's**, one-sided — only a rise is a regression. A run *proposes*
+  one; **accepting it is the code owner's act**, never a case author's.
 
-Both qualifiers are load-bearing, and a comparison across either is **refused** rather than
-answered:
-
-- **N** — normalised entropy is biased upward at small N: the same behaviour reads **0.527 at N=32
-  and 0.605 at N=15**.
-- **model** — see §7.
-
-**A saturated feature carries no ceiling.** The margin is a fixed +0.10, so a feature already near
-the top of its range gets a ceiling with nothing above it. Measured: `routine name` reads **0.768**,
-which the margin would turn into a ceiling of **0.87** — on a statistic that tops out at 1.0. It has
-almost nowhere left to rise, so that ceiling could never fire, and printing it would imply a guard
-that does not exist. **A threshold that cannot be crossed is worse than no threshold, because it
-reads as protection.** So report the value, propose no ceiling, and **say why**: such a feature is
-a **diagnostic reading, not a gate**, and usually a defect to fix rather than a number to record.
-
-**The boundary is NO MAJORITY BEHAVIOUR** — the modal value is not shared by even half the samples.
-Exactly half still counts as a majority:
-
-```
-saturated  ⟺  modal × 2 < N
-```
-
-Two properties are why this line and not another. It needs **no new constant** — "half" is the same
-majority notion the standings already decide on — and it is read off **the two numbers the variance
-table already prints**, so you can apply it to any row by eye. It is a judgement about where to stop
-*proposing*; nothing is gated on it and nothing fails because of it.
-
-It was chosen over the obvious alternative, *"most values are distinct"*, which reads the wrong
-quantity at small N: two distinct values in three samples is ordinary spread, not saturation, and
-that rule would have silenced ceilings on cohorts that plainly deserve one.
-
-On the reference run it separates the real cases cleanly:
-
-| feature | modal | proposes a ceiling? |
-|---|---|---|
-| `routine name` | 5/15 | **no** — `10 < 15` |
-| tool sequence | 13/15 | yes |
-| routine shape | 15/15 | yes |
-
----
+You do not write either. How a ceiling is recorded, why a comparison across model or N is refused,
+and when a feature is too spread to carry one at all are settled by `cohort.py` and pinned by
+`test_cohort.py`.
 
 ## 9 · Consistency is not correctness
 

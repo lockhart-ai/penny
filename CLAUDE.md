@@ -111,8 +111,6 @@ docs/                           — Design documents and review guides
   eval-iteration-workflow.md    — Eval iteration loop: one beat → pairs → seeded world → run → report → merge
   eval-case-design.md           — Eval case contract: end-state assertions (three categories),
                                   measured variance, the porting checklist (#1994)
-  eval-report-format.md         — How a run's report is posted (one-shot, marker, 64K split);
-                                  its pre-#1994 grading grammar is a superseded appendix
   browser-extension-architecture.md — Browser extension architecture & design
   channel-manager-plan.md       — Multi-channel implementation plan
   browser-tools-plan.md         — Browser tools implementation plan

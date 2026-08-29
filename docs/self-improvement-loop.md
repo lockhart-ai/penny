@@ -69,23 +69,18 @@ never editing the PR body, never overwriting a prior comment. The comment stream
 
 What a **ported** case's report says is **`docs/eval-case-design.md`** (#1994):
 end-state assertions in three categories, everything the model emitted measured as
-variance, and a run-health gate under both. The
-paragraph below describes the pre-#1994 grading format un-ported cases still render,
-retained in `docs/eval-report-format.md`'s appendix while the port is in flight.
+variance, and a run-health gate under both. The report itself is rendered by
+`report.py` and pinned by `test_report.py` — there is no prose copy of its format
+to drift from them.
 
-The report each run posts follows one format contract, **`docs/eval-report-format.md`**:
-a manifest header (commit · model · config · N · the required **lever** — the
-run's hypothesis), a dual RESULT line (mean-of-scores + all-pass rate), REGRESSED
-marks on checks that flipped vs the prior run, "passed, fragile" flags,
-failure-cause/pathology counts, check rationales, and thinking at failed/regressed
-turns in collapsed `<details>`. Raw JSONL artifacts, archives, and per-sample DBs
-stay **local** — the comment carries the evaluation's key points, not the bulk.
+Raw JSONL artifacts, archives, and per-sample DBs stay **local**; the comment
+carries the evaluation, not the bulk.
 
-The through-line the format serves:
+The through-line the loop serves:
 
-> **Manifest** says what changed going in → **check-diff** says what regressed
-> coming out → **thinking at regressed turns** says why → **the PR comment stream**
-> keeps the whole iteration inspectable and durable.
+> **The lever** says what changed going in → **the run** says what it did → **the
+> thinking at a failed turn** says why → **the PR comment stream** keeps the whole
+> iteration inspectable and durable.
 
 The mechanics of opening the PR, minting the token, and posting each comment are
 in **`docs/agent-task-workflow.md` §4** (this is the *why*; that is the *how*).
