@@ -150,13 +150,28 @@ class Cohort:
             lambda s, _world: (bool(s.entries), "nothing was written"),
         )
 
-    def assert_each_source_was_kept(self) -> None:
+    def assert_something_from_each_page_was_written(self) -> None:
         """One claim per SOURCE: an ask that says "from each" is not met by keeping one.
+
+        SOMETHING from the page, not the page's named player.  The sibling two-source case has
+        always asked it this way and passes 4/4 where this asked for specific names and passed
+        7/18 — because the seals page's only item is an executive appointment, so a round told to
+        collect trades and signings reads the page, correctly finds nothing in scope, and was
+        failed for it.  The token sets identify which page an entry came from; they are not a
+        list of what the ask puts in scope.
 
         Reads the WHOLE entry — key and content — because a fact in the key and a blurb in the
         body is a perfectly good way to store it, and a content-only read reported a 25/32
         model failure that was entirely its own bug."""
-        self._claim("state: what each page said was kept", _each_source_kept)
+        self._claim("state: something from each page was written down", _each_source_kept)
+
+    def assert_each_page_was_read(self) -> None:
+        """Every source the world declares was actually fetched this round.
+
+        The sibling asserts it per page and it is the claim that separates "read the page and
+        found nothing in scope" from "never looked" — which the written-down claim alone cannot
+        tell apart, and which is the difference between a correct round and a broken one."""
+        self._claim("state: each page was read", _each_page_read)
 
     def assert_nothing_excluded_was_stored(self) -> None:
         """The exclusion the round was told in as many words.  A read rather than a taste: the
@@ -242,6 +257,11 @@ def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
     stored = _normalise(sample.stored_text)
     missed = [source[0] for source in world.keeps if not any(t in stored for t in source)]
     return bool(sample.entries) and not missed, f"nothing stored from {missed}"
+
+
+def _each_page_read(sample: SampleObservation, world: World) -> Answer:
+    unread = [page.match for page in world.pages if page.match not in sample.pages_read]
+    return not unread, f"never fetched {unread}"
 
 
 def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:

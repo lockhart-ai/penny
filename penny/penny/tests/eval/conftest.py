@@ -2310,6 +2310,18 @@ def _written_by_a_live_run(entry) -> bool:
     return any(stamp is not None and not is_seeded_run(stamp) for stamp in stamps)
 
 
+def _pages_read(db: Database) -> str:
+    """Every page this sample fetched, as one blob — the browse-results log's recent window.
+
+    Read here rather than inferred from the tool sequence: a `browse` call that failed, or one
+    whose extraction found nothing, still appears in the sequence, and "the page was read" has to
+    mean the page's own text came back."""
+    memory = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
+    if memory is None:
+        return ""
+    return "\n".join(entry.content for entry in memory.read_recent(window_seconds=3600, cap=None))
+
+
 def _machine_walk(db: Database) -> str:
     """The machine's walk this sample, oldest move first — ``idle→learn, learn→apply``."""
     moves = reversed(db.machine.recent_transitions(limit=20))
@@ -2343,6 +2355,7 @@ def _observe_sample(
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
         given=given_to_the_model(db),
+        pages_read=_pages_read(db),
     )
 
 

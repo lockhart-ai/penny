@@ -22,10 +22,17 @@ from penny.tests.eval.utils.fixtures import CannedPage
 class World(BaseModel):
     """One world: the pages, what must be kept from each, and what must not be kept.
 
-    ``keeps`` is one token set per SOURCE — the names that appear only on that page's
-    keepable line, so a stored copy says which page it came from and an invented one matches
-    neither.  ``excludes`` are tokens that appear ONLY on a line the ask rules out, which is
-    what makes a stored exclusion a read rather than a matter of taste.
+    ``keeps`` is one token set per SOURCE — tokens that appear ONLY on that page, so a stored
+    copy says which page it came from and an invented one matches neither.  They identify the
+    SOURCE; they are not a list of what the ask puts in scope.  That distinction is the whole
+    difference between "something from the seals page was written down" and "the seals page's
+    player was written down": the seals page's only item is an executive appointment, and a round
+    told to collect trades and signings can read the page, correctly find nothing in scope, and
+    still be right.  Requiring `volk`/`petra` failed such a round; the sibling case has always
+    asked the first question and passes 4/4.
+
+    ``excludes`` are tokens that appear ONLY on a line the ask rules out, which is what makes a
+    stored exclusion a read rather than a matter of taste.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -153,7 +160,7 @@ SEALS_NEWS_CONTROL = CannedPage(
 TWO_TEAM_NEWS = World(
     name="base",
     pages=(FOXES_NEWS, SEALS_NEWS),
-    keeps=(("brandt", "aurelio"), ("volk", "petra")),
+    keeps=(("brandt", "aurelio", "goalie"), ("volk", "petra", "player development")),
     excludes=("rovers 2", "gulls 4"),
 )
 

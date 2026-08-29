@@ -371,14 +371,14 @@ def test_every_claim_covers_the_control_samples_too():
     control = Cohort("case", "m", control_world, [_observed("c1", "control", "roux", "roux")])
 
     cohort.assert_machine_landed(ConversationState.LEARN)
-    cohort.assert_each_source_was_kept()
+    cohort.assert_something_from_each_page_was_written()
     cohort.assert_facts_moved_with_the_world(control)
 
     totals = {claim.label: (claim.passed, claim.total) for claim in cohort.claims}
     assert all(total == 4 for _, total in totals.values()), totals
     # Each sample is judged against ITS OWN world: the control kept `roux`, which is its world's
     # fact and not the cohort's, and both read as kept.
-    assert totals["state: what each page said was kept"] == (4, 4)
+    assert totals["state: something from each page was written down"] == (4, 4)
     assert totals["reply: it names what this world says"] == (4, 4)
     assert totals["reply: it names nothing from the world it was not given"] == (4, 4)
 
@@ -390,7 +390,9 @@ def test_a_control_graded_against_the_cohorts_world_would_fail_every_claim():
     base, control_world = _world("base", "brandt", "gulls 4"), _world("control", "roux", "gulls 2")
     cohort = Cohort("case", "m", base, [_observed("b1", "base", "brandt", "brandt")])
     control = Cohort("case", "m", control_world, [_observed("c1", "control", "roux", "roux")])
-    cohort.assert_each_source_was_kept()
+    cohort.assert_something_from_each_page_was_written()
     cohort.assert_facts_moved_with_the_world(control)
-    kept = {claim.label: claim for claim in cohort.claims}["state: what each page said was kept"]
+    kept = {claim.label: claim for claim in cohort.claims}[
+        "state: something from each page was written down"
+    ]
     assert [outcome.ok for outcome in kept.outcomes] == [True, True]

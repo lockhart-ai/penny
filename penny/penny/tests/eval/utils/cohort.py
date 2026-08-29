@@ -108,6 +108,10 @@ class SampleObservation(BaseModel):
     reply: str = ""
     reply_embedding: list[float] | None = None
     given: str = ""
+    # Every page this sample actually fetched, concatenated — so "the page was read" is
+    # decidable separately from "something was written down".  Without it a round that never
+    # looked and a round that looked and correctly found nothing score identically.
+    pages_read: str = ""
 
     @property
     def stored_text(self) -> str:

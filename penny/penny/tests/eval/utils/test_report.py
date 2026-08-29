@@ -946,14 +946,14 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
     diffing rendered prompts, and it silently read zero pages off a two-page world."""
     from penny.tests.eval.utils.worlds import TWO_TEAM_NEWS
 
-    assert TWO_TEAM_NEWS.counts == (2, 4, 2)
+    assert TWO_TEAM_NEWS.counts == (2, 6, 2)
     tail = report.render_case_tail(
         phrasings=[("phrasing 1", "watch them")],
         world=TWO_TEAM_NEWS.render(),
         world_facts=report.WorldFacts(*TWO_TEAM_NEWS.counts),
     )
-    assert "Test inputs — 1 phrasing · 2 pages · 4 must-keep, 2 must-not" in tail
-    assert "Seeded pages — 2 pages · 4 must-keep, 2 must-not" in tail
+    assert "Test inputs — 1 phrasing · 2 pages · 6 must-keep, 2 must-not" in tail
+    assert "Seeded pages — 2 pages · 6 must-keep, 2 must-not" in tail
     assert "| 1 | `ridgelinefoxes` |" in tail, "and the table it labels is right there"
 
 
