@@ -705,9 +705,18 @@ class CaseSections:
         ]
 
     def glyph(self) -> str:
-        """The case's worst state — what someone paging ~100 one-line entries reads."""
-        lost = [FAIL_GLYPH] if self.variance.excluded else []
-        return worst_glyph([self._assertions_glyph(), self._variance_glyph(), *lost])
+        """The case's worst state — what someone paging ~100 one-line entries reads.
+
+        TWO criteria decide it, and only two: the DETERMINISTIC checks, and the VARIANCE
+        against its threshold.  Exclusions do not touch it.
+
+        Viability is a GATE, not a shade: run health already refuses a dead cohort and fails
+        the run outright, so folding it into a colour scale prices one lost sample as a total
+        failure.  A case rendered 🔴 at 56/56 checks and ⚪ variance — which is what one
+        excluded sample of fifteen used to produce — teaches a reader to ignore the colour,
+        which costs more than the exclusion it was trying to announce.  What was excluded, how
+        many, and why by name all render in their own section."""
+        return worst_glyph([self._assertions_glyph(), self._variance_glyph()])
 
     def _assertions_glyph(self) -> str:
         return worst_glyph([assertion_glyph(row) for row in self.assertions])

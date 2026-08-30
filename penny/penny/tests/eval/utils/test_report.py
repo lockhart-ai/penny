@@ -792,7 +792,14 @@ def test_the_three_sections_render_whole():
             # The case NAMES the report, and the topline readings are the TABLE under it —
             # no sentence restating what the rows already say. The assertion side is ONE
             # number over every check the case made, 5 of 6, since none of them is gated.
-            "### 🔴 `memory-learn-close-shape` — `openai/gpt-oss-20b`",
+            #
+            # AMBER, not red, and the excluded sample below is why it used to be red: the
+            # headline is decided by the two overarching criteria — the deterministic checks
+            # and the variance against its threshold — and by nothing else. Viability is a
+            # GATE (run health refuses a dead cohort and fails the run outright), not a shade,
+            # so one lost sample of four cannot outrank a 5/6 check reading. Folding it in
+            # rendered a case 🔴 at 100% checks, which teaches a reader to ignore the colour.
+            "### 🟡 `memory-learn-close-shape` — `openai/gpt-oss-20b`",
             "\n".join(
                 [
                     "| measure | reading |",

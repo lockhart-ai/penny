@@ -2430,7 +2430,7 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, reply: str, before: set[str]
+    db: Database, *, name: str, phrasing: str, arm: int, reply: str, before: set[str]
 ) -> eval_cohort.SampleObservation:
     """Read everything one CHAT sample left behind, while its database is still live.
 
@@ -2445,12 +2445,13 @@ def _observe_sample(
     exclusion = _exclusion(db, reply)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, complete=False, exclusion=exclusion
+            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
         )
     landed = db.machine.latest_transition()
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
+        arm=arm,
         landed=landed.to_state if landed else None,
         walk=_machine_walk(db),
         routines=_routine_records(db),
@@ -2549,9 +2550,13 @@ class _Arms(NamedTuple):
     def driven(self) -> int:
         return len(self.arms) * self.per_phrasing
 
+    def index_of(self, sample_index: int) -> int:
+        """Which ARM this sample runs, by index — the hard link a claim's world is read on."""
+        return sample_index // self.per_phrasing
+
     def at(self, sample_index: int) -> eval_cohort.Arm:
         """The arm this sample runs — its input and the ground it is answered against."""
-        return self.arms[sample_index // self.per_phrasing]
+        return self.arms[self.index_of(sample_index)]
 
     def label(self, sample_index: int) -> str:
         return self.at(sample_index).label
@@ -3034,9 +3039,10 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             sample_index: int,
         ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
             phrasing = arms.label(sample_index)
+            arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
             return lambda db, reply, before: _observe_sample(
-                db, name=name, phrasing=phrasing, reply=reply, before=before
+                db, name=name, phrasing=phrasing, arm=arm, reply=reply, before=before
             )
 
         async def _drive(
@@ -3489,10 +3495,10 @@ def _cycles_exclusion(db: Database, script: str) -> str | None:
 def _observe_cycles(
     db: Database,
     driven: _DrivenCycles,
-    collection: str,
     *,
     name: str,
     phrasing: str,
+    arm: int,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE multi-cycle sample left behind — its own observer, not the chat one.
 
@@ -3505,13 +3511,14 @@ def _observe_cycles(
     exclusion = _cycles_exclusion(db, script)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, complete=False, exclusion=exclusion
+            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
         )
     sent = [message for cycle in driven.observed for message in cycle.sent]
     reply = "\n".join(sent)
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
+        arm=arm,
         landed=_cycle_shape(driven.observed[-1]) if driven.observed else CYCLE_DEAD,
         walk=script,
         entries=_stored_entries(db),
@@ -3627,10 +3634,9 @@ def collector_cycles_eval(
             sample_index: int,
         ) -> Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation]:
             phrasing = driving.label(sample_index)
+            arm = driving.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, ran: _observe_cycles(
-                db, ran, collection, name=name, phrasing=phrasing
-            )
+            return lambda db, ran: _observe_cycles(db, ran, name=name, phrasing=phrasing, arm=arm)
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
@@ -5662,6 +5668,7 @@ def _observe_extraction(
     *,
     name: str,
     phrasing: str,
+    arm: int,
     given: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE extraction sample answered — its own observer, not the chat one.
@@ -5678,11 +5685,12 @@ def _observe_extraction(
     exclusion = _draw_exclusion(db, answer)
     if result is None or exclusion is not None:
         return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, complete=False, exclusion=exclusion or NO_DRAW
+            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
         )
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
+        arm=arm,
         given=given,
         output=_extraction_output(result),
     )
@@ -5796,6 +5804,7 @@ def extractor_eval(
                     extracted,
                     name=f"{case_id}-{sample_index + 1} ({phrasing})",
                     phrasing=phrasing,
+                    arm=arms.index_of(sample_index),
                     given=f"{content}\n{asked}",
                 )
             _write_classifier_report(

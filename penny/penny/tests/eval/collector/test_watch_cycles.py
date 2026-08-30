@@ -169,14 +169,19 @@ def _page(listing: Listing, price: str) -> CannedPage:
 
 
 def _world(listing: Listing) -> World:
-    """This arm's ground: the page as it stands, and the token that says it came from here.
+    """This arm's ground: the page as it stands when the job is set up.
 
-    ``keeps`` names the token identifying the SOURCE rather than what the ask puts in scope —
-    a stored copy says which page it came from and an invented one matches neither."""
+    ``keeps``/``excludes`` are EMPTY, and deliberately.  Those token sets back
+    ``assert_something_from_each_page_was_written``, which asks whether a round kept something
+    identifying each source — and what this job stores is the price, while the token that
+    identifies the page lives in its url and its title.  Declaring the tokens would print
+    "5 must-keep" in every report as though something verified them, and the only claim that
+    could read them would be false of every correct sample.  A contract nothing reads is worse
+    than no contract: it reads as a check that passed."""
     return World(
         name=listing.token,
         pages=(_page(listing, listing.quiet_price),),
-        keeps=((listing.token,),),
+        keeps=(),
         excludes=(),
     )
 

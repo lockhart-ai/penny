@@ -2629,7 +2629,8 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
         for index, world in enumerate(ground)
     ]
     samples = [
-        SampleObservation(name=f"s{index}", phrasing=arm.label) for index, arm in enumerate(arms)
+        SampleObservation(name=f"s{index}", phrasing=arm.label, arm=index)
+        for index, arm in enumerate(arms)
     ]
     cohort = Cohort("case", "m", samples, arms)
     seen: list[str] = []
@@ -2640,6 +2641,24 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
     )
     assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
     assert seen == [WATCH_LISTINGS[0].token, WATCH_LISTINGS[1].token]
+
+
+def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuously():
+    """The direction of the failure is the point.
+
+    The claims that read a world — "something from each page was written", "nothing excluded
+    was stored" — are SATISFIED by an empty one, so a sample answered against a fallback would
+    report a green check for a question nobody asked, on exactly the claims most likely to be
+    wrong.  An unresolvable arm is a harness defect, and a harness defect that reports passes
+    is worse than one that stops."""
+    world = watch_arm(WATCH_LISTINGS[0]).world
+    arms = [eval_cohort.Arm(label="phrasing 1", text="a", world=world)]
+    unstamped = SampleObservation(name="s0", phrasing="phrasing 1")  # arm defaults to -1
+    cohort = Cohort("case", "m", [unstamped], arms)
+    cohort.assert_nothing_excluded_was_stored()
+
+    with pytest.raises(ValueError, match="carries arm -1"):
+        _ = cohort.claims
 
 
 @pytest.mark.parametrize("fixture", EXTRACT_FIELD_FIXTURES, ids=lambda f: f.case_id)

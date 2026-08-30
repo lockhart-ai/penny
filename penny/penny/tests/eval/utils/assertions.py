@@ -39,9 +39,10 @@ from penny.tests.eval.utils.cohort import (
 )
 from penny.tests.eval.utils.worlds import World
 
-# The ground a claim is answered against when the sample's arm cannot be found.  Matches
-# nothing, so a claim made against it is vacuous rather than answered on another arm's pages.
-_NO_GROUND = World(name="unknown arm", pages=(), keeps=(), excludes=())
+# The ground a claim is answered against by a cohort that declared no arms at all — the
+# unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
+# against it is vacuous rather than answered on pages the sample never saw.
+_NO_GROUND = World(name="no arms", pages=(), keeps=(), excludes=())
 
 # How one sample answers one claim: ``(ok, rationale)``.
 Answer = tuple[bool, str | None]
@@ -105,12 +106,22 @@ class Cohort:
     def _world_for(self, sample: SampleObservation) -> World:
         """The world the arm that produced this sample ran against.
 
-        Keyed on the arm LABEL, which is the same anchor the sample's own name carries, so the
-        lookup needs no index arithmetic and no second ordering to keep in step.  A sample
-        whose arm is unknown answers against an empty world rather than against another arm's
-        — a claim made on the wrong ground is worse than one made on none."""
-        arm = next((one for one in self.arms if one.label == sample.phrasing), None)
-        return arm.world if arm is not None else _NO_GROUND
+        Read off the sample's own arm INDEX rather than matched on its rendered label, and a
+        sample that cannot be resolved RAISES.  Both halves matter and the second is the point:
+        the claims that read a world (``_each_source_kept``, ``_nothing_excluded``) are
+        satisfied by an empty one, so a sample answered against a fallback would pass
+        VACUOUSLY — a green check for a question nobody asked, on the exact claims most likely
+        to be wrong.  An unresolvable arm is a harness defect, and a harness defect that
+        reports passes is worse than one that stops."""
+        if not self.arms:
+            return _NO_GROUND
+        if not 0 <= sample.arm < len(self.arms):
+            raise ValueError(
+                f"{self.case_id}: sample {sample.name!r} carries arm {sample.arm}, and this "
+                f"cohort drove {len(self.arms)} — the observer must stamp the arm it drove, "
+                "or every claim that reads a world answers against ground the sample never saw"
+            )
+        return self.arms[sample.arm].world
 
     def _answer(self, answer: WorldClaim) -> list[ClaimOutcome]:
         outcomes = []

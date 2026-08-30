@@ -50,8 +50,9 @@ _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
 def _one_arm(world: World) -> list[Arm]:
     """The chat shape as arms: every sample ran "the ask" against one world.
 
-    The label matches ``_phrasing_label``'s single-wording answer, which is what a sample's
-    own ``phrasing`` carries — the anchor the claim's world lookup keys on."""
+    The label matches ``_phrasing_label``'s single-wording answer, which is what a sample's own
+    ``phrasing`` carries.  The world a claim reads is keyed on the sample's ARM INDEX, though,
+    so a hand-built sample here defaults to arm 0 — the only arm there is."""
     return [Arm(label="the ask", text="the ask", world=world)]
 
 
@@ -59,7 +60,7 @@ def _sample(name: str, arm: str, shape: str, **kwargs) -> SampleObservation:
     """One observation carrying a routine of the given SHAPE — the feature every test here
     measures, since what is under test is the statistic and not the reading of it."""
     routines = [RoutineRecord(name="r", shape=shape, names_a_destination=True)]
-    return SampleObservation(name=name, phrasing=arm, routines=routines, **kwargs)
+    return SampleObservation(name=name, phrasing=arm, arm=0, routines=routines, **kwargs)
 
 
 # ── The statistic ────────────────────────────────────────────────────────────
@@ -396,6 +397,7 @@ def _round(name: str, *, container: str | None, wrote: str | None) -> SampleObse
     return SampleObservation(
         name=name,
         phrasing="the ask",
+        arm=0,
         landed=ConversationState.LEARN.value,
         container=container,
         entries=entries,
@@ -490,7 +492,9 @@ def test_no_claim_can_opt_out_of_being_scored():
     render without counting is a claim that could hold a case's number up while failing."""
     world = World(name="base", pages=(), keeps=(("499",),), excludes=())
     samples = [
-        SampleObservation(name=f"s{i}", phrasing="the ask", landed="learn", reply="x", given="x")
+        SampleObservation(
+            name=f"s{i}", phrasing="the ask", arm=0, landed="learn", reply="x", given="x"
+        )
         for i in range(2)
     ]
     cohort = Cohort("case", "m", samples, _one_arm(world))

@@ -162,6 +162,13 @@ class SampleObservation(BaseModel):
 
     name: str
     phrasing: str
+    # WHICH arm produced this sample, by index into the cohort's own arm list.  A hard link,
+    # because the world a claim reads is the arm's: matching on the rendered LABEL instead
+    # meant an observer that stamped a label no arm carried answered against an empty world,
+    # and the claims that actually read one (``_each_source_kept``, ``_nothing_excluded``)
+    # would then pass VACUOUSLY rather than fail.  A vacuous pass is the quieter failure and
+    # the harder one to notice, so the link is an index and a mismatch raises.
+    arm: int = -1
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
