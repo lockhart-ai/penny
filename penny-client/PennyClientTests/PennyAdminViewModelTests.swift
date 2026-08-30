@@ -135,6 +135,13 @@ struct PennyAdminViewModelTests {
         let (client, transport) = makeAdminClient(prefs: prefs)
         await connectAndClearStartupFrames(client, transport)
         let viewModel = SettingsViewModel(client: client, prefs: prefs)
+        #expect(viewModel.canSendTestNotification == false)
+        transport.emit("""
+        {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
+        """)
+        #expect(viewModel.canSendTestNotification)
+        _ = await sentPayloads(transport, count: 1)
+        transport.clearSentPayloads()
 
         viewModel.refresh()
         transport.emit("""
@@ -177,19 +184,21 @@ struct PennyAdminViewModelTests {
         let entry = try #require(viewModel.domainPermissions.first)
         viewModel.deleteDomain(entry)
         viewModel.decidePermissionPrompt(allowed: true)
+        viewModel.sendTestNotification()
 
         viewModel.webSocketURL = " wss://new.example/penny/ "
         viewModel.username = " bob "
         viewModel.password = "new-secret"
         viewModel.saveConnection()
 
-        let payloads = await sentPayloads(transport, count: 5)
-        #expect(Array(payloads.map(typeName).prefix(5)) == [
+        let payloads = await sentPayloads(transport, count: 6)
+        #expect(Array(payloads.map(typeName).prefix(6)) == [
             "config_request",
             "config_update",
             "domain_update",
             "domain_delete",
-            "permission_decision"
+            "permission_decision",
+            "test_notification"
         ])
         #expect(payloads[1]["key"] == .string("LLM_TEMPERATURE"))
         #expect(payloads[1]["value"] == .string("0.2"))

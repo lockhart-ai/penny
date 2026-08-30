@@ -24,6 +24,7 @@ from penny.channels.ios.models import (
     IOS_MSG_TYPE_HISTORY,
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
+    IOS_MSG_TYPE_TEST_NOTIFICATION,
     IOS_RESP_TYPE_MESSAGES,
     IOS_RESP_TYPE_OUTBOX_CHANGED,
     IOS_RESP_TYPE_REGISTERED,
@@ -747,7 +748,7 @@ async def test_send_raw_logs_and_disables_push_when_apns_rejects_token(db, caplo
 
 
 @pytest.mark.asyncio
-async def test_test_push_phrase_forces_apns_even_when_websocket_connected(db):
+async def test_test_notification_message_forces_apns_even_when_websocket_connected(db):
     apns = FakeApns()
     channel = _make_channel(db, apns=apns)
     ws = FakeWs()
@@ -763,8 +764,10 @@ async def test_test_push_phrase_forces_apns_even_when_websocket_connected(db):
         },
     )
 
-    await channel._handle_chat_message(
-        {"type": "message", "content": "send me a test push"}, "ios-keychain-id"
+    await channel._process_raw_message(
+        server_ws,
+        json.dumps({"type": IOS_MSG_TYPE_TEST_NOTIFICATION}),
+        "ios-keychain-id",
     )
 
     assert len(apns.sent) == 1
@@ -779,6 +782,25 @@ async def test_test_push_phrase_forces_apns_even_when_websocket_connected(db):
     assert outbox[0].source_type == "test_push"
     assert outbox[0].source_name == "test_push"
     assert outbox[0].push_sent_at is not None
+
+
+@pytest.mark.asyncio
+async def test_test_push_phrase_is_forwarded_as_an_ordinary_chat_message(db):
+    apns = FakeApns()
+    channel = _make_channel(db, apns=apns)
+    channel.handle_message = AsyncMock()
+
+    await channel._handle_chat_message(
+        {"type": "message", "content": "send me a test push"}, "ios-keychain-id"
+    )
+
+    assert apns.sent == []
+    channel.handle_message.assert_awaited_once_with(
+        {
+            "ios_sender": "ios-keychain-id",
+            "content": "send me a test push",
+        }
+    )
 
 
 @pytest.mark.asyncio

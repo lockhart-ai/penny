@@ -79,6 +79,32 @@ struct PennyWebSocketClientTests {
         #expect(database.loadMessages().first?.content == "hello Penny")
     }
 
+    @Test func testNotificationRequiresRegistrationAndUsesDedicatedMessage() async {
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: configuredDatabase(),
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+        transport.clearSentPayloads()
+
+        client.sendTestNotification()
+        await Task.yield()
+        #expect(transport.sentPayloads.isEmpty)
+
+        transport.emit("""
+        {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
+        """)
+        _ = await sentPayloads(transport, count: 1)
+        transport.clearSentPayloads()
+        client.sendTestNotification()
+        let payloads = await sentPayloads(transport, count: 1)
+
+        #expect(payloads == [["type": .string("test_notification")]])
+    }
+
     @Test func embeddingRequestUsesCorrelationIDAndDecodesResponse() async throws {
         let transport = MessagePagingMockTransport()
         let client = PennyWebSocketClient(

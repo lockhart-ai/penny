@@ -11,6 +11,7 @@ IOS_MSG_TYPE_HISTORY = "history_request"
 IOS_MSG_TYPE_MESSAGE = "message"
 IOS_MSG_TYPE_PULL = "pull_messages"
 IOS_MSG_TYPE_REGISTER = "register"
+IOS_MSG_TYPE_TEST_NOTIFICATION = "test_notification"
 
 IOS_RESP_TYPE_ACKED = "messages_acked"
 IOS_RESP_TYPE_EMBEDDING = "embedding_response"
@@ -40,6 +41,12 @@ class IosIncomingMessage(BaseModel):
 
     type: str = IOS_MSG_TYPE_MESSAGE
     content: str
+
+
+class IosTestNotification(BaseModel):
+    """Request a diagnostic APNs notification for the registered device."""
+
+    type: str = IOS_MSG_TYPE_TEST_NOTIFICATION
 
 
 class IosPullMessages(BaseModel):
