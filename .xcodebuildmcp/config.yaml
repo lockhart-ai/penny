@@ -1,0 +1,16 @@
+schemaVersion: 1
+
+enabledWorkflows:
+  - simulator
+  - device
+
+sessionDefaultsProfiles:
+  sirius:
+    projectPath: "/Users/robertwaltham/Library/CloudStorage/Dropbox/penny/penny-client/PennyClient.xcodeproj"
+    scheme: "PennyClient"
+    configuration: "Debug"
+    deviceId: "5771124D-00F3-5E80-8696-403B3FD55716"
+    derivedDataPath: "/private/tmp/PennyClientDerivedData-Sirius"
+    platform: "iOS"
+
+activeSessionDefaultsProfile: "sirius"

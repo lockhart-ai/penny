@@ -80,6 +80,7 @@ from penny.channels.ios.models import (
     IOS_MSG_TYPE_MESSAGE,
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
+    IOS_MSG_TYPE_TEST_NOTIFICATION,
     IosAckMessages,
     IosAgentProgress,
     IosAgentProgressTool,
@@ -95,6 +96,7 @@ from penny.channels.ios.models import (
     IosRegister,
     IosRegistered,
     IosStatus,
+    IosTestNotification,
     IosTyping,
 )
 from penny.channels.permission_manager import PermissionManager
@@ -264,6 +266,8 @@ class IosChannel(MessageChannel):
             return None
         if msg_type == IOS_MSG_TYPE_MESSAGE:
             await self._handle_chat_message(data, device_identifier)
+        elif msg_type == IOS_MSG_TYPE_TEST_NOTIFICATION:
+            await self._handle_test_notification(data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_EMBEDDING_REQUEST:
             await self._handle_embedding_request(ws, data)
         elif msg_type == IOS_MSG_TYPE_PULL:
@@ -813,15 +817,20 @@ class IosChannel(MessageChannel):
             msg = IosIncomingMessage(**data)
         except ValidationError:
             return
-        if _is_test_push_request(msg.content):
-            await self._send_test_push(device_identifier)
-            return
         await self.handle_message(
             {
                 "ios_sender": device_identifier,
                 "content": msg.content,
             }
         )
+
+    async def _handle_test_notification(self, data: dict, device_identifier: str) -> None:
+        """Force a diagnostic APNs notification for the registered device."""
+        try:
+            IosTestNotification(**data)
+        except ValidationError:
+            return
+        await self._send_test_push(device_identifier)
 
     async def _handle_embedding_request(self, ws: ServerConnection, data: dict) -> None:
         """Return one query embedding for client-side semantic search."""
@@ -1351,20 +1360,6 @@ def _strip_markup(message: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"[*_`~#>]", "", text)
     return re.sub(r"\s+", " ", text).strip()
-
-
-def _is_test_push_request(message: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", " ", message.lower()).strip()
-    return normalized in {
-        "send me a test push",
-        "send a test push",
-        "send test push",
-        "test push",
-        "send me a test notification",
-        "send a test notification",
-        "send test notification",
-        "test notification",
-    }
 
 
 def _thread_id(source_name: str | None) -> str | None:

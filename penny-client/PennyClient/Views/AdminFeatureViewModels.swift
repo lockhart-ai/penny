@@ -223,6 +223,10 @@ final class SettingsViewModel {
         !webSocketURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var canSendTestNotification: Bool {
+        client.canSend
+    }
+
     var apnsHost: String {
         client.apnsHost
     }
@@ -268,6 +272,10 @@ final class SettingsViewModel {
         prefs.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         prefs.password = password
         client.reconnect()
+    }
+
+    func sendTestNotification() {
+        client.sendTestNotification()
     }
 
     func submitDomainPermission() {

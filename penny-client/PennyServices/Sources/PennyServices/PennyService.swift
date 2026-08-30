@@ -327,6 +327,11 @@ extension PennyService {
         send(.message(content: content))
     }
 
+    public func sendTestNotification() {
+        guard canSend else { return }
+        send(.testNotification)
+    }
+
     public func requestConfig() {
         send(.configRequest)
     }

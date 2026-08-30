@@ -32,19 +32,37 @@ The real `PennyClient/PennyClient/Secrets.plist` is local-only and ignored by gi
 - `username`
 - `password`
 
-## Build And Validation
-Use `BuildProject` for full validation. Use `XcodeRefreshCodeIssuesInFile` for fast Swift diagnostics, but treat stale cross-file scope errors cautiously if the full build and Issue Navigator are clean.
-Zero warnings are expected. Treat all warnings as issues to fix before finishing, including SwiftLint warnings; do not leave new or existing SwiftLint warnings unresolved.
-For final verification, prefer:
-- diagnostics on touched Swift files
-- `XcodeListNavigatorIssues` for workspace errors
-- focused tests for touched behavior, or `RunAllTests` when the change affects shared behavior
-- `BuildProject`
+## Build And Test
+Use XcodeBuildMCP for project discovery, builds, launches, and device tests. Check
+`session_show_defaults` and `list_devices` before the first operation.
+
+- Project: `PennyClient.xcodeproj`
+- Primary scheme: `PennyClient`
+- App test target: `PennyClientTests` (via `PennyClient.xctestplan`)
+- Preferred device: Sirius (`5771124D-00F3-5E80-8696-403B3FD55716`)
+- Device platform: `iOS`
+- Device DerivedData: `/private/tmp/PennyClientDerivedData-Sirius`
+
+Prefer Sirius when connected, then another suitable physical device. Use a
+simulator when the task requires simulator tooling or no suitable physical
+device is available. Use `build_device` for build verification,
+`build_run_device` to install and launch, and `test_device` for app tests. Do not
+invoke `xcodebuild` directly when XcodeBuildMCP is available. Keep physical-device
+DerivedData outside this Dropbox workspace because File Provider attributes can
+break code signing.
+
+Zero warnings are expected. Treat all warnings as issues to fix before finishing,
+including SwiftLint warnings; do not leave new or existing SwiftLint warnings
+unresolved. For final verification, prefer focused tests for touched behavior,
+then the full `PennyClientTests` plan and a successful device build. Missing local
+secrets, device support, signing/provisioning, developer-mode trust, or remote
+services are prerequisites rather than code regressions.
 
 Service-layer changes must also pass `make client-services-check`. This runs the
 `PennyServicesStandaloneTests` bundle against the package without building or
 launching PennyDev or PennyTestflight. Run `make client-check` for the complete
-service, app, and Testflight build gate.
+service, app, and Testflight build gate; this repository-level script uses its
+own simulator workflow and supplements the preferred XcodeBuildMCP device checks.
 
 ## Testing Guidelines
 Use the Swift Testing framework for unit and component tests. UI tests are not recommended by default; avoid XCUIAutomation unless the behavior cannot be validated with focused unit, component, or service-level tests.

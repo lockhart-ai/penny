@@ -41,6 +41,14 @@ struct SettingsView: View {
                     SecureField("Password", text: $viewModel.password)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+
+                    LabeledContent("Test Notification") {
+                        Button("Send") {
+                            viewModel.sendTestNotification()
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!viewModel.canSendTestNotification)
+                    }
                 }
 
                 Section("History") {

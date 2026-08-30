@@ -175,7 +175,7 @@ ID. When an iOS client registers with
 `apns_environment=production`, Penny uses those production credentials; otherwise
 it falls back to the default APNs credentials above.
 
-Diagnostic phrase: send `send me a test push` from the iOS app to force a test APNs notification to that registered device, even while the WebSocket is connected. Similar phrases such as `test push` and `send a test notification` work too.
+In the iOS app's Connection settings, tap **Send** beside **Test Notification** to force a test APNs notification to that registered device, even while the WebSocket is connected. The app sends a `test_notification` WebSocket message for this diagnostic.
 
 ### iOS Service Diagram
 
