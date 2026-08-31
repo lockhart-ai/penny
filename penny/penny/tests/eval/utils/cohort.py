@@ -276,11 +276,14 @@ class Feature:
     name: str
     read: Callable[[SampleObservation], str]
     consequence: Consequence = Consequence.CONSEQUENTIAL
-    # The reading that means this feature saw NOTHING — what ``read`` returns for a sample
-    # that produced no value at all.  Declared so :func:`feature_variance` can tell "every
-    # sample agreed" from "this feature never read anything", which are the same 0.000 and
-    # opposite findings.  Empty means the feature has no such reading and can never be blind.
-    absent: str = ""
+    # The reading that means this feature saw NOTHING — what ``read`` returns for a sample that
+    # produced no value at all.  Declared so :func:`feature_variance` can tell "every sample
+    # agreed" from "this feature never read anything", which are the same 0.000 and opposite
+    # findings.  ``None`` means the feature declares no such reading of its own; the EMPTY
+    # STRING is a legitimate declaration, not the absence of one — a distinction the earlier
+    # ``str = ""`` default could not express, which is how a field populated only on one
+    # outcome pooled to a serene 0.000 and proposed a gate on it.
+    absent: str | None = None
 
 
 TOOL_SEQUENCE = Feature(
@@ -576,10 +579,20 @@ def feature_variance(feature: Feature, samples: Sequence[SampleObservation]) -> 
 def _is_blind(feature: Feature, values: Sequence[str]) -> bool:
     """Whether this feature read NOTHING on every sample it was pooled over.
 
-    Read off the feature's declared ``absent`` value rather than guessed from the shape of
-    the data: only the feature knows what its own "saw nothing" reading looks like, and a
-    feature that declares none can never be blind."""
-    return bool(feature.absent) and bool(values) and set(values) == {feature.absent}
+    Two ways a feature can have read nothing, and both have to hold for a feature nobody has
+    written yet:
+
+    * **No value at all.**  The empty string is the one "nothing" every feature shares, whatever
+      it calls its own — so an all-empty pooling is blind by construction and needs no
+      declaration.  This is what a structured field populated only on one outcome does on a run
+      where that outcome never happens, and it goes blind precisely on the runs that look best.
+    * **The feature's own declared absent reading** — ``no call``, ``no routine``, ``unset``.
+      Compared against ``None`` rather than falsiness, so a feature may legitimately declare the
+      empty string; a feature declaring nothing is never blind by this route."""
+    if not values:
+        return False
+    seen = set(values)
+    return seen == {""} or (feature.absent is not None and seen == {feature.absent})
 
 
 def text_spread(samples: Sequence[SampleObservation]) -> TextSpread | None:

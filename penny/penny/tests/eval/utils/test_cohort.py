@@ -635,12 +635,60 @@ def test_a_blind_feature_proposes_no_ceiling():
 
 
 def test_a_feature_declaring_no_absent_reading_is_never_blind():
-    """Only the feature knows what its own "saw nothing" reading looks like, so one that
-    declares none cannot be blind however uniform it is."""
+    """A feature that declares no saw-nothing reading, and reads a real value, is agreement —
+    however uniform it is.  ``entries stored`` reading ``0`` on every sample is a fact about
+    the round, not a hole in the measurement."""
     entries = feature_variance(
         ENTRIES_STORED, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
     )
     assert entries.distinct == 1 and not entries.blind
+
+
+def test_a_field_that_is_empty_on_every_sample_is_blind_whatever_it_declares():
+    """The empty string is the one "nothing" EVERY feature shares, so it needs no declaration.
+
+    A structured field populated only on one outcome — the extractor's ``reason``, which
+    carries the what-is-missing line on ``NOT_PRESENT`` and nothing on ``EXTRACTED`` — reads
+    ``""`` on all fifteen samples of a run where every draw succeeded.  It goes blind
+    PRECISELY on the runs that look best, and that is when it would otherwise propose a gate.
+
+    The old rule could not catch it either way: the field's real value is ``""`` rather than
+    the declared ``unset``, and a feature declaring ``""`` was skipped by a falsiness guard,
+    so an empty saw-nothing reading was unexpressible by construction."""
+    empty = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            output=[OutputField(name="reason", value="")],
+        )
+        for index in range(6)
+    ]
+    blind = feature_variance(output_field("reason"), empty)
+    assert blind.entropy == 0.0
+    assert blind.blind, "every sample read no value at all"
+    assert proposed_ceiling(blind, _MODEL) is None, "a gate on a non-reading can never fire"
+
+    # The same feature on a run where the outcome DID happen is a real measurement.
+    populated = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            output=[OutputField(name="reason", value=f"no price on the page {index % 2}")],
+        )
+        for index in range(6)
+    ]
+    seen = feature_variance(output_field("reason"), populated)
+    assert not seen.blind and seen.distinct == 2
+
+
+def test_a_feature_may_declare_the_empty_string_as_its_absent_reading():
+    """``None`` means "declares none"; ``""`` is a legitimate declaration.  Collapsing the two
+    into a falsiness check is what made an empty saw-nothing reading unexpressible."""
+    from penny.tests.eval.utils.cohort import Feature
+
+    declared = Feature("blank", lambda observation: observation.walk, absent="")
+    assert declared.absent == ""
+    assert Feature("undeclared", lambda observation: observation.walk).absent is None
 
 
 # ── A single-call context: structured output, no store, no reply (#2017) ─────
