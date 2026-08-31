@@ -35,7 +35,7 @@ from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
 from penny.database.memory import MemoryType
-from penny.database.models import MemoryRow, Skill
+from penny.database.models import MemoryRow, PromptLog, Skill
 from penny.database.skills import (
     SkillParameter,
     build_binding_content,
@@ -143,6 +143,7 @@ from penny.tests.eval.collector.test_watch_cycles import (
     _program as watch_program,
 )
 from penny.tests.eval.conftest import (
+    _ACTOR,
     PENNY_LOGGER,
     BoundExpectation,
     Check,
@@ -160,12 +161,14 @@ from penny.tests.eval.conftest import (
     _frame_attributes_to,
     _guarded_graded,
     _labelling_input,
+    _sample_turns,
     _score_binding,
     _score_extraction,
     _score_framing,
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
+    _turn_kind,
     _without_examples,
     _write_sample_report,
     continue_nudge_fired,
@@ -2641,6 +2644,36 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
     )
     assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
     assert seen == [WATCH_LISTINGS[0].token, WATCH_LISTINGS[1].token]
+
+
+def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():
+    """🤖 meant two opposite things, and the fold could not say which.
+
+    In a chat fold it is the message the user RECEIVED. In the collector fold it was the cycle
+    narrating after its own close — text nothing delivers, since what a user receives is a
+    send-queue row the framework enters afterwards.
+
+    The split follows the DELIVERED SET, which already draws exactly this line, rather than
+    the fixture: a turn the sample sent is a reply, and a sample that delivered nothing has no
+    turn that could be one. Both directions are pinned here, on the same text, because what
+    broke was not either rendering on its own — it was that they were identical."""
+    narration = "We need to finish cycle with done()."
+    row = PromptLog(
+        agent_name="collector",
+        model="a-model",
+        prompt_type="chat",
+        messages=json.dumps([{"role": "assistant", "content": narration}]),
+        response="{}",
+    )
+
+    nobody_told = _sample_turns([row], reply="", driven=(), delivered=())
+    assert (_ACTOR["aside"], narration) in nobody_told
+    assert (_ACTOR["penny"], narration) not in nobody_told
+    assert _turn_kind(_ACTOR["aside"], narration) is report.EventKind.ASIDE
+
+    delivered = _sample_turns([row], reply="", driven=(), delivered=(narration,))
+    assert (_ACTOR["penny"], narration) in delivered
+    assert _turn_kind(_ACTOR["penny"], narration) is report.EventKind.REPLY
 
 
 def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuously():

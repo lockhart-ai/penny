@@ -1429,6 +1429,11 @@ _ACTOR = {
     "tool": "📥 tool result",
     "call": "🔧 Penny → tool",
     "penny": "🤖 Penny",
+    # An agent text turn that reached NOBODY.  A collector cycle narrates to itself and
+    # delivers nothing — what a user receives is a send-queue row the framework enters after
+    # the cycle — so rendering that narration with the reply mark said the opposite of the
+    # truth on the one question a reader of that fold is asking.
+    "aside": "🗒 Penny (to herself)",
 }
 
 
@@ -1513,8 +1518,14 @@ def _sample_turns(
             elif role == "assistant":
                 for call in message.get("tool_calls") or []:
                     emit(_ACTOR["call"], _render_call(call.get("function", {})))
-                if not sent or content.strip() in sent:
+                # A text turn is a DELIVERED reply only if the sample actually sent it.  With
+                # nothing delivered there is nothing it could be, so it renders as an aside
+                # rather than borrowing the reply's mark; with a delivered set, a draw outside
+                # it is a re-roll and is collected by ``rejected_draws`` instead.
+                if content.strip() in sent:
                     emit(_ACTOR["penny"], content)
+                elif not sent:
+                    emit(_ACTOR["aside"], content)
     emit(_ACTOR["penny"], reply.strip())
     return turns
 
@@ -1799,13 +1810,15 @@ def _turn_kind(actor: str, content: str) -> report.EventKind:
         return report.EventKind.CALL
     if actor == _ACTOR["tool"]:
         return report.EventKind.RESULT
+    if actor == _ACTOR["aside"]:
+        return report.EventKind.ASIDE
     return report.EventKind.REPLY
 
 
 def _event_body(kind: report.EventKind, content: str) -> str:
     """The rendered body for an event (the glyph is prepended by the renderer): a reply is quoted,
     a nudge tagged ``*(nudge)*``, a call/result rendered verbatim."""
-    if kind == report.EventKind.REPLY:
+    if kind in (report.EventKind.REPLY, report.EventKind.ASIDE):
         return f'"{content}"'
     if kind == report.EventKind.NUDGE:
         return f"*(nudge)* {content}"
@@ -1944,7 +1957,11 @@ def _turns_to_events(
         kind = _turn_kind(actor, content)
         if kind == report.EventKind.USER:
             _splice(micro_batches, MicroPlacement.RUN_CLOSE, events)
-        action = kind in (report.EventKind.CALL, report.EventKind.REPLY)
+        action = kind in (
+            report.EventKind.CALL,
+            report.EventKind.REPLY,
+            report.EventKind.ASIDE,
+        )
         thought = (thinking.get(content) or "") if action else None
         turn_to_event[turn_index] = len(events)
         events.append(report.Event(kind, _event_body(kind, content), thinking=thought))

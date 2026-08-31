@@ -580,6 +580,25 @@ def test_a_feature_that_read_nothing_renders_red_and_says_so_rather_than_as_agre
     assert "@ gpt N=3" not in rendered, "a blind feature proposes no ceiling"
 
 
+def test_a_delivered_reply_and_an_undelivered_aside_do_not_share_a_mark():
+    """🤖 meant two opposite things in two folds and a reader could not tell which.
+
+    In a chat fold it is the message the user RECEIVED. In a collector fold it was the cycle
+    narrating after its own close — text nothing delivers, since what a user receives is a
+    send-queue row the framework enters afterwards. Same mark, opposite meaning, on exactly the
+    question a reader of that fold is asking.
+
+    Pinned on the two rendered rows together, because what broke was not either row on its own
+    — it was that they were indistinguishable."""
+    delivered = report.Event(report.EventKind.REPLY, '"the price moved to 72"')
+    aside = report.Event(report.EventKind.ASIDE, '"We need to finish cycle with done()."')
+
+    assert delivered.actual_body().startswith("🤖")
+    assert aside.actual_body().startswith("🗒")
+    assert delivered.actual_body() != aside.actual_body()
+    assert report.ACTOR_REPLY != report.ACTOR_ASIDE
+
+
 def test_a_feature_value_carrying_a_newline_a_pipe_and_a_backtick_stays_inside_its_cell():
     """A feature value is arbitrary MODEL OUTPUT, so the table has to survive any of them.
 

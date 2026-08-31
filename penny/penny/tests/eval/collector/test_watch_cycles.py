@@ -31,6 +31,11 @@ routines, therefore different behaviours, and they split rather than pool; colla
 #2007's, not this file's.  This case exists to prove the cohort seam carries a multi-cycle,
 real-store, no-user-turn shape at all.
 
+**The LANDED category is empty for this case, and that is the correct report.**  A watch runs
+cycles; it does not move a conversation machine, and what each cycle left behind is read off
+persisted entries and the send queue — so its claims are STORE claims and the state section
+says it has none, rather than something being invented to fill it.
+
 Report-only (``min_pass_rate=None``).  All content is synthetic — an invented marketplace —
 because the repo is public.
 """
@@ -341,12 +346,6 @@ def _cycle(sample: SampleObservation, index: int) -> str:
     return shapes[index] if index < len(shapes) else ""
 
 
-def _ran_three_cycles(sample: SampleObservation, _world: World) -> Answer:
-    """Three cycles is the contract's own shape — the claims below name positions in it."""
-    shapes = sample.walk.split(", ")
-    return len(shapes) == 3, f"ran {len(shapes)} cycles: {sample.walk!r}"
-
-
 def _quiet_cycle_said_nothing(sample: SampleObservation, _world: World) -> Answer:
     """The same reading twice over is silence.
 
@@ -408,20 +407,28 @@ async def test_the_watch_writes_only_when_the_reading_moves(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — where each cycle ended, read off the persisted run records and the send queue
-    cohort.claim("state: the job ran its three cycles", _ran_three_cycles, SpecCategory.LANDED)
+    # LANDED — nothing.  A watch RUNS CYCLES; it does not move a machine, and it has three
+    # cycle outcomes rather than one state.  Every one of them is read off persisted entries
+    # and the send queue, which is store territory wearing a state label, so the claims below
+    # are STORE claims and this category renders empty.  That empty section is the correct
+    # report for a shape with no state, not an unrun checklist.
+    #
+    # "the harness drove three cycles" is not anywhere: it asserts what the FIXTURE did, which
+    # is why it scored 15/15 in every cohort it ever rendered and could not fail.  Its real
+    # failure mode is already an exclusion, and the fixture's own shape is guarded by the loud
+    # probe and by ``make check``, where a precondition belongs.
+
+    # STORE — what the container and the send queue hold, cycle by cycle and at the end
     cohort.claim(
         "state: the quiet cycle wrote nothing and said nothing",
         _quiet_cycle_said_nothing,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the moved reading was written and told once",
         _moved_reading_was_written_and_told,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — what the container holds once the three cycles are done
     cohort.assert_the_store_holds_an_entry()
     cohort.claim(
         "state: the watch keeps one fact, rewritten", _one_entry_under_one_key, SpecCategory.STORE

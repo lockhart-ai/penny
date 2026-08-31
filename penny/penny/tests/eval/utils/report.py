@@ -40,6 +40,12 @@ ACTOR_USER = "👤"
 ACTOR_CALL = "🔧"
 ACTOR_RESULT = "📥"
 ACTOR_REPLY = "🤖"
+# An agent text turn that reached NOBODY — the model talking to itself mid-run, as against the
+# message a user receives.  A distinct glyph because 🤖 otherwise means two opposite things in
+# two folds: in a chat fold it is the delivered reply, and in a collector fold it was the cycle
+# narrating after its own close, which nothing delivers.  A reader cannot tell those apart from
+# the same mark, and the difference is the whole question they are asking.
+ACTOR_ASIDE = "🗒"
 ACTOR_MICRO = "🧩"
 
 # ── Micro-context role labels (#1759/#1773) — the input row names the scoped USER turn explicitly
@@ -1619,14 +1625,20 @@ FRAGILE_NOTE = (
 class EventKind(StrEnum):
     """One transcript event. ``USER`` opens a step; the rest render as ``actual`` rows.
 
-    ``CALL`` / ``REPLY`` / ``MICRO_OUT`` are model ACTIONS — each gets a 💭 row directly above
-    it. ``NUDGE`` is a recovery injection (``⚠ recovery event``). ``MICRO_IN`` is the instruction
-    + page content into the extraction sub-model; ``MICRO_OUT`` is its extracted value."""
+    ``CALL`` / ``REPLY`` / ``ASIDE`` / ``MICRO_OUT`` are model ACTIONS — each gets a 💭 row
+    directly above it. ``NUDGE`` is a recovery injection (``⚠ recovery event``). ``MICRO_IN`` is
+    the instruction + page content into the extraction sub-model; ``MICRO_OUT`` is its extracted
+    value.
+
+    ``REPLY`` is text the user RECEIVED; ``ASIDE`` is text that reached nobody — the same
+    distinction the delivered set already draws, given its own mark so a reader is not left
+    inferring it from which fixture they happen to be reading."""
 
     USER = "user"
     CALL = "call"
     RESULT = "result"
     REPLY = "reply"
+    ASIDE = "aside"
     NUDGE = "nudge"
     MICRO_IN = "micro_in"
     MICRO_OUT = "micro_out"
@@ -1636,11 +1648,12 @@ _ACTOR_GLYPH = {
     EventKind.CALL: ACTOR_CALL,
     EventKind.RESULT: ACTOR_RESULT,
     EventKind.REPLY: ACTOR_REPLY,
+    EventKind.ASIDE: ACTOR_ASIDE,
     EventKind.NUDGE: ACTOR_USER,
     EventKind.MICRO_IN: ACTOR_MICRO,
     EventKind.MICRO_OUT: ACTOR_MICRO,
 }
-_ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.MICRO_OUT})
+_ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.ASIDE, EventKind.MICRO_OUT})
 
 # The micro-context direction arrow the renderer puts after the actor label (#1759), so the role
 # vocabulary is single-sourced here and the ``MICRO_IN``/``MICRO_OUT`` event body carries only its
