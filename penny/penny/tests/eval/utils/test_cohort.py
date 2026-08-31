@@ -490,15 +490,20 @@ _NO_WORLD = World(name="base", pages=(), keeps=(), excludes=())
 def _delivered(*messages: str) -> Cohort:
     """A one-sample cohort that delivered exactly these messages, oldest first."""
     sample = SampleObservation(
-        name="s0", phrasing="the ask", landed="idle", reply=messages[-1], delivered=list(messages)
+        name="s0",
+        phrasing="the ask",
+        arm=0,
+        landed="idle",
+        reply=messages[-1],
+        delivered=list(messages),
     )
-    return Cohort("case", _MODEL, _NO_WORLD, [sample])
+    return Cohort("case", _MODEL, [sample], _one_arm(_NO_WORLD))
 
 
 def _reply_sample(reply: str) -> SampleObservation:
     """A sample that delivered exactly this reply."""
     return SampleObservation(
-        name="s0", phrasing="the ask", landed="idle", reply=reply, delivered=[reply]
+        name="s0", phrasing="the ask", arm=0, landed="idle", reply=reply, delivered=[reply]
     )
 
 
@@ -578,7 +583,7 @@ def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
     world = World(name="base", pages=(), keeps=(), excludes=(), answers=("baikal", "642"))
 
     empty_handed = "Sounds like you're surprised! Bath! What else do you want to hear about it?"
-    cohort = Cohort("case", _MODEL, world, [_reply_sample(empty_handed)])
+    cohort = Cohort("case", _MODEL, [_reply_sample(empty_handed)], _one_arm(world))
     cohort.assert_the_reply_answers_the_ask()
     assert (cohort.claims[0].passed, cohort.claims[0].total) == (0, 1)
     assert cohort.claims[0].rationales, "and it names what the reply never stated"
@@ -588,7 +593,7 @@ def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
         "lake baikal is about 1642 m deep",
         "Lake Baikal — 1 642 metres.",  # the groupings the models actually emit
     ):
-        answering = Cohort("case", _MODEL, world, [_reply_sample(answered)])
+        answering = Cohort("case", _MODEL, [_reply_sample(answered)], _one_arm(world))
         answering.assert_the_reply_answers_the_ask()
         assert (answering.claims[0].passed, answering.claims[0].total) == (1, 1), answered
 
@@ -597,7 +602,7 @@ def test_a_world_naming_no_answer_makes_no_completeness_claim():
     """An ask with nothing to state — a correction rather than a question — declares no
     answer tokens, and the claim is then true rather than unasked."""
     world = World(name="base", pages=(), keeps=(), excludes=())
-    cohort = Cohort("case", _MODEL, world, [_reply_sample("done — updated it.")])
+    cohort = Cohort("case", _MODEL, [_reply_sample("done — updated it.")], _one_arm(world))
     cohort.assert_the_reply_answers_the_ask()
     assert (cohort.claims[0].passed, cohort.claims[0].total) == (1, 1)
 
