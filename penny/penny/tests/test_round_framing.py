@@ -628,6 +628,8 @@ async def test_a_cold_apply_the_words_fall_short_of_lands_in_request(db):
 
     model = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding="MISSING url")
     machine = _machine(db, model)
+    published: list[ConversationState] = []
+    machine.subscribe_state_changes(published.append)
     entered = await machine.advance(_ASK, message_id=anchor_id, run_id="run-request")
 
     assert machine.state() is ConversationState.REQUEST
@@ -643,6 +645,7 @@ async def test_a_cold_apply_the_words_fall_short_of_lands_in_request(db):
     assert latest.anchor_message_id == anchor_id
     assert latest.skill_frame is None
     assert machine.framing() is None
+    assert published == [ConversationState.REQUEST]
     assert not [row for row in db.memories.list_all() if row.name.startswith("watch-rental")]
 
 

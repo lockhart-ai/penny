@@ -52,6 +52,7 @@ public final class PennyService {
     public var isConnected = false
     public var isRegistered = false
     public var isTyping = false
+    public var conversationState: ConversationStateLabel?
     public var agentProgressRuns: [String: AgentProgressRunItem] = [:]
 
     public var foregroundProgress: AgentProgressRunItem? {
@@ -197,6 +198,7 @@ extension PennyService {
         isConnected = false
         isRegistered = false
         isTyping = false
+        conversationState = nil
         agentProgressRuns.removeAll()
     }
 
@@ -595,6 +597,8 @@ extension PennyService {
             }
         case .typing(let payload):
             isTyping = payload.active
+        case .conversationState(let payload):
+            conversationState = ConversationStateLabel(rawValue: payload.label)
         case .agentProgress(let payload):
             applyAgentProgress(payload)
         case .configResponse(let payload):

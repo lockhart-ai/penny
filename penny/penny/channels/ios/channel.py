@@ -84,6 +84,7 @@ from penny.channels.ios.models import (
     IosAckMessages,
     IosAgentProgress,
     IosAgentProgressTool,
+    IosConversationState,
     IosEmbeddingRequest,
     IosEmbeddingResponse,
     IosHistoryRequest,
@@ -102,6 +103,7 @@ from penny.channels.ios.models import (
 from penny.channels.permission_manager import PermissionManager
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PennyConstants, PermissionResolution
+from penny.conversation_machine import ConversationMachine, ConversationState
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -177,6 +179,9 @@ class IosChannel(MessageChannel):
         self._server: Server | None = None
         self._connections: dict[str, IosConnectionInfo] = {}
         self._closed = asyncio.Event()
+        self._conversation_state_unsubscribe: Callable[[], None] | None = None
+        self._conversation_state_broadcast_task: asyncio.Task[None] | None = None
+        self._pending_conversation_state: ConversationState | None = None
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
         db.messages._on_prompt_logged = self._on_prompt_logged
@@ -195,6 +200,56 @@ class IosChannel(MessageChannel):
     def set_collector(self, collector: Collector) -> None:
         """Wire the collector so iOS can run a collection extractor on demand."""
         self._collector = collector
+
+    def set_conversation_machine(self, machine: ConversationMachine) -> None:
+        """Replace the shared machine subscription without leaving a duplicate behind."""
+        if self._conversation_state_unsubscribe is not None:
+            self._conversation_state_unsubscribe()
+        super().set_conversation_machine(machine)
+        self._conversation_state_unsubscribe = machine.subscribe_state_changes(
+            self._on_conversation_state_changed
+        )
+
+    def _on_conversation_state_changed(self, state: ConversationState) -> None:
+        """Coalesce a settled-state notification into the ordered broadcast task."""
+        self._pending_conversation_state = state
+        task = self._conversation_state_broadcast_task
+        if task is None or task.done():
+            self._conversation_state_broadcast_task = asyncio.create_task(
+                self._broadcast_conversation_states()
+            )
+
+    async def _broadcast_conversation_states(self) -> None:
+        """Deliver each settled batch in order, retaining only the newest queued state."""
+        try:
+            while self._pending_conversation_state is not None:
+                state = self._pending_conversation_state
+                self._pending_conversation_state = None
+                connections = tuple(self._connections.values())
+                await asyncio.gather(
+                    *(self._send_conversation_state(conn, state) for conn in connections)
+                )
+        finally:
+            self._conversation_state_broadcast_task = None
+            if self._pending_conversation_state is not None and not self._closed.is_set():
+                self._conversation_state_broadcast_task = asyncio.create_task(
+                    self._broadcast_conversation_states()
+                )
+
+    @staticmethod
+    async def _send_conversation_state(
+        connection: IosConnectionInfo,
+        state: ConversationState,
+    ) -> None:
+        try:
+            await connection.ws.send(IosConversationState(label=state.value).model_dump_json())
+        except websockets.ConnectionClosed:
+            return
+        except Exception:
+            logger.exception(
+                "Could not send conversation state to iOS device %s",
+                connection.identifier,
+            )
 
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Broadcast prompt log updates to connected iOS clients."""
@@ -336,6 +391,11 @@ class IosChannel(MessageChannel):
                 pending_count=pending_count,
             ),
         )
+        if self._conversation_machine is not None:
+            await self._send_ws(
+                ws,
+                IosConversationState(label=self._conversation_machine.state().value),
+            )
         return msg.device_id
 
     def _persist_registration(self, ws: ServerConnection, msg: IosRegister) -> tuple[bool, int]:
@@ -1194,6 +1254,15 @@ class IosChannel(MessageChannel):
 
     async def close(self) -> None:
         """Shut down websocket and APNs resources."""
+        if self._conversation_state_unsubscribe is not None:
+            self._conversation_state_unsubscribe()
+            self._conversation_state_unsubscribe = None
+        self._pending_conversation_state = None
+        if self._conversation_state_broadcast_task is not None:
+            self._conversation_state_broadcast_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._conversation_state_broadcast_task
+            self._conversation_state_broadcast_task = None
         self._closed.set()
         if self._server:
             self._server.close()

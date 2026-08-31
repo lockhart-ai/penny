@@ -1013,6 +1013,39 @@ async def test_held_draw_stays_put_but_is_still_recorded(db):
     assert transition.skill_name is None
 
 
+async def test_state_subscribers_receive_self_transitions_and_listener_failures_are_isolated(
+    db, caplog
+):
+    """Every completed advance publishes once, and one broken observer costs no other."""
+    machine = _machine(db, _responds("STATE: idle"))
+    published: list[ConversationState] = []
+
+    def broken_listener(state: ConversationState) -> None:
+        raise RuntimeError(f"cannot publish {state}")
+
+    machine.subscribe_state_changes(broken_listener)
+    machine.subscribe_state_changes(published.append)
+
+    with caplog.at_level("ERROR", logger="penny.conversation_machine"):
+        entered = await machine.advance("hello", message_id=_log(db, "hello"))
+
+    assert entered.state is ConversationState.IDLE
+    assert published == [ConversationState.IDLE]
+    assert "Conversation state listener failed" in caplog.text
+
+
+async def test_state_subscription_cleanup_is_idempotent(db):
+    machine = _machine(db, _responds("STATE: idle"))
+    published: list[ConversationState] = []
+    unsubscribe = machine.subscribe_state_changes(published.append)
+
+    unsubscribe()
+    unsubscribe()
+    await machine.advance("hello", message_id=_log(db, "hello"))
+
+    assert published == []
+
+
 async def test_anchor_is_set_on_entry_kept_while_parked_and_cleared_on_break_out(db):
     """The anchor lifecycle end to end: the instigating ask is captured entering
     elicit, SURVIVES the parked round (a later message never overwrites it — a
@@ -1057,6 +1090,8 @@ async def test_apply_resets_structurally_then_classifies_the_new_message(db):
         cause=TransitionCause.CLASSIFIER,
     )
     machine = _machine(db, _responds("STATE: idle"))
+    published: list[ConversationState] = []
+    machine.subscribe_state_changes(published.append)
     await machine.advance("thanks!", message_id=_log(db, "thanks!"))
 
     assert machine.state() is ConversationState.IDLE
@@ -1067,6 +1102,7 @@ async def test_apply_resets_structurally_then_classifies_the_new_message(db):
     assert reset.outcome is None
     assert classified.cause == TransitionCause.CLASSIFIER.value
     assert classified.from_state == ConversationState.IDLE.value
+    assert published == [ConversationState.IDLE]
 
 
 async def test_state_is_a_fold_over_the_log_with_no_materialized_twin(db):

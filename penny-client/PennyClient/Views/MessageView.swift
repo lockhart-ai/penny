@@ -321,7 +321,11 @@ struct MessageView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message", text: $viewModel.draftMessage, axis: .vertical)
+                TextField(
+                    viewModel.composerPresentation.placeholder,
+                    text: $viewModel.draftMessage,
+                    axis: .vertical
+                )
                     .textFieldStyle(.plain)
                     .font(.body)
                     .lineLimit(1...5)
@@ -330,7 +334,14 @@ struct MessageView: View {
                     .onSubmit(viewModel.sendDraft)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
-                    .glassEffect(.regular, in: .capsule)
+                    .glassEffect(
+                        .regular.tint(viewModel.composerPresentation.tint),
+                        in: .capsule
+                    )
+                    .animation(
+                        .easeInOut(duration: 0.2),
+                        value: viewModel.client.conversationState
+                    )
 
                 Button(action: viewModel.sendDraft) {
                     Image(systemName: "paperplane.fill")

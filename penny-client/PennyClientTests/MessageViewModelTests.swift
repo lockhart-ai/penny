@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import PennyClient
 @testable import PennyServices
@@ -43,6 +44,37 @@ struct MessageViewModelTests {
         #expect(didChangeLayout == false)
         #expect(viewModel.selectedMessageLayout == .message)
         #expect(viewModel.scrollToBottomRequest == previousScrollRequest)
+    }
+
+    @Test func composerPresentationTracksEveryConversationState() {
+        let viewModel = MessageView.ViewModel(
+            client: PennyWebSocketClient(
+                databaseService: configuredDatabase(),
+                prefs: configuredPrefs()
+            )
+        )
+
+        viewModel.client.conversationState = .elicit
+        #expect(viewModel.composerPresentation.placeholder == "Teach Penny")
+        #expect(viewModel.composerPresentation.tint == Color.purple.opacity(0.18))
+
+        viewModel.client.conversationState = .learn
+        #expect(viewModel.composerPresentation.placeholder == "Approve or correct")
+        #expect(viewModel.composerPresentation.tint == Color.blue.opacity(0.16))
+
+        viewModel.client.conversationState = .request
+        #expect(viewModel.composerPresentation.placeholder == "Add the missing detail")
+        #expect(viewModel.composerPresentation.tint == Color.orange.opacity(0.18))
+
+        for state in [ConversationStateLabel.idle, .apply] {
+            viewModel.client.conversationState = state
+            #expect(viewModel.composerPresentation.placeholder == "Message")
+            #expect(viewModel.composerPresentation.tint == nil)
+        }
+
+        viewModel.client.conversationState = nil
+        #expect(viewModel.composerPresentation.placeholder == "Message")
+        #expect(viewModel.composerPresentation.tint == nil)
     }
 
     @Test func startupLoadsLatestPageOnly() async {

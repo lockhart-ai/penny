@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+import websockets
 
 from penny.agents.base import AgentProgressEvent
 from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, ApnsError
@@ -28,8 +29,10 @@ from penny.channels.ios.models import (
     IOS_RESP_TYPE_MESSAGES,
     IOS_RESP_TYPE_OUTBOX_CHANGED,
     IOS_RESP_TYPE_REGISTERED,
+    IosConversationState,
 )
 from penny.constants import ChannelType
+from penny.conversation_machine import ConversationState
 from penny.database import Database
 
 
@@ -41,6 +44,31 @@ class FakeWs:
 
     async def send(self, payload: str) -> None:
         self.sent.append(json.loads(payload))
+
+
+class FakeConversationMachine:
+    """Small observable machine surface for channel wiring tests."""
+
+    def __init__(self, state: ConversationState = ConversationState.IDLE) -> None:
+        self.current_state = state
+        self.listeners: list[Any] = []
+
+    def state(self) -> ConversationState:
+        return self.current_state
+
+    def subscribe_state_changes(self, listener):
+        self.listeners.append(listener)
+
+        def unsubscribe() -> None:
+            if listener in self.listeners:
+                self.listeners.remove(listener)
+
+        return unsubscribe
+
+    def publish(self, state: ConversationState) -> None:
+        self.current_state = state
+        for listener in tuple(self.listeners):
+            listener(state)
 
 
 class FakeApns:
@@ -75,6 +103,157 @@ def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChanne
         apns_client=apns,
         is_primary_channel=is_primary,
     )
+
+
+def test_conversation_state_frame_has_exact_wire_shape():
+    assert json.loads(IosConversationState(label="request").model_dump_json()) == {
+        "type": "conversation_state",
+        "label": "request",
+    }
+
+
+async def _wait_for_conversation_state_broadcast(channel: IosChannel) -> None:
+    task = channel._conversation_state_broadcast_task
+    assert task is not None
+    await task
+
+
+@pytest.mark.asyncio
+async def test_registration_is_followed_by_current_conversation_state_snapshot(db):
+    channel = _make_channel(db)
+    machine = FakeConversationMachine(ConversationState.REQUEST)
+    channel.set_conversation_machine(cast(Any, machine))
+    ws = FakeWs()
+
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+
+    assert [message["type"] for message in ws.sent[-2:]] == [
+        "registered",
+        "conversation_state",
+    ]
+    assert ws.sent[-1] == {"type": "conversation_state", "label": "request"}
+
+
+@pytest.mark.asyncio
+async def test_conversation_state_broadcasts_to_all_connections_and_replaces_subscription(db):
+    channel = _make_channel(db)
+    first = FakeConversationMachine()
+    second = FakeConversationMachine()
+    socket_a = FakeWs()
+    socket_b = FakeWs()
+    channel._connections = {
+        "a": IosConnectionInfo(cast(Any, socket_a), 1, "a"),
+        "b": IosConnectionInfo(cast(Any, socket_b), 2, "b"),
+    }
+
+    channel.set_conversation_machine(cast(Any, first))
+    channel.set_conversation_machine(cast(Any, second))
+    first.publish(ConversationState.ELICIT)
+    second.publish(ConversationState.LEARN)
+    await _wait_for_conversation_state_broadcast(channel)
+
+    expected = [{"type": "conversation_state", "label": "learn"}]
+    assert socket_a.sent == expected
+    assert socket_b.sent == expected
+    assert first.listeners == []
+    assert len(second.listeners) == 1
+
+
+@pytest.mark.asyncio
+async def test_conversation_state_broadcast_coalesces_to_latest_waiting_state(db):
+    release = asyncio.Event()
+
+    class SlowWs(FakeWs):
+        async def send(self, payload: str) -> None:
+            await release.wait()
+            await super().send(payload)
+
+    channel = _make_channel(db)
+    machine = FakeConversationMachine()
+    socket = SlowWs()
+    channel._connections["a"] = IosConnectionInfo(cast(Any, socket), 1, "a")
+    channel.set_conversation_machine(cast(Any, machine))
+
+    machine.publish(ConversationState.ELICIT)
+    await asyncio.sleep(0)
+    machine.publish(ConversationState.LEARN)
+    machine.publish(ConversationState.REQUEST)
+    release.set()
+    await _wait_for_conversation_state_broadcast(channel)
+
+    assert socket.sent == [
+        {"type": "conversation_state", "label": "elicit"},
+        {"type": "conversation_state", "label": "request"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_closed_conversation_state_connection_does_not_block_other_sockets(db):
+    class ClosedWs(FakeWs):
+        async def send(self, payload: str) -> None:
+            raise websockets.ConnectionClosedOK(None, None)
+
+    channel = _make_channel(db)
+    machine = FakeConversationMachine()
+    live_socket = FakeWs()
+    channel._connections = {
+        "closed": IosConnectionInfo(cast(Any, ClosedWs()), 1, "closed"),
+        "live": IosConnectionInfo(cast(Any, live_socket), 2, "live"),
+    }
+    channel.set_conversation_machine(cast(Any, machine))
+
+    machine.publish(ConversationState.REQUEST)
+    await _wait_for_conversation_state_broadcast(channel)
+
+    assert live_socket.sent == [{"type": "conversation_state", "label": "request"}]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_conversation_state_delivery_failure_is_logged(db, caplog):
+    class BrokenWs(FakeWs):
+        async def send(self, payload: str) -> None:
+            raise RuntimeError("send failed")
+
+    channel = _make_channel(db)
+    machine = FakeConversationMachine()
+    channel._connections["broken"] = IosConnectionInfo(cast(Any, BrokenWs()), 1, "broken")
+    channel.set_conversation_machine(cast(Any, machine))
+
+    with caplog.at_level("ERROR", logger="penny.channels.ios.channel"):
+        machine.publish(ConversationState.LEARN)
+        await _wait_for_conversation_state_broadcast(channel)
+
+    assert "Could not send conversation state to iOS device broken" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_conversation_state_delivery_and_unsubscribes(db):
+    blocked = asyncio.Event()
+
+    class BlockedWs(FakeWs):
+        async def send(self, payload: str) -> None:
+            await blocked.wait()
+            await super().send(payload)
+
+    channel = _make_channel(db)
+    machine = FakeConversationMachine()
+    channel._connections["a"] = IosConnectionInfo(cast(Any, BlockedWs()), 1, "a")
+    channel.set_conversation_machine(cast(Any, machine))
+    machine.publish(ConversationState.APPLY)
+    await asyncio.sleep(0)
+
+    await channel.close()
+
+    assert machine.listeners == []
+    assert channel._conversation_state_broadcast_task is None
 
 
 async def _ios_admin_request(channel: IosChannel, payload: dict) -> dict:

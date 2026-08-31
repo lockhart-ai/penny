@@ -98,6 +98,7 @@ pieces (:func:`presented_edges`, :func:`render_classifier_content`,
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -131,6 +132,9 @@ class ConversationState(StrEnum):
     LEARN = "learn"
     REQUEST = "request"
     APPLY = "apply"
+
+
+ConversationStateListener = Callable[[ConversationState], None]
 
 
 # The edge table — data, not prose.  Keyed by the CURRENT state; the value is
@@ -1224,6 +1228,22 @@ class ConversationMachine:
         # must not import at import time (the leaf discipline — see CandidateParameter).
         # ``None`` leaves every move unframed, which is the pre-#1868 behaviour exactly.
         self._framer = framer
+        self._state_listeners: dict[int, ConversationStateListener] = {}
+        self._next_state_listener_id = 0
+
+    def subscribe_state_changes(
+        self,
+        listener: ConversationStateListener,
+    ) -> Callable[[], None]:
+        """Subscribe to settled state updates and return an idempotent cleanup."""
+        listener_id = self._next_state_listener_id
+        self._next_state_listener_id += 1
+        self._state_listeners[listener_id] = listener
+
+        def unsubscribe() -> None:
+            self._state_listeners.pop(listener_id, None)
+
+        return unsubscribe
 
     async def advance(
         self,
@@ -1248,7 +1268,21 @@ class ConversationMachine:
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
         entry = await self._frame_round(state, decision, message, run_id=run_id)
         self._record_decision(state, decision, message_id=message_id, run_id=run_id, entry=entry)
-        return TurnEntry(state=self.state(), decision=decision, shortfall=self.shortfall())
+        turn_entry = TurnEntry(
+            state=self.state(),
+            decision=decision,
+            shortfall=self.shortfall(),
+        )
+        self._publish_state(turn_entry.state)
+        return turn_entry
+
+    def _publish_state(self, state: ConversationState) -> None:
+        """Notify every subscriber without letting notification affect a turn."""
+        for listener in tuple(self._state_listeners.values()):
+            try:
+                listener(state)
+            except Exception:
+                logger.exception("Conversation state listener failed")
 
     def state(self) -> ConversationState:
         """Where the machine stands — the newest move's destination.  No history
