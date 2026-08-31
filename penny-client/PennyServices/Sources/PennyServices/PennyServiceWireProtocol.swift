@@ -416,6 +416,14 @@ struct ServerMessageType: Decodable {
     let type: String
 }
 
+public enum ConversationStateLabel: String, CaseIterable, Decodable, Sendable {
+    case idle
+    case elicit
+    case learn
+    case request
+    case apply
+}
+
 enum ServerEnvelope: Decodable {
     case status(StatusPayload)
     case registered(RegisteredPayload)
@@ -424,6 +432,7 @@ enum ServerEnvelope: Decodable {
     case messagesAcked(MessagesAckedPayload)
     case embeddingResponse(EmbeddingResponsePayload)
     case typing(TypingPayload)
+    case conversationState(ConversationStatePayload)
     case agentProgress(AgentProgressPayload)
     case configResponse(ConfigResponsePayload)
     case promptLogsResponse(PromptLogsResponsePayload)
@@ -457,6 +466,8 @@ enum ServerEnvelope: Decodable {
             self = .embeddingResponse(try EmbeddingResponsePayload(from: decoder))
         case "typing":
             self = .typing(try TypingPayload(from: decoder))
+        case "conversation_state":
+            self = .conversationState(try ConversationStatePayload(from: decoder))
         case "agent_progress":
             self = .agentProgress(try AgentProgressPayload(from: decoder))
         case "config_response":
@@ -504,6 +515,8 @@ enum ServerEnvelope: Decodable {
             return "embedding_response:\(payload.requestID)"
         case .typing:
             return nil
+        case .conversationState:
+            return nil
         case .agentProgress:
             return nil
         case .configResponse:
@@ -549,6 +562,8 @@ enum ServerEnvelope: Decodable {
             return "embedding_response"
         case .typing:
             return "typing"
+        case .conversationState:
+            return "conversation_state"
         case .agentProgress:
             return "agent_progress"
         case .configResponse:
@@ -654,6 +669,10 @@ struct EmbeddingResponsePayload: Decodable {
 
 struct TypingPayload: Decodable {
     let active: Bool
+}
+
+struct ConversationStatePayload: Decodable {
+    let label: String
 }
 
 enum AgentProgressEventType: String, Decodable {

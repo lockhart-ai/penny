@@ -84,6 +84,11 @@ extension MessageView {
     @MainActor
     @Observable
     final class ViewModel {
+        struct ComposerPresentation {
+            let placeholder: String
+            let tint: Color?
+        }
+
         var client = PennyWebSocketClient()
         var draftMessage = ""
         var isShowingSettings = false
@@ -129,6 +134,28 @@ extension MessageView {
 
         var shouldShowTypingIndicator: Bool {
             selectedMessageFilter == .all || selectedMessageFilter == .chat
+        }
+
+        var composerPresentation: ComposerPresentation {
+            switch client.conversationState {
+            case .elicit:
+                ComposerPresentation(
+                    placeholder: "Teach Penny",
+                    tint: Color.purple.opacity(0.18)
+                )
+            case .learn:
+                ComposerPresentation(
+                    placeholder: "Approve or correct",
+                    tint: Color.blue.opacity(0.16)
+                )
+            case .request:
+                ComposerPresentation(
+                    placeholder: "Add the missing detail",
+                    tint: Color.orange.opacity(0.18)
+                )
+            case .idle, .apply, nil:
+                ComposerPresentation(placeholder: "Message", tint: nil)
+            }
         }
 
         var canLoadOlderMessages: Bool {

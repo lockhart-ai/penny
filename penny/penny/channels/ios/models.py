@@ -21,6 +21,7 @@ IOS_RESP_TYPE_REGISTERED = "registered"
 IOS_RESP_TYPE_STATUS = "status"
 IOS_RESP_TYPE_TYPING = "typing"
 IOS_RESP_TYPE_AGENT_PROGRESS = "agent_progress"
+IOS_RESP_TYPE_CONVERSATION_STATE = "conversation_state"
 
 
 class IosRegister(BaseModel):
@@ -161,6 +162,13 @@ class IosTyping(BaseModel):
 
     type: str = IOS_RESP_TYPE_TYPING
     active: bool
+
+
+class IosConversationState(BaseModel):
+    """The conversation machine's settled state."""
+
+    type: str = IOS_RESP_TYPE_CONVERSATION_STATE
+    label: str
 
 
 class IosAgentProgressTool(BaseModel):

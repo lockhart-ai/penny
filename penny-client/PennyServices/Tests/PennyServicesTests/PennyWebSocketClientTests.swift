@@ -461,11 +461,44 @@ struct PennyWebSocketClientTests {
         #expect(client.isTyping == false)
     }
 
+    @Test func conversationStateHandlesKnownSuccessiveAndUnknownLabelsAlongsideEphemeralFrames() async {
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: configuredDatabase(),
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+
+        for state in ConversationStateLabel.allCases {
+            transport.emit("""
+            {"type":"conversation_state","label":"\(state.rawValue)"}
+            """)
+            #expect(client.conversationState == state)
+        }
+
+        transport.emit("""
+        {"type":"typing","active":true}
+        """)
+        transport.emit("""
+        {"type":"agent_progress","event":"run_started","run_id":"run-state","agent":"chat","scope":"foreground","tools":[]}
+        """)
+        transport.emit("""
+        {"type":"conversation_state","label":"future-state"}
+        """)
+
+        #expect(client.conversationState == nil)
+        #expect(client.isTyping)
+        #expect(client.foregroundProgress?.id == "run-state")
+    }
+
     @Test func disconnectClearsConnectionState() {
         let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
         client.isConnected = true
         client.isRegistered = true
         client.isTyping = true
+        client.conversationState = .request
         client.agentProgressRuns["run"] = AgentProgressRunItem(id: "run", agent: "collector", scope: .background)
 
         client.disconnect()
@@ -473,6 +506,7 @@ struct PennyWebSocketClientTests {
         #expect(client.isConnected == false)
         #expect(client.isRegistered == false)
         #expect(client.isTyping == false)
+        #expect(client.conversationState == nil)
         #expect(client.agentProgressRuns.isEmpty)
         #expect(client.canSend == false)
     }
