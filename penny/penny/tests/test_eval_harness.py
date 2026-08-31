@@ -131,13 +131,22 @@ from penny.tests.eval.collector.test_watch_cycles import (
     _CONTAINER as WATCH_CONTAINER,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
+    _DATUM as WATCH_DATUM,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _MOVED_DATUM as WATCH_MOVED_DATUM,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
     _PROGRAM_CALLS as WATCH_PROGRAM_CALLS,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
-    LISTINGS as WATCH_LISTINGS,
+    READINGS as WATCH_READINGS,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
     _arm as watch_arm,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _extract_slot as watch_extract_slot,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
     _program as watch_program,
@@ -204,7 +213,7 @@ from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import SampleObservation
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
-from penny.tests.eval.utils.fixtures import BOARD_GAMES
+from penny.tests.eval.utils.fixtures import BOARD_GAMES, LISTING_URL
 from penny.tests.eval.utils.transition_world import (
     APPLY_CASES,
     IDLE_LEARN_CASES,
@@ -2585,39 +2594,60 @@ def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> No
     ]
 
 
-@pytest.mark.parametrize("listing", WATCH_LISTINGS, ids=lambda one: one.token)
-def test_each_watch_arm_lays_down_the_same_program_over_its_own_listing(listing) -> None:
-    """The collector arms are five instances of ONE theme, and this is what says so (#2017).
+def test_every_watch_arm_lays_down_one_program_differing_only_in_its_extract() -> None:
+    """The collector arms are five wordings of ONE instruction, and this is what says so
+    (#2017).
 
     Every arm's stored program must read back as the SAME calls under the strict rendered
-    dialect, carry its own listing url, and name the shared container — the byte-fixed-shape
-    half of "five listings, one program".  An arm whose program parsed to something else would
-    be a different routine, therefore a different behaviour, and pooling it with the others
-    would average two behaviours into one score.
+    dialect, carry the one listing url, name the shared container, and render its OWN
+    ``extract`` slot — and blanking that slot must leave five byte-identical programs.  An arm
+    that differed anywhere else would be a different routine, therefore a different behaviour,
+    and pooling it with the others would average two behaviours into one score.
 
     In ``make check`` rather than in the seeder alone: a program the strict parser cannot read
     leaves the cycle holding only its terminator, and a cycle with no browse writes nothing for
     the most boring reason there is — the exact shape of a passing sample."""
-    program = watch_program(listing)
-    parsed = tuple(call.tool for call in program_calls(program, frozenset(WATCH_PROGRAM_CALLS)))
-    assert parsed == WATCH_PROGRAM_CALLS, f"program: {program!r}"
-    assert listing.url in program, "the runtime join must fill the browse leaf with this url"
-    assert f"'{WATCH_CONTAINER}'" in program, "the attachment must bind to the shared container"
+    programs = [watch_program(reading) for reading in WATCH_READINGS]
+    for reading, program in zip(WATCH_READINGS, programs, strict=True):
+        parsed = tuple(call.tool for call in program_calls(program, frozenset(WATCH_PROGRAM_CALLS)))
+        assert parsed == WATCH_PROGRAM_CALLS, f"program: {program!r}"
+        assert LISTING_URL in program, "the runtime join must fill the browse leaf with the url"
+        assert f"'{WATCH_CONTAINER}'" in program, "the attachment must bind to the container"
+        assert watch_extract_slot(reading) in program, f"program: {program!r}"
+
+    assert len({reading.extract for reading in WATCH_READINGS}) == len(WATCH_READINGS), (
+        "five wordings, or the arms are not arms"
+    )
+    blanked = {
+        program.replace(watch_extract_slot(reading), "extract={}")
+        for reading, program in zip(WATCH_READINGS, programs, strict=True)
+    }
+    assert len(blanked) == 1, f"the arms differ outside the extract slot: {sorted(blanked)}"
 
 
-def test_the_watch_arms_each_bring_their_own_world() -> None:
-    """The generalisation this case exists to exercise: a collector's arms do NOT share a
-    world, so a claim must be answered against the ground its own sample read.
+def test_the_watch_arms_each_bring_their_own_world_over_the_same_facts() -> None:
+    """The generalisation this case exists to exercise — a collector's arms do NOT share a
+    world, so a claim is answered against the ground its own sample read — held together with
+    the rule that makes the case's value claims legal.
 
-    Five arms, five distinct worlds, and each one's page carries only its own listing — an arm
-    answered against a neighbour's page would grade a reading the model was never shown."""
-    arms = [watch_arm(listing) for listing in WATCH_LISTINGS]
-    assert len({arm.world.name for arm in arms}) == len(WATCH_LISTINGS)
-    for arm, listing in zip(arms, WATCH_LISTINGS, strict=True):
-        assert listing.url in arm.world.says
-        others = [one.url for one in WATCH_LISTINGS if one.token != listing.token]
-        assert not [url for url in others if url in arm.world.says]
+    Five arms, five distinct worlds, five distinct page bodies, and the SAME facts on every one
+    of them: the one url, and the watched datum line byte-identical and appearing exactly once.
+    The facts are what the claims hinge on (the store holds the price the page moved to, and no
+    longer the one it moved from), so an arm whose page carried a different price would force
+    every claim back to a shape claim — which is what this refuses in ``make check``, before any
+    GPU time.  The change cycle is checked from the same side: it moves that datum and nothing
+    else."""
+    arms = [watch_arm(reading) for reading in WATCH_READINGS]
+    assert len({arm.world.name for arm in arms}) == len(WATCH_READINGS)
+    assert len({arm.world.says for arm in arms}) == len(WATCH_READINGS), (
+        "the prose must differ between arms, or they are one arm sampled five times"
+    )
+    for arm in arms:
+        assert LISTING_URL in arm.world.says
+        assert arm.world.says.count(WATCH_DATUM) == 1, "one watched line, on every arm"
         assert len(arm.cycles) == 3, "baseline, quiet, change"
+        moved = "\n".join(page.text for page in arm.cycles[2])
+        assert WATCH_MOVED_DATUM in moved and WATCH_DATUM not in moved
 
 
 def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
@@ -2626,7 +2656,7 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
 
     This is the requirement that could not be met by widening the observation record — a
     per-arm world cannot be bolted onto a per-cohort field."""
-    ground = [watch_arm(listing).world for listing in WATCH_LISTINGS[:2]]
+    ground = [watch_arm(reading).world for reading in WATCH_READINGS[:2]]
     arms = [
         eval_cohort.Arm(label=f"phrasing {index + 1}", text=world.name, world=world)
         for index, world in enumerate(ground)
@@ -2643,7 +2673,7 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
         eval_cohort.SpecCategory.STORE,
     )
     assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
-    assert seen == [WATCH_LISTINGS[0].token, WATCH_LISTINGS[1].token]
+    assert seen == [WATCH_READINGS[0].name, WATCH_READINGS[1].name]
 
 
 def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():
@@ -2684,7 +2714,7 @@ def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuou
     report a green check for a question nobody asked, on exactly the claims most likely to be
     wrong.  An unresolvable arm is a harness defect, and a harness defect that reports passes
     is worse than one that stops."""
-    world = watch_arm(WATCH_LISTINGS[0]).world
+    world = watch_arm(WATCH_READINGS[0]).world
     arms = [eval_cohort.Arm(label="phrasing 1", text="a", world=world)]
     unstamped = SampleObservation(name="s0", phrasing="phrasing 1")  # arm defaults to -1
     cohort = Cohort("case", "m", [unstamped], arms)

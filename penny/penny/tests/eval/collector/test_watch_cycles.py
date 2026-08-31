@@ -5,18 +5,22 @@
 only when it has changed, and tells the user only then — the same reading twice over is
 silence, a moved reading is a write and one notification.
 
-**The arms are the job's own inputs, not a rewording.**  A collector has no natural-language
-input to vary: its program is ``render_skill(steps, params)``, deterministic ``N. tool(args)``
-lines, and hand-authoring five of those would be measuring a render rather than a draw.  So the
-five arms are **five instances of one theme on one program** — five listings, five urls, five
-prices, five matching pages.  The skill SHAPE is byte-fixed across all of them; only the bound
-value and the content it reads move.
+**The arms are five wordings of one instruction, over one set of facts.**  A collector has no
+user turn, so its natural-language surface is the ``extract`` instruction its rendered program
+carries and the prose of the page that answers it.  That instruction is written by the
+``SkillSubstitution`` on the ``extract`` path and reaches the model through the shipped
+instantiation seam — ``retarget_writes`` → ``bind_parameters`` → ``render_skill`` — so varying
+it varies a draw rather than a hand-authored render.  Which page each arm reads is the other
+half: same url, same product, same price, five catalogue-grade prose variants around a
+byte-identical datum line.
 
-**That is what makes every claim below a SHAPE claim**, which is the point of driving it this
-way.  Nothing here may name a price, a url or an item, because no single one of them is true of
-the cohort.  What survives is the enactment contract itself, and it holds identically across
-all five: cycle 2 is silent because nothing moved, cycle 3 writes because something did, and a
-notification is owed on exactly the cycles that moved the reading.
+**The FACTS are constant, and the claims hinge on them.**  One listing, one url, one pair of
+prices: ``$499`` before the change and ``$449`` after.  So this case can say what the store
+holds by name — after the cycle that moved the reading the watch holds ``$449`` and no longer
+holds ``$499`` — which is the claim a cohort of five different listings could never make.  The
+two prices are mutually exclusive (neither is a substring of the other), the rule
+``test_collector_enactment.py``'s ``_WatchedFact`` states, because the claim asserts one is
+present and the other gone.
 
 **Three cycles, not two.**  A collection arrives empty, so its first observation is a new key —
 a baseline, and a first observation is news.  The write-gate STOP that makes no-news
@@ -36,8 +40,8 @@ cycles; it does not move a conversation machine, and what each cycle left behind
 persisted entries and the send queue — so its claims are STORE claims and the state section
 says it has none, rather than something being invented to fill it.
 
-Report-only (``min_pass_rate=None``).  All content is synthetic — an invented marketplace —
-because the repo is public.
+Report-only (``min_pass_rate=None``).  All content is synthetic — the house listing fixture on
+an invented marketplace — because the repo is public.
 """
 
 from __future__ import annotations
@@ -74,7 +78,7 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
 )
-from penny.tests.eval.utils.fixtures import CannedPage
+from penny.tests.eval.utils.fixtures import LISTING_URL, CannedPage, datum
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
@@ -85,8 +89,7 @@ _FAMILY = "collector-enactment"
 # The author on a seeded registry row — a fixture's own hand, never a real agent's.
 _SEED_AUTHOR = "eval-seed"
 
-# The one collection every arm's job is configured on.  One name, because one theme: what
-# differs between arms is what the job is POINTED AT, never what kind of job it is.
+# The one collection every arm's job is configured on.  One name, because one job.
 _CONTAINER = "listing-price-watch"
 _CONTAINER_DESCRIPTION = "The asking price on the listing I'm watching, as it stands."
 
@@ -103,101 +106,217 @@ _SCHEDULE = "FREQ=HOURLY"
 # the structural silence cycle 2 is about.
 _KEY = "asking price"
 
+# ── The facts, held constant across every arm ────────────────────────────────
+#
+# One listing, one url, one pair of prices — the house listing every other case in the suite
+# is built on, so a reader who knows `LISTING_URL` knows this world already.  Constant is what
+# lets the claims below name a value: five listings would force every one of them back to a
+# shape claim, and a shape claim cannot tell a watch that recorded the right price from one
+# that recorded a plausible number.
+_ITEM = "Aurora Deck 2"
+_MATCH = "aurora-deck-2"
 
-class Listing(NamedTuple):
-    """One instance of the theme: an item, the page it lives on, and the two readings.
+# The two readings.  MUTUALLY EXCLUSIVE — neither is a substring of the other, in the bare form
+# or in the instruction-labelled pair a cycle may store since #1918 — because the change claim
+# asserts one is present and the other gone.  ``$499`` and ``$4499`` would not have been.
+_BASELINE_PRICE = "$499"
+_MOVED_PRICE = "$449"
 
-    ``token`` is the distinctive substring the canned browser matches the request url on, so
-    each arm serves its own page and only its own."""
-
-    token: str
-    item: str
-    url: str
-    quiet_price: str
-    moved_price: str
+# The watched line itself, byte-identical on all five pages, and labelled as THE current price
+# so the neighbouring items' prices further down each page cannot be read as it (round 5 of
+# the enactment beat measured a wrong-price grab against an unlabelled one).
+_DATUM = f"Current price: {_BASELINE_PRICE}"
+_MOVED_DATUM = f"Current price: {_MOVED_PRICE}"
 
 
-# Five listings, five urls, five prices.  Deliberately unlike each other — a lantern, a chair,
-# a bicycle, a kettle, a rug — so an arm that only works for one shape of item shows up as a
-# divergence rather than as a uniformly passing cohort.
-LISTINGS = (
-    Listing(
-        "keel-lantern",
-        "Keel Lantern, brass",
-        "https://faux-market.example/keel-lantern",
-        "84 zorkmids",
-        "72 zorkmids",
+class Reading(NamedTuple):
+    """One arm: how the job's ``extract`` step words what to look for, and the page prose that
+    answers it.
+
+    ``name`` is what this arm is called wherever it is identified — its world's name, and the
+    row a reader opens when the report says a phrasing diverged.  ``extract`` is the
+    substitution description that becomes ``extract={…}`` in the rendered program, which is the
+    only natural language a collector cycle is handed.  ``body`` is this arm's whole page."""
+
+    name: str
+    extract: str
+    body: str
+
+
+_SPEC_LINK = f"[{_ITEM} specification sheet]({LISTING_URL}/spec)"
+_LISTING_LINK = f"[{_ITEM} listing]({LISTING_URL})"
+_HEAD = f"Title: {_ITEM} — handheld console | faux-market\n{LISTING_URL}\n\n"
+
+
+# Five catalogue-grade pages: same url, same product, same price, five voices.  Each carries
+# far more than the job needs — a seller blurb, a specification block, neighbouring items with
+# their OWN prices, housekeeping notes — because a real page does, and because a page thin
+# enough to answer only the asked question cannot tell restraint from luck.  The neighbours are
+# the load-bearing part: a cycle that grabs a price is only demonstrably reading the RIGHT one
+# where wrong ones are on the page to grab.  Every markdown link sits at the CENTRE of its
+# block, since a search-shaped read is trimmed to ±2 lines around each solo link.
+READINGS = (
+    Reading(
+        "current-price",
+        "the current price",
+        _HEAD + f"{_ITEM} (open box, tested). Sold by a fictional reseller; stock moves weekly.\n"
+        f"{_DATUM}\n"
+        f"{_LISTING_LINK}\n"
+        "Seller: nebula_resale (4.9 stars). The asking price last changed nine days ago.\n"
+        "Condition: open box, tested. Dispatched within two working days.\n"
+        "\n"
+        "Specification\n"
+        "7-inch 1200p display with 512 GB of storage\n"
+        f"{_SPEC_LINK}\n"
+        "About four hours of battery per charge; the cell is replaceable.\n"
+        "Weight 640g · Original box and charger · One controller included\n"
+        "\n"
+        "Others from this seller\n"
+        "Aurora Deck 1, refurbished — $329\n"
+        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "Nebula Dock, charging stand — $59\n"
+        "Both ship from the same fictional warehouse.\n"
+        "\n"
+        "Returns are accepted within thirty days; return postage is the buyer's.\n",
     ),
-    Listing(
-        "harbour-chair",
-        "Harbour Chair, teak",
-        "https://faux-market.example/harbour-chair",
-        "220 zorkmids",
-        "195 zorkmids",
+    Reading(
+        "asking-price",
+        "the asking price on the page",
+        _HEAD
+        + "A fictional marketplace listing. The shop reprices this one whenever the shelf moves.\n"
+        f"{_DATUM}\n"
+        f"{_LISTING_LINK}\n"
+        "Offered by driftwood_games (4.8 stars). The asking price is reviewed every Monday.\n"
+        "Condition: open box, tested. Two working days to dispatch.\n"
+        "\n"
+        "What you get\n"
+        f"{_ITEM} handheld · 7-inch 1200p display · 512 GB\n"
+        f"{_SPEC_LINK}\n"
+        "The battery runs about four hours; charger and one controller are in the box.\n"
+        "Weight 640g · Original packaging · No trade-ins accepted on this listing\n"
+        "\n"
+        "Also listed by this shop\n"
+        "Aurora Deck Lite, boxed — $279\n"
+        "[Aurora Deck Lite](https://faux-market.example/aurora-deck-lite)\n"
+        "Spare stylus, twin pack — $19\n"
+        "Everything ships from one fictional depot.\n"
+        "\n"
+        "Thirty-day returns. The buyer pays return postage.\n",
     ),
-    Listing(
-        "quay-bicycle",
-        "Quay Bicycle, six-speed",
-        "https://faux-market.example/quay-bicycle",
-        "410 zorkmids",
-        "455 zorkmids",
+    Reading(
+        "asking-right-now",
+        "what the listing is asking right now",
+        _HEAD + "Listed by a fictional trade-in counter that re-prices its shelf every few days.\n"
+        f"{_DATUM}\n"
+        f"{_LISTING_LINK}\n"
+        "Seller: quayside_swap (4.7 stars). What the counter asks moves with what it pays.\n"
+        "Condition: open box, tested. Ready to dispatch inside two working days.\n"
+        "\n"
+        "Hardware\n"
+        "A 7-inch 1200p screen and 512 GB of onboard storage\n"
+        f"{_SPEC_LINK}\n"
+        "Around four hours of play per charge; a workshop can swap the battery.\n"
+        "Weight 640g · Boxed as it came · Charger included\n"
+        "\n"
+        "On the same shelf\n"
+        "Aurora Deck 1, tested — $315\n"
+        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "Moulded travel case — $44\n"
+        "The counter posts its shelf every morning.\n"
+        "\n"
+        "Returns within thirty days, postage paid by the buyer.\n",
     ),
-    Listing(
-        "copper-kettle",
-        "Copper Kettle, seamed",
-        "https://faux-market.example/copper-kettle",
-        "37 zorkmids",
-        "41 zorkmids",
+    Reading(
+        "listed-today",
+        "the price it is listed at today",
+        _HEAD + "A fictional clearance warehouse. Today's shelf, republished each morning.\n"
+        f"{_DATUM}\n"
+        f"{_LISTING_LINK}\n"
+        "Seller: pier_clearance (4.6 stars). The asking price is set each day at opening.\n"
+        "Condition: open box, tested. Two working days from order to dispatch.\n"
+        "\n"
+        "Specification\n"
+        "Display 7-inch 1200p · Storage 512 GB\n"
+        f"{_SPEC_LINK}\n"
+        "Roughly four hours of battery; the pack is a serviceable part.\n"
+        "Weight 640g · Original box and charger · One controller\n"
+        "\n"
+        "Today's other handhelds\n"
+        "Aurora Deck Lite, open box — $265\n"
+        "[Aurora Deck Lite](https://faux-market.example/aurora-deck-lite)\n"
+        "Screen guard, twin pack — $12\n"
+        "The whole shelf ships from one fictional warehouse.\n"
+        "\n"
+        "Returns accepted for thirty days; the buyer covers return postage.\n",
     ),
-    Listing(
-        "arcade-rug",
-        "Arcade Rug, hand-knotted",
-        "https://faux-market.example/arcade-rug",
-        "615 zorkmids",
-        "580 zorkmids",
+    Reading(
+        "listing-shows",
+        "the price this listing shows",
+        _HEAD
+        + "A fictional consignment listing. The page shows whatever the owner last agreed to.\n"
+        f"{_DATUM}\n"
+        f"{_LISTING_LINK}\n"
+        "Seller: lantern_consign (4.9 stars). The asking price is whatever this page shows.\n"
+        "Condition: open box, tested. Dispatch within two working days.\n"
+        "\n"
+        "Specification sheet\n"
+        "7-inch 1200p display · 512 GB storage · 640g\n"
+        f"{_SPEC_LINK}\n"
+        "The battery lasts about four hours and is replaceable at a workshop.\n"
+        "Charger, one controller and the original box are included.\n"
+        "\n"
+        "Elsewhere in this consignment\n"
+        "Aurora Deck 1, boxed — $340\n"
+        "[Aurora Deck 1](https://faux-market.example/aurora-deck-1)\n"
+        "Dock and cable set — $69\n"
+        "All consigned stock ships from one fictional store.\n"
+        "\n"
+        "Thirty days to return; return postage is the buyer's.\n",
     ),
 )
 
 
-def _page(listing: Listing, price: str) -> CannedPage:
-    """One listing's page at one price — the only thing that moves between cycle 2 and 3."""
-    return CannedPage(
-        match=listing.token,
-        text=(
-            f"Title: {listing.item} — {listing.url}\n"
-            f"{listing.url}\n\n"
-            f"{listing.item}\n"
-            f"Price: {price}\n"
-            "Collection from the quay, weekday afternoons.\n"
-        ),
-    )
+def _page(reading: Reading) -> CannedPage:
+    """This arm's page as it stands before the change — the baseline and the quiet cycle."""
+    return CannedPage(match=_MATCH, text=reading.body)
 
 
-def _world(listing: Listing) -> World:
+def _moved_page(reading: Reading) -> CannedPage:
+    """The same page with the watched datum — and only the watched datum — moved.
+
+    Derived by the shared ``datum`` edit rather than rebuilt from a template, so the two sides
+    of the pair are one text and one span: the edit RAISES unless the old line appears exactly
+    once, which is what a rebuilt twin cannot check."""
+    return datum(_page(reading), _DATUM, _MOVED_DATUM)
+
+
+def _world(reading: Reading) -> World:
     """This arm's ground: the page as it stands when the job is set up.
 
     ``keeps``/``excludes`` are EMPTY, and deliberately.  Those token sets back
-    ``assert_something_from_each_page_was_written``, which asks whether a round kept something
-    identifying each source — and what this job stores is the price, while the token that
-    identifies the page lives in its url and its title.  Declaring the tokens would print
-    "5 must-keep" in every report as though something verified them, and the only claim that
-    could read them would be false of every correct sample.  A contract nothing reads is worse
-    than no contract: it reads as a check that passed."""
+    ``assert_something_from_each_page_was_written``, which this case never calls — and there is
+    nothing they could usefully hold: a ``keeps`` token has to appear on ONE page so a stored
+    copy says which page it came from, and every arm here reads the same url, the same product
+    and the same price.  Declaring tokens anyway would print "5 must-keep" in every report as
+    though something had verified them.  A contract nothing reads is worse than no contract: it
+    reads as a check that passed."""
     return World(
-        name=listing.token,
-        pages=(_page(listing, listing.quiet_price),),
+        name=reading.name,
+        pages=(_page(reading),),
         keeps=(),
         excludes=(),
     )
 
 
-def _skill(listing: Listing) -> SkillDraft:
+def _skill(reading: Reading) -> SkillDraft:
     """The routine the user taught, in the shape run-end extraction leaves behind.
 
-    ONE shape for every arm — the same two steps, the same placeholders, the same attachment
-    mark on the destination — with only the demonstrated value differing, which is what a
-    routine pointed at a different listing looks like.  Byte-fixed apart from that value is the
-    whole point: five different programs would be five different behaviours."""
+    ONE shape for every arm — the same two steps, the same placeholders, the same bound url,
+    the same attachment mark on the destination.  The one thing that differs is the
+    ``extract`` substitution's DESCRIPTION, which is what ``render_skill`` prints into the
+    program and therefore the only natural language a cycle reads.  The demonstrated
+    ``arguments["extract"]`` stays constant across the arms because it never renders: the
+    labeller's description replaces it at the seam."""
     return SkillDraft(
         name="watch_listing_price",
         intent="Keep an eye on what this listing is asking, and tell me when it changes.",
@@ -207,7 +326,7 @@ def _skill(listing: Listing) -> SkillDraft:
                 ordinal=1,
                 source_ordinal=1,
                 tool="browse",
-                arguments={"queries": [listing.url], "extract": "the asking price"},
+                arguments={"queries": [LISTING_URL], "extract": "the asking price"},
                 substitutions=[
                     SkillSubstitution(
                         path=["queries", 0],
@@ -217,7 +336,7 @@ def _skill(listing: Listing) -> SkillDraft:
                     SkillSubstitution(
                         path=["extract"],
                         kind=SkillSubKind.PLACEHOLDER,
-                        description="the asking price on the page",
+                        description=reading.extract,
                     ),
                 ],
             ),
@@ -227,7 +346,7 @@ def _skill(listing: Listing) -> SkillDraft:
                 tool="collection_write",
                 arguments={
                     "memory": _CONTAINER,
-                    "entries": [{"key": _KEY, "content": listing.quiet_price}],
+                    "entries": [{"key": _KEY, "content": _BASELINE_PRICE}],
                 },
                 substitutions=[
                     SkillSubstitution(
@@ -248,26 +367,31 @@ def _skill(listing: Listing) -> SkillDraft:
             SkillParameter(
                 name="listing",
                 description="the listing page to read each run",
-                value=listing.url,
+                value=LISTING_URL,
             )
         ],
         source_run_id=_SEED_AUTHOR,
     )
 
 
-def _program(listing: Listing) -> str:
+def _program(reading: Reading) -> str:
     """The program the apply turn stores, through the production instantiation seam's own
     three steps in its own order: the attachment bound to the container, the runtime join
     writing the bound value into the leaf the demonstration put its own value in, then the
     render."""
-    skill = _skill(listing)
-    values = {"listing": listing.url}
+    skill = _skill(reading)
+    values = {"listing": LISTING_URL}
     attached = retarget_writes(skill.steps, _CONTAINER)
     joined = bind_parameters(attached, skill.parameters, values)
     return render_skill(joined, values)
 
 
-def _seeder(listing: Listing):
+def _extract_slot(reading: Reading) -> str:
+    """How this arm's instruction renders inside the program — the one span that moves."""
+    return f"extract={{{reading.extract}}}"
+
+
+def _seeder(reading: Reading):
     """The world an apply turn leaves for THIS arm: the routine in the registry, and a
     container configured from it — then every claim that world makes, asserted out loud.
 
@@ -277,25 +401,25 @@ def _seeder(listing: Listing):
     Each failure costs a live cycle per sample to not notice."""
 
     def seed(db: Database) -> None:
-        skill = _skill(listing)
+        skill = _skill(reading)
         db.skills.upsert(skill, author=_SEED_AUTHOR)
         db.memories.create_collection(
             _CONTAINER,
             _CONTAINER_DESCRIPTION,
-            extraction_prompt=_program(listing),
+            extraction_prompt=_program(reading),
             schedule=_SCHEDULE,
             notify=True,
             skill_name=slug_skill_name(skill.name),
-            skill_params={"listing": listing.url},
+            skill_params={"listing": LISTING_URL},
         )
-        _assert_the_watch_world(db, listing)
+        _assert_the_watch_world(db, reading)
 
     return seed
 
 
-def _assert_the_watch_world(db: Database, listing: Listing) -> None:
+def _assert_the_watch_world(db: Database, reading: Reading) -> None:
     """Everything the seeder is responsible for, asserted where it fails loudly."""
-    name = slug_skill_name(_skill(listing).name)
+    name = slug_skill_name(_skill(reading).name)
     assert db.skills.get(name) is not None, f"the job's routine {name!r} must be registered"
 
     row = db.memories.get(_CONTAINER)
@@ -309,12 +433,16 @@ def _assert_the_watch_world(db: Database, listing: Listing) -> None:
         f"the stored program must read back as {list(_PROGRAM_CALLS)} under the rendered "
         f"dialect, got {list(parsed)} — program: {program!r}"
     )
-    assert listing.url in program, (
-        f"the runtime join must fill the browse leaf with {listing.url!r} — a cycle can only "
+    assert LISTING_URL in program, (
+        f"the runtime join must fill the browse leaf with {LISTING_URL!r} — a cycle can only "
         f"fetch the page something it reads names.  Program: {program!r}"
     )
     assert f"'{_CONTAINER}'" in program, (
         f"the attachment must be bound to {_CONTAINER!r}.  Program: {program!r}"
+    )
+    assert _extract_slot(reading) in program, (
+        f"this arm's instruction must reach the model as {_extract_slot(reading)!r} — the "
+        f"extract description is the whole arm axis.  Program: {program!r}"
     )
     assert not collection_entries(db, _CONTAINER), (
         "the container must be empty when the first cycle starts, so a write is exactly a "
@@ -322,22 +450,23 @@ def _assert_the_watch_world(db: Database, listing: Listing) -> None:
     )
 
 
-def _arm(listing: Listing) -> CycleArm:
-    """One arm: this listing's job, and the three registers its cycles read.
+def _arm(reading: Reading) -> CycleArm:
+    """One arm: the one listing read under this arm's instruction, and the three registers its
+    cycles read.
 
     The register is re-installed between cycles because that is the whole point — the world
     MOVED between two runs of the same watch, and what the third cycle does about it is the
-    contract."""
-    quiet = [_page(listing, listing.quiet_price)]
+    contract.  ``text`` is the instruction, because that is what makes this arm this arm."""
+    quiet = [_page(reading)]
     return CycleArm(
-        text=f"{listing.item} — {listing.url} at {listing.quiet_price}, then {listing.moved_price}",
-        seed=_seeder(listing),
-        cycles=[quiet, quiet, [_page(listing, listing.moved_price)]],
-        world=_world(listing),
+        text=reading.extract,
+        seed=_seeder(reading),
+        cycles=[quiet, quiet, [_moved_page(reading)]],
+        world=_world(reading),
     )
 
 
-# ── The claims: SHAPE only, because no value is true of the cohort ───────────
+# ── The claims ───────────────────────────────────────────────────────────────
 
 
 def _cycle(sample: SampleObservation, index: int) -> str:
@@ -351,7 +480,9 @@ def _quiet_cycle_said_nothing(sample: SampleObservation, _world: World) -> Answe
 
     Cycle 2 re-reads the page the baseline already recorded, so the write gate's
     `KEY_EXISTS_UNCHANGED` STOP is what makes no-news structurally silent — no write, and
-    nothing entering a notification."""
+    nothing entering a notification.  It is also what says the baseline recorded the RIGHT
+    value: the STOP fires only where the stored value equals the one just read, so a silent
+    cycle 2 is a cycle 1 that stored what the page said."""
     shape = _cycle(sample, 1)
     return shape == "quiet", f"the quiet cycle was {shape!r}, not silent"
 
@@ -393,16 +524,33 @@ def _one_entry_under_one_key(sample: SampleObservation, _world: World) -> Answer
     ) == 1, f"holds {len(sample.entries)} entries under keys {sorted(keys)}"
 
 
+def _holds_the_price_the_page_moved_to(sample: SampleObservation, _world: World) -> Answer:
+    """After the last cycle the watch holds the price the page moved TO, and no longer the one
+    it moved FROM.
+
+    The facts are the same on every arm, so this claim can name them: ``$449`` present,
+    ``$499`` absent.  Both halves are needed and neither is sufficient — a watch that appended
+    the new price beside the old one holds ``$449`` while still telling the user something that
+    is no longer true, and a watch that never re-read the page holds neither.  Matched as
+    substrings of the whole entry, key and content together, so a cycle that stored the value
+    with its label (the instruction-labelled pair a browse result hands back since #1918) still
+    reads as having stored it."""
+    held = sample.stored_text
+    ok = _MOVED_PRICE in held and _BASELINE_PRICE not in held
+    return ok, f"expected {_MOVED_PRICE} and not {_BASELINE_PRICE}; the watch holds {held!r}"
+
+
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_the_watch_writes_only_when_the_reading_moves(
     collector_cycles_eval: CollectorCyclesEval, model: str
 ) -> None:
-    """One program, five listings: the write gate holds the same way on every one of them."""
+    """One job, five wordings of its instruction: the write gate holds the same way on all of
+    them, and the value it holds at the end is the one the page moved to."""
     cohort = await collector_cycles_eval(
         case_id=_CASE_ID,
         model=model,
         collection=_CONTAINER,
-        arms=[_arm(listing) for listing in LISTINGS],
+        arms=[_arm(reading) for reading in READINGS],
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
@@ -432,6 +580,11 @@ async def test_the_watch_writes_only_when_the_reading_moves(
     cohort.assert_the_store_holds_an_entry()
     cohort.claim(
         "state: the watch keeps one fact, rewritten", _one_entry_under_one_key, SpecCategory.STORE
+    )
+    cohort.claim(
+        f"state: the watch holds {_MOVED_PRICE} and no longer {_BASELINE_PRICE}",
+        _holds_the_price_the_page_moved_to,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the user was told on exactly the cycles that moved the reading",

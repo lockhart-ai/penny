@@ -2546,8 +2546,9 @@ class _Arms(NamedTuple):
     against.  For chat that is a wording of the user's ask, and every arm shares one world.
     For a browse extraction it is a wording of the ``extract`` instruction — Penny's own words,
     written upstream at the call site — again against one page.  For a collector there is no
-    natural-language input at all: what varies is the job's own inputs, so an arm is a set of
-    bound values AND the page that answers them, and the arms do not share a world.
+    user turn: what varies is the ``extract`` instruction its rendered program carries and the
+    prose of the page that answers it, so an arm is a wording AND its own page, and the arms do
+    not share a world.
 
     Lifted out of ``chat_eval``'s closure because nothing about it is chat: it maps a sample
     index to the arm that sample runs and nothing more.  The N is deliberately NOT scaled by
@@ -3441,23 +3442,26 @@ def _cycles_ran_check(driven: _DrivenCycles) -> Check:
 
 
 class CycleArm(NamedTuple):
-    """ONE arm of a collector cohort: the job's own inputs, and the pages that answer them.
+    """ONE arm of a collector cohort: a wording of the job's instruction, and the pages that
+    answer it.
 
-    A collector has no natural-language input to reword — its program is
-    ``render_skill(steps, params)``, deterministic ``N. tool(args)`` lines — so what varies
-    across the arms is the job's BOUND VALUES and the CONTENT they read, together.  Five
-    instances of one theme on one program: five listings, five urls, five prices, five
-    matching pages.  The skill shape is byte-fixed; only the values and the content move.
+    A collector has no user turn, so its natural language is the ``extract`` instruction its
+    rendered program carries — written by the ``SkillSubstitution`` on that path and printed by
+    ``render_skill``, so a wording reaches the model through the shipped instantiation seam
+    rather than through a hand-authored program — plus the prose of the page that answers it.
+    Those two are what vary across the arms.
 
-    That is what forces every claim to be a SHAPE claim, which is the point of driving it this
-    way: nothing can name a specific value, so what survives is the enactment contract itself
-    — a write when the reading moves, silence when it does not, one notification and only
-    there.  Those hold identically across all five.
+    The FACTS do not: one url, one set of bound values, one pair of readings either side of the
+    change, and a byte-identical datum line on every page.  Constant facts are what let a claim
+    name a value — the store holds the price the page moved to, and no longer the one it moved
+    from — instead of retreating to a shape that cannot tell a right reading from a plausible
+    one.
 
     ``text`` is what makes this arm this arm, rendered verbatim in the report so a reader who
-    sees "phrasing 3 diverged" can see which listing that was.  ``seed`` lays THIS arm's job
+    sees "phrasing 3 diverged" can see which wording that was.  ``seed`` lays THIS arm's job
     down, ``cycles`` is its own register per cycle, and ``world`` is its pages — carried so a
-    claim is answered against the ground its own sample actually read."""
+    claim is answered against the ground its own sample actually read, since the prose differs
+    per arm."""
 
     text: str
     seed: Seeder

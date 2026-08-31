@@ -61,6 +61,7 @@ from penny.tests.eval.utils.cohort import (
     output_field,
     unsourced_specifics,
 )
+from penny.tests.eval.utils.fixtures import LISTING_URL
 from penny.tests.eval.utils.worlds import World
 from penny.tools.micro_context import MicroExtractOutcome, spoken_form
 
@@ -134,14 +135,15 @@ _SECTION = (
 )
 
 # An ordinary listing that answers everything asked of it — the baseline, where nothing
-# about this change should show at all.
-_LISTING_URL = "https://faux-market.example/keel-lantern"
+# about this change should show at all.  It is the house listing (`LISTING_URL`), at the price
+# every other case in the suite reads it at: a page and a value the whole suite shares cannot
+# drift into a shape only this file expects.
 _LISTING = (
-    "Keel Lantern, brass\n"
+    "Aurora Deck 2, handheld console\n"
     "\n"
-    "Price: 84 zorkmids\n"
-    "In stock — three left in the workshop\n"
-    "Ships from the quay within two days.\n"
+    "Price: $499\n"
+    "In stock — three left, open box and tested\n"
+    "Ships from a fictional warehouse within two days.\n"
 )
 
 
@@ -149,12 +151,12 @@ _LISTING = (
 
 _ALL_PRESENT = ExtractFixture(
     case_id="extract-fields-all-present",
-    url=_LISTING_URL,
+    url=LISTING_URL,
     page=_LISTING,
     instruction="the item's name, its price and whether it is in stock",
     expectations=(
-        FieldExpectation("name", "Keel Lantern"),
-        FieldExpectation("price", "84 zorkmids"),
+        FieldExpectation("name", "Aurora Deck 2"),
+        FieldExpectation("price", "$499"),
         FieldExpectation("stock", "three left"),
     ),
 )

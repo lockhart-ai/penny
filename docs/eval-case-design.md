@@ -319,23 +319,27 @@ against** — and the input is not always the user's words.
   instruction is the `extract` argument of a browse call — **Penny's own words**, written
   upstream at the call site — so the cohort measures how stable the read is against how the
   calling draw happened to word it, which nothing else measures.
-- **A collector**: no natural-language input exists. Its program is `render_skill(steps,
-  params)` — `N. tool(args)` lines, *"pure and deterministic"* — so **do not vary the
-  `extraction_prompt`**: hand-authoring programs the instantiation seam cannot emit measures a
-  render rather than a draw, which is §5's own trap one layer up. What varies is the job's
-  **inputs** — its bound values and the page content, together. Five instances of one theme on
-  one program: five listings, five urls, five prices, five matching pages. Five variations on a
-  theme, never five different jobs — a different program is a different behaviour and splits
-  rather than pools.
+- **A collector**: no user turn exists, so its natural language is the `extract` instruction the
+  job's rendered program carries, plus the prose of the page that answers it. That instruction is
+  written by the `SkillSubstitution` on the `extract` path and reaches the model through the
+  shipped instantiation seam — `retarget_writes` → `bind_parameters` → `render_skill` — so
+  varying it varies a draw. **Never hand-author the program**: a program the instantiation seam
+  cannot emit measures a render rather than a draw, which is §5's own trap one layer up. Five
+  wordings of one instruction, against five prose variants of one page.
 
-A collector's arms therefore each carry **their own world**, which is why the world lives on the
-**arm** rather than on the cohort: *one world with five wordings* is the special case of *five
+**A collector's facts are held CONSTANT across its arms** — one url, one set of bound values, one
+pair of readings either side of the change — because the assertions hinge on them. The watched
+datum line is byte-identical on every arm; what varies around it is the prose a real page carries
+anyway: a seller blurb, a specification block, neighbouring items with their own prices,
+housekeeping notes. Constant facts are what let a case name a value. *The store holds `$449` and
+no longer holds `$499`* is an assertion; *the store holds something* is a shape, and a shape
+cannot tell a watch that read the right price from one that produced a plausible number.
+
+The arms nonetheless each carry **their own world**, which is why the world lives on the **arm**
+rather than on the cohort: the pages differ, so a provenance claim has to trace against the page
+that sample actually read. *One world with five wordings* is the special case of *five
 `(input, world)` pairs where the world happens to be constant*. A claim is answered against the
 world of the arm that produced the sample it is answering about.
-
-Varying the job's inputs forces every claim to be a **shape claim**, which is the point: nothing
-may name a specific value, because no single value is true of the cohort. What survives is the
-contract itself — a write when the reading moves, silence when it does not.
 
 Within one arm, the world is **fixed across its samples**. A case that varies it does so as a second
 **input** axis, pooled exactly like phrasing — and **within** the 15, never as samples added beside
