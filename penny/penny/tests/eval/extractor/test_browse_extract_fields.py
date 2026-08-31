@@ -304,9 +304,17 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         SpecCategory.PROVENANCE,
     )
 
-    # What is MEASURED — the same structured fields, compared across the cohort.  No tool
-    # sequence and no reply spread: a single call makes neither, and measuring one would
-    # print a feature that cannot see an outlier.
+    # What is MEASURED — the draw's own structured fields, compared across the cohort.
+    #
+    # Variance is ORTHOGONAL to correctness: it does not ask whether a value is right, only
+    # which samples diverge from the pack.  So `reason` belongs here even though this case
+    # asserts the draw lands on `EXTRACTED` and `MicroContextResult` populates `reason` only
+    # on `NOT_PRESENT` — a sample that came back NOT_PRESENT carries a reason the others do
+    # not, and that is exactly an outlier worth surfacing, at finer grain than `outcome` gives.
+    # On a run where every draw succeeds it reads nothing on all fifteen and is flagged blind,
+    # which is the honest "nothing diverged this run" rather than a broken axis.
+    #
+    # No tool sequence and no reply spread: a single call makes neither.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),

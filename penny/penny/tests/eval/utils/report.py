@@ -743,7 +743,20 @@ class CaseSections:
         return rate_glyph(summary.rate) if summary.total else PASS_GLYPH
 
     def _variance_glyph(self) -> str:
-        return worst_glyph([variance_glyph(f) for f in self.variance.features])
+        """The variance side's contribution to the case colour — from the THRESHOLDED features
+        only.
+
+        Variance reaches the headline through its threshold, which is the criterion itself. A
+        BLIND feature has no threshold and proposes no ceiling, so it has nothing to contribute
+        and must not repaint the case: it is a fact about the INSTRUMENT rather than about
+        Penny, and letting it turn a case red at 60/60 checks is the same defect as colouring
+        on an exclusion — a line that contradicts itself teaches a reader to ignore the colour.
+
+        It is not softened, only relocated: the feature's own row stays 🔴 with
+        `— READ NOTHING on every sample; not a reading`, which is where an instrument problem
+        belongs and where it is unmissable."""
+        thresholded = [f for f in self.variance.features if not f.blind]
+        return worst_glyph([variance_glyph(f) for f in thresholded])
 
     def _spread(self) -> str:
         """This case's spread reading: what varies MOST, and how much varies at all.

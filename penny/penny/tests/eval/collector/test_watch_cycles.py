@@ -67,6 +67,7 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
     TRANSITIONS,
@@ -441,9 +442,10 @@ async def test_the_watch_writes_only_when_the_reading_moves(
     # PROVENANCE — nothing in the container came from anywhere but the pages it read
     cohort.assert_every_stored_entry_traces_to_the_world()
 
-    # What is MEASURED.  `ENTRIES_STORED` is deliberately NOT here: `_one_entry_under_one_key`
-    # already asserts the container holds exactly one entry, so the feature could only read
-    # 0.000 while its paired claim passes — a row that can never inform, proposing a ceiling on
-    # a number a deterministic check already pins.  A variance feature earns its place by
-    # catching a spread the assertions do not cover.
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, REPLY_SPREAD)
+    # What is MEASURED.  Variance is ORTHOGONAL to correctness — it surfaces samples unlike
+    # the pack, never whether a value is right — so `ENTRIES_STORED` belongs here even though
+    # `_one_entry_under_one_key` asserts the same count.  The two answer different questions:
+    # the claim says THIS RUN WAS WRONG, the feature says THIS SAMPLE IS UNLIKE THE OTHERS, and
+    # a sample storing zero or two entries is an outlier worth opening whichever way the claim
+    # went.  Being covered by a claim is not a reason to drop an axis.
+    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)

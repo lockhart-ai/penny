@@ -626,6 +626,34 @@ def test_the_checks_row_is_coloured_on_its_aggregate_not_on_its_worst_claim():
     assert report.CaseSections(case_id="c", model="m").glyph() == report.PASS_GLYPH
 
 
+def test_a_blind_feature_is_loud_in_its_row_and_absent_from_the_case_colour():
+    """Variance reaches the headline THROUGH ITS THRESHOLD, and a blind feature has none.
+
+    It proposes no ceiling, so it has nothing to contribute to the case colour — and letting
+    it repaint one turned a case 🔴 at 60/60 checks, which is the same self-contradicting line
+    as colouring on an exclusion. A reader who sees red beside 100% learns to ignore the red.
+
+    Not softened, relocated: the row itself stays 🔴 and says what happened, because a blind
+    axis is a fact about the INSTRUMENT and that is where an instrument problem belongs."""
+    samples = [_observation(f"c-{n} (a)", "a", []) for n in (1, 2, 3)]
+    variance = cohort.pool(samples, [cohort.TOOL_SEQUENCE])
+    sections = report.CaseSections(
+        case_id="c",
+        model="m",
+        assertions=[
+            cohort.AssertionRow(
+                label="state: a", passed=60, total=60, category=cohort.SpecCategory.STORE
+            )
+        ],
+        variance=variance,
+    )
+
+    assert variance.features[0].blind, "the fixture really is blind"
+    assert "| 🔴 | `tool sequence` |" in sections.render(), "loud in its own row"
+    assert "READ NOTHING on every sample; not a reading" in sections.render()
+    assert sections.glyph() == report.PASS_GLYPH, "and absent from the case colour"
+
+
 def test_a_delivered_reply_and_an_undelivered_aside_do_not_share_a_mark():
     """🤖 meant two opposite things in two folds and a reader could not tell which.
 
