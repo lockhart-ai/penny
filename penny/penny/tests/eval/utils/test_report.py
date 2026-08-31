@@ -580,6 +580,52 @@ def test_a_feature_that_read_nothing_renders_red_and_says_so_rather_than_as_agre
     assert "@ gpt N=3" not in rendered, "a blind feature proposes no ceiling"
 
 
+def test_the_checks_row_is_coloured_on_its_aggregate_not_on_its_worst_claim():
+    """The glyph and the number beside it must agree, and the number is the aggregate.
+
+    The fixture is the ONLY kind that distinguishes the two implementations: 87 of 90 is
+    green on the legend's scale, while the worst single claim is 9 of 12 and amber.  A
+    fixture where they agree passes either way and pins nothing — which is how
+    `🟡 87 / 90 · 97%` shipped under a legend reading `🟢 >90%`, a line that reads as a
+    typo rather than as a finding.
+
+    The worst claim keeps its OWN colour in the parenthetical, and that is asserted here
+    too: the fix is not to stop pointing at the soft claim, it is to stop letting the
+    pointer repaint the summary."""
+    rows = [
+        cohort.AssertionRow(
+            label="state: a", passed=78, total=78, category=cohort.SpecCategory.STORE
+        ),
+        cohort.AssertionRow(
+            label="state: b", passed=9, total=12, category=cohort.SpecCategory.LANDED
+        ),
+    ]
+    sections = report.CaseSections(case_id="c", model="m", assertions=rows)
+
+    assert f"| **checks** | {report.PASS_GLYPH} 87 / 90 · 97% " in sections.measures()
+    assert f"(lowest {report.WARN_GLYPH} 0.75 `state: b`)" in sections.measures()
+    assert sections.glyph() == report.PASS_GLYPH, "and the case line follows the aggregate"
+
+    # The other direction: a soft aggregate is amber even when its worst claim is far worse.
+    soft = report.CaseSections(
+        case_id="c",
+        model="m",
+        assertions=[
+            cohort.AssertionRow(
+                label="state: a", passed=40, total=50, category=cohort.SpecCategory.STORE
+            ),
+            cohort.AssertionRow(
+                label="state: b", passed=0, total=10, category=cohort.SpecCategory.LANDED
+            ),
+        ],
+    )
+    assert f"| **checks** | {report.WARN_GLYPH} 40 / 60 · 67% " in soft.measures()
+    assert f"(lowest {report.FAIL_GLYPH} 0.00 `state: b`)" in soft.measures()
+
+    # A case that declared nothing has nothing to colour, and is not a zero rate.
+    assert report.CaseSections(case_id="c", model="m").glyph() == report.PASS_GLYPH
+
+
 def test_a_delivered_reply_and_an_undelivered_aside_do_not_share_a_mark():
     """🤖 meant two opposite things in two folds and a reader could not tell which.
 

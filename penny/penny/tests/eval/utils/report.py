@@ -725,7 +725,22 @@ class CaseSections:
         return worst_glyph([self._assertions_glyph(), self._variance_glyph()])
 
     def _assertions_glyph(self) -> str:
-        return worst_glyph([assertion_glyph(row) for row in self.assertions])
+        """The AGGREGATE's colour — the number this glyph sits beside, and nothing else.
+
+        Colouring the worst individual CLAIM printed a mark against a figure the legend
+        directly below calls something else: `🟡 87 / 90 · 97%` under `🟢 >90%`, a line
+        contradicting itself, which reads as a transcription error rather than as a
+        finding.  The rule is the same one the case glyph follows a level up — the summary
+        is coloured on what it summarises.
+
+        The worst claim is not lost and is not meant to be: it keeps its own glyph in the
+        `(lowest 🟡 0.87 …)` parenthetical, named, which is the pointer into the aggregate.
+        Summary and pointer are different jobs and carry their colours separately.
+
+        A case that declared no assertions has nothing to colour, and reads clean rather
+        than as a zero rate."""
+        summary = self._assertion_summary()
+        return rate_glyph(summary.rate) if summary.total else PASS_GLYPH
 
     def _variance_glyph(self) -> str:
         return worst_glyph([variance_glyph(f) for f in self.variance.features])
