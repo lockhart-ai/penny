@@ -189,6 +189,24 @@ class SampleObservation(BaseModel):
     # The fields of the structured output this sample's draw returned — empty for a sample
     # driven through the agent loop, which leaves its trail in the stores instead.
     output: list[OutputField] = Field(default_factory=list)
+    # ── What a COLLECTOR cycle left, read where a chat turn has no equivalent ──
+    #
+    # ``entries`` above is what THIS SAMPLE WROTE, which is the right reading for "did she
+    # invent that" and the wrong one for "what does the collection hold": a cycle that
+    # correctly wrote nothing leaves it empty while the store still holds the value it was
+    # seeded with.  Both questions are real and they are not the same question, so the store's
+    # own end state is carried beside the sample's writes rather than derived from them.
+    held: dict[str, str] = Field(default_factory=dict)
+    # The run record the cycle closed with — RECORD FIELDS, read literally.  ``run_outcome``
+    # is the cycle's own determination (``worked`` changed something, ``no_work`` closed
+    # clean and changed nothing); ``run_reason`` carries a write-gate STOP by name.  Neither
+    # is a route: nothing here reads a tool name or an ordering.
+    run_outcome: str | None = None
+    run_reason: str | None = None
+    # What reached the SEND QUEUE, one string per message.  Counted rather than joined,
+    # because "told once" and "told twice" are different findings and a joined blob cannot
+    # tell them apart.  ``reply`` above is the same messages as one text, for reply spread.
+    notifications: list[str] = Field(default_factory=list)
 
     @property
     def stored_text(self) -> str:

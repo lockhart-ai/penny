@@ -1,13 +1,29 @@
-"""A price watch runs its cycles: write when the reading moves, silence when it does not
+"""A price watch, one cycle at a time: the first reading, an unchanged one, a moved one
 (#2017, the collector half of the cohort port).
 
-**The behaviour, as one sentence.** Penny re-reads the job's page each cycle, writes the value
-only when it has changed, and tells the user only then — the same reading twice over is
-silence, a moved reading is a write and one notification.
+**Three cases, because there are three behaviours.**  A watch does three different things and
+each is a separate test with its own entry condition, its own single cycle and its own
+assertions.  What selects the behaviour is the ENTRY CONDITION — what the collection already
+holds when the cycle starts — not a script of cycles inside one test body:
+
+* ``watch-writes-the-first-reading`` — the collection is EMPTY and the page says ``$499``.
+  A first observation is news: record it, and say so once.
+* ``watch-stays-quiet-when-the-reading-has-not-moved`` — the collection already holds
+  ``$499`` and the page still says ``$499``.  The write gate STOPS: nothing is written and
+  nothing reaches the send queue.
+* ``watch-writes-and-tells-when-the-reading-moves`` — the collection holds ``$499`` and the
+  page now says ``$449``.  The standing key is rewritten and the user is told once.
+
+The middle case is the only one that can exist at all: the write gate's
+``KEY_EXISTS_UNCHANGED`` STOP fires on a SECOND reading of a value already stored, so
+structural silence has nothing to fire on until something is in the collection.  Preseeding it
+is what gives that cycle its subject — and it is preseeded through the store's own write path,
+under the key the program writes to, so the gate compares against a row of exactly the shape a
+real cycle would have left.
 
 **The arms are five wordings of one instruction, over one set of facts.**  A collector has no
-user turn, so its natural-language surface is the ``extract`` instruction its rendered program
-carries and the prose of the page that answers it.  That instruction is written by the
+user turn, so its natural-language surface is the ``extract`` instruction in its rendered
+program and the prose of the page that answers it.  That instruction is written by the
 ``SkillSubstitution`` on the ``extract`` path and reaches the model through the shipped
 instantiation seam — ``retarget_writes`` → ``bind_parameters`` → ``render_skill`` — so varying
 it varies a draw rather than a hand-authored render.  Which page each arm reads is the other
@@ -15,30 +31,21 @@ half: same url, same product, same price, five catalogue-grade prose variants ar
 byte-identical datum line.
 
 **The FACTS are constant, and the claims hinge on them.**  One listing, one url, one pair of
-prices: ``$499`` before the change and ``$449`` after.  So this case can say what the store
-holds by name — after the cycle that moved the reading the watch holds ``$449`` and no longer
-holds ``$499`` — which is the claim a cohort of five different listings could never make.  The
-two prices are mutually exclusive (neither is a substring of the other), the rule
-``test_collector_enactment.py``'s ``_WatchedFact`` states, because the claim asserts one is
-present and the other gone.
+prices: ``$499`` before the change and ``$449`` after.  So these cases can say what the store
+holds by name.  The two prices are mutually exclusive — neither is a substring of the other,
+the rule ``test_collector_enactment.py``'s ``_WatchedFact`` states — because the moved case
+asserts one is present and the other gone.
 
-**Three cycles, not two.**  A collection arrives empty, so its first observation is a new key —
-a baseline, and a first observation is news.  The write-gate STOP that makes no-news
-structurally silent fires only on a SECOND reading of the same value, so "stay quiet" has no
-cycle it can fire on until cycle 2 exists.  Cycle 3 is then the only place a notification is
-owed on top of the baseline's, which is what makes "told on exactly the cycles that moved"
-a measurement rather than a hope.
+**The LANDED category is empty on all three, and that is the correct report.**  ``LANDED`` is
+read off the conversation machine's walk, and a collector moves no conversation machine.  The
+run record's outcome and its stop reason are tempting to file there, but they are RECORD
+FIELDS, which ``STORE`` covers literally — so that is where they are claimed, and the state
+section renders empty rather than having something invented to fill it.
 
 ``test_collector_enactment.py``'s fifteen cases are five jobs × three cycles plus their
 notify/quiet pairs — the same claim over five different PROGRAMS.  Those are different
 routines, therefore different behaviours, and they split rather than pool; collapsing them is
-#2007's, not this file's.  This case exists to prove the cohort seam carries a multi-cycle,
-real-store, no-user-turn shape at all.
-
-**The LANDED category is empty for this case, and that is the correct report.**  A watch runs
-cycles; it does not move a conversation machine, and what each cycle left behind is read off
-persisted entries and the send queue — so its claims are STORE claims and the state section
-says it has none, rather than something being invented to fill it.
+#2007's, not this file's.
 
 Report-only (``min_pass_rate=None``).  All content is synthetic — the house listing fixture on
 an invented marketplace — because the repo is public.
@@ -50,7 +57,9 @@ from typing import NamedTuple
 
 import pytest
 
+from penny.constants import WRITE_GATE_STOP_REASONS, RunOutcome, WriteGateOutcome
 from penny.database import Database
+from penny.database.memory import EntryInput
 from penny.database.skills import (
     SkillDraft,
     SkillParameter,
@@ -68,6 +77,7 @@ from penny.tests.eval.conftest import (
     CollectorCyclesEval,
     CycleArm,
     collection_entries,
+    seeded_run_id,
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
@@ -83,11 +93,15 @@ from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
-_CASE_ID = "watch-writes-only-when-the-reading-moves"
 _FAMILY = "collector-enactment"
 
 # The author on a seeded registry row — a fixture's own hand, never a real agent's.
 _SEED_AUTHOR = "eval-seed"
+
+# The run that laid the entry condition down.  A SEEDED id, structurally distinguishable from
+# a live ``uuid4().hex``, so every "what did this sample write" reader excludes the preseeded
+# row at the one chokepoint rather than by remembering to.
+_SEED_RUN = seeded_run_id("watch-entry-condition")
 
 # The one collection every arm's job is configured on.  One name, because one job.
 _CONTAINER = "listing-price-watch"
@@ -97,14 +111,18 @@ _CONTAINER_DESCRIPTION = "The asking price on the listing I'm watching, as it st
 # strict rendered dialect, and therefore what each cycle's tool surface is scoped to.
 _PROGRAM_CALLS = ("browse", "collection_write")
 
-# The job's cadence.  Stated because a configured collection has one, though the cycles are
+# The job's cadence.  Stated because a configured collection has one, though the cycle is
 # driven through ``run_for``, which bypasses readiness.
 _SCHEDULE = "FREQ=HOURLY"
 
-# The key every arm's write lands under.  A STABLE key with a moving value is what gives the
-# write gate something to compare: the same reading twice is `KEY_EXISTS_UNCHANGED`, which is
-# the structural silence cycle 2 is about.
+# The key the program writes under, and therefore the key an entry condition must use: the
+# write gate compares a candidate against what is stored UNDER THE SAME KEY, so a preseeded
+# row under any other key would leave the unchanged case with nothing to be unchanged against.
 _KEY = "asking price"
+
+# The STOP a no-change cycle ends on, as the run record states it — read from the shipped
+# table rather than restated, so a reworded reason cannot silently stop matching.
+_STOP_REASON = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
 # ── The facts, held constant across every arm ────────────────────────────────
 #
@@ -117,7 +135,7 @@ _ITEM = "Aurora Deck 2"
 _MATCH = "aurora-deck-2"
 
 # The two readings.  MUTUALLY EXCLUSIVE — neither is a substring of the other, in the bare form
-# or in the instruction-labelled pair a cycle may store since #1918 — because the change claim
+# or in the instruction-labelled pair a cycle may store since #1918 — because the moved case
 # asserts one is present and the other gone.  ``$499`` and ``$4499`` would not have been.
 _BASELINE_PRICE = "$499"
 _MOVED_PRICE = "$449"
@@ -141,6 +159,28 @@ class Reading(NamedTuple):
     name: str
     extract: str
     body: str
+
+
+class WatchCase(NamedTuple):
+    """One behaviour: what the collection holds when the cycle starts, and what the page says.
+
+    Two fields, because those two settings are the whole difference between the three cases.
+    ``stored`` is the price already in the collection, or ``None`` for a collection that
+    arrives empty; ``shows`` is the price on the page the single cycle reads."""
+
+    case_id: str
+    stored: str | None
+    shows: str
+
+
+FIRST_READING = WatchCase("watch-writes-the-first-reading", None, _BASELINE_PRICE)
+UNCHANGED_READING = WatchCase(
+    "watch-stays-quiet-when-the-reading-has-not-moved", _BASELINE_PRICE, _BASELINE_PRICE
+)
+MOVED_READING = WatchCase(
+    "watch-writes-and-tells-when-the-reading-moves", _BASELINE_PRICE, _MOVED_PRICE
+)
+CASES = (FIRST_READING, UNCHANGED_READING, MOVED_READING)
 
 
 _SPEC_LINK = f"[{_ITEM} specification sheet]({LISTING_URL}/spec)"
@@ -276,25 +316,22 @@ READINGS = (
 )
 
 
-def _page(reading: Reading) -> CannedPage:
-    """This arm's page as it stands before the change — the baseline and the quiet cycle."""
-    return CannedPage(match=_MATCH, text=reading.body)
+def _page(case: WatchCase, reading: Reading) -> CannedPage:
+    """The page THIS case's cycle reads, on THIS arm's prose.
+
+    The moved variant is derived from the arm's own page by the shared single-span ``datum``
+    edit rather than rebuilt from a template, so the two sides of the pair are one text and one
+    span: the edit RAISES unless the watched line appears exactly once, which is what a rebuilt
+    twin cannot check."""
+    page = CannedPage(match=_MATCH, text=reading.body)
+    return page if case.shows == _BASELINE_PRICE else datum(page, _DATUM, _MOVED_DATUM)
 
 
-def _moved_page(reading: Reading) -> CannedPage:
-    """The same page with the watched datum — and only the watched datum — moved.
-
-    Derived by the shared ``datum`` edit rather than rebuilt from a template, so the two sides
-    of the pair are one text and one span: the edit RAISES unless the old line appears exactly
-    once, which is what a rebuilt twin cannot check."""
-    return datum(_page(reading), _DATUM, _MOVED_DATUM)
-
-
-def _world(reading: Reading) -> World:
-    """This arm's ground: the page as it stands when the job is set up.
+def _world(case: WatchCase, reading: Reading) -> World:
+    """This arm's ground: the page its single cycle reads.
 
     ``keeps``/``excludes`` are EMPTY, and deliberately.  Those token sets back
-    ``assert_something_from_each_page_was_written``, which this case never calls — and there is
+    ``assert_something_from_each_page_was_written``, which these cases never call — and there is
     nothing they could usefully hold: a ``keeps`` token has to appear on ONE page so a stored
     copy says which page it came from, and every arm here reads the same url, the same product
     and the same price.  Declaring tokens anyway would print "5 must-keep" in every report as
@@ -302,7 +339,7 @@ def _world(reading: Reading) -> World:
     reads as a check that passed."""
     return World(
         name=reading.name,
-        pages=(_page(reading),),
+        pages=(_page(case, reading),),
         keeps=(),
         excludes=(),
     )
@@ -311,9 +348,9 @@ def _world(reading: Reading) -> World:
 def _skill(reading: Reading) -> SkillDraft:
     """The routine the user taught, in the shape run-end extraction leaves behind.
 
-    ONE shape for every arm — the same two steps, the same placeholders, the same bound url,
-    the same attachment mark on the destination.  The one thing that differs is the
-    ``extract`` substitution's DESCRIPTION, which is what ``render_skill`` prints into the
+    ONE shape for every arm and every case — the same two steps, the same placeholders, the
+    same bound url, the same attachment mark on the destination.  The one thing that differs is
+    the ``extract`` substitution's DESCRIPTION, which is what ``render_skill`` prints into the
     program and therefore the only natural language a cycle reads.  The demonstrated
     ``arguments["extract"]`` stays constant across the arms because it never renders: the
     labeller's description replaces it at the seam."""
@@ -391,9 +428,16 @@ def _extract_slot(reading: Reading) -> str:
     return f"extract={{{reading.extract}}}"
 
 
-def _seeder(reading: Reading):
-    """The world an apply turn leaves for THIS arm: the routine in the registry, and a
-    container configured from it — then every claim that world makes, asserted out loud.
+def _seeder(case: WatchCase, reading: Reading):
+    """The world this case's cycle starts in: the routine in the registry, a container
+    configured from it, and the ENTRY CONDITION — then every claim that world makes, asserted
+    out loud.
+
+    The entry condition goes down through the store's own write path, under the key the program
+    writes to, so the row carries the stamps and the embeddings a real cycle's write would have
+    left.  Hand-inserting it would give the write gate something to compare against that no
+    cycle could have produced, and the case would then measure the gate against a shape
+    production never sees.
 
     The probe is not ceremony.  A program the strict parser cannot read leaves the cycle with a
     surface of the terminator alone, and a cycle with no browse writes nothing for the most
@@ -412,19 +456,27 @@ def _seeder(reading: Reading):
             skill_name=slug_skill_name(skill.name),
             skill_params={"listing": LISTING_URL},
         )
-        _assert_the_watch_world(db, reading)
+        if case.stored is not None:
+            memory = db.memory(_CONTAINER)
+            assert memory is not None, f"the job's container {_CONTAINER!r} must exist to seed"
+            memory.write(
+                [EntryInput(key=_KEY, content=case.stored)],
+                author=_SEED_AUTHOR,
+                run_id=_SEED_RUN,
+            )
+        _assert_the_watch_world(db, case, reading)
 
     return seed
 
 
-def _assert_the_watch_world(db: Database, reading: Reading) -> None:
+def _assert_the_watch_world(db: Database, case: WatchCase, reading: Reading) -> None:
     """Everything the seeder is responsible for, asserted where it fails loudly."""
     name = slug_skill_name(_skill(reading).name)
     assert db.skills.get(name) is not None, f"the job's routine {name!r} must be registered"
 
     row = db.memories.get(_CONTAINER)
     assert row is not None, f"the job's container {_CONTAINER!r} must exist"
-    assert row.notify, "this case measures the notification, so the job must be notifying"
+    assert row.notify, "these cases measure the notification, so the job must be notifying"
     assert row.skill_name == name, f"the job must run the taught routine, not {row.skill_name!r}"
 
     program = row.extraction_prompt or ""
@@ -444,161 +496,248 @@ def _assert_the_watch_world(db: Database, reading: Reading) -> None:
         f"this arm's instruction must reach the model as {_extract_slot(reading)!r} — the "
         f"extract description is the whole arm axis.  Program: {program!r}"
     )
-    assert not collection_entries(db, _CONTAINER), (
-        "the container must be empty when the first cycle starts, so a write is exactly a "
-        "new entry rather than a diff a claim has to compute"
+    _assert_the_entry_condition(db, case)
+
+
+def _assert_the_entry_condition(db: Database, case: WatchCase) -> None:
+    """The state the cycle starts from, which is what selects the behaviour being measured.
+
+    An empty collection makes a first observation news; a collection already holding the
+    reading is the only state the ``KEY_EXISTS_UNCHANGED`` STOP can fire against.  Getting this
+    wrong silently turns one case into another — the quiet case run against an empty container
+    would write, pass nothing, and look like a model failure — so it is asserted here rather
+    than assumed."""
+    held = collection_entries(db, _CONTAINER)
+    if case.stored is None:
+        assert not held, (
+            "the container must be empty when the cycle starts, so a write is exactly a new "
+            f"entry rather than a diff a claim has to compute — it holds {held}"
+        )
+        return
+    assert held == {_KEY: case.stored}, (
+        f"the cycle must start from exactly {{{_KEY!r}: {case.stored!r}}} — the write gate "
+        f"compares a candidate against what is stored under the same key, and it holds {held}"
     )
 
 
-def _arm(reading: Reading) -> CycleArm:
-    """One arm: the one listing read under this arm's instruction, and the three registers its
-    cycles read.
+def _arm(case: WatchCase, reading: Reading) -> CycleArm:
+    """One arm of one case: this case's entry condition and page, under this arm's instruction.
 
-    The register is re-installed between cycles because that is the whole point — the world
-    MOVED between two runs of the same watch, and what the third cycle does about it is the
-    contract.  ``text`` is the instruction, because that is what makes this arm this arm."""
-    quiet = [_page(reading)]
+    ``text`` is the instruction, because that is what makes this arm this arm."""
     return CycleArm(
         text=reading.extract,
-        seed=_seeder(reading),
-        cycles=[quiet, quiet, [_moved_page(reading)]],
-        world=_world(reading),
+        seed=_seeder(case, reading),
+        pages=[_page(case, reading)],
+        world=_world(case, reading),
     )
+
+
+def _arms(case: WatchCase) -> list[CycleArm]:
+    """This case's five arms — five wordings of one instruction over five prose variants."""
+    return [_arm(case, reading) for reading in READINGS]
 
 
 # ── The claims ───────────────────────────────────────────────────────────────
+#
+# Every one of them reads END STATE: what the collection holds, what the run record says, and
+# what reached the send queue.  Nothing reads a tool name or an ordering — a skill is an
+# arbitrary tool sequence, so a route is measured in section B and never asserted.
 
 
-def _cycle(sample: SampleObservation, index: int) -> str:
-    """One position of this sample's cycle script."""
-    shapes = sample.walk.split(", ")
-    return shapes[index] if index < len(shapes) else ""
+def _held_text(sample: SampleObservation) -> str:
+    """The collection as the cycle left it, key and content together.
+
+    The WHOLE entry, because a fact in the key and a blurb in the body is a perfectly good way
+    to store it, and a content-only read once reported a 25/32 model failure that was entirely
+    its own bug."""
+    return " ".join(f"{key} {content}" for key, content in sorted(sample.held.items()))
 
 
-def _quiet_cycle_said_nothing(sample: SampleObservation, _world: World) -> Answer:
-    """The same reading twice over is silence.
-
-    Cycle 2 re-reads the page the baseline already recorded, so the write gate's
-    `KEY_EXISTS_UNCHANGED` STOP is what makes no-news structurally silent — no write, and
-    nothing entering a notification.  It is also what says the baseline recorded the RIGHT
-    value: the STOP fires only where the stored value equals the one just read, so a silent
-    cycle 2 is a cycle 1 that stored what the page said."""
-    shape = _cycle(sample, 1)
-    return shape == "quiet", f"the quiet cycle was {shape!r}, not silent"
+def _one_entry(sample: SampleObservation, _world: World) -> Answer:
+    """The watch keeps ONE fact.  A watch that appends grows without bound and the user is
+    told about a value they already have."""
+    return len(sample.held) == 1, f"holds {len(sample.held)} entries: {sorted(sample.held)}"
 
 
-def _moved_reading_was_written_and_told(sample: SampleObservation, _world: World) -> Answer:
-    """A moved reading is a write AND one notification, in the same cycle."""
-    shape = _cycle(sample, 2)
-    return shape == "wrote+told", f"the change cycle was {shape!r}"
+def _holds(price: str):
+    """A claim that the collection holds one named price.
+
+    The facts are the same on every arm, so the claim can name the value rather than asserting
+    that something was stored: a shape claim cannot tell a watch that read the right price from
+    one that produced a plausible number."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        return price in _held_text(sample), f"expected {price}; the collection holds {sample.held}"
+
+    return answer
 
 
-def _told_on_exactly_the_cycles_that_moved(sample: SampleObservation, _world: World) -> Answer:
-    """The user is told on every cycle that moved the reading, and on no other.
+def _holds_the_moved_price_only(sample: SampleObservation, _world: World) -> Answer:
+    """The collection holds the price the page moved TO, and no longer the one it moved FROM.
 
-    NOT "exactly one notification across the three": the container arrives from apply EMPTY,
-    so cycle 1's first observation is a new key — a baseline, and a first observation is news.
-    Measured, the modal script is ``wrote+told, quiet, wrote+told``: two notifications, both
-    owed.  What is never owed is a notification on a cycle that moved nothing, which is the
-    other half of this sentence and what the quiet-cycle claim states on its own.
+    Both halves are needed and neither is sufficient — a watch that appended the new price
+    beside the old one holds ``$449`` while still telling the user something that is no longer
+    true, and a watch that never re-read the page holds neither."""
+    held = _held_text(sample)
+    ok = _MOVED_PRICE in held and _BASELINE_PRICE not in held
+    return ok, f"expected {_MOVED_PRICE} and not {_BASELINE_PRICE}; the collection holds {held!r}"
+
+
+def _closed_having_worked(sample: SampleObservation, _world: World) -> Answer:
+    """The run's own determination: it completed and it CHANGED something.
+
+    A record field, read literally off ``promptlog.run_outcome`` — ``worked`` is defined as
+    "completed and changed something", which is what "the cycle wrote" means without reading a
+    tool name.  ``no_work`` is a clean close that changed nothing and ``failed`` is a bail, and
+    both are the wrong end state here."""
+    closed = sample.run_outcome or "—"
+    detail = f" — {sample.run_reason}" if sample.run_reason else ""
+    return sample.run_outcome == RunOutcome.WORKED.value, f"the run closed {closed}{detail}"
+
+
+def _stopped_on_the_unchanged_value(sample: SampleObservation, _world: World) -> Answer:
+    """The run stopped at the write chokepoint, on the reason the shipped table names.
+
+    This is what makes silence STRUCTURAL rather than a judgement the model makes each cycle:
+    the gate compares the candidate against the stored value and raises its STOP on the very
+    call that would otherwise complete the program, so the notification the framework would
+    have entered is never entered at all."""
+    return sample.run_reason == _STOP_REASON, f"the run closed {sample.run_reason or '—'}"
+
+
+def _told_once(sample: SampleObservation, _world: World) -> Answer:
+    """The user was told, and told once.
 
     Read over the SEND QUEUE, which is what the user will actually receive — a cycle enqueues
-    and the drainer is a separate schedule, so a pending-only read of the outgoing messages
-    reports a delivered notification as silence."""
-    mismatched = [
-        shape
-        for shape in sample.walk.split(", ")
-        if shape and (("told" in shape) != ("wrote" in shape))
-    ]
-    return not mismatched, f"told and wrote disagree on {mismatched}: {sample.walk!r}"
+    and the drainer is a separate schedule, so a pending-only read of outgoing messages reports
+    a delivered notification as silence."""
+    count = len(sample.notifications)
+    return count == 1, f"{count} messages reached the send queue: {sample.notifications}"
 
 
-def _one_entry_under_one_key(sample: SampleObservation, _world: World) -> Answer:
-    """The watch keeps ONE fact, rewritten — not a new row per reading.
-
-    A watch that appends grows without bound and the user is told about a value they already
-    have; this is the claim that says the moving reading landed on the standing key."""
-    keys = {entry.key for entry in sample.entries}
-    return len(
-        sample.entries
-    ) == 1, f"holds {len(sample.entries)} entries under keys {sorted(keys)}"
+def _told_nothing(sample: SampleObservation, _world: World) -> Answer:
+    """Nothing reached the send queue.  No news is not a message saying there is no news."""
+    return not sample.notifications, f"sent {sample.notifications}"
 
 
-def _holds_the_price_the_page_moved_to(sample: SampleObservation, _world: World) -> Answer:
-    """After the last cycle the watch holds the price the page moved TO, and no longer the one
-    it moved FROM.
-
-    The facts are the same on every arm, so this claim can name them: ``$449`` present,
-    ``$499`` absent.  Both halves are needed and neither is sufficient — a watch that appended
-    the new price beside the old one holds ``$449`` while still telling the user something that
-    is no longer true, and a watch that never re-read the page holds neither.  Matched as
-    substrings of the whole entry, key and content together, so a cycle that stored the value
-    with its label (the instruction-labelled pair a browse result hands back since #1918) still
-    reads as having stored it."""
-    held = sample.stored_text
-    ok = _MOVED_PRICE in held and _BASELINE_PRICE not in held
-    return ok, f"expected {_MOVED_PRICE} and not {_BASELINE_PRICE}; the watch holds {held!r}"
+# ── first reading: an empty collection, and a page ───────────────────────────
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_the_watch_writes_only_when_the_reading_moves(
+async def test_the_watch_writes_the_first_reading(
     collector_cycles_eval: CollectorCyclesEval, model: str
 ) -> None:
-    """One job, five wordings of its instruction: the write gate holds the same way on all of
-    them, and the value it holds at the end is the one the page moved to."""
+    """A collection arrives from apply EMPTY, so its first observation is a new key — a
+    baseline, and a first observation is news."""
     cohort = await collector_cycles_eval(
-        case_id=_CASE_ID,
+        case_id=FIRST_READING.case_id,
         model=model,
         collection=_CONTAINER,
-        arms=[_arm(reading) for reading in READINGS],
+        arms=_arms(FIRST_READING),
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — nothing.  A watch RUNS CYCLES; it does not move a machine, and it has three
-    # cycle outcomes rather than one state.  Every one of them is read off persisted entries
-    # and the send queue, which is store territory wearing a state label, so the claims below
-    # are STORE claims and this category renders empty.  That empty section is the correct
-    # report for a shape with no state, not an unrun checklist.
-    #
-    # "the harness drove three cycles" is not anywhere: it asserts what the FIXTURE did, which
-    # is why it scored 15/15 in every cohort it ever rendered and could not fail.  Its real
-    # failure mode is already an exclusion, and the fixture's own shape is guarded by the loud
-    # probe and by ``make check``, where a precondition belongs.
+    # LANDED — nothing; see the module docstring.  A collector moves no conversation machine,
+    # and the run record's fields are STORE claims below rather than a category borrowed.
 
-    # STORE — what the container and the send queue hold, cycle by cycle and at the end
+    # STORE
+    cohort.claim("state: the collection holds one entry", _one_entry, SpecCategory.STORE)
     cohort.claim(
-        "state: the quiet cycle wrote nothing and said nothing",
-        _quiet_cycle_said_nothing,
+        f"state: the entry it holds carries {_BASELINE_PRICE}",
+        _holds(_BASELINE_PRICE),
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: the moved reading was written and told once",
-        _moved_reading_was_written_and_told,
-        SpecCategory.STORE,
+        "state: the run closed having changed something", _closed_having_worked, SpecCategory.STORE
     )
-    cohort.assert_the_store_holds_an_entry()
-    cohort.claim(
-        "state: the watch keeps one fact, rewritten", _one_entry_under_one_key, SpecCategory.STORE
-    )
-    cohort.claim(
-        f"state: the watch holds {_MOVED_PRICE} and no longer {_BASELINE_PRICE}",
-        _holds_the_price_the_page_moved_to,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: the user was told on exactly the cycles that moved the reading",
-        _told_on_exactly_the_cycles_that_moved,
-        SpecCategory.STORE,
-    )
+    cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
 
-    # PROVENANCE — nothing in the container came from anywhere but the pages it read
+    # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
 
-    # What is MEASURED.  Variance is ORTHOGONAL to correctness — it surfaces samples unlike
-    # the pack, never whether a value is right — so `ENTRIES_STORED` belongs here even though
-    # `_one_entry_under_one_key` asserts the same count.  The two answer different questions:
-    # the claim says THIS RUN WAS WRONG, the feature says THIS SAMPLE IS UNLIKE THE OTHERS, and
-    # a sample storing zero or two entries is an outlier worth opening whichever way the claim
-    # went.  Being covered by a claim is not a reason to drop an axis.
+    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+
+
+# ── unchanged reading: the collection already holds what the page says ───────
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
+    collector_cycles_eval: CollectorCyclesEval, model: str
+) -> None:
+    """The same reading twice over is silence — no write, and nothing entering a notification.
+
+    REPLY_SPREAD is not measured here, and that is the point of the case: a correct cohort
+    sends nothing, so a reply-spread reading would be blind on every sample by construction and
+    would print a number where there is no measurement.  A sample that DID speak is caught by
+    the send-queue claim and shows in ``transitions`` as ``quiet+told``."""
+    cohort = await collector_cycles_eval(
+        case_id=UNCHANGED_READING.case_id,
+        model=model,
+        collection=_CONTAINER,
+        arms=_arms(UNCHANGED_READING),
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — nothing; see the module docstring.
+
+    # STORE
+    cohort.claim("state: the collection still holds one entry", _one_entry, SpecCategory.STORE)
+    cohort.claim(
+        f"state: the entry it holds still carries {_BASELINE_PRICE}",
+        _holds(_BASELINE_PRICE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the run stopped on the value being unchanged",
+        _stopped_on_the_unchanged_value,
+        SpecCategory.STORE,
+    )
+    cohort.claim("state: nothing reached the send queue", _told_nothing, SpecCategory.STORE)
+
+    # PROVENANCE — a correct cycle wrote nothing, so this claim is TRUE of it rather than
+    # unasked; what it catches is a quiet cycle that wrote something the page never said.
+    cohort.assert_every_stored_entry_traces_to_the_world()
+
+    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+
+
+# ── moved reading: the collection holds the old price, the page shows a new one ──
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_watch_writes_and_tells_when_the_reading_moves(
+    collector_cycles_eval: CollectorCyclesEval, model: str
+) -> None:
+    """A moved reading is a write AND one notification, on the standing key."""
+    cohort = await collector_cycles_eval(
+        case_id=MOVED_READING.case_id,
+        model=model,
+        collection=_CONTAINER,
+        arms=_arms(MOVED_READING),
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — nothing; see the module docstring.
+
+    # STORE
+    cohort.claim(
+        f"state: the collection holds {_MOVED_PRICE} and no longer {_BASELINE_PRICE}",
+        _holds_the_moved_price_only,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the collection still holds one entry, rewritten", _one_entry, SpecCategory.STORE
+    )
+    cohort.claim(
+        "state: the run closed having changed something", _closed_having_worked, SpecCategory.STORE
+    )
+    cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_stored_entry_traces_to_the_world()
+
     cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)

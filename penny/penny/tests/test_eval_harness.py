@@ -128,6 +128,9 @@ from penny.tests.eval.collector.test_collector_enactment import (
     seed_gate_world,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
+    _BASELINE_PRICE as WATCH_BASELINE_PRICE,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
     _CONTAINER as WATCH_CONTAINER,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
@@ -137,7 +140,13 @@ from penny.tests.eval.collector.test_watch_cycles import (
     _MOVED_DATUM as WATCH_MOVED_DATUM,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
+    _MOVED_PRICE as WATCH_MOVED_PRICE,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
     _PROGRAM_CALLS as WATCH_PROGRAM_CALLS,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    CASES as WATCH_CASES,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
     READINGS as WATCH_READINGS,
@@ -2625,29 +2634,61 @@ def test_every_watch_arm_lays_down_one_program_differing_only_in_its_extract() -
     assert len(blanked) == 1, f"the arms differ outside the extract slot: {sorted(blanked)}"
 
 
-def test_the_watch_arms_each_bring_their_own_world_over_the_same_facts() -> None:
-    """The generalisation this case exists to exercise — a collector's arms do NOT share a
+@pytest.mark.parametrize("case", WATCH_CASES, ids=lambda one: one.case_id)
+def test_the_watch_arms_each_bring_their_own_world_over_the_same_facts(case) -> None:
+    """The generalisation these cases exist to exercise — a collector's arms do NOT share a
     world, so a claim is answered against the ground its own sample read — held together with
-    the rule that makes the case's value claims legal.
+    the rule that makes the value claims legal.
 
     Five arms, five distinct worlds, five distinct page bodies, and the SAME facts on every one
-    of them: the one url, and the watched datum line byte-identical and appearing exactly once.
-    The facts are what the claims hinge on (the store holds the price the page moved to, and no
-    longer the one it moved from), so an arm whose page carried a different price would force
-    every claim back to a shape claim — which is what this refuses in ``make check``, before any
-    GPU time.  The change cycle is checked from the same side: it moves that datum and nothing
-    else."""
-    arms = [watch_arm(reading) for reading in WATCH_READINGS]
+    of them: the one url, and the watched datum line byte-identical and appearing exactly once,
+    with the price this case's cycle is NOT meant to see absent from every page.  The facts are
+    what the claims hinge on (the collection holds the price the page carries), so an arm whose
+    page carried a different price would force every claim back to a shape claim — which is what
+    this refuses in ``make check``, before any GPU time.
+
+    ONE register per arm, because a case drives one cycle: a second one here would be a second
+    behaviour hidden inside a test named for one."""
+    arms = [watch_arm(case, reading) for reading in WATCH_READINGS]
+    shown = WATCH_DATUM if case.shows == WATCH_BASELINE_PRICE else WATCH_MOVED_DATUM
+    unshown = WATCH_MOVED_DATUM if case.shows == WATCH_BASELINE_PRICE else WATCH_DATUM
+
     assert len({arm.world.name for arm in arms}) == len(WATCH_READINGS)
     assert len({arm.world.says for arm in arms}) == len(WATCH_READINGS), (
         "the prose must differ between arms, or they are one arm sampled five times"
     )
     for arm in arms:
         assert LISTING_URL in arm.world.says
-        assert arm.world.says.count(WATCH_DATUM) == 1, "one watched line, on every arm"
-        assert len(arm.cycles) == 3, "baseline, quiet, change"
-        moved = "\n".join(page.text for page in arm.cycles[2])
-        assert WATCH_MOVED_DATUM in moved and WATCH_DATUM not in moved
+        assert arm.world.says.count(shown) == 1, "one watched line, on every arm"
+        assert unshown not in arm.world.says, "the page carries one reading, not both"
+        assert len(arm.pages) == 1, "one cycle, one register"
+        assert list(arm.pages) == list(arm.world.pages), (
+            "the world a claim reads must BE the page the cycle was served"
+        )
+
+
+def test_the_three_watch_cases_differ_only_in_entry_condition_and_page() -> None:
+    """Three behaviours, three cases, and what separates them is exactly two settings.
+
+    A watch does three things — record a first reading, stay quiet on an unchanged one, rewrite
+    and tell on a moved one — and which of them a case measures is decided by what the
+    collection holds when its single cycle starts and by what the page says.  Everything else is
+    shared, so a difference anywhere else would mean two cases were measuring the same
+    behaviour under different names, or one was measuring a behaviour nobody declared."""
+    assert len({case.case_id for case in WATCH_CASES}) == len(WATCH_CASES)
+    settings = {(case.stored, case.shows) for case in WATCH_CASES}
+    assert settings == {
+        (None, WATCH_BASELINE_PRICE),
+        (WATCH_BASELINE_PRICE, WATCH_BASELINE_PRICE),
+        (WATCH_BASELINE_PRICE, WATCH_MOVED_PRICE),
+    }
+    # The middle case is the only state the write gate's unchanged STOP can fire against, and
+    # it can only fire on a value stored under the key the program writes to.
+    quiet = next(case for case in WATCH_CASES if case.stored == case.shows)
+    assert quiet.stored == WATCH_BASELINE_PRICE
+    # Mutually exclusive readings: the moved case asserts one is present and the other gone.
+    assert WATCH_BASELINE_PRICE not in WATCH_MOVED_PRICE
+    assert WATCH_MOVED_PRICE not in WATCH_BASELINE_PRICE
 
 
 def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
@@ -2656,7 +2697,7 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
 
     This is the requirement that could not be met by widening the observation record — a
     per-arm world cannot be bolted onto a per-cohort field."""
-    ground = [watch_arm(reading).world for reading in WATCH_READINGS[:2]]
+    ground = [watch_arm(WATCH_CASES[0], reading).world for reading in WATCH_READINGS[:2]]
     arms = [
         eval_cohort.Arm(label=f"phrasing {index + 1}", text=world.name, world=world)
         for index, world in enumerate(ground)
@@ -2714,7 +2755,7 @@ def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuou
     report a green check for a question nobody asked, on exactly the claims most likely to be
     wrong.  An unresolvable arm is a harness defect, and a harness defect that reports passes
     is worse than one that stops."""
-    world = watch_arm(WATCH_READINGS[0]).world
+    world = watch_arm(WATCH_CASES[0], WATCH_READINGS[0]).world
     arms = [eval_cohort.Arm(label="phrasing 1", text="a", world=world)]
     unstamped = SampleObservation(name="s0", phrasing="phrasing 1")  # arm defaults to -1
     cohort = Cohort("case", "m", [unstamped], arms)

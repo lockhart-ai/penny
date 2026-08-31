@@ -327,8 +327,16 @@ against** — and the input is not always the user's words.
   cannot emit measures a render rather than a draw, which is §5's own trap one layer up. Five
   wordings of one instruction, against five prose variants of one page.
 
-**A collector's facts are held CONSTANT across its arms** — one url, one set of bound values, one
-pair of readings either side of the change — because the assertions hinge on them. The watched
+**A collector case drives ONE cycle**, and its **entry condition** is what selects the behaviour
+it measures — an empty collection, or one already holding a reading. A watch does three things:
+record a first reading, stay quiet on an unchanged one, rewrite and tell on a moved one. Those are
+three cases, not three cycles in one, and the entry condition is the whole difference between
+them. Preseed it through the store's own write path, under the key the job's program writes to:
+the write gate compares a candidate against what is stored under that key, so a hand-inserted row
+gives it something to compare against that no cycle could have produced.
+
+**A collector's facts are held CONSTANT across its arms** — one url, one set of bound values, and
+the one reading that case's cycle is shown — because the assertions hinge on them. The watched
 datum line is byte-identical on every arm; what varies around it is the prose a real page carries
 anyway: a seller blurb, a specification block, neighbouring items with their own prices,
 housekeeping notes. Constant facts are what let a case name a value. *The store holds `$449` and

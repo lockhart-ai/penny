@@ -3442,8 +3442,8 @@ def _cycles_ran_check(driven: _DrivenCycles) -> Check:
 
 
 class CycleArm(NamedTuple):
-    """ONE arm of a collector cohort: a wording of the job's instruction, and the pages that
-    answer it.
+    """ONE arm of a collector cohort: a wording of the job's instruction, and the page that
+    answers it.
 
     A collector has no user turn, so its natural language is the ``extract`` instruction its
     rendered program carries — written by the ``SkillSubstitution`` on that path and printed by
@@ -3451,21 +3451,24 @@ class CycleArm(NamedTuple):
     rather than through a hand-authored program — plus the prose of the page that answers it.
     Those two are what vary across the arms.
 
-    The FACTS do not: one url, one set of bound values, one pair of readings either side of the
-    change, and a byte-identical datum line on every page.  Constant facts are what let a claim
-    name a value — the store holds the price the page moved to, and no longer the one it moved
-    from — instead of retreating to a shape that cannot tell a right reading from a plausible
-    one.
+    The FACTS do not: one url, one set of bound values, one reading, and a byte-identical datum
+    line on every page.  Constant facts are what let a claim name a value — the store holds the
+    price the page carries — instead of retreating to a shape that cannot tell a right reading
+    from a plausible one.
+
+    ONE register, because a case drives ONE cycle.  Which behaviour a case measures is set by
+    the ENTRY CONDITION its ``seed`` lays down — an empty collection or one already holding a
+    reading — not by scripting several cycles inside a single test.
 
     ``text`` is what makes this arm this arm, rendered verbatim in the report so a reader who
     sees "phrasing 3 diverged" can see which wording that was.  ``seed`` lays THIS arm's job
-    down, ``cycles`` is its own register per cycle, and ``world`` is its pages — carried so a
-    claim is answered against the ground its own sample actually read, since the prose differs
-    per arm."""
+    and entry condition down, ``pages`` is the register its cycle reads, and ``world`` is those
+    same pages — carried so a claim is answered against the ground its own sample actually
+    read, since the prose differs per arm."""
 
     text: str
     seed: Seeder
-    cycles: Sequence[list[CannedPage]]
+    pages: list[CannedPage]
     world: World
 
 
@@ -3501,7 +3504,7 @@ def cycle_script(cycles: Sequence[CycleObservation]) -> str:
 
 
 def _cycles_exclusion(db: Database, script: str) -> str | None:
-    """Why a multi-cycle sample cannot be counted, or ``None`` when it can.
+    """Why a cycle-driven sample cannot be counted, or ``None`` when it can.
 
     A cycle the dispatcher REFUSED never ran against the world the case built, so every claim
     would be answered on a world the model never saw — the failure-cause partition would then
@@ -3521,13 +3524,18 @@ def _observe_cycles(
     phrasing: str,
     arm: int,
 ) -> eval_cohort.SampleObservation:
-    """Read what ONE multi-cycle sample left behind — its own observer, not the chat one.
+    """Read what ONE cycle-driven sample left behind — its own observer, not the chat one.
 
     The tool sequence is read from the CYCLES' own calls rather than through
     ``chat_run_tool_sequences``, whose agent filter would return an empty list here on every
-    sample (#2017).  The notification text comes off the SEND QUEUE, because a cycle enqueues
-    and the drainer is a separate schedule — a pending-only read of outgoing messages reports
-    a delivered notification as silence."""
+    sample (#2017).  The notifications come off the SEND QUEUE, because a cycle enqueues and
+    the drainer is a separate schedule — a pending-only read of outgoing messages reports a
+    delivered notification as silence — and they are carried as a LIST as well as joined text,
+    since "told once" and "told twice" are different findings a blob cannot tell apart.
+
+    ``held``, ``run_outcome`` and ``run_reason`` come off the LAST cycle, which for an
+    arm-driven case is its only one.  They are what a collector has instead of a machine walk:
+    the store's own end state, and the record fields the run closed with."""
     script = cycle_script(driven.observed)
     exclusion = _cycles_exclusion(db, script)
     if exclusion is not None:
@@ -3535,17 +3543,21 @@ def _observe_cycles(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
         )
     sent = [message for cycle in driven.observed for message in cycle.sent]
-    reply = "\n".join(sent)
+    last = driven.observed[-1] if driven.observed else None
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=_cycle_shape(driven.observed[-1]) if driven.observed else CYCLE_DEAD,
+        landed=_cycle_shape(last) if last is not None else CYCLE_DEAD,
         walk=script,
         entries=_stored_entries(db),
         tool_sequence=[call.tool for cycle in driven.observed for call in cycle.calls],
-        reply=reply,
+        reply="\n".join(sent),
         given=given_to_the_model(db),
+        held=dict(last.after) if last is not None else {},
+        run_outcome=last.outcome if last is not None else None,
+        run_reason=last.reason if last is not None else None,
+        notifications=list(sent),
     )
 
 
@@ -3669,7 +3681,7 @@ def collector_cycles_eval(
                 sample_index=sample_index,
                 collection=collection,
                 seed=arm.seed if arm is not None else _require_seed(seed),
-                cycles=arm.cycles if arm is not None else cycles,
+                cycles=[arm.pages] if arm is not None else cycles,
                 score=score,
                 seed_skills=seed_skills,
                 prepare=prepare,
