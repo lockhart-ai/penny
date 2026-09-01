@@ -35,7 +35,7 @@ from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
 from penny.database.memory import MemoryType
-from penny.database.models import MemoryRow, Skill
+from penny.database.models import MemoryRow, PromptLog, Skill
 from penny.database.skills import (
     SkillParameter,
     build_binding_content,
@@ -49,6 +49,7 @@ from penny.llm.models import (
     strip_harmony_control_tokens,
 )
 from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
+from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
@@ -126,7 +127,47 @@ from penny.tests.eval.collector.test_collector_enactment import (
     seed_applied_job,
     seed_gate_world,
 )
+from penny.tests.eval.collector.test_watch_cycles import (
+    _BASELINE_AMOUNT as WATCH_BASELINE_AMOUNT,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _BASELINE_PRICE as WATCH_BASELINE_PRICE,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _CONTAINER as WATCH_CONTAINER,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _DATUM as WATCH_DATUM,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _MOVED_AMOUNT as WATCH_MOVED_AMOUNT,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _MOVED_DATUM as WATCH_MOVED_DATUM,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _MOVED_PRICE as WATCH_MOVED_PRICE,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _PROGRAM_CALLS as WATCH_PROGRAM_CALLS,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    CASES as WATCH_CASES,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    READINGS as WATCH_READINGS,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _arm as watch_arm,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _extract_slot as watch_extract_slot,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _program as watch_program,
+)
 from penny.tests.eval.conftest import (
+    _ACTOR,
     PENNY_LOGGER,
     BoundExpectation,
     Check,
@@ -144,12 +185,14 @@ from penny.tests.eval.conftest import (
     _frame_attributes_to,
     _guarded_graded,
     _labelling_input,
+    _sample_turns,
     _score_binding,
     _score_extraction,
     _score_framing,
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
+    _turn_kind,
     _without_examples,
     _write_sample_report,
     continue_nudge_fired,
@@ -169,9 +212,13 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.conftest import (
+    _stated_behaviour as stated_behaviour,
+)
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
 from penny.tests.eval.utils.artifacts import (
     CaseArtifact,
@@ -180,9 +227,11 @@ from penny.tests.eval.utils.artifacts import (
     CheckOutcome,
     FailureCause,
 )
+from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import load_baseline
+from penny.tests.eval.utils.cohort import SampleObservation
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
-from penny.tests.eval.utils.fixtures import BOARD_GAMES
+from penny.tests.eval.utils.fixtures import BOARD_GAMES, LISTING_URL
 from penny.tests.eval.utils.transition_world import (
     APPLY_CASES,
     IDLE_LEARN_CASES,
@@ -2563,21 +2612,238 @@ def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> No
     ]
 
 
+def test_every_watch_arm_lays_down_one_program_differing_only_in_its_extract() -> None:
+    """The collector arms are five wordings of ONE instruction, and this is what says so
+    (#2017).
+
+    Every arm's stored program must read back as the SAME calls under the strict rendered
+    dialect, carry the one listing url, name the shared container, and render its OWN
+    ``extract`` slot — and blanking that slot must leave five byte-identical programs.  An arm
+    that differed anywhere else would be a different routine, therefore a different behaviour,
+    and pooling it with the others would average two behaviours into one score.
+
+    In ``make check`` rather than in the seeder alone: a program the strict parser cannot read
+    leaves the cycle holding only its terminator, and a cycle with no browse writes nothing for
+    the most boring reason there is — the exact shape of a passing sample."""
+    programs = [watch_program(reading) for reading in WATCH_READINGS]
+    for reading, program in zip(WATCH_READINGS, programs, strict=True):
+        parsed = tuple(call.tool for call in program_calls(program, frozenset(WATCH_PROGRAM_CALLS)))
+        assert parsed == WATCH_PROGRAM_CALLS, f"program: {program!r}"
+        assert LISTING_URL in program, "the runtime join must fill the browse leaf with the url"
+        assert f"'{WATCH_CONTAINER}'" in program, "the attachment must bind to the container"
+        assert watch_extract_slot(reading) in program, f"program: {program!r}"
+
+    assert len({reading.extract for reading in WATCH_READINGS}) == len(WATCH_READINGS), (
+        "five wordings, or the arms are not arms"
+    )
+    blanked = {
+        program.replace(watch_extract_slot(reading), "extract={}")
+        for reading, program in zip(WATCH_READINGS, programs, strict=True)
+    }
+    assert len(blanked) == 1, f"the arms differ outside the extract slot: {sorted(blanked)}"
+
+
+@pytest.mark.parametrize("case", WATCH_CASES, ids=lambda one: one.case_id)
+def test_the_watch_arms_each_bring_their_own_world_over_the_same_facts(case) -> None:
+    """The generalisation these cases exist to exercise — a collector's arms do NOT share a
+    world, so a claim is answered against the ground its own sample read — held together with
+    the rule that makes the value claims legal.
+
+    Five arms, five distinct worlds, five distinct page bodies, and the SAME facts on every one
+    of them: the one url, and the watched datum line byte-identical and appearing exactly once,
+    with the price this case's cycle is NOT meant to see absent from every page.  The facts are
+    what the claims hinge on (the collection holds the price the page carries), so an arm whose
+    page carried a different price would force every claim back to a shape claim — which is what
+    this refuses in ``make check``, before any GPU time.
+
+    ONE register per arm, because a case drives one cycle: a second one here would be a second
+    behaviour hidden inside a test named for one."""
+    arms = [watch_arm(case, reading) for reading in WATCH_READINGS]
+    shown = WATCH_DATUM if case.shows == WATCH_BASELINE_PRICE else WATCH_MOVED_DATUM
+    unshown = WATCH_MOVED_DATUM if case.shows == WATCH_BASELINE_PRICE else WATCH_DATUM
+
+    shown_amount = shown.removeprefix("Current price: $")
+    unshown_amount = unshown.removeprefix("Current price: $")
+
+    assert len({arm.world.name for arm in arms}) == len(WATCH_READINGS)
+    assert len({arm.world.says for arm in arms}) == len(WATCH_READINGS), (
+        "the prose must differ between arms, or they are one arm sampled five times"
+    )
+    for arm in arms:
+        assert LISTING_URL in arm.world.says
+        assert arm.world.says.count(shown) == 1, "one watched line, on every arm"
+        assert unshown not in arm.world.says, "the page carries one reading, not both"
+        # And at the NUMERAL level, because that is what a claim matches on: the identity of a
+        # reading is its number, so a page carrying the other amount anywhere — a neighbouring
+        # item's price, a spec figure, a housekeeping note — could satisfy a bare-numeral match
+        # with a number the cycle never read.  The page must carry its own amount exactly once
+        # and the other one not at all.
+        assert arm.world.says.count(shown_amount) == 1, (
+            f"{shown_amount!r} must appear only in the watched line: {arm.world.name}"
+        )
+        assert unshown_amount not in arm.world.says, (
+            f"{unshown_amount!r} must appear nowhere on this page: {arm.world.name}"
+        )
+        assert len(arm.pages) == 1, "one cycle, one register"
+        assert list(arm.pages) == list(arm.world.pages), (
+            "the world a claim reads must BE the page the cycle was served"
+        )
+
+
+def test_the_three_watch_cases_differ_only_in_entry_condition_and_page() -> None:
+    """Three behaviours, three cases, and what separates them is exactly two settings.
+
+    A watch does three things — record a first reading, stay quiet on an unchanged one, rewrite
+    and tell on a moved one — and which of them a case measures is decided by what the
+    collection holds when its single cycle starts and by what the page says.  Everything else is
+    shared, so a difference anywhere else would mean two cases were measuring the same
+    behaviour under different names, or one was measuring a behaviour nobody declared."""
+    assert len({case.case_id for case in WATCH_CASES}) == len(WATCH_CASES)
+    settings = {(case.stored, case.shows) for case in WATCH_CASES}
+    assert settings == {
+        (None, WATCH_BASELINE_PRICE),
+        (WATCH_BASELINE_PRICE, WATCH_BASELINE_PRICE),
+        (WATCH_BASELINE_PRICE, WATCH_MOVED_PRICE),
+    }
+    # The middle case is the only state the write gate's unchanged STOP can fire against, and
+    # it can only fire on a value stored under the key the program writes to.
+    quiet = next(case for case in WATCH_CASES if case.stored == case.shows)
+    assert quiet.stored == WATCH_BASELINE_PRICE
+    # Mutually exclusive readings: the moved case asserts one is present and the other gone.
+    # Held in BOTH forms — the price the page displays, and the bare amount a claim matches on.
+    assert WATCH_BASELINE_PRICE not in WATCH_MOVED_PRICE
+    assert WATCH_MOVED_PRICE not in WATCH_BASELINE_PRICE
+    assert WATCH_BASELINE_AMOUNT not in WATCH_MOVED_AMOUNT
+    assert WATCH_MOVED_AMOUNT not in WATCH_BASELINE_AMOUNT
+
+
+def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
+    """The per-arm world, end to end: two arms with different ground, and a claim that reads
+    the world it is handed answers each sample against its OWN arm.
+
+    This is the requirement that could not be met by widening the observation record — a
+    per-arm world cannot be bolted onto a per-cohort field."""
+    ground = [watch_arm(WATCH_CASES[0], reading).world for reading in WATCH_READINGS[:2]]
+    arms = [
+        eval_cohort.Arm(label=f"phrasing {index + 1}", text=world.name, world=world)
+        for index, world in enumerate(ground)
+    ]
+    samples = [
+        SampleObservation(name=f"s{index}", phrasing=arm.label, arm=index)
+        for index, arm in enumerate(arms)
+    ]
+    cohort = Cohort("case", "m", samples, arms)
+    seen: list[str] = []
+    cohort.claim(
+        "state: the claim saw its own arm's world",
+        lambda _sample, world: (bool(seen.append(world.name)) or True, None),
+        eval_cohort.SpecCategory.STORE,
+    )
+    assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
+    assert seen == [WATCH_READINGS[0].name, WATCH_READINGS[1].name]
+
+
+def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():
+    """🤖 meant two opposite things, and the fold could not say which.
+
+    In a chat fold it is the message the user RECEIVED. In the collector fold it was the cycle
+    narrating after its own close — text nothing delivers, since what a user receives is a
+    send-queue row the framework enters afterwards.
+
+    The split follows the DELIVERED SET, which already draws exactly this line, rather than
+    the fixture: a turn the sample sent is a reply, and a sample that delivered nothing has no
+    turn that could be one. Both directions are pinned here, on the same text, because what
+    broke was not either rendering on its own — it was that they were identical."""
+    narration = "We need to finish cycle with done()."
+    row = PromptLog(
+        agent_name="collector",
+        model="a-model",
+        prompt_type="chat",
+        messages=json.dumps([{"role": "assistant", "content": narration}]),
+        response="{}",
+    )
+
+    nobody_told = _sample_turns([row], reply="", driven=(), delivered=())
+    assert (_ACTOR["aside"], narration) in nobody_told
+    assert (_ACTOR["penny"], narration) not in nobody_told
+    assert _turn_kind(_ACTOR["aside"], narration) is report.EventKind.ASIDE
+
+    delivered = _sample_turns([row], reply="", driven=(), delivered=(narration,))
+    assert (_ACTOR["penny"], narration) in delivered
+    assert _turn_kind(_ACTOR["penny"], narration) is report.EventKind.REPLY
+
+
+def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuously():
+    """The direction of the failure is the point.
+
+    The claims that read a world — "something from each page was written", "nothing excluded
+    was stored" — are SATISFIED by an empty one, so a sample answered against a fallback would
+    report a green check for a question nobody asked, on exactly the claims most likely to be
+    wrong.  An unresolvable arm is a harness defect, and a harness defect that reports passes
+    is worse than one that stops."""
+    world = watch_arm(WATCH_CASES[0], WATCH_READINGS[0]).world
+    arms = [eval_cohort.Arm(label="phrasing 1", text="a", world=world)]
+    unstamped = SampleObservation(name="s0", phrasing="phrasing 1")  # arm defaults to -1
+    cohort = Cohort("case", "m", [unstamped], arms)
+    cohort.assert_nothing_excluded_was_stored()
+
+    with pytest.raises(ValueError, match="carries arm -1"):
+        _ = cohort.claims
+
+
 @pytest.mark.parametrize("fixture", EXTRACT_FIELD_FIXTURES, ids=lambda f: f.case_id)
 def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> None:
     """Per-case coherence probe (#1942): every thing a case says its page supplies really
-    is on that page, and every case declares at least one thing to look for.
+    is on that page, exactly once, and every case declares at least one thing to look for.
 
     An anchor that is not on the page could never be extracted, so the case would grade
     the extractor on a fact nobody gave it — and a case declaring nothing at all grades
-    nothing.  Both have to fail here, in ``make check``, rather than after GPU time."""
+    nothing.  Both have to fail here, in ``make check``, rather than after GPU time.
+
+    ONCE, because an anchor is shrunk to the smallest span with no alternative rendering,
+    and shrinking has a floor: a span short enough to appear in a second story is satisfied
+    by the wrong story, which is a check that cannot fail rather than a permissive one.
+    Uniqueness is the property that says the shrink stopped in time, and it is a fact about
+    the page, so this is where it is held.  Compared through the shipped ``spoken_form``,
+    the same fold the claims use, so the count is over the text a draw is really matched
+    against."""
     assert fixture.expectations
+    assert fixture.behaviour.startswith("In "), (
+        f"{fixture.case_id}: the behaviour reads 'In <the locus>, when <X>, Penny <does Y>.'"
+    )
+    assert ", when " in fixture.behaviour and " Penny " in fixture.behaviour, fixture.behaviour
+    page = spoken_form(fixture.page)
     missing = [
         one.field
         for one in fixture.expectations
-        if one.anchor and spoken_form(one.anchor) not in spoken_form(fixture.page)
+        if one.anchor and spoken_form(one.anchor) not in page
     ]
     assert missing == []
+    repeated = {
+        one.field: page.count(spoken_form(one.anchor))
+        for one in fixture.expectations
+        if one.anchor and page.count(spoken_form(one.anchor)) != 1
+    }
+    assert repeated == {}, f"an anchor must identify ONE span of its page: {repeated}"
+
+
+def test_a_ported_case_states_the_behaviour_it_checks() -> None:
+    """A case reaching the COHORT path without its sentence is refused, loudly.
+
+    The case id is a filename — it says which fixture ran, never what was being asked — so a
+    report rendering a rate above it states a number with no question attached.  Required on
+    the cohort path alone: that is what every ported case runs on, while the inline path
+    predates the convention and carries the cases whose porting is still ahead.
+
+    The refusal names the case and the form, because the sentence is the one thing whoever hit
+    this has to write."""
+    assert stated_behaviour("c", "In the chat agent, when X, Penny does Y.") == (
+        "In the chat agent, when X, Penny does Y."
+    )
+    # Whitespace is not a sentence.
+    for empty in ("", "   ", "\n"):
+        with pytest.raises(ValueError, match="must state the behaviour it checks"):
+            stated_behaviour("watch-writes-the-first-reading", empty)
 
 
 def test_score_extraction_grades_the_outcome_and_each_named_field() -> None:

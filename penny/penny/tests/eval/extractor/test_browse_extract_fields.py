@@ -45,7 +45,25 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.tests.eval.conftest import ExtractorEval, FieldExpectation
+from penny.tests.eval.conftest import (
+    EVAL_MODELS,
+    EXTRACT_OUTCOME,
+    EXTRACT_REASON,
+    EXTRACT_VALUE,
+    ExtractorEval,
+    FieldExpectation,
+)
+from penny.tests.eval.utils.assertions import Answer, WorldClaim
+from penny.tests.eval.utils.cohort import (
+    Consequence,
+    SampleObservation,
+    SpecCategory,
+    output_field,
+    unsourced_specifics,
+)
+from penny.tests.eval.utils.fixtures import LISTING_URL
+from penny.tests.eval.utils.worlds import World
+from penny.tools.micro_context import MicroExtractOutcome, spoken_form
 
 pytestmark = pytest.mark.eval
 
@@ -55,12 +73,17 @@ _FAMILY = "browse-extract"
 class ExtractFixture(NamedTuple):
     """One agreed case: the page as the content script returns it, the instruction as a
     task would word it, and what each thing the instruction names should come back as —
-    an anchor for the ones the page supplies, nothing for the ones it does not."""
+    an anchor for the ones the page supplies, nothing for the ones it does not.
+
+    ``behaviour`` is the one sentence the case exists to check, in the fixed form: "In <the
+    locus>, when <X>, Penny <does Y>."  It rides the fixture so a case states it the same way
+    whichever driver path runs it, and the report renders it before any number."""
 
     case_id: str
     url: str
     page: str
     instruction: str
+    behaviour: str
     expectations: tuple[FieldExpectation, ...]
 
 
@@ -70,6 +93,7 @@ async def _run_case(extractor_eval: ExtractorEval, fixture: ExtractFixture) -> N
     numbers are read."""
     await extractor_eval(
         case_id=fixture.case_id,
+        behaviour=fixture.behaviour,
         url=fixture.url,
         page=fixture.page,
         instruction=fixture.instruction,
@@ -117,14 +141,19 @@ _SECTION = (
 )
 
 # An ordinary listing that answers everything asked of it — the baseline, where nothing
-# about this change should show at all.
-_LISTING_URL = "https://faux-market.example/keel-lantern"
+# about this change should show at all.  It is the house listing (`LISTING_URL`), at the price
+# every other case in the suite reads it at: a page and a value the whole suite shares cannot
+# drift into a shape only this file expects.
+#
+# Its expectations are anchored on the part of each field with no alternative rendering: the
+# proper noun, the digits of the price, the count.  The currency symbol and the word after the
+# count are notation and phrasing, which the draw chooses.
 _LISTING = (
-    "Keel Lantern, brass\n"
+    "Aurora Deck 2, handheld console\n"
     "\n"
-    "Price: 84 zorkmids\n"
-    "In stock — three left in the workshop\n"
-    "Ships from the quay within two days.\n"
+    "Price: $499\n"
+    "In stock — three left, open box and tested\n"
+    "Ships from a fictional warehouse within two days.\n"
 )
 
 
@@ -132,13 +161,17 @@ _LISTING = (
 
 _ALL_PRESENT = ExtractFixture(
     case_id="extract-fields-all-present",
-    url=_LISTING_URL,
+    url=LISTING_URL,
     page=_LISTING,
     instruction="the item's name, its price and whether it is in stock",
+    behaviour=(
+        "In the browse-extract micro-context, when the page carries everything the "
+        "instruction named, Penny comes back with all of it."
+    ),
     expectations=(
-        FieldExpectation("name", "Keel Lantern"),
-        FieldExpectation("price", "84 zorkmids"),
-        FieldExpectation("stock", "three left"),
+        FieldExpectation("name", "Aurora Deck 2"),
+        FieldExpectation("price", "499"),
+        FieldExpectation("stock", "three"),
     ),
 )
 
@@ -155,6 +188,20 @@ async def test_a_page_that_answers_everything_still_answers_everything(
 
 # ── Case 2: the instruction allows a thing to be absent, and it is ────────────
 
+# The two things this page DOES supply, named once: the deterministic coherence probe holds
+# them against the page, the unported fixtures state them as expectations, and the ported
+# case's provenance claims read the same two strings.  One source of truth, so a page edit
+# cannot leave a claim asserting a span the page no longer carries.
+#
+# Each is the SMALLEST UNIQUE span of its story — the proper noun the headline is about, and
+# the url — because everything around it the model may legitimately write another way.  A draw
+# that trimmed the headline to its subject, or reordered its clause, read the page exactly as
+# well as one that copied the sentence, and an anchor carrying the whole sentence would fail
+# it.  Unique on the page as well as small: the probe holds both, since a span that appears in
+# a second story would be satisfied by the wrong one.
+_HEADLINE_ANCHOR = "Lantern festival"
+_LINK_ANCHOR = "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
+
 _PARTLY_PRESENT = ExtractFixture(
     case_id="extract-fields-partly-present",
     url=_HOMEPAGE_URL,
@@ -162,24 +209,146 @@ _PARTLY_PRESENT = ExtractFixture(
     instruction=(
         "the headlines and their links, with a one-line summary of each where the page gives one"
     ),
+    behaviour=(
+        "In the browse-extract micro-context, when the page carries only some of what the "
+        "instruction named, Penny comes back with the parts it has instead of reporting the "
+        "page empty."
+    ),
     expectations=(
-        FieldExpectation("headline", "Lantern festival draws a record crowd to the old quarter"),
-        FieldExpectation(
-            "link", "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
-        ),
+        FieldExpectation("headline", _HEADLINE_ANCHOR),
+        FieldExpectation("link", _LINK_ANCHOR),
         FieldExpectation("summary"),
     ),
 )
 
 
-@pytest.mark.asyncio
+# ── The ported case: five wordings of that one instruction ────────────────────
+#
+# The arm here is the ``extract`` instruction, and it is PENNY's own text — production
+# writes it as the ``extract`` argument of a browse call, at the call site, by whatever
+# agent made the call.  So these five are not five ways a person might ask; they are five
+# ways the CALLING DRAW might have worded the same request, which is variation that happens
+# in production today and that nothing measures.
+#
+# Two of them hedge ("where the page gives one", "if there is one") and three do not, which
+# is deliberate: whether the answer degrades per field is decided by what the PAGE carries,
+# never by whether the instruction was worded to expect a gap.  That is the claim
+# ``extract-fields-partly-present-unhedged`` makes with a second page, and pooling both
+# wordings into one cohort states it as a variance reading over one world instead.
+_PARTLY_PRESENT_PHRASINGS = (
+    "the headline of each story, the link to it, and a one-line summary if there is one",
+    "for every story: its title, its url, and a short summary",
+    "each headline with its link and a one-sentence summary",
+    "pull out the story titles, the links they point at, and a brief summary of each",
+)
+
+
+def _carries(anchor: str) -> WorldClaim:
+    """A claim that the answer carries one thing the PAGE supplies.
+
+    One claim per supplied thing rather than one over all of them, because an instruction
+    naming several things degrades one thing at a time and a single combined claim would
+    report "some of it arrived" as a total failure.
+
+    Compared through the shipped ``spoken_form``, so a value passes whether or not the draw
+    kept the punctuation or the article in front of it — deliberately not an equality, since
+    which words carry a fact has a little play in it and a scorer demanding one exact string
+    would be answering for the draw."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        value = sample.field(EXTRACT_VALUE)
+        carried = spoken_form(anchor) in spoken_form(value)
+        return carried, f"not in the extracted value: {value!r}"
+
+    return answer
+
+
+def _read_the_page(sample: SampleObservation, _world: World) -> Answer:
+    """The decisive one: a page carrying SOME of what was asked for is a read.
+
+    ``NOT_PRESENT`` here is the regression itself — the answer that cost a whole round its
+    headlines and links because the page was short of the third thing."""
+    outcome = sample.field(EXTRACT_OUTCOME)
+    return outcome == MicroExtractOutcome.EXTRACTED.value, f"came back {outcome}"
+
+
+def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
+    """Every specific value in the answer traces to what the draw was GIVEN.
+
+    The extractor's own failure mode, and the strongest claim available to it: ``value`` is
+    free text lifted off the page and production validates none of it, so a plausible headline
+    the page never carried reaches the caller verbatim and is written down as read."""
+    invented = unsourced_specifics(sample.output_text, sample.given)
+    return not invented, f"not on the page: {invented}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
-    extractor_eval: ExtractorEval,
+    extractor_eval: ExtractorEval, model: str
 ) -> None:
-    """The regression itself: the page has two of the three things named and the third
-    is genuinely not on it.  The read has to come back with the two, not answer as though
-    the page were empty — that answer cost a whole round its headlines and links."""
-    await _run_case(extractor_eval, _PARTLY_PRESENT)
+    """The regression itself: the page has two of the three things named and the third is
+    genuinely not on it.  The read has to come back with the two, not answer as though the
+    page were empty.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    nothing to any store — so there is no store claim to make.  The empty section says the
+    shape has nothing to store, not that nobody ran the checklist.
+    """
+    cohort = await extractor_eval(
+        case_id=_PARTLY_PRESENT.case_id,
+        behaviour=_PARTLY_PRESENT.behaviour,
+        model=model,
+        url=_PARTLY_PRESENT.url,
+        page=_PARTLY_PRESENT.page,
+        instruction=_PARTLY_PRESENT.instruction,
+        also_instructed=_PARTLY_PRESENT_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — which of the closed outcomes the draw committed to
+    cohort.claim(
+        "state: the draw read the page rather than reporting it empty",
+        _read_the_page,
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — what the page supplies arrived, and nothing else did
+    cohort.claim(
+        "state: the answer carries the headline the page supplies",
+        _carries(_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the link the page supplies",
+        _carries(_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: every specific value in the answer is on the page",
+        _nothing_invented,
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — the draw's own structured fields, compared across the cohort.
+    #
+    # Variance is ORTHOGONAL to correctness: it does not ask whether a value is right, only
+    # which samples diverge from the pack.  So `reason` belongs here even though this case
+    # asserts the draw lands on `EXTRACTED` and `MicroContextResult` populates `reason` only
+    # on `NOT_PRESENT` — a sample that came back NOT_PRESENT carries a reason the others do
+    # not, and that is exactly an outlier worth surfacing, at finer grain than `outcome` gives.
+    # On a run where every draw succeeds it reads nothing on all fifteen and is flagged blind,
+    # which is the honest "nothing diverged this run" rather than a broken axis.
+    #
+    # No tool sequence and no reply spread: a single call makes neither.
+    cohort.measure(
+        output_field(EXTRACT_OUTCOME),
+        output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+    )
 
 
 # ── Case 3: the same, with an instruction that hedges nothing ─────────────────
@@ -189,8 +358,13 @@ _PARTLY_PRESENT_UNHEDGED = ExtractFixture(
     url=_SECTION_URL,
     page=_SECTION,
     instruction="the headline, the byline and the published time for each story",
+    behaviour=(
+        "In the browse-extract micro-context, when the instruction gives no hint that "
+        "anything might be missing and the page is short of one thing anyway, Penny still "
+        "comes back with what it has — what decides the answer is the page, not the wording."
+    ),
     expectations=(
-        FieldExpectation("headline", "City orchestra names a conductor from within the ranks"),
+        FieldExpectation("headline", "City orchestra"),
         FieldExpectation("byline", "Ines Marlowe"),
         FieldExpectation("published time"),
     ),
@@ -216,6 +390,11 @@ _NONE_PRESENT = ExtractFixture(
     url=_HOMEPAGE_URL,
     page=_HOMEPAGE,
     instruction="the closing price of each company named and its ticker symbol",
+    behaviour=(
+        "In the browse-extract micro-context, when the page carries none of what the "
+        "instruction named, Penny says plainly that it carries none of it rather than "
+        "answering anyway."
+    ),
     expectations=(
         FieldExpectation("closing price"),
         FieldExpectation("ticker symbol"),

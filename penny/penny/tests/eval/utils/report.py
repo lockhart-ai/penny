@@ -27,6 +27,7 @@ verdicts on their own ``expected`` rows in a trailing ``run-close`` table.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -39,6 +40,12 @@ ACTOR_USER = "👤"
 ACTOR_CALL = "🔧"
 ACTOR_RESULT = "📥"
 ACTOR_REPLY = "🤖"
+# An agent text turn that reached NOBODY — the model talking to itself mid-run, as against the
+# message a user receives.  A distinct glyph because 🤖 otherwise means two opposite things in
+# two folds: in a chat fold it is the delivered reply, and in a collector fold it was the cycle
+# narrating after its own close, which nothing delivers.  A reader cannot tell those apart from
+# the same mark, and the difference is the whole question they are asking.
+ACTOR_ASIDE = "🗒"
 ACTOR_MICRO = "🧩"
 
 # ── Micro-context role labels (#1759/#1773) — the input row names the scoped USER turn explicitly
@@ -83,6 +90,14 @@ TABLE_DIVIDER = "|---|---|---|"
 # A markdown code fence is three backticks at minimum; a longer one is grown per text.
 _MIN_FENCE = 3
 CELL_TRUNCATE_LIMIT = 500  # an actual cell over this collapses into a single <details> (#1759)
+# How much of ONE measured value a table cell shows before it is cut and digested.  Smaller than
+# the cell limit above because several of these are comma-joined into a single cell, and the
+# column's job is to let a reader tell values apart at a glance rather than to reproduce them —
+# the whole value is in the sample fold for a reader who wants it.
+FEATURE_CELL_LIMIT = 120
+# A newline inside a cell, made visible.  A row ENDS at a raw newline, and a value that spans
+# lines is a different value from one that does not, so it is marked rather than dropped.
+_NEWLINE_MARK = " ⏎ "
 
 # ── Sample-block grammar (the uniform-collapse skeleton, #1753) ───────────────
 SAMPLE_ROW = "sample"  # every sample banner opens ``sample N — <banner>``
@@ -123,6 +138,55 @@ def truncate_cell(text: str, limit: int = CELL_TRUNCATE_LIMIT) -> str:
     first_line = escape_cell(text.split("\n", 1)[0])
     full = escape_cell(text)
     return f"<details><summary>{first_line} … ({len(text)} chars)</summary>{full}</details>"
+
+
+def feature_cell(value: str) -> str:
+    r"""ONE measured value, rendered safe and legible inside a markdown table cell.
+
+    A feature value is arbitrary MODEL OUTPUT.  Any of them can carry a newline, a pipe or a
+    backtick, and the next fixture will produce a shape nobody enumerated — so this holds for a
+    feature that does not exist yet rather than for the ones that exist now.  What went wrong
+    without it: the browse extractor's ``value`` is a whole multi-line extraction, and a raw
+    newline ENDS THE ROW — the first line rendered as the cell, the rest fell out of the table
+    as loose text, and the trailing pipe was left orphaned.
+
+    Four things, in order, each answering a different way the cell can break:
+
+    * ``⏎`` for a newline — the one thing that ends a row.  A visible marker rather than a
+      space, because a value that spans lines and one that does not are different values, and
+      silently joining them would make the column claim they are the same.
+    * ``\|`` for a pipe — the other cell terminator.
+    * a code span grown longer than the longest backtick run inside, padded when the value
+      starts or ends with one, so a value containing backticks still closes where it should.
+    * truncation, with a short digest of the WHOLE value appended.  Telling values apart is the
+      entire job of this column, and two long values sharing a prefix would otherwise render
+      identically — the digest is what keeps distinct values distinct once the text is cut."""
+    if not value:
+        return "—"
+    flat = value.replace("\r\n", "\n").replace("\n", _NEWLINE_MARK).replace("|", "\\|")
+    if len(flat) > FEATURE_CELL_LIMIT:
+        flat = f"{flat[:FEATURE_CELL_LIMIT]}… +{_value_digest(value)}"
+    return _code_span(flat)
+
+
+def _code_span(text: str) -> str:
+    """``text`` as a markdown code span that closes where it should.
+
+    The fence is one longer than the longest backtick run inside, and the content is padded
+    when it starts or ends with a backtick — both are what the CommonMark code-span rules
+    require, and both are reachable from a model that wrote a backtick into a value."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _value_digest(value: str) -> str:
+    """Six hex characters of the whole value — what keeps two truncated values distinguishable.
+
+    Deterministic, so a rendered report is reproducible from its data, and short enough that it
+    reads as a disambiguator rather than as part of the value."""
+    return hashlib.blake2s(value.encode("utf-8"), digest_size=3).hexdigest()
 
 
 # ── The score-cell verdict (one check's outcome, rendered) ───────────────────
@@ -324,8 +388,12 @@ def cost_glyph(cost: cohort.SampleCost | None) -> str:
 
 def variance_glyph(feature: cohort.VarianceFeature) -> str:
     """A feature's colour.  No ceiling has been ACCEPTED anywhere yet — every one this report
-    prints is proposed — so the honest answer is grey until one is."""
-    return UNGATED_GLYPH
+    prints is proposed — so the honest answer is grey until one is.
+
+    A BLIND feature is the exception, and it is RED: it read nothing on every sample, so its
+    serene 0.000 is the absence of a measurement rather than a cohort in agreement.  Grey
+    would file it beside the honest readings, which is exactly the confusion it causes."""
+    return FAIL_GLYPH if feature.blind else UNGATED_GLYPH
 
 
 # ── The three sections a case reports ────────────────────────────────────────
@@ -404,6 +472,13 @@ _NO_PHRASING_OUTLIERS = "_No phrasing produced a value the others did not._"
 # implies a guard that can never trip.  The reading itself still renders — it is the
 # diagnostic, and on a distinctness statistic it is usually the most interesting row.
 _NO_CEILING = "— diagnostic reading; too spread to gate"
+# What the ceiling column says for a feature that read NOTHING.  It occupies the ceiling
+# column because that is where a reader looks to decide whether a number can be trusted, and
+# the answer here is that the number is not a reading at all.
+_BLIND_FEATURE = "— READ NOTHING on every sample; not a reading"
+# The cosine half over no measurable pairs.  Named rather than printed as 0.000, which in this
+# table would read as the strongest possible finding rather than as the absence of one.
+_NO_COSINE = "cosine NOT MEASURABLE (no reply carried an embedding)"
 _COST_LEAD = "**Cost, per sample.**"
 
 # What the assertion side is, said where its table ends: a reading, not a gate.  Stated rather
@@ -495,16 +570,22 @@ class CaseSections:
 
     case_id: str
     model: str = ""
+    # The one sentence the case exists to check, in the fixed form: "In <the locus>, when <X>,
+    # Penny <does Y>."  The case id is a filename; this is the contract, so it is rendered
+    # before any number — a reader has to know what was being asked before a rate means
+    # anything.  The locus names the SHIPPED agent, never a label for it.
+    behaviour: str = ""
     assertions: Sequence[cohort.AssertionRow] = ()
     variance: cohort.CohortVariance = field(default_factory=cohort.CohortVariance)
     cost: cohort.SampleCost | None = None
     run: RunFacts = field(default_factory=RunFacts)
 
     def render(self) -> str:
-        """The summary method: the case's heading, its measures, then the sections behind
-        folds."""
+        """The summary method: the case's heading, the behaviour it checks, its measures, then
+        the sections behind folds."""
         blocks = [
             self.heading(),
+            *([self.behaviour] if self.behaviour else []),
             self.measures(),
             titled_fold(
                 f"{self._assertions_glyph()} {SECTION_A}",
@@ -636,15 +717,52 @@ class CaseSections:
         ]
 
     def glyph(self) -> str:
-        """The case's worst state — what someone paging ~100 one-line entries reads."""
-        lost = [FAIL_GLYPH] if self.variance.excluded else []
-        return worst_glyph([self._assertions_glyph(), self._variance_glyph(), *lost])
+        """The case's worst state — what someone paging ~100 one-line entries reads.
+
+        TWO criteria decide it, and only two: the DETERMINISTIC checks, and the VARIANCE
+        against its threshold.  Exclusions do not touch it.
+
+        Viability is a GATE, not a shade: run health already refuses a dead cohort and fails
+        the run outright, so folding it into a colour scale prices one lost sample as a total
+        failure.  A case rendered 🔴 at 56/56 checks and ⚪ variance — which is what one
+        excluded sample of fifteen used to produce — teaches a reader to ignore the colour,
+        which costs more than the exclusion it was trying to announce.  What was excluded, how
+        many, and why by name all render in their own section."""
+        return worst_glyph([self._assertions_glyph(), self._variance_glyph()])
 
     def _assertions_glyph(self) -> str:
-        return worst_glyph([assertion_glyph(row) for row in self.assertions])
+        """The AGGREGATE's colour — the number this glyph sits beside, and nothing else.
+
+        Colouring the worst individual CLAIM printed a mark against a figure the legend
+        directly below calls something else: `🟡 87 / 90 · 97%` under `🟢 >90%`, a line
+        contradicting itself, which reads as a transcription error rather than as a
+        finding.  The rule is the same one the case glyph follows a level up — the summary
+        is coloured on what it summarises.
+
+        The worst claim is not lost and is not meant to be: it keeps its own glyph in the
+        `(lowest 🟡 0.87 …)` parenthetical, named, which is the pointer into the aggregate.
+        Summary and pointer are different jobs and carry their colours separately.
+
+        A case that declared no assertions has nothing to colour, and reads clean rather
+        than as a zero rate."""
+        summary = self._assertion_summary()
+        return rate_glyph(summary.rate) if summary.total else PASS_GLYPH
 
     def _variance_glyph(self) -> str:
-        return worst_glyph([variance_glyph(f) for f in self.variance.features])
+        """The variance side's contribution to the case colour — from the THRESHOLDED features
+        only.
+
+        Variance reaches the headline through its threshold, which is the criterion itself. A
+        BLIND feature has no threshold and proposes no ceiling, so it has nothing to contribute
+        and must not repaint the case: it is a fact about the INSTRUMENT rather than about
+        Penny, and letting it turn a case red at 60/60 checks is the same defect as colouring
+        on an exclusion — a line that contradicts itself teaches a reader to ignore the colour.
+
+        It is not softened, only relocated: the feature's own row stays 🔴 with
+        `— READ NOTHING on every sample; not a reading`, which is where an instrument problem
+        belongs and where it is unmissable."""
+        thresholded = [f for f in self.variance.features if not f.blind]
+        return worst_glyph([variance_glyph(f) for f in thresholded])
 
     def _spread(self) -> str:
         """This case's spread reading: what varies MOST, and how much varies at all.
@@ -767,11 +885,12 @@ def _assertion_row(row: cohort.AssertionRow) -> str:
 
 def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
     ceiling = cohort.proposed_ceiling(feature, model)
-    proposal = (
-        f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n}"
-        if ceiling is not None
-        else _NO_CEILING
-    )
+    if feature.blind:
+        proposal = _BLIND_FEATURE
+    elif ceiling is not None:
+        proposal = f"`{ceiling.value:.2f}` @ {ceiling.model} N={ceiling.n}"
+    else:
+        proposal = _NO_CEILING
     return (
         f"| {variance_glyph(feature)} | `{feature.name}` | {feature.distinct} | "
         f"{feature.modal}/{feature.n} ({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
@@ -796,14 +915,25 @@ def _cost_block(cost: cohort.SampleCost, model: str) -> str:
 
 
 def _text_spread_line(text: cohort.TextSpread) -> str:
+    """The reply spread, with the cosine half NAMED as unmeasurable where it is.
+
+    A mean over no pairs is 0.000, which in this table reads as "every pair maximally
+    dissimilar" — the strongest possible finding — when what happened is that no reply
+    carried an embedding to compare.  Saying so is the difference between a reading and a
+    hole shaped like one."""
+    cosine = (
+        f"cosine mean {text.cosine_mean:.3f} min {text.cosine_min:.3f}"
+        if text.cosine_measurable
+        else _NO_COSINE
+    )
     return (
-        f"Reply text over {text.pairs} pairs — cosine mean {text.cosine_mean:.3f} "
-        f"min {text.cosine_min:.3f} · containment mean {text.containment_mean:.3f}"
+        f"Reply text over {text.pairs} pairs — {cosine} · "
+        f"containment mean {text.containment_mean:.3f}"
     )
 
 
 def _value_list(values: Sequence[str]) -> str:
-    return ", ".join(f"`{value}`" for value in values) if values else "—"
+    return ", ".join(feature_cell(value) for value in values) if values else "—"
 
 
 # ── The case document: what every sample shares, stated ONCE ─────────────────
@@ -827,6 +957,9 @@ def _value_list(values: Sequence[str]) -> str:
 PROMPT_VARIANTS_LABEL = "System prompts — {contexts} contexts · {shared} shared by every sample"
 PHRASINGS_LABEL = "Phrasings — {count} of one ask"
 WORLD_LABEL = "Seeded pages — {pages} · {keeps} must-keep, {excludes} must-not"
+# One arm's own ground, when the arms do not share one.  Named by the ARM so the fold, the
+# variance rows and the sample names all key on the same anchor.
+_ARM_WORLD_LABEL = "Seeded pages, {arm} — {pages}"
 OUTLIERS_HEADING = "Outliers"
 OUTLIERS_SUMMARY = "{count} of {driven} samples · diverging on {features}"
 _EVERYWHERE_DISTINCT = (
@@ -929,17 +1062,17 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def render_phrasings(phrasings: Sequence[tuple[str, str]]) -> str:
-    """The K wordings of the one ask, as a table.
+def render_phrasings(arms: Sequence[cohort.Arm]) -> str:
+    """The cohort's arms, as a table — what each one said.
 
-    Tabular rather than a run of prose blocks: the wordings are a COVERAGE mechanism and the
+    Tabular rather than a run of prose blocks: the arms are a COVERAGE mechanism and the
     reason they sit together is to be read AGAINST each other, which a column does and stacked
     paragraphs do not."""
-    if not phrasings:
+    if not arms:
         return ""
-    rows = "\n".join(f"| {label} | {_cell(text)} |" for label, text in phrasings)
+    rows = "\n".join(f"| {arm.label} | {_cell(arm.text)} |" for arm in arms)
     return fold(
-        PHRASINGS_LABEL.format(count=plural(len(phrasings), "wording")),
+        PHRASINGS_LABEL.format(count=plural(len(arms), "wording")),
         f"{_PHRASING_HEAD_ROW}\n{rows}",
     )
 
@@ -953,6 +1086,29 @@ def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
         pages=plural(counts.pages, "page"), keeps=counts.keeps, excludes=counts.excludes
     )
     return fold(label, world)
+
+
+def render_arm_worlds(arms: Sequence[cohort.Arm]) -> str:
+    """The ground the arms were answered against.
+
+    ONE fold when every arm shares a world — the chat shape, where the pages are a property of
+    the case and stating them per arm would print the same table five times.  One fold PER ARM
+    when they differ, which is what a cohort varying the job's own inputs looks like: the
+    fifth arm's page is the only place its bound values can be checked against what it read.
+    """
+    worlds = cohort.distinct_worlds(arms)
+    if not worlds:
+        return ""
+    if len(worlds) == 1:
+        return render_seeded_world(worlds[0].render(), WorldFacts(*worlds[0].counts))
+    return "\n\n".join(
+        fold(
+            _ARM_WORLD_LABEL.format(arm=arm.label, pages=plural(arm.world.counts[0], "page")),
+            arm.world.render(),
+        )
+        for arm in arms
+        if arm.world.pages
+    )
 
 
 def render_outliers(
@@ -1041,7 +1197,7 @@ def _uniform_note(everywhere_distinct: Sequence[str], pooled: int) -> str:
 
 
 def _code(value: str) -> str:
-    return f"`{value}`" if value else "—"
+    return feature_cell(value)
 
 
 # The seam between what a reader meets BEFORE the representative sample and what belongs after
@@ -1053,9 +1209,7 @@ CASE_PROMPTS_MARKER = "<!-- case prompts -->"
 
 def render_case_tail(
     *,
-    phrasings: Sequence[tuple[str, str]] = (),
-    world: str = "",
-    world_facts: WorldFacts | None = None,
+    arms: Sequence[cohort.Arm] = (),
     outliers: Sequence[tuple[int, cohort.SampleStanding]] = (),
     everywhere_distinct: Sequence[str] = (),
 ) -> str:
@@ -1063,15 +1217,11 @@ def render_case_tail(
 
     The system prompts are NOT here.  They are what a sample was actually run with, so they live
     with the sample a reader is following — reading one turn should not mean jumping between two
-    sections.  What stays is the world the case declares: the wordings and the pages."""
-    inputs = "\n\n".join(
-        part
-        for part in (render_phrasings(phrasings), render_seeded_world(world, world_facts))
-        if part
-    )
-    facts = world_facts or WorldFacts()
+    sections.  What stays is what the case declares: its arms and the ground each ran against."""
+    inputs = "\n\n".join(part for part in (render_phrasings(arms), render_arm_worlds(arms)) if part)
+    facts = _arm_world_facts(arms)
     summary = TEST_INPUTS_SUMMARY.format(
-        phrasings=plural(len(phrasings), "phrasing"),
+        phrasings=plural(len(arms), "phrasing"),
         pages=f"{plural(facts.pages, 'page')} · {facts.keeps} must-keep, {facts.excludes} must-not",
     )
     parts = [
@@ -1079,6 +1229,19 @@ def render_case_tail(
         render_outliers(outliers, everywhere_distinct) if outliers else "",
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+def _arm_world_facts(arms: Sequence[cohort.Arm]) -> WorldFacts:
+    """What the closed `Test inputs` fold states about the ground, summed over DISTINCT worlds.
+
+    Summed rather than taken from the first arm: a cohort whose arms each brought their own
+    pages really did seed five of them, and reporting one would describe a fifth of the run."""
+    counts = [world.counts for world in cohort.distinct_worlds(arms)]
+    return WorldFacts(
+        pages=sum(one[0] for one in counts),
+        keeps=sum(one[1] for one in counts),
+        excludes=sum(one[2] for one in counts),
+    )
 
 
 def render_representative(*, banner: str, number: int, prompts: str, transcript: str) -> str:
@@ -1496,14 +1659,20 @@ FRAGILE_NOTE = (
 class EventKind(StrEnum):
     """One transcript event. ``USER`` opens a step; the rest render as ``actual`` rows.
 
-    ``CALL`` / ``REPLY`` / ``MICRO_OUT`` are model ACTIONS — each gets a 💭 row directly above
-    it. ``NUDGE`` is a recovery injection (``⚠ recovery event``). ``MICRO_IN`` is the instruction
-    + page content into the extraction sub-model; ``MICRO_OUT`` is its extracted value."""
+    ``CALL`` / ``REPLY`` / ``ASIDE`` / ``MICRO_OUT`` are model ACTIONS — each gets a 💭 row
+    directly above it. ``NUDGE`` is a recovery injection (``⚠ recovery event``). ``MICRO_IN`` is
+    the instruction + page content into the extraction sub-model; ``MICRO_OUT`` is its extracted
+    value.
+
+    ``REPLY`` is text the user RECEIVED; ``ASIDE`` is text that reached nobody — the same
+    distinction the delivered set already draws, given its own mark so a reader is not left
+    inferring it from which fixture they happen to be reading."""
 
     USER = "user"
     CALL = "call"
     RESULT = "result"
     REPLY = "reply"
+    ASIDE = "aside"
     NUDGE = "nudge"
     MICRO_IN = "micro_in"
     MICRO_OUT = "micro_out"
@@ -1513,11 +1682,12 @@ _ACTOR_GLYPH = {
     EventKind.CALL: ACTOR_CALL,
     EventKind.RESULT: ACTOR_RESULT,
     EventKind.REPLY: ACTOR_REPLY,
+    EventKind.ASIDE: ACTOR_ASIDE,
     EventKind.NUDGE: ACTOR_USER,
     EventKind.MICRO_IN: ACTOR_MICRO,
     EventKind.MICRO_OUT: ACTOR_MICRO,
 }
-_ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.MICRO_OUT})
+_ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.ASIDE, EventKind.MICRO_OUT})
 
 # The micro-context direction arrow the renderer puts after the actor label (#1759), so the role
 # vocabulary is single-sourced here and the ``MICRO_IN``/``MICRO_OUT`` event body carries only its

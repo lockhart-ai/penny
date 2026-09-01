@@ -15,7 +15,8 @@ truncation + escaping, #1759) and the fold/parse seam the assembler's re-normali
 
 from __future__ import annotations
 
-from penny.tests.eval.utils import cohort, report
+from penny.tests.eval.utils import cohort, report, worlds
+from penny.tests.eval.utils.fixtures import CannedPage
 
 
 def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> None:
@@ -466,10 +467,17 @@ def test_the_tail_states_the_inputs_and_what_the_outliers_did():
         shape="x",
         divergences=[cohort.FeatureDivergence(feature="tool sequence", value="a", modal="b")],
     )
+    ground = worlds.World(
+        name="one page",
+        pages=(CannedPage(match="foxes", text="Title: Foxes\nBrandt signs.\n"),),
+        keeps=(("brandt",),),
+        excludes=(),
+    )
     tail = report.render_case_tail(
-        phrasings=[("phrasing 1", "watch the two pages"), ("phrasing 2", "keep an eye on them")],
-        world="| # | page | must be kept |\n|---|---|---|\n| 1 | `foxes` | `brandt` |",
-        world_facts=report.WorldFacts(pages=1, keeps=1, excludes=0),
+        arms=[
+            cohort.Arm(label="phrasing 1", text="watch the two pages", world=ground),
+            cohort.Arm(label="phrasing 2", text="keep an eye on them", world=ground),
+        ],
         outliers=[(3, outlier)],
     )
 
@@ -552,6 +560,157 @@ def test_the_variance_section_reports_the_spread_and_names_the_wording_that_move
     assert "| `tool sequence` | 2 | 2/3 (0.67) |" in rendered
     assert "@ gpt N=3" in rendered, "a ceiling names the model and the N it was measured at"
     assert "`browse → browse`" in rendered, "the wording that produced a value no other did"
+
+
+def test_a_feature_that_read_nothing_renders_red_and_says_so_rather_than_as_agreement():
+    """A blind feature and a cohort in perfect agreement both compute to 0.000, and one is the
+    best result a feature can report while the other is the absence of a measurement.
+
+    So it is RED and the ceiling column says what happened — grey would file it beside the
+    honest readings, which is exactly the confusion it causes.  The case's own line goes red
+    with it: measurement blindness should be visible from the run header, not on the third
+    click."""
+    samples = [_observation(f"c-{n} (phrasing 1)", "phrasing 1", []) for n in (1, 2, 3)]
+    rendered = report.CaseSections(
+        case_id="c", model="gpt", variance=cohort.pool(samples, [cohort.TOOL_SEQUENCE])
+    ).render()
+
+    assert "| 🔴 | `tool sequence` | 1 | 3/3 (1.00) | 0.000 | " in rendered
+    assert "READ NOTHING on every sample; not a reading" in rendered
+    assert "@ gpt N=3" not in rendered, "a blind feature proposes no ceiling"
+
+
+def test_the_checks_row_is_coloured_on_its_aggregate_not_on_its_worst_claim():
+    """The glyph and the number beside it must agree, and the number is the aggregate.
+
+    The fixture is the ONLY kind that distinguishes the two implementations: 87 of 90 is
+    green on the legend's scale, while the worst single claim is 9 of 12 and amber.  A
+    fixture where they agree passes either way and pins nothing — which is how
+    `🟡 87 / 90 · 97%` shipped under a legend reading `🟢 >90%`, a line that reads as a
+    typo rather than as a finding.
+
+    The worst claim keeps its OWN colour in the parenthetical, and that is asserted here
+    too: the fix is not to stop pointing at the soft claim, it is to stop letting the
+    pointer repaint the summary."""
+    rows = [
+        cohort.AssertionRow(
+            label="state: a", passed=78, total=78, category=cohort.SpecCategory.STORE
+        ),
+        cohort.AssertionRow(
+            label="state: b", passed=9, total=12, category=cohort.SpecCategory.LANDED
+        ),
+    ]
+    sections = report.CaseSections(case_id="c", model="m", assertions=rows)
+
+    assert f"| **checks** | {report.PASS_GLYPH} 87 / 90 · 97% " in sections.measures()
+    assert f"(lowest {report.WARN_GLYPH} 0.75 `state: b`)" in sections.measures()
+    assert sections.glyph() == report.PASS_GLYPH, "and the case line follows the aggregate"
+
+    # The other direction: a soft aggregate is amber even when its worst claim is far worse.
+    soft = report.CaseSections(
+        case_id="c",
+        model="m",
+        assertions=[
+            cohort.AssertionRow(
+                label="state: a", passed=40, total=50, category=cohort.SpecCategory.STORE
+            ),
+            cohort.AssertionRow(
+                label="state: b", passed=0, total=10, category=cohort.SpecCategory.LANDED
+            ),
+        ],
+    )
+    assert f"| **checks** | {report.WARN_GLYPH} 40 / 60 · 67% " in soft.measures()
+    assert f"(lowest {report.FAIL_GLYPH} 0.00 `state: b`)" in soft.measures()
+
+    # A case that declared nothing has nothing to colour, and is not a zero rate.
+    assert report.CaseSections(case_id="c", model="m").glyph() == report.PASS_GLYPH
+
+
+def test_a_blind_feature_is_loud_in_its_row_and_absent_from_the_case_colour():
+    """Variance reaches the headline THROUGH ITS THRESHOLD, and a blind feature has none.
+
+    It proposes no ceiling, so it has nothing to contribute to the case colour — and letting
+    it repaint one turned a case 🔴 at 60/60 checks, which is the same self-contradicting line
+    as colouring on an exclusion. A reader who sees red beside 100% learns to ignore the red.
+
+    Not softened, relocated: the row itself stays 🔴 and says what happened, because a blind
+    axis is a fact about the INSTRUMENT and that is where an instrument problem belongs."""
+    samples = [_observation(f"c-{n} (a)", "a", []) for n in (1, 2, 3)]
+    variance = cohort.pool(samples, [cohort.TOOL_SEQUENCE])
+    sections = report.CaseSections(
+        case_id="c",
+        model="m",
+        assertions=[
+            cohort.AssertionRow(
+                label="state: a", passed=60, total=60, category=cohort.SpecCategory.STORE
+            )
+        ],
+        variance=variance,
+    )
+
+    assert variance.features[0].blind, "the fixture really is blind"
+    assert "| 🔴 | `tool sequence` |" in sections.render(), "loud in its own row"
+    assert "READ NOTHING on every sample; not a reading" in sections.render()
+    assert sections.glyph() == report.PASS_GLYPH, "and absent from the case colour"
+
+
+def test_a_delivered_reply_and_an_undelivered_aside_do_not_share_a_mark():
+    """🤖 meant two opposite things in two folds and a reader could not tell which.
+
+    In a chat fold it is the message the user RECEIVED. In a collector fold it was the cycle
+    narrating after its own close — text nothing delivers, since what a user receives is a
+    send-queue row the framework enters afterwards. Same mark, opposite meaning, on exactly the
+    question a reader of that fold is asking.
+
+    Pinned on the two rendered rows together, because what broke was not either row on its own
+    — it was that they were indistinguishable."""
+    delivered = report.Event(report.EventKind.REPLY, '"the price moved to 72"')
+    aside = report.Event(report.EventKind.ASIDE, '"We need to finish cycle with done()."')
+
+    assert delivered.actual_body().startswith("🤖")
+    assert aside.actual_body().startswith("🗒")
+    assert delivered.actual_body() != aside.actual_body()
+    assert report.ACTOR_REPLY != report.ACTOR_ASIDE
+
+
+def test_a_feature_value_carrying_a_newline_a_pipe_and_a_backtick_stays_inside_its_cell():
+    """A feature value is arbitrary MODEL OUTPUT, so the table has to survive any of them.
+
+    The one that broke it: the browse extractor's `value` is a whole multi-line extraction, and
+    a raw newline ENDS THE ROW — the first line rendered as the cell, the remaining lines fell
+    out of the table as loose text, and the trailing pipe was left orphaned. It read as
+    "misformatted, different values in each column", which is exactly what it was.
+
+    Pinned WHOLE, on a value carrying all three cell-breaking characters at once, because the
+    property has to hold for a feature nobody has written yet rather than for the one that
+    surfaced it."""
+    hostile = "Title: A | B\nuse `browse` here"
+    samples = [
+        cohort.SampleObservation(name="c-1 (a)", phrasing="a", reply=hostile),
+        cohort.SampleObservation(name="c-2 (b)", phrasing="b", reply="plain"),
+    ]
+    # A plain structural feature reading the reply — REPLY_SPREAD itself is the pairwise
+    # marker the pooler recognises, so it never reaches the per-phrasing table.
+    answered = cohort.Feature("answer", lambda observation: observation.reply)
+    rendered = report.CaseSections(
+        case_id="c", model="m", variance=cohort.pool(samples, [answered])
+    ).render()
+
+    row = [line for line in rendered.splitlines() if "Title: A" in line]
+    assert len(row) == 1, "the whole value stays on ONE row"
+    assert row[0] == ("| `answer` | a | 1/1 | ``Title: A \\| B ⏎ use `browse` here`` |")
+    assert row[0].startswith("|") and row[0].endswith("|"), "the row's cells are all closed"
+    assert "\n" not in row[0]
+
+
+def test_two_long_values_sharing_a_prefix_do_not_render_identically():
+    """Telling values apart is the ENTIRE job of that column, so truncation may not collapse
+    two distinct values into one cell.  The digest of the whole value is what keeps them apart
+    once the visible text is cut."""
+    shared = "Title: " + "A" * 200
+    other = shared[:-1] + "B"
+    assert report.feature_cell(shared) != report.feature_cell(other)
+    assert len(report.feature_cell(shared)) < len(shared)
 
 
 def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
@@ -726,7 +885,14 @@ def test_the_three_sections_render_whole():
             # The case NAMES the report, and the topline readings are the TABLE under it —
             # no sentence restating what the rows already say. The assertion side is ONE
             # number over every check the case made, 5 of 6, since none of them is gated.
-            "### 🔴 `memory-learn-close-shape` — `openai/gpt-oss-20b`",
+            #
+            # AMBER, not red, and the excluded sample below is why it used to be red: the
+            # headline is decided by the two overarching criteria — the deterministic checks
+            # and the variance against its threshold — and by nothing else. Viability is a
+            # GATE (run health refuses a dead cohort and fails the run outright), not a shade,
+            # so one lost sample of four cannot outrank a 5/6 check reading. Folding it in
+            # rendered a case 🔴 at 100% checks, which teaches a reader to ignore the colour.
+            "### 🟡 `memory-learn-close-shape` — `openai/gpt-oss-20b`",
             "\n".join(
                 [
                     "| measure | reading |",
@@ -796,8 +962,11 @@ def test_the_three_sections_render_whole():
                                 "`browse → browse → write` |",
                             ]
                         ),
-                        "Reply text over 3 pairs — cosine mean 0.000 min 0.000 · "
-                        "containment mean 1.000",
+                        # These replies carry no embeddings, so the cosine half is NAMED as
+                        # unmeasurable rather than printed as 0.000 — which in this table
+                        # would read as every pair being maximally dissimilar (#2017).
+                        "Reply text over 3 pairs — cosine NOT MEASURABLE (no reply carried "
+                        "an embedding) · containment mean 1.000",
                     ]
                 ),
             ),
@@ -974,9 +1143,7 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
 
     assert TWO_TEAM_NEWS.counts == (2, 6, 2)
     tail = report.render_case_tail(
-        phrasings=[("phrasing 1", "watch them")],
-        world=TWO_TEAM_NEWS.render(),
-        world_facts=report.WorldFacts(*TWO_TEAM_NEWS.counts),
+        arms=[cohort.Arm(label="phrasing 1", text="watch them", world=TWO_TEAM_NEWS)]
     )
     assert (
         "#### Test inputs\n\n"

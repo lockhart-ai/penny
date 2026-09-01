@@ -96,6 +96,95 @@ reply-content rate moved by **3 samples** where every structural claim moved by 
 — `PROVENANCE`'s reply half is one — but read a few points of movement in its rate as the ordinary
 noise of reading prose, not as a change in behaviour.
 
+### What may be asserted at all
+
+> **We can only deterministically assert on data and structure we can strictly identify. Where the
+> model may legitimately paraphrase its output, only variance can detect it.**
+
+One question decides every check in a case:
+
+> **Can the model legitimately say this a different way? If yes → variance. If no → assertion.**
+
+Most of this document falls out of it. *Never match a phrasing*, reply text as cosmetic, the routine
+name as cosmetic, a tool sequence measured rather than asserted — each is the same answer to the same
+question. So is notation: `$449` against `449` is the model choosing how to render a number, which is
+paraphrase at the token level, and an assertion must target the part with no alternative rendering.
+
+"Strictly identifiable" has to be concrete or it decides nothing:
+
+| assertable | not assertable |
+|---|---|
+| counts · closed enums · record fields · digits · proper nouns · urls · keys | sentences · summaries · a label the model composed · notation · units · reply text |
+
+### It differs by shape
+
+The three shapes the drivers serve read the rule differently, because what the model returns is
+different in each:
+
+- **Chat and a collector** leave their trail in the stores and the machine, so their assertions are
+  reads of that trail: where it landed, what the store holds, which record fields the run carries.
+- **A microcontext returns a typed result, and that result splits in two.** Its **closed** fields —
+  the outcome enum, a state, the parameter set minted, which spots were named — are strictly
+  identifiable and asserted by equality. Its **open** fields — `value`, `reason`, a composed name —
+  are what the model wrote, and they are assertable *only* through fact alignment. Otherwise they
+  are variance.
+
+**Fact alignment is bidirectional, and one direction alone is half a check.** *Nothing invented* —
+every fact in the output appears in the input. *Nothing omitted* — every fact the input supplies that
+the instruction asked for appears in the output. A draw that returns one headline of five satisfies
+the first perfectly while being wrong, so a case that makes only that claim has measured the easy
+half.
+
+**A closed field's expected value is derived from the fixture's declared facts**, never chosen
+independently of them. `EXTRACTED` is the right expectation on a page carrying some of what was
+asked for, and the wrong one on a page carrying none of it — the same value, correct against one
+world and false against another. If a case cannot say which of its declared facts makes its
+expectation right, it is asserting a habit.
+
+**Do not claim what production already validates.** A span the binder checked with
+`_is_a_spoken_span`, a class the classifier validated against its own membership and re-rolled until
+it matched — a claim over either runs 15/15 by construction and measures the validator rather than
+the behaviour. Where an obvious-looking claim is missing for this reason, **say so in the case**, so
+a thin assertion set reads as *closed upstream* rather than as a checklist nobody ran.
+
+**The boundary.** This sharpens what may be asserted; it does not rescue §9. A draw can be strictly
+identifiable, fully aligned in both directions, and still wrong in a way no assertion here reaches —
+the wrong-but-stable row stays exactly where it is, catchable only by a human reading one sample.
+
+### The smallest unique datum
+
+*The corollary, for a value that passed the test above.*
+
+**An assertion names the smallest token that uniquely identifies the fact, and nothing about how
+it was written.**
+
+A value reaches the store through a draw that chose how to write it — with a currency symbol or
+without, bare or carrying its label, with units or without. Those choices are the paraphrase the
+rule above excludes. The fact is the reading.
+
+So shrink the expected value to the minimal distinctive one and match it as a substring of the
+**whole** entry:
+
+- `449`, not `$449` — a draw that stored `449` read the same page as one that stored `$449`
+- `05:20`, not `The dawn sailing: scheduled 05:20.` — the extract answers an instruction; it does
+  not echo the page line
+
+Two ways to get it wrong, and shrinking creates the second:
+
+| too large | too small |
+|---|---|
+| carries notation, units, a label, or surrounding words the draw was free to choose | no longer unique in the world, so a wrong value satisfies it |
+| **fails a correct run** for a cosmetic reason | **passes a wrong one** |
+
+The test is two questions. *Would a differently-worded correct answer fail this?* Shrink until no.
+*Could a wrong value satisfy it?* Stop before yes.
+
+**Uniqueness is a property of the world, not of the token.** A pair a case asserts on must be
+mutually exclusive — neither a substring of the other — and absent from everything else the pages
+carry. `449` / `499` qualify; `499` / `4499` would not; `scheduled 05:20` / `not scheduled` would
+not. **If the world admits no small unique datum, that is a fixture to fix, not a licence to
+assert a large one.**
+
 ### The non-negotiables
 
 | rule | why | the evidence |
@@ -105,6 +194,7 @@ noise of reading prose, not as a change in behaviour.
 | **An assertion about the store reads the WHOLE entry** — key *and* content. | A fact in the key and a blurb in the body is a perfectly good way to store it. | A prototype reported a 25/32 model failure that was entirely its own bug: it read content only. |
 | **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | 17 dead samples of 31 in one prototype run; `run_health.py` is the machinery that closes it |
 | **Never match a phrasing.** A reply check looking for a token you guessed in advance is the thing this design replaces. | Measurably both too strict and too loose in the same suite. | 31 replies that stated the recorded cadence correctly were failed; elsewhere an infra error string and a raw thinking leak both scored *passed* (#1994 §1). |
+| **Assert the smallest unique datum**, matched as a substring of the whole entry. Never bake in notation, units, or a label the draw chose. | The value is the fact; how it was written is model output — the same failure class as matching a phrasing, one level down. | A claim written as `$449` failed a draw that had correctly read the page and stored `449` (#2023). |
 
 ---
 
@@ -183,6 +273,7 @@ reference the afternoon you read it.
 async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) -> None:
     cohort = await chat_eval(
         case_id="<behaviour>-<what it does>",
+        behaviour=<THE SENTENCE>,                       # what this case checks — below
         model=model,
         seed=<the round this turn continues>,           # seeded, never hoped for
         world=<WORLD>,                                  # the pages, the keeps, the excludes
@@ -211,10 +302,95 @@ with no `# A · PROVENANCE` block is a case that skipped it. Expect your case to
 nobody can hand you — a category the source case said nothing about, which only the inward column
 will surface.
 
-**One setup, one enactment, one set of assertions.** A case drives its ask **once**. Two enactments
-in one test body is a structural antipattern: it turns the body into a script, and it hides a second
-cohort inside a test named for one. Input variation is expressed as **parametrisation** — that is
-what `also_phrased` is, and what the model axis is — never as a second drive.
+A **collector** case takes the same shape through its own driver. What replaces the ask is the
+**entry condition** — what the collection holds when the cycle starts — and the arms carry the
+instruction wording and the page that answers it:
+
+```python
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> None:
+    cohort = await collector_cycles_eval(
+        case_id="<behaviour>-<what it does>",
+        behaviour=<THE SENTENCE>,
+        model=model,
+        collection=_CONTAINER,                          # the job this case drives
+        arms=[_arm(<THE CASE>, reading) for reading in READINGS],
+        samples_per_phrasing=3,                         # 5 arms × 3 = 15 pooled
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+    # A · LANDED — EMPTY, and that is the correct report.  A collector moves no conversation
+    # machine, so there is no walk to read a landing off.  The run record's outcome and its
+    # stop reason are RECORD FIELDS, so they are claimed under STORE.
+    # A · STORE
+    cohort.claim("state: <what the store holds>", _holds(<AMOUNT>), SpecCategory.STORE)
+    cohort.claim("state: <what the run record says>", _closed_having_worked, SpecCategory.STORE)
+    # A · PROVENANCE
+    cohort.assert_every_stored_entry_traces_to_the_world()
+
+    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+```
+
+Each arm's `seed` lays the entry condition down through the **store's own write path**, under the
+key the job's program writes to, and asserts it in a loud probe — a hand-inserted row gives the
+write gate something to compare against that no cycle could have produced.
+
+A **microcontext** case drives one call, and its arms are five wordings of the instruction:
+
+```python
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
+    cohort = await extractor_eval(
+        case_id="<behaviour>-<what it does>",
+        behaviour=<THE SENTENCE>,
+        model=model,
+        url=<URL>, page=<PAGE>,                         # one world, fixed across the arms
+        instruction=<THE INSTRUCTION>,                  # Penny's own words, written upstream
+        also_instructed=<FOUR MORE WORDINGS>,
+        samples_per_phrasing=3,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+    # A · LANDED — the CLOSED field of the typed result, asserted by equality
+    cohort.claim("state: <which outcome it committed to>", _read_the_page, SpecCategory.LANDED)
+    # A · STORE — EMPTY, and that is the correct report.  One call returns a value; it writes
+    # to no store, so there is nothing for a store claim to read.
+    # A · PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
+    cohort.claim("state: <what the page supplies arrived>", _carries(<ANCHOR>),
+                 SpecCategory.PROVENANCE)
+    cohort.claim("state: <nothing else did>", _nothing_invented, SpecCategory.PROVENANCE)
+
+    cohort.measure(output_field(OUTCOME),
+                   output_field(VALUE, consequence=Consequence.COSMETIC))
+```
+
+An empty category is a **report**, not an omission — but only when the shape genuinely has nothing
+there. Say which of the two it is in the case, or a reader cannot tell a closed question from an
+unrun one.
+
+**One entry condition, one model run, one set of assertions.** The COUNT is the rule, wherever the
+count is expressed. An enactment is one chat turn, one collector cycle, or one microcontext call —
+so a fixture handing the driver three registers is three enactments exactly as three `await`s in the
+body are, and it is the harder one to see: the body still reads as a single drive. Input variation
+is expressed as **parametrisation** — that is what `also_phrased` and the model axis are — never as
+a second enactment, in the body or under it.
+
+**What a second enactment costs is blame.** Sequentially coupled runs stop partitioning: a first run
+that fails leaves the second and third with no precondition, so their claims are false for a reason
+that has nothing to do with what they measure, and one defect is counted three times with no way to
+say which run was wrong. The variance number goes the same way — one score averaging several
+behaviours reports the spread of whichever one moved as instability of all of them.
+
+Where the behaviours differ is in what selects them: §6 has the collector form, where the entry
+condition does it.
+
+**Every case states the behaviour it checks**, in one sentence, in the fixed form
+**In \<the locus\>, when \<X\>, Penny \<does Y\>.** The locus names where the behaviour happens
+by its **shipped agent name** — `browse-extract`, `state-classifier`, `skill-framer`, the chat
+agent, a price-watch collector — never a label invented for the report. It is `behaviour=` on the
+driver call, required on the cohort path, and it renders in the case's report header above every
+number: a case id says which fixture ran, and a rate means nothing until a reader knows what was
+being asked.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
@@ -264,6 +440,24 @@ and never as a fact about one sample.
 Measuring something derived instead attributes the spread to code with no discretion, and points the
 fix at something that cannot be fixed.
 
+### A feature that read nothing is not a feature in agreement
+
+A feature whose every sample reads its **absent** value — no tool call, no routine, a field the
+draw never returned — scores `0.000`, which is the same number a cohort in perfect agreement
+scores and the opposite finding. So a feature declares the reading that means it saw nothing
+(`Feature.absent`), the pooler marks the case **blind**, and the report renders it red with no
+proposed ceiling. A variance feature that cannot see an outlier is worse than an absent one:
+the table prints a number either way, and only one of them is a measurement.
+
+The same rule covers a half-measure: a reply spread whose cosine half could be computed on no
+pair reports `0.000`, which in that table reads as *every pair maximally dissimilar* — the
+strongest possible finding — rather than as the absence of one. It says so instead.
+
+What this catches concretely: a non-chat fixture reusing a reader filtered to the chat agent's
+own rows comes back empty on every sample. That is why each fixture writes **its own**
+observation and **its own** completeness gate — chat's "no reply" condition applied to a
+single-call context would void every sample and refuse the run.
+
 **Report per-phrasing rows beside the pooled score.** Phrasings are a *coverage* mechanism, not a
 variance one — model stochasticity carries essentially all the spread (~0.05 of it is phrasing; one
 model produced 4.8 distinct routine shapes inside a *single* phrasing), which is what justifies
@@ -293,7 +487,45 @@ The line that matters is phrasing versus scenario: five wordings of one ask pool
 while a different ask is a different case — folding it in would average two behaviours into one
 score and call the result instability.
 
-The world a case declares is **fixed across its cohort**. A case that varies it does so as a second
+**An arm is one input the behaviour is answered from, together with the world it is answered
+against** — and the input is not always the user's words.
+
+- **Chat**: five wordings of one ask, one world.
+- **A microcontext**: five wordings of its instruction, one world. For the browse extractor that
+  instruction is the `extract` argument of a browse call — **Penny's own words**, written
+  upstream at the call site — so the cohort measures how stable the read is against how the
+  calling draw happened to word it, which nothing else measures.
+- **A collector**: no user turn exists, so its natural language is the `extract` instruction the
+  job's rendered program carries, plus the prose of the page that answers it. That instruction is
+  written by the `SkillSubstitution` on the `extract` path and reaches the model through the
+  shipped instantiation seam — `retarget_writes` → `bind_parameters` → `render_skill` — so
+  varying it varies a draw. **Never hand-author the program**: a program the instantiation seam
+  cannot emit measures a render rather than a draw, which is §5's own trap one layer up. Five
+  wordings of one instruction, against five prose variants of one page.
+
+**A collector case drives ONE cycle**, and its **entry condition** is what selects the behaviour
+it measures — an empty collection, or one already holding a reading. A watch does three things:
+record a first reading, stay quiet on an unchanged one, rewrite and tell on a moved one. Those are
+three cases, not three cycles in one, and the entry condition is the whole difference between
+them. Preseed it through the store's own write path, under the key the job's program writes to:
+the write gate compares a candidate against what is stored under that key, so a hand-inserted row
+gives it something to compare against that no cycle could have produced.
+
+**A collector's facts are held CONSTANT across its arms** — one url, one set of bound values, and
+the one reading that case's cycle is shown — because the assertions hinge on them. The watched
+datum line is byte-identical on every arm; what varies around it is the prose a real page carries
+anyway: a seller blurb, a specification block, neighbouring items with their own prices,
+housekeeping notes. Constant facts are what let a case name a value. *The store holds `$449` and
+no longer holds `$499`* is an assertion; *the store holds something* is a shape, and a shape
+cannot tell a watch that read the right price from one that produced a plausible number.
+
+The arms nonetheless each carry **their own world**, which is why the world lives on the **arm**
+rather than on the cohort: the pages differ, so a provenance claim has to trace against the page
+that sample actually read. *One world with five wordings* is the special case of *five
+`(input, world)` pairs where the world happens to be constant*. A claim is answered against the
+world of the arm that produced the sample it is answering about.
+
+Within one arm, the world is **fixed across its samples**. A case that varies it does so as a second
 **input** axis, pooled exactly like phrasing — and **within** the 15, never as samples added beside
 them.
 
@@ -403,10 +635,10 @@ Two other scope rules that come from the same place:
 |---|---|
 | `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
-| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes` |
+| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes`; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
-| `penny/penny/tests/eval/conftest.py` | the `chat_eval` driver: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` |
+| `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
 
 A `World`'s `keeps` is one token set **per source** — tokens appearing only on that page, so a
 stored copy says which page it came from and an invented one matches neither. They identify the

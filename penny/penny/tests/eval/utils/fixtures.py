@@ -12,7 +12,7 @@ or of the listing a journey is built on would be two contracts free to drift.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,30 @@ class CannedPage:
     image: str | None = None
     fails: bool = False
     channel_outage: bool = False
+
+
+def datum(page: CannedPage, old: str, new: str) -> CannedPage:
+    """The same rich page with its DATUM — and only its datum — rewritten.
+
+    A watch case needs two pages that differ in exactly the fact the job is looking for, and
+    building the second one from a template instead of from the first is how the two drift
+    apart.  So the pair is one page and one edit.
+
+    Exactly one span moves, enforced twice over: the old text must appear, and it must appear
+    ONCE.  A span that matched nothing is a page rewritten upstream (the variant would come
+    back identical to its twin, and the change cycle would score a miss on every sample); a
+    span that matched twice is an edit reaching somewhere the case never named — a change to the
+    page's structure rather than to the datum the job is looking for, which the ruling quoted
+    above the enactment case's own pages forbids.
+
+    Copied through ``replace`` rather than re-constructed field by field, so a page that grows
+    a field carries it into its variant instead of silently losing it."""
+    occurrences = page.text.count(old)
+    if occurrences != 1:
+        raise ValueError(
+            f"a datum edit must move exactly one span — {old!r} appears {occurrences} times"
+        )
+    return replace(page, text=page.text.replace(old, new))
 
 
 # Every browse read fails at the *page* level — the "browsed many sources, read

@@ -14,10 +14,15 @@ from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    FIELD_UNSET,
     REPLY_SPREAD,
     ROUTINE_SHAPE,
+    TOOL_SEQUENCE,
+    Arm,
     AssertionRow,
     AssertionSummary,
+    OutputField,
     RoutineRecord,
     SampleObservation,
     SpecCategory,
@@ -27,10 +32,12 @@ from penny.tests.eval.utils.cohort import (
     compare_to_ceiling,
     feature_variance,
     normalised_entropy,
+    output_field,
     per_sample_cost,
     pool,
     proposed_ceiling,
     specifics,
+    text_spread,
     unsourced_specifics,
     variance_headline,
 )
@@ -40,11 +47,20 @@ _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
 
 
+def _one_arm(world: World) -> list[Arm]:
+    """The chat shape as arms: every sample ran "the ask" against one world.
+
+    The label matches ``_phrasing_label``'s single-wording answer, which is what a sample's own
+    ``phrasing`` carries.  The world a claim reads is keyed on the sample's ARM INDEX, though,
+    so a hand-built sample here defaults to arm 0 — the only arm there is."""
+    return [Arm(label="the ask", text="the ask", world=world)]
+
+
 def _sample(name: str, arm: str, shape: str, **kwargs) -> SampleObservation:
     """One observation carrying a routine of the given SHAPE — the feature every test here
     measures, since what is under test is the statistic and not the reading of it."""
     routines = [RoutineRecord(name="r", shape=shape, names_a_destination=True)]
-    return SampleObservation(name=name, phrasing=arm, routines=routines, **kwargs)
+    return SampleObservation(name=name, phrasing=arm, arm=0, routines=routines, **kwargs)
 
 
 # ── The statistic ────────────────────────────────────────────────────────────
@@ -381,6 +397,7 @@ def _round(name: str, *, container: str | None, wrote: str | None) -> SampleObse
     return SampleObservation(
         name=name,
         phrasing="the ask",
+        arm=0,
         landed=ConversationState.LEARN.value,
         container=container,
         entries=entries,
@@ -400,12 +417,12 @@ def test_a_sample_that_wrote_nothing_fails_the_claim_about_where_its_write_lande
     cohort = Cohort(
         "case",
         "m",
-        _ONE_SOURCE,
         [
             _round("wrote-into-it", container="round-box", wrote="499"),
             _round("wrote-elsewhere", container="other-box", wrote="499"),
             _round("wrote-nothing", container="round-box", wrote=None),
         ],
+        _one_arm(_ONE_SOURCE),
     )
     cohort.assert_the_write_landed_in_the_round_container()
     claim = cohort.claims[0]
@@ -421,7 +438,9 @@ def test_an_unframed_round_fails_the_only_claim_that_reads_the_framing():
 
     This is also the suite's ONLY reader of the round framing — no other claim mentions the
     container — so an unframed round is invisible unless this claim says so."""
-    cohort = Cohort("case", "m", _ONE_SOURCE, [_round("unframed", container=None, wrote="499")])
+    cohort = Cohort(
+        "case", "m", [_round("unframed", container=None, wrote="499")], _one_arm(_ONE_SOURCE)
+    )
     cohort.assert_the_write_landed_in_the_round_container()
     claim = cohort.claims[0]
 
@@ -473,10 +492,12 @@ def test_no_claim_can_opt_out_of_being_scored():
     render without counting is a claim that could hold a case's number up while failing."""
     world = World(name="base", pages=(), keeps=(("499",),), excludes=())
     samples = [
-        SampleObservation(name=f"s{i}", phrasing="the ask", landed="learn", reply="x", given="x")
+        SampleObservation(
+            name=f"s{i}", phrasing="the ask", arm=0, landed="learn", reply="x", given="x"
+        )
         for i in range(2)
     ]
-    cohort = Cohort("case", "m", world, samples)
+    cohort = Cohort("case", "m", samples, _one_arm(world))
     cohort.assert_machine_landed(ConversationState.LEARN)
     cohort.assert_every_value_in_the_reply_is_sourced()
 
@@ -571,3 +592,178 @@ def test_a_case_that_measured_nothing_has_no_reading():
     empty = variance_headline([])
     assert not empty.has_reading
     assert (empty.varying, empty.total) == (0, 0)
+
+
+# ── A feature that read NOTHING is not a feature in agreement (#2017) ────────
+#
+# The two are the same 0.000 and opposite findings, and telling them apart is the whole of
+# the measurement-blindness guard: total agreement is the best result a feature can report,
+# while reading nothing on every sample is a feature that CANNOT report an outlier.
+
+
+def test_a_feature_that_read_nothing_on_every_sample_is_blind_not_agreed():
+    """The concrete trap: a non-chat fixture whose tool-sequence reader is filtered to the
+    chat agent's rows comes back empty on every sample.  Entropy is 0.000 either way, so
+    without this the report files a blindfold beside a cohort in perfect agreement."""
+    blind = feature_variance(
+        TOOL_SEQUENCE, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+    )
+    assert blind.entropy == 0.0
+    assert blind.blind, "every sample read TOOL_SEQUENCE's absent value"
+
+    seen = feature_variance(
+        TOOL_SEQUENCE,
+        [_sample(f"s{index}", "p1", "shape", tool_sequence=["browse"]) for index in range(6)],
+    )
+    assert seen.entropy == 0.0
+    assert not seen.blind, "an agreed READING is agreement, not blindness"
+
+
+def test_a_blind_feature_proposes_no_ceiling():
+    """A ceiling recorded on a feature that read nothing locks the blindness in as the
+    expected behaviour, and the guard it prints could never fire."""
+    blind = feature_variance(
+        TOOL_SEQUENCE, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+    )
+    assert proposed_ceiling(blind, _MODEL) is None
+
+    seen = feature_variance(
+        TOOL_SEQUENCE,
+        [_sample(f"s{index}", "p1", "shape", tool_sequence=["browse"]) for index in range(6)],
+    )
+    assert proposed_ceiling(seen, _MODEL) is not None, "an agreed reading still proposes"
+
+
+def test_a_feature_declaring_no_absent_reading_is_never_blind():
+    """A feature that declares no saw-nothing reading, and reads a real value, is agreement —
+    however uniform it is.  ``entries stored`` reading ``0`` on every sample is a fact about
+    the round, not a hole in the measurement."""
+    entries = feature_variance(
+        ENTRIES_STORED, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
+    )
+    assert entries.distinct == 1 and not entries.blind
+
+
+def test_a_field_that_is_empty_on_every_sample_is_blind_whatever_it_declares():
+    """The empty string is the one "nothing" EVERY feature shares, so it needs no declaration.
+
+    A structured field populated only on one outcome — the extractor's ``reason``, which
+    carries the what-is-missing line on ``NOT_PRESENT`` and nothing on ``EXTRACTED`` — reads
+    ``""`` on all fifteen samples of a run where every draw succeeded.  It goes blind
+    PRECISELY on the runs that look best, and that is when it would otherwise propose a gate.
+
+    The old rule could not catch it either way: the field's real value is ``""`` rather than
+    the declared ``unset``, and a feature declaring ``""`` was skipped by a falsiness guard,
+    so an empty saw-nothing reading was unexpressible by construction."""
+    empty = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            output=[OutputField(name="reason", value="")],
+        )
+        for index in range(6)
+    ]
+    blind = feature_variance(output_field("reason"), empty)
+    assert blind.entropy == 0.0
+    assert blind.blind, "every sample read no value at all"
+    assert proposed_ceiling(blind, _MODEL) is None, "a gate on a non-reading can never fire"
+
+    # The same feature on a run where the outcome DID happen is a real measurement.
+    populated = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            output=[OutputField(name="reason", value=f"no price on the page {index % 2}")],
+        )
+        for index in range(6)
+    ]
+    seen = feature_variance(output_field("reason"), populated)
+    assert not seen.blind and seen.distinct == 2
+
+
+def test_a_feature_may_declare_the_empty_string_as_its_absent_reading():
+    """``None`` means "declares none"; ``""`` is a legitimate declaration.  Collapsing the two
+    into a falsiness check is what made an empty saw-nothing reading unexpressible."""
+    from penny.tests.eval.utils.cohort import Feature
+
+    declared = Feature("blank", lambda observation: observation.walk, absent="")
+    assert declared.absent == ""
+    assert Feature("undeclared", lambda observation: observation.walk).absent is None
+
+
+# ── A single-call context: structured output, no store, no reply (#2017) ─────
+def test_a_draws_structured_output_is_read_by_field_and_measured_by_field():
+    """What a micro-context case asserts and what it measures are the same values: the
+    fields of the typed result the draw returned."""
+    sample = SampleObservation(
+        name="s1",
+        phrasing="the ask",
+        output=[
+            OutputField(name="outcome", value="extracted"),
+            OutputField(name="value", value="84 zorkmids"),
+        ],
+    )
+    assert sample.field("outcome") == "extracted"
+    assert sample.field("value") == "84 zorkmids"
+    assert sample.output_text == "outcome extracted value 84 zorkmids"
+
+    feature = output_field("outcome")
+    assert feature.read(sample) == "extracted"
+
+
+def test_a_field_the_draw_never_returned_reads_unset_rather_than_blank():
+    """A real reading, not a missing one: a draw that answered with the wrong shape genuinely
+    has nothing there, so a claim about that field is FALSE of the sample rather than unasked
+    — and the variance table gets a word rather than an empty cell."""
+    sample = SampleObservation(name="s1", phrasing="the ask")
+    assert sample.field("outcome") == FIELD_UNSET
+    assert output_field("outcome").absent == FIELD_UNSET
+
+
+def test_a_single_call_sample_pools_even_though_it_has_no_reply_and_no_store():
+    """The completeness gate is per FIXTURE.  A micro-context sample has no reply at all, and
+    chat's own "no reply" condition applied here would void every sample and refuse the run —
+    so a sample carrying only its structured answer must pool as the complete sample it is."""
+    samples = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            output=[OutputField(name="outcome", value="extracted")],
+        )
+        for index in range(4)
+    ]
+    variance = pool(samples, [output_field("outcome")])
+    assert variance.pooled == 4
+    assert variance.excluded == []
+    assert variance.features[0].distinct == 1
+    assert not variance.features[0].blind
+
+
+def test_a_reply_spread_with_no_embeddings_says_so_rather_than_reading_zero():
+    """``_mean([])`` is 0.000, and in the spread table that reads as "every pair maximally
+    dissimilar" — the strongest possible finding — when what happened is that nothing could be
+    compared.  A collector's notification is the standing case: a cycle ENQUEUES and the
+    drainer is a separate schedule, so its text is usually absent from the outgoing messages
+    the embeddings are read off."""
+    unembedded = [
+        SampleObservation(name=f"s{index}", phrasing="the ask", reply="the price moved")
+        for index in range(3)
+    ]
+    spread = text_spread(unembedded)
+    assert spread is not None
+    assert spread.pairs == 3, "containment is computable over every pair"
+    assert spread.cosine_pairs == 0
+    assert not spread.cosine_measurable, "0.000 here is the absence of a reading"
+
+    embedded = [
+        SampleObservation(
+            name=f"s{index}",
+            phrasing="the ask",
+            reply="the price moved",
+            reply_embedding=[1.0, 0.0],
+        )
+        for index in range(3)
+    ]
+    measured = text_spread(embedded)
+    assert measured is not None and measured.cosine_measurable
+    assert measured.cosine_pairs == 3

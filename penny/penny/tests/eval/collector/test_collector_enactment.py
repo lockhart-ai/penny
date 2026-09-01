@@ -78,7 +78,6 @@ numbers are read.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from functools import partial
@@ -124,7 +123,7 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
     send_queue_mechanisms,
 )
-from penny.tests.eval.utils.fixtures import CannedPage
+from penny.tests.eval.utils.fixtures import CannedPage, datum
 
 # The request → apply beat's own five cases, their world, their probe and the seeding
 # vocabulary they are written in — read from where that beat declares them rather than
@@ -230,25 +229,6 @@ DIRECTION_CHECK_LABEL = "state: the configured terms carry the direction the goa
 # instead of inside it.
 
 
-def _datum(page: CannedPage, old: str, new: str) -> CannedPage:
-    """The same rich page with its DATUM — and only its datum — rewritten.
-
-    Exactly one span moves, enforced twice over: the old text must appear, and it must
-    appear ONCE.  A span that matched nothing is a page rewritten upstream (the variant
-    would come back identical to its twin, and the change cycle would score a miss on
-    every sample); a span that matched twice is an edit reaching somewhere the case never
-    named, which is the structural-change-instead-of-datum-change the ruling forbids.
-
-    Copied through ``replace`` rather than re-constructed field by field, so a page that
-    grows a field carries it into its variant instead of silently losing it."""
-    occurrences = page.text.count(old)
-    if occurrences != 1:
-        raise ValueError(
-            f"a datum edit must move exactly one span — {old!r} appears {occurrences} times"
-        )
-    return replace(page, text=page.text.replace(old, new))
-
-
 # The ferry board's watched line, in the terse form the timetable really posts.  Two
 # things it has to get right, both measured in round 6:
 #
@@ -264,12 +244,12 @@ def _datum(page: CannedPage, old: str, new: str) -> CannedPage:
 # off the same page — "dawn sailing" and "the dawn sailing" — and a keyword that does not
 # appear verbatim is one the extract can refuse to find (3 of 5 held-binding samples came
 # back with a not-found sentence instead of a value).  "The dawn sailing" contains both.
-_NORTH_PIER_QUIET = _datum(
+_NORTH_PIER_QUIET = datum(
     _NORTH_PIER_DEPARTURES,
     "Dawn sailing: not on the board this season.",
     "The dawn sailing: not scheduled.",
 )
-_NORTH_PIER_WITH_THE_DAWN = _datum(
+_NORTH_PIER_WITH_THE_DAWN = datum(
     _NORTH_PIER_QUIET,
     "The dawn sailing: not scheduled.",
     "The dawn sailing: scheduled 05:20.",
@@ -277,17 +257,17 @@ _NORTH_PIER_WITH_THE_DAWN = _datum(
 
 # The listing's own price is labelled as THE current one, so the neighbouring items'
 # prices further down the page cannot be read as it.  Round 5 measured a wrong-price grab.
-_KEEL_LANTERN_QUIET = _datum(_KEEL_LANTERN_LISTING, "Price: $128", "Current price: $128")
-_KEEL_LANTERN_REPRICED = _datum(_KEEL_LANTERN_QUIET, "Current price: $128", "Current price: $112")
+_KEEL_LANTERN_QUIET = datum(_KEEL_LANTERN_LISTING, "Price: $128", "Current price: $128")
+_KEEL_LANTERN_REPRICED = datum(_KEEL_LANTERN_QUIET, "Current price: $128", "Current price: $112")
 
 # Already crisp: a labelled line carrying a bare number.  Verified rather than sharpened.
 _RIVER_OTTERS_QUIET = _RIVER_OTTERS_CENSUS
-_RIVER_OTTERS_FEWER = _datum(_RIVER_OTTERS_QUIET, "Count: 46 otters", "Count: 39 otters")
+_RIVER_OTTERS_FEWER = datum(_RIVER_OTTERS_QUIET, "Count: 46 otters", "Count: 39 otters")
 
 # The special is the DISH NAME alone — the ambient prose about how the board works stays
 # on the page, outside the line the datum sits on.
 _NEW_BAKERY_QUIET = _NEW_BAKERY_SPECIALS
-_NEW_BAKERY_TOMORROW = _datum(
+_NEW_BAKERY_TOMORROW = datum(
     _NEW_BAKERY_QUIET,
     "Today's special: apricot and almond galette",
     "Today's special: fig and hazelnut tart",
@@ -316,27 +296,21 @@ class _WatchedFact(NamedTuple):
     """The ONE controllable fact the two pages differ on — what a cycle that really read
     the page has to come back holding.
 
-    Each is the MINIMAL DISTINCTIVE VALUE the extract returns — not the page line it came
-    off.  The extract is handed an instruction and answers it, so a page reading "The dawn
-    sailing: scheduled 05:20." comes back as "05:20", and an expectation written against
-    the page's own words would score a correct find a miss.  Transcribed from measured
-    draws like every other fixture here.
+    Each is the SMALLEST UNIQUE DATUM for its page, written and matched by the rule
+    ``docs/eval-case-design.md`` §2 states.  Transcribed from measured draws like every
+    other fixture here.
 
-    The two halves must be MUTUALLY EXCLUSIVE — neither a substring of the other, in the
-    bare form OR in the instruction-labelled pair a cycle may store since #1918 — because
-    the change cycle asserts one is present and the other gone.  "not scheduled" and
-    "05:20" satisfy that; "not scheduled" and "scheduled 05:20" would not have.
+    What is specific to THESE pages: the two halves are mutually exclusive against each
+    other and against everything else these pages carry — "not scheduled" and "05:20"
+    satisfy that, "not scheduled" and "scheduled 05:20" would not have — because the change
+    cycle asserts one is present and the other gone.
 
-    Both are matched as substrings of the entry the cycle wrote (key or content — where in
-    the entry a fact lands is deliberately open), so a cycle that stored the value with its
-    units or its label still reads as having stored it.
-
-    That substring shape is what makes these survive #1918 unchanged.  The browse result
-    now hands back the extracted value LABELLED with the instruction it answers ("the dawn
-    sailing: scheduled 05:20"), so a cycle copying step 1 verbatim stores the pair rather
-    than the bare value — and a check written against the VALUE reads both forms as the
-    same find, which is the reading it always had.  Neither half needed widening; stating
-    it here so the next reader knows that was checked rather than assumed."""
+    And they survive #1918 unchanged.  The browse result now hands back the extracted value
+    LABELLED with the instruction it answers ("the dawn sailing: scheduled 05:20"), so a
+    cycle copying step 1 verbatim stores the pair rather than the bare value — and a
+    substring match on the VALUE reads both forms as the same find, which is the reading it
+    always had.  Neither half needed widening; stating it here so the next reader knows that
+    was checked rather than assumed."""
 
     quiet: str
     changed: str

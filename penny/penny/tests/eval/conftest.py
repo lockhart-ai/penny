@@ -1062,16 +1062,25 @@ def outgoing_replies(db: Database) -> list[str]:
     return [entry.content for entry in entries]
 
 
-def chat_run_tool_sequences(db: Database) -> list[list[str]]:
-    """Tool names per CHAT run, in chronological run order — one list per user turn
-    of a scripted conversation.  The per-run split is what lets a multi-turn
+def chat_run_tool_sequences(
+    db: Database, agent_name: str = PennyConstants.CHAT_AGENT_NAME
+) -> list[list[str]]:
+    """Tool names per run of ``agent_name``, in chronological run order — one list per user
+    turn of a scripted conversation.  The per-run split is what lets a multi-turn
     contract assert phase discipline (an elicitation turn must not enact; the
     demonstration turn must carry the call spine) — ``tool_call_sequence`` flattens
     the whole sample into one list.  Micro-context calls (browse-extract, skill
     naming) carry no tool calls and other agents' rows are excluded, so each list
-    is exactly one chat turn's calls, in emission order."""
+    is exactly one turn's calls, in emission order.
+
+    The agent is a PARAMETER because the filter is otherwise a silent blindfold on every
+    non-chat reader: a collector cycle's calls are logged under the collector's name, so a
+    fixture reusing the chat default reads an empty sequence on every sample and its tool
+    feature pools to a serene 0.000 — the same number a cohort in perfect agreement prints.
+    :attr:`cohort.VarianceFeature.blind` is the backstop that makes such a reading loud; this
+    is the fix that stops it happening."""
     rows = sorted(
-        (row for row in live_prompts(db) if row.agent_name == PennyConstants.CHAT_AGENT_NAME),
+        (row for row in live_prompts(db) if row.agent_name == agent_name),
         key=lambda row: row.timestamp,
     )
     order: list[str] = []
@@ -1420,6 +1429,11 @@ _ACTOR = {
     "tool": "📥 tool result",
     "call": "🔧 Penny → tool",
     "penny": "🤖 Penny",
+    # An agent text turn that reached NOBODY.  A collector cycle narrates to itself and
+    # delivers nothing — what a user receives is a send-queue row the framework enters after
+    # the cycle — so rendering that narration with the reply mark said the opposite of the
+    # truth on the one question a reader of that fold is asking.
+    "aside": "🗒 Penny (to herself)",
 }
 
 
@@ -1504,8 +1518,14 @@ def _sample_turns(
             elif role == "assistant":
                 for call in message.get("tool_calls") or []:
                     emit(_ACTOR["call"], _render_call(call.get("function", {})))
-                if not sent or content.strip() in sent:
+                # A text turn is a DELIVERED reply only if the sample actually sent it.  With
+                # nothing delivered there is nothing it could be, so it renders as an aside
+                # rather than borrowing the reply's mark; with a delivered set, a draw outside
+                # it is a re-roll and is collected by ``rejected_draws`` instead.
+                if content.strip() in sent:
                     emit(_ACTOR["penny"], content)
+                elif not sent:
+                    emit(_ACTOR["aside"], content)
     emit(_ACTOR["penny"], reply.strip())
     return turns
 
@@ -1790,13 +1810,15 @@ def _turn_kind(actor: str, content: str) -> report.EventKind:
         return report.EventKind.CALL
     if actor == _ACTOR["tool"]:
         return report.EventKind.RESULT
+    if actor == _ACTOR["aside"]:
+        return report.EventKind.ASIDE
     return report.EventKind.REPLY
 
 
 def _event_body(kind: report.EventKind, content: str) -> str:
     """The rendered body for an event (the glyph is prepended by the renderer): a reply is quoted,
     a nudge tagged ``*(nudge)*``, a call/result rendered verbatim."""
-    if kind == report.EventKind.REPLY:
+    if kind in (report.EventKind.REPLY, report.EventKind.ASIDE):
         return f'"{content}"'
     if kind == report.EventKind.NUDGE:
         return f"*(nudge)* {content}"
@@ -1935,7 +1957,11 @@ def _turns_to_events(
         kind = _turn_kind(actor, content)
         if kind == report.EventKind.USER:
             _splice(micro_batches, MicroPlacement.RUN_CLOSE, events)
-        action = kind in (report.EventKind.CALL, report.EventKind.REPLY)
+        action = kind in (
+            report.EventKind.CALL,
+            report.EventKind.REPLY,
+            report.EventKind.ASIDE,
+        )
         thought = (thinking.get(content) or "") if action else None
         turn_to_event[turn_index] = len(events)
         events.append(report.Event(kind, _event_body(kind, content), thinking=thought))
@@ -2271,6 +2297,8 @@ EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 # a sample's database exists from sample START, so a file is not evidence that anything ran.
 NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its seeded world"
 NO_REPLY = "the measured turn produced no reply"
+NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
+NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
 
 # The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
 # design — a value Penny invents early in a turn rides into the message history and would
@@ -2419,21 +2447,28 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, reply: str, before: set[str]
+    db: Database, *, name: str, phrasing: str, arm: int, reply: str, before: set[str]
 ) -> eval_cohort.SampleObservation:
-    """Read everything one sample left behind, while its database is still live.
+    """Read everything one CHAT sample left behind, while its database is still live.
 
     Gated for completeness FIRST, so a dead sample carries no facts to be pooled by accident.
+
+    Every read below is a CHAT read — the machine's walk, the registry, the collections, the
+    outgoing message the reply was embedded on, and a tool sequence filtered to the chat
+    agent's own rows.  A fixture driving another shape writes its OWN observer rather than
+    calling this one: reused elsewhere it returns a row that is structurally fine and
+    substantively empty (#2017).
     """
     exclusion = _exclusion(db, reply)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, complete=False, exclusion=exclusion
+            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
         )
     landed = db.machine.latest_transition()
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
+        arm=arm,
         landed=landed.to_state if landed else None,
         walk=_machine_walk(db),
         routines=_routine_records(db),
@@ -2452,12 +2487,34 @@ def _observe_sample(
     )
 
 
+# The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every
+# shape shares — a sample's database exists from sample START, so a file is not a result — and
+# each gate adds whatever "this shape produced nothing" means for the shape it drives.
 def _exclusion(db: Database, reply: str) -> str | None:
-    """Why this sample cannot be counted, or ``None`` when it can."""
+    """Why a CHAT sample cannot be counted, or ``None`` when it can.
+
+    Chat's own second condition is an empty reply: the turn is a conversation and a turn that
+    said nothing produced no behaviour to read.  It is stated HERE rather than shared, because
+    it is false of every other shape — a micro-context sample has no reply at all, and a gate
+    that voided one for that would void the entire cohort and refuse the run (#2017)."""
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if not reply.strip():
         return NO_REPLY
+    return None
+
+
+def _draw_exclusion(db: Database, answer: str) -> str | None:
+    """Why a single-call sample cannot be counted, or ``None`` when it can.
+
+    A micro-context leaves no reply and writes no store, so the only thing that makes it
+    countable is that the draw reached the model and came back with a usable answer.  The
+    runner passes the parsed result's own marker as ``answer`` — empty exactly when the draw
+    failed whole after its rerolls."""
+    if not measured_turn_ran(db):
+        return NO_MEASURED_TURN
+    if not answer.strip():
+        return NO_DRAW
     return None
 
 
@@ -2482,6 +2539,71 @@ def _phrasing_label(phrasings: Sequence[str], sample_index: int, per_phrasing: i
     return "the ask"
 
 
+class _Arms(NamedTuple):
+    """A cohort's ARMS and how many samples each one runs (#1994/#2017).
+
+    An arm is one input the behaviour is answered from, together with the WORLD it is answered
+    against.  For chat that is a wording of the user's ask, and every arm shares one world.
+    For a browse extraction it is a wording of the ``extract`` instruction — Penny's own words,
+    written upstream at the call site — again against one page.  For a collector there is no
+    user turn: what varies is the ``extract`` instruction its rendered program carries and the
+    prose of the page that answers it, so an arm is a wording AND its own page, and the arms do
+    not share a world.
+
+    Lifted out of ``chat_eval``'s closure because nothing about it is chat: it maps a sample
+    index to the arm that sample runs and nothing more.  The N is deliberately NOT scaled by
+    anything ambient — a recorded ceiling is ``(feature, model, N, value)`` and normalised
+    entropy is biased upward at small N, so an N that drifted with an environment variable
+    would silently make every recorded threshold incomparable."""
+
+    arms: list[eval_cohort.Arm]
+    per_phrasing: int
+
+    @property
+    def spoken(self) -> list[str]:
+        """The input each sample runs, by sample index."""
+        return [arm.text for arm in self.arms for _ in range(self.per_phrasing)]
+
+    @property
+    def driven(self) -> int:
+        return len(self.arms) * self.per_phrasing
+
+    def index_of(self, sample_index: int) -> int:
+        """Which ARM this sample runs, by index — the hard link a claim's world is read on."""
+        return sample_index // self.per_phrasing
+
+    def at(self, sample_index: int) -> eval_cohort.Arm:
+        """The arm this sample runs — its input and the ground it is answered against."""
+        return self.arms[self.index_of(sample_index)]
+
+    def label(self, sample_index: int) -> str:
+        return self.at(sample_index).label
+
+
+def _arms(inputs: Sequence[str], worlds: Sequence[World], per_phrasing: int, samples: int) -> _Arms:
+    """The arms a case drives, each sampled ``per_phrasing`` times.
+
+    ``worlds`` is either one world for every arm (the chat and micro-context shape, where the
+    ground is a property of the CASE) or one per arm (a collector, where the ground moves with
+    the inputs).  An empty ``inputs`` means the case is not ported and takes its fixture's old
+    path, so the arms come back empty."""
+    each = per_phrasing or samples
+    ground = (
+        list(worlds) if len(worlds) > 1 else [(worlds[0] if worlds else _NO_WORLD) for _ in inputs]
+    )
+    return _Arms(
+        arms=[
+            eval_cohort.Arm(
+                label=_phrasing_label(list(inputs), index * each, each),
+                text=text,
+                world=ground[index],
+            )
+            for index, text in enumerate(inputs)
+        ],
+        per_phrasing=each,
+    )
+
+
 # The world a case declares nothing about — a cohort still needs one for its claims to read, and
 # this one matches nothing, so a claim made against it is vacuous rather than wrong.
 _NO_WORLD = World(name="unspecified", pages=(), keeps=(), excludes=())
@@ -2499,6 +2621,7 @@ class _PendingCase:
     module: str
     min_pass_rate: float | None
     gate_pathology_excluded: bool
+    behaviour: str = ""
     intended: int = 0
     cohort: Cohort | None = None
     results: list[SampleResult] = field(default_factory=list)
@@ -2530,7 +2653,9 @@ class _PendingCase:
         # ASSEMBLER needs to know which sample to expand in the posted comment.  Deriving them
         # twice would let the map and the expanded sample disagree about which one is modal.
         standings = eval_cohort.standings(observations, self.driven_cohort.features)
-        _record_case_report(self.driven_cohort, observations, standings, self.perf, self.driven)
+        _record_case_report(
+            self.driven_cohort, observations, standings, self.perf, self.driven, self.behaviour
+        )
         _finish_case(
             self.case_id,
             self.family,
@@ -2583,6 +2708,24 @@ def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
     Only the representative: an outlier is communicated by its DIVERGENCE, which is a few rows,
     and a typical sample by the fact that it agreed.  Every sample stays whole in the artifact."""
     return [index + 1 for index, s in enumerate(standings) if s.worth_opening]
+
+
+# The one sentence a ported case states about itself, in the fixed form: "In <the locus>, when
+# <X>, Penny <does Y>."  REQUIRED on the cohort path and nowhere else — that path is what every
+# ported case runs on, so a case reaching it without a sentence is one whose contract nobody
+# wrote down, and the report would render a rate with nothing saying what was being asked.  The
+# inline path predates the convention and carries ~40 cases that are their own tickets' to port.
+_NO_BEHAVIOUR = (
+    '{case_id}: a ported case must state the behaviour it checks — behaviour="In <the locus>, '
+    'when <X>, Penny <does Y>.", naming the shipped agent as the locus'
+)
+
+
+def _stated_behaviour(case_id: str, behaviour: str) -> str:
+    """The case's own sentence, or a refusal naming what is missing."""
+    if not behaviour.strip():
+        raise ValueError(_NO_BEHAVIOUR.format(case_id=case_id))
+    return behaviour.strip()
 
 
 def _finish_case(
@@ -2681,6 +2824,7 @@ def _record_case_report(
     standings: Sequence[eval_cohort.SampleStanding],
     perf: _Perf,
     driven: int,
+    behaviour: str,
 ) -> None:
     """Assemble and write the case's document — its three sections, then everything its samples
     SHARE: the one ask in its several wordings, the one world, the system prompts, and the map
@@ -2693,6 +2837,7 @@ def _record_case_report(
     sections = report.CaseSections(
         case_id=cohort.case_id,
         model=cohort.model,
+        behaviour=behaviour,
         assertions=eval_assertions.assertion_rows(cohort.claims),
         variance=variance,
         cost=eval_cohort.per_sample_cost(
@@ -2711,9 +2856,7 @@ def _record_case_report(
         sections,
         report.render_prompt_variants(report.prompt_variants(prompts, total=len(samples))),
         report.render_case_tail(
-            phrasings=cohort.phrasings,
-            world=cohort.world.render(),
-            world_facts=report.WorldFacts(*cohort.world.counts),
+            arms=cohort.arms,
             outliers=list(enumerate(standings, start=1)),
             everywhere_distinct=eval_cohort.everywhere_distinct(samples, cohort.features),
         ),
@@ -2878,6 +3021,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
     async def _run(
         *,
         case_id: str,
+        behaviour: str = "",
         message: str | None = None,
         messages: Sequence[str] | None = None,
         score: Scorer | None = None,
@@ -2906,15 +3050,16 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         set, which is what the variance statistics want and what a per-sample callback cannot
         see.  A case with no ``ask`` takes the ``score`` path unchanged."""
         eval_artifacts.begin_case(case_id)
-        phrasings = [ask, *also_phrased] if ask is not None else []
-        per_phrasing = samples_per_phrasing or samples
-        # A cohort's N is the sum of its phrasings' own counts.  Deliberately NOT scaled by
-        # anything ambient: a recorded ceiling is `(feature, model, N, value)` and normalised
-        # entropy is biased upward at small N, so an N that drifted with an environment
-        # variable would silently make every recorded threshold incomparable.
-        spoken = [phrase for phrase in phrasings for _ in range(per_phrasing)]
+        # Chat's convenience over the general form: one world, K wordings of one ask.
+        arms = _arms(
+            [ask, *also_phrased] if ask is not None else [],
+            [world] if world is not None else [],
+            samples_per_phrasing,
+            samples,
+        )
+        spoken = arms.spoken
         turns = [] if spoken else _conversation_turns(message, messages)
-        driven = len(spoken) if spoken else samples
+        driven = arms.driven if spoken else samples
         pages = list(world.pages) if world is not None else browse
 
         pending = (
@@ -2924,6 +3069,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                     case_id=case_id,
                     family=family,
                     module=request.module.__name__,
+                    behaviour=_stated_behaviour(case_id, behaviour),
                     min_pass_rate=min_pass_rate,
                     gate_pathology_excluded=gate_pathology_excluded,
                 ),
@@ -2935,10 +3081,11 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         def _observe(
             sample_index: int,
         ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
-            phrasing = _phrasing_label(phrasings, sample_index, per_phrasing)
+            phrasing = arms.label(sample_index)
+            arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
             return lambda db, reply, before: _observe_sample(
-                db, name=name, phrasing=phrasing, reply=reply, before=before
+                db, name=name, phrasing=phrasing, arm=arm, reply=reply, before=before
             )
 
         async def _drive(
@@ -2984,16 +3131,12 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 driven,
                 samples,
             )
-            return Cohort(case_id=case_id, model=model, world=_NO_WORLD, samples=[])
+            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = Cohort(
             case_id=case_id,
             model=model or _reporting_model(),
-            world=world if world is not None else _NO_WORLD,
             samples=[r.observation for r in results if r.observation is not None],
-            phrasings=[
-                (_phrasing_label(phrasings, index * per_phrasing, per_phrasing), text)
-                for index, text in enumerate(phrasings)
-            ],
+            arms=arms.arms,
         )
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
@@ -3243,7 +3386,16 @@ def _decoded_arguments(raw: object) -> dict:
 # only — every claim about a multi-cycle watch is per-cycle, so binary all-or-nothing would
 # collapse "it fetched but never spoke" and "it did nothing at all" into one number.
 CyclesScorer = Callable[[Database, "list[CycleObservation]"], "list[Check]"]
-CollectorCyclesEval = Callable[..., Awaitable[None]]
+CollectorCyclesEval = Callable[..., Awaitable["Cohort"]]
+
+
+def _require_seed(seed: Seeder | None) -> Seeder:
+    """The unported path's seeder, which it must supply.  Stated rather than defaulted: a
+    cycle case with no world laid down would drive against an empty database and every claim
+    would fail for the most boring reason there is."""
+    if seed is None:
+        raise ValueError("collector_cycles_eval needs `seed` when it is not driven with `arms`")
+    return seed
 
 
 class _DrivenCycles(NamedTuple):
@@ -3314,10 +3466,130 @@ def _cycles_ran_check(driven: _DrivenCycles) -> Check:
     )
 
 
+class CycleArm(NamedTuple):
+    """ONE arm of a collector cohort: a wording of the job's instruction, and the page that
+    answers it.
+
+    A collector has no user turn, so its natural language is the ``extract`` instruction its
+    rendered program carries — written by the ``SkillSubstitution`` on that path and printed by
+    ``render_skill``, so a wording reaches the model through the shipped instantiation seam
+    rather than through a hand-authored program — plus the prose of the page that answers it.
+    Those two are what vary across the arms.
+
+    The FACTS do not: one url, one set of bound values, one reading, and a byte-identical datum
+    line on every page.  Constant facts are what let a claim name a value — the store holds the
+    price the page carries — instead of retreating to a shape that cannot tell a right reading
+    from a plausible one.
+
+    ONE register, because a case drives ONE cycle.  Which behaviour a case measures is set by
+    the ENTRY CONDITION its ``seed`` lays down — an empty collection or one already holding a
+    reading — not by scripting several cycles inside a single test.
+
+    ``text`` is what makes this arm this arm, rendered verbatim in the report so a reader who
+    sees "phrasing 3 diverged" can see which wording that was.  ``seed`` lays THIS arm's job
+    and entry condition down, ``pages`` is the register its cycle reads, and ``world`` is those
+    same pages — carried so a claim is answered against the ground its own sample actually
+    read, since the prose differs per arm."""
+
+    text: str
+    seed: Seeder
+    pages: list[CannedPage]
+    world: World
+
+
+# One cycle's terminal SHAPE, as the enactment contract reads it.  A vocabulary of three words
+# rather than a record per cycle: the whole watch contract is "what did each cycle do", so the
+# cycles compose into one ordered script that a claim reads and a variance feature measures —
+# which is why a multi-cycle sample needs no per-cycle field on the observation.
+CYCLE_WROTE = "wrote"
+CYCLE_QUIET = "quiet"
+CYCLE_TOLD = "told"
+CYCLE_DEAD = "no run"
+
+
+def _cycle_shape(cycle: CycleObservation) -> str:
+    """What ONE cycle did: whether it moved the collection, and whether it spoke.
+
+    Read off persisted state — the collection's entries as the cycle found and left them, and
+    the SEND QUEUE — never off a harness flag.  A cycle that produced no run of its own is
+    named as such rather than reading as a silent success."""
+    if cycle.outcome is None and not cycle.calls:
+        return CYCLE_DEAD
+    moved = CYCLE_WROTE if cycle.changed else CYCLE_QUIET
+    return f"{moved}+{CYCLE_TOLD}" if cycle.sent else moved
+
+
+def cycle_script(cycles: Sequence[CycleObservation]) -> str:
+    """The ordered shapes of a sample's cycles — ``wrote, quiet, wrote+told``.
+
+    The whole watch contract in one value: a claim reads a position of it and the variance
+    table measures the script entire, so a cohort where one arm stopped notifying shows up as
+    a divergence rather than as a number nobody looks at."""
+    return ", ".join(_cycle_shape(cycle) for cycle in cycles)
+
+
+def _cycles_exclusion(db: Database, script: str) -> str | None:
+    """Why a cycle-driven sample cannot be counted, or ``None`` when it can.
+
+    A cycle the dispatcher REFUSED never ran against the world the case built, so every claim
+    would be answered on a world the model never saw — the failure-cause partition would then
+    tag it behavioural, which is the one thing it is not."""
+    if not measured_turn_ran(db):
+        return NO_MEASURED_TURN
+    if CYCLE_DEAD in script:
+        return NO_CYCLE
+    return None
+
+
+def _observe_cycles(
+    db: Database,
+    driven: _DrivenCycles,
+    *,
+    name: str,
+    phrasing: str,
+    arm: int,
+) -> eval_cohort.SampleObservation:
+    """Read what ONE cycle-driven sample left behind — its own observer, not the chat one.
+
+    The tool sequence is read from the CYCLES' own calls rather than through
+    ``chat_run_tool_sequences``, whose agent filter would return an empty list here on every
+    sample (#2017).  The notifications come off the SEND QUEUE, because a cycle enqueues and
+    the drainer is a separate schedule — a pending-only read of outgoing messages reports a
+    delivered notification as silence — and they are carried as a LIST as well as joined text,
+    since "told once" and "told twice" are different findings a blob cannot tell apart.
+
+    ``held``, ``run_outcome`` and ``run_reason`` come off the LAST cycle, which for an
+    arm-driven case is its only one.  They are what a collector has instead of a machine walk:
+    the store's own end state, and the record fields the run closed with."""
+    script = cycle_script(driven.observed)
+    exclusion = _cycles_exclusion(db, script)
+    if exclusion is not None:
+        return eval_cohort.SampleObservation(
+            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
+        )
+    sent = [message for cycle in driven.observed for message in cycle.sent]
+    last = driven.observed[-1] if driven.observed else None
+    return eval_cohort.SampleObservation(
+        name=name,
+        phrasing=phrasing,
+        arm=arm,
+        landed=_cycle_shape(last) if last is not None else CYCLE_DEAD,
+        walk=script,
+        entries=_stored_entries(db),
+        tool_sequence=[call.tool for cycle in driven.observed for call in cycle.calls],
+        reply="\n".join(sent),
+        given=given_to_the_model(db),
+        held=dict(last.after) if last is not None else {},
+        run_outcome=last.outcome if last is not None else None,
+        run_reason=last.reason if last is not None else None,
+        notifications=list(sent),
+    )
+
+
 @pytest.fixture
 def collector_cycles_eval(
     make_config: Callable[..., Config], tmp_path, request
-) -> CollectorCyclesEval:
+) -> Iterator[CollectorCyclesEval]:
     """Drive SEVERAL real collector cycles (``run_for``) N times for one collection, each
     cycle against its own browse register, and score them together (#1905).
 
@@ -3330,6 +3602,8 @@ def collector_cycles_eval(
     run first, then embeddings backfill, then ``prepare`` gets the constructed Penny — a
     loud world probe, so a drifted seed fails in the seed rather than after GPU time."""
 
+    _cohorts: dict[str, _PendingCase] = {}
+
     async def _sample(
         penny: Penny,
         *,
@@ -3338,9 +3612,10 @@ def collector_cycles_eval(
         collection: str,
         seed: Seeder,
         cycles: Sequence[list[CannedPage]],
-        score: CyclesScorer,
+        score: CyclesScorer | None,
         seed_skills: Sequence[SkillDraft] | None,
         prepare: Preparer | None,
+        observe: Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation] | None,
     ) -> SampleResult:
         """ONE sample against a constructed Penny: lay its world down, probe it, drive its
         cycles, score them with the ran-guard folded in, and write its report block."""
@@ -3352,11 +3627,18 @@ def collector_cycles_eval(
         if prepare is not None:
             prepare(penny)
         driven = await _drive_cycles(penny, collection, cycles)
-        result = _guarded_graded(
-            list(score(penny.db, driven.observed)), [_cycles_ran_check(driven)]
+        # A ported case is graded from its cohort's CLAIMS, made once every sample has run, so
+        # the sample scores nothing at drive time and carries only the ran-guard.
+        scored: list[Check | str] = (
+            list(score(penny.db, driven.observed)) if score is not None else []
         )
+        result = _guarded_graded(scored, [_cycles_ran_check(driven)])
         _stamp_cause(penny.db, result)
         _write_sample_report(penny.db, case_id, sample_index, result=result)
+        # Read while THIS sample's database is still open — the only moment what the cycles
+        # left behind is available at all.
+        if observe is not None:
+            result.observation = observe(penny.db, driven)
         _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
         return result
 
@@ -3364,47 +3646,107 @@ def collector_cycles_eval(
         *,
         case_id: str,
         collection: str,
-        seed: Seeder,
-        cycles: Sequence[list[CannedPage]],
-        score: CyclesScorer,
+        behaviour: str = "",
+        seed: Seeder | None = None,
+        cycles: Sequence[list[CannedPage]] = (),
+        score: CyclesScorer | None = None,
+        arms: Sequence[CycleArm] = (),
+        samples_per_phrasing: int = 0,
+        model: str = "",
         seed_skills: Sequence[SkillDraft] | None = None,
         prepare: Preparer | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = None,
         family: str | None = None,
-    ) -> None:
+    ) -> Cohort:
+        """Drive several real collector cycles N times and return the COHORT (a ported case),
+        or score each sample through ``score`` (a case not yet ported).
+
+        A PORTED case passes ``arms`` — five instances of ONE theme on one program, each
+        bringing its own bound values, its own pages and its own world.  The arms do NOT share
+        a world, which is why the world lives on the arm rather than on the cohort."""
         eval_artifacts.begin_case(case_id)
+        driving = _arms(
+            [arm.text for arm in arms],
+            [arm.world for arm in arms],
+            samples_per_phrasing,
+            samples,
+        )
+        driven_count = driving.driven if arms else samples
+
+        pending = (
+            _cohorts.setdefault(
+                case_id,
+                _PendingCase(
+                    case_id=case_id,
+                    family=family,
+                    module=request.module.__name__,
+                    behaviour=_stated_behaviour(case_id, behaviour),
+                    min_pass_rate=min_pass_rate,
+                    gate_pathology_excluded=False,
+                ),
+            )
+            if arms
+            else None
+        )
+
+        def _observer(
+            sample_index: int,
+        ) -> Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation]:
+            phrasing = driving.label(sample_index)
+            arm = driving.index_of(sample_index)
+            name = f"{case_id}-{sample_index + 1} ({phrasing})"
+            return lambda db, ran: _observe_cycles(db, ran, name=name, phrasing=phrasing, arm=arm)
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
+            arm = arms[sample_index // driving.per_phrasing] if arms else None
             return await _sample(
                 penny,
                 case_id=case_id,
                 sample_index=sample_index,
                 collection=collection,
-                seed=seed,
-                cycles=cycles,
+                seed=arm.seed if arm is not None else _require_seed(seed),
+                cycles=[arm.pages] if arm is not None else cycles,
                 score=score,
                 seed_skills=seed_skills,
                 prepare=prepare,
+                observe=_observer(sample_index) if arms else None,
             )
 
         results, perf = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+            make_config, tmp_path, case_id=case_id, samples=driven_count, drive=_drive, model=model
         )
-        eval_artifacts.record_case(
+        if not arms:
+            _finish_case(
+                case_id,
+                family,
+                request.module.__name__,
+                results,
+                perf,
+                min_pass_rate,
+                False,
+                driven_count,
+                samples,
+            )
+            return Cohort(case_id=case_id, model=model, samples=[])
+        cohort = Cohort(
             case_id=case_id,
-            family=family,
-            module=request.module.__name__,
-            results=results,
-            perf=perf,
-            min_pass_rate=min_pass_rate,
+            model=model or _reporting_model(),
+            samples=[r.observation for r in results if r.observation is not None],
+            arms=driving.arms,
         )
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
+        assert pending is not None
+        pending.add(cohort, results, perf, intended=driven_count)
+        return cohort
 
-    return _run
+    yield _run
+    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
+    # assembled here, once the body has had its say.
+    for pending in _cohorts.values():
+        pending.finish()
+    _cohorts.clear()
 
 
 class _InjectingClient(LlmClient):
@@ -5248,7 +5590,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Binder
 
 # ── Browse EXTRACTION: what a page half-carries (#1942) ───────────────────────
 
-ExtractorEval = Callable[..., Awaitable[None]]
+ExtractorEval = Callable[..., Awaitable["Cohort"]]
 
 
 class FieldExpectation(NamedTuple):
@@ -5350,8 +5692,84 @@ def _score_extraction(
     ]
 
 
+# The fields of a browse extraction's structured answer, named once.  A case asserts them
+# and measures them by these names, so the two halves of #2017's framing — deterministic and
+# variance — read the same value rather than two spellings of it.
+EXTRACT_OUTCOME = "outcome"
+EXTRACT_VALUE = "value"
+EXTRACT_REASON = "reason"
+
+# The outcomes that mean the draw never produced a usable answer at all.  A sample landing on
+# one of these is EXCLUDED rather than scored: it is the micro-context twin of a chat turn
+# that produced no reply, and grading it would report a failed contract for a contract nobody
+# exercised.
+_EXTRACT_FAILURES = frozenset(
+    {MicroExtractOutcome.EXTRACTION_FAILED, MicroExtractOutcome.POISON_REROLL_FAILED}
+)
+
+
+def _extraction_output(result: MicroContextResult) -> list[eval_cohort.OutputField]:
+    """One extraction draw's STRUCTURED ANSWER, field by field.
+
+    All three fields, always — including the empty one.  Which of ``value`` and ``reason`` is
+    populated is decided by the outcome, so carrying only the filled one would make the
+    cohort's field comparison read a different set of axes per sample and quietly turn "the
+    draw answered differently" into "the draw answered a different question"."""
+    return [
+        eval_cohort.OutputField(name=EXTRACT_OUTCOME, value=result.outcome.value),
+        eval_cohort.OutputField(name=EXTRACT_VALUE, value=result.value),
+        eval_cohort.OutputField(name=EXTRACT_REASON, value=result.reason),
+    ]
+
+
+def _observe_extraction(
+    db: Database,
+    result: MicroContextResult | None,
+    *,
+    name: str,
+    phrasing: str,
+    arm: int,
+    given: str,
+) -> eval_cohort.SampleObservation:
+    """Read what ONE extraction sample answered — its own observer, not the chat one.
+
+    A single-call context leaves no machine walk, no registry row, no collection entry and no
+    outgoing message, so every read ``_observe_sample`` makes would come back empty here and
+    the row would be structurally fine and substantively hollow.  What there IS to read is the
+    draw's typed result, and it is read directly rather than fished back out of the ledger.
+
+    ``given`` is the document plus the instruction — exactly what was handed to the draw, from
+    the call site rather than reconstructed — so a provenance claim compares the answer against
+    the real input."""
+    answer = "" if result is None or result.outcome in _EXTRACT_FAILURES else result.outcome.value
+    exclusion = _draw_exclusion(db, answer)
+    if result is None or exclusion is not None:
+        return eval_cohort.SampleObservation(
+            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
+        )
+    return eval_cohort.SampleObservation(
+        name=name,
+        phrasing=phrasing,
+        arm=arm,
+        given=given,
+        output=_extraction_output(result),
+    )
+
+
+def _extraction_world(url: str, page: str) -> World:
+    """The one page an extraction case is answered against, as a :class:`World`.
+
+    Built from the case's own ``url``/``page`` rather than declared separately, so there is one
+    source of truth for what the draw read and the report's world fold renders exactly the
+    document the draw was handed.  ``keeps``/``excludes`` are empty: those token sets exist for
+    claims about what a ROUND chose to store, and this shape stores nothing."""
+    return World(name=url, pages=(CannedPage(match=url, text=page),), keeps=(), excludes=())
+
+
 @pytest.fixture
-def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> ExtractorEval:
+def extractor_eval(
+    make_config: Callable[..., Config], tmp_path, request
+) -> Iterator[ExtractorEval]:
     """Drive the browse EXTRACTION micro-context (#1588/#1942) N times, and NOTHING else.
 
     The extraction's whole input is one fetched page's section and one instruction, so
@@ -5365,60 +5783,132 @@ def extractor_eval(make_config: Callable[..., Config], tmp_path, request) -> Ext
     INSTRUCTION are authored, never the prompt.
     """
 
+    _cohorts: dict[str, _PendingCase] = {}
+
     async def _run(
         *,
         case_id: str,
         url: str,
         page: str,
         instruction: str,
-        expectations: Sequence[FieldExpectation],
+        behaviour: str = "",
+        expectations: Sequence[FieldExpectation] = (),
+        also_instructed: Sequence[str] = (),
+        samples_per_phrasing: int = 0,
+        model: str = "",
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
         family: str | None = None,
-    ) -> None:
+    ) -> Cohort:
+        """Drive one page + instruction through the extraction draw and return its COHORT
+        (a ported case), or score each sample through ``expectations`` (a case not yet ported).
+
+        A PORTED case passes ``also_instructed`` — the other wordings of the SAME request —
+        and gets a :class:`Cohort` back to assert against.  The arm here is the ``extract``
+        instruction, which is PENNY's own text: production writes it at the browse call site,
+        so what the cohort measures is whether the answer survives how the calling draw
+        happened to word the request.  The page is FIXED across the arms; it is the world.
+        """
         eval_artifacts.begin_case(case_id)
+        # One page, K wordings of the instruction — the same shape chat has, and the world is
+        # a property of the CASE rather than of the arm.
+        arms = _arms(
+            [instruction, *also_instructed] if also_instructed else [],
+            [_extraction_world(url, page)],
+            samples_per_phrasing,
+            samples,
+        )
+        spoken = arms.spoken
+        driven = arms.driven if spoken else samples
         content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
+
+        pending = (
+            _cohorts.setdefault(
+                case_id,
+                _PendingCase(
+                    case_id=case_id,
+                    family=family,
+                    module=request.module.__name__,
+                    behaviour=_stated_behaviour(case_id, behaviour),
+                    min_pass_rate=min_pass_rate,
+                    gate_pathology_excluded=False,
+                ),
+            )
+            if spoken
+            else None
+        )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
+            asked = spoken[sample_index] if spoken else instruction
             micro = MicroContext(penny.model_client)
+            extracted: MicroContextResult | None = None
             try:
                 extracted = await asyncio.wait_for(
-                    micro.extract(content, instruction, run_target=penny.chat_agent.name),
+                    micro.extract(content, asked, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                scored = _score_extraction(extracted, expectations)
+                # A ported case is graded from its cohort's CLAIMS, made after every sample has
+                # run, so the sample itself scores nothing at drive time.
+                scored = [] if spoken else _score_extraction(extracted, expectations)
                 result = _guarded_graded(list(scored), [])
                 result.fragile = result.passed and _extract_rerolled(penny.db)
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no extraction draw within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
+            if spoken:
+                phrasing = arms.label(sample_index)
+                result.observation = _observe_extraction(
+                    penny.db,
+                    extracted,
+                    name=f"{case_id}-{sample_index + 1} ({phrasing})",
+                    phrasing=phrasing,
+                    arm=arms.index_of(sample_index),
+                    given=f"{content}\n{asked}",
+                )
             _write_classifier_report(
                 penny.db,
                 case_id,
                 sample_index,
                 result=result,
-                phrasing=instruction,
+                phrasing=asked,
                 agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
             )
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
         results, perf = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
+            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
-        eval_artifacts.record_case(
+        if not spoken:
+            _finish_case(
+                case_id,
+                family,
+                request.module.__name__,
+                results,
+                perf,
+                min_pass_rate,
+                False,
+                driven,
+                samples,
+            )
+            return Cohort(case_id=case_id, model=model, samples=[])
+        cohort = Cohort(
             case_id=case_id,
-            family=family,
-            module=request.module.__name__,
-            results=results,
-            perf=perf,
-            min_pass_rate=min_pass_rate,
+            model=model or _reporting_model(),
+            samples=[r.observation for r in results if r.observation is not None],
+            arms=arms.arms,
         )
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
+        assert pending is not None
+        pending.add(cohort, results, perf, intended=driven)
+        return cohort
 
-    return _run
+    yield _run
+    # The case's claims are made in the TEST BODY, after the drive returns — so the report is
+    # assembled here, once the body has had its say.
+    for pending in _cohorts.values():
+        pending.finish()
+    _cohorts.clear()

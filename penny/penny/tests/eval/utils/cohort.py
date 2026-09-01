@@ -39,8 +39,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
+
+from penny.tests.eval.utils.worlds import World
 
 # How far above the observed spread a proposed ceiling sits.  Measured: subsampling real
 # 32-sample cohorts down to 15 puts the sampling noise on normalised entropy at ~±0.11, so a
@@ -84,6 +86,69 @@ class StoredEntry(BaseModel):
         return " ".join(part for part in (self.key, self.content) if part)
 
 
+class Arm(BaseModel):
+    """ONE arm of a cohort: the input this arm ran, and the world it ran against.
+
+    An arm is the general unit, and "one world in five wordings" is its special case — five
+    arms whose ``world`` happens to be the same object.  Chat is that case; a collector is
+    not, because its arms vary the job's own inputs (the bound values and the pages that
+    answer them together), so each carries its own world by construction.
+
+    Carrying the world HERE rather than on the cohort is what makes the two expressible by one
+    seam.  A per-cohort world cannot be narrowed to an arm afterwards, so a cohort holding one
+    would force every non-chat shape into a special case at the point a claim is answered —
+    which is the layer that must stay shape-agnostic.
+
+    ``label`` is the anchor: it names the arm in the report's rows and inside every sample's
+    own name, so a reader who sees "phrasing 3 diverged" has one thing to look up.  ``text``
+    is what that arm actually said, verbatim — a label with no text beside it is a dead
+    anchor, unreadable exactly when a reader needs it."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    label: str
+    text: str
+    world: World
+
+
+def distinct_worlds(arms: Sequence[Arm]) -> list[World]:
+    """The distinct worlds a set of arms ran against, in arm order.
+
+    ONE entry is the chat and micro-context shape — every arm answered against the same
+    ground, which the report states once.  Several is a cohort whose arms each brought their
+    own, which is what varying a job's inputs looks like.  Defined once because three readers
+    ask it — the cohort, the world fold, and the fold's own counts — and three spellings of
+    "are these the same world" is three things to disagree."""
+    seen: list[World] = []
+    for arm in arms:
+        if arm.world not in seen:
+            seen.append(arm.world)
+    return seen
+
+
+# What ``SampleObservation.field`` answers for a field the draw did not return.  A rendered
+# word rather than an empty string, because it travels into the variance table as a value and
+# a blank cell there reads as a rendering bug rather than as an absence.
+FIELD_UNSET = "unset"
+
+
+class OutputField(BaseModel):
+    """One field of the STRUCTURED OUTPUT a draw returned, as a string.
+
+    A single-call context (the classifier, the framer, the labeller, the binder, the browse
+    extractor) answers with a typed result and touches no store — so what a case asserts and
+    what it measures are the same thing: this result's fields.  They are carried as strings
+    for the reason every :class:`Feature` value is a string — what is being compared is
+    DISTINCTNESS, and two samples agree when they produced the same value.
+
+    Deliberately NOT folded into :class:`StoredEntry`: three claims already read ``entries``
+    as "an entry in one of Penny's collections", and a draw's fields arriving in that list
+    would silently put them inside every one of those answers."""
+
+    name: str
+    value: str
+
+
 class SampleObservation(BaseModel):
     """Everything one sample left behind, read while its database was still live.
 
@@ -97,6 +162,13 @@ class SampleObservation(BaseModel):
 
     name: str
     phrasing: str
+    # WHICH arm produced this sample, by index into the cohort's own arm list.  A hard link,
+    # because the world a claim reads is the arm's: matching on the rendered LABEL instead
+    # meant an observer that stamped a label no arm carried answered against an empty world,
+    # and the claims that actually read one (``_each_source_kept``, ``_nothing_excluded``)
+    # would then pass VACUOUSLY rather than fail.  A vacuous pass is the quieter failure and
+    # the harder one to notice, so the link is an index and a mismatch raises.
+    arm: int = -1
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
@@ -114,11 +186,46 @@ class SampleObservation(BaseModel):
     # Collections this round created that carry a schedule or a notify flag.  Learning must not
     # INSTANTIATE, so this is empty on a correct round.
     scheduled: list[str] = Field(default_factory=list)
+    # The fields of the structured output this sample's draw returned — empty for a sample
+    # driven through the agent loop, which leaves its trail in the stores instead.
+    output: list[OutputField] = Field(default_factory=list)
+    # ── What a COLLECTOR cycle left, read where a chat turn has no equivalent ──
+    #
+    # ``entries`` above is what THIS SAMPLE WROTE, which is the right reading for "did she
+    # invent that" and the wrong one for "what does the collection hold": a cycle that
+    # correctly wrote nothing leaves it empty while the store still holds the value it was
+    # seeded with.  Both questions are real and they are not the same question, so the store's
+    # own end state is carried beside the sample's writes rather than derived from them.
+    held: dict[str, str] = Field(default_factory=dict)
+    # The run record the cycle closed with — RECORD FIELDS, read literally.  ``run_outcome``
+    # is the cycle's own determination (``worked`` changed something, ``no_work`` closed
+    # clean and changed nothing); ``run_reason`` carries a write-gate STOP by name.  Neither
+    # is a route: nothing here reads a tool name or an ordering.
+    run_outcome: str | None = None
+    run_reason: str | None = None
+    # What reached the SEND QUEUE, one string per message.  Counted rather than joined,
+    # because "told once" and "told twice" are different findings and a joined blob cannot
+    # tell them apart.  ``reply`` above is the same messages as one text, for reply spread.
+    notifications: list[str] = Field(default_factory=list)
 
     @property
     def stored_text(self) -> str:
         """Every entry this sample wrote, key and content together."""
         return " ".join(entry.text for entry in self.entries)
+
+    def field(self, name: str) -> str:
+        """This sample's value for one field of its draw's structured output.
+
+        :data:`FIELD_UNSET` where the draw returned no such field, which is a REAL reading and
+        not a missing one: a draw that answered with the wrong shape genuinely has nothing
+        there, and a claim about that field is false of the sample rather than unasked."""
+        return next((one.value for one in self.output if one.name == name), FIELD_UNSET)
+
+    @property
+    def output_text(self) -> str:
+        """Every field the draw returned, name and value together — what a provenance claim
+        over a structured answer reads."""
+        return " ".join(f"{one.name} {one.value}" for one in self.output)
 
 
 # ── What a case claims ───────────────────────────────────────────────────────
@@ -187,11 +294,23 @@ class Feature:
     name: str
     read: Callable[[SampleObservation], str]
     consequence: Consequence = Consequence.CONSEQUENTIAL
+    # The reading that means this feature saw NOTHING — what ``read`` returns for a sample that
+    # produced no value at all.  Declared so :func:`feature_variance` can tell "every sample
+    # agreed" from "this feature never read anything", which are the same 0.000 and opposite
+    # findings.  ``None`` means the feature declares no such reading of its own; the EMPTY
+    # STRING is a legitimate declaration, not the absence of one — a distinction the earlier
+    # ``str = ""`` default could not express, which is how a field populated only on one
+    # outcome pooled to a serene 0.000 and proposed a gate on it.
+    absent: str | None = None
 
 
-TOOL_SEQUENCE = Feature("tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call")
+TOOL_SEQUENCE = Feature(
+    "tool sequence", lambda o: " → ".join(o.tool_sequence) or "no call", absent="no call"
+)
 ROUTINE_SHAPE = Feature(
-    "routine shape", lambda o: " | ".join(r.shape for r in o.routines) or "no routine"
+    "routine shape",
+    lambda o: " | ".join(r.shape for r in o.routines) or "no routine",
+    absent="no routine",
 )
 # What the framer called the routine.  Measured DIRECTLY rather than through the container it
 # produces: a container name is `derive_collection_name(skill.name, [parameter values])`, and on
@@ -209,13 +328,27 @@ ROUTINE_NAME = Feature(
     "routine name",
     lambda o: ", ".join(sorted({r.name for r in o.routines})) or "none",
     consequence=Consequence.COSMETIC,
+    absent="none",
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
-TRANSITIONS = Feature("transitions", lambda o: o.walk)
+TRANSITIONS = Feature("transitions", lambda o: o.walk, absent="no move")
 
 # Reply spread is pairwise rather than per-sample, so it is a marker the pooler recognises
 # rather than a value any one sample carries.
 REPLY_SPREAD = Feature("reply text", lambda o: o.reply, consequence=Consequence.COSMETIC)
+
+
+def output_field(name: str, *, consequence: Consequence = Consequence.CONSEQUENTIAL) -> Feature:
+    """One field of a draw's STRUCTURED OUTPUT, as a measured axis.
+
+    A single-call context returns a typed result rather than leaving a trail through the
+    stores, so its variance axes are simply its own fields: the same values the case asserts,
+    compared across the cohort.  No new concept — this is :class:`Feature` reading
+    ``SampleObservation.output`` instead of a chat-shaped attribute.
+
+    ``absent`` is :data:`FIELD_UNSET`, so a field the draw never returned reads as blind
+    rather than as fifteen samples agreeing."""
+    return Feature(name, lambda o: o.field(name), consequence=consequence, absent=FIELD_UNSET)
 
 
 class ExcludedSample(BaseModel):
@@ -255,6 +388,14 @@ class VarianceFeature(BaseModel):
     modal: int
     entropy: float
     phrasings: list[PhrasingRow] = Field(default_factory=list)
+    # Every sample read this feature's ABSENT value, so it saw nothing at all.  Carried
+    # separately from the entropy because the two are the same 0.000 and opposite findings:
+    # total agreement is the best result a feature can report, and reading nothing on every
+    # sample is a feature that CANNOT report an outlier — which is worse than not measuring
+    # at all, since the table shows a number either way.  What this catches concretely: a
+    # non-chat fixture whose tool-sequence reader is filtered to the chat agent's rows comes
+    # back empty on every sample and pools to a serene 0.000.
+    blind: bool = False
 
     @property
     def modal_share(self) -> float:
@@ -294,6 +435,18 @@ class TextSpread(BaseModel):
     cosine_mean: float
     cosine_min: float
     containment_mean: float
+    # How many of those pairs the COSINE half could actually be computed on.  Carried
+    # separately because a reply with no embedding contributes to containment and not to
+    # cosine, and ``_mean([])`` is 0.000 — which reads as "every pair maximally dissimilar"
+    # when the truth is "no pair was measurable".  A collector's notification is the standing
+    # case: a cycle ENQUEUES and the drainer is a separate schedule, so its text is usually
+    # absent from the outgoing messages the embeddings are read off (#2017).
+    cosine_pairs: int = 0
+
+    @property
+    def cosine_measurable(self) -> bool:
+        """Whether the cosine half is a reading at all."""
+        return self.cosine_pairs > 0
 
 
 class CohortVariance(BaseModel):
@@ -437,7 +590,27 @@ def feature_variance(feature: Feature, samples: Sequence[SampleObservation]) -> 
         modal=max(counts.values()) if counts else 0,
         entropy=normalised_entropy(values),
         phrasings=_phrasing_rows(feature, samples),
+        blind=_is_blind(feature, values),
     )
+
+
+def _is_blind(feature: Feature, values: Sequence[str]) -> bool:
+    """Whether this feature read NOTHING on every sample it was pooled over.
+
+    Two ways a feature can have read nothing, and both have to hold for a feature nobody has
+    written yet:
+
+    * **No value at all.**  The empty string is the one "nothing" every feature shares, whatever
+      it calls its own — so an all-empty pooling is blind by construction and needs no
+      declaration.  This is what a structured field populated only on one outcome does on a run
+      where that outcome never happens, and it goes blind precisely on the runs that look best.
+    * **The feature's own declared absent reading** — ``no call``, ``no routine``, ``unset``.
+      Compared against ``None`` rather than falsiness, so a feature may legitimately declare the
+      empty string; a feature declaring nothing is never blind by this route."""
+    if not values:
+        return False
+    seen = set(values)
+    return seen == {""} or (feature.absent is not None and seen == {feature.absent})
 
 
 def text_spread(samples: Sequence[SampleObservation]) -> TextSpread | None:
@@ -461,6 +634,7 @@ def text_spread(samples: Sequence[SampleObservation]) -> TextSpread | None:
         cosine_mean=_mean(cosines),
         cosine_min=min(cosines) if cosines else NO_SPREAD,
         containment_mean=_mean(containments),
+        cosine_pairs=len(cosines),
     )
 
 
@@ -497,8 +671,12 @@ def proposed_ceiling(
     feature is already too spread for one to mean anything.
 
     Proposed, never locked: a near-ceiling feature is a defect to fix first, not a threshold to
-    record, and proposing one anyway prints a guard that could not fire."""
-    if feature.saturated:
+    record, and proposing one anyway prints a guard that could not fire.
+
+    A BLIND feature is refused for the same reason from the other end: it reads its absent
+    value on every sample, so its entropy is 0.000 for want of any reading at all and a
+    ceiling recorded there would lock in the blindness as the expected behaviour."""
+    if feature.saturated or feature.blind:
         return None
     return RecordedCeiling(
         feature=feature.name,
