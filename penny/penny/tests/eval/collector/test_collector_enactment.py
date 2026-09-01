@@ -296,27 +296,21 @@ class _WatchedFact(NamedTuple):
     """The ONE controllable fact the two pages differ on — what a cycle that really read
     the page has to come back holding.
 
-    Each is the MINIMAL DISTINCTIVE VALUE the extract returns — not the page line it came
-    off.  The extract is handed an instruction and answers it, so a page reading "The dawn
-    sailing: scheduled 05:20." comes back as "05:20", and an expectation written against
-    the page's own words would score a correct find a miss.  Transcribed from measured
-    draws like every other fixture here.
+    Each is the SMALLEST UNIQUE DATUM for its page, written and matched by the rule
+    ``docs/eval-case-design.md`` §2 states.  Transcribed from measured draws like every
+    other fixture here.
 
-    The two halves must be MUTUALLY EXCLUSIVE — neither a substring of the other, in the
-    bare form OR in the instruction-labelled pair a cycle may store since #1918 — because
-    the change cycle asserts one is present and the other gone.  "not scheduled" and
-    "05:20" satisfy that; "not scheduled" and "scheduled 05:20" would not have.
+    What is specific to THESE pages: the two halves are mutually exclusive against each
+    other and against everything else these pages carry — "not scheduled" and "05:20"
+    satisfy that, "not scheduled" and "scheduled 05:20" would not have — because the change
+    cycle asserts one is present and the other gone.
 
-    Both are matched as substrings of the entry the cycle wrote (key or content — where in
-    the entry a fact lands is deliberately open), so a cycle that stored the value with its
-    units or its label still reads as having stored it.
-
-    That substring shape is what makes these survive #1918 unchanged.  The browse result
-    now hands back the extracted value LABELLED with the instruction it answers ("the dawn
-    sailing: scheduled 05:20"), so a cycle copying step 1 verbatim stores the pair rather
-    than the bare value — and a check written against the VALUE reads both forms as the
-    same find, which is the reading it always had.  Neither half needed widening; stating
-    it here so the next reader knows that was checked rather than assumed."""
+    And they survive #1918 unchanged.  The browse result now hands back the extracted value
+    LABELLED with the instruction it answers ("the dawn sailing: scheduled 05:20"), so a
+    cycle copying step 1 verbatim stores the pair rather than the bare value — and a
+    substring match on the VALUE reads both forms as the same find, which is the reading it
+    always had.  Neither half needed widening; stating it here so the next reader knows that
+    was checked rather than assumed."""
 
     quiet: str
     changed: str

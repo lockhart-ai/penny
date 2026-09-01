@@ -96,6 +96,38 @@ reply-content rate moved by **3 samples** where every structural claim moved by 
 — `PROVENANCE`'s reply half is one — but read a few points of movement in its rate as the ordinary
 noise of reading prose, not as a change in behaviour.
 
+### The smallest unique datum
+
+**An assertion names the smallest token that uniquely identifies the fact, and nothing about how
+it was written.**
+
+A value reaches the store through a draw that chose how to write it — with a currency symbol or
+without, bare or carrying its label, with units or without. Those choices are model output. The
+fact is the reading.
+
+So shrink the expected value to the minimal distinctive one and match it as a substring of the
+**whole** entry:
+
+- `449`, not `$449` — a draw that stored `449` read the same page as one that stored `$449`
+- `05:20`, not `The dawn sailing: scheduled 05:20.` — the extract answers an instruction; it does
+  not echo the page line
+
+Two ways to get it wrong, and shrinking creates the second:
+
+| too large | too small |
+|---|---|
+| carries notation, units, a label, or surrounding words the draw was free to choose | no longer unique in the world, so a wrong value satisfies it |
+| **fails a correct run** for a cosmetic reason | **passes a wrong one** |
+
+The test is two questions. *Would a differently-worded correct answer fail this?* Shrink until no.
+*Could a wrong value satisfy it?* Stop before yes.
+
+**Uniqueness is a property of the world, not of the token.** A pair a case asserts on must be
+mutually exclusive — neither a substring of the other — and absent from everything else the pages
+carry. `449` / `499` qualify; `499` / `4499` would not; `scheduled 05:20` / `not scheduled` would
+not. **If the world admits no small unique datum, that is a fixture to fix, not a licence to
+assert a large one.**
+
 ### The non-negotiables
 
 | rule | why | the evidence |
@@ -105,6 +137,7 @@ noise of reading prose, not as a change in behaviour.
 | **An assertion about the store reads the WHOLE entry** — key *and* content. | A fact in the key and a blurb in the body is a perfectly good way to store it. | A prototype reported a 25/32 model failure that was entirely its own bug: it read content only. |
 | **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | 17 dead samples of 31 in one prototype run; `run_health.py` is the machinery that closes it |
 | **Never match a phrasing.** A reply check looking for a token you guessed in advance is the thing this design replaces. | Measurably both too strict and too loose in the same suite. | 31 replies that stated the recorded cadence correctly were failed; elsewhere an infra error string and a raw thinking leak both scored *passed* (#1994 §1). |
+| **Assert the smallest unique datum**, matched as a substring of the whole entry. Never bake in notation, units, or a label the draw chose. | The value is the fact; how it was written is model output — the same failure class as matching a phrasing, one level down. | A claim written as `$449` failed a draw that had correctly read the page and stored `449` (#2023). |
 
 ---
 

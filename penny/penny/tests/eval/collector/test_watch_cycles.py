@@ -134,11 +134,19 @@ _STOP_REASON = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 _ITEM = "Aurora Deck 2"
 _MATCH = "aurora-deck-2"
 
-# The two readings.  MUTUALLY EXCLUSIVE — neither is a substring of the other, in the bare form
-# or in the instruction-labelled pair a cycle may store since #1918 — because the moved case
-# asserts one is present and the other gone.  ``$499`` and ``$4499`` would not have been.
-_BASELINE_PRICE = "$499"
-_MOVED_PRICE = "$449"
+# The two readings, in their two roles.  The AMOUNT is the identity of the reading and what
+# every claim matches on; the PRICE is how a listing displays it, and it is what the pages
+# carry.  Keeping the two apart is what lets a page look like a real page while a claim answers
+# the question it is actually asking.
+#
+# Both forms are MUTUALLY EXCLUSIVE — neither amount is a substring of the other, and neither
+# price is a substring of the other, in the bare form or in the instruction-labelled pair a
+# cycle may store since #1918 — because the moved case asserts one is present and the other
+# gone.  ``499`` and ``4499`` would not have been.
+_BASELINE_AMOUNT = "499"
+_MOVED_AMOUNT = "449"
+_BASELINE_PRICE = f"${_BASELINE_AMOUNT}"
+_MOVED_PRICE = f"${_MOVED_AMOUNT}"
 
 # The watched line itself, byte-identical on all five pages, and labelled as THE current price
 # so the neighbouring items' prices further down each page cannot be read as it (round 5 of
@@ -559,28 +567,39 @@ def _one_entry(sample: SampleObservation, _world: World) -> Answer:
     return len(sample.held) == 1, f"holds {len(sample.held)} entries: {sorted(sample.held)}"
 
 
-def _holds(price: str):
-    """A claim that the collection holds one named price.
+def _holds(amount: str):
+    """A claim that the collection holds one named reading.
 
     The facts are the same on every arm, so the claim can name the value rather than asserting
     that something was stored: a shape claim cannot tell a watch that read the right price from
-    one that produced a plausible number."""
+    one that produced a plausible number.
+
+    Matched on the bare AMOUNT.  The identity of a reading is its number — that is what moves on
+    the page, and what a watch exists to track — while which currency notation a draw happened to
+    keep is not a question this claim answers.  ``449`` and ``499`` are mutually exclusive as
+    numerals, so naming the amount costs the claim nothing it was measuring."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
-        return price in _held_text(sample), f"expected {price}; the collection holds {sample.held}"
+        held = _held_text(sample)
+        return amount in held, f"expected {amount}; the collection holds {sample.held}"
 
     return answer
 
 
 def _holds_the_moved_price_only(sample: SampleObservation, _world: World) -> Answer:
-    """The collection holds the price the page moved TO, and no longer the one it moved FROM.
+    """The collection holds the reading the page moved TO, and no longer the one it moved FROM.
 
-    Both halves are needed and neither is sufficient — a watch that appended the new price
-    beside the old one holds ``$449`` while still telling the user something that is no longer
-    true, and a watch that never re-read the page holds neither."""
+    Both halves are needed and neither is sufficient — a watch that appended the new reading
+    beside the old one holds ``449`` while still telling the user something that is no longer
+    true, and a watch that never re-read the page holds neither.
+
+    Matched on the bare AMOUNTS, for the reason ``_holds`` gives: the identity of a reading is
+    its number, and the notation a draw kept is not this claim's question."""
     held = _held_text(sample)
-    ok = _MOVED_PRICE in held and _BASELINE_PRICE not in held
-    return ok, f"expected {_MOVED_PRICE} and not {_BASELINE_PRICE}; the collection holds {held!r}"
+    ok = _MOVED_AMOUNT in held and _BASELINE_AMOUNT not in held
+    return ok, (
+        f"expected {_MOVED_AMOUNT} and not {_BASELINE_AMOUNT}; the collection holds {held!r}"
+    )
 
 
 def _closed_having_worked(sample: SampleObservation, _world: World) -> Answer:
@@ -644,8 +663,8 @@ async def test_the_watch_writes_the_first_reading(
     # STORE
     cohort.claim("state: the collection holds one entry", _one_entry, SpecCategory.STORE)
     cohort.claim(
-        f"state: the entry it holds carries {_BASELINE_PRICE}",
-        _holds(_BASELINE_PRICE),
+        f"state: the entry it holds carries {_BASELINE_AMOUNT}",
+        _holds(_BASELINE_AMOUNT),
         SpecCategory.STORE,
     )
     cohort.claim(
@@ -686,8 +705,8 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
     # STORE
     cohort.claim("state: the collection still holds one entry", _one_entry, SpecCategory.STORE)
     cohort.claim(
-        f"state: the entry it holds still carries {_BASELINE_PRICE}",
-        _holds(_BASELINE_PRICE),
+        f"state: the entry it holds still carries {_BASELINE_AMOUNT}",
+        _holds(_BASELINE_AMOUNT),
         SpecCategory.STORE,
     )
     cohort.claim(
@@ -725,7 +744,7 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
 
     # STORE
     cohort.claim(
-        f"state: the collection holds {_MOVED_PRICE} and no longer {_BASELINE_PRICE}",
+        f"state: the collection holds {_MOVED_AMOUNT} and no longer {_BASELINE_AMOUNT}",
         _holds_the_moved_price_only,
         SpecCategory.STORE,
     )

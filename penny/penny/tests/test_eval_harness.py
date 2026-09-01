@@ -128,6 +128,9 @@ from penny.tests.eval.collector.test_collector_enactment import (
     seed_gate_world,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
+    _BASELINE_AMOUNT as WATCH_BASELINE_AMOUNT,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
     _BASELINE_PRICE as WATCH_BASELINE_PRICE,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
@@ -135,6 +138,9 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.collector.test_watch_cycles import (
     _DATUM as WATCH_DATUM,
+)
+from penny.tests.eval.collector.test_watch_cycles import (
+    _MOVED_AMOUNT as WATCH_MOVED_AMOUNT,
 )
 from penny.tests.eval.collector.test_watch_cycles import (
     _MOVED_DATUM as WATCH_MOVED_DATUM,
@@ -2653,6 +2659,9 @@ def test_the_watch_arms_each_bring_their_own_world_over_the_same_facts(case) -> 
     shown = WATCH_DATUM if case.shows == WATCH_BASELINE_PRICE else WATCH_MOVED_DATUM
     unshown = WATCH_MOVED_DATUM if case.shows == WATCH_BASELINE_PRICE else WATCH_DATUM
 
+    shown_amount = shown.removeprefix("Current price: $")
+    unshown_amount = unshown.removeprefix("Current price: $")
+
     assert len({arm.world.name for arm in arms}) == len(WATCH_READINGS)
     assert len({arm.world.says for arm in arms}) == len(WATCH_READINGS), (
         "the prose must differ between arms, or they are one arm sampled five times"
@@ -2661,6 +2670,17 @@ def test_the_watch_arms_each_bring_their_own_world_over_the_same_facts(case) -> 
         assert LISTING_URL in arm.world.says
         assert arm.world.says.count(shown) == 1, "one watched line, on every arm"
         assert unshown not in arm.world.says, "the page carries one reading, not both"
+        # And at the NUMERAL level, because that is what a claim matches on: the identity of a
+        # reading is its number, so a page carrying the other amount anywhere — a neighbouring
+        # item's price, a spec figure, a housekeeping note — could satisfy a bare-numeral match
+        # with a number the cycle never read.  The page must carry its own amount exactly once
+        # and the other one not at all.
+        assert arm.world.says.count(shown_amount) == 1, (
+            f"{shown_amount!r} must appear only in the watched line: {arm.world.name}"
+        )
+        assert unshown_amount not in arm.world.says, (
+            f"{unshown_amount!r} must appear nowhere on this page: {arm.world.name}"
+        )
         assert len(arm.pages) == 1, "one cycle, one register"
         assert list(arm.pages) == list(arm.world.pages), (
             "the world a claim reads must BE the page the cycle was served"
@@ -2687,8 +2707,11 @@ def test_the_three_watch_cases_differ_only_in_entry_condition_and_page() -> None
     quiet = next(case for case in WATCH_CASES if case.stored == case.shows)
     assert quiet.stored == WATCH_BASELINE_PRICE
     # Mutually exclusive readings: the moved case asserts one is present and the other gone.
+    # Held in BOTH forms — the price the page displays, and the bare amount a claim matches on.
     assert WATCH_BASELINE_PRICE not in WATCH_MOVED_PRICE
     assert WATCH_MOVED_PRICE not in WATCH_BASELINE_PRICE
+    assert WATCH_BASELINE_AMOUNT not in WATCH_MOVED_AMOUNT
+    assert WATCH_MOVED_AMOUNT not in WATCH_BASELINE_AMOUNT
 
 
 def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
