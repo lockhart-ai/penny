@@ -212,6 +212,9 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.conftest import (
+    _stated_behaviour as stated_behaviour,
+)
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
@@ -2805,6 +2808,10 @@ def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> Non
     the same fold the claims use, so the count is over the text a draw is really matched
     against."""
     assert fixture.expectations
+    assert fixture.behaviour.startswith("In "), (
+        f"{fixture.case_id}: the behaviour reads 'In <the locus>, when <X>, Penny <does Y>.'"
+    )
+    assert ", when " in fixture.behaviour and " Penny " in fixture.behaviour, fixture.behaviour
     page = spoken_form(fixture.page)
     missing = [
         one.field
@@ -2818,6 +2825,25 @@ def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> Non
         if one.anchor and page.count(spoken_form(one.anchor)) != 1
     }
     assert repeated == {}, f"an anchor must identify ONE span of its page: {repeated}"
+
+
+def test_a_ported_case_states_the_behaviour_it_checks() -> None:
+    """A case reaching the COHORT path without its sentence is refused, loudly.
+
+    The case id is a filename — it says which fixture ran, never what was being asked — so a
+    report rendering a rate above it states a number with no question attached.  Required on
+    the cohort path alone: that is what every ported case runs on, while the inline path
+    predates the convention and carries the cases whose porting is still ahead.
+
+    The refusal names the case and the form, because the sentence is the one thing whoever hit
+    this has to write."""
+    assert stated_behaviour("c", "In the chat agent, when X, Penny does Y.") == (
+        "In the chat agent, when X, Penny does Y."
+    )
+    # Whitespace is not a sentence.
+    for empty in ("", "   ", "\n"):
+        with pytest.raises(ValueError, match="must state the behaviour it checks"):
+            stated_behaviour("watch-writes-the-first-reading", empty)
 
 
 def test_score_extraction_grades_the_outcome_and_each_named_field() -> None:

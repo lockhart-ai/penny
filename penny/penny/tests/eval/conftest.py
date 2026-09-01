@@ -2621,6 +2621,7 @@ class _PendingCase:
     module: str
     min_pass_rate: float | None
     gate_pathology_excluded: bool
+    behaviour: str = ""
     intended: int = 0
     cohort: Cohort | None = None
     results: list[SampleResult] = field(default_factory=list)
@@ -2652,7 +2653,9 @@ class _PendingCase:
         # ASSEMBLER needs to know which sample to expand in the posted comment.  Deriving them
         # twice would let the map and the expanded sample disagree about which one is modal.
         standings = eval_cohort.standings(observations, self.driven_cohort.features)
-        _record_case_report(self.driven_cohort, observations, standings, self.perf, self.driven)
+        _record_case_report(
+            self.driven_cohort, observations, standings, self.perf, self.driven, self.behaviour
+        )
         _finish_case(
             self.case_id,
             self.family,
@@ -2705,6 +2708,24 @@ def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
     Only the representative: an outlier is communicated by its DIVERGENCE, which is a few rows,
     and a typical sample by the fact that it agreed.  Every sample stays whole in the artifact."""
     return [index + 1 for index, s in enumerate(standings) if s.worth_opening]
+
+
+# The one sentence a ported case states about itself, in the fixed form: "In <the locus>, when
+# <X>, Penny <does Y>."  REQUIRED on the cohort path and nowhere else — that path is what every
+# ported case runs on, so a case reaching it without a sentence is one whose contract nobody
+# wrote down, and the report would render a rate with nothing saying what was being asked.  The
+# inline path predates the convention and carries ~40 cases that are their own tickets' to port.
+_NO_BEHAVIOUR = (
+    '{case_id}: a ported case must state the behaviour it checks — behaviour="In <the locus>, '
+    'when <X>, Penny <does Y>.", naming the shipped agent as the locus'
+)
+
+
+def _stated_behaviour(case_id: str, behaviour: str) -> str:
+    """The case's own sentence, or a refusal naming what is missing."""
+    if not behaviour.strip():
+        raise ValueError(_NO_BEHAVIOUR.format(case_id=case_id))
+    return behaviour.strip()
 
 
 def _finish_case(
@@ -2803,6 +2824,7 @@ def _record_case_report(
     standings: Sequence[eval_cohort.SampleStanding],
     perf: _Perf,
     driven: int,
+    behaviour: str,
 ) -> None:
     """Assemble and write the case's document — its three sections, then everything its samples
     SHARE: the one ask in its several wordings, the one world, the system prompts, and the map
@@ -2815,6 +2837,7 @@ def _record_case_report(
     sections = report.CaseSections(
         case_id=cohort.case_id,
         model=cohort.model,
+        behaviour=behaviour,
         assertions=eval_assertions.assertion_rows(cohort.claims),
         variance=variance,
         cost=eval_cohort.per_sample_cost(
@@ -2998,6 +3021,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
     async def _run(
         *,
         case_id: str,
+        behaviour: str = "",
         message: str | None = None,
         messages: Sequence[str] | None = None,
         score: Scorer | None = None,
@@ -3045,6 +3069,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                     case_id=case_id,
                     family=family,
                     module=request.module.__name__,
+                    behaviour=_stated_behaviour(case_id, behaviour),
                     min_pass_rate=min_pass_rate,
                     gate_pathology_excluded=gate_pathology_excluded,
                 ),
@@ -3621,6 +3646,7 @@ def collector_cycles_eval(
         *,
         case_id: str,
         collection: str,
+        behaviour: str = "",
         seed: Seeder | None = None,
         cycles: Sequence[list[CannedPage]] = (),
         score: CyclesScorer | None = None,
@@ -3655,6 +3681,7 @@ def collector_cycles_eval(
                     case_id=case_id,
                     family=family,
                     module=request.module.__name__,
+                    behaviour=_stated_behaviour(case_id, behaviour),
                     min_pass_rate=min_pass_rate,
                     gate_pathology_excluded=False,
                 ),
@@ -5764,6 +5791,7 @@ def extractor_eval(
         url: str,
         page: str,
         instruction: str,
+        behaviour: str = "",
         expectations: Sequence[FieldExpectation] = (),
         also_instructed: Sequence[str] = (),
         samples_per_phrasing: int = 0,
@@ -5802,6 +5830,7 @@ def extractor_eval(
                     case_id=case_id,
                     family=family,
                     module=request.module.__name__,
+                    behaviour=_stated_behaviour(case_id, behaviour),
                     min_pass_rate=min_pass_rate,
                     gate_pathology_excluded=False,
                 ),

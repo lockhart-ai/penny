@@ -56,6 +56,14 @@ pytestmark = pytest.mark.eval
 
 _CASE_ID = "transition-elicit-to-learn"
 
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The case id is a filename; this is the contract.
+_BEHAVIOUR = (
+    "In the chat agent, when she has asked to be taught a job and the user walks her through "
+    "it once, Penny follows the steps as given, mints a routine from what she just did, and "
+    "tells the user what that routine will run — without setting it running."
+)
+
 
 @pytest.fixture
 def standing_elicit_round() -> Seeder:
@@ -76,6 +84,7 @@ async def test_elicit_to_learn_runs_the_round_and_reports_what_it_captured(
     that closes it states the steps the routine captured."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
+        behaviour=_BEHAVIOUR,
         model=model,
         seed=standing_elicit_round,
         world=AURORA_LISTING,

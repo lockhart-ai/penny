@@ -570,16 +570,22 @@ class CaseSections:
 
     case_id: str
     model: str = ""
+    # The one sentence the case exists to check, in the fixed form: "In <the locus>, when <X>,
+    # Penny <does Y>."  The case id is a filename; this is the contract, so it is rendered
+    # before any number — a reader has to know what was being asked before a rate means
+    # anything.  The locus names the SHIPPED agent, never a label for it.
+    behaviour: str = ""
     assertions: Sequence[cohort.AssertionRow] = ()
     variance: cohort.CohortVariance = field(default_factory=cohort.CohortVariance)
     cost: cohort.SampleCost | None = None
     run: RunFacts = field(default_factory=RunFacts)
 
     def render(self) -> str:
-        """The summary method: the case's heading, its measures, then the sections behind
-        folds."""
+        """The summary method: the case's heading, the behaviour it checks, its measures, then
+        the sections behind folds."""
         blocks = [
             self.heading(),
+            *([self.behaviour] if self.behaviour else []),
             self.measures(),
             titled_fold(
                 f"{self._assertions_glyph()} {SECTION_A}",

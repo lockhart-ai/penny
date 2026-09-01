@@ -273,6 +273,7 @@ reference the afternoon you read it.
 async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) -> None:
     cohort = await chat_eval(
         case_id="<behaviour>-<what it does>",
+        behaviour=<THE SENTENCE>,                       # what this case checks — below
         model=model,
         seed=<the round this turn continues>,           # seeded, never hoped for
         world=<WORLD>,                                  # the pages, the keeps, the excludes
@@ -310,6 +311,7 @@ instruction wording and the page that answers it:
 async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> None:
     cohort = await collector_cycles_eval(
         case_id="<behaviour>-<what it does>",
+        behaviour=<THE SENTENCE>,
         model=model,
         collection=_CONTAINER,                          # the job this case drives
         arms=[_arm(<THE CASE>, reading) for reading in READINGS],
@@ -340,6 +342,7 @@ A **microcontext** case drives one call, and its arms are five wordings of the i
 async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
     cohort = await extractor_eval(
         case_id="<behaviour>-<what it does>",
+        behaviour=<THE SENTENCE>,
         model=model,
         url=<URL>, page=<PAGE>,                         # one world, fixed across the arms
         instruction=<THE INSTRUCTION>,                  # Penny's own words, written upstream
@@ -380,6 +383,14 @@ behaviours reports the spread of whichever one moved as instability of all of th
 
 Where the behaviours differ is in what selects them: §6 has the collector form, where the entry
 condition does it.
+
+**Every case states the behaviour it checks**, in one sentence, in the fixed form
+**In \<the locus\>, when \<X\>, Penny \<does Y\>.** The locus names where the behaviour happens
+by its **shipped agent name** — `browse-extract`, `state-classifier`, `skill-framer`, the chat
+agent, a price-watch collector — never a label invented for the report. It is `behaviour=` on the
+driver call, required on the cohort path, and it renders in the case's report header above every
+number: a case id says which fixture ran, and a rate means nothing until a reader knows what was
+being asked.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.

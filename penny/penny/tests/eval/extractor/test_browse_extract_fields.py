@@ -73,12 +73,17 @@ _FAMILY = "browse-extract"
 class ExtractFixture(NamedTuple):
     """One agreed case: the page as the content script returns it, the instruction as a
     task would word it, and what each thing the instruction names should come back as —
-    an anchor for the ones the page supplies, nothing for the ones it does not."""
+    an anchor for the ones the page supplies, nothing for the ones it does not.
+
+    ``behaviour`` is the one sentence the case exists to check, in the fixed form: "In <the
+    locus>, when <X>, Penny <does Y>."  It rides the fixture so a case states it the same way
+    whichever driver path runs it, and the report renders it before any number."""
 
     case_id: str
     url: str
     page: str
     instruction: str
+    behaviour: str
     expectations: tuple[FieldExpectation, ...]
 
 
@@ -88,6 +93,7 @@ async def _run_case(extractor_eval: ExtractorEval, fixture: ExtractFixture) -> N
     numbers are read."""
     await extractor_eval(
         case_id=fixture.case_id,
+        behaviour=fixture.behaviour,
         url=fixture.url,
         page=fixture.page,
         instruction=fixture.instruction,
@@ -158,6 +164,10 @@ _ALL_PRESENT = ExtractFixture(
     url=LISTING_URL,
     page=_LISTING,
     instruction="the item's name, its price and whether it is in stock",
+    behaviour=(
+        "In the browse-extract micro-context, when the page carries everything the "
+        "instruction named, Penny comes back with all of it."
+    ),
     expectations=(
         FieldExpectation("name", "Aurora Deck 2"),
         FieldExpectation("price", "499"),
@@ -198,6 +208,11 @@ _PARTLY_PRESENT = ExtractFixture(
     page=_HOMEPAGE,
     instruction=(
         "the headlines and their links, with a one-line summary of each where the page gives one"
+    ),
+    behaviour=(
+        "In the browse-extract micro-context, when the page carries only some of what the "
+        "instruction named, Penny comes back with the parts it has instead of reporting the "
+        "page empty."
     ),
     expectations=(
         FieldExpectation("headline", _HEADLINE_ANCHOR),
@@ -282,6 +297,7 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
     """
     cohort = await extractor_eval(
         case_id=_PARTLY_PRESENT.case_id,
+        behaviour=_PARTLY_PRESENT.behaviour,
         model=model,
         url=_PARTLY_PRESENT.url,
         page=_PARTLY_PRESENT.page,
@@ -342,6 +358,11 @@ _PARTLY_PRESENT_UNHEDGED = ExtractFixture(
     url=_SECTION_URL,
     page=_SECTION,
     instruction="the headline, the byline and the published time for each story",
+    behaviour=(
+        "In the browse-extract micro-context, when the instruction gives no hint that "
+        "anything might be missing and the page is short of one thing anyway, Penny still "
+        "comes back with what it has — what decides the answer is the page, not the wording."
+    ),
     expectations=(
         FieldExpectation("headline", "City orchestra"),
         FieldExpectation("byline", "Ines Marlowe"),
@@ -369,6 +390,11 @@ _NONE_PRESENT = ExtractFixture(
     url=_HOMEPAGE_URL,
     page=_HOMEPAGE,
     instruction="the closing price of each company named and its ticker symbol",
+    behaviour=(
+        "In the browse-extract micro-context, when the page carries none of what the "
+        "instruction named, Penny says plainly that it carries none of it rather than "
+        "answering anyway."
+    ),
     expectations=(
         FieldExpectation("closing price"),
         FieldExpectation("ticker symbol"),

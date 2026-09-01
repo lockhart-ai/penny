@@ -191,6 +191,27 @@ MOVED_READING = WatchCase(
 CASES = (FIRST_READING, UNCHANGED_READING, MOVED_READING)
 
 
+# The one sentence each case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The locus is the SHIPPED name of where the behaviour happens, and the three
+# share an opening clause and differ only at the entry condition — that parallelism is what the
+# three-case split reads like out loud.  The case id is a filename; this is the contract.
+_BEHAVIOUR = {
+    FIRST_READING.case_id: (
+        "In a price-watch collector, when the job runs for the first time and its collection "
+        "is still empty, Penny records the price the page shows and tells the user once — a "
+        "first observation is news."
+    ),
+    UNCHANGED_READING.case_id: (
+        "In a price-watch collector, when the page's price has not changed since she last "
+        "recorded it, Penny writes nothing and says nothing."
+    ),
+    MOVED_READING.case_id: (
+        "In a price-watch collector, when the page's price has changed since she last recorded "
+        "it, Penny replaces the price she was holding with the new one and tells the user "
+        "exactly once."
+    ),
+}
+
 _SPEC_LINK = f"[{_ITEM} specification sheet]({LISTING_URL}/spec)"
 _LISTING_LINK = f"[{_ITEM} listing]({LISTING_URL})"
 _HEAD = f"Title: {_ITEM} — handheld console | faux-market\n{LISTING_URL}\n\n"
@@ -650,6 +671,7 @@ async def test_the_watch_writes_the_first_reading(
     baseline, and a first observation is news."""
     cohort = await collector_cycles_eval(
         case_id=FIRST_READING.case_id,
+        behaviour=_BEHAVIOUR[FIRST_READING.case_id],
         model=model,
         collection=_CONTAINER,
         arms=_arms(FIRST_READING),
@@ -693,6 +715,7 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
     the send-queue claim and shows in ``transitions`` as ``quiet+told``."""
     cohort = await collector_cycles_eval(
         case_id=UNCHANGED_READING.case_id,
+        behaviour=_BEHAVIOUR[UNCHANGED_READING.case_id],
         model=model,
         collection=_CONTAINER,
         arms=_arms(UNCHANGED_READING),
@@ -733,6 +756,7 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
     """A moved reading is a write AND one notification, on the standing key."""
     cohort = await collector_cycles_eval(
         case_id=MOVED_READING.case_id,
+        behaviour=_BEHAVIOUR[MOVED_READING.case_id],
         model=model,
         collection=_CONTAINER,
         arms=_arms(MOVED_READING),
