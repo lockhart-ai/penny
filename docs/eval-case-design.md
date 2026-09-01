@@ -301,10 +301,85 @@ with no `# A · PROVENANCE` block is a case that skipped it. Expect your case to
 nobody can hand you — a category the source case said nothing about, which only the inward column
 will surface.
 
-**One setup, one enactment, one set of assertions.** A case drives its ask **once**. Two enactments
-in one test body is a structural antipattern: it turns the body into a script, and it hides a second
-cohort inside a test named for one. Input variation is expressed as **parametrisation** — that is
-what `also_phrased` is, and what the model axis is — never as a second drive.
+A **collector** case takes the same shape through its own driver. What replaces the ask is the
+**entry condition** — what the collection holds when the cycle starts — and the arms carry the
+instruction wording and the page that answers it:
+
+```python
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> None:
+    cohort = await collector_cycles_eval(
+        case_id="<behaviour>-<what it does>",
+        model=model,
+        collection=_CONTAINER,                          # the job this case drives
+        arms=[_arm(<THE CASE>, reading) for reading in READINGS],
+        samples_per_phrasing=3,                         # 5 arms × 3 = 15 pooled
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+    # A · LANDED — EMPTY, and that is the correct report.  A collector moves no conversation
+    # machine, so there is no walk to read a landing off.  The run record's outcome and its
+    # stop reason are RECORD FIELDS, so they are claimed under STORE.
+    # A · STORE
+    cohort.claim("state: <what the store holds>", _holds(<AMOUNT>), SpecCategory.STORE)
+    cohort.claim("state: <what the run record says>", _closed_having_worked, SpecCategory.STORE)
+    # A · PROVENANCE
+    cohort.assert_every_stored_entry_traces_to_the_world()
+
+    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+```
+
+Each arm's `seed` lays the entry condition down through the **store's own write path**, under the
+key the job's program writes to, and asserts it in a loud probe — a hand-inserted row gives the
+write gate something to compare against that no cycle could have produced.
+
+A **microcontext** case drives one call, and its arms are five wordings of the instruction:
+
+```python
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
+    cohort = await extractor_eval(
+        case_id="<behaviour>-<what it does>",
+        model=model,
+        url=<URL>, page=<PAGE>,                         # one world, fixed across the arms
+        instruction=<THE INSTRUCTION>,                  # Penny's own words, written upstream
+        also_instructed=<FOUR MORE WORDINGS>,
+        samples_per_phrasing=3,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+    # A · LANDED — the CLOSED field of the typed result, asserted by equality
+    cohort.claim("state: <which outcome it committed to>", _read_the_page, SpecCategory.LANDED)
+    # A · STORE — EMPTY, and that is the correct report.  One call returns a value; it writes
+    # to no store, so there is nothing for a store claim to read.
+    # A · PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
+    cohort.claim("state: <what the page supplies arrived>", _carries(<ANCHOR>),
+                 SpecCategory.PROVENANCE)
+    cohort.claim("state: <nothing else did>", _nothing_invented, SpecCategory.PROVENANCE)
+
+    cohort.measure(output_field(OUTCOME),
+                   output_field(VALUE, consequence=Consequence.COSMETIC))
+```
+
+An empty category is a **report**, not an omission — but only when the shape genuinely has nothing
+there. Say which of the two it is in the case, or a reader cannot tell a closed question from an
+unrun one.
+
+**One entry condition, one model run, one set of assertions.** The COUNT is the rule, wherever the
+count is expressed. An enactment is one chat turn, one collector cycle, or one microcontext call —
+so a fixture handing the driver three registers is three enactments exactly as three `await`s in the
+body are, and it is the harder one to see: the body still reads as a single drive. Input variation
+is expressed as **parametrisation** — that is what `also_phrased` and the model axis are — never as
+a second enactment, in the body or under it.
+
+**What a second enactment costs is blame.** Sequentially coupled runs stop partitioning: a first run
+that fails leaves the second and third with no precondition, so their claims are false for a reason
+that has nothing to do with what they measure, and one defect is counted three times with no way to
+say which run was wrong. The variance number goes the same way — one score averaging several
+behaviours reports the spread of whichever one moved as instability of all of them.
+
+Where the behaviours differ is in what selects them: §6 has the collector form, where the entry
+condition does it.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
@@ -552,7 +627,7 @@ Two other scope rules that come from the same place:
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes`; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
-| `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat, `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
+| `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
 
 A `World`'s `keeps` is one token set **per source** — tokens appearing only on that page, so a
 stored copy says which page it came from and an invented one matches neither. They identify the
