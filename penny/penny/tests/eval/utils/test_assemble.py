@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from penny.tests.eval.utils import report
+from penny.tests.eval.utils import assemble, comment_split, report
 from penny.tests.eval.utils.artifacts import (
     CaseArtifact,
     CaseTimings,
@@ -26,6 +26,7 @@ from penny.tests.eval.utils.artifacts import (
     CheckOutcome,
     FailureCause,
     RunManifest,
+    VarianceReading,
     build_manifest,
     render_manifest_header,
 )
@@ -621,3 +622,158 @@ def test_the_samples_the_comment_does_not_carry_are_accounted_for() -> None:
     assert "**No pooled sample matched the representative**" in variant
     assert "all 14 of the others diverged" in variant
     assert "agreed" not in variant
+
+
+# ── One comment per case, its index, and the run summary (#2020) ─────────────
+def _indexed_run(tmp_path: Path, name: str, model: str, cases: dict[str, tuple[int, int]]) -> Path:
+    """A run dir for ONE model holding ``cases`` — each id mapped to (passed, total) checks."""
+    manifest = build_manifest(
+        commit="abba710a03ae3555148fea6a86712e9af020499a",
+        dirty_diff="",
+        model=model,
+        embedding_model="embeddinggemma",
+        samples=15,
+        lever="the index",
+        now=datetime(2026, 9, 1, 3, 36, 27, tzinfo=UTC),
+    )
+    artifacts = [
+        CaseArtifact(
+            run_id=manifest.run_id,
+            case_id=case_id,
+            family="chat-recovery",
+            mean=1.0,
+            all_pass_rate=1.0,
+            pathology_excluded_mean=1.0,
+            samples=15,
+            sample_scores=[1.0],
+            sample_causes=[None],
+            cause_counts=CauseCounts(),
+            checks=[CheckOutcome(label="state: landed", passed=passed, total=total)],
+            timings=_TIMINGS,
+            expand_samples=[1],
+            variance=[
+                VarianceReading(name="tool sequence", entropy=0.5, saturated=False, distinct=3)
+            ],
+        )
+        for case_id, (passed, total) in cases.items()
+    ]
+    report_dir = tmp_path / name
+    # A real case document OPENS on its heading, and that heading is what the index is spliced
+    # into — so the fixture carries one, written through the same renderer the case uses.
+    transcripts = {
+        case_id: (
+            f"{report.case_heading(report.rate_glyph(passed / total), case_id, model)}\n\n"
+            f"{_BROWSE_SAMPLE_FOLDED}"
+        )
+        for case_id, (passed, total) in cases.items()
+    }
+    _write_run(report_dir, manifest, artifacts, transcripts)
+    return report_dir
+
+
+def test_the_index_counts_the_cases_the_run_started_not_the_ones_that_closed(
+    tmp_path: Path,
+) -> None:
+    """N is what the run COVERS, so a case that started and died leaves a visible gap.
+
+    A case writes its report file at the top of its runner, before any sample; it appends a
+    results record only if it closes.  Counting closed cases would silently renumber a
+    four-case run to ``1/3`` and hide the one that died — which is the whole reason a reader
+    wants the denominator."""
+    report_dir = _indexed_run(
+        tmp_path, "run-a", "openai/gpt-oss-20b", {"a-case": (13, 14), "c-case": (12, 14)}
+    )
+    # A case that started and died: its report file exists, its results record does not.
+    (report_dir / "b-case.md").write_text("### 🔴 `b-case`\n")
+
+    assert assemble.started_cases(report_dir) == ["a-case", "b-case", "c-case"]
+    assert assemble.case_index(report_dir, "a-case") == " 1/3"
+    assert assemble.case_index(report_dir, "c-case") == " 3/3"
+    headings = [
+        document.splitlines()[0] for document in assemble.assemble_case_comments(report_dir)
+    ]
+    assert headings == [
+        "### 🟢 `a-case` 1/3 — `openai/gpt-oss-20b`",
+        "### 🟡 `c-case` 3/3 — `openai/gpt-oss-20b`",
+    ], "the dead case is counted in N and contributes no report — the gap is the point"
+
+
+def test_the_index_is_per_model_and_stable_across_a_re_run(tmp_path: Path) -> None:
+    """Two models are two runs, each with its own N — and the order is the case id.
+
+    Keyed on the id rather than on file order because file order is the xdist worker's
+    assignment, which differs run to run: an index that moved between rounds would make
+    ``3/5`` mean nothing when comparing two reports of the same set."""
+    cases = {"c-case": (14, 14), "a-case": (14, 14)}
+    gpt = _indexed_run(tmp_path, "run-gpt", "openai/gpt-oss-20b", cases)
+    gemma = _indexed_run(
+        tmp_path, "run-gemma", "google/gemma-4-26b-a4b-it", {**cases, "b": (14, 14)}
+    )
+
+    assert assemble.case_index(gpt, "a-case") == " 1/2", "one model's run counts its own cases"
+    assert assemble.case_index(gemma, "a-case") == " 1/3", "and never the other model's"
+    rerun = _indexed_run(
+        tmp_path, "run-gpt-again", "openai/gpt-oss-20b", dict(reversed(cases.items()))
+    )
+    assert assemble.started_cases(rerun) == assemble.started_cases(gpt), "stable across a re-run"
+
+
+def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) -> None:
+    """The summary is GENERATED — one section per model, the arithmetic the case headers do."""
+    gpt = _indexed_run(
+        tmp_path, "run-gpt", "openai/gpt-oss-20b", {"a-case": (13, 14), "b-case": (12, 14)}
+    )
+    gemma = _indexed_run(tmp_path, "run-gemma", "google/gemma-4-26b-a4b-it", {"a-case": (14, 14)})
+    summary = assemble.render_run_summary([gpt, gemma])
+
+    assert "### `openai/gpt-oss-20b`" in summary and "### `google/gemma-4-26b-a4b-it`" in summary
+    assert "**🟡 25 / 28 checks · 89%** — 2 cases" in summary, "summed across THAT model's cases"
+    assert "**🟢 14 / 14 checks · 100%** — 1 case" in summary, "and the other model totalled apart"
+    assert "| 1 | `a-case` | 🟢 13/14 · 93% |" in summary
+    assert "14 pooled + 1 excluded" in summary, "what the rate is over, beside it"
+
+
+def test_a_blind_feature_is_never_counted_as_agreement(tmp_path: Path) -> None:
+    """A feature that read nothing scores 0.000 — the number perfect agreement scores.
+
+    So it is excluded from the aggregate entirely rather than averaged in as the strongest
+    possible result: reporting it would say the cohort agreed completely about a feature that
+    saw no value at all."""
+    report_dir = _indexed_run(tmp_path, "run-blind", "openai/gpt-oss-20b", {"a-case": (14, 14)})
+    artifact = assemble.load_case_artifacts(report_dir)[0]
+    blind = artifact.model_copy(
+        update={
+            "variance": [
+                VarianceReading(
+                    name="routine name", entropy=0.0, saturated=False, distinct=1, blind=True
+                ),
+                VarianceReading(name="tool sequence", entropy=0.4, saturated=False, distinct=2),
+            ]
+        }
+    )
+    (report_dir / "results.jsonl").write_text(blind.model_dump_json() + "\n")
+
+    summary = assemble.render_run_summary([report_dir])
+    assert "1 of 1 features vary · 1 blind" in summary, "the blind one is counted apart, not in"
+    assert "max H 0.400 `tool sequence`" in summary, "and the maximum is over what SAW something"
+
+
+def test_a_case_document_is_postable_where_a_whole_run_was_not(tmp_path: Path) -> None:
+    """The size fix, and the seam that makes the fallback work.
+
+    Three cases assembled to one document ran to 68,385 characters against a 65,536 cap with no
+    legal seam in it at all — the representative fold's seam was written against a ``<summary>``
+    that ``titled_fold`` never renders, so the splitter found nothing to cut. Both halves are
+    pinned: a case is its own document, and a representative fold IS a seam."""
+    report_dir = _indexed_run(
+        tmp_path, "run-big", "openai/gpt-oss-20b", {"a-case": (14, 14), "b-case": (14, 14)}
+    )
+    documents = assemble.assemble_case_comments(report_dir)
+    assert len(documents) == 2, "one document per case, never one per run"
+    for document in documents:
+        assert comment_split.split_run_comment(document) == [document], "each fits as one comment"
+
+    representative = f"prelude\n\n{report.titled_fold(report.REPRESENTATIVE_HEADING, 'x', 'y')}"
+    assert len(report.split_sample_blocks(representative)) == 2, (
+        "a representative fold opens a sample block, so the splitter has a legal cut there"
+    )

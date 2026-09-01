@@ -188,6 +188,17 @@ Two ways to get it wrong, and shrinking creates the second:
 The test is two questions. *Would a differently-worded correct answer fail this?* Shrink until no.
 *Could a wrong value satisfy it?* Stop before yes.
 
+**A token the ASK does not require fails a correct run, and the fix is not a shrink.** The two
+questions above assume the value is one the answer owes; where it is not, the token is fine and
+the *ask* is what is wrong — a case asking which lake is deepest is answered correctly by naming
+it, so requiring its depth fails a reply that did what was asked. Widening the ask so it requests
+the value is the fixture's job, not the claim's. Treat it differently from a shrink: a shrink is
+strictly more permissive and cannot turn a passing check red, while a changed ask changes the
+behaviour being measured and **can move any number in either direction** — measured, one such
+change took a case from 83/84 to 72/84 on one model and 58/66 to 83/84 on the other. So it is a
+**code owner's call, not an in-flight repair**: raise it with the numbers, do not fold it into the
+port.
+
 **Uniqueness is a property of the world, not of the token.** A pair a case asserts on must be
 mutually exclusive — neither a substring of the other — and absent from everything else the pages
 carry. `449` / `499` qualify; `499` / `4499` would not; `scheduled 05:20` / `not scheduled` would
@@ -292,22 +303,22 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
         min_pass_rate=None,                             # assertions are never floored — §8
         family=<FAMILY>,
     )
-    # A · LANDED
+    # LANDED
     cohort.assert_machine_landed(ConversationState.<STATE>)
-    # A · STORE
+    # STORE
     cohort.assert_the_store_holds_an_entry()
     cohort.assert_nothing_excluded_was_stored()
-    # A · PROVENANCE
+    # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    # B · what is measured, never asserted
+    # measured, never asserted — section B
     cohort.measure(TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS,
                    REPLY_SPREAD)
 ```
 
 The three category comments are load-bearing: they are where the **inward** pass is run. A case
-with no `# A · PROVENANCE` block is a case that skipped it. Expect your case to have one claim
+with no `# PROVENANCE` block is a case that skipped it. Expect your case to have one claim
 nobody can hand you — a category the source case said nothing about, which only the inward column
 will surface.
 
@@ -328,13 +339,13 @@ async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> N
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # A · LANDED — EMPTY, and that is the correct report.  A collector moves no conversation
+    # LANDED — EMPTY, and that is the correct report.  A collector moves no conversation
     # machine, so there is no walk to read a landing off.  The run record's outcome and its
     # stop reason are RECORD FIELDS, so they are claimed under STORE.
-    # A · STORE
+    # STORE
     cohort.claim("state: <what the store holds>", _holds(<AMOUNT>), SpecCategory.STORE)
     cohort.claim("state: <what the run record says>", _closed_having_worked, SpecCategory.STORE)
-    # A · PROVENANCE
+    # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
 
     cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
@@ -360,11 +371,11 @@ async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # A · LANDED — the CLOSED field of the typed result, asserted by equality
+    # LANDED — the CLOSED field of the typed result, asserted by equality
     cohort.claim("state: <which outcome it committed to>", _read_the_page, SpecCategory.LANDED)
-    # A · STORE — EMPTY, and that is the correct report.  One call returns a value; it writes
+    # STORE — EMPTY, and that is the correct report.  One call returns a value; it writes
     # to no store, so there is nothing for a store claim to read.
-    # A · PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
+    # PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
     cohort.claim("state: <what the page supplies arrived>", _carries(<ANCHOR>),
                  SpecCategory.PROVENANCE)
     cohort.claim("state: <nothing else did>", _nothing_invented, SpecCategory.PROVENANCE)

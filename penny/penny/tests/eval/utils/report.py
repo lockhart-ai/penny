@@ -432,8 +432,57 @@ _C_SUMMARY = "{count} of {driven} · dominant: {reason}"
 # a run-level header above it would state the same numbers twice.  It OUTRANKS its own sections
 # (`###` against their `####`) — a section rendering larger than the case containing it reads as
 # though the nesting ran the other way.
-_CASE_HEADING = "### {glyph} `{case_id}`"
-_CASE_HEADING_MODEL = "### {glyph} `{case_id}` — `{model}`"
+_CASE_HEADING = "### {glyph} `{case_id}`{index}"
+_CASE_HEADING_MODEL = "### {glyph} `{case_id}`{index} — `{model}`"
+# WHERE this case sits in its run — ``3/5`` — so a reader moving through a run's reports knows
+# which one they are on and whether they have seen them all.  Unbacticked, between the case's
+# own name and the model: it is a POSITION rather than an identifier, and the two identifiers
+# on the line are what the backticks mark.
+_CASE_INDEX = " {position}/{total}"
+# What a case heading opens with, matched to RE-HEAD a rendered document.  A case document's
+# first line IS its heading, so the swap is a line replacement rather than a search through
+# prose — and both spellings come from ``case_heading`` below, so the one written during the
+# run and the one the assembler fills in cannot drift in style, only in whether they carry
+# the index.
+_HEADING_OPENS = "### "
+
+
+def render_case_index(position: int, total: int) -> str:
+    """``3/5`` as it renders in a heading, or nothing when the run did not state one."""
+    if total <= 0:
+        return ""
+    return _CASE_INDEX.format(position=position, total=total)
+
+
+def case_heading(glyph: str, case_id: str, model: str = "", index: str = "") -> str:
+    """The one rendering of a case's heading, read twice: once by the case as it closes (with
+    no index — a running case cannot know how many cases its run covers), once by the
+    assembler (with one)."""
+    if not model:
+        return _CASE_HEADING.format(glyph=glyph, case_id=case_id, index=index)
+    return _CASE_HEADING_MODEL.format(glyph=glyph, case_id=case_id, index=index, model=model)
+
+
+def with_case_index(document: str, index: str) -> str:
+    """``document`` with its heading carrying ``index``, or unchanged when it has no heading.
+
+    The document's FIRST line is its heading, so this replaces that line rather than editing
+    text anywhere else — and it leaves a transcript that opens on something else alone, which
+    is the honest answer for the unported path rather than a heading invented for it."""
+    head, newline, rest = document.partition("\n")
+    if not index or not head.startswith(_HEADING_OPENS):
+        return document
+    return f"{_indexed(head, index)}{newline}{rest}"
+
+
+def _indexed(heading: str, index: str) -> str:
+    """One heading with its index spliced after the case id — before the model clause, which
+    is where the position belongs: it qualifies the case, not what ran it."""
+    marker = " — `"
+    name, separator, model = heading.partition(marker)
+    return f"{name}{index}{separator}{model}" if separator else f"{heading}{index}"
+
+
 # The topline scores are the TABLE, not a sentence above it.  Real column headers, because an
 # empty `| | |` renders as a blank band across the top of the table.
 _MEASURE_HEAD = "| measure | reading |\n|---|---|"
@@ -575,6 +624,10 @@ class CaseSections:
     # before any number — a reader has to know what was being asked before a rate means
     # anything.  The locus names the SHIPPED agent, never a label for it.
     behaviour: str = ""
+    # WHERE this case sits in its run (``" 3/5"``), or empty while it is running.  A case
+    # cannot know the count: its siblings run concurrently, so the run's own case set is
+    # settled only at assemble time, which is where this is filled in.
+    index: str = ""
     assertions: Sequence[cohort.AssertionRow] = ()
     variance: cohort.CohortVariance = field(default_factory=cohort.CohortVariance)
     cost: cohort.SampleCost | None = None
@@ -660,12 +713,13 @@ class CaseSections:
 
     # ── The one line a reader sees by default ────────────────────────────
     def heading(self) -> str:
-        """The case NAMES the report — what was run, behind the worst glyph in it."""
-        if not self.model:
-            return _CASE_HEADING.format(glyph=self.glyph(), case_id=self.case_id)
-        return _CASE_HEADING_MODEL.format(
-            glyph=self.glyph(), case_id=self.case_id, model=self.model
-        )
+        """The case NAMES the report — what was run, behind the worst glyph in it.
+
+        ``index`` is the run-level fact a case cannot know while it is running: cases run
+        concurrently, so how many the run covers is settled only once every one of them has
+        started.  It is therefore EMPTY here and filled at assemble time
+        (:func:`case_heading`), which is the one place a whole run is readable."""
+        return case_heading(self.glyph(), self.case_id, self.model, self.index)
 
     def measures(self) -> str:
         """The topline readings as a TABLE — every measure one row, no sentence restating it.
@@ -1446,12 +1500,15 @@ def samples_accounted(*, matched: int, diverged: int) -> str:
 # The seam a sample block opens on — the folded form and the legacy bare heading. Public because
 # it is also the ONLY place a run comment may be cut when it exceeds GitHub's comment cap (#1808):
 # one definition of "a sample starts here", shared by the re-normalizer and the splitter.
-# A sample fold opens on one of these.  The representative carries a LABEL rather than a
-# banner — every other section is a label, and this one was a sentence holding five pieces of
-# metadata — but it is still a sample block, so the splitter keeps its seam here.
+# A sample fold opens on one of these.  The representative renders through ``titled_fold``,
+# so its seam is the ``####`` HEADING that names it and never the ``<summary>`` beneath —
+# the summary states that sample's own findings and carries no fixed text to match.  Written
+# against the summary, this arm matched nothing that is ever rendered, and a run whose only
+# folds were representatives therefore had NO legal seam at all: three cases assembled to
+# 68,385 characters and could not be posted by the supported route.
 SAMPLE_BLOCK_START = (
-    rf"(?:<details><summary>(?:{SAMPLE_ROW} \d+ — |{REPRESENTATIVE_LABEL}</summary>)"
-    rf"|#### {SAMPLE_ROW} \d+ — )"
+    rf"(?:<details><summary>{SAMPLE_ROW} \d+ — "
+    rf"|#### (?:{SAMPLE_ROW} \d+ — |{REPRESENTATIVE_HEADING}\n))"
 )
 
 

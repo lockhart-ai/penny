@@ -173,6 +173,7 @@ from penny.tests.eval.conftest import (
     NO_MEASURED_TURN,
     NO_REPLY,
     PENNY_LOGGER,
+    UNSTATED,
     BoundExpectation,
     Check,
     CycleCall,
@@ -200,6 +201,7 @@ from penny.tests.eval.conftest import (
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
+    _stated_pass_rate,
     _stored_entries,
     _turn_kind,
     _without_examples,
@@ -1626,6 +1628,26 @@ def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_
     assert _exclusion(db, "an answer", True) is None, "the fault fired — a real sample"
     assert _exclusion(db, "an answer", False) == INJECTION_NEVER_FIRED
     assert _exclusion(db, "   ", False) == NO_REPLY, "an empty reply outranks the injector"
+
+
+def test_a_ported_case_must_state_its_threshold_and_the_inline_path_keeps_its_default() -> None:
+    """``min_pass_rate`` is REQUIRED on the cohort path, the way the behaviour sentence is.
+
+    ``None`` cannot double as "not stated" the way an empty behaviour string can, because on
+    this path ``None`` IS the value every ported case states deliberately — a report-only
+    case.  So an unstated threshold has its own marker, and a ported case reaching the driver
+    without one is refused before a sample runs rather than being gated at the inline path's
+    default with nobody having decided that.
+
+    Both directions, and the second is what keeps the ~40 unported cases untouched: on the
+    inline path an unstated threshold still means 0.75, exactly as it always has."""
+    assert _stated_pass_rate("a-case", None, ported=True) is None, "report-only is a VALUE"
+    assert _stated_pass_rate("a-case", 0.9, ported=True) == 0.9, "and so is a stated floor"
+
+    with pytest.raises(ValueError, match="must state its threshold"):
+        _stated_pass_rate("a-case", UNSTATED, ported=True)
+
+    assert _stated_pass_rate("a-case", UNSTATED, ported=False) == 0.75, "the inline default"
 
 
 def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path) -> None:

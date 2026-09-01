@@ -2735,6 +2735,7 @@ def _variance_readings(
             entropy=feature.entropy,
             saturated=feature.saturated,
             distinct=feature.distinct,
+            blind=feature.blind,
         )
         for feature in pooled.features
     ]
@@ -2764,6 +2765,45 @@ def _stated_behaviour(case_id: str, behaviour: str) -> str:
     if not behaviour.strip():
         raise ValueError(_NO_BEHAVIOUR.format(case_id=case_id))
     return behaviour.strip()
+
+
+class _Unstated:
+    """A parameter nobody passed.
+
+    ``behaviour`` can use the empty string for this because a case always has something to
+    say; ``min_pass_rate`` cannot, because ``None`` is a VALUE there — the report-only setting
+    every ported case states deliberately — so "not stated" needs a marker of its own."""
+
+    def __repr__(self) -> str:
+        return "<unstated>"
+
+
+UNSTATED = _Unstated()
+# What a driver takes for a threshold: a rate, the report-only ``None``, or nothing at all.
+PassRate = float | None | _Unstated
+
+# The report-only setting is REQUIRED on the cohort path and nowhere else, for the reason the
+# behaviour sentence is: that path is what every ported case runs on, and a case reaching it
+# without stating its threshold is gated at the inline path's default without anyone deciding
+# that.  Thresholds are the code owner's — a case author states ``None`` and a run PROPOSES.
+# The inline path predates the convention and keeps its default, so the ~40 cases on it are
+# untouched.
+# What the INLINE path has always defaulted to, named rather than repeated at each driver.
+_INLINE_MIN_PASS_RATE = 0.75
+
+_NO_PASS_RATE = (
+    "{case_id}: a ported case must state its threshold — min_pass_rate=None, because a ported "
+    "case lands report-only and a floor is the code owner's to accept, never a case author's"
+)
+
+
+def _stated_pass_rate(case_id: str, min_pass_rate: PassRate, ported: bool) -> float | None:
+    """The threshold this case runs under, refusing an unstated one on the cohort path."""
+    if not isinstance(min_pass_rate, _Unstated):
+        return min_pass_rate
+    if ported:
+        raise ValueError(_NO_PASS_RATE.format(case_id=case_id))
+    return _INLINE_MIN_PASS_RATE
 
 
 def _finish_case(
@@ -3090,7 +3130,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         prepare: Preparer | None = None,
         wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
         samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
+        min_pass_rate: PassRate = UNSTATED,
         timeout: float = 120.0,
         family: str | None = None,
         gate_pathology_excluded: bool = False,
@@ -3112,6 +3152,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             samples,
         )
         spoken = arms.spoken
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
         turns = [] if spoken else _conversation_turns(message, messages)
         driven = arms.driven if spoken else samples
         pages = list(world.pages) if world is not None else browse
@@ -3720,7 +3761,7 @@ def collector_cycles_eval(
         seed_skills: Sequence[SkillDraft] | None = None,
         prepare: Preparer | None = None,
         samples: int = SAMPLES,
-        min_pass_rate: float | None = None,
+        min_pass_rate: PassRate = UNSTATED,
         family: str | None = None,
     ) -> Cohort:
         """Drive several real collector cycles N times and return the COHORT (a ported case),
@@ -3737,6 +3778,7 @@ def collector_cycles_eval(
             samples,
         )
         driven_count = driving.driven if arms else samples
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(arms))
 
         pending = (
             _cohorts.setdefault(
@@ -5887,7 +5929,7 @@ def extractor_eval(
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
+        min_pass_rate: PassRate = UNSTATED,
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
@@ -5910,6 +5952,7 @@ def extractor_eval(
             samples,
         )
         spoken = arms.spoken
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
         driven = arms.driven if spoken else samples
         content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
 
