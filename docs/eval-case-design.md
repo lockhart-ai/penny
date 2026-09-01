@@ -135,6 +135,15 @@ the instruction asked for appears in the output. A draw that returns one headlin
 the first perfectly while being wrong, so a case that makes only that claim has measured the easy
 half.
 
+**A chat reply has the same two halves, and they are two named claims.** *Nothing invented* is
+`assert_every_value_in_the_reply_is_sourced`. *Nothing omitted* is `assert_the_reply_answers_the_ask`,
+read off the world's own `answers` tokens. A reply that answers nothing at all passes every other
+claim in the set vacuously — it lands in the right state, it is a complete message, and it carries no
+unsourced value because it carries no value — so a case whose ask has an answer to state makes the
+second claim too. `answers` names only what the **ask asked for**: a token the reply does not owe
+fails a correct run, so an answer worth asserting is one the ask requests, which is the fixture's job
+and not the claim's.
+
 **A closed field's expected value is derived from the fixture's declared facts**, never chosen
 independently of them. `EXTRACTED` is the right expectation on a page carrying some of what was
 asked for, and the wrong one on a page carrying none of it — the same value, correct against one
@@ -635,7 +644,7 @@ Two other scope rules that come from the same place:
 |---|---|
 | `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
-| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes`; carried per **arm** (`cohort.Arm`), not per cohort |
+| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes`, and the `answers` the reply must state; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
 | `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |

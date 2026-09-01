@@ -69,6 +69,16 @@ _CALL_AS_TEXT = (
     '"reasoning": "Look up which lake is the deepest and read the details."}'
 )
 
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The locus is the SHIPPED agent name — the turn under test is the chat
+# agent's, which is also what the sabotage is aimed at.  The case id is a filename; this is
+# the contract, and it renders above every number in the report.
+_BEHAVIOUR = (
+    "In the chat agent, when a draw comes back as the TEXT of a tool call instead of a "
+    "call, Penny throws that draw away and still answers the user's question out of the "
+    "page she read, sending them nothing she was supposed to discard."
+)
+
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_call_as_text_is_caught_and_the_turn_still_completes(
@@ -78,6 +88,7 @@ async def test_call_as_text_is_caught_and_the_turn_still_completes(
     answered from the page rather than from the model's own head."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
+        behaviour=_BEHAVIOUR,
         model=model,
         world=DEEPEST_LAKE,
         ask=DEEPEST_LAKE_ASK,

@@ -3606,6 +3606,7 @@ def _observe_cycles(
     name: str,
     phrasing: str,
     arm: int,
+    collection: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE cycle-driven sample left behind — its own observer, not the chat one.
 
@@ -3618,7 +3619,9 @@ def _observe_cycles(
 
     ``held``, ``run_outcome`` and ``run_reason`` come off the LAST cycle, which for an
     arm-driven case is its only one.  They are what a collector has instead of a machine walk:
-    the store's own end state, and the record fields the run closed with."""
+    the store's own end state, and the record fields the run closed with.  ``held`` names the
+    BOUND collection on every entry, because it is the one container this job writes to and a
+    claim reads the whole entry — key and content — exactly as a chat sample's does."""
     script = cycle_script(driven.observed)
     exclusion = _cycles_exclusion(db, script)
     if exclusion is not None:
@@ -3637,7 +3640,10 @@ def _observe_cycles(
         tool_sequence=[call.tool for cycle in driven.observed for call in cycle.calls],
         reply="\n".join(sent),
         given=given_to_the_model(db),
-        held=dict(last.after) if last is not None else {},
+        held=[
+            eval_cohort.StoredEntry(collection=collection, key=key, content=content)
+            for key, content in (last.after if last is not None else {}).items()
+        ],
         run_outcome=last.outcome if last is not None else None,
         run_reason=last.reason if last is not None else None,
         notifications=list(sent),
@@ -3754,7 +3760,9 @@ def collector_cycles_eval(
             phrasing = driving.label(sample_index)
             arm = driving.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, ran: _observe_cycles(db, ran, name=name, phrasing=phrasing, arm=arm)
+            return lambda db, ran: _observe_cycles(
+                db, ran, name=name, phrasing=phrasing, arm=arm, collection=collection
+            )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool

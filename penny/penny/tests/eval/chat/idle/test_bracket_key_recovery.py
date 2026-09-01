@@ -101,6 +101,16 @@ _SEEDED = {entry.split(" — ")[0]: entry for entry in BOARD_GAMES.entries}
 _COPYTHROUGH_CASE_ID = "key-render-copythrough"
 _FORCED_RECOVERY_CASE_ID = "key-render-forced-recovery"
 
+# The one sentence the PORTED case exists to check, in the fixed form: "In <the locus>, when
+# <X>, Penny <does Y>."  The locus is the SHIPPED agent name.  The copy-through case beside
+# it is still on the scorer path and states its contract in its own docstring; the case id is
+# a filename, and this is what renders above every number in the ported case's report.
+_FORCED_RECOVERY_BEHAVIOUR = (
+    "In the chat agent, when her first attempt to correct an entry is refused for wrapping "
+    "the key in the brackets a display put round it, Penny comes back with the bare key and "
+    "leaves the correction on the entry the user named and on nothing else."
+)
+
 # Both cases, for the ``make check`` probe that runs their shared world's assertions once
 # per case — so a fixture edit that broke either one's premise fails there rather than an
 # hour into a GPU run.
@@ -312,7 +322,14 @@ def _target_rewritten_under_its_bare_key(sample: SampleObservation, _world: Worl
     ``update_entry`` on the case this ports, which failed a sample that recovered through
     ``collection_write`` while the entry itself landed correctly.  What matters is which
     key the store was left holding a new value under, and a value written under
-    ``[Ark Nova]`` satisfies none of this sentence."""
+    ``[Ark Nova]`` satisfies none of this sentence.
+
+    It claims the value MOVED and never what it moved TO, deliberately.  The ask supplies a
+    playtime ("about 150 minutes") and a player count ("1-4 players"), and both are things a
+    correct rewrite may legitimately render another way — 150 minutes as ``2.5 hours``, the
+    range as ``1 to 4`` — so an assertion naming either would fail a correct run for a
+    cosmetic reason.  What this case is about is which KEY the correction landed under, and
+    that has exactly one strictly-identifiable form."""
     written = [
         entry
         for entry in sample.entries
@@ -352,6 +369,7 @@ async def test_forced_bracket_key_recovery(chat_eval: ChatEval, model: str) -> N
     mutation inside the run's step budget."""
     cohort = await chat_eval(
         case_id=_FORCED_RECOVERY_CASE_ID,
+        behaviour=_FORCED_RECOVERY_BEHAVIOUR,
         model=model,
         world=_EMPTY_BROWSE,
         ask=_UPDATE_MESSAGE,

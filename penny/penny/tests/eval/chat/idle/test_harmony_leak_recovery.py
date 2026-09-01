@@ -66,6 +66,15 @@ _FAMILY = "chat-recovery"
 # a generic tool so the fixture carries no real-world specifics.
 _HARMONY_LEAK = "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
 
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  It differs from its sibling's only at the fault, which is the whole
+# reason the two are separate cases rather than one pooled cohort.
+_BEHAVIOUR = (
+    "In the chat agent, when a draw comes back carrying a raw tool-call envelope as text, "
+    "Penny throws that draw away and still answers the user's question out of the page she "
+    "read, sending them nothing she was supposed to discard."
+)
+
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_leaked_envelope_is_caught_and_the_turn_is_answered_cleanly(
@@ -75,6 +84,7 @@ async def test_a_leaked_envelope_is_caught_and_the_turn_is_answered_cleanly(
     page rather than from the model's own head."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
+        behaviour=_BEHAVIOUR,
         model=model,
         world=DEEPEST_LAKE,
         ask=DEEPEST_LAKE_ASK,
