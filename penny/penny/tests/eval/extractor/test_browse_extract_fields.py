@@ -138,6 +138,10 @@ _SECTION = (
 # about this change should show at all.  It is the house listing (`LISTING_URL`), at the price
 # every other case in the suite reads it at: a page and a value the whole suite shares cannot
 # drift into a shape only this file expects.
+#
+# Its expectations are anchored on the part of each field with no alternative rendering: the
+# proper noun, the digits of the price, the count.  The currency symbol and the word after the
+# count are notation and phrasing, which the draw chooses.
 _LISTING = (
     "Aurora Deck 2, handheld console\n"
     "\n"
@@ -156,8 +160,8 @@ _ALL_PRESENT = ExtractFixture(
     instruction="the item's name, its price and whether it is in stock",
     expectations=(
         FieldExpectation("name", "Aurora Deck 2"),
-        FieldExpectation("price", "$499"),
-        FieldExpectation("stock", "three left"),
+        FieldExpectation("price", "499"),
+        FieldExpectation("stock", "three"),
     ),
 )
 
@@ -178,7 +182,14 @@ async def test_a_page_that_answers_everything_still_answers_everything(
 # them against the page, the unported fixtures state them as expectations, and the ported
 # case's provenance claims read the same two strings.  One source of truth, so a page edit
 # cannot leave a claim asserting a span the page no longer carries.
-_HEADLINE_ANCHOR = "Lantern festival draws a record crowd to the old quarter"
+#
+# Each is the SMALLEST UNIQUE span of its story — the proper noun the headline is about, and
+# the url — because everything around it the model may legitimately write another way.  A draw
+# that trimmed the headline to its subject, or reordered its clause, read the page exactly as
+# well as one that copied the sentence, and an anchor carrying the whole sentence would fail
+# it.  Unique on the page as well as small: the probe holds both, since a span that appears in
+# a second story would be satisfied by the wrong one.
+_HEADLINE_ANCHOR = "Lantern festival"
 _LINK_ANCHOR = "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
 
 _PARTLY_PRESENT = ExtractFixture(
@@ -332,7 +343,7 @@ _PARTLY_PRESENT_UNHEDGED = ExtractFixture(
     page=_SECTION,
     instruction="the headline, the byline and the published time for each story",
     expectations=(
-        FieldExpectation("headline", "City orchestra names a conductor from within the ranks"),
+        FieldExpectation("headline", "City orchestra"),
         FieldExpectation("byline", "Ines Marlowe"),
         FieldExpectation("published time"),
     ),

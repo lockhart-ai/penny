@@ -2791,18 +2791,33 @@ def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuou
 @pytest.mark.parametrize("fixture", EXTRACT_FIELD_FIXTURES, ids=lambda f: f.case_id)
 def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> None:
     """Per-case coherence probe (#1942): every thing a case says its page supplies really
-    is on that page, and every case declares at least one thing to look for.
+    is on that page, exactly once, and every case declares at least one thing to look for.
 
     An anchor that is not on the page could never be extracted, so the case would grade
     the extractor on a fact nobody gave it — and a case declaring nothing at all grades
-    nothing.  Both have to fail here, in ``make check``, rather than after GPU time."""
+    nothing.  Both have to fail here, in ``make check``, rather than after GPU time.
+
+    ONCE, because an anchor is shrunk to the smallest span with no alternative rendering,
+    and shrinking has a floor: a span short enough to appear in a second story is satisfied
+    by the wrong story, which is a check that cannot fail rather than a permissive one.
+    Uniqueness is the property that says the shrink stopped in time, and it is a fact about
+    the page, so this is where it is held.  Compared through the shipped ``spoken_form``,
+    the same fold the claims use, so the count is over the text a draw is really matched
+    against."""
     assert fixture.expectations
+    page = spoken_form(fixture.page)
     missing = [
         one.field
         for one in fixture.expectations
-        if one.anchor and spoken_form(one.anchor) not in spoken_form(fixture.page)
+        if one.anchor and spoken_form(one.anchor) not in page
     ]
     assert missing == []
+    repeated = {
+        one.field: page.count(spoken_form(one.anchor))
+        for one in fixture.expectations
+        if one.anchor and page.count(spoken_form(one.anchor)) != 1
+    }
+    assert repeated == {}, f"an anchor must identify ONE span of its page: {repeated}"
 
 
 def test_score_extraction_grades_the_outcome_and_each_named_field() -> None:

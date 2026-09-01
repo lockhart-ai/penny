@@ -96,14 +96,71 @@ reply-content rate moved by **3 samples** where every structural claim moved by 
 — `PROVENANCE`'s reply half is one — but read a few points of movement in its rate as the ordinary
 noise of reading prose, not as a change in behaviour.
 
+### What may be asserted at all
+
+> **We can only deterministically assert on data and structure we can strictly identify. Where the
+> model may legitimately paraphrase its output, only variance can detect it.**
+
+One question decides every check in a case:
+
+> **Can the model legitimately say this a different way? If yes → variance. If no → assertion.**
+
+Most of this document falls out of it. *Never match a phrasing*, reply text as cosmetic, the routine
+name as cosmetic, a tool sequence measured rather than asserted — each is the same answer to the same
+question. So is notation: `$449` against `449` is the model choosing how to render a number, which is
+paraphrase at the token level, and an assertion must target the part with no alternative rendering.
+
+"Strictly identifiable" has to be concrete or it decides nothing:
+
+| assertable | not assertable |
+|---|---|
+| counts · closed enums · record fields · digits · proper nouns · urls · keys | sentences · summaries · a label the model composed · notation · units · reply text |
+
+### It differs by shape
+
+The three shapes the drivers serve read the rule differently, because what the model returns is
+different in each:
+
+- **Chat and a collector** leave their trail in the stores and the machine, so their assertions are
+  reads of that trail: where it landed, what the store holds, which record fields the run carries.
+- **A microcontext returns a typed result, and that result splits in two.** Its **closed** fields —
+  the outcome enum, a state, the parameter set minted, which spots were named — are strictly
+  identifiable and asserted by equality. Its **open** fields — `value`, `reason`, a composed name —
+  are what the model wrote, and they are assertable *only* through fact alignment. Otherwise they
+  are variance.
+
+**Fact alignment is bidirectional, and one direction alone is half a check.** *Nothing invented* —
+every fact in the output appears in the input. *Nothing omitted* — every fact the input supplies that
+the instruction asked for appears in the output. A draw that returns one headline of five satisfies
+the first perfectly while being wrong, so a case that makes only that claim has measured the easy
+half.
+
+**A closed field's expected value is derived from the fixture's declared facts**, never chosen
+independently of them. `EXTRACTED` is the right expectation on a page carrying some of what was
+asked for, and the wrong one on a page carrying none of it — the same value, correct against one
+world and false against another. If a case cannot say which of its declared facts makes its
+expectation right, it is asserting a habit.
+
+**Do not claim what production already validates.** A span the binder checked with
+`_is_a_spoken_span`, a class the classifier validated against its own membership and re-rolled until
+it matched — a claim over either runs 15/15 by construction and measures the validator rather than
+the behaviour. Where an obvious-looking claim is missing for this reason, **say so in the case**, so
+a thin assertion set reads as *closed upstream* rather than as a checklist nobody ran.
+
+**The boundary.** This sharpens what may be asserted; it does not rescue §9. A draw can be strictly
+identifiable, fully aligned in both directions, and still wrong in a way no assertion here reaches —
+the wrong-but-stable row stays exactly where it is, catchable only by a human reading one sample.
+
 ### The smallest unique datum
+
+*The corollary, for a value that passed the test above.*
 
 **An assertion names the smallest token that uniquely identifies the fact, and nothing about how
 it was written.**
 
 A value reaches the store through a draw that chose how to write it — with a currency symbol or
-without, bare or carrying its label, with units or without. Those choices are model output. The
-fact is the reading.
+without, bare or carrying its label, with units or without. Those choices are the paraphrase the
+rule above excludes. The fact is the reading.
 
 So shrink the expected value to the minimal distinctive one and match it as a substring of the
 **whole** entry:
