@@ -758,6 +758,30 @@ def test_a_blind_feature_is_never_counted_as_agreement(tmp_path: Path) -> None:
     assert "max H 0.400 `tool sequence`" in summary, "and the maximum is over what SAW something"
 
 
+def test_the_token_figures_are_labelled_and_count_every_sample_driven(tmp_path: Path) -> None:
+    """Two placements, two units, each said in the text that carries it.
+
+    The model header answers "what did this run cost", which is a TOTAL; the per-case column
+    answers "how do these cases compare", which is per sample — the comparable form, since
+    cases need not drive the same number of samples.  A figure that could be either is worse
+    than none: here the two differ by a factor of fifteen.
+
+    The divisor is the samples DRIVEN, never the pooled ones.  A sample that burned tokens and
+    was then excluded still cost them, so dividing by the smaller pooled count would inflate
+    every case that excluded a sample — and inflate it most where the harness misfired most."""
+    report_dir = _indexed_run(
+        tmp_path, "run-cost", "openai/gpt-oss-20b", {"a-case": (14, 14), "b-case": (14, 14)}
+    )
+    summary = assemble.render_run_summary([report_dir])
+
+    # _TIMINGS is 54,200 in / 5,900 out per case, over two cases and 15 driven samples each.
+    assert "**108,400 in · 11,800 out** — run total, every sample driven" in summary, (
+        "the model header totals both cases and says it is a total"
+    )
+    assert "| tokens / sample |" in summary, "and the column says it is not"
+    assert "| 3,613 in · 393 out |" in summary, "54,200 / 15 driven — not / 14 pooled"
+
+
 def test_a_case_document_is_postable_where_a_whole_run_was_not(tmp_path: Path) -> None:
     """The size fix, and the seam that makes the fallback work.
 

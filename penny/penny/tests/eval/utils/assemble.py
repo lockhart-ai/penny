@@ -515,8 +515,18 @@ _SUMMARY_VARIANCE = (
 )
 _SUMMARY_NO_VARIANCE = "**no features measured**"
 _SUMMARY_BLIND = " · {count} blind"
-_SUMMARY_TABLE_HEAD = "| # | case | deterministic | variance | samples |\n|---|---|---|---|---|"
-_SUMMARY_ROW = "| {position} | `{case_id}` | {checks} | {variance} | {samples} |"
+# The unit is IN THE HEADING, both places, because a token figure that could be either a
+# total or a per-sample average is worse than none: they answer different questions and the
+# difference here is a factor of fifteen.  The model header answers "what did this run cost",
+# which is a total; the per-case column answers "how do these cases compare", which is per
+# sample — the comparable form, since cases need not drive the same number of samples.
+_SUMMARY_TABLE_HEAD = (
+    "| # | case | deterministic | variance | samples | tokens / sample |\n|---|---|---|---|---|---|"
+)
+_SUMMARY_ROW = "| {position} | `{case_id}` | {checks} | {variance} | {samples} | {cost} |"
+_SUMMARY_COST = "**{input:,} in · {output:,} out**{thinking} — run total, every sample driven"
+_SUMMARY_THINKING = " ({share:.0%} thinking)"
+_ROW_COST = "{input:,.0f} in · {output:,.0f} out"
 _SUMMARY_CASES = "{count} case{plural}"
 _ROW_CHECKS = "{glyph} {passed}/{total} · {rate:.0%}"
 _ROW_VARIANCE = "{glyph} max H {entropy:.3f} `{feature}` · {varying}/{total} vary"
@@ -598,6 +608,9 @@ def _model_section(manifest: RunManifest, artifacts: Sequence[CaseArtifact]) -> 
     """One model's whole run: its two headline readings, then a row per case."""
     lines = [_SUMMARY_MODEL_HEADING.format(model=manifest.model), ""]
     lines += [_summary_checks(artifacts), "", _summary_variance(artifacts), ""]
+    cost = _summary_cost(artifacts)
+    if cost:
+        lines += [cost, ""]
     lines += [_SUMMARY_TABLE_HEAD]
     lines += [
         _SUMMARY_ROW.format(
@@ -606,10 +619,52 @@ def _model_section(manifest: RunManifest, artifacts: Sequence[CaseArtifact]) -> 
             checks=_row_checks(artifact),
             variance=_row_variance(artifact),
             samples=_row_samples(artifact),
+            cost=_row_cost(artifact),
         )
         for position, artifact in enumerate(artifacts, start=1)
     ]
     return "\n".join(lines)
+
+
+def _summary_cost(artifacts: Sequence[CaseArtifact]) -> str:
+    """What the model's whole run SPENT — a total, over every sample it drove.
+
+    Every driven sample, INCLUDING the ones run health later excluded: a sample that burned
+    tokens and was then dropped from the pool still cost them, so this and the pooled count
+    beside it answer different questions and must not be reconciled.  The case record's
+    timings are summed as each sample's drive returns, before any exclusion is decided, so
+    that is already what they hold.
+
+    Not comparable across runs of different sizes, which is exactly why the per-case column
+    is per sample instead — the two units are split by the question each is asked."""
+    total_in = sum(artifact.timings.input_tokens for artifact in artifacts)
+    total_out = sum(artifact.timings.output_tokens for artifact in artifacts)
+    reasoning = sum(artifact.timings.reasoning_tokens for artifact in artifacts)
+    if not total_in and not total_out:
+        return ""
+    thinking = (
+        _SUMMARY_THINKING.format(share=reasoning / total_out) if reasoning and total_out else ""
+    )
+    return _SUMMARY_COST.format(input=total_in, output=total_out, thinking=thinking)
+
+
+def _row_cost(artifact: CaseArtifact) -> str:
+    """What ONE sample of this case cost, which is the comparable form across cases.
+
+    Divided by the samples DRIVEN rather than the ones pooled, because the tokens were spent
+    driving all of them — dividing by the smaller pooled count would inflate every case that
+    excluded a sample, and inflate it most where the harness misfired most."""
+    per = cohort.per_sample_cost(
+        samples=artifact.samples,
+        calls=artifact.timings.calls,
+        duration_ms=artifact.timings.duration_ms,
+        input_tokens=artifact.timings.input_tokens,
+        output_tokens=artifact.timings.output_tokens,
+        reasoning_tokens=artifact.timings.reasoning_tokens,
+    )
+    if per is None or not (per.input_tokens or per.output_tokens):
+        return _ROW_ABSENT
+    return _ROW_COST.format(input=per.input_tokens, output=per.output_tokens)
 
 
 def _scored_checks(artifact: CaseArtifact) -> tuple[int, int]:
