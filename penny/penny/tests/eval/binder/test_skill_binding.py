@@ -13,7 +13,7 @@ answers for a parameter nobody declared or leaves one unanswered.  What these ca
 measure is what is left after that: whether it picked the RIGHT span, and whether it knew
 when to decline.
 
-Seven cases, both directions of the contract:
+Eight cases, both directions of the contract:
 
 * ``bind-listing-page`` — one url parameter, the ask names the page.
 * ``bind-two-parameters`` — the page AND what to look for on it, out of one message.
@@ -23,6 +23,9 @@ Seven cases, both directions of the contract:
 * ``bind-missing-page`` — the SHORTFALL: an ask that describes the job and names no page.
 * ``bind-missing-keyword`` — the shortfall beside a successful bind: the page is there,
   what to look for on it is not.
+* ``binder-fills-one-and-names-the-other-missing`` — the slot's CANONICAL case (#2006):
+  that same ask in five wordings, pooled into a cohort of fifteen and claimed against
+  ``docs/eval-case-design.md`` rather than the per-parameter scorer below.
 
 Since #1894 the binder is the ONE door for every entry against a routine the registry
 already holds — a cold apply and a request the classifier drew directly both come through
@@ -53,8 +56,27 @@ from typing import NamedTuple
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database.skills import SkillParameter
-from penny.tests.eval.conftest import BinderEval, BoundExpectation
+from penny.tests.eval.conftest import (
+    BIND_MISSING,
+    BIND_OUTCOME,
+    EVAL_MODELS,
+    BinderEval,
+    BindOutcome,
+    BoundExpectation,
+    bound_value_field,
+)
+from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.cohort import (
+    FIELD_UNSET,
+    Consequence,
+    SampleObservation,
+    SpecCategory,
+    output_field,
+)
+from penny.tests.eval.utils.worlds import World
+from penny.tools.micro_context import spoken_form
 
 pytestmark = pytest.mark.eval
 
@@ -417,6 +439,218 @@ async def test_one_parameter_binds_while_the_other_is_reported_missing(
     back to the next draw as its settled values, so a page given now is never asked for
     again."""
     await _run_case(binder_eval, _MISSING_KEYWORD)
+
+
+# ── The ported case: one parameter filled, one reported missing ───────────────
+#
+# The survivor is ``bind-missing-keyword``, because it is the one ask that states the whole
+# behaviour in a single draw: the page is in the message and what to look for on it is not,
+# so the answer has to carry both halves — the value it could read, and the parameter
+# nothing supplied — while the cadence sitting beside the address stays out of either.
+#
+# THE FACTS ARE CONSTANT across the five wordings, because every claim hinges on them.  The
+# address appears verbatim in each; the cadence appears verbatim as "every morning"; and no
+# wording names a timetable entry, so the shortfall is a property of the ask rather than of
+# how it was phrased.  Varying the cadence's own words would be varying the world a claim
+# reads, not the words a person used.
+#
+# An arm is a SEQUENCE of turns, matching the framer's shape: an ask is however many turns
+# the user took to make it, and ``render_spoken_turns`` renders them as the haystack the
+# span check reads.
+_MISSING_KEYWORD_PHRASINGS = (
+    (
+        "every morning could you look at https://northpier.example/departures for me "
+        "and let me know?",
+    ),
+    (
+        "would you mind checking https://northpier.example/departures every morning and "
+        "telling me what you find?",
+    ),
+    ("please look at https://northpier.example/departures every morning and keep me in the loop",),
+    (
+        "i'd like https://northpier.example/departures checked every morning — just let "
+        "me know how it looks",
+    ),
+)
+
+# The case's id and its five arms, named at module level so the deterministic probe in
+# ``make check`` can hold every arm against the facts it claims — the address, the cadence,
+# and the absence of anything answering the keyword — before any GPU time is spent.
+MISSING_KEYWORD_CASE_ID = "binder-fills-one-and-names-the-other-missing"
+MISSING_KEYWORD_ARMS = (_MISSING_KEYWORD.turns, *_MISSING_KEYWORD_PHRASINGS)
+
+# The two declared parameters, by the side of the contract each one is: the ask supplies an
+# address for the first and nothing at all for the second.  Named rather than indexed at each
+# claim, so a signature edit that reordered them breaks here rather than silently swapping
+# which parameter every claim is about.  The drift probe already holds this pair against the
+# signature's own declared order.
+_SUPPLIED = _MISSING_KEYWORD.expectations[0]
+_UNSUPPLIED = _MISSING_KEYWORD.expectations[1]
+
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The locus is the SHIPPED agent name.  The case id is a filename; this is
+# the contract, and it renders above every number in the report.
+_MISSING_KEYWORD_BEHAVIOUR = (
+    f"In the {PennyConstants.SKILL_BIND_AGENT_NAME} micro-context, when a routine Penny "
+    "already knows is pointed at something new and the ask supplies only part of what it "
+    "declares, Penny fills each parameter from the span that supplies it and names the one "
+    "nothing supplies — taking the job's cadence into neither."
+)
+
+
+def _reported_a_shortfall(sample: SampleObservation, _world: World) -> Answer:
+    """The draw came back a SHORTFALL rather than a complete binding.
+
+    An enumerated outcome, asserted by equality: production answers with ``BoundValues``
+    when every declared parameter got a value and ``MissingParameters`` when one did not,
+    and which of the two it wrote is the decision this case is about.  It is not validated
+    anywhere upstream — the draw chooses, per parameter, whether to write a value line or a
+    missing line — so this is the open question and not the validator's.
+
+    The wrong answer is the interesting one: a complete binding here means the draw filled
+    the keyword from something in the sentence that is not a timetable entry, which is a
+    routine that will read the right page for the wrong thing."""
+    outcome = sample.field(BIND_OUTCOME)
+    return outcome == BindOutcome.SHORTFALL.value, f"came back {outcome}"
+
+
+def _names_the_keyword_missing(sample: SampleObservation, _world: World) -> Answer:
+    """It names the keyword, and only the keyword, as the thing nothing supplies.
+
+    Equality over a closed set — the parameters the signature DECLARES — so this is the
+    smallest datum that identifies the answer: naming the url as well would be a routine
+    that cannot be pointed anywhere despite being handed an address, and naming nothing at
+    all is the outcome claim above said a second way."""
+    reported = sample.field(BIND_MISSING)
+    return reported == _UNSUPPLIED.parameter, f"reported {reported!r}"
+
+
+def _the_url_is_the_span_that_supplies_it(sample: SampleObservation, _world: World) -> Answer:
+    """The bound url carries the address the ask supplies — the *nothing omitted* half.
+
+    Production validates that a value is A span of the user's words (``_is_a_spoken_span``)
+    and re-rolls until it is, so what is left to measure is whether it is THE span: an ask
+    carrying one address and one cadence has two spans a draw could have taken, and only
+    one of them is a page.
+
+    The anchor is the SMALLEST datum unique in this world — the host and path, without the
+    scheme — because a draw that bound the address with ``https://`` and one that bound it
+    without read the ask exactly as well, and the scheme is a rendering the draw was free to
+    choose.  Compared through the shipped ``spoken_form``, so what a case calls a match and
+    what production calls a span are one definition."""
+    bound = sample.field(bound_value_field(_SUPPLIED.parameter))
+    if bound == FIELD_UNSET:
+        return False, "no value came back for it"
+    carried = spoken_form(_SUPPLIED.anchor) in spoken_form(bound)
+    return carried, f"bound {bound!r}, not the page the ask names"
+
+
+def _no_value_carries_the_cadence(sample: SampleObservation, _world: World) -> Answer:
+    """No bound value carries the job's cadence — the *nothing invented* half.
+
+    How often a routine runs is settled where the job is set running, never by the binder,
+    so a cadence INSIDE a value means the draw read the terms as part of the thing to point
+    the routine at, and the routine's identity then depends on how often it runs.  It is a
+    fact of this world rather than a vocabulary rule: the case declares the words its own
+    ask carries, exactly as a world declares what must not be kept from a page, so nothing
+    here is keyed to a list of timing words in general."""
+    bound = {
+        one.parameter: sample.field(bound_value_field(one.parameter))
+        for one in _MISSING_KEYWORD.expectations
+    }
+    offenders = [
+        f"{name} ({term})"
+        for name, value in bound.items()
+        if value != FIELD_UNSET
+        for term in _MISSING_KEYWORD.forbidden
+        if spoken_form(term) in spoken_form(value)
+    ]
+    return not offenders, f"carried the terms: {'; '.join(offenders)}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_page_binds_and_the_entry_is_reported_missing(
+    binder_eval: BinderEval, model: str
+) -> None:
+    """One ask in five wordings: check this timetable page every morning and keep me posted.
+
+    The page is in the message and what to look for on it is not, so the answer has to carry
+    both halves — the missing parameter named, and the bound one not thrown away on the way
+    to reporting it — with the cadence in neither.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    to no store — so there is nothing for a store claim to read.  What this binding becomes
+    is round state on a later transition, and this case never runs that.
+
+    **Three claims are missing because production already validates them**, and a thin set
+    should read as closed rather than as unrun.  Two are ``_fills_the_declared_signature``'s:
+    that the drawn names equal the declared names exactly (so no parameter is answered
+    twice, left unanswered or invented), and that every value is a literal span of what the
+    user said.  The third is a GENERATED record rather than a validator — that nothing was
+    bound for the parameter reported missing.  ``_skill_binding`` builds ``values`` from the
+    value lines and ``names`` from the rest, so a name in one can never be in the other: the
+    partition is the framework's arithmetic, not the draw's answer.
+    """
+    cohort = await binder_eval(
+        case_id=MISSING_KEYWORD_CASE_ID,
+        behaviour=_MISSING_KEYWORD_BEHAVIOUR,
+        model=model,
+        turns=_MISSING_KEYWORD.turns,
+        also_phrased=_MISSING_KEYWORD_PHRASINGS,
+        skill=_MISSING_KEYWORD.skill,
+        intent=_MISSING_KEYWORD.intent,
+        parameters=_MISSING_KEYWORD.parameters,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the CLOSED fields of the typed result, asserted by equality: which of the two
+    # enumerated answers the draw wrote, and which declared parameter it named.
+    cohort.claim(
+        "state: the draw reported a shortfall rather than a complete binding",
+        _reported_a_shortfall,
+        SpecCategory.LANDED,
+    )
+    cohort.claim(
+        "state: it names the keyword as the one thing nothing supplies",
+        _names_the_keyword_missing,
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — the OPEN field, which for this shape is each bound value, read in both
+    # directions: the value carries the span of the ask that supplies it, and it carries
+    # nothing the parameter does not own.
+    cohort.claim(
+        "state: the url is bound to the address the ask supplies",
+        _the_url_is_the_span_that_supplies_it,
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: no bound value carries the job's cadence",
+        _no_value_carries_the_cadence,
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — the draw's own structured fields.
+    #
+    # The OUTCOME and what it reported missing are CONSEQUENTIAL: a complete binding and a
+    # shortfall are two different end states, and which parameter is named decides what the
+    # turn goes on to ask for.  The bound url is COSMETIC — a draw that kept the scheme and
+    # one that dropped it point the routine at the same page.
+    #
+    # The KEYWORD's own value axis is absent, deliberately: a correct draw binds nothing for
+    # it, so the field is absent from every sample and an axis over it would read `unset`
+    # throughout, which the pooler reports as blind rather than as agreement.
+    #
+    # No tool sequence and no reply spread: a single call makes neither.
+    cohort.measure(
+        output_field(BIND_OUTCOME),
+        output_field(BIND_MISSING),
+        output_field(bound_value_field(_SUPPLIED.parameter), consequence=Consequence.COSMETIC),
+    )
 
 
 # Every case, for the deterministic drift probes in ``make check`` — one place, so the
