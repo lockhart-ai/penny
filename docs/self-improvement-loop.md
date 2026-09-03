@@ -197,12 +197,12 @@ and the `quality` reviewer no longer dispatch — retired by #1624 / #1569; the
 
 **Query-aware mock browser.** The isolation core stubs browse with one fixed
 string — enough to check *whether* the model browsed, not *how it reasoned over
-the result*. The `browse=` kwarg on `chat_eval` / `collector_eval` installs
-`CannedPage`s keyed by a query/URL substring (`install_browse` in `conftest.py`),
-so a case returns a realistic page (facts + a source URL in the visible body) and
-a refined follow-up query maps to a different page — letting cases score the
-*subsequent* call (the write, the send, the second browse) and even multi-hop
-chains.
+the result*. The `browse=` kwarg on `chat_eval` — and a `CycleArm`'s own `pages`
+on `collector_cycles_eval` — installs `CannedPage`s keyed by a query/URL
+substring (`install_browse` in `conftest.py`), so a case returns a realistic page
+(facts + a source URL in the visible body) and a refined follow-up query maps to
+a different page — letting cases score the *subsequent* call (the write, the
+send, the second browse) and even multi-hop chains.
 
 **Score behaviour, not content.** Because browse content is canned and the model
 is stochastic, scorers assert on behaviour (tool called, entry written, message

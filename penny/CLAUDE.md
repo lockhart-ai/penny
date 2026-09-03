@@ -584,7 +584,7 @@ under test, and which state that agent is in. The tree is that grouping.
 
 ```
 tests/eval/
-  conftest.py       — the drivers (chat_eval, collector_eval, the per-agent fixtures).
+  conftest.py       — the drivers (chat_eval, collector_cycles_eval, the per-agent ones).
                       Stays at the ROOT: pytest resolves conftest hierarchically, so one
                       here serves every subdirectory
   utils/            — shared machinery, and nothing else: artifacts · checkpoint ·
@@ -812,7 +812,7 @@ configured terms actually carry — every surface a cycle reads, which since #19
 prompt's three parts (instructions · routine · values by name) plus the collection's own name and
 description — and names WHERE, so a condition surviving only in a prose description reads as that
 rather than as the mechanism carrying it. The `collector_cycles_eval`
-runner (`collector_eval`'s multi-cycle sibling — each cycle's footprint kept apart as a
+runner (the one collector driver there is — each cycle's footprint kept apart as a
 `CycleObservation`, plus a ran-guard `Check` so a dispatcher refusal can never read as the model
 doing nothing), report-only, with the seeded world, the page variants, the scorer's own
 three-good-cycles fixture, and every configured surface held against `Collector._compose_prompt`
