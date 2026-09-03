@@ -3621,13 +3621,14 @@ def _observe_cycles(
 def collector_cycles_eval(
     make_config: Callable[..., Config], tmp_path, request
 ) -> Iterator[CollectorCyclesEval]:
-    """Drive SEVERAL real collector cycles (``run_for``) N times for one collection, each
-    cycle against its own browse register, and score them together (#1905).
+    """Drive one or SEVERAL real collector cycles (``run_for``) N times for one collection,
+    each cycle against its own browse register, and score them together (#1905).
 
-    ``collector_eval``'s multi-cycle sibling, kept beside it rather than folded into it:
-    a one-cycle case scores an end state, while a watch's contract is what the SECOND
-    cycle does about a world that moved — no notification when nothing changed, exactly
-    one when something did — which needs each cycle's footprint kept apart.
+    The one collector driver there is.  It keeps each cycle's footprint apart rather than
+    folding them into one end state, because a watch's contract is what the SECOND cycle
+    does about a world that moved — no notification when nothing changed, exactly one when
+    something did.  A ported case drives ONE cycle per arm and reads that same footprint,
+    so a single-cycle case needs no driver of its own.
 
     Each sample is hermetic (its own mock Signal server, DB and real-model Penny).  Seeds
     run first, then embeddings backfill, then ``prepare`` gets the constructed Penny — a
