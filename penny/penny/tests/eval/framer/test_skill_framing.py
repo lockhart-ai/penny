@@ -7,7 +7,7 @@ occasion.  It never sees the tool calls; the leaf labeller, which names the rout
 implementation, never sees the ask (#1824).  Nothing is offered to it: it MINTS the
 parameters by reading what the user said.
 
-Seven cases, all the same look-up → find → remember shape, deliberately spanning the
+Eight cases, all the same look-up → find → remember shape, deliberately spanning the
 three multiplicity shapes — one argument, two of the SAME type, two of DIFFERENT types —
 while varying topic, how much the ask names, and how many pieces have to be re-supplied:
 
@@ -19,6 +19,9 @@ while varying topic, how much the ask names, and how many pieces have to be re-s
 * ``frame-two-types-page-and-title`` — a page + a title: two pieces, different types.
 * ``frame-two-same-type-symbols`` — two symbols, where a single list parameter is most
   tempting and each must stay its own scalar.
+* ``framer-mints-only-the-piece-that-varies`` — the slot's CANONICAL case (#2006): the
+  ticker ask in five wordings, pooled into a cohort of fifteen and claimed against
+  ``docs/eval-case-design.md`` rather than the per-check scorer below.
 
 Each case's input is the round's USER turns, rendered by the shipped
 ``build_framing_content`` — never hand-written — so the draw reads exactly what
@@ -57,7 +60,27 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.tests.eval.conftest import FramerEval, ParameterFamily
+from penny.constants import PennyConstants
+from penny.tests.eval.conftest import (
+    EVAL_MODELS,
+    FRAME_DESCRIPTION,
+    FRAME_NAME,
+    FRAME_PARAMETERS,
+    FramerEval,
+    ParameterFamily,
+    classify_by_family,
+    frame_parameter_name,
+    frame_parameter_says,
+    framed_parameters,
+)
+from penny.tests.eval.utils.assertions import Answer, WorldClaim
+from penny.tests.eval.utils.cohort import (
+    Consequence,
+    SampleObservation,
+    SpecCategory,
+    output_field,
+)
+from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
@@ -207,6 +230,200 @@ async def test_the_share_price_is_the_routine_and_the_ticker_is_the_parameter(
     routine is set running and contributes nothing to the signature — a framer that turns
     it into a parameter has made a delivery preference into something to be re-supplied."""
     await _run_case(framer_eval, _TICKER)
+
+
+# ── The ported case: the ticker ask, in five wordings ─────────────────────────
+#
+# The survivor is ``frame-ticker-only-parameter``, because its ask is the plainest
+# statement of the whole behaviour AND of its negative direction at once: what the user
+# came for (the share price) bakes into the framing, the one thing that varies (the
+# symbol) becomes the parameter, and "tell me when it moves" — which is settled where the
+# job is set running — becomes neither.
+#
+# THE FACTS ARE CONSTANT across the five wordings, because the claims hinge on them: every
+# arm names the symbol VLT, asks for its share price, says to remember it under VLT, and
+# carries a clause about being told when it changes.  What varies is only how a person
+# says that.  An arm that dropped the notification clause would be a different ask and its
+# samples would be measuring a different behaviour under one case id.
+#
+# An arm is a SEQUENCE of turns, not a sentence: the round's ask is two turns (the standing
+# want, then the demonstration), and ``build_framing_content`` renders the user's turns one
+# per line as the whole document.  So a wording of this ask is two turns said differently.
+_TICKER_PHRASINGS = (
+    (
+        "could you keep tabs on a stock for me and let me know when it changes",
+        "look up VLT, get the share price, and remember it under VLT",
+    ),
+    (
+        "i'd like a stock followed, with a heads up whenever it moves",
+        "check VLT, find the share price, and save it under VLT",
+    ),
+    (
+        "can you watch a stock for me? tell me if it shifts",
+        "look VLT up, find the share price, and keep it under VLT",
+    ),
+    (
+        "keep an eye on a stock and ping me when the number moves",
+        "look up VLT, find the share price, and store it under VLT",
+    ),
+)
+
+# The case's id and its five arms, named at module level so the deterministic probe in
+# ``make check`` can hold every arm against the facts it claims before any GPU time.
+TICKER_CASE_ID = "framer-mints-only-the-piece-that-varies"
+TICKER_ARMS = (_TICKER.turns, *_TICKER_PHRASINGS)
+
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The locus is the SHIPPED agent name.  The case id is a filename; this is
+# the contract, and it renders above every number in the report.
+_TICKER_BEHAVIOUR = (
+    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when a demonstrated "
+    "round is turned into a reusable routine, Penny mints one parameter for the piece a new "
+    "occasion has to supply and leaves what the user came for — and when they want telling "
+    "— in the framing rather than in the interface."
+)
+
+
+def _answers(family: ParameterFamily) -> WorldClaim:
+    """A claim that EXACTLY ONE minted parameter answers one piece the ask requires.
+
+    The parameter set is a CLOSED field, so this is asserted by equality under LANDED rather
+    than traced under PROVENANCE — but it is still one half of a pair, and its other half is
+    the count below: nothing the ask requires was left out, and nothing it does not was
+    added.
+
+    "Answers" is decided by :func:`classify_by_family`, the one classification discipline
+    every suite that asks what a drawn parameter is for reads.  That is a closed equivalence
+    class agreed with the code owner and pinned in ``make check``, not a judgement made per
+    run: the family's tokens are the breadth a piece may be named at, so ``ticker``,
+    ``symbol`` and ``stock_symbol`` are one answer and a reference name is a target rather
+    than a string to match.  Which is what makes this an assertion rather than a reading —
+    a differently-worded correct answer passes, and no correct draw can answer it twice.
+
+    Nothing at all answering it is a piece the routine can no longer be pointed at; two
+    answering it is the same piece asked for twice."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        drawn = framed_parameters(sample)
+        matched = [
+            name
+            for (name, _says), family_of in zip(
+                drawn, classify_by_family(drawn, (family,)), strict=True
+            )
+            if family_of is not None
+        ]
+        return len(matched) == 1, f"{len(matched)} answer it: {matched or 'none'}"
+
+    return answer
+
+
+def _asks_for_nothing_else(sample: SampleObservation, _world: World) -> Answer:
+    """The count — the other half of the pair above, and the case's negative direction.
+
+    Anything beyond the pieces the ask requires is a piece the user would be made to
+    re-supply that their own ask already settled — the cadence, the notification, the thing
+    the routine is FOR.  So the count IS the negative direction, and it is stated here
+    rather than as a list of timing words: a rule keyed to the vocabulary of the clause in
+    front of us would not fire for a clause nobody enumerated, and a parameter minted for
+    anything the ask does not require fails this claim whatever it is called."""
+    drawn = sample.field(FRAME_PARAMETERS)
+    return drawn == str(len(_TICKER.parameters)), f"minted {drawn}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
+    framer_eval: FramerEval, model: str
+) -> None:
+    """One ask in five wordings: track a stock, tell me when it moves, here is the symbol.
+
+    The share price is what the routine IS, so it belongs in the framing; the symbol is the
+    one thing said again next time; and being told when it moves is settled where the job is
+    set running.  A framer that turns the notification into a parameter has made a delivery
+    preference into something to be re-supplied.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    to no store — so there is nothing for a store claim to read.  The signature this draw
+    returns is persisted later, by run-end extraction, and this case never runs it.
+
+    **Three claims are missing because production already validates them**, and a thin set
+    should read as closed rather than as unrun: that the draw minted at least one parameter,
+    that no two parameters share a name, and that every demonstrated value is a literal span
+    of the user's own turns are all ``_mints_a_usable_signature``'s, re-rolled until they
+    hold, so each would run 15/15 by construction.
+
+    **The PROVENANCE category is empty too, and it needs its reason stated.**  Fact
+    alignment reads a draw's OPEN fields, and this draw's are the routine's ``name``, its
+    ``description``, each parameter's line, and each parameter's demonstrated ``value``.  The
+    value is closed upstream — production refuses one that is not a literal span of the
+    user's turns.  The other three are an identifier and two lines of deliberately GENERIC
+    prose, which carry no traceable value at all on a correct draw, and the suite's one
+    instrument for the invented direction (``unsourced_specifics``) does not transfer to
+    them: measured against this case's own document, it reads a Title-Cased but perfectly
+    correct framing as four inventions, while a made-up exchange in ``the Nasdaq exchange``
+    passes — capitalisation is a rendering the draw chooses, and a single-word invention is
+    the probe's declared blind spot.  A check that fails a correct run for a cosmetic reason
+    and misses the thing it is for is not an assertion, so this category is empty rather than
+    filled with it.
+
+    **And one real contract is NOT measured here, deliberately.**  That the routine's name
+    and description say the KIND of task and never THIS occasion — a framing carrying ``VLT``
+    is a routine that can only ever run once — fits none of the three assertion categories:
+    it is the CONVERSE of a provenance claim (the offending token is in the ask, so nothing
+    is invented and nothing is omitted), and inventing a category to keep one measurement is
+    how a closed list stops being closed.  It stays what the design calls wrong-but-stable —
+    read by a person opening the modal sample, where the drawn name renders verbatim.
+    """
+    cohort = await framer_eval(
+        case_id=TICKER_CASE_ID,
+        behaviour=_TICKER_BEHAVIOUR,
+        model=model,
+        turns=_TICKER.turns,
+        also_phrased=_TICKER_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the CLOSED field of the typed result: the parameter SET it minted, by
+    # equality.  A framing draw has no enumerated outcome to land on (a signature came back
+    # or nothing did, and nothing is the completeness gate's), so the set is what this
+    # category holds for this shape.
+    for one in _TICKER.parameters:
+        cohort.claim(
+            f"state: exactly one parameter answers the {one.label}",
+            _answers(one),
+            SpecCategory.LANDED,
+        )
+    cohort.claim(
+        "state: the routine asks for nothing else",
+        _asks_for_nothing_else,
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — EMPTY, and see the docstring: this draw has no open field a fact
+    # alignment can read.
+
+    # What is MEASURED — the draw's own structured fields.
+    #
+    # The COUNT is consequential: a routine asking for two things is a different interface
+    # from one asking for one.  The name, the description and the drawn parameter's own
+    # name and line are COSMETIC — `stock_tracker` and `share_price_watcher` leave the same
+    # interface behind — and the naming spread is the framer's known system-level finding
+    # (0.90 on both measured models), so it belongs in the variance table and never as a
+    # fact about one sample.  Only position 1 is measured: this ask requires one parameter,
+    # so a second position exists on a divergent sample alone and its axis would read
+    # `unset` for the pack.
+    #
+    # No tool sequence and no reply spread: a single call makes neither.
+    cohort.measure(
+        output_field(FRAME_PARAMETERS),
+        output_field(FRAME_NAME, consequence=Consequence.COSMETIC),
+        output_field(FRAME_DESCRIPTION, consequence=Consequence.COSMETIC),
+        output_field(frame_parameter_name(1), consequence=Consequence.COSMETIC),
+        output_field(frame_parameter_says(1), consequence=Consequence.COSMETIC),
+    )
 
 
 # ── Case 4: one turn is enough to frame ───────────────────────────────────────

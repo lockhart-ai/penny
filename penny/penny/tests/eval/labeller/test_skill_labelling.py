@@ -6,7 +6,7 @@ provenance verdict, no routine name, no routine description.  The interface half
 description · parameters, decided from the user's ask alone) is the framer's, a separate
 draw that never sees this one's evidence.
 
-Five cases, all the same look-up → extract → remember shape, varying topic, leaf
+Six cases, all the same look-up → extract → remember shape, varying topic, leaf
 structure and conversation length, so what moves between them is the NAMING and nothing
 else:
 
@@ -16,6 +16,9 @@ else:
 * ``leaf-shared-spot-one-name`` — one spot filling two sites: ONE line covering both?
 * ``leaf-single-turn-teach`` — no elicit round: the conversation block at its minimum.
 * ``leaf-search-not-page`` — the look-up is a text search: named as a search, not a page?
+* ``namer-tells-two-sources-apart`` — the slot's CANONICAL case (#2006): the two-sources
+  demonstration in five wordings over one ledger, pooled into a cohort of fifteen and
+  claimed against ``docs/eval-case-design.md`` rather than the per-spot scorer below.
 
 Each case is a fixture LEDGER, and its input document is rendered from that ledger by
 the shipped ``distill_steps`` + ``build_naming_content`` — never hand-written — so the
@@ -40,7 +43,23 @@ from typing import NamedTuple
 import pytest
 
 from penny.constants import PennyConstants
-from penny.tests.eval.conftest import DemoCall, DemoTurn, LabellerEval
+from penny.tests.eval.conftest import (
+    EVAL_MODELS,
+    DemoCall,
+    DemoTurn,
+    LabellerEval,
+    label_name_field,
+    label_says_field,
+)
+from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.cohort import (
+    Consequence,
+    SampleObservation,
+    SpecCategory,
+    output_field,
+)
+from penny.tests.eval.utils.worlds import World
+from penny.tools.micro_context import slug_parameter_name
 
 pytestmark = pytest.mark.eval
 
@@ -253,6 +272,213 @@ async def test_two_sources_draw_distinct_names(labeller_eval: LabellerEval):
     run, so one name for both loses which site is which.  A labeller that calls them
     both `news_page` has collapsed a distinction the routine depends on."""
     await _run_case(labeller_eval, _TWO_SOURCES)
+
+
+# ── The ported case: two sources, one demonstration, five wordings ────────────
+#
+# The survivor is ``leaf-two-sources-distinct-names``, because it states the behaviour and
+# its negative direction in one demonstration: every spot is named for what it does in THIS
+# routine, and the two sites — which take their own value every run — must not collapse
+# onto one name.  Its sibling ``leaf-shared-spot-one-name`` cannot be the survivor: a split
+# shared spot keys a line to a name nobody offered, which the production validator refuses
+# and re-rolls, so its whole claim runs 15/15 by construction.
+#
+# THE ARM IS THE DEMONSTRATING UTTERANCE, and the LEDGER is held constant across the five.
+# Distillation is deterministic Python over the calls, so identical calls mean identical
+# spots under identical current names on every arm — which is what makes one ``by_value``
+# map, one offered set and one set of claims legal over the pool.  What moves is the words
+# the user used to demonstrate it: both addresses appear verbatim in every wording, and so
+# does the thing being kept, because the claims hinge on them.
+_TWO_SOURCES_PHRASINGS = (
+    "have a look at citydesk.example/front and harborpost.example/front, and save the "
+    "top headline from each",
+    "open citydesk.example/front and harborpost.example/front and keep the lead story from both",
+    "check citydesk.example/front and harborpost.example/front, then remember whichever "
+    "headline is at the top of each",
+    "go to citydesk.example/front and harborpost.example/front and note down the top "
+    "headline on each one",
+)
+
+# The case's id, its five arms and the two spots it tells apart, named at module level so
+# the deterministic probe in ``make check`` can hold every arm against the ledger it claims
+# — one offered set, one map home — before any GPU time is spent.
+TWO_SOURCES_CASE_ID = "namer-tells-two-sources-apart"
+TWO_SOURCES_ARMS = (_TWO_SOURCES.utterance, *_TWO_SOURCES_PHRASINGS)
+
+# The two spots on the SAME argument, by the CURRENT (argument-derived) name distillation
+# gives each — the anchor the input document renders verbatim and the key every field is
+# filed under.  Named here rather than spelled at each claim, so a ledger edit that renamed
+# a spot breaks the probe rather than quietly voiding a claim.
+_FIRST_SOURCE = "queries"
+_SECOND_SOURCE = "queries-2"
+OFFERED_SPOTS = (_FIRST_SOURCE, _SECOND_SOURCE, "extract", "memory", "key")
+
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The locus is the SHIPPED agent name.  The case id is a filename; this is
+# the contract, and it renders above every number in the report.
+_TWO_SOURCES_BEHAVIOUR = (
+    f"In the {PennyConstants.SKILL_NAMING_AGENT_NAME} micro-context, when a demonstrated "
+    "routine reads two different pages into one argument, Penny gives every spot its own "
+    "name for what it supplies in THIS routine — never the argument's own name handed back, "
+    "and never one name covering both sites."
+)
+
+
+def _drawn_names(sample: SampleObservation) -> dict[str, str]:
+    """What the draw called each offered spot, keyed by the spot's current name."""
+    return {spot: sample.field(label_name_field(spot)) for spot in OFFERED_SPOTS}
+
+
+def _every_name_hardens_to_a_key(sample: SampleObservation, _world: World) -> Answer:
+    """Every spot's name survives the SHIPPED hardener as something a binding can use.
+
+    Imported, never re-implemented: a name becomes a key through ``slug_parameter_name`` at
+    instantiation, so what a case calls usable and what production calls a key are one
+    definition.  A name that hardens to nothing — punctuation, an empty line after the
+    separator — leaves the spot named by nothing, which is the answer OMITTED rather than
+    given.
+
+    One claim over all five spots rather than five: every spot here is offered under the
+    same contract, so which of them failed is the rationale's job.  (An extract instruction
+    naming several DIFFERENT things is the case that needs one claim each — the things
+    degrade one at a time and are not interchangeable.)"""
+    unusable = [
+        spot for spot, name in _drawn_names(sample).items() if not slug_parameter_name(name)
+    ]
+    return not unusable, f"hardens to nothing: {unusable}"
+
+
+def _no_spot_was_handed_back_its_own_name(sample: SampleObservation, _world: World) -> Answer:
+    """No spot came back named after the tool argument it fills.
+
+    The document offers each spot under its argument-derived name, so a draw answering
+    ``queries`` with ``queries`` has described the spot rather than named it — the answer is
+    OMITTED, and the routine is left exactly as unreadable as it was."""
+    echoed = [
+        spot
+        for spot, name in _drawn_names(sample).items()
+        if slug_parameter_name(name) == slug_parameter_name(spot)
+    ]
+    return not echoed, f"echoed the argument name: {echoed}"
+
+
+def _every_spot_says_what_belongs_there(sample: SampleObservation, _world: World) -> Answer:
+    """Every spot's line carries the one thing to supply there each run.
+
+    The description is the grammar's one optional field, so a line that stops after its name
+    is well-formed and reaches the caller — the spot is named and nobody can tell what goes
+    in it.  The instruction asks for both halves; a blank omits one."""
+    silent = [spot for spot in OFFERED_SPOTS if not sample.field(label_says_field(spot)).strip()]
+    return not silent, f"no description: {silent}"
+
+
+def _the_two_sources_drew_different_names(sample: SampleObservation, _world: World) -> Answer:
+    """The two sites are two spots, and they read back as two.
+
+    The demonstration SUPPLIES the distinction — each site takes its own value every run —
+    so a draw calling both of them ``news_page`` has omitted it, and at run time one name
+    for two spots cannot say which site is which.  Compared HARDENED, because that is what
+    the names become: ``News Page`` and ``news_page`` are one key, not two."""
+    first, second = _drawn_names(sample)[_FIRST_SOURCE], _drawn_names(sample)[_SECOND_SOURCE]
+    hardened = (slug_parameter_name(first), slug_parameter_name(second))
+    return hardened[0] != hardened[1], f"both drew {hardened[0]!r}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_two_sources_are_named_apart_however_the_demonstration_is_worded(
+    labeller_eval: LabellerEval, model: str
+) -> None:
+    """One demonstration in five wordings: read two front pages, keep the top headline of
+    each.
+
+    **The LANDED category is empty for this case, and it is CLOSED UPSTREAM rather than
+    unrun.**  A labelling draw's closed field is WHICH spots were named, and production
+    validates exactly that: ``_labels_every_spot`` accepts a draw only when every offered
+    spot has one well-formed line and nothing else does, re-rolling while it does not.  So
+    "every spot got a line" runs 15/15 by construction and would measure the validator.
+    What is left to claim is what those lines SAY, which is the provenance block below.
+
+    **The STORE category is empty by construction.**  A micro-context is one call that
+    returns a typed result — it writes to no store — so there is nothing for a store claim
+    to read.
+
+    **One further claim is missing for the same upstream reason**: that a value filling two
+    argument sites draws exactly ONE line.  A draw that split it either repeats the spot's
+    current name or keys a line to a name nobody offered, and the coverage rule refuses
+    both, so no split ever reaches an accepted draw.
+
+    **And the provenance block below carries only ONE of its two directions, which the design
+    calls half a check — so here is the other half's reason.**  *Nothing invented* has no
+    legal instrument for this shape.  The suite's one probe (``unsourced_specifics``) reads
+    URLs, numbers and capitalised name phrases, which is the right instrument for a value
+    lifted off a page and the wrong one for an identifier and a line of generic prose:
+    measured against this case's own document, it reads a Title-Cased but perfectly correct
+    label — ``First Site — The First News Front Page To Read`` — as four inventions, while
+    the failure the ticket actually names (a spot named for what the LAST routine did, say
+    ``product_price`` on a headline routine) carries no capital, no digit and no url and is
+    invisible to it.  A check that fails a correct run for a cosmetic reason and misses the
+    thing it is for is not an assertion, so it is left out rather than counted.
+    """
+    cohort = await labeller_eval(
+        case_id=TWO_SOURCES_CASE_ID,
+        behaviour=_TWO_SOURCES_BEHAVIOUR,
+        model=model,
+        utterance=_TWO_SOURCES.utterance,
+        also_demonstrated=_TWO_SOURCES_PHRASINGS,
+        conversation=_TWO_SOURCES.conversation,
+        calls=_TWO_SOURCES.calls,
+        target=_TWO_SOURCES.target,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — empty, and closed upstream; see the docstring.
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.  All
+    # four are the *nothing omitted* direction: the demonstration offers a spot and asks for
+    # a name and a line, and each claim is a way that answer can fail to arrive — nothing
+    # usable, the question handed back, no line, or a distinction the demonstration draws
+    # collapsed.  The other direction is absent, and the docstring says why.
+    cohort.claim(
+        "state: every spot's name hardens to a usable binding key",
+        _every_name_hardens_to_a_key,
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: no spot was handed back its own argument name",
+        _no_spot_was_handed_back_its_own_name,
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: every spot's line says what belongs there",
+        _every_spot_says_what_belongs_there,
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the two sources drew different names",
+        _the_two_sources_drew_different_names,
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — what the draw called each spot, one axis per spot.
+    #
+    # COSMETIC, all five: `first_front_page` and `citydesk_page` leave the same routine
+    # behind, so a divergence is a fact about the SYSTEM's naming spread and never about one
+    # sample.  This is the framer's own known signature one layer down, and filing it
+    # consequential would make almost every sample an outlier.
+    #
+    # The DESCRIPTION axes are left out: a line of prose is measured by textual spread and
+    # this shape has no reply for that machinery to read, so an entropy over free text would
+    # report near-total disagreement on every run whatever the draw did.
+    #
+    # No tool sequence and no reply spread: a single call makes neither.
+    cohort.measure(
+        *(
+            output_field(label_name_field(spot), consequence=Consequence.COSMETIC)
+            for spot in OFFERED_SPOTS
+        )
+    )
 
 
 # ── Case 3: one spot filling two sites draws exactly one name ─────────────────

@@ -746,11 +746,18 @@ replace are recorded in the measurement history on PR #1925), `test_command_tool
 contracts for the command-retirement tools), `test_email_dispatch.py`
 (NL-dispatch of the email tools that retired `/email` + `/zoho`),
 `test_skill_labelling.py` (#1828 — the run-end LEAF
-labeller over five FIXTURE demonstrations: every offered spot draws a usable semantic
+labeller over six FIXTURE demonstrations: every offered spot draws a usable semantic
 name and one line of what belongs there, with the two-sources and shared-spot cases
 adding their own structural claim; the `labeller_eval` runner, report-only, with each
-case's input document pinned byte-for-byte by a drift probe in `make check`),
-`test_skill_framing.py` (#1830 — the run-end skill FRAMER over seven agreed asks
+case's input document pinned byte-for-byte by a drift probe in `make check`.  The sixth,
+`namer-tells-two-sources-apart`, is the slot's canonical case PORTED to the cohort
+structure (#2006): the two-sources demonstration in five wordings over ONE ledger, so the
+spots and their current names are identical on every arm.  Its LANDED category is empty
+and CLOSED UPSTREAM — coverage is `_labels_every_spot`'s and would run 15/15 by
+construction — so every claim it makes is about what the drawn lines SAY, and all four are
+the *nothing omitted* direction: the *nothing invented* one has no legal instrument for a
+draw whose open fields are an identifier and generic prose),
+`test_skill_framing.py` (#1830 — the run-end skill FRAMER over eight agreed asks
 spanning the three multiplicity shapes (one argument · two of the same type · two of
 different types): the parameter SET exactly, each expected family answered by exactly one
 drawn parameter and nothing else asked for, plus the structural check that the name and
@@ -763,7 +770,17 @@ check covers the PARAMETER lines as its own check too — the enforcement half o
 parameter-line contract — reading each line's SUBSTANCE, with any `(e.g., …)` clause
 stripped first, since the traces showed that garnish is appended after the line is
 decided; an instance token in the NAME, or a value standing as the whole description,
-still fails), `test_skill_binding.py` (#1867 — the skill BINDER over seven cases built
+still fails.  The eighth ask, `framer-mints-only-the-piece-that-varies`, is the ticker case
+PORTED to the cohort structure (#2006): one ask in five wordings, claiming the parameter SET
+by equality — one parameter answers the ticker family, and nothing else is asked for, which
+is where the negative direction lives, since the cadence and the notification are pieces the
+ask already settled.  Its PROVENANCE category is EMPTY and says so: a framing's open fields
+are an identifier and two lines of deliberately generic prose, and `unsourced_specifics` —
+the suite's one instrument for the invented direction — reads a Title-Cased correct framing
+as four inventions while passing a made-up exchange, so it does not transfer to them.  What
+it deliberately does NOT claim is genericity: that the name says the KIND of task and never
+THIS occasion fits none of the design's three assertion categories, being the converse of a
+provenance claim, so it stays a reading of the modal sample), `test_skill_binding.py` (#1867 — the skill BINDER over eight cases built
 from the idle→apply asks, both directions of the contract: five extraction cases (incl.
 the two-parameter bind, where the page and what to look for on it come out of one
 message) and two shortfall cases (an ask naming no page at all, and one supplying the
@@ -774,7 +791,12 @@ structural check that no job TERM (a cadence, an end date) rode into a value; th
 the user's turns — pinned by the same kind of drift probe. Membership, coverage and "is
 this even in the user's words" are the PRODUCTION validator's, so an accepted draw never
 reaches the scorer carrying an invented value; what the cases measure is whether it picked
-the RIGHT span and whether it knew when to decline),
+the RIGHT span and whether it knew when to decline.  The eighth,
+`binder-fills-one-and-names-the-other-missing`, is the missing-keyword case PORTED to the
+cohort structure (#2006): one ask in five wordings, with the address and the cadence
+byte-identical on every arm, claiming both enumerated halves — that the draw came back a
+SHORTFALL and that it names the keyword — plus the two directions over the bound value, that
+the url carries the span the ask supplies and that no value carries the cadence),
 `test_collector_enactment.py` (#1905 — the BACKGROUND half of the north star: chat's half is
 fully enacted, and nothing had ever verified the COLLECTOR can run what chat built. Five cases,
 one per collection the `request → apply` beat leaves behind, each seeding that beat's FULL exit

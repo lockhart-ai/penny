@@ -32,7 +32,12 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
 from penny.constants import PennyConstants, RunOutcome
-from penny.conversation_machine import RoundShortfall
+from penny.conversation_machine import (
+    ConversationState,
+    RoundShortfall,
+    build_snapshot,
+    presented_edges,
+)
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.database.models import MemoryRow, PromptLog, Skill
@@ -54,6 +59,11 @@ from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER, require_memory
+from penny.tests.eval.binder.test_skill_binding import (
+    _MISSING_KEYWORD,
+    _TWO_PARAMETERS,
+    MISSING_KEYWORD_ARMS,
+)
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
     IDLE_APPLY_CASES,
@@ -111,6 +121,10 @@ from penny.tests.eval.chat.learn.test_teach_arrives_whole import (
 from penny.tests.eval.chat.request.test_ask_is_one_value_short import (
     _asks_for_what_is_missing_check,
     _does_not_re_ask_check,
+)
+from penny.tests.eval.classifier.test_state_classifier import (
+    PASSING_MENTION_ARMS,
+    SEEDED_SKILLS,
 )
 from penny.tests.eval.collector.test_collector_enactment import (
     _STOP_REASON as _STOP,
@@ -194,6 +208,7 @@ from penny.tests.eval.conftest import (
     _held_entries,
     _InjectTextBail,
     _labelling_input,
+    _refuse_unscorable,
     _sample_turns,
     _score_binding,
     _score_extraction,
@@ -229,6 +244,12 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
+from penny.tests.eval.framer.test_skill_framing import TICKER_ARMS
+from penny.tests.eval.labeller.test_skill_labelling import (
+    _TWO_SOURCES,
+    OFFERED_SPOTS,
+    TWO_SOURCES_ARMS,
+)
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
@@ -1649,6 +1670,15 @@ def test_a_ported_case_must_state_its_threshold_and_the_inline_path_keeps_its_de
 
     assert _stated_pass_rate("a-case", UNSTATED, ported=False) == 0.75, "the inline default"
 
+    # The SCORER's inputs take the same shape, and for a sharper reason (#2006): they carry
+    # defaults so a ported case can omit them, and an inline case that omits one produces no
+    # checks at all — `SampleResult.graded([])` scores 1.0 over nothing, so the case reports a
+    # green for every sample it drove.  Refused before a sample runs; a ported case passes.
+    _refuse_unscorable("a-case", ported=True, pool=(), expectations=())
+    _refuse_unscorable("a-case", ported=False, pool=("something to sweep",))
+    with pytest.raises(ValueError, match="must state its expectations"):
+        _refuse_unscorable("a-case", ported=False, expectations=())
+
 
 def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path) -> None:
     """``held`` and ``entries`` are two reads of the same rows, and a claim about what a
@@ -2766,6 +2796,149 @@ def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> No
     assert [one.parameter for one in fixture.expectations] == [
         parameter.name for parameter in fixture.parameters
     ]
+
+
+# ── The microcontext arms: five wordings of ONE ask, over constant facts (#2006) ──
+#
+# Every ported microcontext case pools five arms into one number, which is only legal if
+# the arms differ in their WORDS and agree on their FACTS.  Each probe below states that
+# for its own case, in ``make check``, before any GPU time — a cohort whose arms disagree
+# about the world reports the spread of two behaviours as the instability of one.
+
+
+def test_every_passing_mention_arm_holds_a_door_open_it_must_decline(tmp_path) -> None:
+    """The classifier's arms (#2006): five ways of mentioning the same thing in passing,
+    against a registry that really does put the routine doors on offer.
+
+    The second half is what makes the case's one claim mean anything.  ``presented_edges``
+    withholds every skill-gated state when the snapshot has no candidates, so a hold
+    measured against an empty registry is a hold with no door to decline — it would score
+    green while proving nothing.  Asserted from the PRODUCTION snapshot builder, so what
+    the probe calls offered is what the draw will be offered.
+
+    The arms themselves: five distinct wordings, each naming the subject a seeded routine
+    plainly covers, and none of them asking for anything."""
+    assert len(PASSING_MENTION_ARMS) == 5
+    assert len(set(PASSING_MENTION_ARMS)) == 5, "five wordings, or the arms are not arms"
+    for arm in PASSING_MENTION_ARMS:
+        assert "auction listings" in arm, f"every arm names the same subject: {arm!r}"
+
+    db = migrated_db(str(tmp_path / "classifier-arms.db"))
+    for draft in SEEDED_SKILLS:
+        db.skills.upsert(draft, author="probe")
+    offered = presented_edges(
+        build_snapshot(db, state=ConversationState.IDLE, message=PASSING_MENTION_ARMS[0])
+    )
+    assert ConversationState.APPLY in offered, "the apply door must be on offer to be declined"
+    assert ConversationState.REQUEST in offered, "so must request"
+    assert ConversationState.IDLE in offered, "and idle must be a door the state opens"
+
+
+def test_every_framing_arm_says_one_ask_in_different_words() -> None:
+    """The framer's arms (#2006): five wordings of ONE ask, over one set of facts.
+
+    The claims name a parameter family and a count, and both hinge on what the ask
+    REQUIRES — so every arm has to require the same thing.  Each carries the symbol, the
+    share price it is wanted for, and a clause about being told when it moves; an arm
+    missing the notification clause would drop the negative direction the case exists for,
+    and one missing the symbol would leave the family claim nothing to be answered by.
+
+    The documents are built through the SHIPPED renderer, because that is what the draw
+    reads — a probe over the raw turns would pass on a render that dropped one."""
+    assert len(TICKER_ARMS) == 5
+    documents = [
+        build_framing_content(
+            "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in arm]
+        )
+        for arm in TICKER_ARMS
+    ]
+    assert len(set(documents)) == 5, "five wordings, or the arms are not arms"
+    for arm, document in zip(TICKER_ARMS, documents, strict=True):
+        assert "VLT" in document, f"every arm names the symbol: {arm}"
+        assert "share price" in document, f"every arm asks for the share price: {arm}"
+        assert any(word in document for word in ("moves", "changes", "shifts")), (
+            f"every arm asks to be told when it moves: {arm}"
+        )
+
+
+def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration() -> None:
+    """The labeller's arms (#2006): five wordings of one demonstration, over ONE ledger.
+
+    The ledger is what decides which spots exist and what each is currently called, and
+    every claim in the case is keyed by those current names — so the arms must agree on
+    them exactly.  They do because distillation is deterministic over the CALLS, which the
+    arms do not vary at all; this says so rather than leaving it to be inferred.
+
+    What must differ is the conversation block: five distinct documents, each carrying both
+    addresses verbatim, since the case claims the two sources are told apart and an arm
+    naming one of them could not be answered."""
+    assert len(TWO_SOURCES_ARMS) == 5
+    rendered = [
+        _labelling_input(_TWO_SOURCES.calls, _TWO_SOURCES.target, arm, _TWO_SOURCES.conversation)
+        for arm in TWO_SOURCES_ARMS
+    ]
+    documents = [content for content, _map in rendered]
+    assert len(set(documents)) == 5, "five wordings, or the arms are not arms"
+    maps = [tuple(sorted(by_value.items())) for _content, by_value in rendered]
+    assert len(set(maps)) == 1, f"the arms offer different spots: {maps}"
+    # A SET, not a sequence: the case's claims are keyed by name and its measured axes are
+    # one per spot, so what has to hold is that it names exactly the spots the ledger
+    # offers.  The order the ledger's distillation happens to walk them in is a render
+    # detail, and pinning it here would make an unrelated change to that walk read as the
+    # case claiming a spot nobody offers.
+    offered = set(dict(maps[0]).values())
+    assert offered == set(OFFERED_SPOTS), (
+        f"the case claims spots the ledger does not offer: {sorted(offered ^ set(OFFERED_SPOTS))}"
+    )
+    for arm, document in zip(TWO_SOURCES_ARMS, documents, strict=True):
+        assert "citydesk.example/front" in document, f"every arm names the first source: {arm!r}"
+        assert "harborpost.example/front" in document, f"every arm names the second: {arm!r}"
+
+
+def test_every_binding_arm_supplies_the_page_and_never_the_entry() -> None:
+    """The binder's arms (#2006): five wordings of one ask, over one signature.
+
+    Three facts have to hold on every arm or a claim is answered against ground its own
+    sample never saw: the ADDRESS the url claim anchors on, the CADENCE the no-terms claim
+    forbids (byte-identical, since the claim matches it literally), and the ABSENCE of
+    anything naming a timetable entry — which is what makes the shortfall a property of the
+    ask rather than of one phrasing.
+
+    The signature is asserted constant too: an arm binding a different routine would be a
+    different behaviour under one case id."""
+    assert len(MISSING_KEYWORD_ARMS) == 5
+    spoken_by_arm = [render_spoken_turns(arm) for arm in MISSING_KEYWORD_ARMS]
+    documents = [
+        build_binding_content(
+            spoken,
+            _MISSING_KEYWORD.skill,
+            _MISSING_KEYWORD.intent,
+            _MISSING_KEYWORD.parameters,
+        )
+        for spoken in spoken_by_arm
+    ]
+    assert len(set(documents)) == 5, "five wordings, or the arms are not arms"
+    supplied, unsupplied = _MISSING_KEYWORD.expectations
+    # What an ask that DOES supply the keyword says, read off the sibling case drawn against
+    # the same signature — so "no arm names an entry" is anchored to a real one rather than to
+    # a phrase spelled here.
+    timetable_entry = _TWO_PARAMETERS.expectations[1].anchor
+    for arm, spoken in zip(MISSING_KEYWORD_ARMS, spoken_by_arm, strict=True):
+        assert supplied.anchor in spoken, f"every arm names the page: {arm}"
+        for term in _MISSING_KEYWORD.forbidden:
+            assert term in spoken, f"every arm states the cadence verbatim: {arm}"
+        assert timetable_entry not in spoken, f"no arm names a timetable entry: {arm}"
+    assert not unsupplied.anchor, "the keyword is the parameter the ask supplies nothing for"
+    # BLANK the one span that moves and the five documents collapse to one: the signature
+    # block renders identically on every arm, so nothing outside the user's own turns varies.
+    # Read by REMOVING the turns rather than by splitting on the header they sit under — a
+    # header spelled here would be a second copy of a production literal, and if it ever moved
+    # the split would return the whole document on both sides and pass on anything.
+    blanked = {
+        document.replace(spoken, "")
+        for document, spoken in zip(documents, spoken_by_arm, strict=True)
+    }
+    assert len(blanked) == 1, f"the arms differ outside the user's turns: {sorted(blanked)}"
 
 
 def test_every_watch_arm_lays_down_one_program_differing_only_in_its_extract() -> None:

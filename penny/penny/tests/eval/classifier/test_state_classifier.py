@@ -45,6 +45,13 @@ where a correction that carries instructions stays in learn while an engaged
 question that carries none falls to idle — learn never returns to elicit
 (code-owner ruling: elicit exists to GET instructions, and they have been given).
 
+One case does NOT sweep a pool: ``classifier-holds-idle-on-a-passing-mention`` is the
+slot's CANONICAL case (#2006), and it takes the passing-mention boundary out of the hold
+pool and says it five ways — five wordings of ONE ask, one world, pooled into a cohort of
+fifteen and claimed against ``docs/eval-case-design.md``.  A pool and five wordings are not
+the same mechanism: a pool is ten scenarios standing in for one edge's coverage, and
+averaging their rates reports ten behaviours as one number.
+
 Fictional-but-believable fixtures throughout (the repo is public).
 """
 
@@ -52,6 +59,7 @@ from __future__ import annotations
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.skills import (
@@ -61,7 +69,16 @@ from penny.database.skills import (
     derive_collection_name,
     render_skill,
 )
-from penny.tests.eval.conftest import ClassifierEval, Seeder, eval_skill
+from penny.tests.eval.conftest import (
+    CLASSIFY_STATE,
+    EVAL_MODELS,
+    ClassifierEval,
+    Seeder,
+    eval_skill,
+)
+from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.cohort import SampleObservation, SpecCategory, output_field
+from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
@@ -106,7 +123,7 @@ async def test_idle_holds_on_chat_and_passing_mentions(
 
 _PRICE_SKILL = "watch a listing price for changes"
 _CAFE_SKILL = "collect daily cafe specials"
-_SEEDED_SKILLS = [
+SEEDED_SKILLS = [
     eval_skill(
         _PRICE_SKILL,
         "keep an eye on a product or listing page and record its current price",
@@ -166,7 +183,7 @@ _CROSS_DOMAIN_SKILLS = [
         "search the job boards for newly posted listings matching a role and save them",
         {"role": "the kind of job to look for", "boards": "the job boards to search"},
     ),
-    _SEEDED_SKILLS[0],
+    SEEDED_SKILLS[0],
 ]
 
 _CROSS_DOMAIN_POOL = [
@@ -212,7 +229,7 @@ async def test_idle_still_elicits_when_no_candidate_covers(
         state=ConversationState.IDLE,
         pool=_UNCOVERED_POOL,
         expected=ConversationState.ELICIT,
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=0.8,
         family=_FAMILY,
     )
@@ -245,10 +262,123 @@ async def test_idle_holds_on_chat_with_candidates_dangling(
         state=ConversationState.IDLE,
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=0.8,
         family=_FAMILY,
     )
+
+
+# ── The ported case: the passing mention, with the routine doors on offer ─────
+#
+# The pool above is TEN SCENARIOS standing in for one edge's coverage — a greeting, a
+# general-knowledge question, a thank-you, and, at four of its ten slots, the boundary the
+# ticket names: a passing mention of something a known routine could be pointed at.  The
+# ported case takes that boundary alone and says it five ways, which is the only shape a
+# pooled variance number means anything over: five wordings of ONE ask, one world, one set
+# of facts.
+#
+# THE FACTS ARE CONSTANT across the arms because the claim hinges on them.  Every wording
+# is the user describing THEIR OWN recurring habit of looking at the auction listings —
+# same subject, same habit framing, same recurrence — so what moves between arms is the
+# words and nothing else.  A wording that asked Penny to watch the listings would be a
+# different behaviour wearing the same case id.
+
+# The case's id and its five arms, named at module level so the deterministic probe in
+# ``make check`` can hold them against the world they claim — that apply and request really
+# are on offer — before any GPU time is spent on a hold with no door to decline.
+HOLD_CASE_ID = "classifier-holds-idle-on-a-passing-mention"
+
+_PASSING_MENTION = "i've been checking the auction listings every day lately"
+_PASSING_MENTION_PHRASINGS = (
+    "been going through the auction listings most days lately",
+    "these days i end up scrolling the auction listings every evening",
+    "i've fallen into a habit of reading the auction listings each morning",
+    "lately i look at the auction listings pretty much daily",
+)
+PASSING_MENTION_ARMS = (_PASSING_MENTION, *_PASSING_MENTION_PHRASINGS)
+
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The locus is the SHIPPED agent name.  The case id is a filename; this is
+# the contract, and it renders above every number in the report.
+_HOLD_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user "
+    "mentions in passing something a routine she already knows could be pointed at, Penny "
+    "picks idle from the doors idle opens — she does not walk through the apply or request "
+    "door standing open beside it."
+)
+
+
+def _held_idle(sample: SampleObservation, _world: World) -> Answer:
+    """The decision itself, and the whole of what this case claims.
+
+    ONE claim states BOTH directions at once, which is why there is no second one beside it:
+    idle is what a passing mention should draw, and every other door the state opens —
+    elicit, apply, request — is a door this message must not go through.  Splitting that
+    into "held idle" and "did not apply" would be the same sentence counted twice.
+
+    The drawn state's MEMBERSHIP in the offered union is not claimed anywhere: production
+    validates it (``_state_is_bound``) and re-rolls until it holds, so a claim over it would
+    run 15/15 by construction and measure the validator.  WHICH member she picked is the
+    open question, and it is this one."""
+    drawn = sample.field(CLASSIFY_STATE)
+    return drawn == ConversationState.IDLE.value, f"drew {drawn}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_passing_mention_holds_idle_with_the_routine_doors_open(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The passing-mention hold, with candidates dangling: ordinary conversation that names
+    a thing a seeded routine plainly covers, said five ways, against a registry that puts
+    apply and request on offer.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    to no store — so there is nothing for a store claim to read.  (What the classifier
+    decides is later WRITTEN by the machine, as a ``state_transition`` row; that write is
+    ``ConversationMachine``'s and this case never runs it.)
+
+    **The PROVENANCE category is empty too, and for a different reason: it is CLOSED
+    UPSTREAM.**  Fact alignment reads a draw's OPEN fields — the ones the model wrote in its
+    own words — and this draw has none.  Both fields it returns are closed sets the harness
+    itself supplied: ``state`` is membership-validated against the offered union and
+    re-rolled until it is a member, and ``skill`` is GENERATED rather than drawn on an
+    ungated state — ``StateDraw`` leaves it empty by construction, so a claim that this
+    decision bound no routine would be asserting what ``_state_draw`` writes.  There is no
+    value here that could have been invented, so there is nothing to trace.
+    """
+    cohort = await classifier_eval(
+        case_id=HOLD_CASE_ID,
+        behaviour=_HOLD_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_PASSING_MENTION,
+        also_asked=_PASSING_MENTION_PHRASINGS,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw held the conversation in idle",
+        _held_idle,
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+    # PROVENANCE — empty because it is closed upstream; see the docstring.
+
+    # What is MEASURED — the draw's own structured fields.
+    #
+    # ``state`` is the only axis this case can read.  ``outcome`` is constant by the
+    # completeness gate (a draw that came back anything but DECIDED left the cohort before
+    # any of this), and ``skill`` is empty on every sample because idle binds none — which
+    # scores 0.000, the same number a cohort in perfect agreement scores and the opposite
+    # finding, so measuring it would print a number where there is no measurement.
+    #
+    # No tool sequence and no reply spread: a single call makes neither.
+    cohort.measure(output_field(CLASSIFY_STATE))
 
 
 async def test_mixed_chat_plus_covered_ask_applies(
@@ -262,7 +392,7 @@ async def test_mixed_chat_plus_covered_ask_applies(
         pool=_MIXED_POOL,
         expected=ConversationState.APPLY,
         expected_skill=_PRICE_SKILL,
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=0.8,
         family=_FAMILY,
     )
@@ -413,7 +543,7 @@ async def test_switching_a_running_jobs_notifications_on_holds_idle(
         pool=_NOTIFY_ON_POOL,
         expected=ConversationState.IDLE,
         seed=_standing_jobs(notify=False),
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=None,
         family=_FAMILY,
     )
@@ -435,7 +565,7 @@ async def test_switching_a_running_jobs_notifications_off_holds_idle(
         pool=_NOTIFY_OFF_POOL,
         expected=ConversationState.IDLE,
         seed=_standing_jobs(notify=True),
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=None,
         family=_FAMILY,
     )
@@ -472,7 +602,7 @@ async def test_parked_details_wrong_skill_elicits(classifier_eval: ClassifierEva
         expected=ConversationState.ELICIT,
         penny_last_turn=_REQUEST_QUESTION,
         task_anchor=_KAYAK_ASK,
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=None,
         family=_FAMILY,
     )
@@ -536,7 +666,7 @@ async def test_parked_elicit_steps_arrive_with_skills_populated(
         expected=ConversationState.LEARN,
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=SEEDED_SKILLS,
         min_pass_rate=0.8,
         family=_FAMILY,
     )
