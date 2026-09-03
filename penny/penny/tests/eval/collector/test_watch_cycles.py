@@ -87,6 +87,7 @@ from penny.tests.eval.utils.cohort import (
     TRANSITIONS,
     SampleObservation,
     SpecCategory,
+    StoredEntry,
 )
 from penny.tests.eval.utils.fixtures import LISTING_URL, CannedPage, datum
 from penny.tests.eval.utils.worlds import World
@@ -579,13 +580,20 @@ def _held_text(sample: SampleObservation) -> str:
     The WHOLE entry, because a fact in the key and a blurb in the body is a perfectly good way
     to store it, and a content-only read once reported a 25/32 model failure that was entirely
     its own bug."""
-    return " ".join(f"{key} {content}" for key, content in sorted(sample.held.items()))
+    return " ".join(entry.text for entry in sorted(sample.held, key=_held_key))
+
+
+def _held_key(entry: StoredEntry) -> str:
+    """One held entry's key, for a stable reading order.  A collection entry always has one;
+    the empty string is the keyless-log shape the type allows and this collection never has."""
+    return entry.key or ""
 
 
 def _one_entry(sample: SampleObservation, _world: World) -> Answer:
     """The watch keeps ONE fact.  A watch that appends grows without bound and the user is
     told about a value they already have."""
-    return len(sample.held) == 1, f"holds {len(sample.held)} entries: {sorted(sample.held)}"
+    keys = sorted(_held_key(entry) for entry in sample.held)
+    return len(sample.held) == 1, f"holds {len(sample.held)} entries: {keys}"
 
 
 def _holds(amount: str):
@@ -602,7 +610,7 @@ def _holds(amount: str):
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         held = _held_text(sample)
-        return amount in held, f"expected {amount}; the collection holds {sample.held}"
+        return amount in held, f"expected {amount}; the collection holds {held!r}"
 
     return answer
 

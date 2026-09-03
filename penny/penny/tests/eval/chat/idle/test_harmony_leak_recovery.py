@@ -1,132 +1,112 @@
-"""Harmony-envelope-leak recovery contract — when a chat reply is really a tool
-call that the backend failed to parse, so the whole Harmony envelope leaked into
-``message.content`` as literal control-token text, the loop must NOT deliver that
-raw envelope to the user; the agent-loop reroll guard discards it and the live
-model recovers on the unchanged context to a real reply.
+"""Envelope leak recovery: the turn is answered cleanly after a raw envelope leaks.
 
-Production failure this pins: on some remote OpenAI-compatible backends serving
-gpt-oss (non-Ollama runners), the Harmony tool-call envelope leaks into the text
-channel instead of being parsed into ``tool_calls`` — e.g.
-``<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>``
-with ``tool_calls`` empty. Chat replies inline via a text turn, so that raw
-envelope string would be finalized as the reply and delivered verbatim. Stock
-Ollama parses the envelope, so this is defensive robustness for leaky backends,
-not a fix for our own runner. The decision (issue #1501) is REJECT + REROLL — do
-not reconstruct the call from the envelope grammar — reusing the discard-and-reroll
-machinery the punctuation-collapse degeneracy guard already owns.
+Ported to the cohort structure under #2009; the contract is `docs/eval-case-design.md`.
 
-The leak is intermittent (the same runner parses correctly on other turns), so we
-FORCE one leaked-envelope response right after the model's first real tool call
-(``_InjectTextBail`` with the envelope as the bail text) and let the REAL model
-drive the recovery through the production reroll. The contract is STRUCTURAL, never
-wording:
+Mid-turn, right after the model's first real tool call, the harness hands it back a whole
+Harmony tool-call envelope as literal control-token text — what some remote
+OpenAI-compatible backends serving gpt-oss do instead of parsing the call into
+``tool_calls``, leaving a chat text turn to finalise the raw envelope as the reply.  The
+decision (#1501) is REJECT + REROLL, never reconstruct the call from the envelope grammar,
+and the LIVE model must recover on the unchanged context.
 
-  PASS = the reply carries NO raw Harmony tokens (the envelope never reached the
-         user) and it's substantive prose — the model re-drew cleanly and answered.
+Sibling of ``test_chat_call_recovery`` — same world, same question, same end state — and
+deliberately a SEPARATE case: the fault is different, and the two are caught by different
+machinery.  A leaked envelope is a TRANSPORT artifact checked on every draw whatever its
+shape, where call-as-text is checked only on a draw carrying no tool calls, so a cohort
+pooling them would average two mechanisms into one score.
 
-The mechanism is current, and is checked on EVERY draw rather than only on a
-call-less one: ``Agent._unusable_output_condition`` treats ``TOOL_CALL_LEAK`` as a
-transport artifact (alongside ``DEGENERATE_OUTPUT``), so it does not ride an
-agent's declared ``invalid_draw_conditions`` and applies to a collector cycle
-exactly as it does to a chat turn.  This scorer reads the reply through the SAME
-``has_leaked_harmony_envelope`` predicate the guard rejects it with.
+  * THE FAULT IS FIXED, the WORDING varies — five wordings of one question, pooled.
+  * THE INJECTION IS HARNESS MACHINERY: a sample the leak never fired on ran an unbroken
+    turn and leaves the cohort as a named exclusion, never as a behavioural failure — at
+    the cost #2018 records, since the leak fires after the first tool call and a turn that
+    read nothing leaves here rather than failing the provenance claim.
+  * THE FAULT IS AIMED AT THE CHAT TURN.  An agent's model client is shared with every
+    microcontext built from it, so the sabotage is confined to the chat agent by name —
+    without that, the bail lands in `browse-extract` and the turn under test runs clean.
+  * the tool calls MEASURED rather than asserted.
 
-Report-only (``min_pass_rate=None``), the canonical convention — stated rather
-than inherited from ``chat_eval``'s 0.75 default.  The deterministic mechanism
-(detect the leaked envelope on the raw output, discard, re-roll on unchanged
-context, abort if it persists) is pinned in
-``tests/agents/test_agentic_loop.py``; this owns the live model-behaviour contract.
+REPORT-ONLY (``min_pass_rate=None``).  Nothing here is the user's: the ask is a
+general-knowledge question and the page is public reference content served from an
+``example`` domain, because the repo is public.
+
+The deterministic mechanism (detect the leak on the raw output, discard, re-roll, abort if
+it persists) is pinned in ``tests/agents/test_agentic_loop.py``; this owns the live
+model-behaviour contract.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from penny.database import Database
-from penny.tests.eval.conftest import (
-    ChatEval,
-    Check,
-    _InjectTextBail,
-    gave_up_mid_run,
-    outgoing_replies,
-    tool_call_sequence,
+from penny.constants import PennyConstants
+from penny.conversation_machine import ConversationState
+from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, _InjectTextBail
+from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
 )
-from penny.tests.eval.utils.fixtures import TOPIC_PAGES
-from penny.text_validity import has_leaked_harmony_envelope
+from penny.tests.eval.utils.worlds import (
+    DEEPEST_LAKE,
+    DEEPEST_LAKE_ASK,
+    DEEPEST_LAKE_PHRASINGS,
+)
 
 pytestmark = pytest.mark.eval
 
-# Enough letters that the reply is something a person could have received, rather than a
-# fragment the loop finalized.  A floor, not a quality bar — what the case is about is
-# the envelope never arriving, and a bare "ok" would leave that unanswered either way.
-_SUBSTANTIVE_LETTERS = 15
+_CASE_ID = "chat-harmony-envelope-leak-recovery"
 
-# A whole Harmony tool-call envelope the injector emits as plain text after the
-# model's first real tool call — the exact leak shape seen on non-Ollama gpt-oss
-# backends (generic ``browse`` tool, no real-world specifics).
+# The family every chat recovery case reports under — what Penny does once something has
+# already gone wrong.  A second spelling would split one bucket across two headings.
+_FAMILY = "chat-recovery"
+
+# A whole Harmony tool-call envelope the injector emits as plain text after the model's
+# first real tool call — the exact leak shape seen on non-Ollama gpt-oss backends, naming
+# a generic tool so the fixture carries no real-world specifics.
 _HARMONY_LEAK = "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
 
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  It differs from its sibling's only at the fault, which is the whole
+# reason the two are separate cases rather than one pooled cohort.
+_BEHAVIOUR = (
+    "In the chat agent, when a draw comes back carrying a raw tool-call envelope as text, "
+    "Penny throws that draw away and still answers the user's question out of the page she "
+    "read, sending them nothing she was supposed to discard."
+)
 
-def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
-    """Graded: the forced Harmony-envelope leak reached NO delivered message, and the reply
-    the user got is substantive prose — the model re-drew into a real answer rather than the
-    loop finalizing the leaked envelope.
 
-    The first check reads the DELIVERED messages off the messagelog rather than the last
-    reply the runner happened to hold: what the contract forbids is raw control tokens
-    reaching the user at all, and a turn that delivers two messages would otherwise be
-    scored on one of them.  The 'forced bail fired — contract exercised' guard is PREPENDED
-    by ``chat_eval``'s graded path (#1697) — so a run that never triggered the leak can't
-    pass on a normal answer — and this scorer owns only the recovery outcome."""
-    delivered = outgoing_replies(db)
-    leaked = [message for message in delivered if has_leaked_harmony_envelope(message)]
-    letters = sum(1 for character in reply if character.isalpha())
-    gave_up = gave_up_mid_run(db)
-    return [
-        Check(
-            "nothing delivered to the user carried a raw Harmony envelope",
-            not leaked,
-            kind="reply",
-            rationale=None
-            if not leaked
-            else (
-                f"{len(leaked)} of {len(delivered)} delivered message(s) carried raw control "
-                f"tokens — the leak reached the user: {leaked[0][:120]!r}"
-            ),
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_leaked_envelope_is_caught_and_the_turn_is_answered_cleanly(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A leaked call envelope is thrown away, and the question is still answered from the
+    page rather than from the model's own head."""
+    cohort = await chat_eval(
+        case_id=_CASE_ID,
+        behaviour=_BEHAVIOUR,
+        model=model,
+        world=DEEPEST_LAKE,
+        ask=DEEPEST_LAKE_ASK,
+        also_phrased=DEEPEST_LAKE_PHRASINGS,
+        samples_per_phrasing=3,
+        wrap_client=lambda real: _InjectTextBail(
+            real, _HARMONY_LEAK, target_agent=PennyConstants.CHAT_AGENT_NAME
         ),
-        Check(
-            "the reply reads as something a person would receive",
-            letters >= _SUBSTANTIVE_LETTERS,
-            kind="reply",
-            rationale=None
-            if letters >= _SUBSTANTIVE_LETTERS
-            else (
-                f"the reply carries {letters} letters, under the {_SUBSTANTIVE_LETTERS} a "
-                f"real answer would: {reply[:120]!r}"
-            ),
-        ),
-        Check(
-            "answered rather than apologising its way out",
-            not gave_up,
-            scored=False,
-            kind="proc",
-            rationale=(
-                "the reply is a defeatist give-up — the re-roll runs on the unchanged "
-                "context and a clean draw was available"
-            )
-            if gave_up
-            else f"calls made: {tool_call_sequence(db) or 'none'}",
-        ),
-    ]
-
-
-async def test_harmony_envelope_leak_is_caught_and_recovers(chat_eval: ChatEval) -> None:
-    await chat_eval(
-        case_id="chat-harmony-envelope-leak-recovery",
-        family="chat-recovery",
-        message="what's the deepest lake in the world?",
-        browse=list(TOPIC_PAGES),
-        wrap_client=lambda real: _InjectTextBail(real, _HARMONY_LEAK),
-        score=_score_recovered,
         min_pass_rate=None,
+        family=_FAMILY,
+        timeout=240.0,
     )
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.assert_no_delivered_message_is_an_unusable_draw()
+    cohort.assert_every_delivered_message_is_whole()
+    cohort.assert_the_reply_answers_the_ask()
+
+    # PROVENANCE
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

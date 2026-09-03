@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from penny.agents.chat import ChatAgent
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.utils.cohort import (
     Arm,
@@ -38,6 +39,12 @@ from penny.tests.eval.utils.cohort import (
     unsourced_specifics,
 )
 from penny.tests.eval.utils.worlds import World
+from penny.text_validity import (
+    half_formed_send_reason,
+    has_leaked_harmony_envelope,
+    is_degenerate_run,
+)
+from penny.validation.conditions import ConditionKey
 
 # The ground a claim is answered against by a cohort that declared no arms at all — the
 # unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
@@ -143,14 +150,14 @@ class Cohort:
         Scored rather than reported, for the one case whose contract only EXISTS in the state
         it names: a story about the reply that closes a learn round has no subject at all
         outside that state."""
-        self._claim(
+        self.claim(
             f"state: the machine landed in {state.value}",
             lambda s, _world: (s.landed == state.value, f"walked {s.walk}"),
             SpecCategory.LANDED,
         )
 
     def assert_a_routine_reached_the_registry(self) -> None:
-        self._claim(
+        self.claim(
             "state: the round taught a routine",
             lambda s, _world: (bool(s.routines), "nothing reached the registry"),
             SpecCategory.STORE,
@@ -168,14 +175,14 @@ class Cohort:
 
         The defect it catches: a routine that browses and never persists runs every cycle for
         ever and keeps nothing, and no check in the suite could see it."""
-        self._claim(
+        self.claim(
             "state: the routine it recorded names somewhere to act",
             _names_a_destination,
             SpecCategory.STORE,
         )
 
     def assert_the_store_holds_an_entry(self) -> None:
-        self._claim(
+        self.claim(
             "state: the store holds at least one entry",
             lambda s, _world: (bool(s.entries), "nothing was written"),
             SpecCategory.STORE,
@@ -194,7 +201,7 @@ class Cohort:
         Reads the WHOLE entry — key and content — because a fact in the key and a blurb in the
         body is a perfectly good way to store it, and a content-only read reported a 25/32
         model failure that was entirely its own bug."""
-        self._claim(
+        self.claim(
             "state: something from each page was written down",
             _each_source_kept,
             SpecCategory.STORE,
@@ -206,7 +213,7 @@ class Cohort:
         The instruction renders the framed container's name verbatim, so the destination is a
         COPY of a rendered anchor and a write that went elsewhere invented one over what it was
         given. This replaces every judgement about what a collection ought to be called."""
-        self._claim(
+        self.claim(
             "state: the demonstrated write landed in the round's container",
             _wrote_into_container,
             SpecCategory.STORE,
@@ -214,7 +221,7 @@ class Cohort:
 
     def assert_nothing_was_scheduled(self) -> None:
         """Learning must not INSTANTIATE: teaching a round does not set it running."""
-        self._claim(
+        self.claim(
             "state: nothing it created was scheduled", _nothing_scheduled, SpecCategory.STORE
         )
 
@@ -224,7 +231,7 @@ class Cohort:
         A named spot stops being a leaf parameter, and the labeller names every spot
         unconditionally — so a leftover one means the labelling draw fell back as a whole and the
         routine kept its arg-derived names."""
-        self._claim(
+        self.claim(
             "state: every spot in the routine is a placeholder",
             _placeholders_only,
             SpecCategory.STORE,
@@ -233,14 +240,74 @@ class Cohort:
     def assert_nothing_excluded_was_stored(self) -> None:
         """The exclusion the round was told in as many words.  A read rather than a taste: the
         compared tokens appear ONLY on the excluded line."""
-        self._claim(
+        self.claim(
             "state: nothing the ask excluded was stored", _nothing_excluded, SpecCategory.STORE
+        )
+
+    def assert_no_delivered_message_is_an_unusable_draw(self) -> None:
+        """Nothing that reached the user is a draw the loop was supposed to throw away.
+
+        Read through PRODUCTION'S OWN declaration of what an unusable chat draw is — the
+        chat agent's ``invalid_draw_conditions`` plus the two transport artifacts the loop
+        checks on every draw — never through the one fault a case's injector happens to
+        force.  A recovery case keyed to its own injected shape would pass while a
+        DIFFERENT unusable draw sailed out in the same turn, and a condition added to
+        production would arrive here with nobody remembering to copy it.
+
+        Every DELIVERED message, not the last reply: what the contract forbids is the bad
+        draw reaching the user at all, and a turn that delivered two messages would
+        otherwise be judged on one of them."""
+        self.claim(
+            "state: nothing delivered to the user was an unusable draw",
+            _nothing_unusable_delivered,
+            SpecCategory.STORE,
+        )
+
+    def assert_every_delivered_message_is_whole(self) -> None:
+        """Every message the user received is a complete message.
+
+        Judged by ``half_formed_send_reason`` — the SHARED rule the send path refuses a
+        message by and the run-health classifier flags one by — so what Penny will not
+        send and what this calls incomplete are one definition.  A chat reply is delivered
+        inline by a text turn and never passes that gate, which is what leaves room for a
+        turn to finalise a fragment.
+
+        It replaces a letter-count floor: a threshold somebody picked stands for the
+        question rather than answering it, and production already answers it."""
+        self.claim(
+            "state: every message delivered to the user is a complete message",
+            _delivered_messages_are_whole,
+            SpecCategory.STORE,
+        )
+
+    def assert_the_reply_answers_the_ask(self) -> None:
+        """The reply states what the ask asked for, in the world's own terms.
+
+        The only COMPLETENESS claim in the set.  Everything else here is soundness — where
+        the machine landed, what the store holds, that nothing was invented — and a reply
+        that answers nothing at all satisfies all of it: it lands in the right state, it
+        delivers a complete message, and it carries no unsourced value because it carries
+        no value.  Measured: a sample whose extractor had returned the answer replied
+        "Sounds like you're surprised! Bath! What else do you want to hear about Lake
+        Baikal?" and passed 5 of 5 claims as the cohort's REPRESENTATIVE sample.
+
+        Read off the world, never off a guessed phrasing: ``World.answers`` holds tokens
+        taken from the page the ask is answered against, so this is the same containment
+        read ``keeps`` makes about the store, pointed at the reply.  It is a STORE claim
+        because the delivered message is a record the sample's database holds, and it is
+        the reply KIND because it reads prose — which carries a wider noise floor than a
+        structural claim and must never be offered a floor as if it did not."""
+        self.claim(
+            "reply: it states the answer the world carries",
+            _reply_answers_the_ask,
+            SpecCategory.STORE,
+            kind="reply",
         )
 
     def assert_every_stored_entry_traces_to_the_world(self) -> None:
         """An entry naming something nobody's page mentions was invented — and once it is in a
         collection, a collector re-reads it for ever."""
-        self._claim(
+        self.claim(
             "state: every stored entry traces to what the round was given",
             _store_is_sourced,
             SpecCategory.PROVENANCE,
@@ -251,7 +318,7 @@ class Cohort:
         user's turns and the tool results, never Penny's own turns, or a value she invents
         early in a turn rides into the message history and sources itself from her own account
         of it."""
-        self._claim(
+        self.claim(
             "reply: every specific value in it is sourced",
             _reply_is_sourced,
             SpecCategory.PROVENANCE,
@@ -345,6 +412,59 @@ def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
     stored = _normalise(sample.stored_text)
     landed = [token for token in world.excludes if token in stored]
     return not landed, f"stored the excluded {landed}"
+
+
+# What makes a chat draw unusable, COMPOSED from what production declares rather than
+# re-listed: the two transport artifacts ``Agent._unusable_output_condition`` checks on
+# every draw whatever its shape, then the chat agent's OWN ``invalid_draw_conditions`` —
+# the shapes that are not a reply.  Composed, because a recovery case keyed to the one
+# fault its injector forces would pass while a different unusable draw sailed out in the
+# same turn, and a condition added to production would arrive here with nobody remembering
+# to copy it.
+_UNUSABLE_DRAW: tuple[tuple[str, Callable[[str], bool]], ...] = (
+    (ConditionKey.TOOL_CALL_LEAK.value, has_leaked_harmony_envelope),
+    (ConditionKey.DEGENERATE_OUTPUT.value, is_degenerate_run),
+    *((key.value, predicate) for key, predicate in ChatAgent.invalid_draw_conditions),
+)
+
+
+def _unusable_draw_condition(message: str) -> str | None:
+    """The name of the condition that makes ``message`` an unusable draw, or ``None``."""
+    return next((name for name, is_invalid in _UNUSABLE_DRAW if is_invalid(message)), None)
+
+
+def _nothing_unusable_delivered(sample: SampleObservation, _world: World) -> Answer:
+    """The rationale names the CONDITIONS that fired and how many of the turn's messages
+    they landed on, never the messages themselves — the sample's own fold carries those
+    verbatim, and a claim that quotes a slice of one would be inventing where to cut."""
+    unusable = [
+        condition
+        for message in sample.delivered
+        if (condition := _unusable_draw_condition(message)) is not None
+    ]
+    return not unusable, f"{len(unusable)} of {len(sample.delivered)} delivered — {unusable}"
+
+
+def _delivered_messages_are_whole(sample: SampleObservation, _world: World) -> Answer:
+    """Production's own refusal reason is the rationale — it already names the defect and
+    the next move, so there is nothing for this to add and no message to quote."""
+    half_formed = [
+        reason
+        for message in sample.delivered
+        if (reason := half_formed_send_reason(message)) is not None
+    ]
+    return not half_formed, f"{len(half_formed)} of {len(sample.delivered)} — {half_formed}"
+
+
+def _reply_answers_the_ask(sample: SampleObservation, world: World) -> Answer:
+    """Every token the world says an answer carries is in the reply, folded through the ONE
+    typography definition so a no-break space or a curly dash cannot fail a correct answer.
+
+    A world naming no answer tokens makes no claim and is true — that is an ask with nothing
+    to state, not a claim that went unasked."""
+    said = fold_typography(sample.reply)
+    missing = [token for token in world.answers if fold_typography(token) not in said]
+    return not missing, f"the reply never states {missing}"
 
 
 def _store_is_sourced(sample: SampleObservation, _world: World) -> Answer:

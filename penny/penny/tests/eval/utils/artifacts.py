@@ -330,6 +330,12 @@ class VarianceReading(BaseModel):
     name: str
     entropy: float
     saturated: bool
+    # Whether every sample read this feature's ABSENT value — no tool call, no routine, a field
+    # the draw never returned.  It scores 0.000, which is the number a cohort in perfect
+    # agreement scores and the opposite finding, so a roll-up that counted it as agreement would
+    # report the strongest possible result for a feature that saw nothing.  Defaulted, so a
+    # record written before this field decodes as not-blind rather than failing to load.
+    blind: bool = False
     # How many values the feature took. Whether it VARIES is read structurally — more than one —
     # so the run header needs no magnitude threshold to say how much of a case moved at all.
     distinct: int = 1

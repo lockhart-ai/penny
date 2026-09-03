@@ -44,6 +44,7 @@ from penny.database.skills import (
 )
 from penny.llm.models import (
     LlmMessage,
+    LlmResponse,
     LlmToolCall,
     LlmToolCallFunction,
     strip_harmony_control_tokens,
@@ -52,7 +53,7 @@ from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
-from penny.tests.conftest import TEST_SENDER
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
     IDLE_APPLY_CASES,
@@ -168,7 +169,11 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.conftest import (
     _ACTOR,
+    INJECTION_NEVER_FIRED,
+    NO_MEASURED_TURN,
+    NO_REPLY,
     PENNY_LOGGER,
+    UNSTATED,
     BoundExpectation,
     Check,
     CycleCall,
@@ -181,9 +186,13 @@ from penny.tests.eval.conftest import (
     _case_prompts,
     _cycle_recovered_check,
     _enacting_name,
+    _exclusion,
     _flush_sample_blocks,
     _frame_attributes_to,
     _guarded_graded,
+    _guarded_injector,
+    _held_entries,
+    _InjectTextBail,
     _labelling_input,
     _sample_turns,
     _score_binding,
@@ -192,9 +201,12 @@ from penny.tests.eval.conftest import (
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
+    _stated_pass_rate,
+    _stored_entries,
     _turn_kind,
     _without_examples,
     _write_sample_report,
+    collection_entries,
     continue_nudge_fired,
     count_tool_calls,
     draw_rerolled,
@@ -1520,6 +1532,150 @@ def test_bail_fired_and_cycle_recovered_guard_checks() -> None:
     assert recovered.ok and recovered.rationale is None
     stalled = _cycle_recovered_check(False)
     assert not stalled.ok and stalled.rationale is not None
+
+
+class _RecordingClient:
+    """A real client's stand-in: records who called, answers with a tool call once."""
+
+    def __init__(self) -> None:
+        self.callers: list[str | None] = []
+
+    async def chat(self, messages=None, tools=None, *args, **kwargs):
+        self.callers.append(kwargs.get("agent_name"))
+        function = LlmToolCallFunction(name="browse", arguments={})
+        call = LlmToolCall(id="call-1", function=function)
+        return LlmResponse(message=LlmMessage(role="assistant", content="", tool_calls=[call]))
+
+
+async def test_the_forced_fault_is_confined_to_the_turn_the_case_is_about() -> None:
+    """An agent's model client is SHARED with every microcontext built from it, so an
+    injector installed on ``chat_agent._model_client`` sees the extractor's calls too.
+
+    Both halves of the trigger are gated on the caller, and both matter.  If another
+    agent's tool call can ARM it, the bail is aimed one call early; if another agent's
+    call can RECEIVE it, the fault is spent on a turn the case is not about and the turn
+    under test runs clean — while ``bail_injected`` reports the contract exercised.  That
+    is not hypothetical: on the first ported run the bail landed in ``browse-extract`` on
+    12 of 15 gpt-oss samples and 15 of 15 gemma ones, and both cohorts were read as
+    recoveries.  A collector runner passes no target and keeps the old any-caller
+    behaviour, because there the cycle itself is what is being broken."""
+    real = _RecordingClient()
+    injector = _InjectTextBail(real, "{}", target_agent=PennyConstants.CHAT_AGENT_NAME)
+
+    # A microcontext's tool-calling response must not arm the trigger...
+    await injector.chat([], agent_name="browse-extract")
+    assert not injector.bail_injected
+    # ...and once the TARGET has made its tool call, the next microcontext call is still
+    # the real model's, not the bail's.
+    await injector.chat([], agent_name=PennyConstants.CHAT_AGENT_NAME)
+    micro = await injector.chat([], agent_name="browse-extract")
+    assert micro.has_tool_calls, "the extractor got the real model, not the sabotage"
+    assert not injector.bail_injected, "the fault is still unspent"
+
+    bailed = await injector.chat([], agent_name=PennyConstants.CHAT_AGENT_NAME)
+    assert injector.bail_injected and bailed.message.content == "{}"
+    assert real.callers == ["browse-extract", "chat", "browse-extract"], (
+        "every call but the sabotaged one reached the real model"
+    )
+
+
+async def test_an_untargeted_injector_still_fires_on_any_caller() -> None:
+    """The collector runners install their injector on the CYCLE's client and name no
+    target, so the trigger keeps its any-caller behaviour — this pins that the confinement
+    is opt-in and changes nothing for a case that did not ask for it."""
+    real = _RecordingClient()
+    injector = _InjectTextBail(real, "Done.")
+    await injector.chat([], agent_name="collector")
+    bailed = await injector.chat([], agent_name="browse-extract")
+    assert injector.bail_injected and bailed.message.content == "Done."
+
+
+def test_a_misfired_injection_is_a_named_exclusion_and_never_also_a_failed_check() -> None:
+    """A recovery case's forced fault reports its misfire ONCE, to whichever half of the
+    report can carry it (#2009).
+
+    A sample the sabotage never fired on answered an unbroken turn: it exercised no
+    recovery, so its end state says nothing about the behaviour the case is named for.  A
+    PORTED case says so as a named exclusion and the sample leaves before any claim is
+    answered; a case still on the scorer path has no exclusions section, so the guard Check
+    stays its carrier.  Pinned in both directions because telling BOTH would count one
+    misfire twice — as harness debris and as the model getting it wrong — which is exactly
+    the reading a recorded run produced, marking a sample behavioural while the entry it
+    was asked to correct had landed."""
+    wrapper = _InjectTextBail(object(), "{}")
+
+    def observe(db, reply, before, injected):  # a ported case's observer
+        raise AssertionError("not called here")
+
+    assert _guarded_injector(wrapper, None) is wrapper, "a scorer case keeps its guard"
+    assert _guarded_injector(wrapper, observe) is None, "an observed case reports it itself"
+    assert _guarded_injector(None, observe) is None, "a case that forced nothing has nothing"
+
+
+def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_path) -> None:
+    """``injected`` is the injector's own account of whether it fired, and ``None`` means the
+    case installed none — so the condition is asked only of a case that forced a fault.
+
+    The order matters and is pinned with it: a sample whose measured turn never ran, or that
+    produced no reply, is excluded for THAT rather than for the injector, because those are
+    the more fundamental facts and naming the injector for them would send a reader after the
+    wrong thing."""
+    db = _make_db(tmp_path)
+    assert _exclusion(db, "an answer", None) == NO_MEASURED_TURN, "no live turn outranks all"
+
+    _log_prompt(db, response=_content_response("an answer"))
+    assert _exclusion(db, "an answer", None) is None, "no injector, nothing to ask"
+    assert _exclusion(db, "an answer", True) is None, "the fault fired — a real sample"
+    assert _exclusion(db, "an answer", False) == INJECTION_NEVER_FIRED
+    assert _exclusion(db, "   ", False) == NO_REPLY, "an empty reply outranks the injector"
+
+
+def test_a_ported_case_must_state_its_threshold_and_the_inline_path_keeps_its_default() -> None:
+    """``min_pass_rate`` is REQUIRED on the cohort path, the way the behaviour sentence is.
+
+    ``None`` cannot double as "not stated" the way an empty behaviour string can, because on
+    this path ``None`` IS the value every ported case states deliberately — a report-only
+    case.  So an unstated threshold has its own marker, and a ported case reaching the driver
+    without one is refused before a sample runs rather than being gated at the inline path's
+    default with nobody having decided that.
+
+    Both directions, and the second is what keeps the ~40 unported cases untouched: on the
+    inline path an unstated threshold still means 0.75, exactly as it always has."""
+    assert _stated_pass_rate("a-case", None, ported=True) is None, "report-only is a VALUE"
+    assert _stated_pass_rate("a-case", 0.9, ported=True) == 0.9, "and so is a stated floor"
+
+    with pytest.raises(ValueError, match="must state its threshold"):
+        _stated_pass_rate("a-case", UNSTATED, ported=True)
+
+    assert _stated_pass_rate("a-case", UNSTATED, ported=False) == 0.75, "the inline default"
+
+
+def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path) -> None:
+    """``held`` and ``entries`` are two reads of the same rows, and a claim about what a
+    round left ALONE can only be answered by the first.
+
+    ``entries`` is stamped by run id, so it carries only what this round wrote — which makes
+    an entry the round never touched and an entry it DELETED look identical there, both
+    simply absent.  The bracket-key recovery case's "nothing else in the collection moved"
+    claim is answered against the seeded rows this round did not write, so it needs the read
+    that can see them."""
+    db = _make_db(tmp_path)
+    _seed_board_games(db)
+    seeded = collection_entries(db, BOARD_GAMES.name)
+
+    assert _stored_entries(db) == [], "a seeded row carries no run stamp, so no round wrote it"
+    assert {entry.key for entry in _held_entries(db)} == set(seeded), "the store holds them all"
+
+    require_memory(db, BOARD_GAMES.name).update(
+        key="Ark Nova", content="Ark Nova — now with a playtime.", author="chat", run_id="r1"
+    )
+    assert [(entry.key, entry.content) for entry in _stored_entries(db)] == [
+        ("Ark Nova", "Ark Nova — now with a playtime.")
+    ], "the round wrote exactly one entry"
+    held = {entry.key: entry.content for entry in _held_entries(db)}
+    assert set(held) == set(seeded), "and the collection still holds every key it was seeded with"
+    assert held["Ark Nova"] == "Ark Nova — now with a playtime."
+    assert held["Spirit Island"] == seeded["Spirit Island"], "an untouched row reads as seeded"
 
 
 def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:

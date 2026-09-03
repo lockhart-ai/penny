@@ -103,7 +103,6 @@ EVAL_EPHEMERAL_HEALTH_DIR := /tmp/penny-eval-health
 # Inside the run dir (so it rides the durable artifact home and is diagnosable after
 # the fact) but in a SUBDIR, so it is never mistaken for a run dir itself.
 COMMENT_SUBDIR := comment
-COMMENT_BODY := body.md
 # Alias for the make binary used to mint the token inside the eval-report recipe. Referenced
 # through this alias, NOT the literal `$(MAKE)`, on purpose: GNU make executes any recipe line
 # containing the literal `$(MAKE)`/`${MAKE}` even under `-n` (recursive-make tracing), and
@@ -465,7 +464,7 @@ assemble: $(if $(LOCAL),,build)
 # `GIT_COMMIT=`, `#1 [internal]`) — the pollution a hand-piped `make assemble` publishes.
 eval-report: $(if $(LOCAL),,build)
 	@if [ -z "$(PR)" ]; then \
-		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]" >&2; \
+		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=\"<run-dir> [<run-dir>...]\"] [FORCE=1]" >&2; \
 		exit 1; \
 	fi; \
 	run="$(if $(filter command line,$(origin RUN)),$(RUN),)"; \
@@ -476,7 +475,8 @@ eval-report: $(if $(LOCAL),,build)
 			exit 1; \
 		fi; \
 	fi; \
-	host_dir="$(EVAL_ARTIFACTS_HOST)/$$run"; \
+	primary="$${run%% *}"; \
+	host_dir="$(EVAL_ARTIFACTS_HOST)/$$primary"; \
 	if [ ! -d "$$host_dir" ]; then \
 		echo "eval-report: run dir not found: $$host_dir" >&2; \
 		exit 1; \
@@ -487,18 +487,22 @@ eval-report: $(if $(LOCAL),,build)
 		exit 0; \
 	fi; \
 	host_parts="$$host_dir/$(COMMENT_SUBDIR)"; \
-	mount_parts="$(EVAL_ARTIFACTS_MOUNT)/$$run/$(COMMENT_SUBDIR)"; \
+	mount_parts="$(EVAL_ARTIFACTS_MOUNT)/$$primary/$(COMMENT_SUBDIR)"; \
 	mkdir -p "$$host_parts"; \
-	if ! $(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.utils.assemble "$(EVAL_ARTIFACTS_MOUNT)/$$run" > "$$host_parts/$(COMMENT_BODY)"; then \
-		echo "eval-report: assemble failed for $$run" >&2; \
-		exit 1; \
-	fi; \
-	if [ ! -s "$$host_parts/$(COMMENT_BODY)" ]; then \
-		echo "eval-report: assemble produced no output for $$run — is it a completed run?" >&2; \
-		exit 1; \
-	fi; \
-	if ! names="$$($(EVAL_RUN) python -m penny.tests.eval.utils.comment_split "$$mount_parts/$(COMMENT_BODY)" "$$mount_parts")"; then \
+	mounts=""; \
+	for one in $$run; do \
+		if [ ! -d "$(EVAL_ARTIFACTS_HOST)/$$one" ]; then \
+			echo "eval-report: run dir not found: $(EVAL_ARTIFACTS_HOST)/$$one" >&2; \
+			exit 1; \
+		fi; \
+		mounts="$$mounts $(EVAL_ARTIFACTS_MOUNT)/$$one"; \
+	done; \
+	if ! names="$$($(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.utils.assemble --comments "$$mount_parts"$$mounts)"; then \
 		echo "eval-report: could not prepare $$run for posting" >&2; \
+		exit 1; \
+	fi; \
+	if [ -z "$$names" ]; then \
+		echo "eval-report: assemble produced no comments for $$run — is it a completed run?" >&2; \
 		exit 1; \
 	fi; \
 	tok="$$($(SUBMAKE) token)"; \
@@ -516,7 +520,7 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: posted $$name → $$url"; \
 		if [ -z "$$first" ]; then first="$$url"; fi; \
 	done; \
-	printf '%s\n' "$$first" > "$$host_dir/$(POSTED_MARKER)"; \
+	for one in $$run; do printf '%s\n' "$$first" > "$(EVAL_ARTIFACTS_HOST)/$$one/$(POSTED_MARKER)"; done; \
 	echo "eval-report: posted $$run → PR #$(PR) as $$(printf '%s\n' $$names | wc -l | tr -d ' ') comment(s); marker → $$first"
 
 migrate-test: $(if $(LOCAL),,build)

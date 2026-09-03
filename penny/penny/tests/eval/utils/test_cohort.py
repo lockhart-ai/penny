@@ -483,6 +483,130 @@ def test_an_invented_url_is_still_caught():
     ]
 
 
+# ── What reached the user (#2009) ────────────────────────────────────────────
+_NO_WORLD = World(name="base", pages=(), keeps=(), excludes=())
+
+
+def _delivered(*messages: str) -> Cohort:
+    """A one-sample cohort that delivered exactly these messages, oldest first."""
+    sample = SampleObservation(
+        name="s0",
+        phrasing="the ask",
+        arm=0,
+        landed="idle",
+        reply=messages[-1],
+        delivered=list(messages),
+    )
+    return Cohort("case", _MODEL, [sample], _one_arm(_NO_WORLD))
+
+
+def _reply_sample(reply: str) -> SampleObservation:
+    """A sample that delivered exactly this reply."""
+    return SampleObservation(
+        name="s0", phrasing="the ask", arm=0, landed="idle", reply=reply, delivered=[reply]
+    )
+
+
+def _answered(cohort: Cohort) -> tuple[int, int]:
+    claim = cohort.claims[0]
+    return claim.passed, claim.total
+
+
+_CLEAN_REPLY = "Lake Baikal is the deepest, at about 1,642 metres."
+_SERIALIZED_CALL = '{"queries": ["deepest lake"], "reasoning": "look it up"}'
+_LEAKED_ENVELOPE = (
+    "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
+)
+
+
+def test_an_unusable_draw_is_read_by_productions_rule_not_by_the_injected_shape():
+    """The claim reads EVERY shape production refuses, not the one a case's injector forces.
+
+    A recovery case keyed to its own fault would pass while a DIFFERENT unusable draw sailed
+    out in the same turn — so the condition set is composed from the chat agent's own
+    ``invalid_draw_conditions`` plus the transport artifacts the loop checks on every draw,
+    and this pins that both halves answer.  Asserting a leaked envelope here is deliberate:
+    it is the shape the call-as-text case's own injector never emits."""
+    clean = _delivered(_CLEAN_REPLY)
+    clean.assert_no_delivered_message_is_an_unusable_draw()
+    assert _answered(clean) == (1, 1)
+
+    for unusable in (_SERIALIZED_CALL, _LEAKED_ENVELOPE, "{}"):
+        cohort = _delivered(unusable)
+        cohort.assert_no_delivered_message_is_an_unusable_draw()
+        assert _answered(cohort) == (0, 1), f"{unusable!r} is a draw the loop refuses"
+        assert cohort.claims[0].rationales, "and the rationale names the condition that fired"
+
+
+def test_every_delivered_message_is_read_and_not_only_the_last():
+    """What the contract forbids is the bad draw reaching the user AT ALL.
+
+    A turn that delivers two messages would otherwise be judged on one of them, which is how
+    a discarded draw arriving FIRST went unseen — so the bad one leads here, where a
+    reply-only read would miss it."""
+    cohort = _delivered(_SERIALIZED_CALL, _CLEAN_REPLY)
+    cohort.assert_no_delivered_message_is_an_unusable_draw()
+    assert _answered(cohort) == (0, 1)
+
+
+def test_a_delivered_message_is_whole_by_the_rule_the_send_path_refuses_by():
+    """Completeness is production's ``half_formed_send_reason``, not a letter count.
+
+    The floor it replaces was fifteen letters — a number somebody picked, which stands for
+    the question rather than answering it.  Both directions matter, and the SHORT-BUT-COMPLETE
+    case is the one that floor got wrong: a brief finished answer is a message a person should
+    receive, and a long one trailing off into an ellipsis is not."""
+    whole = _delivered("Baikal.")
+    whole.assert_every_delivered_message_is_whole()
+    assert _answered(whole) == (1, 1), "a short complete answer is a complete message"
+
+    trailed_off = "the deepest one is …"
+    bailed_out = "I don't know"
+    bare_url = "https://geo.example.test/lakes"
+    for half_formed in (trailed_off, bailed_out, bare_url):
+        cohort = _delivered(half_formed)
+        cohort.assert_every_delivered_message_is_whole()
+        assert _answered(cohort) == (0, 1), f"{half_formed!r} is not a message to deliver"
+        assert cohort.claims[0].rationales, "and production's own reason is the rationale"
+
+
+def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
+    """The claim the rest of the set cannot make.
+
+    A reply carrying no values passes every other claim vacuously — it lands in the right
+    state, it is a complete message, and it has nothing in it to be unsourced.  The first
+    text here is the real one that did: it was its cohort's REPRESENTATIVE sample, marked
+    pass at 5 of 5, on a turn whose extractor had already returned the answer.
+
+    Both directions, and the second is the one that keeps the claim honest: a reply that
+    answers is not failed for how it groups the digits."""
+    world = World(name="base", pages=(), keeps=(), excludes=(), answers=("baikal", "642"))
+
+    empty_handed = "Sounds like you're surprised! Bath! What else do you want to hear about it?"
+    cohort = Cohort("case", _MODEL, [_reply_sample(empty_handed)], _one_arm(world))
+    cohort.assert_the_reply_answers_the_ask()
+    assert (cohort.claims[0].passed, cohort.claims[0].total) == (0, 1)
+    assert cohort.claims[0].rationales, "and it names what the reply never stated"
+
+    for answered in (
+        "Lake Baikal, 1,642 metres deep.",
+        "lake baikal is about 1642 m deep",
+        "Lake Baikal — 1 642 metres.",  # the groupings the models actually emit
+    ):
+        answering = Cohort("case", _MODEL, [_reply_sample(answered)], _one_arm(world))
+        answering.assert_the_reply_answers_the_ask()
+        assert (answering.claims[0].passed, answering.claims[0].total) == (1, 1), answered
+
+
+def test_a_world_naming_no_answer_makes_no_completeness_claim():
+    """An ask with nothing to state — a correction rather than a question — declares no
+    answer tokens, and the claim is then true rather than unasked."""
+    world = World(name="base", pages=(), keeps=(), excludes=())
+    cohort = Cohort("case", _MODEL, [_reply_sample("done — updated it.")], _one_arm(world))
+    cohort.assert_the_reply_answers_the_ask()
+    assert (cohort.claims[0].passed, cohort.claims[0].total) == (1, 1)
+
+
 # ── Every deterministic check is scored, counted and coloured ────────────────
 def test_no_claim_can_opt_out_of_being_scored():
     """Deterministic checks are ALWAYS scored — there is no advisory claim on this side.

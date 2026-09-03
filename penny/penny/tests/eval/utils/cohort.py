@@ -175,9 +175,27 @@ class SampleObservation(BaseModel):
     walk: str = ""
     routines: list[RoutineRecord] = Field(default_factory=list)
     entries: list[StoredEntry] = Field(default_factory=list)
+    # Every entry the store HOLDS when the sample ends — the same ``StoredEntry`` shape as
+    # ``entries``, because it is the same three facts about the same rows and two shapes for
+    # one thing drift.  ``entries`` is the subset this sample WROTE, which is the right
+    # reading for "did she invent that" and the wrong one for "what does the store hold":
+    # a cycle that correctly wrote nothing leaves it empty while the store still holds the
+    # value it was seeded with, and in a list of writes an entry never touched and an entry
+    # deleted are both simply absent.  Both questions are real and they are not the same
+    # question, so the store's own end state is carried beside the sample's writes rather
+    # than derived from them.
+    #
+    # WHICH rows are read is the fixture's, like every other observation: a chat sample
+    # reads every collection, a collector cycle reads the one container its job is bound to.
+    held: list[StoredEntry] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
+    # Every message the sample DELIVERED to the user, oldest first.  ``reply`` is only the
+    # last one, and a claim about what reached the user has to read them all: a turn that
+    # delivered two messages would otherwise be judged on one of them, which is how a
+    # discarded draw arriving first went unseen.
+    delivered: list[str] = Field(default_factory=list)
     given: str = ""
     # The container the round was FRAMED on, read off the move that settled it — the same anchor
     # the turn's instruction rendered.  A write that landed anywhere else invented a destination
@@ -191,12 +209,6 @@ class SampleObservation(BaseModel):
     output: list[OutputField] = Field(default_factory=list)
     # ── What a COLLECTOR cycle left, read where a chat turn has no equivalent ──
     #
-    # ``entries`` above is what THIS SAMPLE WROTE, which is the right reading for "did she
-    # invent that" and the wrong one for "what does the collection hold": a cycle that
-    # correctly wrote nothing leaves it empty while the store still holds the value it was
-    # seeded with.  Both questions are real and they are not the same question, so the store's
-    # own end state is carried beside the sample's writes rather than derived from them.
-    held: dict[str, str] = Field(default_factory=dict)
     # The run record the cycle closed with — RECORD FIELDS, read literally.  ``run_outcome``
     # is the cycle's own determination (``worked`` changed something, ``no_work`` closed
     # clean and changed nothing); ``run_reason`` carries a write-gate STOP by name.  Neither

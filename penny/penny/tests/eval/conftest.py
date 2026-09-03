@@ -612,13 +612,6 @@ def count_tool_calls(db: Database, tool_name: str) -> int:
     )
 
 
-_GAVE_UP = re.compile(
-    r"\b(sorry|apolog\w+)\b.{0,50}"
-    r"\b(wasn't|was not|couldn't|could not|can't|cannot|unable|not able)\b",
-    re.IGNORECASE,
-)
-
-
 def _row_turns(row: PromptLog) -> list[dict]:
     """One promptlog row's conversation: the turns it CARRIED (``messages``) followed by the
     turns the run appended after it (``trailing_messages`` — the tail no later call carried,
@@ -842,15 +835,6 @@ def _cycle_recovered_check(success: bool) -> Check:
         rationale=None
         if success
         else "the cycle did not recover to a successful close after the nudge",
-    )
-
-
-def gave_up_mid_run(db: Database) -> bool:
-    """Did any assistant reply apologise for a failure it should have recovered from — a
-    defeatist give-up ("Sorry, I wasn't able to get results right now") instead of a retry?"""
-    return any(
-        message.get("role") == "assistant" and _GAVE_UP.search(message.get("content") or "")
-        for message in _iter_prompt_messages(db)
     )
 
 
@@ -2299,6 +2283,17 @@ NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its 
 NO_REPLY = "the measured turn produced no reply"
 NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
+# A RECOVERY case forces its fault; the injector reports whether it actually fired.  A sample
+# it never fired on answered an unbroken turn, so there was no recovery to observe and its end
+# state says nothing about the behaviour the case is named for.  That is HARNESS debris, not a
+# model failure — a distinction with teeth, since the sabotage misfires in practice.
+#
+# THE COST, STATED (#2018): `bail_injected` does not say the fault could not be APPLIED, it
+# says the turn took a route the injector WATCHES.  A turn that took an unwatched route leaves
+# the cohort here, and whatever else it did goes unjudged with it.  Named per sample and
+# counted in the report's harness section rather than absorbed, so the rate is readable;
+# whether an unwatched route belongs in the cohort at all is #2018's to decide.
+INJECTION_NEVER_FIRED = "the forced fault never fired — the turn ran unbroken, so no recovery"
 
 # The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
 # design — a value Penny invents early in a turn rides into the message history and would
@@ -2309,6 +2304,12 @@ NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world th
 # laundering risk an assistant turn does — framework-rendered from the registry and the
 # ledger, and rendered BEFORE the turn acts, so it cannot contain anything this turn invented.
 _GIVEN_ROLES = frozenset({"user", "tool", "system"})
+
+
+# How a ported case reads one sample: its live database, the reply it produced, the
+# collections that existed before it, and — for a case that forced a fault — whether the
+# injector actually fired.  ``None`` for the injector arm means the case installed none.
+Observer = Callable[[Database, str, set[str], bool | None], eval_cohort.SampleObservation]
 
 
 def measured_turn_ran(db: Database) -> bool:
@@ -2391,6 +2392,28 @@ def _stored_entries(db: Database) -> list[eval_cohort.StoredEntry]:
     return written
 
 
+def _held_entries(db: Database) -> list[eval_cohort.StoredEntry]:
+    """Every entry the store HOLDS at the end of the sample, whoever wrote it.
+
+    The counterpart to ``_stored_entries``, which reads only what this round WROTE — and
+    the same ``StoredEntry`` shape, because it is the same three facts about the same rows.
+    A claim about what a round left ALONE cannot be answered from a list of its writes:
+    there, an entry it never touched and an entry it deleted are both simply absent.
+    Collections only, for the same reason ``_stored_entries`` is: a log is keyless and
+    append-only, so it holds nothing a round could have left in a different state."""
+    held: list[eval_cohort.StoredEntry] = []
+    for row in db.memories.list_all():
+        if row.type != MemoryType.COLLECTION:
+            continue
+        memory = db.memory(row.name)
+        entries = memory.read_all() if memory is not None else []
+        held += [
+            eval_cohort.StoredEntry(collection=row.name, key=entry.key, content=entry.content)
+            for entry in entries
+        ]
+    return held
+
+
 def _written_by_a_live_run(entry) -> bool:
     """Whether THIS sample put an entry's current value there — created by a live run, or last
     rewritten by one.  Both stamps, because an edit of a seeded entry moves only the second."""
@@ -2447,7 +2470,14 @@ def _machine_walk(db: Database) -> str:
 
 
 def _observe_sample(
-    db: Database, *, name: str, phrasing: str, arm: int, reply: str, before: set[str]
+    db: Database,
+    *,
+    name: str,
+    phrasing: str,
+    arm: int,
+    reply: str,
+    before: set[str],
+    injected: bool | None,
 ) -> eval_cohort.SampleObservation:
     """Read everything one CHAT sample left behind, while its database is still live.
 
@@ -2459,7 +2489,7 @@ def _observe_sample(
     calling this one: reused elsewhere it returns a row that is structurally fine and
     substantively empty (#2017).
     """
-    exclusion = _exclusion(db, reply)
+    exclusion = _exclusion(db, reply, injected)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
@@ -2473,6 +2503,8 @@ def _observe_sample(
         walk=_machine_walk(db),
         routines=_routine_records(db),
         entries=_stored_entries(db),
+        held=_held_entries(db),
+        delivered=outgoing_replies(db),
         tool_sequence=[
             tool
             for run in chat_run_tool_sequences(db)
@@ -2490,17 +2522,23 @@ def _observe_sample(
 # The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every
 # shape shares — a sample's database exists from sample START, so a file is not a result — and
 # each gate adds whatever "this shape produced nothing" means for the shape it drives.
-def _exclusion(db: Database, reply: str) -> str | None:
+def _exclusion(db: Database, reply: str, injected: bool | None) -> str | None:
     """Why a CHAT sample cannot be counted, or ``None`` when it can.
 
     Chat's own second condition is an empty reply: the turn is a conversation and a turn that
     said nothing produced no behaviour to read.  It is stated HERE rather than shared, because
     it is false of every other shape — a micro-context sample has no reply at all, and a gate
-    that voided one for that would void the entire cohort and refuse the run (#2017)."""
+    that voided one for that would void the entire cohort and refuse the run (#2017).
+
+    ``injected`` is the injector's own account of whether it fired, and ``None`` for a case
+    that installs none — so the third condition is asked only of a case that forced a fault.
+    """
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if not reply.strip():
         return NO_REPLY
+    if injected is False:
+        return INJECTION_NEVER_FIRED
     return None
 
 
@@ -2697,6 +2735,7 @@ def _variance_readings(
             entropy=feature.entropy,
             saturated=feature.saturated,
             distinct=feature.distinct,
+            blind=feature.blind,
         )
         for feature in pooled.features
     ]
@@ -2726,6 +2765,45 @@ def _stated_behaviour(case_id: str, behaviour: str) -> str:
     if not behaviour.strip():
         raise ValueError(_NO_BEHAVIOUR.format(case_id=case_id))
     return behaviour.strip()
+
+
+class _Unstated:
+    """A parameter nobody passed.
+
+    ``behaviour`` can use the empty string for this because a case always has something to
+    say; ``min_pass_rate`` cannot, because ``None`` is a VALUE there — the report-only setting
+    every ported case states deliberately — so "not stated" needs a marker of its own."""
+
+    def __repr__(self) -> str:
+        return "<unstated>"
+
+
+UNSTATED = _Unstated()
+# What a driver takes for a threshold: a rate, the report-only ``None``, or nothing at all.
+PassRate = float | None | _Unstated
+
+# The report-only setting is REQUIRED on the cohort path and nowhere else, for the reason the
+# behaviour sentence is: that path is what every ported case runs on, and a case reaching it
+# without stating its threshold is gated at the inline path's default without anyone deciding
+# that.  Thresholds are the code owner's — a case author states ``None`` and a run PROPOSES.
+# The inline path predates the convention and keeps its default, so the ~40 cases on it are
+# untouched.
+# What the INLINE path has always defaulted to, named rather than repeated at each driver.
+_INLINE_MIN_PASS_RATE = 0.75
+
+_NO_PASS_RATE = (
+    "{case_id}: a ported case must state its threshold — min_pass_rate=None, because a ported "
+    "case lands report-only and a floor is the code owner's to accept, never a case author's"
+)
+
+
+def _stated_pass_rate(case_id: str, min_pass_rate: PassRate, ported: bool) -> float | None:
+    """The threshold this case runs under, refusing an unstated one on the cohort path."""
+    if not isinstance(min_pass_rate, _Unstated):
+        return min_pass_rate
+    if ported:
+        raise ValueError(_NO_PASS_RATE.format(case_id=case_id))
+    return _INLINE_MIN_PASS_RATE
 
 
 def _finish_case(
@@ -2941,6 +3019,21 @@ def _scored_sample(
     return SampleResult.binary(fails)
 
 
+def _guarded_injector(
+    wrapper: _InjectingClient | None, observe: Observer | None
+) -> _InjectingClient | None:
+    """The injector whose misfire is reported as a failed guard CHECK, or ``None``.
+
+    ONE fact — the sabotage never fired — told to whichever half of the report can carry
+    it, and told exactly once.  A case that is OBSERVED reports it as a named exclusion on
+    the observation (``INJECTION_NEVER_FIRED``), because an unbroken turn exercises no
+    recovery and is harness debris rather than the model getting anything wrong; a case
+    scored by a callback has no exclusions section, so the guard Check is where its
+    contract is stated.  Told to both, the same misfire would count twice — once as debris
+    and once as a behavioural failure."""
+    return None if observe is not None else wrapper
+
+
 async def _drive_sample(
     penny: Penny,
     server: MockSignalServer,
@@ -2952,7 +3045,7 @@ async def _drive_sample(
     wrap_client: Callable[[LlmClient], _InjectingClient] | None,
     timeout: float,
     retryable: bool,
-    observe: Callable[[Database, str, set[str]], eval_cohort.SampleObservation] | None = None,
+    observe: Observer | None = None,
 ) -> SampleResult:
     """ONE attempt at one sample against an already-seeded Penny: drive the turns,
     score them, write the sample's report block and dump its thinking.
@@ -2973,7 +3066,7 @@ async def _drive_sample(
     reply = ""
     try:
         reply = await _drive_turns(server, turns, timeout=timeout, retryable=retryable)
-        result = _scored_sample(penny.db, before, reply, score, wrapper)
+        result = _scored_sample(penny.db, before, reply, score, _guarded_injector(wrapper, observe))
         _stamp_cause(penny.db, result)
         _write_sample_report(
             penny.db, case_id, sample_index, result=result, reply=reply, driven=turns
@@ -2986,7 +3079,8 @@ async def _drive_sample(
     # moment what the round left behind is available at all.  A timed-out sample reaches this
     # line too, so it is EXCLUDED by name rather than silently absent from the pool.
     if observe is not None:
-        result.observation = observe(penny.db, reply, before)
+        injected = wrapper.bail_injected if wrapper is not None else None
+        result.observation = observe(penny.db, reply, before, injected)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
@@ -3036,7 +3130,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         prepare: Preparer | None = None,
         wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
         samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
+        min_pass_rate: PassRate = UNSTATED,
         timeout: float = 120.0,
         family: str | None = None,
         gate_pathology_excluded: bool = False,
@@ -3058,6 +3152,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             samples,
         )
         spoken = arms.spoken
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
         turns = [] if spoken else _conversation_turns(message, messages)
         driven = arms.driven if spoken else samples
         pages = list(world.pages) if world is not None else browse
@@ -3078,14 +3173,18 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             else None
         )
 
-        def _observe(
-            sample_index: int,
-        ) -> Callable[[Database, str, set[str]], eval_cohort.SampleObservation]:
+        def _observe(sample_index: int) -> Observer:
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, reply, before: _observe_sample(
-                db, name=name, phrasing=phrasing, arm=arm, reply=reply, before=before
+            return lambda db, reply, before, injected: _observe_sample(
+                db,
+                name=name,
+                phrasing=phrasing,
+                arm=arm,
+                reply=reply,
+                before=before,
+                injected=injected,
             )
 
         async def _drive(
@@ -3548,6 +3647,7 @@ def _observe_cycles(
     name: str,
     phrasing: str,
     arm: int,
+    collection: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE cycle-driven sample left behind — its own observer, not the chat one.
 
@@ -3560,7 +3660,9 @@ def _observe_cycles(
 
     ``held``, ``run_outcome`` and ``run_reason`` come off the LAST cycle, which for an
     arm-driven case is its only one.  They are what a collector has instead of a machine walk:
-    the store's own end state, and the record fields the run closed with."""
+    the store's own end state, and the record fields the run closed with.  ``held`` names the
+    BOUND collection on every entry, because it is the one container this job writes to and a
+    claim reads the whole entry — key and content — exactly as a chat sample's does."""
     script = cycle_script(driven.observed)
     exclusion = _cycles_exclusion(db, script)
     if exclusion is not None:
@@ -3579,7 +3681,10 @@ def _observe_cycles(
         tool_sequence=[call.tool for cycle in driven.observed for call in cycle.calls],
         reply="\n".join(sent),
         given=given_to_the_model(db),
-        held=dict(last.after) if last is not None else {},
+        held=[
+            eval_cohort.StoredEntry(collection=collection, key=key, content=content)
+            for key, content in (last.after if last is not None else {}).items()
+        ],
         run_outcome=last.outcome if last is not None else None,
         run_reason=last.reason if last is not None else None,
         notifications=list(sent),
@@ -3656,7 +3761,7 @@ def collector_cycles_eval(
         seed_skills: Sequence[SkillDraft] | None = None,
         prepare: Preparer | None = None,
         samples: int = SAMPLES,
-        min_pass_rate: float | None = None,
+        min_pass_rate: PassRate = UNSTATED,
         family: str | None = None,
     ) -> Cohort:
         """Drive several real collector cycles N times and return the COHORT (a ported case),
@@ -3673,6 +3778,7 @@ def collector_cycles_eval(
             samples,
         )
         driven_count = driving.driven if arms else samples
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(arms))
 
         pending = (
             _cohorts.setdefault(
@@ -3696,7 +3802,9 @@ def collector_cycles_eval(
             phrasing = driving.label(sample_index)
             arm = driving.index_of(sample_index)
             name = f"{case_id}-{sample_index + 1} ({phrasing})"
-            return lambda db, ran: _observe_cycles(db, ran, name=name, phrasing=phrasing, arm=arm)
+            return lambda db, ran: _observe_cycles(
+                db, ran, name=name, phrasing=phrasing, arm=arm, collection=collection
+            )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
@@ -3758,11 +3866,29 @@ class _InjectingClient(LlmClient):
     wrapped client.  Holds ``bail_injected`` (a declared attribute, so callers read
     ``wrapper.bail_injected`` directly — no ``getattr`` probing); ``chat`` is
     overridden by subclasses and every other attribute (e.g. ``model``) forwards to
-    the real client."""
+    the real client.
 
-    def __init__(self, real: LlmClient) -> None:
+    ``target_agent`` CONFINES the sabotage to one caller's turns.  An agent's model client
+    is shared with everything built from it — the browse tool and, through it, every
+    microcontext (``browse-extract``, ``state-classifier``) — so wrapping
+    ``chat_agent._model_client`` does NOT confine the fault to the chat turn: the next
+    ``chat()`` after the turn's browse call is the extractor's, and the bail lands there.
+    Measured on the first ported run, that is where it landed on 12 of 15 gpt-oss samples
+    and 15 of 15 gemma ones: the microcontext discarded it, re-rolled, and the turn under
+    test was never broken — while ``bail_injected`` said the contract had been exercised.
+    Both call sites already pass ``agent_name``, so the caller is a value the client is
+    GIVEN rather than one an injector has to infer.  ``None`` fires on any caller, which is
+    what a collector runner wants, where the cycle itself is the thing being broken.
+    """
+
+    def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
         self._real = real
+        self._target_agent = target_agent
         self.bail_injected = False
+
+    def targets(self, **kwargs) -> bool:
+        """Whether this call belongs to the turn the case is about."""
+        return self._target_agent is None or kwargs.get("agent_name") == self._target_agent
 
     async def chat(self, messages, tools=None, *args, **kwargs):
         raise NotImplementedError
@@ -3778,19 +3904,25 @@ class _InjectAfterToolCall(_InjectingClient):
     ``_InjectDoneBail`` doesn't share this trigger — its bail is the cycle's very
     FIRST response, before any real tool call."""
 
-    def __init__(self, real: LlmClient) -> None:
-        super().__init__(real)
+    def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
+        super().__init__(real, target_agent=target_agent)
         self._saw_tool = False
 
     def _bail_response(self) -> LlmResponse:
         raise NotImplementedError
 
     async def chat(self, messages, tools=None, *args, **kwargs):
-        if self._saw_tool and not self.bail_injected:
+        """Delegate until the TARGET's first tool call lands, then bail on its next call.
+
+        Both halves are gated on the caller: another agent's tool call must not arm the
+        trigger and must not receive the bail, or the fault is spent on a turn the case is
+        not about — which is exactly what happened before the gate existed."""
+        mine = self.targets(**kwargs)
+        if mine and self._saw_tool and not self.bail_injected:
             self.bail_injected = True
             return self._bail_response()
         response = await self._real.chat(messages, *args, tools=tools, **kwargs)
-        if response.has_tool_calls:
+        if mine and response.has_tool_calls:
             self._saw_tool = True
         return response
 
@@ -3806,8 +3938,8 @@ class _InjectTextBail(_InjectAfterToolCall):
     scenario actually fired (else the contract test would be vacuous).
     """
 
-    def __init__(self, real, bail_text: str) -> None:
-        super().__init__(real)
+    def __init__(self, real, bail_text: str, *, target_agent: str | None = None) -> None:
+        super().__init__(real, target_agent=target_agent)
         self._bail_text = bail_text
 
     def _bail_response(self) -> LlmResponse:
@@ -5797,7 +5929,7 @@ def extractor_eval(
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
+        min_pass_rate: PassRate = UNSTATED,
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
@@ -5820,6 +5952,7 @@ def extractor_eval(
             samples,
         )
         spoken = arms.spoken
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
         driven = arms.driven if spoken else samples
         content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
 
