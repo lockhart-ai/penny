@@ -101,12 +101,27 @@ class MechanismRecord(BaseModel):
     silently exempts whichever field nobody enumerated — a description edit, a rebind, an
     archive.  The two are separate facts about one row and neither derives the other: a
     creation is also a change, and a change to a row that already existed is not a creation.
+
+    The rest is the row's CONFIGURATION — the TERMS a turn that stands a job up committed to:
+    the schedule it fires on, whether it tells the user, and whether it stops.  Read as named
+    fields rather than through the ledger because this is the opposite direction from
+    ``changed_this_run``: there the question is whether ANYTHING moved, which no field list
+    can answer, and here it is what the turn chose, which only the fields say.  Which ROUTINE
+    the row runs is deliberately absent: a turn configuring a framed round is handed it
+    framework-side off the round's own framing, so it is the container's name read twice.
+
+    ``schedule`` travels VERBATIM — the stored rule is what a claim about cadence reads a gap
+    off and what its rationale has to quote, and two spellings of one cadence are the same
+    answer, so the string is carried and the reading is the case's.
     """
 
     name: str
     archived: bool
     born_this_run: bool
     changed_this_run: bool
+    notifies: bool
+    schedule: str | None
+    expires: bool
 
 
 class Arm(BaseModel):
@@ -195,6 +210,17 @@ class SampleObservation(BaseModel):
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
+    # The routine the move NAMED, off the landed transition's own ``skill_name`` — which
+    # routine the decision recognised as covering the ask, before anything was stood up.
+    # Beside ``landed`` because it is the same row and the same reading: where the machine
+    # went, and what it went there about.  ``None`` where the move named none, which is a
+    # real reading (an ordinary chat turn names no routine) and not a missing one.
+    decision_skill: str | None = None
+    # The parameters the round is still WAITING ON, off the landed transition's own
+    # ``round_shortfall`` — their declared names, in the routine's declared order.  Empty
+    # where the move recorded no shortfall, which is the ordinary reading (only a move landing
+    # in request carries one) and not a missing one.
+    awaiting: list[str] = Field(default_factory=list)
     walk: str = ""
     routines: list[RoutineRecord] = Field(default_factory=list)
     entries: list[StoredEntry] = Field(default_factory=list)
