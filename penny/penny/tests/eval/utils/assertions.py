@@ -46,6 +46,12 @@ from penny.text_validity import (
 )
 from penny.validation.conditions import ConditionKey
 
+# The STORE label several cases claim under, named once because a label is a DIFF-JOIN KEY: a
+# copy per case is a chance for a typo to split one claim's history into two.  Deliberately
+# case-NEUTRAL, so one wording reads the same whether the round was abandoned, never started,
+# or is waiting on a value.
+_NOTHING_CREATED = "state: no mechanism was created"
+
 # The ground a claim is answered against by a cohort that declared no arms at all — the
 # unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
 # against it is vacuous rather than answered on pages the sample never saw.
@@ -244,6 +250,54 @@ class Cohort:
             "state: nothing the ask excluded was stored", _nothing_excluded, SpecCategory.STORE
         )
 
+    def assert_nothing_was_written(self) -> None:
+        """This round wrote no entry anywhere.
+
+        The end-state form of "she did not go and do it": a turn that asks to be taught, asks
+        for a missing value, or stands a job up to run LATER has read nothing worth keeping and
+        kept nothing.  It reads the entries the sample WROTE rather than what the store holds,
+        so a seeded world's own contents can never answer it."""
+        self.claim(
+            "state: nothing was written to any collection", _nothing_written, SpecCategory.STORE
+        )
+
+    def assert_no_mechanism_was_created(self) -> None:
+        """No mechanism was created — not an inert container, not a configured job, none.
+
+        The registry read is a list of rows, so "nothing" is a COUNT and not an inference."""
+        self.claim(_NOTHING_CREATED, _nothing_was_born, SpecCategory.STORE)
+
+    def assert_the_move_named_the_routine(self, routine: str) -> None:
+        """The move the turn recorded NAMED this routine — the decision half of picking one
+        out of a registry of real routines of the same kind.
+
+        A registry key, which is strictly identifiable, where "she recognised the right
+        routine" said in a sentence is not.  It reads the landed transition's own
+        ``skill_name``, so it is answered whether or not the turn went on to build anything —
+        which is the distinction it exists for: picking the wrong routine and picking the right
+        one and then doing nothing are different failures."""
+        self.claim(
+            "state: the move named the routine that covers the ask",
+            _named_the_routine(routine),
+            SpecCategory.LANDED,
+        )
+
+    def assert_no_running_mechanism_was_changed(self) -> None:
+        """Nothing that was ALREADY running was touched — the only mechanism a turn may change
+        is one it created itself.
+
+        Read off the mutation LEDGER rather than a field-by-field diff, so a rebind, a schedule
+        change, a description edit and an archive all answer it the same way and the field
+        nobody enumerated is caught too.  The born-this-run exemption is what lets one sentence
+        serve a turn that builds nothing and a turn that stands a job up: what it forbids is
+        reaching into the jobs the world was already running, which is none of any turn's
+        business."""
+        self.claim(
+            "state: no mechanism that was already running was changed",
+            _running_mechanisms_untouched,
+            SpecCategory.STORE,
+        )
+
     def assert_no_delivered_message_is_an_unusable_draw(self) -> None:
         """Nothing that reached the user is a draw the loop was supposed to throw away.
 
@@ -406,6 +460,37 @@ def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
     # Vacuously true over an empty registry, which would render a round that produced nothing as
     # a pass — so the claim only speaks where a routine exists.
     return bool(sample.routines) and not asking, f"still a leaf parameter: {asking}"
+
+
+def _nothing_written(sample: SampleObservation, _world: World) -> Answer:
+    return not sample.entries, f"wrote {sorted({e.collection for e in sample.entries})}"
+
+
+def _nothing_was_born(sample: SampleObservation, _world: World) -> Answer:
+    born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
+    return not born, f"created {born}"
+
+
+def _named_the_routine(routine: str) -> WorldClaim:
+    """The claim that the landed move named ``routine``, bound to one case's covering one.
+
+    The rationale names what it bound INSTEAD, because every wrong pick here is a real routine
+    that would go on watching the wrong kind of thing."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        return (
+            sample.decision_skill == routine,
+            f"the move bound {sample.decision_skill!r}, the ask needs {routine!r}",
+        )
+
+    return answer
+
+
+def _running_mechanisms_untouched(sample: SampleObservation, _world: World) -> Answer:
+    touched = sorted(
+        one.name for one in sample.mechanisms if one.changed_this_run and not one.born_this_run
+    )
+    return not touched, f"changed {touched}"
 
 
 def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
