@@ -2611,30 +2611,45 @@ def reply_embedding(db: Database, reply: str) -> list[float] | None:
     return deserialize_embedding(row.embedding)
 
 
-def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
-    """Every routine the round minted, as the registry holds it.
+def routine_names_a_destination(steps: Sequence[SkillStep]) -> bool:
+    """Whether any leaf in a routine names somewhere to ACT — the ATTACHMENT MARK, set by
+    distillation on any leaf whose demonstrated value named one of Penny's own collections.
 
-    ``names_a_destination`` reads the ATTACHMENT MARK — set by distillation on any leaf whose
-    demonstrated value named one of Penny's own collections — so it is true of a write, of a
-    log append, and of a plugin verb nobody here has heard of, and false of a routine that
-    only browses.  Never keyed to a tool NAME: a skill is an arbitrary tool sequence."""
+    So it is true of a write, of a log append, and of a plugin verb nobody here has heard of,
+    and false of a routine that only browses.  Never keyed to a tool NAME: a skill is an
+    arbitrary tool sequence.
+
+    Its own function because two readers ask it of two shapes — the observation, off the
+    registry rows a sample left, and the fixture probe, off the DRAFTS a world seeds — and the
+    probe exists precisely to say the claim reads the minted routine rather than the seeded
+    five, which a second spelling of the reading could not honestly do."""
+    return any(substitution.attachment for step in steps for substitution in step.substitutions)
+
+
+def routine_open_parameters(steps: Sequence[SkillStep]) -> list[str]:
+    """The spots a routine still carries as LEAF parameters, sorted.
+
+    A named spot stops being a parameter and the labeller names every spot unconditionally, so
+    a leftover one means the labelling draw fell back as a whole.  Read by the same two readers
+    ``routine_names_a_destination`` is, for the same reason."""
+    return sorted(
+        {
+            substitution.parameter
+            for step in steps
+            for substitution in step.substitutions
+            if substitution.kind == SkillSubKind.HOLE and substitution.parameter is not None
+        }
+    )
+
+
+def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
+    """Every routine the round minted, as the registry holds it."""
     return [
         eval_cohort.RoutineRecord(
             name=skill.name,
             shape=render_skill_shape(skill),
-            open_parameters=sorted(
-                {
-                    substitution.parameter
-                    for step in steps_from_json(skill.steps)
-                    for substitution in step.substitutions
-                    if substitution.kind == SkillSubKind.HOLE and substitution.parameter is not None
-                }
-            ),
-            names_a_destination=any(
-                substitution.attachment
-                for step in steps_from_json(skill.steps)
-                for substitution in step.substitutions
-            ),
+            open_parameters=routine_open_parameters(steps_from_json(skill.steps)),
+            names_a_destination=routine_names_a_destination(steps_from_json(skill.steps)),
         )
         for skill in db.skills.list_all()
     ]
@@ -2698,7 +2713,10 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
     is not reported as a change the row carries.
 
     The three configuration values beside it are the row's own, copied verbatim: the ledger says
-    what moved and never where it landed, so a claim naming a value has to read the row."""
+    what moved and never where it landed, so a claim naming a value has to read the row.
+
+    ``expires`` beside them is whether the row carries an end condition at all — a TERM a turn
+    that stood a job up committed to, read as a named column for the same reason."""
     return [
         eval_cohort.MechanismRecord(
             name=row.name,
@@ -2709,6 +2727,7 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
             born_this_run=row.name not in before,
             touched_this_run=_touched_this_run(_live_events(db, row.name)),
             moved_this_run=_moved_this_run(_live_events(db, row.name), row),
+            expires=row.expires_at is not None,
         )
         for row in db.memories.list_all()
         if row.type == MemoryType.COLLECTION
@@ -2790,6 +2809,21 @@ def _framed_container(db: Database) -> str | None:
     return RoundFraming.model_validate_json(latest.skill_frame).container
 
 
+def _awaited_parameters(db: Database) -> list[str]:
+    """What the round is still WAITING ON, read off the move that settled it.
+
+    From the MACHINE for the reason ``_framed_container`` is: the round's partial binding is
+    recorded on the transition and read back on every later turn of the round, so what a
+    request turn asks for is a row rather than a re-reading of the reply.  Their DECLARED
+    names, in declared order — a parameter name is a binding key, which is strictly
+    identifiable, where the sentence that asks for it is prose."""
+    latest = db.machine.latest_transition()
+    if latest is None or latest.round_shortfall is None:
+        return []
+    shortfall = RoundShortfall.model_validate_json(latest.round_shortfall)
+    return [parameter.name for parameter in shortfall.missing]
+
+
 def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
     """Collections this round created that carry a schedule or a notify flag.
 
@@ -2855,6 +2889,8 @@ def _observe_sample(
         phrasing=phrasing,
         arm=arm,
         landed=landed.to_state if landed else None,
+        decision_skill=landed.skill_name if landed else None,
+        awaiting=_awaited_parameters(db),
         walk=_machine_walk(db),
         routines=_routine_records(db),
         entries=_stored_entries(db),
