@@ -1089,11 +1089,23 @@ def divergences(
 # Nothing else in the suite covers them.  Tightening the rule to catch them is what the measured
 # false-positive rate above rules out, so the miss is the bought half of that trade.
 _NUMBER = r"\d[\d,.:%$]*"
-# A URL runs to the first whitespace, MINUS any sentence mark it ran into: `\S+` alone captured
-# the full stop closing the sentence, and `…/aurora-deck-2.` matches no world.  Only `.,;:!?` are
-# refused as the LAST character, so a url legitimately ending in a bracket, a slash or a dash —
-# `…/Foo_(bar)`, `…/news/` — keeps it.
-_URL = r"https?://\S*[^\s.,;:!?]"
+# Dashes the model draws instead of a hyphen — folded everywhere (below), and admitted INTO the
+# URL grammar because that is where one was measured: a sample cited the page it read with
+# U+2011 hyphens throughout the address.
+_DASHES = "‐‑‒–—−"
+# A URL is bounded by the characters a URI may CONTAIN, not by "everything up to a space".
+# `\S*` ran the address into whatever the prose put beside it — first the full stop closing the
+# sentence (`…/aurora-deck-2.`, which matches no world), then the delimiter a reply wrapped it
+# in, which matched no world either and reported a correctly cited page as an invention (#2049).
+#
+# Subtracting the wrappers someone happened to observe repairs those and leaves the next one.
+# The set a URI may contain is CLOSED (RFC 3986), so everything outside it is refused by one
+# line — the backtick and the angle bracket that were seen, and equally `"`, `«»`, `“”`, `｢｣`,
+# `{}`, `|` and every other mark nobody has drawn yet.  Widened only by the drawn dashes above,
+# which JOIN rather than wrap; the backtick folds to an apostrophe but is a wrapper, so
+# admitting it is this defect.
+_URI_CHARS = rf"A-Za-z0-9._~%!$&'()*+,;=:/?#@\[\]{_DASHES}-"
+_URL = rf"https?://[{_URI_CHARS}]+"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"
 _NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
 _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
@@ -1110,8 +1122,6 @@ _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 # The model emits whichever apostrophe its tokenizer prefers; not folding them reported `I’ve`
 # and `Brandt’s` as inventions.
 _APOSTROPHES = "’‘`´"
-# Dashes it draws instead of a hyphen — in a URL, in a name, anywhere.
-_DASHES = "‐‑‒–—−"
 # Spaces that are not the space key, including the zero-width one that glues two words together.
 _SPACES = " ​  "
 _QUOTES = (("“", '"'), ("”", '"'))
@@ -1157,9 +1167,57 @@ def _fold_phrases(text: str) -> str:
     )
 
 
+def _is_url(token: str) -> bool:
+    """A URL is the one specific that can run into the prose around it: a number's word
+    boundary and a name phrase's character class both stop before a mark on their own."""
+    return "://" in token
+
+
 def _is_atomic(token: str) -> bool:
     """Whether a match is one value rather than a phrase of them — a URL or a number."""
-    return token[0].isdigit() or "://" in token
+    return token[0].isdigit() or _is_url(token)
+
+
+# Marks that end a SENTENCE rather than an address.  Every one of them is a legal URI character,
+# so the grammar cannot rule on them and prose has to: nobody's address ends in a comma.
+_SENTENCE_MARKS = ".,;:!?"
+# Brackets and the apostrophe are legal in a path, so a trailing one is decided by PAIRING
+# rather than by the grammar: `…/Foo_(bar)` closes something the address opened, `(…/page)`
+# closes something the sentence opened.  A mark that is its own partner pairs by parity.
+_PAIRS = {")": "(", "]": "[", "'": "'"}
+
+
+def _closes_the_address(url: str, opener: str) -> bool:
+    """Whether the URL's last character closes something the URL itself opened.  A mark that is
+    its own partner has no opener to count, so it pairs by parity instead."""
+    if opener == url[-1]:
+        return url.count(opener) % 2 == 0
+    return url.count(opener) >= url.count(url[-1])
+
+
+def _runs_past_the_address(url: str) -> bool:
+    """Whether the URL's last character belongs to the prose rather than to the address.
+
+    ``_DROPPED`` is read here as well as in the fold: the fold erases it from BOTH sides of the
+    comparison, so leaving it on the token hides the character underneath from these rules —
+    `…/page.**` would otherwise keep the full stop the fold goes on to expose."""
+    last = url[-1]
+    if last in _SENTENCE_MARKS or last in _DROPPED:
+        return True
+    opener = _PAIRS.get(last)
+    return opener is not None and not _closes_the_address(url, opener)
+
+
+def _url_only(token: str) -> str:
+    """The address without the prose it ran into.
+
+    The repair lives HERE, on the extracted token, rather than in the fold, because the
+    comparison is containment: extra characters on the haystack side are already harmless, and
+    only the token can carry a mark that belongs to nobody.  So both sides still fold through
+    the one definition, and neither folds through anything else."""
+    while token and _runs_past_the_address(token):
+        token = token[:-1]
+    return token
 
 
 def specifics(text: str) -> list[str]:
@@ -1173,6 +1231,7 @@ def specifics(text: str) -> list[str]:
     found: list[str] = []
     for match in _SPECIFIC.finditer(_fold_phrases(text)):
         token = match.group().strip()
+        token = _url_only(token) if _is_url(token) else token
         parts = [token] if _is_atomic(token) else token.split()
         found += [part for part in parts if part and part not in found]
     return found
