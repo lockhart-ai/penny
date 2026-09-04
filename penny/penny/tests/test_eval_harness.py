@@ -31,7 +31,7 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
-from penny.constants import PennyConstants, RunOutcome
+from penny.constants import MutationActor, PennyConstants, RunOutcome
 from penny.conversation_machine import (
     ConversationState,
     RoundShortfall,
@@ -103,7 +103,6 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
 )
 from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
     BAIL_CASES,
-    _claims_no_job_check,
     assert_the_round_built_what_it_claims,
 )
 from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
@@ -208,6 +207,7 @@ from penny.tests.eval.conftest import (
     _held_entries,
     _InjectTextBail,
     _labelling_input,
+    _mechanism_records,
     _refuse_unscorable,
     _sample_turns,
     _score_binding,
@@ -241,6 +241,13 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.conftest import (
     _stated_behaviour as stated_behaviour,
+)
+
+# ``collection_names`` under an alias: the dispatch world exports one of its own (a sorted
+# LIST of what a case seeded), and this is the observation path's snapshot of every memory
+# name in the store — two different questions that would silently swap under one name.
+from penny.tests.eval.conftest import (
+    collection_names as memory_names_now,
 )
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
@@ -290,6 +297,11 @@ from penny.tests.eval.utils.transition_world import (
     seed_parked_in_request,
 )
 from penny.tests.schema_template import migrated_db, schema_only_db
+
+# Production's own rule for a message worth delivering, read from where the send path and the
+# run-health classifier read it — so the tripwire below pins the agreed reference replies
+# against the same definition the ported claim answers with, never a second copy of it.
+from penny.text_validity import half_formed_send_reason
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import (
@@ -986,15 +998,26 @@ def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> 
     Driven here against a real migrated database for the reason its sibling beats' pins are:
     the seeders are CODE, and their loud probes otherwise run only under ``make eval``, where
     a raise costs an hour of GPU before it is seen.  Its own database per case, because that
-    is what the sample gets, and because two of these worlds seed FEWER journeys than the
+    is what the sample gets, and because one of these worlds seeds FEWER journeys than the
     module's five — where a leftover ``_JOURNEYS`` reference would show.
 
     The container premise rides along in the same loop, and both ways of getting it wrong
-    are silent on a run: a container that arrived already archived would score the beat's
-    one cleanup claim green for free, and a world carrying a framing nobody accounted for
-    would make that claim's n/a a real miss.  The registry claim stays out, exactly as it
-    does for the learn → apply pin: the harness seeds fixture skills after the case's seed."""
+    are silent on a run: a container that arrived already archived would score the learn
+    case's one cleanup claim green for free, and a world carrying a framing nobody accounted
+    for would leave the other three claiming a container their round never built.  The
+    registry claim stays out, exactly as it does for the learn → apply pin: the harness seeds
+    fixture skills after the case's seed.
+
+    The cohort's own arithmetic rides along too — five wordings of one ask, which is what
+    makes a case's fifteen samples one number rather than a pool of several behaviours."""
     for index, case in enumerate(BAIL_CASES):
+        assert len(case.also_phrased) == 4, (
+            f"{case.case_id}: a cohort is FIVE wordings of one ask, got "
+            f"{1 + len(case.also_phrased)}"
+        )
+        assert len({case.bail, *case.also_phrased}) == 5, (
+            f"{case.case_id}: two of its wordings are the same string"
+        )
         db = migrated_db(str(tmp_path / f"bail-{index}.db"))
         case.world.seed(db)
         case.world.seeded(db)
@@ -1225,17 +1248,19 @@ def test_the_choose_scorer_reads_each_case_s_own_reference_reply() -> None:
     assert not _gave_an_opinion_check("honestly, whichever you like the sound of.").ok
 
 
-def test_the_bail_scorer_passes_each_case_s_own_reference_reply() -> None:
-    """Every bail case's reference reply — the answer the case itself calls correct — passes
-    that beat's one reply check.
+def test_every_bail_reference_reply_is_a_message_penny_would_send() -> None:
+    """Every bail case's reference reply — the answer the case itself calls correct — is a
+    complete message by production's own rule.
 
-    The same tripwire the request beats carry, on the check most likely to trip it: a
-    job-was-set-up vocabulary wide enough to catch an ordinary acknowledgement would score
-    every sample a miss, and the correct answers here are exactly the sentences that say
-    "dropped it" without saying anything is running."""
+    What the "check the scorer before you blame the model" tripwire becomes for this family
+    once its guessed job-is-running vocabulary is gone.  The ported cases make no claim over
+    reply text beyond provenance, so there is no scorer left to run the reference through;
+    what is left worth pinning is the FIXTURE — these answers are the shortest in the suite
+    ("sure thing — skipping it."), and an agreed answer that read as a fragment would be an
+    agreed answer Penny would refuse to send, which is a bail nobody could pass."""
     for case in BAIL_CASES:
-        claimed = _claims_no_job_check(case.reference)
-        assert claimed.ok, f"{case.case_id}: {claimed.rationale} — reference: {case.reference!r}"
+        reason = half_formed_send_reason(case.reference)
+        assert reason is None, f"{case.case_id}: {reason} — reference: {case.reference!r}"
 
 
 def test_the_request_scorer_passes_each_case_s_own_reference_reply() -> None:
@@ -1706,6 +1731,39 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
     assert set(held) == set(seeded), "and the collection still holds every key it was seeded with"
     assert held["Ark Nova"] == "Ark Nova — now with a playtime."
     assert held["Spirit Island"] == seeded["Spirit Island"], "an untouched row reads as seeded"
+
+
+def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(tmp_path) -> None:
+    """``_mechanism_records`` reads a registry ROW rather than what it holds, and its three
+    booleans are what the round-ends-in-idle claims are answered from.
+
+    Every one of them is silent when it is wrong, which is why it is pinned here rather than
+    discovered on a paid run.  ``born_this_run`` is a name-set diff against the snapshot taken
+    AFTER the seed, so a seeded collection reading as newly created would fail "nothing was
+    created" on every sample.  ``changed_this_run`` is a mutation-ledger read filtered by run
+    id, so a seeded event mistaken for a live one would fail "nothing was changed" on every
+    sample — and the same read the other way round is what makes an archive visible at all.
+    ``archived`` has to survive the row being retired, which is the one thing a reader that
+    skipped archived rows would lose."""
+    db = _make_db(tmp_path)
+    db.memories.create_collection(
+        "a-seeded-job", "A job the world was handed.", created_by_run_id=seeded_run_id("world")
+    )
+    before = memory_names_now(db)
+
+    seeded = {record.name: record for record in _mechanism_records(db, before)}["a-seeded-job"]
+    assert not seeded.born_this_run, "the seed laid it down before the sample's turn began"
+    assert not seeded.changed_this_run, "and its only event cites the run that seeded it"
+    assert not seeded.archived
+
+    db.memories.create_collection("a-minted-job", "One the turn made.", created_by_run_id="live-1")
+    db.memories.archive("a-seeded-job", actor=MutationActor.SYSTEM, run_id="live-1")
+    records = {record.name: record for record in _mechanism_records(db, before)}
+
+    assert records["a-minted-job"].born_this_run and records["a-minted-job"].changed_this_run
+    retired = records["a-seeded-job"]
+    assert retired.archived, "an archived row is still READ — that is what the claim reads"
+    assert retired.changed_this_run and not retired.born_this_run
 
 
 def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:

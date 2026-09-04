@@ -38,7 +38,7 @@ from similarity.embeddings import deserialize_embedding
 from sqlmodel import Session, col, select
 
 from penny.config import Config
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, MutationEntityType, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
     RoundFraming,
@@ -492,6 +492,17 @@ def seed_collection(
         [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],
         author="user",
     )
+
+
+# How far back ONE mechanism's mutation history is read when asking whether THIS sample
+# touched it.  Generous rather than tight: a seeded job carries two events (created by its
+# round, re-rendered by its apply turn), and reading well past them is what makes "this turn
+# changed nothing here" a read rather than a guess about where the window fell.
+#
+# Declared HERE because two readers ask the same question of the same read — the observation
+# below and the transition suite's own jobs-untouched check — and two spellings of one window
+# are two answers waiting to disagree about a world with a longer history than either expected.
+MUTATION_HISTORY_WINDOW = 20
 
 
 def collection_names(db: Database) -> set[str]:
@@ -2415,6 +2426,34 @@ def _held_entries(db: Database) -> list[eval_cohort.StoredEntry]:
     return held
 
 
+def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.MechanismRecord]:
+    """Every mechanism the registry holds when the sample ends, ARCHIVED ONES INCLUDED.
+
+    Archived rows are the point: a bail retires the container its round built by archiving it,
+    and a reader that dropped retired rows would report the one thing the cleanup did as the
+    container having vanished.
+
+    ``changed_this_run`` is read off the mutation ledger — a live turn's mutation cites a live
+    run and every event a seeded world wrote cites a seeded one — so it is a read rather than a
+    diff against a remembered before-state, and it is keyed to no field: a rebind, a schedule
+    change, a description edit and an archive all answer it the same way."""
+    return [
+        eval_cohort.MechanismRecord(
+            name=row.name,
+            archived=row.archived,
+            born_this_run=row.name not in before,
+            changed_this_run=any(
+                not is_seeded_run(event.run_id)
+                for event in db.mutations.history(
+                    row.name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
+                )
+            ),
+        )
+        for row in db.memories.list_all()
+        if row.type == MemoryType.COLLECTION
+    ]
+
+
 def _written_by_a_live_run(entry) -> bool:
     """Whether THIS sample put an entry's current value there — created by a live run, or last
     rewritten by one.  Both stamps, because an edit of a seeded entry moves only the second."""
@@ -2505,6 +2544,7 @@ def _observe_sample(
         routines=_routine_records(db),
         entries=_stored_entries(db),
         held=_held_entries(db),
+        mechanisms=_mechanism_records(db, before),
         delivered=outgoing_replies(db),
         tool_sequence=[
             tool

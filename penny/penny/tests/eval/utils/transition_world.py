@@ -69,6 +69,7 @@ from penny.skill_extraction import (
 )
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
+    MUTATION_HISTORY_WINDOW,
     Check,
     ParameterFamily,
     Seeder,
@@ -420,9 +421,14 @@ class _AbsentRound(NamedTuple):
 _ElicitRound = _LearnCase | _AbsentRound
 
 
-# Case 1 — the script's own turn, continuing ``transition-idle-to-elicit``.
+# Case 1 — the script's own round, continuing ``transition-idle-to-elicit``.  It is no longer
+# DRIVEN as a case: the elicit → learn edge's canonical case is the ported
+# ``transition-elicit-to-learn`` (#2002), which brings its own turns, and this survives purely
+# as the SEED the learn → idle and learn → apply rounds are laid down from.  So its id names
+# what it seeds rather than the case it used to be (#2005): one id must never name two cases,
+# and a seeded row carrying a live case's id is a diagnostic that points at the wrong file.
 _AURORA_ROUND = _LearnCase(
-    case_id="transition-elicit-to-learn",
+    case_id="seed-listing-round",
     ask=_IDLE_ASK,
     teach_question=(
         "i don't have a routine for that yet — can you walk me through it once? "
@@ -2697,11 +2703,6 @@ _IDLE_BANTER = (
 # ``_BROWSE_CALL_ID`` and ``_WRITE_CALL_ID`` play for the demonstrated round.
 _SET_CALL_ID = "call-seeded-set"
 
-# How many mutation events a probe or scorer reads back for one collection.  Generous: a
-# seeded job carries two (created by its round, re-rendered by its apply turn), and
-# reading well past them is what makes "nothing else has touched it" a real claim.
-_MUTATION_WINDOW = 20
-
 # What one journey contributes to the world, counted once here so the windows below and
 # the expected conversation are derived from the same arithmetic: FOUR incoming turns (the
 # ask, the demonstration, the acceptance and the closing ack) and FIVE moves (the elicit,
@@ -3342,7 +3343,7 @@ def _seeded_jobs_untouched_check(db: Database, journeys: tuple[_Journey, ...] = 
     touched = [
         f"{journey.round.framing.container}: {event.action} by {event.run_id}"
         for journey in journeys
-        for event in db.mutations.history(journey.round.framing.container, _MUTATION_WINDOW)
+        for event in db.mutations.history(journey.round.framing.container, MUTATION_HISTORY_WINDOW)
         if not is_seeded_run(event.run_id)
     ]
     return Check(

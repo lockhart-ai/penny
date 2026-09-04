@@ -86,6 +86,29 @@ class StoredEntry(BaseModel):
         return " ".join(part for part in (self.key, self.content) if part)
 
 
+class MechanismRecord(BaseModel):
+    """One MECHANISM — a collection row — as the sample left it.
+
+    ``StoredEntry``'s sibling one level up: that reads what a container HOLDS, this reads the
+    container itself, which is the only place a round's own cleanup is legible.  A bail
+    archives the container its round built, and an archived row still holds every entry it
+    held, so a claim read off the entries cannot tell a retired job from a live one.
+
+    ``born_this_run`` is a REGISTRY read — the row's name was absent when the sample started.
+    ``changed_this_run`` is the mutation ledger's answer to the same row: an event on it citing
+    a run this sample made.  The ledger rather than a field-by-field diff, because what a bail
+    must not do is touch a running job AT ALL, and a comparison keyed to a list of fields
+    silently exempts whichever field nobody enumerated — a description edit, a rebind, an
+    archive.  The two are separate facts about one row and neither derives the other: a
+    creation is also a change, and a change to a row that already existed is not a creation.
+    """
+
+    name: str
+    archived: bool
+    born_this_run: bool
+    changed_this_run: bool
+
+
 class Arm(BaseModel):
     """ONE arm of a cohort: the input this arm ran, and the world it ran against.
 
@@ -188,6 +211,11 @@ class SampleObservation(BaseModel):
     # WHICH rows are read is the fixture's, like every other observation: a chat sample
     # reads every collection, a collector cycle reads the one container its job is bound to.
     held: list[StoredEntry] = Field(default_factory=list)
+    # Every MECHANISM the registry holds when the sample ends, archived ones included — what
+    # a round's own cleanup and a running job's survival are both read off.  Beside ``held``
+    # rather than derived from it, because they answer different questions about the same
+    # rows: ``held`` is what a container contains, this is what the container IS.
+    mechanisms: list[MechanismRecord] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
