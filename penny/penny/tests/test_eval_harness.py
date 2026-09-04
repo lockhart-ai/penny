@@ -20,7 +20,7 @@ import ast
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -67,6 +67,7 @@ from penny.tests.eval.binder.test_skill_binding import (
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
     IDLE_APPLY_CASES,
+    assert_every_wording_names_the_space,
     assert_new_space_is_unknown,
 )
 from penny.tests.eval.chat.apply.test_missing_value_arrives import _names_the_cadence_check
@@ -115,11 +116,11 @@ from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
     seed_corrected_round,
 )
 from penny.tests.eval.chat.learn.test_teach_arrives_whole import (
+    assert_every_wording_names_the_page,
     assert_the_teach_is_new_to_the_world,
 )
 from penny.tests.eval.chat.request.test_ask_is_one_value_short import (
-    _asks_for_what_is_missing_check,
-    _does_not_re_ask_check,
+    assert_no_wording_names_a_page,
 )
 from penny.tests.eval.classifier.test_state_classifier import (
     PASSING_MENTION_ARMS,
@@ -195,6 +196,7 @@ from penny.tests.eval.conftest import (
     ParameterFamily,
     SampleResult,
     _assert_threshold,
+    _awaited_parameters,
     _bail_fired_check,
     _case_prompts,
     _cycle_recovered_check,
@@ -228,6 +230,8 @@ from penny.tests.eval.conftest import (
     env_seconds,
     is_seeded_run,
     live_prompt_perf,
+    routine_names_a_destination,
+    routine_open_parameters,
     routing_clean,
     run_exhibited_pathology,
     sample_is_fragile,
@@ -273,6 +277,9 @@ from penny.tests.eval.utils.cohort import SampleObservation
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import BOARD_GAMES, LISTING_URL
 from penny.tests.eval.utils.transition_world import (
+    _JOURNEYS,
+    _SHORT_LISTING,
+    _TEACH_HARBOUR_FLAG,
     APPLY_CASES,
     IDLE_LEARN_CASES,
     IDLE_REQUEST_CASES,
@@ -631,6 +638,24 @@ def test_every_short_ask_s_own_world_seeds_and_reads_back(tmp_path) -> None:
         assert_values_are_new(db, case.case_id, case.settled.values())
 
 
+def test_every_entry_edge_holds_its_facts_constant_across_its_wordings() -> None:
+    """Each ported entry edge's five wordings agree on the facts its claims are made about
+    (#2005, tranche 2).
+
+    A cohort pools five wordings of ONE ask, and a case may only name a value because the
+    facts are constant across its arms — so a wording that supplies what another withholds is
+    not a paraphrase, it is a second scenario, and its samples would fail every claim for a
+    reason that has nothing to do with the behaviour.  Each edge's premise is the one its own
+    claims rest on: the teach must name the page it demonstrates against, the short ask must
+    name none, and the cold ask must supply every value the routine is pointed at.
+
+    Pure and deterministic, so it runs here rather than at seed time in a paid run."""
+    assert_every_wording_names_the_page(_TEACH_HARBOUR_FLAG)
+    assert_no_wording_names_a_page(_SHORT_LISTING)
+    for case in IDLE_APPLY_CASES:
+        assert_every_wording_names_the_space(case)
+
+
 def test_every_short_ask_falls_one_value_short_of_the_routine_it_names() -> None:
     """Each idle → request case accounts for its routine's declared parameters EXACTLY —
     every one either settled by the ask or named missing — and names at least one missing.
@@ -673,7 +698,10 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
     The recorded BINDING is read back through the production model here too, against the
     values the case declares: the seeder writes what a request turn's binder left (#1894),
     and everything the turn under test is answered from — the waiting-on section the
-    classifier is shown, and the values the next binder completes from — is that one row."""
+    classifier is shown, and the values the next binder completes from — is that one row.  And
+    through the OBSERVATION reader the ported idle → request case answers its shortfall claim
+    with, since a reader that came back empty would report a correctly parked round as one that
+    had parked on nothing to ask about."""
     for index, case in enumerate(REQUEST_APPLY_CASES):
         db = migrated_db(str(tmp_path / f"parked-request-{index}.db"))
         seed_parked_in_request(case)(db)
@@ -686,6 +714,11 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
         assert waiting.skill == slug_skill_name(case.parked.skill.name)
         assert waiting.bound == case.parked.settled
         assert tuple(one.name for one in waiting.missing) == case.parked.missing
+        assert _awaited_parameters(db) == list(case.parked.missing), (
+            "and the observation reads the same row: the idle → request case claims what the "
+            "round is waiting on, so a reader that came back empty would report every sample "
+            "as having parked on nothing to ask about"
+        )
         named = _names_the_cadence_check(case.reference, case)
         assert named.ok, f"{case.case_id}: {named.rationale} — reference: {case.reference!r}"
         declared = sorted(parameter.name for parameter in case.parked.skill.parameters)
@@ -1048,15 +1081,38 @@ def test_every_teach_is_answered_against_a_world_that_knows_neither_page_nor_fac
         assert_the_teach_is_new_to_the_world(db, case)
 
 
-def test_the_teach_scorer_passes_each_case_s_own_reference_reply() -> None:
-    """Every idle → learn case's reference reply — the answer the case itself calls correct
-    — passes that beat's two REPLY checks.
+def test_every_seeded_routine_satisfies_the_claims_made_over_the_whole_registry() -> None:
+    """Every routine the composed world seeds carries an attachment mark and no leaf parameter.
 
-    The same tripwire the request and bail beats carry (the "check the scorer before you
-    blame the model" rule, applied before the run rather than after it): a reply check that
-    cannot pass the agreed answer scores every sample a miss, and this suite has shipped
-    that bug once already.  Both checks read the reply alone, so they run here rather than
-    costing an hour of GPU to find."""
+    Two of the idle → learn case's claims — ``assert_the_routine_names_a_destination`` and
+    ``assert_every_spot_is_a_placeholder`` — are ALL-quantified over the registry, and this
+    world seeds five routines before the measured turn begins.  That is what makes their truth
+    value the NEW routine's: they hold iff the seeded five satisfy them and the minted one does.
+    A fixture that stopped carrying its mark (the #1783/#1828 mark, set by distillation on a
+    leaf whose demonstrated value named one of Penny's own collections) would report as the
+    model's failure on all fifteen samples — the "check the scorer before you blame the model"
+    rule applied to a fixture, and cheap enough to run here rather than after a paid run."""
+    for journey in _JOURNEYS:
+        draft = journey.round.skill
+        assert routine_names_a_destination(draft.steps), (
+            f"{draft.name}: no leaf carries the attachment mark, so a claim that every routine "
+            "names somewhere to act would fail on the fixture"
+        )
+        still_open = routine_open_parameters(draft.steps)
+        assert not still_open, f"{draft.name}: still a leaf parameter: {still_open}"
+
+
+def test_the_round_report_check_passes_each_teach_case_s_own_reference_reply() -> None:
+    """Every idle → learn case's reference reply — the answer the case itself calls correct
+    — passes the round-report REPLY checks.
+
+    The tripwire the correction beat still needs (the "check the scorer before you blame the
+    model" rule, applied before the run rather than after it): a reply check that cannot pass
+    the agreed answer scores every sample a miss, and this suite has shipped that bug once
+    already.  The idle → learn edge itself no longer runs those checks — its ported case makes
+    no claim over reply text beyond provenance (#2005) — but these five references are the
+    widest set the shared check has, so they stay its cheapest exercise, and the fixtures they
+    read are what the four quarantined variants would come back on."""
     for case in IDLE_LEARN_CASES:
         for check in _round_reported_checks(case.stored, case.reference, [case.reference]):
             assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
@@ -1263,23 +1319,19 @@ def test_every_bail_reference_reply_is_a_message_penny_would_send() -> None:
         assert reason is None, f"{case.case_id}: {reason} — reference: {case.reference!r}"
 
 
-def test_the_request_scorer_passes_each_case_s_own_reference_reply() -> None:
+def test_every_short_ask_reference_reply_is_a_message_penny_would_send() -> None:
     """Every idle → request case's reference reply — the answer the case itself calls
-    correct — passes that beat's two REPLY checks.
+    correct — is a complete message by production's own rule.
 
-    The tripwire for a scorer bug (the "check the scorer before you blame the model" rule,
-    applied before the run rather than after it).  Both checks read a vocabulary, and a
-    vocabulary that cannot match the agreed answer would score the beat's own reference a
-    miss on every sample: measured once already, where a found-thing set built from
-    parameter names had no entry for "looking out for", which is how a person writes it.
-    Cheap and deterministic, so it runs here rather than costing an hour of GPU to find."""
+    What the "check the scorer before you blame the model" tripwire becomes for this family
+    once its guessed missing-piece vocabulary is gone (#2005, the same move the bail family
+    made).  The ported case makes no claim over reply text beyond provenance, so there is no
+    scorer left to run the reference through; what is left worth pinning is the FIXTURE —
+    an agreed answer that read as a fragment would be an agreed answer Penny would refuse to
+    send, which is an ask nobody could pass."""
     for case in IDLE_REQUEST_CASES:
-        asked = _asks_for_what_is_missing_check(case.reference, case)
-        assert asked.ok, f"{case.case_id}: {asked.rationale} — reference: {case.reference!r}"
-        held = _does_not_re_ask_check(case.reference, case)
-        assert held.ok or held.ignored, (
-            f"{case.case_id}: {held.rationale} — reference: {case.reference!r}"
-        )
+        reason = half_formed_send_reason(case.reference)
+        assert reason is None, f"{case.case_id}: {reason} — reference: {case.reference!r}"
 
 
 def test_a_settled_value_is_said_back_however_an_address_is_written() -> None:
@@ -1734,8 +1786,9 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
 
 
 def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(tmp_path) -> None:
-    """``_mechanism_records`` reads a registry ROW rather than what it holds, and its three
-    booleans are what the round-ends-in-idle claims are answered from.
+    """``_mechanism_records`` reads a registry ROW rather than what it holds — the three
+    booleans the round-ends-in-idle claims are answered from, and the CONFIGURATION the
+    idle → apply claims read (#2005).
 
     Every one of them is silent when it is wrong, which is why it is pinned here rather than
     discovered on a paid run.  ``born_this_run`` is a name-set diff against the snapshot taken
@@ -1744,7 +1797,12 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     id, so a seeded event mistaken for a live one would fail "nothing was changed" on every
     sample — and the same read the other way round is what makes an archive visible at all.
     ``archived`` has to survive the row being retired, which is the one thing a reader that
-    skipped archived rows would lose."""
+    skipped archived rows would lose.
+
+    The TERMS half is the opposite direction and fails the opposite way: an inert container
+    reading as a job on a schedule would pass "it fires on the cadence they asked for" on a
+    turn that stood nothing up, so the row that carries terms and the row that carries none are
+    both driven here."""
     db = _make_db(tmp_path)
     db.memories.create_collection(
         "a-seeded-job", "A job the world was handed.", created_by_run_id=seeded_run_id("world")
@@ -1755,12 +1813,25 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     assert not seeded.born_this_run, "the seed laid it down before the sample's turn began"
     assert not seeded.changed_this_run, "and its only event cites the run that seeded it"
     assert not seeded.archived
+    assert not seeded.notifies and seeded.schedule is None and not seeded.expires, (
+        "an INERT container carries no terms at all"
+    )
 
-    db.memories.create_collection("a-minted-job", "One the turn made.", created_by_run_id="live-1")
+    db.memories.create_collection(
+        "a-minted-job",
+        "One the turn made.",
+        created_by_run_id="live-1",
+        schedule="FREQ=HOURLY",
+        notify=True,
+        expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+    )
     db.memories.archive("a-seeded-job", actor=MutationActor.SYSTEM, run_id="live-1")
     records = {record.name: record for record in _mechanism_records(db, before)}
 
-    assert records["a-minted-job"].born_this_run and records["a-minted-job"].changed_this_run
+    minted = records["a-minted-job"]
+    assert minted.born_this_run and minted.changed_this_run
+    assert minted.notifies and minted.expires
+    assert minted.schedule == "FREQ=HOURLY", "the rule travels verbatim — the case reads its gap"
     retired = records["a-seeded-job"]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run
