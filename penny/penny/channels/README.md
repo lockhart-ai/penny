@@ -152,6 +152,30 @@ delivery and background APNs notifications:
   returned `next_cursor` and resend it after reconnecting to resume.
 - `ack_messages`: `ids`
 - `heartbeat`
+- `config_request`: fetch shared runtime settings
+- `config_update`: `key`, `value`, optional `request_id`. The iOS endpoint echoes
+  `request_id` in its `config_response`; validation failures also include `error`.
+  The response includes current `params`, so clients confirm the saved value.
+
+### Image attachment settings
+
+The **iOS Attachments** runtime group contains four shared switches, each accepting
+`0` or `1` and defaulting to `1`:
+
+- `IOS_AUTOMATIC_IMAGES`: master switch for automatic attachments.
+- `IOS_CITED_PAGE_IMAGES`: images captured from an exact cited page.
+- `IOS_SAME_SITE_IMAGES`: images from other pages on a cited site.
+- `IOS_RELATED_IMAGES`: broader matches, including previously generated images.
+
+Settings apply to new conversational and collector replies across all iOS devices,
+before their outbox entries are created. Explicit attachments and images generated
+in the current reply bypass these switches. Each stored candidate belongs to its
+strongest matching category; a disabled category cannot reappear through fallback.
+Matching order and ranking remain unchanged among eligible images.
+
+Already queued messages, history downloads, and other channels are unaffected.
+`include_attachments` remains an independent history-download option. Attachment
+records retain their existing inline data-URL format.
 
 ### Server messages
 

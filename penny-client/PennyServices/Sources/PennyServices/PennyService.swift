@@ -64,6 +64,8 @@ public final class PennyService {
     }
     public var lastError: String?
     public var runtimeConfigParams: [RuntimeConfigParam] = []
+    public private(set) var hasLoadedRuntimeConfig = false
+    public let imageAttachmentSettings = ImageAttachmentSettings()
     public var promptLogRuns: [PromptLogRun] = []
     public var promptLogsHasMore = false
     public var memories: [MemoryRecord] = []
@@ -120,6 +122,12 @@ public final class PennyService {
 
     public var canSend: Bool {
         isConnected && isRegistered
+    }
+
+    public var supportsImageAttachmentSettings: Bool {
+        hasLoadedRuntimeConfig && ImageAttachmentSetting.allCases.allSatisfy { setting in
+            runtimeConfigParams.contains { $0.key == setting.rawValue && ["0", "1"].contains($0.value) }
+        }
     }
 
     public var apnsHost: String {
@@ -180,6 +188,9 @@ extension PennyService {
     }
 
     private func disconnect(clearLiveBindings: Bool) {
+        imageAttachmentSettings.disconnect()
+        hasLoadedRuntimeConfig = false
+        runtimeConfigParams = []
         stopBackgroundTasks()
         historyResponseContinuation?.finish()
         historyResponseContinuation = nil
@@ -340,6 +351,13 @@ extension PennyService {
 
     public func updateConfig(key: String, value: String) {
         send(.configUpdate(key: key, value: value))
+    }
+
+    public func updateImageAttachmentSetting(_ setting: ImageAttachmentSetting, enabled: Bool) {
+        guard canSend, supportsImageAttachmentSettings,
+              imageAttachmentSettings.pendingSetting == nil else { return }
+        let requestID = imageAttachmentSettings.begin(setting, enabled: enabled)
+        send(.configUpdate(key: setting.rawValue, value: enabled ? "1" : "0", requestID: requestID))
     }
 
     public func requestPromptLogs(
@@ -554,6 +572,7 @@ extension PennyService {
             isConnected = true
             isRegistered = true
             pendingCount = payload.pendingCount
+            requestConfig()
             send(.pullMessages(limit: pendingMessagePullLimit))
             resumeHistorySyncIfNeeded()
         case .outboxChanged(let payload):
@@ -602,7 +621,10 @@ extension PennyService {
         case .agentProgress(let payload):
             applyAgentProgress(payload)
         case .configResponse(let payload):
-            runtimeConfigParams = payload.params
+            if imageAttachmentSettings.receive(payload) {
+                runtimeConfigParams = payload.params
+                hasLoadedRuntimeConfig = true
+            }
         case .promptLogsResponse(let payload):
             if payload.runs.isEmpty || promptLogRuns.isEmpty {
                 promptLogRuns = payload.runs
@@ -869,6 +891,12 @@ extension PennyService {
             } catch {
                 await MainActor.run {
                     self.lastError = error.localizedDescription
+                    if case .configUpdate(_, _, let requestID) = outgoingMessage {
+                        self.imageAttachmentSettings.fail(
+                            requestID: requestID,
+                            message: "Could not send the change. Check the connection and try again."
+                        )
+                    }
                 }
             }
         }

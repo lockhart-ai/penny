@@ -19,6 +19,7 @@ GROUP_MEMORY = "Memory"
 GROUP_BROWSE = "Browse"
 GROUP_SEND = "Send"
 GROUP_EMAIL = "Email"
+GROUP_IOS_ATTACHMENTS = "iOS Attachments"
 
 # Ordered list for display
 CONFIG_GROUPS: list[str] = [
@@ -28,6 +29,7 @@ CONFIG_GROUPS: list[str] = [
     GROUP_BROWSE,
     GROUP_SEND,
     GROUP_EMAIL,
+    GROUP_IOS_ATTACHMENTS,
 ]
 
 
@@ -71,6 +73,13 @@ def _validate_positive_int(value: str) -> int:
         raise ValueError("must be a positive integer")
 
     return parsed
+
+
+def _validate_switch(value: str) -> int:
+    """Parse a runtime switch without accepting other integer values."""
+    if value not in ("0", "1"):
+        raise ValueError("must be 0 or 1")
+    return int(value)
 
 
 def _validate_non_negative_int(value: str) -> int:
@@ -369,6 +378,22 @@ ConfigParam(
     validator=_validate_positive_float,
     group=GROUP_EMAIL,
 )
+
+
+for _key, _description in (
+    ("IOS_AUTOMATIC_IMAGES", "Attach automatic images to new iOS replies"),
+    ("IOS_CITED_PAGE_IMAGES", "Include automatic images from exact cited pages"),
+    ("IOS_SAME_SITE_IMAGES", "Include automatic images from other pages on cited sites"),
+    ("IOS_RELATED_IMAGES", "Include broader related images, including previously generated images"),
+):
+    ConfigParam(
+        key=_key,
+        description=_description,
+        type=int,
+        default=1,
+        validator=_validate_switch,
+        group=GROUP_IOS_ATTACHMENTS,
+    )
 
 
 class RuntimeParams:

@@ -10,7 +10,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -104,6 +104,7 @@ from penny.channels.permission_manager import PermissionManager
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PennyConstants, PermissionResolution
 from penny.conversation_machine import ConversationMachine, ConversationState
+from penny.database.media_store import ImageSelectionPolicy
 from penny.database.memory import (
     EntryInput,
     MemoryAlreadyExistsError,
@@ -192,6 +193,17 @@ class IosChannel(MessageChannel):
     def sender_id(self) -> str:
         """Identifier for outgoing iOS messages."""
         return "penny"
+
+    def _image_selection_policy(self) -> ImageSelectionPolicy:
+        if self._config is None:
+            return ImageSelectionPolicy()
+        runtime = self._config.runtime
+        return ImageSelectionPolicy(
+            automatic=bool(runtime.IOS_AUTOMATIC_IMAGES),
+            cited_page=bool(runtime.IOS_CITED_PAGE_IMAGES),
+            same_site=bool(runtime.IOS_SAME_SITE_IMAGES),
+            related=bool(runtime.IOS_RELATED_IMAGES),
+        )
 
     def set_permission_manager(self, manager: PermissionManager) -> None:
         """Set the permission manager for routing iOS permission decisions."""
@@ -429,7 +441,9 @@ class IosChannel(MessageChannel):
 
     # --- Shared admin surface ---
 
-    async def _handle_config_request(self, ws: ServerConnection) -> None:
+    async def _handle_config_request(
+        self, ws: ServerConnection, *, request_id: str | None = None, error: str | None = None
+    ) -> None:
         """Return all runtime config params with current values."""
         params = []
         for group, group_params in get_params_by_group():
@@ -447,7 +461,12 @@ class IosChannel(MessageChannel):
                         "group": group,
                     }
                 )
-        await self._send_json(ws, {"type": BROWSER_RESP_TYPE_CONFIG, "params": params})
+        response = {"type": BROWSER_RESP_TYPE_CONFIG, "params": params}
+        if request_id is not None:
+            response["request_id"] = request_id
+        if error is not None:
+            response["error"] = error
+        await self._send_json(ws, response)
 
     async def _handle_config_update(self, ws: ServerConnection, data: dict) -> None:
         """Validate and persist a single config param update."""
@@ -459,17 +478,23 @@ class IosChannel(MessageChannel):
         param = RUNTIME_CONFIG_PARAMS.get(req.key)
         if not param:
             logger.warning("Unknown config key: %s", req.key)
+            await self._handle_config_request(
+                ws,
+                request_id=req.request_id,
+                error="Unknown setting. Refresh settings and try again.",
+            )
             return
         try:
             validated = param.validator(req.value)
         except ValueError as error:
             logger.warning("Invalid config value %s=%s: %s", req.key, req.value, error)
+            await self._handle_config_request(ws, request_id=req.request_id, error=str(error))
             return
         with Session(self._db.engine) as session:
             existing = session.get(RuntimeConfig, req.key)
             if existing:
                 existing.value = str(validated)
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = datetime.now(UTC)
                 session.add(existing)
             else:
                 session.add(
@@ -477,12 +502,12 @@ class IosChannel(MessageChannel):
                         key=req.key,
                         value=str(validated),
                         description=param.description,
-                        updated_at=datetime.utcnow(),
+                        updated_at=datetime.now(UTC),
                     )
                 )
             session.commit()
         logger.info("Config updated via iOS: %s = %s", req.key, validated)
-        await self._handle_config_request(ws)
+        await self._handle_config_request(ws, request_id=req.request_id)
 
     _PROMPT_LOG_PAGE_SIZE = 50
 

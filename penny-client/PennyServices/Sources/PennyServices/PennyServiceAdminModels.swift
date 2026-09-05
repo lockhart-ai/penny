@@ -21,6 +21,14 @@ public struct RuntimeConfigParam: Decodable, Identifiable {
 
 struct ConfigResponsePayload: Decodable {
     let params: [RuntimeConfigParam]
+    let requestID: String?
+    let error: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case params
+        case requestID = "request_id"
+        case error
+    }
 }
 
 public enum RunOutcome: String, Codable {

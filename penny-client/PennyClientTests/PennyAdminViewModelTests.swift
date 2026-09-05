@@ -140,7 +140,7 @@ struct PennyAdminViewModelTests {
         {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
         """)
         #expect(viewModel.canSendTestNotification)
-        _ = await sentPayloads(transport, count: 1)
+        _ = await sentPayloads(transport, count: 2)
         transport.clearSentPayloads()
 
         viewModel.refresh()
@@ -369,4 +369,60 @@ private func promptLogsResponseJSON(hasMore: Bool) -> String {
       ]
     }
     """
+}
+
+@Suite(.serialized)
+@MainActor
+struct ImageAttachmentSettingsViewModelTests {
+    @Test func imageTogglesFollowAvailabilityConfirmationAndAutomaticSwitch() async throws {
+        let prefs = configuredPrefs()
+        let (client, transport) = makeAdminClient(prefs: prefs)
+        let viewModel = SettingsViewModel(client: client, prefs: prefs)
+        #expect(!viewModel.canEditImageSetting(.automatic))
+        await connectAndClearStartupFrames(client, transport)
+        transport.emit("""
+        {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
+        """)
+        _ = await sentPayloads(transport, count: 2)
+        #expect(viewModel.imageSettingsStatus == "Loading image settings…")
+        transport.emit("{\"type\":\"config_response\",\"params\":[]}")
+        #expect(!viewModel.canEditImageSetting(.automatic))
+        #expect(viewModel.imageSettingsStatus == "Update the server to enable image settings.")
+        transport.emit(imageConfigJSON())
+        #expect(viewModel.imageSettingsStatus == nil)
+        #expect(viewModel.runtimeConfigParams.isEmpty)
+        #expect(ImageAttachmentSetting.allCases.allSatisfy { viewModel.canEditImageSetting($0) })
+        transport.clearSentPayloads()
+        viewModel.setImageSetting(.automatic, enabled: false)
+        #expect(!viewModel.imageSettingValue(.automatic))
+        #expect(!viewModel.canEditImageSetting(.related))
+        #expect(!viewModel.canEditImageSetting(.automatic))
+        let payloads = await sentPayloads(transport, count: 1)
+        guard case .string(let identifier)? = payloads.first?["request_id"] else {
+            Issue.record("Missing image update correlation")
+            return
+        }
+        transport.emit(imageConfigJSON(requestID: identifier, automatic: "0"))
+        #expect(viewModel.canEditImageSetting(.automatic))
+        #expect(!viewModel.canEditImageSetting(.citedPage))
+        #expect(viewModel.imageSettingValue(.citedPage)) // retained while master is off
+        viewModel.setImageSetting(.related, enabled: false)
+        #expect(client.imageAttachmentSettings.pendingSetting == nil)
+        viewModel.setImageSetting(.automatic, enabled: true)
+        #expect(viewModel.imageSettingValue(.automatic))
+        client.disconnect()
+        #expect(!viewModel.canEditImageSetting(.automatic))
+        #expect(client.imageAttachmentSettings.error != nil)
+    }
+}
+
+private func imageConfigJSON(requestID: String? = nil, automatic: String = "1") -> String {
+    let params = ImageAttachmentSetting.allCases.map { setting in
+        """
+        {"key":"\(setting.rawValue)","value":"\(setting == .automatic ? automatic : "1")",
+        "default":"1","description":"Image setting","type":"int","group":"iOS Attachments"}
+        """
+    }.joined(separator: ",")
+    let correlation = requestID.map { ",\"request_id\":\"\($0)\"" } ?? ""
+    return "{\"type\":\"config_response\",\"params\":[\(params)]\(correlation)}"
 }

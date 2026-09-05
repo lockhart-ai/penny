@@ -100,6 +100,7 @@ class BrowserConfigUpdate(BaseModel):
     type: str
     key: str
     value: str
+    request_id: str | None = None
 
 
 class BrowserRegister(BaseModel):

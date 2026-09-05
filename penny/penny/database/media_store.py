@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import NamedTuple
 from urllib.parse import urlparse
 
+from pydantic import BaseModel
 from similarity.embeddings import find_similar
 from sqlmodel import Session, select
 
@@ -40,6 +41,23 @@ class _Candidate(NamedTuple):
     source_url: str
     created_at: datetime
     vector: list[float] | None
+
+
+class ImageSelectionPolicy(BaseModel):
+    """Automatic image categories allowed by a delivery channel."""
+
+    automatic: bool = True
+    cited_page: bool = True
+    same_site: bool = True
+    related: bool = True
+
+    def allows(self, row: _Candidate, urls: list[str]) -> bool:
+        """Classify by the strongest relationship so blocked rows cannot fall through."""
+        if _normalize_url(row.source_url) in {_normalize_url(url) for url in urls}:
+            return self.cited_page
+        if _domain(row.source_url) in ({_domain(url) for url in urls} - {""}):
+            return self.same_site
+        return self.related
 
 
 class MediaStore:
@@ -87,7 +105,13 @@ class MediaStore:
         with self._session() as session:
             return session.get(Media, media_id)
 
-    def select_image(self, urls: list[str], embedding: list[float] | None) -> Media | None:
+    def select_image(
+        self,
+        urls: list[str],
+        embedding: list[float] | None,
+        *,
+        policy: ImageSelectionPolicy | None = None,
+    ) -> Media | None:
         """Pick the image to attach to an egress message, most-relevant first.
 
         ``urls`` are the links the message itself contains (Penny cites her
@@ -103,10 +127,13 @@ class MediaStore:
            random pick among the top-K so a centroid "magnet" image can't repeat
            on consecutive messages (jitter applies *only* to this fallback).
 
-        Returns None only when nothing qualifies (no URL match and no embedded
-        media), so a reply still carries an image whenever one can be matched.
+        The optional channel policy excludes disabled categories before matching.
+        Returns None when automatic images are off or no eligible image qualifies.
         """
-        rows = self._candidates()
+        policy = policy or ImageSelectionPolicy()
+        if not policy.automatic:
+            return None
+        rows = [row for row in self._candidates() if policy.allows(row, urls)]
         chosen = (
             self._cited_page_image(rows, urls)
             or self._cited_domain_image(rows, urls, embedding)
