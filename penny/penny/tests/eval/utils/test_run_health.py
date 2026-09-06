@@ -315,7 +315,8 @@ class TestASampleTheRigNeverStarted:
                 [],
                 1,
                 observation=eval_cohort.SampleObservation(
-                    name=f"boot-failure-{sample_index + 1}", phrasing="the ask"
+                    name=f"boot-failure-{eval_conftest.sample_number(sample_index)}",
+                    phrasing="the ask",
                 ),
             )
 

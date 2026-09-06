@@ -1417,7 +1417,10 @@ def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: boo
         return
     with Session(db.engine) as session:
         rows = session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all()
-    lines = [f"\n===== THINKING [{case_id} #{sample_index}] — {len(rows)} LLM call(s) ====="]
+    lines = [
+        f"\n===== THINKING [{case_id} #{sample_number(sample_index)}] "
+        f"— {len(rows)} LLM call(s) ====="
+    ]
     for index, row in enumerate(rows, start=1):
         label = row.agent_name or row.prompt_type or "?"
         if row.thinking:
@@ -1625,11 +1628,30 @@ def _place_checks(
     return placed, leftover
 
 
+def sample_number(sample_index: int) -> int:
+    """What a sample is CALLED — the number every surface a reader meets it on renders.
+
+    One number per sample, defined here and read everywhere: the report's sample banner, the
+    cohort observation's name, the thinking dump's header, and the artifact files the reader
+    opens next.  It is 1-based because that is what a reader counts, and the sample INDEX
+    stays 0-based because that is what a range produces.
+
+    Declared as its own function because the two spellings cost a real diagnosis (#2076): the
+    report called a sample ``-11`` while its evidence sat in ``-10.db``, so a reader following
+    the report's own name landed on the NEXT sample's database — one that had run cleanly —
+    and read a correct exclusion as a harness defect.  A name that resolves to the wrong file
+    is worse than no name: every fact it hands back is about something else."""
+    return sample_index + 1
+
+
 def _sample_db_path(tmp_path, case_id: str, sample_index: int, attempt: int = 0) -> str:
     """Where a sample's hermetic DB lives.  When ``EVAL_REPORT_DIR`` is set the DB
     persists BESIDE the reports (the mounted dir survives the ``--rm`` container),
     so a run's raw promptlog can be re-read after the fact — same doctrine as the
     transcripts: the evidence always survives the run.  Unset → tmp_path as before.
+
+    Named by :func:`sample_number`, so the file a report's sample name points at is that
+    sample's own (#2076).  Its log lands beside it under the same stem.
 
     ``attempt`` keys a RE-DRIVEN sample onto its own file (#1803 review): nothing
     deletes a sample's DB, so a retry handed the same path would re-seed over the
@@ -1640,7 +1662,7 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int, attempt: int = 0)
     base = Path(report_dir) if report_dir else tmp_path
     Path(base).mkdir(parents=True, exist_ok=True)
     suffix = f"-attempt{attempt + 1}" if attempt else ""
-    return str(Path(base) / f"{case_id}-{sample_index}{suffix}.db")
+    return str(Path(base) / f"{case_id}-{sample_number(sample_index)}{suffix}.db")
 
 
 # The logger every penny module logs through (each is ``logging.getLogger(__name__)``, so
@@ -2107,7 +2129,7 @@ def _build_transcript(
     if not turns:
         banner = _sample_banner(db, result, evaluated=False)
         return report.SampleTranscript(
-            sample_index + 1, banner, [], placeholder=report.NO_TURNS_PLACEHOLDER
+            sample_number(sample_index), banner, [], placeholder=report.NO_TURNS_PLACEHOLDER
         )
     events, turn_to_event = _turns_to_events(
         turns, _thinking_by_content(main_rows), _micro_batches(rows)
@@ -2118,7 +2140,7 @@ def _build_transcript(
     passed_checks, total = _scored_counts(result)
     _record_case_prompts(case_id, sample_index, _system_prompts(rows))
     return report.build_sample(
-        number=sample_index + 1,
+        number=sample_number(sample_index),
         banner=_sample_banner(db, result, evaluated=True),
         events=events,
         checks=checks,
@@ -2140,7 +2162,7 @@ def _record_case_prompts(
     case_id: str, sample_index: int, prompts: Sequence[report.SystemPrompt]
 ) -> None:
     """Hold one sample's system prompts until its case closes."""
-    label = f"{report.SAMPLE_ROW} {sample_index + 1}"
+    label = f"{report.SAMPLE_ROW} {sample_number(sample_index)}"
     _case_prompts.setdefault(case_id, []).extend((label, prompt) for prompt in prompts)
 
 
@@ -2259,7 +2281,7 @@ def _never_started(
     differs per sample.  The message is printed beside the sample id where it happens.
     """
     return eval_cohort.SampleObservation(
-        name=f"{case_id}-{sample_index + 1}",
+        name=f"{case_id}-{sample_number(sample_index)}",
         phrasing=NEVER_SPOKEN,
         complete=False,
         exclusion=SAMPLE_NEVER_STARTED.format(fault=type(error).__name__),
@@ -2328,7 +2350,8 @@ async def _run_samples(
                     return await _attempt(sample_index, attempt)
                 except _ModelCallError:
                     print(
-                        f"  ↻ {case_id} sample {sample_index}: the model call failed — "
+                        f"  ↻ {case_id} sample {sample_number(sample_index)}: "
+                        f"the model call failed — "
                         f"retrying ({attempt + 1} of {attempts})"
                     )
                 # BROAD ON PURPOSE, and it files rather than hides: an enumerated list here
@@ -3361,7 +3384,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         def _observe(sample_index: int) -> Observer:
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)
-            name = f"{case_id}-{sample_index + 1} ({phrasing})"
+            name = f"{case_id}-{sample_number(sample_index)} ({phrasing})"
             return lambda db, reply, before, injected: _observe_sample(
                 db,
                 name=name,
@@ -3915,7 +3938,7 @@ def collector_cycles_eval(
         ) -> Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation]:
             phrasing = driving.label(sample_index)
             arm = driving.index_of(sample_index)
-            name = f"{case_id}-{sample_index + 1} ({phrasing})"
+            name = f"{case_id}-{sample_number(sample_index)} ({phrasing})"
             return lambda db, ran: _observe_cycles(
                 db, ran, name=name, phrasing=phrasing, arm=arm, collection=collection
             )
@@ -4958,7 +4981,7 @@ def _write_classifier_report(
     rows = _micro_context_rows(db, *agent_names)
     if not rows:
         transcript = report.SampleTranscript(
-            sample_index + 1,
+            sample_number(sample_index),
             _sample_banner(db, result, evaluated=False),
             [],
             placeholder=report.NO_TURNS_PLACEHOLDER,
@@ -4969,7 +4992,7 @@ def _write_classifier_report(
         checks = _classifier_check_views(result, len(events) - 1, baseline_from_env(), case_id)
         passed_checks, total = _scored_counts(result)
         transcript = report.build_sample(
-            number=sample_index + 1,
+            number=sample_number(sample_index),
             banner=_sample_banner(db, result, evaluated=True),
             events=events,
             checks=checks,
@@ -5168,7 +5191,7 @@ def classifier_eval(
                 result.observation = _observe_classification(
                     penny.db,
                     decision,
-                    name=f"{case_id}-{sample_index + 1} ({label})",
+                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
                     given=content,
@@ -6084,7 +6107,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 result.observation = _observe_framing(
                     penny.db,
                     signature,
-                    name=f"{case_id}-{sample_index + 1} ({label})",
+                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
                     given=content,
@@ -6245,7 +6268,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                     penny.db,
                     labels,
                     offered,
-                    name=f"{case_id}-{sample_index + 1} ({label})",
+                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
                     given=content,
@@ -6651,7 +6674,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 result.observation = _observe_binding(
                     penny.db,
                     binding,
-                    name=f"{case_id}-{sample_index + 1} ({label})",
+                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
                     given=content,
@@ -6973,7 +6996,7 @@ def extractor_eval(
                 result.observation = _observe_extraction(
                     penny.db,
                     extracted,
-                    name=f"{case_id}-{sample_index + 1} ({phrasing})",
+                    name=f"{case_id}-{sample_number(sample_index)} ({phrasing})",
                     phrasing=phrasing,
                     arm=arms.index_of(sample_index),
                     given=f"{content}\n{asked}",

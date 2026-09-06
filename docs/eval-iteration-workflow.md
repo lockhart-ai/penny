@@ -65,7 +65,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 ## 6. Diagnose
 
-- **Read the thinking and the ledger — never transcript greps.** Draws come from the **per-sample DBs**; the console `RESULT` lines are authoritative for scores; use **explicit absolute run-dir paths**.
+- **Read the thinking and the ledger — never transcript greps.** Draws come from the **per-sample DBs**; the console `RESULT` lines are authoritative for scores; use **explicit absolute run-dir paths**. A sample's `.db` and `.log` carry the number the report calls it — `sample 11` is `<case>-11.db` — so open the file the report names and no other.
 - **Causes partition**: behavioral / pathology / harness. Then the behavioral ones partition again: **model choice · scorer strictness · fixture defect · presented-state defect.**
 - **The model's reasoning is ground truth.** When a draw is wrong, ask first **what the state failed to present**. The window collapse, the required-looking optional field, and the one-shot-verb description were all "model failures" that decoded as **correct reasoning over defective presentation**.
 - **Verify the mechanism, not the inference** — dump the actual history window, parse the actual schema, count the actual draws. **Two diagnoses in this arc reversed on the raw read.**
