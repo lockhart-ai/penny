@@ -21,7 +21,7 @@ struct MessageView: View {
     @State private var pendingIncomingAutoScrollMessageID: Int?
     @State private var lastTopScrolledMessageID: Int?
     @State private var chatViewportFrame: CGRect = .zero
-    @State private var selectedPennyNavigation: PennyNavigationDestination?
+    @State private var isShowingDataBrowser = false
     @FocusState private var isComposerFocused: Bool
 
     var body: some View {
@@ -37,7 +37,7 @@ struct MessageView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 8) {
-                        pennyNavigationMenu
+                        dataBrowserButton
 
                         if viewModel.hasHiddenNewMessages {
                             hiddenNewMessagesButton
@@ -88,9 +88,6 @@ struct MessageView: View {
             }
             .sheet(isPresented: $isShowingActivity) {
                 AgentActivityView(client: viewModel.client)
-            }
-            .navigationDestination(item: $selectedPennyNavigation) { destination in
-                pennyNavigationDestination(destination)
             }
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
@@ -238,15 +235,10 @@ struct MessageView: View {
         viewModel.client.foregroundProgress?.currentStatus ?? "Penny is typing"
     }
 
-    private var pennyNavigationMenu: some View {
-        Menu {
-            ForEach(PennyNavigationDestination.allCases) { destination in
-                Button {
-                    selectedPennyNavigation = destination
-                } label: {
-                    Label(destination.title, systemImage: destination.systemImage)
-                }
-            }
+    private var dataBrowserButton: some View {
+        Button {
+            isComposerFocused = false
+            isShowingDataBrowser = true
         } label: {
             Image(systemName: "memories")
                 .frame(width: 28, height: 28)
@@ -254,16 +246,11 @@ struct MessageView: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.primary)
-        .accessibilityLabel("Penny navigation")
-    }
-
-    @ViewBuilder
-    private func pennyNavigationDestination(_ destination: PennyNavigationDestination) -> some View {
-        switch destination {
-        case .insights:
-            InsightsView(client: viewModel.client)
-        case .memories:
-            MemoryManagementView(client: viewModel.client)
+        .accessibilityLabel("Browse Penny data")
+        .popover(isPresented: $isShowingDataBrowser) {
+            DataBrowserView(client: viewModel.client)
+                .presentationCompactAdaptation(.sheet)
+                .presentationDetents([.large])
         }
     }
 
@@ -397,31 +384,6 @@ struct MessageView: View {
         .accessibilityLabel("Replying to \(viewModel.replySummary(for: message))")
     }
 
-}
-
-private enum PennyNavigationDestination: String, CaseIterable, Identifiable {
-    case insights
-    case memories
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .insights:
-            return "Insights"
-        case .memories:
-            return "Memories"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .insights:
-            return "chart.bar.doc.horizontal"
-        case .memories:
-            return "tray.full"
-        }
-    }
 }
 
 private extension MessageView {

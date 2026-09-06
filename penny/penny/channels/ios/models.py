@@ -190,3 +190,22 @@ class IosAgentProgress(BaseModel):
     max_steps: int | None = None
     tools: list[IosAgentProgressTool] = Field(default_factory=list)
     outcome: str | None = None
+
+
+class IosDataReadRequest(BaseModel):
+    """Optional correlation and common filters for the read-only data browser."""
+
+    type: str
+    request_id: str
+    query: str | None = None
+    agent_name: str | None = None
+    flagged_only: bool = False
+    offset: int = Field(default=0, ge=0)
+
+
+class IosDataReadError(BaseModel):
+    """A failed read, correlated without exposing internal exception details."""
+
+    type: str = "data_read_error"
+    request_id: str
+    error: str

@@ -258,6 +258,7 @@ class BrowserMemoriesResponse(BaseModel):
     """Full list of memories sent to the addon for the Memories tab."""
 
     type: str = BROWSER_RESP_TYPE_MEMORIES
+    request_id: str | None = None
     memories: list[MemoryRecord]
 
 
@@ -271,6 +272,7 @@ class BrowserMemoryDetailResponse(BaseModel):
     ``*_has_more`` flags tell the addon whether to show a "load more" control."""
 
     type: str = BROWSER_RESP_TYPE_MEMORY_DETAIL
+    request_id: str | None = None
     memory: MemoryRecord
     entries: list[MemoryEntryRecord]
     entries_has_more: bool = False
@@ -287,6 +289,7 @@ class BrowserMemoryPageResponse(BaseModel):
     ``section``."""
 
     type: str = BROWSER_RESP_TYPE_MEMORY_PAGE
+    request_id: str | None = None
     name: str
     section: Literal["entries", "collector_runs"]
     entries: list[MemoryEntryRecord] = []
