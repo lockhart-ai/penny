@@ -1,7 +1,20 @@
-"""Isolated conversation-state classifier contracts (#1706): the boundary
-directions and the out-edges the canonical suite does not enact.
+"""The conversation-state classifier, measured IN ISOLATION: one case per DECISION
+the draw makes (#1706/#2055).
 
-Each case sweeps a ten-phrasing pool deterministically (sample i →
+Isolation and aggregate are both wanted (the #2004 ruling).  The chat transition
+cases enact these same edges end to end, deliberately rather than redundantly: a
+case here hands the draw a lean snapshot and asserts WHICH state it picked, so a
+miss is attributable to the draw itself, while an enacted case asserts where the
+machine landed after a whole turn.  They catch different things, and the canonical
+set holds both.
+
+The classifier's axis is the DECISION rather than the edge, which is why fourteen
+out-edges carry twenty cases: ``presented_edges`` structurally withholds every
+skill-gated state when the registry holds nothing, so the same edge drawn from a
+cold registry is a choice out of a narrower union than the same edge drawn from a
+populated one — a materially different decision, not an easier one.
+
+A case NOT YET PORTED sweeps a ten-phrasing pool deterministically (sample i →
 ``pool[i % 10]``), so at N=10 one run covers every phrasing exactly once and the
 per-check cells map 1:1 to phrasings — the input-variation doctrine's first
 native customer.  Snapshots are built PER SAMPLE by the production
@@ -9,12 +22,9 @@ native customer.  Snapshots are built PER SAMPLE by the production
 the empty-registry and populated-registry cases is exactly what varies in
 production: whether the registry holds skills.
 
-``test_state_transitions.py`` ENACTS each plain direction end to end on composed
-worlds, which strictly subsumes the same direction drawn in isolation — so every
-case that measured one is deleted (the #1919 eval-test audit).  What remains is
-what enacting those directions never reaches:
+What the pooled cases below hold, until a ported case replaces each:
 
-**Two whole out-edges no canonical case covers.**  elicit → elicit — a question
+**Two whole out-edges no chat transition case covers.**  elicit → elicit — a question
 back leaves the machine parked, because the teach question has not been answered
 yet (``test_parked_elicit_still_clarifying``); and request → elicit — the named
 skill was the wrong one but the task is still wanted, so the routine has to be
@@ -45,12 +55,16 @@ where a correction that carries instructions stays in learn while an engaged
 question that carries none falls to idle — learn never returns to elicit
 (code-owner ruling: elicit exists to GET instructions, and they have been given).
 
-One case does NOT sweep a pool: ``classifier-holds-idle-on-a-passing-mention`` is the
-slot's CANONICAL case (#2006), and it takes the passing-mention boundary out of the hold
-pool and says it five ways — five wordings of ONE ask, one world, pooled into a cohort of
-fifteen and claimed against ``docs/eval-case-design.md``.  A pool and five wordings are not
-the same mechanism: a pool is ten scenarios standing in for one edge's coverage, and
+A PORTED case does not sweep a pool: it takes ONE decision and says it five ways —
+five wordings of one ask, one world, one set of facts, pooled into a cohort of fifteen
+and claimed against ``docs/eval-case-design.md``.  A pool and five wordings are not the
+same mechanism: a pool is ten scenarios standing in for one edge's coverage, and
 averaging their rates reports ten behaviours as one number.
+
+Every ported case reports an EMPTY ``STORE`` and an EMPTY ``PROVENANCE``, and each says
+why in its own docstring — a single call moves no machine and writes to no store, and the
+two fields the draw returns are closed sets with nothing in them that could have been
+invented.  What a gated draw adds is a SECOND ``LANDED`` claim: the routine it bound.
 
 Fictional-but-believable fixtures throughout (the repo is public).
 """
@@ -70,19 +84,69 @@ from penny.database.skills import (
     render_skill,
 )
 from penny.tests.eval.conftest import (
+    CLASSIFY_SKILL,
     CLASSIFY_STATE,
     EVAL_MODELS,
     ClassifierEval,
+    ParkedRound,
     Seeder,
     eval_skill,
 )
-from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.assertions import Answer, WorldClaim
 from penny.tests.eval.utils.cohort import SampleObservation, SpecCategory, output_field
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
 _FAMILY = "state-classifier"
+
+
+# ── What a ported case here claims, said once ────────────────────────────────
+#
+# Every ported case in this file makes the same two kinds of claim over the same two
+# structured fields, so they are stated once as factories rather than re-spelled per case:
+# a second copy of a claim's body is a second place for it to drift.
+
+
+def _drew(expected: ConversationState) -> WorldClaim:
+    """WHICH member of the offered union the draw picked.
+
+    States BOTH directions at once, which is why no "and not the others" claim stands
+    beside it: the expected state is what this message should draw, and every other door
+    the current state opens is a door it must not go through.  Splitting that into "held
+    idle" and "did not apply" would be the same sentence counted twice.
+
+    The drawn state's MEMBERSHIP in the offered union is not claimed anywhere: production
+    validates it (``_state_is_bound``) and re-rolls until it holds, so a claim over it
+    would run 15/15 by construction and measure the validator.  WHICH member she picked is
+    the open question, and it is this one."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        drawn = sample.field(CLASSIFY_STATE)
+        return drawn == expected.value, f"drew {drawn}"
+
+    return answer
+
+
+def _bound(expected: str) -> WorldClaim:
+    """WHICH routine a skill-gated draw named on its ``SKILL:`` line.
+
+    The draw contract validates that the name is one of the offered candidates and re-rolls
+    while it is not, so *that* it named a real routine is closed upstream exactly as
+    membership is.  Which ONE it named is the open question, and it is a different question
+    from the state: a draw can land in apply and bind the wrong routine, which would set the
+    wrong job running.  So a gated case makes two claims where an ungated one makes one.
+
+    The routine's name is a KEY rather than prose — it is quoted verbatim in Known skills
+    and copied back — so equality is the right comparison and there is no smaller unique
+    datum to shrink to."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        named = sample.field(CLASSIFY_SKILL)
+        return named == expected, f"named {named!r}"
+
+    return answer
+
 
 # ── The cold-start shape (no skills seeded) ───────────────────────────────────
 
@@ -308,22 +372,6 @@ _HOLD_BEHAVIOUR = (
 )
 
 
-def _held_idle(sample: SampleObservation, _world: World) -> Answer:
-    """The decision itself, and the whole of what this case claims.
-
-    ONE claim states BOTH directions at once, which is why there is no second one beside it:
-    idle is what a passing mention should draw, and every other door the state opens —
-    elicit, apply, request — is a door this message must not go through.  Splitting that
-    into "held idle" and "did not apply" would be the same sentence counted twice.
-
-    The drawn state's MEMBERSHIP in the offered union is not claimed anywhere: production
-    validates it (``_state_is_bound``) and re-rolls until it holds, so a claim over it would
-    run 15/15 by construction and measure the validator.  WHICH member she picked is the
-    open question, and it is this one."""
-    drawn = sample.field(CLASSIFY_STATE)
-    return drawn == ConversationState.IDLE.value, f"drew {drawn}"
-
-
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_passing_mention_holds_idle_with_the_routine_doors_open(
     classifier_eval: ClassifierEval, model: str
@@ -362,7 +410,7 @@ async def test_a_passing_mention_holds_idle_with_the_routine_doors_open(
     # LANDED — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw held the conversation in idle",
-        _held_idle,
+        _drew(ConversationState.IDLE),
         SpecCategory.LANDED,
     )
 
@@ -759,3 +807,499 @@ async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEv
         min_pass_rate=0.8,
         family=_FAMILY,
     )
+
+
+# ── The six edges with no isolated coverage (#2055 tranche A) ─────────────────
+#
+# Six ported cases, one per edge, each five wordings of ONE decision over one world.
+# Nothing here shares a pool with the cases above: a pool is ten scenarios standing in
+# for an edge's coverage, and averaging their rates reports ten behaviours as one number.
+#
+# THREE CLAIM CATEGORIES, and two of them are EMPTY on every case in this file — stated
+# once here and referenced from each case rather than restated six times:
+#
+#   STORE is empty because the shape has nothing there.  A micro-context is ONE call
+#   returning a typed result: it moves no machine and writes to no store, so there is no
+#   trail for a store claim to read.  (What the classifier decides is later written by
+#   ``ConversationMachine`` as a ``state_transition`` row; that write is the machine's and
+#   no case here runs it.)
+#
+#   PROVENANCE is empty because it is CLOSED UPSTREAM.  Fact alignment reads a draw's OPEN
+#   fields — the ones the model wrote in its own words — and this draw returns none.  Both
+#   fields it returns are closed sets the harness itself supplied: ``state`` is validated
+#   against the offered union and re-rolled until it is a member, and ``skill`` is validated
+#   against the offered candidates on a gated draw and GENERATED empty on an ungated one.
+#   Nothing here could have been invented, so there is nothing to trace.
+#
+# WHAT IS CLAIMED is the one open question: WHICH member the draw picked — ``_drew`` at the
+# top of the file.  For an ungated state that is the whole claim set; for a gated one there
+# is a second, ``_bound``, because the ``SKILL:`` line is a second choice out of a second
+# offered set and validation guarantees only that it names SOME candidate.
+
+
+# ── idle → request: a covered ask that is one value short ────────────────────
+#
+# THE FACTS ARE CONSTANT across the arms: every wording asks for the SAME subject (the
+# camera kit listing), for the SAME ongoing job (watch its price), and none of them says
+# WHICH page — which is the whole entry condition.  A wording that carried an address
+# would be the idle → apply behaviour wearing this case's id.
+#
+# The registry is seeded, and that is what makes the case mean anything: ``presented_edges``
+# withholds every skill-gated state when there are no candidates, so request cannot be drawn
+# at all against an empty registry.  The distractor is seeded for the SKILL claim's sake —
+# with one candidate, naming the right one is not a choice.
+
+REQUEST_SHORT_CASE_ID = "classifier-draws-request-when-a-known-routine-is-a-value-short"
+
+_REQUEST_SHORT_ASK = "can you keep an eye on the price of the camera kit listing for me?"
+_REQUEST_SHORT_PHRASINGS = (
+    "i'd like the camera kit listing's price watched",
+    "could you track what the camera kit listing is going for?",
+    "keep tabs on the price of that camera kit listing",
+    "watch the camera kit listing and keep a record of its price",
+)
+REQUEST_SHORT_ARMS = (_REQUEST_SHORT_ASK, *_REQUEST_SHORT_PHRASINGS)
+
+_REQUEST_SHORT_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when a routine "
+    "she already knows covers the ask but the message never says which page it is about, "
+    "Penny draws request and binds that routine."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_covered_ask_missing_its_page_draws_request(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The idle → request draw: a known routine covers the ask, and the one value it
+    declares is not in the message.
+
+    STORE and PROVENANCE are empty; the section comment above says why for every case in
+    this file.  Two LANDED claims, because this state is skill-gated: which state, and
+    which routine.
+    """
+    cohort = await classifier_eval(
+        case_id=REQUEST_SHORT_CASE_ID,
+        behaviour=_REQUEST_SHORT_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_REQUEST_SHORT_ASK,
+        also_asked=_REQUEST_SHORT_PHRASINGS,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed fields of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw parked the round in request",
+        _drew(ConversationState.REQUEST),
+        SpecCategory.LANDED,
+    )
+    cohort.claim(
+        "state: the draw bound the routine that covers the ask",
+        _bound(_PRICE_SKILL),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    # What is MEASURED — both structured fields the draw fills.  ``skill`` is measured here
+    # and not on the ungated cases because this state BINDS one: on an ungated draw it is
+    # empty on every sample, which scores 0.000 — the same number perfect agreement scores.
+    # ``outcome`` is constant by the completeness gate, and a single call makes no tool
+    # sequence and no reply.
+    cohort.measure(output_field(CLASSIFY_STATE), output_field(CLASSIFY_SKILL))
+
+
+# ── idle → learn: teaching that nobody asked for ─────────────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording teaches the SAME routine — the same page, the same
+# cadence, the same thing to remember, the same store verb — and every one says outright
+# that it is teaching.  Both halves are the edge's own condition, so an arm missing either
+# would be a different behaviour.
+#
+# AT MOST ONE ARM USES THE CONDITION'S OWN EXEMPLARS.  The shipped idle → learn condition
+# illustrates the declaration with three phrases ('let me teach you', 'here's how', 'new job
+# for you'), and a pool built out of them measures whether the draw can match a string it was
+# handed rather than whether it can read a teach.  Only the first arm opens that way; the
+# rest declare the same thing in words the prompt never says, so four of the five are a real
+# read (#1783 — a fixture must never lend its own phrasing to the prompt under test).
+#
+# Seeded registry rather than a cold one, deliberately.  The doors this draw has to decline
+# are the skill-gated ones, and they are structurally absent when the registry is empty —
+# so a learn measured cold is a learn with nothing to lose to.  The seeded routines are
+# watch-shaped and read a page, which is what the edge's own "choose learn even if a known
+# skill looks close" clause exists for; neither covers a ferry timetable.
+
+UNPROMPTED_TEACH_CASE_ID = "classifier-draws-learn-when-teaching-arrives-unprompted"
+
+_TEACH_PAGE = "harborferries.example/timetable"
+_UNPROMPTED_TEACH_ASK = (
+    f"new job for you: each morning read {_TEACH_PAGE} and remember the first sailing"
+)
+_UNPROMPTED_TEACH_PHRASINGS = (
+    f"i've got a new routine for you — each morning read {_TEACH_PAGE} and remember the "
+    "first sailing",
+    f"this is how i want it done: each morning read {_TEACH_PAGE} and remember the first sailing",
+    f"here's a routine i want you doing each morning: read {_TEACH_PAGE} and remember the "
+    "first sailing",
+    f"adding one to your repertoire — each morning read {_TEACH_PAGE} and remember the "
+    "first sailing",
+)
+UNPROMPTED_TEACH_ARMS = (_UNPROMPTED_TEACH_ASK, *_UNPROMPTED_TEACH_PHRASINGS)
+
+_UNPROMPTED_TEACH_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user "
+    "starts teaching a new routine unprompted and their message carries the steps, Penny "
+    "draws learn — she does not read the teaching as an ask to be taught, nor as one of "
+    "the routines she already has."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_unprompted_teaching_draws_learn(classifier_eval: ClassifierEval, model: str) -> None:
+    """The idle → learn draw: the user says they are teaching, and the steps are in the
+    message, from a standing start rather than from inside a teach loop.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    learn binds no routine, so there is no second choice to claim.
+    """
+    cohort = await classifier_eval(
+        case_id=UNPROMPTED_TEACH_CASE_ID,
+        behaviour=_UNPROMPTED_TEACH_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_UNPROMPTED_TEACH_ASK,
+        also_asked=_UNPROMPTED_TEACH_PHRASINGS,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw took the round into learn",
+        _drew(ConversationState.LEARN),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    # ``skill`` is generated empty on this ungated state, so measuring it would print
+    # 0.000 where there is no measurement.
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── elicit → idle: the teach round is called off ─────────────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording calls off the SAME round — the ferry timetable one
+# the teach question opened — and none of them carries instructions (which would be learn)
+# or asks anything back (which would leave the machine parked in elicit).
+#
+# No skills are seeded, and nothing is lost by that: elicit's out-edges carry no skill-gated
+# state at all, so the union this draw chooses from is the same either way.  A round is in
+# elicit BECAUSE nothing covered the ask, and an empty registry is the world that says so.
+
+ELICIT_CALLED_OFF_CASE_ID = "classifier-falls-to-idle-when-the-elicit-round-is-called-off"
+
+_ELICIT_CALLED_OFF_ASK = "actually never mind, forget the ferry timetable thing"
+_ELICIT_CALLED_OFF_PHRASINGS = (
+    "eh, drop it — i don't need the ferry timetable thing after all",
+    "actually let's skip the ferry timetable one, i've changed my mind",
+    "forget it, i don't want the ferry timetable thing set up anymore",
+    "never mind the ferry timetable thing, it's not worth the trouble",
+)
+ELICIT_CALLED_OFF_ARMS = (_ELICIT_CALLED_OFF_ASK, *_ELICIT_CALLED_OFF_PHRASINGS)
+
+_ELICIT_CALLED_OFF_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user "
+    "calls off the round the teach question opened, Penny falls to idle."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_called_off_elicit_round_falls_to_idle(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The elicit → idle draw: the break-out edge, taken because the user dropped the task.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    idle binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=ELICIT_CALLED_OFF_CASE_ID,
+        behaviour=_ELICIT_CALLED_OFF_BEHAVIOUR,
+        model=model,
+        state=ConversationState.ELICIT,
+        ask=_ELICIT_CALLED_OFF_ASK,
+        also_asked=_ELICIT_CALLED_OFF_PHRASINGS,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw broke the round out to idle",
+        _drew(ConversationState.IDLE),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── learn → apply: the demonstrated round is accepted ────────────────────────
+#
+# THE FACTS ARE CONSTANT in the world rather than in the words: every arm answers the SAME
+# demonstration report and offer, and every one is a plain acceptance carrying no new
+# instructions (which would hold the round in learn) and no retraction (which would break
+# it out to idle).
+#
+# AT MOST ONE ARM USES THE CONDITION'S OWN EXEMPLARS.  The shipped learn → apply condition
+# illustrates the acceptance with three ("a yes, a great, a go-ahead"), so only the first
+# arm is built on them; the rest accept in words the prompt never says (#1783).
+#
+# The registry holds the routine the round taught, because that is where a real round
+# stands at this moment: run-end extraction files the routine under the name the round
+# pinned, so by the time the offer is answered it is a candidate like any other.  The two
+# standing distractors read a page and record something from it, exactly as it does — which
+# is what makes WHICH routine a question worth claiming.
+
+_FERRY_SKILL = "record the first ferry sailing each day"
+_ACCEPTED_ROUND_SKILLS = [
+    eval_skill(
+        _FERRY_SKILL,
+        "read a ferry timetable page and remember the first sailing of the day",
+        {"url": "the ferry timetable page to read"},
+    ),
+    *SEEDED_SKILLS,
+]
+
+# The learn turn's own close, in the shape ``Prompt.LEARN_INSTRUCTION`` asks for: what each
+# step produced, what it now knows how to do, and an offer to set it running.
+_DEMONSTRATION_REPORT = (
+    "I read harborferries.example/timetable and saved the first sailing — 05:20. "
+    "So I know how to do this now: read the ferry timetable and remember the first "
+    "sailing of the day. Want me to set it up to run on its own each morning?"
+)
+
+OFFER_ACCEPTED_CASE_ID = "classifier-draws-apply-when-the-offer-is-accepted"
+
+_OFFER_ACCEPTED_ASK = "yes, that's exactly it — go ahead"
+_OFFER_ACCEPTED_PHRASINGS = (
+    "perfect, that's what i wanted",
+    "nice, that's the shape i was after — let's have it",
+    "yep, you nailed it, keep it",
+    "that's the one, go with it",
+)
+OFFER_ACCEPTED_ARMS = (_OFFER_ACCEPTED_ASK, *_OFFER_ACCEPTED_PHRASINGS)
+
+_OFFER_ACCEPTED_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user "
+    "accepts the round that was just demonstrated, Penny draws apply and binds the routine "
+    "that round taught."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_accepted_offer_draws_apply(classifier_eval: ClassifierEval, model: str) -> None:
+    """The learn → apply draw: a plain acceptance of what was just demonstrated, with the
+    round's own routine standing in the registry beside two near neighbours.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
+    because this state is skill-gated: which state, and which routine.
+    """
+    cohort = await classifier_eval(
+        case_id=OFFER_ACCEPTED_CASE_ID,
+        behaviour=_OFFER_ACCEPTED_BEHAVIOUR,
+        model=model,
+        state=ConversationState.LEARN,
+        ask=_OFFER_ACCEPTED_ASK,
+        also_asked=_OFFER_ACCEPTED_PHRASINGS,
+        penny_last_turn=_DEMONSTRATION_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=_ACCEPTED_ROUND_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed fields of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw took the round into apply",
+        _drew(ConversationState.APPLY),
+        SpecCategory.LANDED,
+    )
+    cohort.claim(
+        "state: the draw bound the routine the round taught",
+        _bound(_FERRY_SKILL),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE), output_field(CLASSIFY_SKILL))
+
+
+# ── request → apply: the missing value arrives ───────────────────────────────
+#
+# THE FACTS ARE CONSTANT: every arm supplies the SAME page, byte for byte, and adds nothing
+# else — the words around it are the only thing that moves.  That constancy is what lets the
+# SKILL claim name a routine: the page is the value the parked round is short of, and the
+# routine that declares it is the one the draw has to bind.
+#
+# THE ROUND'S BINDING IS DECLARED (#2084), because production reaches request only through
+# the binder and records what it settled on the move — so a draw parked here is always shown
+# the `## The details this task is waiting on` section, naming the routine, what the user has
+# already given and what is still needed.  ``_PRICE_SKILL`` declares one parameter and this
+# round settled none of it: the ask named a subject and no address, which is what parked it.
+#
+# Penny's last turn says in PLAIN WORDS what she would do and asks for the missing part by
+# what it is, which is what ``Prompt.REQUEST_INSTRUCTION`` instructs a request turn to do —
+# it never quotes the registry's own name at the user.  The routine's own name reaches the
+# draw the way production puts it there, on the waiting-on section, so binding it is a COPY
+# rather than a resolution — and the claim is still open, because the other seeded routine is
+# equally copyable and only one of them is the one this round is parked on.
+
+_PARKED_ON_THE_PRICE_WATCH = ParkedRound(skill=_PRICE_SKILL)
+
+_REQUEST_TURN = (
+    "I can keep an eye on a listing page and note its price whenever it changes — "
+    "which page should I be watching?"
+)
+_KAYAK_PAGE = "harborkayak.example/rentals/sea-touring"
+
+VALUE_ARRIVED_CASE_ID = "classifier-draws-apply-when-the-missing-value-arrives"
+
+_VALUE_ARRIVED_ASK = _KAYAK_PAGE
+_VALUE_ARRIVED_PHRASINGS = (
+    f"it's {_KAYAK_PAGE}",
+    f"the page is {_KAYAK_PAGE}",
+    f"use {_KAYAK_PAGE} for it",
+    f"here you go — {_KAYAK_PAGE}",
+)
+VALUE_ARRIVED_ARMS = (_VALUE_ARRIVED_ASK, *_VALUE_ARRIVED_PHRASINGS)
+
+_VALUE_ARRIVED_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the page the "
+    "parked round was waiting on arrives, Penny draws apply and binds the routine she had "
+    "named."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_missing_value_arriving_draws_apply(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The request → apply draw: the round parked asking for one detail, and this message
+    is that detail.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
+    because this state is skill-gated: which state, and which routine.
+    """
+    cohort = await classifier_eval(
+        case_id=VALUE_ARRIVED_CASE_ID,
+        behaviour=_VALUE_ARRIVED_BEHAVIOUR,
+        model=model,
+        state=ConversationState.REQUEST,
+        ask=_VALUE_ARRIVED_ASK,
+        also_asked=_VALUE_ARRIVED_PHRASINGS,
+        penny_last_turn=_REQUEST_TURN,
+        task_anchor=_KAYAK_ASK,
+        parked_round=_PARKED_ON_THE_PRICE_WATCH,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed fields of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw took the round into apply",
+        _drew(ConversationState.APPLY),
+        SpecCategory.LANDED,
+    )
+    cohort.claim(
+        "state: the draw bound the routine the round was parked on",
+        _bound(_PRICE_SKILL),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE), output_field(CLASSIFY_SKILL))
+
+
+# ── request → idle: the parked round is called off ───────────────────────────
+#
+# THE FACTS ARE CONSTANT in what every arm withholds, which is what this edge turns on: none
+# of them supplies the page (that is apply, the case above), and none of them says the named
+# routine was the wrong one while still wanting the task done (that is elicit, request's
+# other door).  What is left is the break-out, and idle is the state that owns it.
+#
+# The registry is seeded so both of those doors are really on offer — with no candidates,
+# ``presented_edges`` withholds apply outright and the call-off would be declining a door
+# that was never open.  The round declares the same binding the case above does (#2084): a
+# call-off measured against a document that never said what the round was waiting for is a
+# call-off of nothing in particular.
+
+REQUEST_CALLED_OFF_CASE_ID = "classifier-falls-to-idle-when-a-parked-request-is-called-off"
+
+_REQUEST_CALLED_OFF_ASK = "actually never mind, forget the whole thing"
+_REQUEST_CALLED_OFF_PHRASINGS = (
+    "eh, drop it — i don't need that watched after all",
+    "actually let's skip it, i've changed my mind",
+    "forget it, don't set that up",
+    "never mind, i'll just look at it myself",
+)
+REQUEST_CALLED_OFF_ARMS = (_REQUEST_CALLED_OFF_ASK, *_REQUEST_CALLED_OFF_PHRASINGS)
+
+_REQUEST_CALLED_OFF_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user "
+    "calls off the round that is parked waiting on a detail, Penny falls to idle."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_called_off_parked_request_falls_to_idle(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The request → idle draw: the round asked for one detail and the user dropped the
+    task instead of supplying it.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    idle binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=REQUEST_CALLED_OFF_CASE_ID,
+        behaviour=_REQUEST_CALLED_OFF_BEHAVIOUR,
+        model=model,
+        state=ConversationState.REQUEST,
+        ask=_REQUEST_CALLED_OFF_ASK,
+        also_asked=_REQUEST_CALLED_OFF_PHRASINGS,
+        penny_last_turn=_REQUEST_TURN,
+        task_anchor=_KAYAK_ASK,
+        parked_round=_PARKED_ON_THE_PRICE_WATCH,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw broke the round out to idle",
+        _drew(ConversationState.IDLE),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
