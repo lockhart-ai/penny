@@ -801,7 +801,7 @@ the suite's one instrument for the invented direction — reads a Title-Cased co
 as four inventions while passing a made-up exchange, so it does not transfer to them.  What
 it deliberately does NOT claim is genericity: that the name says the KIND of task and never
 THIS occasion fits none of the design's three assertion categories, being the converse of a
-provenance claim, so it stays a reading of the modal sample), `test_skill_binding.py` (#1867 — the skill BINDER over eight cases built
+provenance claim, so it stays a reading of the modal sample), `test_skill_binding.py` (#1867 — the skill BINDER over seven per-parameter cases built
 from the idle→apply asks, both directions of the contract: five extraction cases (incl.
 the two-parameter bind, where the page and what to look for on it come out of one
 message) and two shortfall cases (an ask naming no page at all, and one supplying the
@@ -812,12 +812,24 @@ structural check that no job TERM (a cadence, an end date) rode into a value; th
 the user's turns — pinned by the same kind of drift probe. Membership, coverage and "is
 this even in the user's words" are the PRODUCTION validator's, so an accepted draw never
 reaches the scorer carrying an invented value; what the cases measure is whether it picked
-the RIGHT span and whether it knew when to decline.  The eighth,
-`binder-fills-one-and-names-the-other-missing`, is the missing-keyword case PORTED to the
-cohort structure (#2006): one ask in five wordings, with the address and the cadence
-byte-identical on every arm, claiming both enumerated halves — that the draw came back a
-SHORTFALL and that it names the keyword — plus the two directions over the bound value, that
-the url carries the span the ask supplies and that no value carries the cadence),
+the RIGHT span and whether it knew when to decline.  Beside them the slot's CANONICAL SET
+(#2006/#2057) — SEVEN cohort cases, one ask in five wordings each, claimed against
+`docs/eval-case-design.md` — covers the binder's whole decision space, {complete bind,
+shortfall} × {single slot, multi slot} plus the completion draw: the page bound with
+neither the cadence nor the end date riding in; a threshold condition the signature has
+nowhere to put; two parameters of different kinds out of one message; TWO OF THE SAME KIND,
+where nothing but the word the ask puts beside each says which is which, and a swap points
+the job at the right pages in the wrong roles with every downstream check reading it as
+correct; the shortfall on an ask that names an object and no page; the shortfall beside a
+successful bind; and the COMPLETION DRAW — `bind_entry(…, settled=…)`'s warm shape, whose
+document is the two turns a parked round has now heard with the settled parameter absent
+from the offered signature, so the page it settled is in the words and no longer in the
+question.  Every claim is an outcome enum under LANDED or a bound value under PROVENANCE
+read in both directions; STORE is empty on all seven and says so, and three claims are
+deliberately not made because production already validates them.  Each case declares the
+terms its claims FORBID and derives the facts its arms must state from them, so a fact
+nobody measures cannot be written down — the defect that shape closes is a claim label
+promising to catch a padded condition while the terms it read forbade only the cadence),
 `test_collector_enactment.py` (#1905 — the BACKGROUND half of the north star: chat's half is
 fully enacted, and nothing had ever verified the COLLECTOR can run what chat built. Five cases,
 one per collection the `request → apply` beat leaves behind, each seeding that beat's FULL exit
