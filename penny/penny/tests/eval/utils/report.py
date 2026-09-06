@@ -463,12 +463,35 @@ def case_heading(glyph: str, case_id: str, model: str = "", index: str = "") -> 
     return _CASE_HEADING_MODEL.format(glyph=glyph, case_id=case_id, index=index, model=model)
 
 
+def headed(
+    document: str, *, glyph: str, case_id: str, model: str, index: str, run: RunFacts
+) -> str:
+    """``document`` under the heading every case report opens on, whatever shape wrote it.
+
+    A case that computed a cohort renders its own heading as it closes, so that line only
+    needs the run-level ``X/N`` a running case cannot know; a case scored inline writes
+    sample folds and nothing else, so its report reached the PR as an unlabelled run of
+    folds — nothing in it saying which case it was, where it sat in the run, or which commit
+    measured it.  Both come out of the SAME renderer (:func:`case_heading`, over the same
+    :meth:`RunFacts.rows`), so the two shapes cannot drift.
+
+    A document that already has a heading keeps it verbatim — the glyph on it was decided by
+    the case's own assertions and variance, which the artifact's check counts do not
+    reproduce, so re-rendering it would repaint a colour nothing here measured."""
+    if document.startswith(_HEADING_OPENS):
+        return with_case_index(document, index)
+    head = case_heading(glyph, case_id, model, index)
+    rows = run.rows()
+    if rows:
+        head = f"{head}\n\n{measure_table(rows)}"
+    return f"{head}\n\n{document}"
+
+
 def with_case_index(document: str, index: str) -> str:
     """``document`` with its heading carrying ``index``, or unchanged when it has no heading.
 
     The document's FIRST line is its heading, so this replaces that line rather than editing
-    text anywhere else — and it leaves a transcript that opens on something else alone, which
-    is the honest answer for the unported path rather than a heading invented for it."""
+    text anywhere else."""
     head, newline, rest = document.partition("\n")
     if not index or not head.startswith(_HEADING_OPENS):
         return document
@@ -502,6 +525,17 @@ _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
 # sample it cannot account for is how infrastructure failure gets read as behaviour.
 _COUNTS = "{pooled} pooled + {excluded} excluded = {driven} driven"
 _NO_VARIANCE = "nothing pooled"
+
+
+def measure_table(rows: Sequence[tuple[str, str]]) -> str:
+    """``rows`` as the measure table a case report states its readings in.
+
+    One table shape wherever a case states a reading — a case that computed a cohort fills
+    it with its checks, variance and cost above the run's provenance; one that did not
+    states the provenance alone, in the same table rather than in a line of its own."""
+    body = "\n".join(_MEASURE_ROW.format(measure=name, reading=text) for name, text in rows)
+    return f"{_MEASURE_HEAD}\n{body}"
+
 
 _ASSERTION_HEAD = "|  | assertion | held | rate |\n|---|---|---|---|"
 _CATEGORY_HEADING = "**{category}**"
@@ -607,6 +641,25 @@ class RunFacts:
     @property
     def stated(self) -> bool:
         return bool(self.commit or self.run_id)
+
+    def rows(self) -> list[tuple[str, str]]:
+        """Where this run came from, as measure rows — empty when nothing was stated, so a
+        case rendered without provenance omits the rows entirely rather than printing them
+        blank.
+
+        Read by every shape a case report can take: the cohort renderer folds them into its
+        own measures table, and a case that built no such table states them under its
+        heading, so the commit a report names is one rendering rather than two."""
+        if not self.stated:
+            return []
+        provider = f" · {self.provider}" if self.provider else ""
+        return [
+            (
+                "commit",
+                _M_COMMIT.format(commit=self.commit, provider=provider, embeddings=self.embeddings),
+            ),
+            ("run", f"`{self.run_id}`"),
+        ]
 
 
 @dataclass(frozen=True)
@@ -750,25 +803,8 @@ class CaseSections:
         ]
         if self.cost is not None:
             rows.append(("cost / sample", self._cost_summary()))
-        rows += self._provenance_rows()
-        body = "\n".join(_MEASURE_ROW.format(measure=name, reading=text) for name, text in rows)
-        return f"{_MEASURE_HEAD}\n{body}"
-
-    def _provenance_rows(self) -> list[tuple[str, str]]:
-        """Where this run came from — omitted entirely when the case was rendered without it,
-        rather than printed as empty cells."""
-        if not self.run.stated:
-            return []
-        provider = f" · {self.run.provider}" if self.run.provider else ""
-        return [
-            (
-                "commit",
-                _M_COMMIT.format(
-                    commit=self.run.commit, provider=provider, embeddings=self.run.embeddings
-                ),
-            ),
-            ("run", f"`{self.run.run_id}`"),
-        ]
+        rows += self.run.rows()
+        return measure_table(rows)
 
     def glyph(self) -> str:
         """The case's worst state — what someone paging ~100 one-line entries reads.

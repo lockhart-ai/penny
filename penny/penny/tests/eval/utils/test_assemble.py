@@ -698,6 +698,84 @@ def test_the_index_counts_the_cases_the_run_started_not_the_ones_that_closed(
     ], "the dead case is counted in N and contributes no report — the gap is the point"
 
 
+def _heading_case(
+    manifest: RunManifest, case_id: str, passed: int, expand: list[int] | None = None
+) -> CaseArtifact:
+    """One case record: its deterministic checks, and whether it nominated a sample.
+
+    A case that drove no cohort nominates none, which is what keeps every sample in its own
+    plain fold — the shape a legacy pooled case's report actually has."""
+    return CaseArtifact(
+        run_id=manifest.run_id,
+        case_id=case_id,
+        family="classifier",
+        mean=1.0,
+        all_pass_rate=1.0,
+        pathology_excluded_mean=1.0,
+        samples=15,
+        sample_scores=[1.0],
+        sample_causes=[None],
+        cause_counts=CauseCounts(),
+        checks=[CheckOutcome(label="state: landed", passed=passed, total=14)],
+        timings=_TIMINGS,
+        expand_samples=expand or [],
+    )
+
+
+def test_a_case_that_wrote_no_heading_is_headed_like_one_that_did(tmp_path: Path) -> None:
+    """Every case report NAMES itself, its place in the run, and the commit that measured it.
+
+    A case that computed a cohort renders its own heading as it closes, and only the run-level
+    ``X/N`` is spliced in here.  A legacy pooled case writes sample folds and nothing else, so
+    its comment opened directly on ``<details><summary>sample 1 …`` with nothing in it saying
+    which case it was or what it was measured against.  It is given the SAME heading, from the
+    same renderer, over the same run facts."""
+    manifest = build_manifest(
+        commit="abba710a03ae3555148fea6a86712e9af020499a",
+        dirty_diff="",
+        model="openai/gpt-oss-20b",
+        embedding_model="embeddinggemma",
+        samples=15,
+        lever="the heading",
+        now=datetime(2026, 9, 1, 3, 36, 27, tzinfo=UTC),
+    )
+    report_dir = tmp_path / "run-mixed"
+    _write_run(
+        report_dir,
+        manifest,
+        [
+            _heading_case(manifest, "cohort-case", 14, [1]),
+            _heading_case(manifest, "legacy-case", 7),
+        ],
+        {
+            # A ported case's document OPENS on the heading its own renderer wrote.
+            "cohort-case": (
+                f"{report.case_heading(report.PASS_GLYPH, 'cohort-case', manifest.model)}\n\n"
+                f"{_BROWSE_SAMPLE_FOLDED}\n\n"
+            ),
+            # A legacy pooled case writes sample folds and nothing else.
+            "legacy-case": f"{_BROWSE_SAMPLE_FOLDED}\n\n",
+        },
+    )
+
+    ported, legacy = assemble.assemble_case_comments(report_dir)
+
+    assert ported.splitlines()[0] == "### 🟢 `cohort-case` 1/2 — `openai/gpt-oss-20b`", (
+        "a case that wrote its own heading keeps it — only the index it could not know is added"
+    )
+    head, _, rest = legacy.partition("<details>")
+    assert head == (
+        "### 🟡 `legacy-case` 2/2 — `openai/gpt-oss-20b`\n"
+        "\n"
+        "| measure | reading |\n"
+        "|---|---|\n"
+        "| **commit** | `abba710a` · `embeddinggemma` |\n"
+        "| **run** | `run-20260901T033627Z-abba710a` |\n"
+        "\n"
+    ), "the case id, where it sits in the run, the model, and the commit measured"
+    assert rest.startswith("<summary>sample 1"), "above the folds it did write, which are untouched"
+
+
 def test_the_index_is_per_model_and_stable_across_a_re_run(tmp_path: Path) -> None:
     """Two models are two runs, each with its own N — and the order is the case id.
 
