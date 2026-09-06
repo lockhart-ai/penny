@@ -48,7 +48,6 @@ from penny.conversation_machine import (
     StateClassifier,
     StateDecision,
     build_snapshot,
-    render_classifier_content,
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
@@ -2416,6 +2415,10 @@ NEVER_SPOKEN = "never started"
 # saved reads that date off the self-state header and nowhere else.  It carries none of the
 # laundering risk an assistant turn does — framework-rendered from the registry and the
 # ledger, and rendered BEFORE the turn acts, so it cannot contain anything this turn invented.
+#
+# For a MICRO-CONTEXT draw the system prompt is its output CONTRACT, which makes the same
+# correction load-bearing for a second reason (#2078): the tags the contract tells the draw
+# to write with are words the draw was GIVEN, so one appearing in the answer is a copy.
 _GIVEN_ROLES = frozenset({"user", "tool", "system"})
 
 
@@ -2437,7 +2440,21 @@ def measured_turn_ran(db: Database) -> bool:
 
 def given_to_the_model(db: Database) -> str:
     """Everything this sample's turn was GIVEN, as one blob — the world a provenance claim
-    reads against (#1994)."""
+    reads against (#1994).
+
+    THE ONE reader, for a chat turn and for a single-call micro-context draw alike, and it
+    reads the PROMPTLOG rather than rebuilding the input at the call site — so the haystack is
+    what the model was handed and not a second copy of part of it.
+
+    A haystack assembled from a runner's own arguments omits the contract the draw was framed
+    by, and the words that contract taught it then read as inventions (#2078).  Measured: a
+    partly-present extraction answered a line per story ending ``NOT_PRESENT``, the tag's tail
+    glued across the line break to the next story's first word — the name phrase
+    ``PRESENT City``, whose ``PRESENT`` the page does not carry — and ``nothing invented``
+    failed on 2 of 15 CORRECT draws.  ``NOT_PRESENT:`` is in the extraction contract, so
+    reading what was really given passes it by construction, and passes the classifier's state
+    names, the binder's outcome names and every contract token nobody has written yet with it —
+    there is no list of tags to keep anywhere."""
     return "\n".join(
         str(turn.get("content") or "")
         for turn in _iter_prompt_messages(db)
@@ -4617,7 +4634,6 @@ def _observe_classification(
     name: str,
     phrasing: str,
     arm: int,
-    given: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE classification sample decided — its own observer, not the chat one.
 
@@ -4626,10 +4642,9 @@ def _observe_classification(
     on every sample and a chat-shaped read would return a structurally fine, substantively
     hollow row (#2017).  What there is to read is the typed decision.
 
-    ``given`` is the rendered classifier content, from the call site rather than
-    reconstructed — and it already CARRIES the message, in its own section, so appending the
-    message beside it would put the one thing every provenance claim traces against into the
-    haystack twice."""
+    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
+    rendered classifier content, which already CARRIES the message in its own section, under
+    the contract naming the states the draw may write."""
     failed = decision is None or decision.outcome in _STATE_FAILURES
     exclusion = _draw_exclusion(db, "" if failed else decision.outcome.value)
     if decision is None or exclusion is not None:
@@ -4640,7 +4655,7 @@ def _observe_classification(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        given=given,
+        given=given_to_the_model(db),
         output=_classification_output(decision),
     )
 
@@ -5125,7 +5140,6 @@ def classifier_eval(
                 await _seed_eval_skills(penny, seed_skills)
             classifier = StateClassifier(penny.model_client)
             decision: StateDecision | None = None
-            content = ""
             try:
                 # The PRODUCTION snapshot builder per sample, so the eval
                 # exercises the same path the wiring does — EVERY seeded
@@ -5140,9 +5154,6 @@ def classifier_eval(
                     task_anchor=task_anchor,
                     parked_round=parked_round,
                 )
-                # What the draw is GIVEN, captured at the call site rather than
-                # reconstructed — the same document ``classify`` renders for it.
-                content = render_classifier_content(snapshot, phrasing)
                 decision = await asyncio.wait_for(
                     classifier.classify(snapshot, phrasing, run_target=penny.chat_agent.name),
                     timeout=timeout,
@@ -5171,7 +5182,6 @@ def classifier_eval(
                     name=f"{case_id}-{sample_index + 1} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
-                    given=content,
                 )
             _write_classifier_report(
                 penny.db, case_id, sample_index, result=result, phrasing=phrasing
@@ -5275,7 +5285,6 @@ def _observe_labelling(
     name: str,
     phrasing: str,
     arm: int,
-    given: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE labelling sample named — its own observer, not the chat one.
 
@@ -5285,7 +5294,8 @@ def _observe_labelling(
     persisted skill: everything downstream — applying a label, rendering it — is deterministic
     Python pinned in ``make check``.
 
-    ``given`` is the rendered document the draw was handed, from the call site."""
+    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
+    rendered document under the contract naming the line the draw must write per spot."""
     exclusion = _draw_exclusion(db, "" if labels is None else DREW_ITS_LABELS)
     if labels is None or exclusion is not None:
         return eval_cohort.SampleObservation(
@@ -5295,7 +5305,7 @@ def _observe_labelling(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        given=given,
+        given=given_to_the_model(db),
         output=_labelling_output(labels, offered),
     )
 
@@ -5601,7 +5611,6 @@ def _observe_framing(
     name: str,
     phrasing: str,
     arm: int,
-    given: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE framing sample decided — its own observer, not the chat one.
 
@@ -5610,15 +5619,19 @@ def _observe_framing(
     read ``_observe_sample`` makes would come back empty and the row would be structurally
     fine and substantively hollow (#2017).
 
-    ``given`` is the rendered document — the user's own turns and nothing else, from the call
-    site rather than reconstructed."""
+    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
+    user's own turns under the contract naming the lines the draw must write."""
     exclusion = _draw_exclusion(db, "" if signature is None else DREW_A_SIGNATURE)
     if signature is None or exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
         )
     return eval_cohort.SampleObservation(
-        name=name, phrasing=phrasing, arm=arm, given=given, output=_framing_output(signature)
+        name=name,
+        phrasing=phrasing,
+        arm=arm,
+        given=given_to_the_model(db),
+        output=_framing_output(signature),
     )
 
 
@@ -6087,7 +6100,6 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                     name=f"{case_id}-{sample_index + 1} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
-                    given=content,
                 )
             _write_classifier_report(
                 penny.db,
@@ -6248,7 +6260,6 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                     name=f"{case_id}-{sample_index + 1} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
-                    given=content,
                 )
             _write_classifier_report(
                 penny.db,
@@ -6360,7 +6371,6 @@ def _observe_binding(
     name: str,
     phrasing: str,
     arm: int,
-    given: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE binding sample answered — its own observer, not the chat one.
 
@@ -6373,15 +6383,19 @@ def _observe_binding(
     not: it is an enumerated outcome the machine acts on, so it stays in the cohort and the
     case asserts which of the two it was.
 
-    ``given`` is the rendered document — the signature AND the user's turns, from the call
-    site rather than reconstructed."""
+    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the
+    signature and the user's turns under the contract naming the lines the draw must write."""
     exclusion = _draw_exclusion(db, "" if binding is None else _binding_outcome(binding).value)
     if binding is None or exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion or NO_DRAW
         )
     return eval_cohort.SampleObservation(
-        name=name, phrasing=phrasing, arm=arm, given=given, output=_binding_output(binding)
+        name=name,
+        phrasing=phrasing,
+        arm=arm,
+        given=given_to_the_model(db),
+        output=_binding_output(binding),
     )
 
 
@@ -6654,7 +6668,6 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                     name=f"{case_id}-{sample_index + 1} ({label})",
                     phrasing=label,
                     arm=arms.index_of(sample_index),
-                    given=content,
                 )
             _write_classifier_report(
                 penny.db,
@@ -6837,7 +6850,6 @@ def _observe_extraction(
     name: str,
     phrasing: str,
     arm: int,
-    given: str,
 ) -> eval_cohort.SampleObservation:
     """Read what ONE extraction sample answered — its own observer, not the chat one.
 
@@ -6846,9 +6858,9 @@ def _observe_extraction(
     the row would be structurally fine and substantively hollow.  What there IS to read is the
     draw's typed result, and it is read directly rather than fished back out of the ledger.
 
-    ``given`` is the document plus the instruction — exactly what was handed to the draw, from
-    the call site rather than reconstructed — so a provenance claim compares the answer against
-    the real input."""
+    ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the page
+    and the instruction under the extraction contract, so a provenance claim compares the
+    answer against the whole of what the draw was handed, ``NOT_PRESENT:`` included."""
     answer = "" if result is None or result.outcome in _EXTRACT_FAILURES else result.outcome.value
     exclusion = _draw_exclusion(db, answer)
     if result is None or exclusion is not None:
@@ -6859,7 +6871,7 @@ def _observe_extraction(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        given=given,
+        given=given_to_the_model(db),
         output=_extraction_output(result),
     )
 
@@ -6976,7 +6988,6 @@ def extractor_eval(
                     name=f"{case_id}-{sample_index + 1} ({phrasing})",
                     phrasing=phrasing,
                     arm=arms.index_of(sample_index),
-                    given=f"{content}\n{asked}",
                 )
             _write_classifier_report(
                 penny.db,

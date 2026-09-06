@@ -41,7 +41,15 @@ from penny.tests.eval.utils.cohort import (
     unsourced_specifics,
     variance_headline,
 )
+from penny.tests.eval.utils.fixtures import (
+    EXTRACT_TAGGED_ANSWER,
+    EXTRACT_TAGGED_ASK,
+    EXTRACT_TAGGED_BYLINE,
+    EXTRACT_TAGGED_PAGE,
+    EXTRACT_UNSOURCED_NAME,
+)
 from penny.tests.eval.utils.worlds import World
+from penny.tools.micro_context import MICRO_CONTEXT_SYSTEM_PROMPT
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
@@ -554,6 +562,44 @@ def test_an_invented_url_is_still_caught():
     assert unsourced_specifics("see (https://other.example/nope)", _GIVEN) == [
         "https://other.example/nope"
     ]
+
+
+# ── A word the draw was GIVEN is not a word it invented (#2078) ──────────────
+#
+# The haystack is the WHOLE prompt, contract included, so the vocabulary a micro-context is
+# told to answer in is in it by construction.  The haystack side names no tag: it is the
+# SHIPPED ``MICRO_CONTEXT_SYSTEM_PROMPT``, so a contract that grows a third tag is covered
+# the day it ships.  The two spellings below are in the ANSWER, where they stand in for what
+# a model literally wrote.
+#
+# What the runner used to build from its own arguments, and what the draw was really handed.
+_WITHOUT_THE_CONTRACT = f"{EXTRACT_TAGGED_PAGE}\n{EXTRACT_TAGGED_ASK}"
+_WHOLE_PROMPT = f"{MICRO_CONTEXT_SYSTEM_PROMPT}\n{_WITHOUT_THE_CONTRACT}"
+# The drawn value with the observation's own field names around it, as ``output_text`` reads.
+_TAGGED_ANSWER = f"outcome extracted value {EXTRACT_TAGGED_ANSWER} reason "
+
+
+def test_a_contract_tag_inside_a_value_is_a_word_the_draw_was_given():
+    """#2078: `nothing invented` failed 2 of 15 samples on a CORRECT draw that marked each
+    story's missing field with the contract's own `NOT_PRESENT`.
+
+    Not the tag itself — an underscore is not whitespace, so `NOT_PRESENT` matches no name
+    phrase.  It is the tag's TAIL, glued across the line break to the next story's first
+    word — two capitalised words in a row over a page carrying no `PRESENT`.  The fixture
+    reconstructs that shape on synthetic names rather than replaying the observed draw.
+
+    Every word of it was given, in the system prompt, so a haystack that is the whole prompt
+    passes it with nothing on that side keyed to either tag's spelling."""
+    assert unsourced_specifics(_TAGGED_ANSWER, _WITHOUT_THE_CONTRACT) == ["PRESENT", "EXTRACTED"]
+    assert unsourced_specifics(_TAGGED_ANSWER, _WHOLE_PROMPT) == []
+
+
+def test_a_name_the_page_never_carried_is_still_caught_beside_the_tags():
+    """The paired over-correction guard: reading the contract into the haystack must not turn
+    into "a capitalised word is never an invention".  The same draw with one byline swapped
+    for a name nowhere in the prompt still reports that name, and only that name."""
+    invented = _TAGGED_ANSWER.replace(EXTRACT_TAGGED_BYLINE, EXTRACT_UNSOURCED_NAME, 1)
+    assert unsourced_specifics(invented, _WHOLE_PROMPT) == ["Casimir", "Oyelaran"]
 
 
 # ── What reached the user (#2009) ────────────────────────────────────────────

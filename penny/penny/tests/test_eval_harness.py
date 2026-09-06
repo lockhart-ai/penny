@@ -35,6 +35,7 @@ from penny.constants import MutationActor, PennyConstants, RunOutcome
 from penny.conversation_machine import (
     ConversationState,
     RoundShortfall,
+    StateDecision,
     build_snapshot,
     presented_edges,
     render_classifier_content,
@@ -212,6 +213,11 @@ from penny.tests.eval.conftest import (
     _InjectTextBail,
     _labelling_input,
     _mechanism_records,
+    _observe_binding,
+    _observe_classification,
+    _observe_extraction,
+    _observe_framing,
+    _observe_labelling,
     _refuse_binding_off_request,
     _refuse_unscorable,
     _registry_shortfall,
@@ -277,11 +283,16 @@ from penny.tests.eval.utils.artifacts import (
 )
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import load_baseline
-from penny.tests.eval.utils.cohort import SampleObservation
+from penny.tests.eval.utils.cohort import SampleObservation, unsourced_specifics
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
     ENACTING_TOOLS,
+    EXTRACT_TAGGED_ANSWER,
+    EXTRACT_TAGGED_ASK,
+    EXTRACT_TAGGED_BYLINE,
+    EXTRACT_TAGGED_PAGE,
+    EXTRACT_UNSOURCED_NAME,
     LISTING_URL,
     CannedPage,
     SynthCollection,
@@ -320,14 +331,24 @@ from penny.text_validity import half_formed_send_reason
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import (
+    _BARE_CONTENT_TEMPLATE,
+    _USER_TEMPLATE,
+    BIND_SKILL_SYSTEM_PROMPT,
+    MICRO_CONTEXT_SYSTEM_PROMPT,
+    NOT_PRESENT_TAG,
+    SKILL_FRAME_SYSTEM_PROMPT,
+    SKILL_NAMING_SYSTEM_PROMPT,
+    STATE_CLASSIFIER_SYSTEM_PROMPT,
     BoundValues,
     FramedParameter,
     LeafLabel,
+    MicroContext,
     MicroContextResult,
     MicroExtractOutcome,
     MissingParameters,
     SkillLabels,
     SkillSignature,
+    StateDrawOutcome,
     spoken_form,
 )
 from penny.tools.models import ToolResult
@@ -3837,6 +3858,175 @@ def test_score_extraction_grades_the_outcome_and_each_named_field() -> None:
         ("the page carries no ticker symbol", True, False),
         ("not_present: 'no prices are listed.'", True, False),
     ]
+
+
+# ── What a micro-context sample was GIVEN is its whole prompt (#2078) ────────
+#
+# Every observer under one gate, so a customer that goes back to building its haystack from
+# the runner's own arguments fails here.  The document is the same for all five: what is
+# asserted is that the CONTRACT reached the haystack beside it, and each customer's contract
+# and user template are the SHIPPED ones, so the test can never pass against a prompt shape
+# production does not use.
+
+
+def _extraction_observation(db: Database) -> SampleObservation:
+    return _observe_extraction(
+        db,
+        MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=EXTRACT_TAGGED_ANSWER),
+        name="draw-1 (the ask)",
+        phrasing="the ask",
+        arm=0,
+    )
+
+
+def _classification_observation(db: Database) -> SampleObservation:
+    return _observe_classification(
+        db,
+        StateDecision(
+            outcome=StateDrawOutcome.DECIDED,
+            state=ConversationState.APPLY,
+            skill="watch-a-listing",
+        ),
+        name="draw-1 (the ask)",
+        phrasing="the ask",
+        arm=0,
+    )
+
+
+def _labelling_observation(db: Database) -> SampleObservation:
+    return _observe_labelling(
+        db,
+        SkillLabels(labels={"memory": LeafLabel(name="destination", description="where it goes")}),
+        ["memory"],
+        name="draw-1 (the ask)",
+        phrasing="the ask",
+        arm=0,
+    )
+
+
+def _framing_observation(db: Database) -> SampleObservation:
+    return _observe_framing(
+        db,
+        SkillSignature(
+            name="watch_a_listing",
+            description="Watch one listing and record what it says.",
+            parameters=(FramedParameter(name="url", description="the page", value="the page"),),
+        ),
+        name="draw-1 (the ask)",
+        phrasing="the ask",
+        arm=0,
+    )
+
+
+def _binding_observation(db: Database) -> SampleObservation:
+    return _observe_binding(
+        db,
+        BoundValues(values={"url": "https://sports-beta.example/hockey"}),
+        name="draw-1 (the ask)",
+        phrasing="the ask",
+        arm=0,
+    )
+
+
+# Every micro-context customer: who drew, the contract it drew under, the user template it
+# was handed, and the observer that reads the sample back.
+_MICRO_CONTEXT_GIVENS = (
+    (
+        PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        MICRO_CONTEXT_SYSTEM_PROMPT,
+        _USER_TEMPLATE,
+        _extraction_observation,
+    ),
+    (
+        PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        STATE_CLASSIFIER_SYSTEM_PROMPT,
+        _BARE_CONTENT_TEMPLATE,
+        _classification_observation,
+    ),
+    (
+        PennyConstants.SKILL_NAMING_AGENT_NAME,
+        SKILL_NAMING_SYSTEM_PROMPT,
+        _BARE_CONTENT_TEMPLATE,
+        _labelling_observation,
+    ),
+    (
+        PennyConstants.SKILL_FRAME_AGENT_NAME,
+        SKILL_FRAME_SYSTEM_PROMPT,
+        _BARE_CONTENT_TEMPLATE,
+        _framing_observation,
+    ),
+    (
+        PennyConstants.SKILL_BIND_AGENT_NAME,
+        BIND_SKILL_SYSTEM_PROMPT,
+        _BARE_CONTENT_TEMPLATE,
+        _binding_observation,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "contract", "user_template", "observe"),
+    _MICRO_CONTEXT_GIVENS,
+    ids=[customer[0] for customer in _MICRO_CONTEXT_GIVENS],
+)
+def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
+    tmp_path, agent_name: str, contract: str, user_template: str, observe
+) -> None:
+    """A sample's `given` is the prompt its draw received — the contract as well as the
+    document (#2078).
+
+    Each observer used to be handed a haystack the runner built from its own arguments, so
+    the words the draw was TOLD to answer in were missing from it and read as inventions.
+    The extraction case is the one that measured it; the other four carry the same defect on
+    their own contracts' vocabulary, so all five are held here rather than one standing in
+    for the rest."""
+    db = _make_db(tmp_path, "micro-context-given")
+    _log_prompt(
+        db,
+        messages=MicroContext._messages(
+            EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK, contract, user_template
+        ),
+        agent_name=agent_name,
+    )
+
+    observation = observe(db)
+
+    assert observation.complete
+    assert contract in observation.given
+    assert EXTRACT_TAGGED_PAGE in observation.given
+
+
+def test_an_extraction_answer_carrying_the_contract_tags_invents_nothing(tmp_path) -> None:
+    """The claim that failed, end to end (#2078): the probe over an extraction sample's own
+    observation.
+
+    The drawn value marks each story's missing field with `NOT_PRESENT`, whose tail glues
+    across the line break into a name phrase the page does not carry — 2 of 15 correct draws
+    failed `nothing invented` on it.  With the contract in the haystack the claim holds, and
+    the paired guard asks for a real invention back: one byline swapped for a name nowhere in
+    the prompt is still reported, so this is not "a capitalised word is never an invention"."""
+    db = _make_db(tmp_path, "extraction-given")
+    _log_prompt(
+        db,
+        messages=MicroContext._messages(EXTRACT_TAGGED_PAGE, EXTRACT_TAGGED_ASK),
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+    )
+
+    sourced = _extraction_observation(db)
+    assert NOT_PRESENT_TAG in sourced.given
+    assert unsourced_specifics(sourced.output_text, sourced.given) == []
+
+    invented = _observe_extraction(
+        db,
+        MicroContextResult(
+            outcome=MicroExtractOutcome.EXTRACTED,
+            value=EXTRACT_TAGGED_ANSWER.replace(EXTRACT_TAGGED_BYLINE, EXTRACT_UNSOURCED_NAME, 1),
+        ),
+        name="draw-2 (the ask)",
+        phrasing="the ask",
+        arm=0,
+    )
+    assert unsourced_specifics(invented.output_text, invented.given) == ["Casimir", "Oyelaran"]
 
 
 def test_score_binding_grades_each_declared_parameter_and_the_terms() -> None:
