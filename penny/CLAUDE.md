@@ -720,17 +720,30 @@ cohort can never exit 0. Cases drive the
 real chat/collector loops and score persisted DB state + sends at a `pass_rate`
 threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`
-(#1919 — the chat REPLY: answered out of the user's own collections with no browse,
-answered from a page, answered one link deep, and the four honesty branches that say
-what actually happened — every call reflected, a duplicate save reported as already
-there, an empty store left empty, a failed read admitted. Every watched value is
-INVENTED — a posted admission, a maker's name, a shortlist of games that don't exist —
-so a reply carrying one can only have read it; report-only throughout. It replaces
-`test_chat_response.py` + `test_narration_survival.py`, whose `likes`-collection seed
-migration 0097 had left crashing at seed time and whose chitchat case the canonical
-`transition-idle-to-idle` already covers on a stronger world — the one thing that case
-carried alone, the emoji voice check, rides every case here as an advisory rather than
-retiring with it),
+(#1919, ported to the cohort structure by #2008 — the chat REPLY on an idle turn, as SIX
+cohorts of fifteen: three behaviours, one case per ENTRY CONDITION. Browse-and-answer is two
+(the fact posted on the page she reaches, and the fact one link deep, which needs its own
+sentence because the index's answer-bearing line is what carries the next address); answering
+out of the user's own collections is one; honest failure is three (every source unreachable,
+a store with nothing in it, a store that already holds what she is asked to record). Three of
+the six are A/B PAIRS on one ask — the same five wordings against a readable page and against
+a world where every source errors, and against a seeded store and the production cold start —
+so the negative direction is expressed as the WORLD rather than as a clause. Every watched
+value is INVENTED and is ONE whitespace-free token (a posted admission, a maker's surname, a
+climb figure the user typed into their own collection), because `fold_typography` folds a
+declared set of space characters rather than the whole category and a multi-word token can be
+failed by a space nobody has met. Report-only throughout. What did NOT port: every
+`tool_was_called` / `tool_not_called` / pages-served check (a ROUTE, and three of them keyed
+to a tool NAME — measured as `TOOL_SEQUENCE` instead), five reply vocabularies somebody
+guessed in advance, the price-SHAPED reply regex (subsumed by
+`assert_every_value_in_the_reply_is_sourced`, which fails any number the reply supplies in a
+world where nothing was read), the emoji voice advisory (prose, and section B has no shape for
+a binary voice flag), and the `chat-reply-reflects-every-call` case whole — a message carrying
+a save, a lookup and a recall is three behaviours in one turn. The duplicate case's entry
+condition is now SEEDED rather than driven as a first turn, because a case is one entry
+condition and ONE model run. It replaced `test_chat_response.py` + `test_narration_survival.py`,
+whose `likes`-collection seed migration 0097 had left crashing at seed time and whose chitchat
+case the canonical `transition-idle-to-idle` already covers on a stronger world),
 `test_standing_collection.py` (operating a job that is already running — turn its
 notifications off, turn them back on, retire it — plus reading back what its routine does;
 the two notify cases are the ensemble the per-collection switch needs to be reachable at
