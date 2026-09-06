@@ -1,41 +1,49 @@
-"""The muting contracts — an explicit request to mute or unmute, dispatched onto the
-tool that does it, driven against the REAL model and scored on the PERSISTED
-``MuteState`` row + the tool the model actually called.
+"""Muting: one case (#2008, tranche 3).
 
-This is the retirement contract for the ``/mute`` + ``/unmute`` commands (epic
-#1445, issue #1447): the slash commands are gone, so the intent must dispatch from
-natural language.  THREE cases, and each asserts STRUCTURALLY — which tool fired
-(from the persisted promptlog) and what the mute row says afterward — never on the
-reply's wording, which is stochastic.
+Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-  mute     — an unmuted world, "please mute notifications" → notifications_mute
-             fired, the MuteState row is there, nothing else touched.
-  unmute   — a muted world, "okay you can unmute notifications" →
-             notifications_unmute fired, the row is gone, nothing else touched.
-  no-fire  — a casual mention ("it's been a quiet day") must call neither tool and
-             leave the mute state exactly where it found it.
+**The behaviour is *Penny mutes or unmutes when asked in the tool's own terms, and nothing
+else moves*, and one case carries it.**  Muting and unmuting are the same sentence in two
+entry conditions — an unmuted world and a muted one — so the design's rule is that one of
+them survives, and the MUTE direction strictly dominates: its end state cannot be answered
+by the seed.  *The user is muted afterwards* is false of a fresh database by construction, so
+a sample that did nothing fails it; *the user is no longer muted* is TRUE of an unseeded world,
+so the unmute case's headline rests entirely on its own seed holding — the failure its source
+file guards against in as many words.  A claim that cannot pass without the turn acting beats
+one that can, so ``explicit-unmute-request-unmutes`` is QUARANTINED here rather than deleted,
+and comes back the day the lift direction is the thing being measured.
 
-**Each case also verifies the state was IN FRONT OF THE MODEL.**  Whether
-notifications are muted is rendered ambiently by ``SelfStateHeader`` (#1919), and
-that is half of what a muting turn stands on: before it, nothing in the context
-said which way the switch was set, so the tool descriptions were the only carrier
-of a state the model could not verify.  The check reads the sample's own persisted
-chat SYSTEM PROMPT for the header's line — asserted per sample rather than assumed
-from the deterministic pins, because a header that stopped rendering would leave
-every case here scoring a turn that never saw the state.
+**The no-fire direction is STATED, never a case.**  ``notifications-no-fire`` — a casual
+mention of a quiet day, which must move nothing — is #2008's ruling as the negative direction
+of this one behaviour rather than a behaviour of its own.  It cannot be an ARM either: an arm
+is one wording of an ask whose expected end state is the case's, and this one expects the
+opposite.  So the sentence states both directions and the case carries the negative as a claim
+its own world CAN answer — nothing but the notification switch moved — which is the same harm
+(acting where nobody asked) read off the world where an ask does exist.
 
-**Dispatch stands on the tool descriptions ALONE.**  Migration 0076 seeded a
-"Mute or unmute notifications" skill whose numbered steps taught this routing;
-0092 deleted every seeded rule entry and 0097 the collection itself, and 0108
-leaves nothing pre-seeded at all — so these cases seed no skill, the registry the
-turn runs against is empty, and what they measure is whether
-``NotificationsMuteTool`` / ``NotificationsUnmuteTool`` (live on the chat surface,
-``ChatAgent.get_tools``) are reachable from an explicit ask with no recipe pointing
-at them.  The seeded world is already the production cold start.
+Recorded as a doc gap, the same one tranche 1 recorded: #2004 says a negative direction with
+its own expected outcome is its own case, and #2008 rules the opposite for this pair.  What is
+genuinely lost here is narrower than it looks and is worth naming: the harm the no-fire case
+catches is *the switch moving when nobody asked*, and in a world where somebody DID ask, the
+switch moving is the correct answer — so that reading has no home in this case at all.
 
-Report-only (``min_pass_rate=None``), the canonical convention — stated per case
-rather than inherited from ``chat_eval``'s 0.75 default, so the threshold is a
-thing the module says rather than a thing it happens to get.
+**Dispatch stands on the tool descriptions ALONE.**  Migration 0076 seeded a "Mute or unmute
+notifications" skill whose numbered steps taught this routing; 0092 deleted every seeded rule
+entry and 0097 the collection itself, and 0108 leaves nothing pre-seeded at all — so this case
+seeds no skill, the registry the turn runs against is empty, and what it measures is whether
+``NotificationsMuteTool`` is reachable from an explicit ask with no recipe pointing at it.  The
+seeded world is already the production cold start, which is what makes *nothing was created* a
+TOTAL reading of what the turn touched rather than a sample of it.
+
+**The state has to be IN FRONT OF THE MODEL, and that is a PREMISE rather than a claim.**
+Whether notifications are muted is rendered ambiently by ``SelfStateHeader`` (#1919), and that
+is half of what a muting turn stands on: before it, the tool descriptions were the only carrier
+of a state the model could not verify.  The probe renders the header itself, before the turn,
+so a header that stopped carrying the line fails naming the line rather than leaving fifteen
+samples scoring a turn that never saw the state.
+
+REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
+accept once the numbers have been read.
 """
 
 from __future__ import annotations
@@ -43,273 +51,152 @@ from __future__ import annotations
 import pytest
 
 from penny.agents.self_state import SelfStateHeader
-from penny.database import Database
+from penny.conversation_machine import ConversationState
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import (
+    EVAL_MODELS,
     ChatEval,
-    Check,
-    Preparer,
-    _iter_prompt_messages,
-    collection_names,
-    tool_call_sequence,
-    tool_not_called,
-    tool_was_called,
+)
+from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
+    SampleObservation,
+    SpecCategory,
 )
 from penny.tests.eval.utils.dispatch_world import assert_dispatch_world
+from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
-# Family tag (explicit, meaningful grouping) for every case in this module — shared with
-# the sibling dispatch stories (email, generate_image, choose) so the report's families
-# rollup reads chat-surface tool dispatch as one group.
+# Family tag (explicit, meaningful grouping) — shared with the sibling dispatch stories
+# (email, generate_image, choose) so the report's families rollup reads chat-surface tool
+# dispatch as one group.
 _FAMILY = "nl-dispatch"
 
 _MUTE = "notifications_mute"
 _UNMUTE = "notifications_unmute"
 
+_CASE_ID = "explicit-mute-request-mutes"
 
-def _probe_dispatch_world(case_id: str) -> Preparer:
-    """Assert the world each case is answered in, once the runner has built it.
+# The world every arm is answered against.  Every field is EMPTY, and each is a report rather
+# than an omission: no page can answer an ask about Penny's own notification switch, so a page
+# set would only give a sample that went browsing something to talk about; the turn is asked to
+# write nothing, so a ``keeps`` set would state a contract the ask never made and an
+# ``excludes`` set would assert one reading of an ask that rules nothing out; and the ask is an
+# INSTRUCTION, so "done — you won't hear from me until you say otherwise" is a complete answer
+# and requiring a token would fail a correct run for something nobody requested.
+_WORLD = World(name=_CASE_ID, pages=(), keeps=(), excludes=())
 
-    Both claims are the shared dispatch-world probe: the chat surface really carries the
-    two tools (they are registered unconditionally, but a scored dispatch miss against a
-    model that was never offered the tool is the failure this forecloses), and the
-    registry holds no COLLECTION — which is what makes the no-fire case's "built nothing"
-    row a total reading rather than a sample of one."""
+_ASK = "please mute notifications"
+_ALSO_PHRASED = (
+    "mute notifications for me",
+    "can you mute notifications?",
+    "go ahead and mute notifications",
+    "i'd like notifications muted",
+)
 
-    def prepare(penny: Penny) -> None:
-        assert_dispatch_world(penny, case_id, [_MUTE, _UNMUTE])
+_BEHAVIOUR = (
+    "In the chat agent, when the user asks in the notification tool's own terms for "
+    "notifications to be muted, Penny mutes them and moves nothing else — no collection "
+    "created, changed or written to — while a passing remark that merely mentions how quiet "
+    "things have been moves nothing at all."
+)
 
-    return prepare
 
+def assert_mute_world(penny: Penny) -> None:
+    """The world this case is answered in, asserted out loud before the turn runs.
 
-def _seed_muted(db: Database) -> None:
-    """Start the user already muted — the precondition for an unmute case."""
-    db.users.set_muted(TEST_SENDER)
-    assert db.users.is_muted(TEST_SENDER), (
-        "the unmute cases start from a muted user — an unseeded one would make "
-        "'MuteState absent' true before the turn ran"
+    Three things, each the precondition of a claim below: the chat surface really carries the
+    two notification tools (a scored dispatch miss against a model that was never offered the
+    tool is the failure this forecloses); the registry holds no COLLECTION, which is what makes
+    *nothing was created* a total reading; and notifications are ON — both in the store, so the
+    claim that they are muted afterwards cannot be answered by the seed, and in the header the
+    model reads, so the turn is answered by something that says which way the switch is set."""
+    assert_dispatch_world(penny, _CASE_ID, [_MUTE, _UNMUTE])
+    assert not penny.db.users.is_muted(TEST_SENDER), (
+        f"{_CASE_ID}: the user must start unmuted, or the claim that this turn muted them is "
+        "answered by the seed"
+    )
+    rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+    assert SelfStateHeader.NOTIFICATIONS_ON in rendered, (
+        f"{_CASE_ID}: the header must state {SelfStateHeader.NOTIFICATIONS_ON!r} — the turn "
+        f"would otherwise be answered with nothing saying which way the switch is set:\n"
+        f"{rendered}"
     )
 
 
-# ── Scorers (read the persisted MuteState row + the promptlog tool calls) ─────
+# ── The claims, as pure functions over one sample ─────────────────────────────
+#
+# None of them reads a tool NAME.  Whether ``notifications_mute`` fired is a ROUTE — many
+# routes reach one end state, and a plugin could add a third verb over the same row tomorrow —
+# so it is measured in the tool sequence and never asserted; what the case claims is the switch
+# the turn left behind.
 
 
-def _landed_state_check(db: Database) -> Check:
-    """Advisory: which state the conversation machine put this turn in.
+def _notifications_are_muted(sample: SampleObservation, _world: World) -> Answer:
+    """Proactive notifications are muted for the user afterwards.
 
-    Since #1706 the machine classifies every message BEFORE the chat agent runs, so a
-    naive mute request is also a turn that could land in ``learn`` and mint a routine at
-    run end.  None of these cases score that — what they measure is the dispatch — but a
-    surprising landing is the first thing worth seeing when one of them moves, so it is
-    rendered rather than left to be rediscovered."""
-    latest = db.machine.latest_transition()
-    landed = latest.to_state if latest is not None else None
-    return Check(
-        "the machine recorded where the turn landed",
-        latest is not None,
-        scored=False,
-        kind="proc",
-        rationale=f"landed in {landed!r}" if latest is not None else "the machine never moved",
+    A violating sample is nameable: one that says it has muted them and leaves the row absent —
+    the failure the whole retirement of ``/mute`` rests on, since the reply is the only place
+    the user learns anything happened."""
+    return sample.muted, "nothing was muted, whatever the reply said"
+
+
+def _nothing_else_moved(sample: SampleObservation, _world: World) -> Answer:
+    """No mechanism was created, retired or edited, and nothing was written anywhere.
+
+    The negative direction, read off the world where an ask DOES exist: the harm a passing
+    remark risks is acting on something nobody asked for, and this is that harm asked about
+    everything except the one switch the ask named.  A violating sample is nameable: one that
+    stands a container up to keep a note about being muted, one that files "muted at 14:02"
+    into a list, and one that reaches into a mechanism on the way through."""
+    touched = sorted(
+        one.name for one in sample.mechanisms if one.born_this_run or one.changed_this_run
     )
+    wrote = sorted(f"{entry.collection}:{entry.key}" for entry in sample.entries)
+    return not touched and not wrote, f"created or changed {touched}, wrote {wrote}"
 
 
-def _state_in_context_check(db: Database, line: str) -> Check:
-    """The mute state was IN the chat system prompt this sample ran on.
-
-    Half of what a muting turn stands on, and the half that used to be missing: with
-    nothing rendering the switch, the tool descriptions were its only carrier and they
-    could only describe a state the model had no way to check.  Read off the sample's
-    own persisted prompt rather than trusted from the deterministic render pins, because
-    a header that stopped rendering would leave every case here scoring a turn that never
-    saw the state — green for the wrong reason.
-
-    The expected text comes from ``SelfStateHeader``'s own constant, so the check cannot
-    drift from what the header writes."""
-    present = any(
-        message.get("role") == "system" and line in (message.get("content") or "")
-        for message in _iter_prompt_messages(db)
-    )
-    return Check(
-        "the mute state was in the prompt the model answered on",
-        present,
-        kind="guard",
-        rationale=None
-        if present
-        else (
-            f"no system prompt carried {line!r} — the turn was answered with nothing "
-            "saying which way notifications were set"
-        ),
-    )
-
-
-def _nothing_else_touched_check(db: Database, sibling: str, before: set[str]) -> Check:
-    """The turn did the one thing it was asked and no more: the opposite tool stayed
-    quiet and no collection was built off the request."""
-    quiet = tool_not_called(db, sibling)
-    built = sorted(collection_names(db) - before)
-    return Check(
-        "nothing else was touched",
-        quiet and not built,
-        anchor=f"{sibling}(",
-        kind="spine",
-        rationale=None
-        if quiet and not built
-        else (
-            f"{'called ' + sibling + ' as well; ' if not quiet else ''}"
-            f"{'created ' + str(built) if built else ''}".strip("; ")
-        ),
-    )
-
-
-def _score_mute(db: Database, before: set[str], reply: str) -> list[Check]:
-    """An explicit "mute notifications" request, answered on a prompt that says they are
-    ON, routed onto the tool that mutes them."""
-    fired = tool_was_called(db, _MUTE)
-    muted = db.users.is_muted(TEST_SENDER)
-    return [
-        _state_in_context_check(db, SelfStateHeader.NOTIFICATIONS_ON),
-        Check(
-            "routed the request onto notifications_mute",
-            fired,
-            anchor=f"{_MUTE}(",
-            kind="spine",
-            rationale=None
-            if fired
-            else (
-                "the mute tool never fired — with nothing in the registry pointing at it, "
-                "the dispatch stands on the tool description alone.  Calls made: "
-                f"{tool_call_sequence(db) or 'none'}"
-            ),
-        ),
-        Check(
-            "the user is muted afterwards (the MuteState row is there)",
-            muted,
-            kind="state",
-            rationale=None
-            if muted
-            else "no MuteState row — whatever the reply said, nothing was actually muted",
-        ),
-        _nothing_else_touched_check(db, _UNMUTE, before),
-        _landed_state_check(db),
-    ]
-
-
-def _score_unmute(db: Database, before: set[str], reply: str) -> list[Check]:
-    """An explicit "unmute notifications" request, answered on a prompt that says they
-    are MUTED, routed onto the tool that lifts it."""
-    fired = tool_was_called(db, _UNMUTE)
-    unmuted = not db.users.is_muted(TEST_SENDER)
-    return [
-        _state_in_context_check(db, SelfStateHeader.NOTIFICATIONS_MUTED),
-        Check(
-            "routed the request onto notifications_unmute",
-            fired,
-            anchor=f"{_UNMUTE}(",
-            kind="spine",
-            rationale=None
-            if fired
-            else (
-                "the unmute tool never fired — with nothing in the registry pointing at "
-                "it, the dispatch stands on the tool description alone.  Calls made: "
-                f"{tool_call_sequence(db) or 'none'}"
-            ),
-        ),
-        Check(
-            "the user is no longer muted (the MuteState row is gone)",
-            unmuted,
-            kind="state",
-            rationale=None
-            if unmuted
-            else "the MuteState row is still there — whatever the reply said, nothing changed",
-        ),
-        _nothing_else_touched_check(db, _MUTE, before),
-        _landed_state_check(db),
-    ]
-
-
-def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
-    """A casual mention of a quiet day is NOT a mute request: neither tool may fire and the
-    mute state must be exactly where the turn found it.
-
-    The registry row is advisory rather than scored — the machine fronts every turn now, so
-    an over-eager landing in ``learn`` can mint a routine off an ordinary remark, which is
-    worth SEEING here without widening what this module claims to measure."""
-    mute_quiet = tool_not_called(db, _MUTE)
-    unmute_quiet = tool_not_called(db, _UNMUTE)
-    unchanged = not db.users.is_muted(TEST_SENDER)
-    built = sorted(collection_names(db) - before)
-    return [
-        Check(
-            "did not mute on a passing mention",
-            mute_quiet,
-            anchor=f"{_MUTE}(",
-            kind="spine",
-            rationale=None
-            if mute_quiet
-            else "muted the user off a remark about the day being quiet",
-        ),
-        Check(
-            "did not unmute on a passing mention",
-            unmute_quiet,
-            anchor=f"{_UNMUTE}(",
-            kind="spine",
-            rationale=None if unmute_quiet else "unmuted off a remark about the day being quiet",
-        ),
-        Check(
-            "the mute state is exactly where the turn found it",
-            unchanged,
-            kind="state",
-            rationale=None if unchanged else "the turn left a MuteState row behind",
-        ),
-        Check(
-            "built nothing off an ordinary remark",
-            not built,
-            scored=False,
-            kind="proc",
-            rationale=f"created {built}" if built else "nothing was created",
-        ),
-        _landed_state_check(db),
-    ]
-
-
-# ── Cases ─────────────────────────────────────────────────────────────────────
-
-
-async def test_an_explicit_mute_request_mutes(chat_eval: ChatEval) -> None:
-    """An unmuted world and a request in the tool's own terms: the turn fires the mute
-    tool, the MuteState row is there afterwards, and nothing else moved."""
-    await chat_eval(
-        case_id="explicit-mute-request-mutes",
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_explicit_mute_request_mutes_and_moves_nothing_else(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """An unmuted world, a header that says so, and a request in the tool's own terms."""
+    cohort: Cohort = await chat_eval(
+        case_id=_CASE_ID,
+        behaviour=_BEHAVIOUR,
+        model=model,
+        prepare=assert_mute_world,
+        world=_WORLD,
+        ask=_ASK,
+        also_phrased=_ALSO_PHRASED,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
-        prepare=_probe_dispatch_world("explicit-mute-request-mutes"),
-        message="please mute notifications",
-        score=_score_mute,
-        min_pass_rate=None,
+        timeout=240.0,
+    )
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the switch the ask named, then its negative direction.
+    cohort.claim(
+        "state: notifications are muted for the user", _notifications_are_muted, SpecCategory.STORE
+    )
+    cohort.claim(
+        "state: nothing but the notification switch moved", _nothing_else_moved, SpecCategory.STORE
     )
 
+    # PROVENANCE — the half the source case had none of.  A turn that filed a fact into a
+    # collection nobody's world mentions fails the first; a reply that states a value tracing to
+    # nothing the model was given fails the second.
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-async def test_an_explicit_unmute_request_unmutes(chat_eval: ChatEval) -> None:
-    """A muted world and a request in the tool's own terms: the turn fires the unmute
-    tool, the MuteState row is gone afterwards, and nothing else moved."""
-    await chat_eval(
-        case_id="explicit-unmute-request-unmutes",
-        family=_FAMILY,
-        prepare=_probe_dispatch_world("explicit-unmute-request-unmutes"),
-        message="okay you can unmute notifications",
-        seed=_seed_muted,
-        score=_score_unmute,
-        min_pass_rate=None,
-    )
-
-
-async def test_no_fire_casual_mention(chat_eval: ChatEval) -> None:
-    await chat_eval(
-        case_id="notifications-no-fire",
-        family=_FAMILY,
-        prepare=_probe_dispatch_world("notifications-no-fire"),
-        message="it's been a quiet day today, not much going on honestly",
-        score=_score_no_fire,
-        min_pass_rate=None,
-    )
+    # TOOL_SEQUENCE is where the dispatch itself is read: a correct sample calls the mute tool
+    # and a sample that answered in prose without touching it reads differently, which is the
+    # divergence this case is named for.  Measured, never asserted — the call is a route.
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

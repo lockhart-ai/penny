@@ -93,10 +93,12 @@ from penny.tests.eval.chat.idle.test_choose_dispatch import (
     _OPTIONS as _CHOOSE_OPTIONS,
 )
 from penny.tests.eval.chat.idle.test_choose_dispatch import (
-    CHOOSE_CASES,
-    _gave_an_opinion_check,
-    _reply_reports,
+    REFERENCE_REPLY as CHOOSE_REFERENCE_REPLY,
+)
+from penny.tests.eval.chat.idle.test_choose_dispatch import (
     assert_choose_world,
+    picks_on_the_record,
+    reply_reports,
 )
 from penny.tests.eval.chat.idle.test_command_tools import (
     IMAGE_CASES,
@@ -110,9 +112,16 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
     assert_mailbox_world,
     install_mailbox,
 )
+from penny.tests.eval.chat.idle.test_notifications import assert_mute_world
 from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
     BAIL_CASES,
     assert_the_round_built_what_it_claims,
+)
+from penny.tests.eval.chat.idle.test_speakable_log_reads import LOG_READ_CASES
+from penny.tests.eval.chat.idle.test_standing_collection import (
+    OPERATION_CASES,
+    assert_the_operation_world,
+    seed_standing_jobs,
 )
 from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
     CORRECTION_CASES,
@@ -372,6 +381,7 @@ from penny.tests.schema_template import migrated_db, schema_only_db
 # against the same definition the ported claim answers with, never a second copy of it.
 from penny.text_validity import half_formed_send_reason
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
+from penny.tools.choose import CHOSE_MESSAGE
 from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import (
     _BARE_CONTENT_TEMPLATE,
@@ -1155,6 +1165,61 @@ def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> 
         assert_the_round_built_what_it_claims(db, case)
 
 
+def _assert_one_ask_in_five_wordings(case_id: str, ask: str, also_phrased: tuple[str, ...]) -> None:
+    """A cohort is FIVE wordings of ONE ask, all distinct.
+
+    The arithmetic every ported case rests on: fifteen samples are one number only because the
+    arms differ in wording alone, and two identical wordings quietly make a five-arm cohort a
+    four-arm one whose report still says five."""
+    assert len(also_phrased) == 4, (
+        f"{case_id}: a cohort is FIVE wordings of one ask, got {1 + len(also_phrased)}"
+    )
+    assert len({ask, *also_phrased}) == 5, f"{case_id}: two of its wordings are the same string"
+
+
+def test_every_standing_operation_is_answered_against_the_job_it_claims(tmp_path) -> None:
+    """Each standing-collection case's world — a job stood up through the production
+    instantiation seam — seeds cleanly and reads back as the job the case describes.
+
+    Driven here against a real migrated database for the reason its sibling beats' pins are:
+    the seeders are CODE, and their loud probes otherwise run only under ``make eval``, where a
+    raise costs an hour of GPU before it is seen.  Its own database per case, because that is
+    what the sample gets.
+
+    What the premise holds is the precondition of the claims, and every way of getting it wrong
+    is silent on a run: a row that stopped rendering the lever the ask is about would make every
+    sample measure the model's guesswork rather than its reading; a job that arrived already
+    quiet, already retired or already at the asked-for hour would score the headline green for
+    free; and a world that started muted would answer "she did not silence everything" before
+    the turn ran."""
+    for index, case in enumerate(OPERATION_CASES):
+        _assert_one_ask_in_five_wordings(case.case_id, case.ask, case.also_phrased)
+        db = migrated_db(str(tmp_path / f"standing-{index}.db"))
+        seed_standing_jobs(case.job)(db)
+        assert_the_operation_world(db, case)
+
+
+def test_every_log_read_case_is_answered_against_a_world_only_a_read_can_answer(tmp_path) -> None:
+    """Each log-read case's world seeds cleanly and holds its answer in exactly ONE place.
+
+    This is #2001's world-integrity test, re-landed as the premise the ported cases share.  Both
+    halves of the collector-runs world were silently wrong once and went unnoticed through three
+    full suites: a cycle whose trace said it wrote while its entry never landed left the
+    collection empty and dropped the ``· wrote '<key>'`` clause the self-state header renders in
+    production, so the case measured a world THINNER than the real one — against a "read the
+    collections instead" alternative that was a dead end rather than a wrong answer — and the
+    failing cycle's REASON is the whole ask, so were the header to carry it the read would be
+    redundant and a model that reasons would rightly skip it.
+
+    The vector half of the message case's premise is deliberately not driven here: the seeder
+    writes the messages and the RUNNER embeds them, so it is asserted per sample instead."""
+    for index, case in enumerate(LOG_READ_CASES):
+        _assert_one_ask_in_five_wordings(case.case_id, case.ask, case.also_phrased)
+        db = migrated_db(str(tmp_path / f"log-read-{index}.db"))
+        case.seed(db)
+        case.premise(db)
+
+
 def test_every_teach_is_answered_against_a_world_that_knows_neither_page_nor_fact(
     tmp_path,
 ) -> None:
@@ -1334,8 +1399,8 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
             assert_mailbox_world(penny, email_case)
         for image_case in IMAGE_CASES:
             assert_image_world(penny, image_case)
-        for choose_case in CHOOSE_CASES:
-            assert_choose_world(penny, choose_case)
+        assert_choose_world(penny)
+        assert_mute_world(penny)
 
 
 def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> None:
@@ -1360,23 +1425,21 @@ def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> 
     assert not _claims_no_picture_check("here's the picture you asked for!").ok
 
 
-def test_the_choose_scorer_reads_each_case_s_own_reference_reply() -> None:
-    """The choose story's two reply checks both pass the answers the cases call correct,
-    and both refuse the answers they exist to catch.
+def test_the_choose_claim_reads_the_pick_the_record_carries() -> None:
+    """The said-equals-did claim reads the pick off the tool's OWN result frame, agrees with
+    the reply that reports it, and refuses the two options it does not.
 
-    Said-equals-did is a comparison against the pick the RUN produced, so the pin replays
-    the fire case's reference as though the tool had returned the option it names: it must
-    agree with that option and DISAGREE with the two it does not, since a comparison that
-    passed every option would let a free-chosen reply score green behind a real call.  The
-    opinion floor is the same pair on the other direction."""
-    fires = next(case for case in CHOOSE_CASES if case.fires)
-    named = [option for option in _CHOOSE_OPTIONS if _reply_reports(option, fires.reference)]
-    assert len(named) == 1, f"the reference must report exactly one pick, it reports {named}"
+    Both halves, because only the pair keeps the claim meaning anything: a reader that could
+    not find a pick in the frame the tool actually writes would fail every correct sample,
+    while a comparison that passed every option would let a free-chosen reply score green
+    behind a real call.  Driven off the SHIPPED message template rather than a retyped copy,
+    so a change to what the tool says fails here rather than at the top of a paid run."""
+    record = CHOSE_MESSAGE.format(pick="maple", n=len(_CHOOSE_OPTIONS))
+    picks = picks_on_the_record(f"an earlier turn\n{record}\nand what came after it")
+    assert picks == ["maple"], f"the pick must be read off the tool's own frame, got {picks}"
 
-    judgment = next(case for case in CHOOSE_CASES if not case.fires)
-    opinion = _gave_an_opinion_check(judgment.reference)
-    assert opinion.ok, f"{judgment.case_id}: {opinion.rationale}"
-    assert not _gave_an_opinion_check("honestly, whichever you like the sound of.").ok
+    named = [option for option in _CHOOSE_OPTIONS if reply_reports(option, CHOOSE_REFERENCE_REPLY)]
+    assert named == ["maple"], f"the reference must report exactly one pick, it reports {named}"
 
 
 def test_every_bail_reference_reply_is_a_message_penny_would_send() -> None:

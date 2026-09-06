@@ -2634,11 +2634,20 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
     ``changed_this_run`` is read off the mutation ledger — a live turn's mutation cites a live
     run and every event a seeded world wrote cites a seeded one — so it is a read rather than a
     diff against a remembered before-state, and it is keyed to no field: a rebind, a schedule
-    change, a description edit and an archive all answer it the same way."""
+    change, a description edit and an archive all answer it the same way.
+
+    The four CONFIGURATION fields are the row's own, copied verbatim.  They exist for the claim
+    the ledger read cannot make — that on the one row this turn was told to change, only the
+    field the ask named moved — since ``changed_this_run`` is true of that row by construction
+    and says nothing about which field moved."""
     return [
         eval_cohort.MechanismRecord(
             name=row.name,
             archived=row.archived,
+            notifies=row.notify,
+            schedule=row.schedule,
+            routine=row.skill_name,
+            program=row.extraction_prompt,
             born_this_run=row.name not in before,
             changed_this_run=any(
                 not is_seeded_run(event.run_id)
@@ -2741,6 +2750,7 @@ def _observe_sample(
         entries=_stored_entries(db),
         held=_held_entries(db),
         mechanisms=_mechanism_records(db, before),
+        muted=db.users.is_muted(TEST_SENDER),
         delivered=outgoing_replies(db),
         tool_sequence=_chat_tool_sequence(db),
         reply=reply,

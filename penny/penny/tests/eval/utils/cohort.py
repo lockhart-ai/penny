@@ -101,12 +101,25 @@ class MechanismRecord(BaseModel):
     silently exempts whichever field nobody enumerated — a description edit, a rebind, an
     archive.  The two are separate facts about one row and neither derives the other: a
     creation is also a change, and a change to a row that already existed is not a creation.
+
+    ``notifies`` / ``schedule`` / ``routine`` / ``program`` are the row's own CONFIGURATION as
+    the sample left it — what a standing job IS, beside what it holds.  They are read because
+    an operation on a running job is two claims, not one: the field the ask named moved, AND
+    nothing else on the row did.  ``changed_this_run`` cannot answer the second half about the
+    very row the turn was told to change (it is true by construction there), so the fields the
+    claim compares have to be readable.  ``program`` is the rendered instruction the collector
+    runs — carried whole rather than as a present/absent flag, because a program silently
+    rewritten while a flag was flipped is a different job wearing the same row.
     """
 
     name: str
     archived: bool
     born_this_run: bool
     changed_this_run: bool
+    notifies: bool
+    schedule: str | None
+    routine: str | None
+    program: str | None
 
 
 class Arm(BaseModel):
@@ -223,6 +236,17 @@ class SampleObservation(BaseModel):
     # rather than derived from it, because they answer different questions about the same
     # rows: ``held`` is what a container contains, this is what the container IS.
     mechanisms: list[MechanismRecord] = Field(default_factory=list)
+    # Whether PROACTIVE NOTIFICATIONS are muted for the user when the sample ends — the
+    # global switch, one level up from a mechanism's own ``notifies``.  It is a row in the
+    # store like every other end state (present = muted), and it is the only place two
+    # neighbouring behaviours can be told apart: silencing ONE running job and silencing
+    # EVERYTHING look identical on a mechanism's row, and the second is what a measured
+    # sample reached for when it read the first as unavailable.
+    #
+    # Read by the CHAT observer, which is the only shape whose turns can move it.  A shape
+    # that writes its own observation leaves the default, which is what a database nobody
+    # muted holds — and no non-chat case claims it.
+    muted: bool = False
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
