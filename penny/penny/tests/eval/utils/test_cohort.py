@@ -450,35 +450,108 @@ def test_an_unframed_round_fails_the_only_claim_that_reads_the_framing():
 
 # ── Typography is folded ONCE, on both sides of every comparison ─────────────
 _GIVEN = "browse: https://faux-market.example/aurora-deck-2 says Price: $499"
+_CITED = "https://faux-market.example/aurora-deck-2"
 
 
 def test_a_url_written_with_a_non_breaking_hyphen_is_the_url_it_was_given():
     """MEASURED: a sample cited the page it read, drawing its dashes as U+2011, and the probe
     called the URL an invention — while the store claim beside it folded that same dash and
-    agreed the value was sourced. One folding now serves both."""
+    agreed the value was sourced. One folding now serves both.
+
+    The drawn dash is asserted to stay INSIDE the extracted address, not merely to leave the
+    claim happy: a grammar that stopped at the first U+2011 would extract `https://faux`, which
+    is a substring of the world's URL and would pass this by prefix — the claim holding for a
+    reason that is not the one it states."""
     drawn = "https://faux\u2011market.example/aurora\u2011deck\u20112"
+    assert specifics(f"saved the price from {drawn}") == [drawn]
     assert unsourced_specifics(f"saved the price from {drawn}", _GIVEN) == []
 
 
-def test_a_url_ending_a_sentence_does_not_swallow_the_full_stop():
-    """MEASURED on both of one model's misses: `\\S+` ran the sentence mark into the URL, so
-    `…/aurora-deck-2.` matched no world and a correctly cited page read as invented."""
-    assert unsourced_specifics("i read https://faux-market.example/aurora-deck-2.", _GIVEN) == []
-    assert unsourced_specifics("see https://faux-market.example/aurora-deck-2, then", _GIVEN) == []
+def test_a_url_runs_only_as_far_as_the_address_does():
+    """Whatever the prose puts beside a URL is the prose's, not the address's.
+
+    MEASURED on both of one model's misses: `\\S+` ran the sentence mark into the URL, so
+    `…/aurora-deck-2.` matched no world and a correctly cited page read as invented.  MEASURED
+    again 3× across two cases (#2049) for the delimiter a reply WRAPS it in — and the backtick
+    form was then folded into an apostrophe on its way to the comparison, so the token weighed
+    against the world was a string the model never wrote.
+
+    Only the first five forms below were ever observed — three wrappers and the two sentence
+    marks that were measured before them.  The rest are here because the repair is the URI
+    grammar, a closed set, rather than a list of the marks someone ran into: a test carrying
+    only what was seen would let the next wrapper regress in silence, and "the ones we saw" is
+    exactly what this probe has already been repaired into once."""
+    for wrapped in (
+        f"`{_CITED}`",
+        f"<{_CITED}>",
+        f"({_CITED})",
+        f"{_CITED}.",
+        f"{_CITED},",
+        f"[{_CITED}]",
+        f'"{_CITED}"',
+        f"'{_CITED}'",
+        f"“{_CITED}”",
+        f"«{_CITED}»",
+        f"｢{_CITED}｣",
+        f"{{{_CITED}}}",
+        f"| {_CITED} |",
+        f"**{_CITED}**",
+        f"**{_CITED}.**",
+        f"[the page]({_CITED})",
+        f"(source: {_CITED})",
+        _CITED,
+    ):
+        said = f"i read {wrapped} today"
+        assert specifics(said) == [_CITED], wrapped
+        assert unsourced_specifics(said, _GIVEN) == [], wrapped
+
+
+def test_the_reply_provenance_claim_reads_a_wrapped_url_as_sourced():
+    """The claim on the reference port and on every case ported since — reached through the
+    shipped assertion rather than the probe alone, because that is the number the epic's
+    recorded provenance rates are made of."""
+    sample = SampleObservation(
+        name="s0",
+        phrasing="the ask",
+        arm=0,
+        landed="idle",
+        reply=f"i read `{_CITED}` today",
+        given=_GIVEN,
+    )
+    world = World(name="base", pages=(), keeps=(), excludes=())
+    cohort = Cohort("case", _MODEL, [sample], _one_arm(world))
+    cohort.assert_every_value_in_the_reply_is_sourced()
+    assert (cohort.claims[0].passed, cohort.claims[0].total) == (1, 1)
 
 
 def test_a_url_that_legitimately_ends_in_punctuation_keeps_it():
-    """The paired over-correction guard: only `.,;:!?` are refused as the LAST character, so a
-    bracket, a slash or a dash that is genuinely part of the address survives."""
+    """The paired over-correction guard: refusing a trailing mark outright would eat the tail
+    of the address itself.  A bracket is decided by PAIRING — `…/Foo_(bar)` closes one it
+    opened, `(…/page)` closes one the sentence opened — and a slash or a dash, which pair with
+    nothing, is part of the address wherever it sits."""
     assert specifics("https://en.wikipedia.org/wiki/Foo_(bar)") == [
         "https://en.wikipedia.org/wiki/Foo_(bar)"
     ]
+    assert specifics("(https://en.wikipedia.org/wiki/Foo_(bar))") == [
+        "https://en.wikipedia.org/wiki/Foo_(bar)"
+    ]
     assert specifics("https://example.com/news/") == ["https://example.com/news/"]
+    assert specifics("https://example.com/a-b-") == ["https://example.com/a-b-"]
+    assert specifics("https://example.com/list[1]") == ["https://example.com/list[1]"]
+    assert specifics("https://example.com/o'brien'") == ["https://example.com/o'brien'"]
 
 
 def test_an_invented_url_is_still_caught():
-    """The probe must not be loosened into uselessness by either fix."""
+    """The probe must not be loosened into uselessness by any of the fixes — and it reports the
+    address the model wrote, not the address plus what it was wrapped in, so the token in the
+    rationale is a form a reader can recognise."""
     assert unsourced_specifics("see https://other.example/nope.", _GIVEN) == [
+        "https://other.example/nope"
+    ]
+    assert unsourced_specifics("see `https://other.example/nope`", _GIVEN) == [
+        "https://other.example/nope"
+    ]
+    assert unsourced_specifics("see (https://other.example/nope)", _GIVEN) == [
         "https://other.example/nope"
     ]
 
