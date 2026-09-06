@@ -2683,7 +2683,8 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
     )
 
     # A customer that never drew has no prompt to state, so the placeholder sample deposits none
-    # rather than an empty entry the case-close path would then have to tell apart from a real one.
+    # rather than an empty entry the case-close path would then have to tell apart from a real one
+    # — and it still renders its honest placeholder, pinned whole beside the deposit it withholds.
     quiet = _make_db(tmp_path, _QUIET_CUSTOMER_CASE)
     _two_customer_ledger(quiet)
     _write_classifier_report(
@@ -2695,7 +2696,14 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
         agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
     )
     assert _QUIET_CUSTOMER_CASE not in _case_prompts
-    assert report.NO_TURNS_PLACEHOLDER in _sample_report_text(tmp_path, _QUIET_CUSTOMER_CASE)
+    assert _sample_report_text(tmp_path, _QUIET_CUSTOMER_CASE) == (
+        "<details><summary>sample 1 — ✅ pass · 0s · 3 calls</summary>\n"
+        "\n"
+        f"{report.NO_TURNS_PLACEHOLDER}\n"
+        "\n"
+        "</details>\n"
+        "\n"
+    )
 
 
 # ── The labeller runner's learn → render step (#1828) ─────────────────────────
