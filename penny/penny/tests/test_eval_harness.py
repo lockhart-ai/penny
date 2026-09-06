@@ -220,6 +220,7 @@ from penny.tests.eval.conftest import (
     _stored_entries,
     _turn_kind,
     _without_examples,
+    _write_classifier_report,
     _write_sample_report,
     collection_entries,
     continue_nudge_fired,
@@ -2567,6 +2568,134 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "</details>\n"
         "\n"
     )
+
+
+# ── A microcontext sample states its system prompt too (#2062) ───────────────────────────────
+
+_MICRO_PROMPT_CASE = "micro-prompts"
+_QUIET_CUSTOMER_CASE = "micro-prompts-quiet"
+_CLASSIFIER_PROMPT = "Pick one state."
+_NAMER_PROMPT = "Name the routine."
+
+
+def _two_customer_ledger(db: Database) -> None:
+    """One microcontext sample's promptlog as a two-customer run leaves it (#1803): the state
+    classifier's draw, the run-end labeller's, and — between them — a main-agent row that is
+    neither, so what the deposit is SCOPED to is assertable rather than assumed."""
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": _CLASSIFIER_PROMPT},
+            {"role": "user", "content": "current: idle · newest message: watch the listing"},
+        ],
+        response=_content_response("STATE: learn"),
+        thinking="a task, not a question",
+    )
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": "watch the listing"},
+        ],
+        response=_content_response("on it"),
+    )
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": _NAMER_PROMPT},
+            {"role": "user", "content": "steps: browse"},
+        ],
+        response=_content_response("NAME: watch-the-listing"),
+    )
+
+
+def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monkeypatch) -> None:
+    # #2062: `_write_classifier_report` builds its transcript by hand, and never deposited the
+    # sample's prompts the way `_build_transcript` does for a chat run — so `_case_prompts` was
+    # empty for EVERY microcontext case (extractor, classifier, framer, binder, labeller) and
+    # the case document's "state each distinct prompt once" section rendered nothing at all.
+    # The prompt is what a reader needs to ask what the state failed to present, so its absence
+    # sent every microcontext diagnosis to the sample database for the one thing the report
+    # exists to carry.  It now deposits from the SAME rows its transcript renders, so every
+    # prompt the document states belongs to an actor the reader can watch acting.
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    _case_prompts.pop(_MICRO_PROMPT_CASE, None)
+    customers = (
+        PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        PennyConstants.SKILL_NAMING_AGENT_NAME,
+    )
+    result = SampleResult.graded([Check("named the routine", ok=True, kind="state")])
+    for index in range(2):
+        db = _make_db(tmp_path, f"micro-prompts-{index}")
+        _two_customer_ledger(db)
+        _write_classifier_report(
+            db,
+            _MICRO_PROMPT_CASE,
+            index,
+            result=result,
+            phrasing="watch the listing",
+            agent_names=customers,
+        )
+
+    assert [
+        (sample, prompt.context, prompt.text)
+        for sample, prompt in _case_prompts[_MICRO_PROMPT_CASE]
+    ] == [
+        ("sample 1", "state-classifier", _CLASSIFIER_PROMPT),
+        ("sample 1", "skill-namer", _NAMER_PROMPT),
+        ("sample 2", "state-classifier", _CLASSIFIER_PROMPT),
+        ("sample 2", "skill-namer", _NAMER_PROMPT),
+    ], "both customers under test deposit, in ledger order; the main agent neither was does not"
+
+    # The case document's own section, composed exactly as the two case-close paths compose it
+    # (`_record_case_report` for a ported case, `_record_unported_prompts` for one that never
+    # built a cohort) — both pop this accumulator and render it through the same two calls.
+    assert report.render_prompt_variants(
+        report.prompt_variants(_case_prompts.pop(_MICRO_PROMPT_CASE), total=2)
+    ) == (
+        "<details><summary>System prompts — 2 contexts · 2 shared by every sample</summary>\n"
+        "\n"
+        "<details><summary>skill-namer — 17 chars · every sample</summary>\n"
+        "\n"
+        "```\n"
+        "Name the routine.\n"
+        "```\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "<details><summary>state-classifier — 15 chars · every sample</summary>\n"
+        "\n"
+        "```\n"
+        "Pick one state.\n"
+        "```\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "</details>"
+    )
+
+    block = _sample_report_text(tmp_path, _MICRO_PROMPT_CASE)
+    assert _CLASSIFIER_PROMPT not in block and _NAMER_PROMPT not in block, (
+        "a sample carries only its own sequence — the prompt is stated once, on the case (#1997)"
+    )
+
+    # A customer that never drew has no prompt to state, so the placeholder sample deposits none
+    # rather than an empty entry the case-close path would then have to tell apart from a real one.
+    quiet = _make_db(tmp_path, _QUIET_CUSTOMER_CASE)
+    _two_customer_ledger(quiet)
+    _write_classifier_report(
+        quiet,
+        _QUIET_CUSTOMER_CASE,
+        0,
+        result=result,
+        phrasing="watch the listing",
+        agent_names=(PennyConstants.BROWSE_EXTRACT_AGENT_NAME,),
+    )
+    assert _QUIET_CUSTOMER_CASE not in _case_prompts
+    assert report.NO_TURNS_PLACEHOLDER in _sample_report_text(tmp_path, _QUIET_CUSTOMER_CASE)
 
 
 # ── The labeller runner's learn → render step (#1828) ─────────────────────────
