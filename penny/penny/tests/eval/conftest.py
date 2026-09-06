@@ -2664,6 +2664,33 @@ def routine_open_parameters(steps: Sequence[SkillStep]) -> list[str]:
     )
 
 
+def routine_demonstrated_values(steps: Sequence[SkillStep]) -> list[str]:
+    """Every string at the leaves of a routine's demonstrated call arguments.
+
+    What the routine will actually fetch and look for each run — one altitude BELOW
+    ``render_skill_shape``, which carries no argument values at all.  Read by the same two
+    readers ``routine_names_a_destination`` is: the observation, off the registry rows a sample
+    left, and a fixture probe, off the drafts a world seeds.
+
+    A FLAT list rather than one keyed by tool or by argument position, for the reason nothing
+    else in this path names a tool: a skill is an arbitrary tool sequence, so which call carries
+    the page and which carries what to look for is not something a reader can know, and a
+    reading keyed to either stops firing the moment a round is demonstrated with a tool nobody
+    enumerated."""
+    return [text for step in steps for text in _leaf_strings(step.arguments)]
+
+
+def _leaf_strings(node: object) -> list[str]:
+    """Every string at the leaves of one call's arguments, however deeply they nest."""
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        return [text for value in node.values() for text in _leaf_strings(value)]
+    if isinstance(node, list):
+        return [text for value in node for text in _leaf_strings(value)]
+    return []
+
+
 def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
     """Every routine the round minted, as the registry holds it."""
     return [
@@ -2672,6 +2699,7 @@ def _routine_records(db: Database) -> list[eval_cohort.RoutineRecord]:
             shape=render_skill_shape(skill),
             open_parameters=routine_open_parameters(steps_from_json(skill.steps)),
             names_a_destination=routine_names_a_destination(steps_from_json(skill.steps)),
+            demonstrated_values=routine_demonstrated_values(steps_from_json(skill.steps)),
         )
         for skill in db.skills.list_all()
     ]

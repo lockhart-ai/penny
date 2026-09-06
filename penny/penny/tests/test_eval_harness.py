@@ -80,7 +80,12 @@ from penny.tests.eval.chat.apply.test_known_routine_new_space import (
     assert_every_wording_names_the_space,
     assert_new_space_is_unknown,
 )
-from penny.tests.eval.chat.apply.test_missing_value_arrives import _names_the_cadence_check
+from penny.tests.eval.chat.apply.test_missing_value_arrives import (
+    assert_every_wording_carries_the_value,
+)
+from penny.tests.eval.chat.apply.test_offer_accepted import (
+    assert_every_wording_gives_the_terms,
+)
 from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
     BRACKET_KEY_CASES,
     _seed_board_games,
@@ -117,10 +122,9 @@ from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
     assert_the_round_built_what_it_claims,
 )
 from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
+    _CORRECT_TO_SOUTH_LOOP,
     CORRECTION_CASES,
-    SHAPE_DELTA_WITHOUT_RE_RUNNING,
-    SHAPE_RE_RAN_AND_APPLIED,
-    _correction_shape,
+    assert_every_wording_names_the_corrected_line,
     assert_the_correction_is_unsaid,
     assert_the_teach_round_is_parked,
     seed_corrected_round,
@@ -333,7 +337,12 @@ from penny.tests.eval.utils.artifacts import (
 )
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
-from penny.tests.eval.utils.cohort import SampleObservation, unsourced_specifics
+from penny.tests.eval.utils.cohort import (
+    SampleObservation,
+    cadence_seconds,
+    rule_parts,
+    unsourced_specifics,
+)
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
@@ -350,6 +359,7 @@ from penny.tests.eval.utils.fixtures import (
 from penny.tests.eval.utils.transition_world import (
     _JOURNEYS,
     _SHORT_LISTING,
+    _SUPPLIED_TIMETABLE,
     _TEACH_HARBOUR_FLAG,
     APPLY_CASES,
     IDLE_LEARN_CASES,
@@ -367,9 +377,7 @@ from penny.tests.eval.utils.transition_world import (
     assert_round_is_framed,
     assert_seeded_ledger,
     assert_values_are_new,
-    cadence_seconds,
     parked_binding,
-    rule_parts,
     seed_composed_world,
     seed_learned_round,
     seed_parked_in_request,
@@ -792,6 +800,24 @@ def test_every_entry_edge_holds_its_facts_constant_across_its_wordings() -> None
         assert_every_wording_names_the_space(case)
 
 
+def test_every_finishing_edge_holds_its_facts_constant_across_its_wordings() -> None:
+    """Each ported finishing edge's five wordings agree on the facts its claims are made about
+    (#2005, tranche 3).
+
+    A cohort pools five wordings of ONE ask, and a case may only name a value because the facts
+    are constant across its arms — so a wording that supplies what another withholds is not a
+    paraphrase, it is a second scenario, and its samples would fail every claim for a reason
+    that has nothing to do with the behaviour.  Each edge's premise is the one its own claims
+    rest on: the acceptance must give the terms the job's claims read, the supply must carry the
+    value the derived container's name is built from, and the correction must name the line it
+    redirects to WITHOUT carrying that line's own answer.
+
+    Pure and deterministic, so it runs here rather than at seed time in a paid run."""
+    assert_every_wording_gives_the_terms()
+    assert_every_wording_carries_the_value(_SUPPLIED_TIMETABLE)
+    assert_every_wording_names_the_corrected_line(_CORRECT_TO_SOUTH_LOOP)
+
+
 def test_every_short_ask_falls_one_value_short_of_the_routine_it_names() -> None:
     """Each idle → request case accounts for its routine's declared parameters EXACTLY —
     every one either settled by the ask or named missing — and names at least one missing.
@@ -826,10 +852,10 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
     what the ask fell short of, and the two turns together answer the routine's declared
     parameters — read off the fixture DRAFT, since the registry the probe reads is seeded by
     the runner and not here.  Both ways of getting that wrong are silent on a run, and each
-    turns the whole beat into a measurement of something else.  The reply check rides along
-    for the reason its sibling beat's does: a cadence vocabulary that cannot match the
-    answer the case itself calls correct would score every sample a miss, and that is a
-    scorer bug this suite has shipped once already.
+    turns the whole beat into a measurement of something else.  The reply check that used to ride
+    along retired with the ported case (#2005, tranche 3): a cadence named back in the reply
+    is a PHRASING match, so nothing scores one now and there is no vocabulary left to hold
+    against the reference.
 
     The recorded BINDING is read back through the production model here too, against the
     values the case declares: the seeder writes what a request turn's binder left (#1894),
@@ -855,8 +881,6 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
             "round is waiting on, so a reader that came back empty would report every sample "
             "as having parked on nothing to ask about"
         )
-        named = _names_the_cadence_check(case.reference, case)
-        assert named.ok, f"{case.case_id}: {named.rationale} — reference: {case.reference!r}"
         declared = sorted(parameter.name for parameter in case.parked.skill.parameters)
         assert declared == sorted(case.bound), (
             f"{case.case_id}: the routine declares {declared}, the two turns settle "
@@ -1294,48 +1318,6 @@ def test_the_correction_scorer_passes_each_case_s_own_reference_reply() -> None:
     for case in CORRECTION_CASES:
         for check in _round_reported_checks(case.corrected, case.reference, [case.reference]):
             assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
-
-
-def test_every_way_a_correction_can_be_answered_has_its_own_name() -> None:
-    """The shape naming PARTITIONS the observations it is composed from — every combination
-    of "did it re-run", "did it store the corrected value" and "did it store the one it
-    replaced" lands on a phrase of its own, and the claim breaks a tie in exactly one of
-    them.
-
-    Pinned because that phrase is what the report hands the code owner to answer the
-    question this beat exists for, and a naming that collapsed two observations onto one
-    wording would read as an answer while hiding which failure occurred — which the first
-    draft did, reporting a run that stored the corrected value AND re-stored the one it
-    replaced as a clean delta-apply.
-
-    Stated as PROPERTIES rather than as a second copy of the table, which would pass by
-    agreeing with whatever the function does: the eight observations must produce eight
-    distinct phrases, and the claim may only decide the one where nothing was fetched and
-    nothing was written — the only place a reply is the sole evidence there is.  Two anchors
-    say which combination holds the pass and which holds the shape this whole beat watches
-    for, read from the module's own constants so a rewording moves both sites at once."""
-    named = {
-        (refetched, stored, kept, said): _correction_shape(
-            refetched=refetched, stored=stored, kept=kept, said=said
-        )
-        for refetched in (True, False)
-        for stored in (True, False)
-        for kept in (True, False)
-        for said in (True, False)
-    }
-    observations = [key[:3] for key in named if key[3]]
-    decided_by_the_claim = {
-        triple for triple in observations if named[(*triple, True)] != named[(*triple, False)]
-    }
-    assert decided_by_the_claim == {(False, False, False)}, (
-        f"the claim must decide one observation, it decided {sorted(decided_by_the_claim)}"
-    )
-    phrases = {named[(*triple, False)] for triple in observations}
-    assert len(phrases) == len(observations), (
-        f"every observation must have its own name, got {named}"
-    )
-    assert named[True, True, False, False] == SHAPE_RE_RAN_AND_APPLIED
-    assert named[False, True, False, False] == SHAPE_DELTA_WITHOUT_RE_RUNNING
 
 
 def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> None:

@@ -442,19 +442,21 @@ def _routines_of(case: _BailCase) -> list[str]:
 #   * touched           — a sample that reconfigures a running job, re-renders it, archives it
 #                         or edits its description records a mutation citing this turn's run.
 #                         Read off the LEDGER rather than off a field-by-field diff, so the
-#                         change nobody enumerated is caught too.
+#                         change nobody enumerated is caught too.  It graduated with the
+#                         created one, tranche 3's accepted offer and its correction both
+#                         asking the same sentence of a round with a container of its own.
 #   * archived (learn)  — a sample that leaves the round's container live, or one that revives
 #                         it after the landing archived it, fails it.
 #
 # What no claim here reads is a TOOL NAME: a skill is an arbitrary tool sequence, so the
 # question is what the store holds afterwards and never which verb got it there.
 #
-# The CREATED one graduated into ``assertions.py`` when tranche 2's entry edges became its
-# second customer (#2005): a claim graduates at the second CUSTOMER, and its label went with it
-# so one claim's history stays one row.  The other three stay LOCAL, each for its own reason —
-# two are parametrised by the case's own world, and the registry one is live on an IDLE landing
-# and entailed by the landing everywhere else (see its docstring), so it has no second customer
-# and would be a claim nobody could legally make.
+# Two of them are now in ``assertions.py`` — the CREATED one when tranche 2's entry edges
+# became its second customer, and the TOUCHED one when tranche 3's did (#2005).  A claim
+# graduates at the second CUSTOMER, and each label went with it so one claim's history stays
+# one row.  The other two stay LOCAL: the archived one is this edge's alone, and the registry
+# one is live on an IDLE landing and entailed by the landing everywhere else (see its
+# docstring), so it has no second customer and would be a claim nobody could legally make.
 
 
 def _registry_unchanged(case: _BailCase) -> Callable[[SampleObservation, World], Answer]:
@@ -479,28 +481,6 @@ def _registry_unchanged(case: _BailCase) -> Callable[[SampleObservation, World],
     return answer
 
 
-def _touched_nothing_but_its_own_container(
-    case: _BailCase,
-) -> Callable[[SampleObservation, World], Answer]:
-    """The only mechanism this turn may change is the one the round built.
-
-    For three of the four that is NO mechanism at all, because those rounds built nothing;
-    for the mid-teach bail it is the round's own container, which the landing retires.  One
-    sentence rather than two labels, because it is one rule read against each world's own
-    answer to "what did this round build".
-
-    The mechanisms already running are none of a bail's business, and that is what this reads:
-    a live turn's mutation cites a live run and every event the seeded world wrote cites a
-    seeded one, so "this turn changed nothing here" is a read rather than a diff."""
-    allowed = {case.world.container} if case.world.container is not None else set()
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        touched = sorted({one.name for one in sample.mechanisms if one.changed_this_run} - allowed)
-        return not touched, f"changed {touched}"
-
-    return answer
-
-
 def _the_round_container_was_archived(
     container: str,
 ) -> Callable[[SampleObservation, World], Answer]:
@@ -520,14 +500,14 @@ def _the_round_container_was_archived(
     return answer
 
 
-# The two labels this family's own claims are made under.  Named once because a label is a
+# The one label this family's own claim is still made under.  Named once because a label is a
 # diff-join key: four copies of one sentence are four chances for a typo to split one claim's
 # history into two.  Deliberately case-NEUTRAL — one wording reads the same whether the
-# abandoned round was a teach loop, a negotiation, or no round at all.  The third moved into
-# ``assertions.py`` at its second customer (#2005 tranche 2), which is why the cases below say
-# ``assert_no_mechanism_was_created`` where they used to name one here.
+# abandoned round was a teach loop, a negotiation, or no round at all.  Two others moved into
+# ``assertions.py`` at their second customers (#2005 tranches 2 and 3), which is why the cases
+# below say ``assert_no_mechanism_was_created`` and
+# ``assert_only_the_rounds_own_mechanism_changed`` where they used to name labels here.
 _REGISTRY_UNCHANGED = "state: the registry holds exactly the routines it already had"
-_TOUCHED_ONLY_ITS_OWN = "state: the only mechanism this turn changed is the one the round built"
 
 
 # What every case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE``
@@ -578,11 +558,7 @@ async def test_elicit_to_idle_drops_the_task_and_answers_the_new_one(
     # STORE
     cohort.assert_no_mechanism_was_created()
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_ELICIT), SpecCategory.STORE)
-    cohort.claim(
-        _TOUCHED_ONLY_ITS_OWN,
-        _touched_nothing_but_its_own_container(_BAIL_FROM_ELICIT),
-        SpecCategory.STORE,
-    )
+    cohort.assert_only_the_rounds_own_mechanism_changed(_BAIL_FROM_ELICIT.world.container)
 
     # PROVENANCE — the half the source case had none of.  This bail changes the subject to a
     # question with an answer on a page, so a reply that answered it out of the model's own
@@ -609,11 +585,7 @@ async def test_learn_to_idle_archives_the_abandoned_round(chat_eval: ChatEval, m
     # STORE
     cohort.assert_no_mechanism_was_created()
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_LEARN), SpecCategory.STORE)
-    cohort.claim(
-        _TOUCHED_ONLY_ITS_OWN,
-        _touched_nothing_but_its_own_container(_BAIL_FROM_LEARN),
-        SpecCategory.STORE,
-    )
+    cohort.assert_only_the_rounds_own_mechanism_changed(_BAIL_FROM_LEARN.world.container)
     cohort.claim(
         "state: the round's container was archived",
         _the_round_container_was_archived(_AURORA_APPLY.framing.container),
@@ -651,11 +623,7 @@ async def test_request_to_idle_drops_a_binding_that_was_half_settled(
     cohort.claim(
         _REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_HELD_BINDING), SpecCategory.STORE
     )
-    cohort.claim(
-        _TOUCHED_ONLY_ITS_OWN,
-        _touched_nothing_but_its_own_container(_BAIL_FROM_HELD_BINDING),
-        SpecCategory.STORE,
-    )
+    cohort.assert_only_the_rounds_own_mechanism_changed(_BAIL_FROM_HELD_BINDING.world.container)
 
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
@@ -682,11 +650,7 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(
     # STORE
     cohort.assert_no_mechanism_was_created()
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BANTER_ON_IDLE), SpecCategory.STORE)
-    cohort.claim(
-        _TOUCHED_ONLY_ITS_OWN,
-        _touched_nothing_but_its_own_container(_BANTER_ON_IDLE),
-        SpecCategory.STORE,
-    )
+    cohort.assert_only_the_rounds_own_mechanism_changed(_BANTER_ON_IDLE.world.container)
 
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()

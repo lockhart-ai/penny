@@ -16,10 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from itertools import islice
 from typing import NamedTuple
-
-from dateutil.rrule import rrulestr
 
 from penny.constants import PennyConstants, TransitionCause
 from penny.conversation_machine import (
@@ -69,22 +66,16 @@ from penny.skill_extraction import (
 )
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
-    MUTATION_HISTORY_WINDOW,
     Check,
     ParameterFamily,
     Seeder,
     asked_for_page_structure,
     classify_by_family,
     collection_entries,
-    count_tool_calls,
     is_seeded_run,
-    last_tool_args,
-    new_collections,
     outgoing_replies,
-    routing_clean,
     seeded_run_id,
     tool_call_name,
-    tool_not_called,
     tool_was_called,
 )
 
@@ -94,6 +85,10 @@ from penny.tests.eval.conftest import (
 # contracts (the same rule ``ENACTING_TOOLS`` is read under).
 from penny.tests.eval.framer.test_skill_framing import _PLACE_TOKENS
 
+# How a stored schedule READS — its cadence and which parts it states.  From the module that
+# owns ``MechanismRecord.schedule`` rather than defined here, because the claims three ported
+# stand-up cases make on that field reach it through ``assertions.py``, which this module
+# cannot supply without a cycle.
 # The listing this script is built on, and the enacting-tool set the elicitation
 # contract IS — the calls that would mean she acted before being taught.  Both are read
 # from the suite's shared fixtures rather than restated here: the passing-mention guard
@@ -144,13 +139,9 @@ from penny.tools.base import Tool
 # seeding side: a seeded apply turn stores the rule the tool would have stored and echoes
 # back what the tool would have echoed.
 from penny.tools.collection_instantiation import (
-    _DTSTART_TAG,
-    _LINE_ESCAPE,
-    _RRULE_TAG,
     has_schedule,
     parse_schedule,
     render_reinstantiation_echo,
-    render_schedule_clause,
 )
 from penny.tools.micro_context import (
     FramedParameter,
@@ -1685,8 +1676,7 @@ class _ApplyCase(NamedTuple):
     hour to run at); ``expects_expiry`` is whether they gave an
     end condition at all (inventing one is a failure); ``bound`` is every value the
     round supplied that the routine has to be pointed at, matched case-folded so a
-    normalized copy of a scheme-less address still counts; ``cadence_tokens`` is what a
-    reply naming the cadence back would have to contain.
+    normalized copy of a scheme-less address still counts.
 
     ``confirmation`` is THIS case's reference reply — how she says the job is running — and
     it is DATA rather than prose for the same reason ``_LearnCase.closing_report`` is: the
@@ -1715,7 +1705,6 @@ class _ApplyCase(NamedTuple):
     anchored: bool
     expects_expiry: bool
     bound: tuple[str, ...]
-    cadence_tokens: tuple[str, ...]
 
 
 # Case 1 — the script's own turn, continuing ``transition-elicit-to-learn``: the offer
@@ -1737,7 +1726,6 @@ _AURORA_APPLY = _ApplyCase(
     anchored=False,
     expects_expiry=True,
     bound=(LISTING_URL,),
-    cadence_tokens=("hour", "60 min"),
 )
 
 # Case 2 — the ferry, whose terms are a time of DAY rather than a period, so the cron
@@ -1759,7 +1747,6 @@ _FERRY_APPLY = _ApplyCase(
     anchored=True,
     expects_expiry=False,
     bound=(_FERRY_TIMETABLE_URL, "late sailing"),
-    cadence_tokens=("morning",),
 )
 
 # Case 3 — the store-each-day digest set running.  Nothing in the acceptance ends it,
@@ -1777,7 +1764,6 @@ _BAKERY_APPLY = _ApplyCase(
     anchored=False,
     expects_expiry=False,
     bound=(_BAKERY_SPECIALS_URL,),
-    cadence_tokens=("day", "daily"),
 )
 
 # Case 4 — the weekly count.  The page arrives in the user's own scheme-less form, which
@@ -1797,7 +1783,6 @@ _COLONY_APPLY = _ApplyCase(
     anchored=False,
     expects_expiry=False,
     bound=("harborseals.example/colony-count",),
-    cadence_tokens=("week",),
 )
 
 # Case 5 — the tight cadence with an end condition the model has to WORK OUT: "the end
@@ -1822,7 +1807,6 @@ _ARRIVALS_APPLY = _ApplyCase(
     anchored=False,
     expects_expiry=True,
     bound=(_NEW_ARRIVALS_URL,),
-    cadence_tokens=("two hours", "2 hours", "120 min"),
 )
 
 
@@ -2161,139 +2145,6 @@ def _landed_in(landed: StateTransition | None, state: ConversationState) -> Stat
     return landed
 
 
-def _landed_apply_move(landed: StateTransition | None) -> StateTransition | None:
-    """The turn's last move, but only when it put the machine in APPLY."""
-    return _landed_in(landed, ConversationState.APPLY)
-
-
-def _skill_binding_check(landed: StateTransition | None, *, intended: str, label: str) -> Check:
-    """The decision bound the INTENDED routine — the landed transition's ``skill_name`` is
-    the one that covers what was asked for, not another routine in the registry.
-
-    ``landed`` is the move the caller has ALREADY qualified by where it landed, so a
-    misroute is n/a here: that is the landed-state advisory's finding, and scoring the
-    binding on top of it would recount one classifier miss twice.
-
-    ``label`` is the caller's because a label is a diff-join key: two beats ask this same
-    question of two different situations and each names it in its own terms, while the
-    reading itself must be one definition."""
-    applied = landed
-    if applied is None:
-        return Check.na(label, kind="state")
-    bound = applied.skill_name
-    return Check(
-        label,
-        bound == intended,
-        rationale=None if bound == intended else f"bound {bound!r}, the ask needs {intended!r}",
-        kind="state",
-    )
-
-
-# The rule part that ANCHORS a recurrence to a time of day.  Read as a PART of the stored
-# rule rather than off the parsed object, because dateutil defaults an unstated hour to the
-# start's — so the parsed rule cannot tell a stated hour from an inherited one, and only the
-# text says whether the model chose one.
-_HOUR_PART = "BYHOUR"
-
-# Where a rule with no ``DTSTART`` of its own is anchored for measurement.  Any fixed instant
-# does: the cadence is the GAP between occurrences, and a gap does not move with the anchor.
-_MEASURING_ANCHOR = datetime(2000, 1, 1, tzinfo=UTC)
-
-# How many occurrences a gap needs.  Two — a rule that can only fire once (COUNT=1) has no
-# cadence to read, which is a real shape and reads as no cadence rather than as an error.
-_OCCURRENCES_FOR_A_GAP = 2
-
-
-def _rule_body(schedule: str) -> str:
-    """The stored schedule's RULE line — the ``DTSTART`` line dropped and any ``RRULE:``
-    tag stripped.  A schedule renders on one line with its newline written ``\\n`` (the form
-    the parser accepts back), so both spellings are unfolded first."""
-    lines = [line for line in schedule.replace(_LINE_ESCAPE, "\n").splitlines() if line.strip()]
-    body = next((line for line in reversed(lines) if not line.upper().startswith(_DTSTART_TAG)), "")
-    return body[len(_RRULE_TAG) :] if body.upper().startswith(_RRULE_TAG) else body
-
-
-def rule_parts(schedule: str) -> set[str]:
-    """Which PARTS the stored rule states, by name — the declared shape, read structurally
-    off the rule rather than by comparing its spelling to one we had in mind."""
-    return {part.partition("=")[0].strip().upper() for part in _rule_body(schedule).split(";")}
-
-
-def cadence_seconds(schedule: str) -> int | None:
-    """How often the stored rule FIRES, in seconds — the gap between its first two
-    occurrences, measured by walking the rule itself.
-
-    Reading the gap rather than the FREQ/INTERVAL pair is what makes the check answer the
-    question the acceptance asked ("every day") instead of a question about spelling: a
-    daily cadence written ``FREQ=DAILY``, ``FREQ=HOURLY;INTERVAL=24``, or
-    ``FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU`` all fire a day apart, and all three are the
-    same answer.  ``None`` when the rule fires at most once."""
-    text = schedule.replace(_LINE_ESCAPE, "\n")
-    anchored = _DTSTART_TAG in text.upper()
-    rule = rrulestr(text) if anchored else rrulestr(text, dtstart=_MEASURING_ANCHOR)
-    occurrences = list(islice(iter(rule), _OCCURRENCES_FOR_A_GAP))
-    if len(occurrences) < _OCCURRENCES_FOR_A_GAP:
-        return None
-    return int((occurrences[1] - occurrences[0]).total_seconds())
-
-
-def _schedule_check(row: MemoryRow | None, *, fires_every: int, anchored: bool) -> Check:
-    """The schedule runs on the cadence they asked for — and, where the terms name a time of
-    DAY rather than a period, states an hour to run at.
-
-    WHICH hour is not scored (the code owner's leeway ruling, carried over from the cron
-    form it replaced): picking a sensible morning is expected of the model, but the hour it
-    picks is a judgment about wording, and the drawn rule rides advisory for review.
-
-    ``fires_every`` and ``anchored`` are the terms, passed as values rather than read off a
-    case, so both beats that ask this question share one reading of a stored rule."""
-    label = "state: the schedule runs on the cadence they asked for"
-    if row is None or row.schedule is None:
-        return Check(label, False, rationale="no schedule was set", kind="state")
-    drawn = cadence_seconds(row.schedule)
-    states_an_hour = _HOUR_PART in rule_parts(row.schedule)
-    matches = drawn == fires_every and (states_an_hour or not anchored)
-    return Check(
-        label,
-        matches,
-        rationale=None if matches else f"fires every {drawn}s, states {rule_parts(row.schedule)}",
-        kind="state",
-    )
-
-
-def _stated_end_condition(db: Database, row: MemoryRow) -> str | None:
-    """The end condition this turn STATED, in the form it stated it, or ``None``.
-
-    Read off the drawn ``expires_at`` argument first and the stored row second (#1944).
-    The row alone stopped being the whole answer when the tool boundary began normalising
-    a far-future sentinel to no expiry: a model that invented ``2099-12-31`` now leaves a
-    row indistinguishable from one that asked for nothing, which is right for the JOB and
-    wrong for a check about what the model asked for.  The row still answers the other
-    door — an end condition lifted out of the schedule's own ``UNTIL=``, which is stated
-    in no ``expires_at`` argument at all."""
-    drawn = (last_tool_args(db, _SET_TOOL) or {}).get("expires_at")
-    if drawn is not None:
-        return str(drawn)
-    return row.expires_at.isoformat() if row.expires_at is not None else None
-
-
-def _expiry_check(db: Database, row: MemoryRow | None, *, expected: bool) -> Check:
-    """The end condition matches the terms — stated when they gave one, ABSENT when they
-    did not.  An invented end condition is a failure in its own right: a job that stops
-    on a date nobody asked for goes quiet without anyone noticing."""
-    label = "state: the end condition matches the terms (set only when they gave one)"
-    if row is None:
-        return Check(label, False, rationale="no job carries the routine", kind="state")
-    stated = _stated_end_condition(db, row)
-    given = stated is not None
-    return Check(
-        label,
-        given == expected,
-        rationale=None if given == expected else f"stated end condition {stated!r}",
-        kind="state",
-    )
-
-
 def _overlaps(wanted: str, bound: list[str]) -> bool:
     """Whether any bound value and the expected phrase OVERLAP — either one containing the
     other, case-folded, with neither empty.
@@ -2317,90 +2168,6 @@ def _overlaps(wanted: str, bound: list[str]) -> bool:
         value.strip() and (value.lower() in expected or expected in value.lower())
         for value in bound
     )
-
-
-def _bound_parameters_check(row: MemoryRow | None, *, wanted: tuple[str, ...], label: str) -> Check:
-    """EVERY parameter the routine asks for was bound — the page it is pointed at, and
-    where the routine asks for two things, what to look for on it as well.
-
-    Matched case-folded and by overlap in either direction (``_overlaps``): an address may
-    arrive without a scheme, and a phrase may be bound by the word that locates it.
-    ``label`` is the caller's — WHERE a value came from is what each beat is measuring, and
-    that is what its label says.  The bound values themselves ride VERBATIM in the drawn
-    advisory, so what a looser match accepted is always visible."""
-    bound = list(_bound_parameters(row).values()) if row is not None else []
-    missing = [value for value in wanted if not _overlaps(value, bound)]
-    return Check(
-        label,
-        not missing,
-        rationale=None if not missing else f"bound {bound}, missing {missing}",
-        kind="state",
-    )
-
-
-def _drawn_advisories(db: Database, row: MemoryRow | None) -> list[Check]:
-    """What she committed to, verbatim — the trigger clause in its copyable input form,
-    the end condition where one was set, and the parameters she bound.
-
-    Whether a drawn cron expression or a computed month's-end datetime is WELL judged is
-    read at joint review against the reference replies; a scorer that faked that reading
-    would be answering for the draw."""
-    if row is None:
-        return []
-    drawn: list[Check] = []
-    if has_schedule(row):
-        drawn.append(
-            Check(
-                f"drew schedule {render_schedule_clause(row)!r}", True, scored=False, kind="state"
-            )
-        )
-    stated = _stated_end_condition(db, row)
-    if stated is not None:
-        drawn.append(
-            Check(
-                f"drew end condition {stated}",
-                True,
-                scored=False,
-                kind="state",
-            )
-        )
-    bound = _bound_parameters(row)
-    if bound:
-        drawn.append(Check(f"bound parameters {bound}", True, scored=False, kind="state"))
-    return drawn
-
-
-def _job_setup_advisories(
-    db: Database, row: MemoryRow | None, landed: StateTransition | None
-) -> list[Check]:
-    """What a turn that stood a job up committed to, and how the state came to be — the
-    drawn schedule, end condition and bindings verbatim, one set call, the landed state,
-    and clean routing.  Shared by both apply beats: an advisory says the same thing about
-    an accepted offer and about a cold ask, and two copies would drift."""
-    sets = count_tool_calls(db, _SET_TOOL)
-    return [
-        *_drawn_advisories(db, row),
-        Check(
-            "calls: one collection_set call",
-            sets == 1,
-            rationale=f"{sets} calls" if sets != 1 else None,
-            scored=False,
-            kind="proc",
-        ),
-        Check(
-            "calls: the machine landed in apply",
-            _landed_apply_move(landed) is not None,
-            rationale=f"landed in {landed.to_state if landed else None}",
-            scored=False,
-            kind="spine",
-        ),
-        Check(
-            "calls: clean routing (no re-rolled draw or continue nudge)",
-            routing_clean(db),
-            scored=False,
-            kind="proc",
-        ),
-    ]
 
 
 # ── idle → apply: a cold ask points a KNOWN routine at a new space ────────────
@@ -3289,71 +3056,6 @@ def _collection_texts(db: Database, name: str) -> list[str]:
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 
-def _minted_job(db: Database, before: set[str]) -> MemoryRow | None:
-    """The collection this turn MINTED for the new space — whichever routine it carries.
-
-    Read as "new AND routine-bearing" rather than "carries the intended routine", so a
-    turn that stood a job up on the WRONG one is a bound-the-wrong-routine finding rather
-    than a set-nothing-up one.  The five seeded jobs are excluded by construction: they
-    existed before the turn."""
-    return next((row for row in new_collections(db, before) if row.skill_name is not None), None)
-
-
-def _enactment_binding_check(row: MemoryRow | None, skill: SkillDraft) -> Check:
-    """The other half of the selection claim (the decision half is
-    ``_skill_binding_check``): the JOB runs the routine that covers the ask.
-
-    Scored unconditionally, because with five real routines in the registry the enactment
-    is where a wrong pick becomes a mechanism that watches the wrong kind of thing from
-    now on — and it is a different failure from deciding wrongly, so it reads as its own
-    row."""
-    label = "state: the job runs the routine that covers the ask"
-    intended = slug_skill_name(skill.name)
-    bound = row.skill_name if row is not None else None
-    return Check(
-        label,
-        bound == intended,
-        rationale=None
-        if bound == intended
-        else f"the job runs {bound!r}, the ask needs {intended!r}",
-        kind="state",
-    )
-
-
-# What "the world's live mechanisms are none of this turn's business" is called wherever it
-# is read — a diff-join key shared by every beat that makes the claim, including the one
-# that has no jobs to make it about and reports it n/a.
-_JOBS_UNTOUCHED_LABEL = "state: the five running jobs were left untouched"
-
-
-def _seeded_jobs_untouched_check(db: Database, journeys: tuple[_Journey, ...] = _JOURNEYS) -> Check:
-    """None of the running jobs was reconfigured, re-rendered or archived by this turn —
-    the different-params side of the one-job-one-collection boundary, read directly off the
-    mutation ledger.
-
-    Each job is named by its round's own DERIVED container (#1870), which is the name
-    find-or-create would have landed on had the ask been for that job again: they are
-    exactly the names this turn must NOT derive, so reading them from the framing is what
-    makes "a different place mints its own" and "the same place reconfigures" two sides of
-    one claim rather than two independent readings.  ``journeys`` is the world's own set,
-    since a case seeding fewer journeys has fewer jobs to leave alone.
-
-    A live turn's mutation cites a live run and every event the seeded world wrote cites a
-    seeded one, so "this turn changed nothing here" is a read rather than a diff."""
-    touched = [
-        f"{journey.round.framing.container}: {event.action} by {event.run_id}"
-        for journey in journeys
-        for event in db.mutations.history(journey.round.framing.container, MUTATION_HISTORY_WINDOW)
-        if not is_seeded_run(event.run_id)
-    ]
-    return Check(
-        _JOBS_UNTOUCHED_LABEL,
-        not touched,
-        rationale=f"touched {touched}" if touched else None,
-        kind="state",
-    )
-
-
 def _declared_order(db: Database, skill: SkillDraft) -> list[str]:
     """The routine's declared parameter NAMES, in declared order — the registry read
     ``_declared_parameters`` owns, projected onto the half a derived name needs.
@@ -3376,84 +3078,6 @@ def _derived_container(db: Database, skill: SkillDraft, bound: dict[str, str]) -
     order and derive a plausible name for a job nobody asked for."""
     values = [bound[name] for name in _declared_order(db, skill)]
     return derive_collection_name(slug_skill_name(skill.name), values)
-
-
-def _fresh_mint_check(
-    db: Database, row: MemoryRow | None, skill: SkillDraft, bound: dict[str, str]
-) -> Check:
-    """The job landed on the container DERIVED for it (#1870) — a new space, so the name
-    the derivation makes of this routine and these values is one no collection carries yet
-    and find-or-create mints it.
-
-    This is where the beat's whole claim about identity is read: the name is a function of
-    the routine and the values it was pointed at, so a container under it is a job anybody
-    can find again by asking for the same thing — and the five already running, whose names
-    the untouched check reads the same way, are exactly the names it must not be."""
-    expected = _derived_container(db, skill, bound)
-    landed = row is not None and row.name == expected
-    return Check(
-        "state: the job landed on the container derived for it",
-        landed,
-        rationale=(
-            None if landed else f"landed on {row.name if row else None}, expected {expected!r}"
-        ),
-        kind="state",
-    )
-
-
-def _job_stood_up_checks(db: Database, row: MemoryRow | None) -> list[Check]:
-    """A job exists at all: the call that stands one up was made, a new collection carries
-    it, and the routine's program was rendered into it.
-
-    The three claims every beat that mints a job from a routine the registry ALREADY holds
-    makes in the same words — the cold ask and the short ask completed over two turns — so
-    they are read once here rather than restated per beat, where the labels (which are
-    diff-join keys) would drift apart a word at a time."""
-    return [
-        Check(
-            "state: she set the job up with collection_set",
-            tool_was_called(db, _SET_TOOL),
-            kind="state",
-        ),
-        Check(
-            "state: a new collection carries the job",
-            row is not None,
-            rationale=None if row else "no new collection carries a routine",
-            kind="state",
-        ),
-        Check(
-            "state: the routine's program was rendered into it",
-            row is not None and bool(row.extraction_prompt),
-            kind="state",
-        ),
-    ]
-
-
-def _job_terms_checks(
-    db: Database, row: MemoryRow | None, *, fires_every: int, anchored: bool, expects_expiry: bool
-) -> list[Check]:
-    """The job runs on the terms it was given — its cadence, its end condition (or the
-    absence of one), and the telling-them clause every one of these asks carries — and she
-    set it running instead of running it once.
-
-    The terms are passed as VALUES rather than read off a case, because both beats that
-    stand a job up from a cold registry ask exactly this of it — the cold ask in one turn
-    and the short ask completed in two — and the labels are diff-join keys, so one reading
-    is what lets the two report under the same rows."""
-    return [
-        _schedule_check(row, fires_every=fires_every, anchored=anchored),
-        _expiry_check(db, row, expected=expects_expiry),
-        Check(
-            "state: it will tell them when something changes",
-            row is not None and bool(row.notify),
-            kind="state",
-        ),
-        Check(
-            "state: she set it running instead of running it now (no browse this turn)",
-            tool_not_called(db, _BROWSE_TOOL),
-            kind="state",
-        ),
-    ]
 
 
 # ── idle → request: the routine is known, and the ask is one value short ──────
@@ -3724,12 +3348,6 @@ def _said_back(value: str, reply: str) -> bool:
     return bool(spoken) and spoken in reply.lower()
 
 
-def _mentions_any(tokens: tuple[str, ...], text: str) -> bool:
-    """Whether any of ``tokens`` turns up in ``text``, case-folded — the same reading
-    ``_mentions`` makes, with the arguments the other way round."""
-    return any(token.lower() in text.lower() for token in tokens)
-
-
 # ── request → apply: the missing value arrives and the job stands up ──────────
 #
 # Beat 6 (#1892), and the second half of #1885's agreed pairs: each case starts exactly
@@ -3874,14 +3492,13 @@ class _RequestApplyCase(NamedTuple):
     The rest is what the two turns' terms ask for: ``cadence_seconds`` is how far apart the
     job should fire whatever rule spelling says so, ``anchored`` whether those terms name a
     time of DAY rather than a period (so the rule has to state an hour to run at),
-    ``expects_expiry`` whether an end condition was given at all (inventing one is a
-    failure), and ``cadence_tokens`` what a reply naming the cadence back would contain.
+    and ``expects_expiry`` whether an end condition was given at all (inventing one is a
+    failure).
 
     ``reference`` is how the supply would be answered WELL — a review target, read at joint
-    review and never matched by the scorer.  It is DATA for the reason the short ask's is:
-    a scorer that cannot pass the answer the case itself calls correct is a broken scorer,
-    and holding the reply here lets the deterministic pin in ``test_eval_harness.py`` run
-    the cadence vocabulary through it without a GPU."""
+    review and never matched by a claim.  It is DATA rather than prose so a reader comparing
+    the modal sample against the answer the case itself calls correct has one string to
+    compare, and so a quarantined variant keeps the answer it was agreed on."""
 
     case_id: str
     parked: _IdleRequestCase
@@ -3891,7 +3508,6 @@ class _RequestApplyCase(NamedTuple):
     cadence_seconds: int
     anchored: bool
     expects_expiry: bool
-    cadence_tokens: tuple[str, ...]
     reference: str
 
     @property
@@ -3914,7 +3530,6 @@ _SUPPLIED_TIMETABLE = _RequestApplyCase(
     cadence_seconds=86400,
     anchored=True,
     expects_expiry=False,
-    cadence_tokens=("morning",),
     reference=(
         "done — i'll check the north pier timetable every morning and message you when "
         "the dawn sailing shows up."
@@ -3930,7 +3545,6 @@ _SUPPLIED_LISTING = _RequestApplyCase(
     cadence_seconds=7200,
     anchored=False,
     expects_expiry=True,
-    cadence_tokens=("couple", "two hours", "2 hours", "120 min"),
     reference=(
         "done — i'll check that listing's price every couple of hours until sunday and "
         "message you if it moves."
@@ -3946,7 +3560,6 @@ _SUPPLIED_COUNT = _RequestApplyCase(
     cadence_seconds=604800,
     anchored=False,
     expects_expiry=False,
-    cadence_tokens=("week",),
     reference=("done — i'll check the otter count every week and message you if it drops."),
 )
 
@@ -3959,7 +3572,6 @@ _SUPPLIED_BAKERY = _RequestApplyCase(
     cadence_seconds=86400,
     anchored=True,
     expects_expiry=True,
-    cadence_tokens=("morning",),
     reference=(
         "done — i'll grab the new bakery's special every morning until the end of the "
         "month and message you what's on."
@@ -3975,7 +3587,6 @@ _SUPPLIED_PIER = _RequestApplyCase(
     cadence_seconds=86400,
     anchored=True,
     expects_expiry=False,
-    cadence_tokens=("morning",),
     reference=(
         "done — i'll check the north pier board every morning and message you when the "
         "dawn sailing appears."
@@ -4599,10 +4210,3 @@ IDLE_LEARN_CASES = (
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
-
-
-# The containers the composed world's five live jobs run into — the collections that already
-# carry a routine when a teach arrives beside them.  Read from each round's own framing for
-# the reason ``_seeded_jobs_untouched_check`` reads them there: it is the name find-or-create
-# would land on for that job, so one reading serves both claims.
-_LIVE_JOB_CONTAINERS = tuple(journey.round.framing.container for journey in _JOURNEYS)
