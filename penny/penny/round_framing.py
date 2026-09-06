@@ -444,13 +444,32 @@ def _shortfall(
     _log_shortfall(routine, bound)
     if bound is None:
         return None
+    return round_shortfall(routine, declared, already, bound)
+
+
+def round_shortfall(
+    routine: Skill,
+    declared: list[SkillParameter],
+    already: dict[str, str],
+    bound: MissingParameters,
+) -> RoundShortfall:
+    """What a parked round is WAITING ON, built from the routine the registry holds
+    (#1894) — the only construction of a shortfall on the production path.
+
+    Everything but the values is READ off ``routine`` rather than supplied: the registry's
+    own name and description, and the DECLARED order both lists are built in, so the
+    rendered state reads the way the routine is written wherever else it renders.
+
+    Public because the eval harness's isolated classifier draw has to be handed the
+    snapshot production hands it (#2084), and it reaches this the same way production
+    does, off the seeded registry row.  The one mirror of this scheme that remains is the
+    transition world's ``parked_binding``, which builds a case's recorded binding from its
+    fixture DRAFT because the seeder runs before the registry holds the routine at all; it
+    is held to this by a test asserting the two agree."""
     values = already | bound.values
     return RoundShortfall(
         skill=routine.name,
         description=routine.description,
-        # Both lists are built in DECLARED order rather than in the order the draw
-        # happened to answer in, so the rendered state reads the way the routine is
-        # written wherever else it renders.
         bound={
             parameter.name: values[parameter.name]
             for parameter in declared
