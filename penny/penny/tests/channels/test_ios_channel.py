@@ -1117,3 +1117,114 @@ async def test_sent_message_embedding_reaches_pull_and_history_wire_records(db):
     )
     history_record = ws.sent[-1]["messages"][0]
     assert history_record["embedding"] == "AACAPwAAAD8AAIC/"
+
+
+@pytest.mark.asyncio
+async def test_image_settings_are_validated_shared_and_persisted(db, test_config):
+    from penny.config_params import GROUP_IOS_ATTACHMENTS, RuntimeParams
+
+    channel = _make_channel(db)
+    test_config.runtime = RuntimeParams(db=db)
+    channel._config = test_config
+    response = await _ios_admin_request(channel, {"type": "config_request"})
+    settings = [param for param in response["params"] if param["group"] == GROUP_IOS_ATTACHMENTS]
+    assert len(settings) == 4
+    assert all(param["value"] == param["default"] == "1" for param in settings)
+    for param in settings:
+        request = {
+            "type": "config_update",
+            "key": param["key"],
+            "value": "0",
+            "request_id": "save-1",
+        }
+        saved = await _ios_admin_request(channel, request)
+        assert saved["request_id"] == "save-1"
+        assert "error" not in saved
+        # A fresh accessor (as after restart) and another iOS channel see the same DB override.
+        assert getattr(RuntimeParams(db=db), param["key"]) == 0
+        for invalid in ("2", "-1", "true", "", "0.0"):
+            rejected = await _ios_admin_request(channel, {**request, "value": invalid})
+            assert rejected["request_id"] == "save-1"
+            assert rejected["error"] == "must be 0 or 1"
+            assert getattr(RuntimeParams(db=db), param["key"]) == 0
+    other = _make_channel(db)
+    other._config = test_config
+    response = await _ios_admin_request(other, {"type": "config_request"})
+    assert all(
+        param["value"] == "0"
+        for param in response["params"]
+        if param["group"] == GROUP_IOS_ATTACHMENTS
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collector", [False, True])
+async def test_ios_image_policy_only_changes_new_automatic_deliveries(db, test_config, collector):
+    import base64
+
+    from penny.config_params import RuntimeParams
+    from penny.scheduler.send_queue_drainer import SendQueueDrainer
+
+    channel = _make_channel(db)
+    test_config.runtime = RuntimeParams(db=db)
+    channel._config = test_config
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    media_id = db.media.put(b"page", "image/png", source_url="https://site.test/p")
+    content = "See https://site.test/p"
+
+    async def deliver():
+        if collector:
+            db.send_queue.enqueue(content=content, collection="test-images")
+            drainer = SendQueueDrainer(db, test_config)
+            drainer.set_channel(channel)
+            db.messages.log_message("incoming", "ios-keychain-id", "run now")
+            assert await drainer.execute()
+        else:
+            await channel.send_response("ios-keychain-id", content, parent_id=None, author="chat")
+
+    await deliver()
+    first = db.ios.pending_for_device(device.id)[0]
+    expected = [f"data:image/png;base64,{base64.b64encode(b'page').decode()}"]
+    assert json.loads(first.attachments_json) == expected
+    await _ios_admin_request(
+        channel, {"type": "config_update", "key": "IOS_AUTOMATIC_IMAGES", "value": "0"}
+    )
+    await deliver()
+    pending = db.ios.pending_for_device(device.id)
+    assert len(pending) == 2
+    assert pending[1].attachments_json is None
+    # Direct attachments and current-run generated IDs bypass the automatic policy.
+    await channel.send_response("ios-keychain-id", "explicit", None, "chat", attachments=expected)
+    await channel.send_response("ios-keychain-id", "generated", None, "chat", media_ids=[media_id])
+    await channel.send_response("ios-keychain-id", content, None, "chat", media_ids=[999999])
+    pending = db.ios.pending_for_device(device.id)
+    assert [json.loads(row.attachments_json) for row in pending[2:4]] == [expected, expected]
+    assert pending[4].attachments_json is None  # missing generated ID obeys fallback policy
+    await channel._handle_pull(cast(Any, ws), {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
+    assert ws.sent[-1]["messages"][0]["attachments"] == expected
+    await channel._handle_history(cast(Any, ws), {"type": IOS_MSG_TYPE_HISTORY}, "ios-keychain-id")
+    history = ws.sent[-1]["messages"]
+    assert (
+        next(row for row in history if row.get("outbox_id") == first.id)["attachments"] == expected
+    )
+    await channel._handle_history(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_HISTORY,
+            "include_attachments": False,
+        },
+        "ios-keychain-id",
+    )
+    assert all(row["attachments"] == [] for row in ws.sent[-1]["messages"])
+    await channel.close()

@@ -232,7 +232,7 @@ final class SettingsViewModel {
     }
 
     var runtimeConfigParams: [RuntimeConfigParam] {
-        client.runtimeConfigParams
+        client.runtimeConfigParams.filter { ImageAttachmentSetting(rawValue: $0.key) == nil }
     }
 
     var domainPermissions: [DomainPermissionEntry] {

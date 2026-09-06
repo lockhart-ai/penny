@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
 from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
+from penny.database.media_store import ImageSelectionPolicy
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -474,10 +475,14 @@ class MessageChannel(ABC):
         if generated:
             return generated
         urls = _MESSAGE_URL_RE.findall(text)
-        media = self._db.media.select_image(urls, embedding)
+        media = self._db.media.select_image(urls, embedding, policy=self._image_selection_policy())
         if media is None:
             return None
         return [self._encode_media_row(media)]
+
+    def _image_selection_policy(self) -> ImageSelectionPolicy:
+        """Channels can restrict automatic images without changing explicit delivery."""
+        return ImageSelectionPolicy()
 
     def _encode_media(self, media_ids: list[int]) -> list[str] | None:
         """Fetch each generated media row by id and encode it as a data URI.

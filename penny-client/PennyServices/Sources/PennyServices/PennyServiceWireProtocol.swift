@@ -13,7 +13,7 @@ enum ClientMessage: Encodable {
     case embeddingRequest(requestID: String, text: String)
     case heartbeat
     case configRequest
-    case configUpdate(key: String, value: String)
+    case configUpdate(key: String, value: String, requestID: String? = nil)
     case promptLogsRequest(agentName: String?, offset: Int?, query: String?, flaggedOnly: Bool?)
     case memoriesRequest(query: String?)
     case memoryDetailRequest(name: String, query: String?)
@@ -89,10 +89,11 @@ enum ClientMessage: Encodable {
             try container.encode("heartbeat", forKey: .type)
         case .configRequest:
             try container.encode("config_request", forKey: .type)
-        case .configUpdate(let key, let value):
+        case .configUpdate(let key, let value, let requestID):
             try container.encode("config_update", forKey: .type)
             try container.encode(key, forKey: .key)
             try container.encode(value, forKey: .value)
+            try container.encodeIfPresent(requestID, forKey: .requestID)
         case .promptLogsRequest(let agentName, let offset, let query, let flaggedOnly):
             try container.encode("prompt_logs_request", forKey: .type)
             try container.encodeIfPresent(agentName, forKey: .agentName)
@@ -209,8 +210,10 @@ enum ClientMessage: Encodable {
             return "embedding_response:\(requestID)"
         case .testNotification, .heartbeat:
             return nil
-        case .configRequest, .configUpdate:
+        case .configRequest:
             return "config_response"
+        case .configUpdate(_, _, let requestID):
+            return requestID.map { "config_response:\($0)" } ?? "config_response"
         case .promptLogsRequest:
             return "prompt_logs_response"
         case .memoriesRequest:
@@ -519,8 +522,8 @@ enum ServerEnvelope: Decodable {
             return nil
         case .agentProgress:
             return nil
-        case .configResponse:
-            return "config_response"
+        case .configResponse(let payload):
+            return payload.requestID.map { "config_response:\($0)" } ?? "config_response"
         case .promptLogsResponse:
             return "prompt_logs_response"
         case .promptLogUpdate:

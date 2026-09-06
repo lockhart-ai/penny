@@ -97,7 +97,7 @@ struct PennyWebSocketClientTests {
         transport.emit("""
         {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
         """)
-        _ = await sentPayloads(transport, count: 1)
+        _ = await sentPayloads(transport, count: 2)
         transport.clearSentPayloads()
         client.sendTestNotification()
         let payloads = await sentPayloads(transport, count: 1)
@@ -120,7 +120,7 @@ struct PennyWebSocketClientTests {
         """)
 
         let requestTask = Task { try await client.requestEmbedding("coffee") }
-        let payloads = await sentPayloads(transport, count: 3)
+        let payloads = await sentPayloads(transport, count: 5)
         guard case .string(let requestID)? = payloads.last?["request_id"] else {
             Issue.record("Embedding request did not include a request_id")
             return

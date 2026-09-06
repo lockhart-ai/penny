@@ -51,6 +51,8 @@ struct SettingsView: View {
                     }
                 }
 
+                ImageAttachmentSettingsSection(viewModel: viewModel)
+
                 Section("History") {
                     ForEach(HistoryChannel.allCases) { channel in
                         Toggle(channel.title, isOn: Binding(
