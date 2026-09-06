@@ -135,9 +135,24 @@ _ENRICHED_RECIPE = (
 # The smallest token that says the enrichment landed.  The identity of this change is the
 # step the box did not have; every other word in the enriched text is already in the entry
 # the box was seeded with, so a larger expectation would only add words the write was free
-# to reword.  It appears nowhere else in this world, so nothing but the enrichment can
-# satisfy it.
-_ENRICHMENT = "marinade"
+# to reword.
+#
+# SHRUNK from the whole word after the first measured run.  ``marinade`` failed 10 of 15
+# gpt-oss samples that had done exactly what the case is named for — found the key the box
+# really uses and landed the enrichment on it — because the write RETYPED the value the
+# program handed it: ``marinate``, ``marination``, ``marina des``.  The thinking traces
+# quote the program's own wording correctly and then re-word it at the write, which is the
+# model choosing how to write a value rather than which value to write, and #1994's rule
+# excludes exactly that from an assertion.  The other model wrote it verbatim 15 of 15, so
+# the whole word was measuring how much like one model the other is.
+#
+# The stem is where the two shrink questions both answer.  Would a differently-worded
+# correct answer fail it?  No — every observed correct variant carries it.  Could a wrong
+# value satisfy it?  No — the un-enriched text carries no ``marin`` at all, and neither does
+# the one sample that recorded a different step entirely (``lime garnish``), which stays a
+# genuine miss.  It appears nowhere else in this world: not in either seeded recipe, not in
+# either key, not in the collection's description.
+_ENRICHMENT = "marin"
 
 
 # Five wordings of one instruction — the substitution description that becomes ``{…}`` in
@@ -388,9 +403,11 @@ def _assert_the_entry_condition(db: Database) -> None:
     assert held[RECIPE_BOX_FAJITAS_KEY] == RECIPE_BOX_FAJITAS_SEED_CONTENT, (
         f"the recipe must start un-enriched, got {held[RECIPE_BOX_FAJITAS_KEY]!r}"
     )
-    assert _ENRICHMENT not in RECIPE_BOX_FAJITAS_SEED_CONTENT, (
-        f"{_ENRICHMENT!r} must be absent from the seeded value — it is the token that says "
-        "the enrichment landed, and a seed already carrying it would make the claim vacuous"
+    assert not any(_ENRICHMENT in f"{key} {content}" for key, content in held.items()), (
+        f"{_ENRICHMENT!r} must appear nowhere in the box the cycle starts from — it is the "
+        f"token that says the enrichment landed, and uniqueness is a property of the WORLD "
+        f"rather than of the token, so a seeded row already carrying it makes the claim "
+        f"vacuous.  The box holds {held}"
     )
     assert RECIPE_BOX_NEAR_MISS_KEY not in held, (
         f"the forced probe's key {RECIPE_BOX_NEAR_MISS_KEY!r} must MISS — a box holding it "
@@ -440,9 +457,10 @@ def _the_recipe_carries_the_enrichment(sample: SampleObservation, _world: World)
     """The entry the box already had now carries the step it did not.
 
     Read over the WHOLE entry — key and content — because a fact in the key and a blurb in
-    the body is a perfectly good way to store it.  Matched on the bare token: the identity
-    of this change is the step that was added, and how the write chose to word the rest of
-    the recipe around it is not a question this claim answers."""
+    the body is a perfectly good way to store it.  Matched on the STEM of the added step,
+    for the measured reason recorded above ``_ENRICHMENT``: the identity of this change is
+    the step that was added, and which inflection the write happened to type is the model
+    choosing how to render a value rather than which value to record."""
     entry = next((e for e in sample.held if _held_key(e) == RECIPE_BOX_FAJITAS_KEY), None)
     if entry is None:
         return False, f"the box no longer holds {RECIPE_BOX_FAJITAS_KEY!r} at all"
@@ -491,7 +509,7 @@ async def test_key_not_found_recovers_onto_the_key_the_box_uses(
         SpecCategory.STORE,
     )
     cohort.claim(
-        f"state: the recipe the box already had now carries {_ENRICHMENT}",
+        f"state: the recipe the box already had now carries the added step ({_ENRICHMENT})",
         _the_recipe_carries_the_enrichment,
         SpecCategory.STORE,
     )
