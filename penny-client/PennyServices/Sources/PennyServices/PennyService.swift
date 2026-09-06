@@ -47,6 +47,13 @@ public final class PennyService {
     @ObservationIgnored private var embeddingContinuations: [String: CheckedContinuation<Data, Error>] = [:]
     @ObservationIgnored private var pendingResponseTimings: [String: [PendingResponseTiming]] = [:]
 
+    @ObservationIgnored public private(set) lazy var dataBrowser = DataBrowserClient { [weak self] data in
+        guard let self, self.canSend else { throw DataBrowserError.disconnected }
+        try await self.webSocketClient.send(data)
+    }
+    public private(set) var browserMemoryRevision = 0
+    public private(set) var browserRunRevision = 0
+
     public var messages: [ChatMessage] = []
     public var pendingCount = 0
     public var isConnected = false
@@ -188,6 +195,7 @@ extension PennyService {
     }
 
     private func disconnect(clearLiveBindings: Bool) {
+        dataBrowser.disconnect()
         imageAttachmentSettings.disconnect()
         hasLoadedRuntimeConfig = false
         runtimeConfigParams = []
@@ -545,6 +553,7 @@ extension PennyService {
     }
 
     private func handle(_ data: Data) {
+        if dataBrowser.receive(data) { return }
         do {
             let envelope = try decoder.decode(ServerEnvelope.self, from: data)
             apply(envelope)
@@ -633,8 +642,10 @@ extension PennyService {
             }
             promptLogsHasMore = payload.hasMore
         case .promptLogUpdate(let payload):
+            browserRunRevision += 1
             applyPromptLogUpdate(payload.prompt)
         case .runOutcomeUpdate(let payload):
+            browserRunRevision += 1
             applyRunOutcomeUpdate(payload)
         case .memoriesResponse(let payload):
             memories = payload.memories
@@ -643,6 +654,7 @@ extension PennyService {
         case .memoryPageResponse(let payload):
             memoryPage = MemoryPage(payload: payload)
         case .memoryChanged(let payload):
+            browserMemoryRevision += 1
             lastMemoryChangedName = payload.name
         case .collectionTriggerResult(let payload):
             collectionTriggerResult = payload

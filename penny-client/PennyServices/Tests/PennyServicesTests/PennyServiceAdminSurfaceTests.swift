@@ -429,13 +429,10 @@ private func memoryRecordJSON(name: String) -> String {
       "name": "\(name)",
       "type": "collection",
       "description": "Meal notes",
-      "intent": "Remember cooking preferences",
-      "inclusion": "relevant",
-      "recall": "recent",
       "published": true,
       "archived": false,
       "extraction_prompt": "extract meals",
-      "collector_interval_seconds": 3600,
+      "schedule": "FREQ=HOURLY",
       "last_collected_at": "2026-07-05T12:00:00Z",
       "entry_count": 2
     }

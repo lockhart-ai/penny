@@ -233,8 +233,8 @@ enum DataURLDecoder {
     }
 }
 
-enum DateParser {
-    static func parse(_ value: String) -> Date? {
+public enum DateParser {
+    public static func parse(_ value: String) -> Date? {
         if let date = iso8601WithFractionalSeconds.date(from: value) {
             return date
         }

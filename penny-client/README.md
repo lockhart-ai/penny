@@ -15,3 +15,18 @@ the connection settings' Save button is separate. Explicit attachments and image
 generated for the current request always remain deliverable. The controls affect
 new replies; existing messages and the History attachment option are unchanged.
 An older server that does not expose all four switches shows disabled controls.
+
+
+The top-left memories button opens a read-only data browser (iPad popover, iPhone
+sheet). Memories are grouped into Collections, Logs, and Archived; each has Entries,
+Activity, and read-only Config panels. Prompts shows all agent runs with filters and
+expandable run → prompt → turn details. The previous Insights and Memory Management
+screens have been removed. Global settings remain under the gear button.
+
+The browser reads the current memory contract, including `schedule` (RRULE) and
+notification status (`published` on the wire). Deploy the accompanying iOS server
+support before this client: memory list/detail/page and prompt-log reads use optional
+`request_id` values echoed on responses and `data_read_error` failures. Existing
+clients without IDs remain supported. Browser requests time out after 30 seconds;
+filter changes, dismissal, and reconnect discard obsolete results. No memory data is
+persisted on the client, and this browser provides no mutation controls.

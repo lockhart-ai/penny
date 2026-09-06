@@ -1228,3 +1228,66 @@ async def test_ios_image_policy_only_changes_new_automatic_deliveries(db, test_c
     )
     assert all(row["attachments"] == [] for row in ws.sent[-1]["messages"])
     await channel.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "read_request",
+    [
+        {"type": "memories_request"},
+        {"type": "memory_detail_request", "name": "browser-fixture"},
+        {"type": "memory_page_request", "name": "browser-fixture", "section": "entries"},
+        {"type": "memory_page_request", "name": "browser-fixture", "section": "collector_runs"},
+        {"type": "prompt_logs_request", "query": "fixture", "offset": 0},
+    ],
+)
+async def test_data_browser_read_ids_are_optional_and_echoed(db, read_request):
+    channel = _make_channel(db)
+    db.memories.create_collection("browser-fixture", "Synthetic browser data")
+    legacy = await _ios_admin_request(channel, read_request)
+    correlated = await _ios_admin_request(channel, {**read_request, "request_id": "read-1"})
+    assert "request_id" not in legacy
+    assert correlated.pop("request_id") == "read-1"
+    assert correlated == legacy
+    if read_request["type"] == "memory_detail_request":
+        assert "inclusion" not in correlated["memory"]
+        assert "recall" not in correlated["memory"]
+        assert "collector_interval_seconds" not in correlated["memory"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "read_request",
+    [
+        {"type": "memory_detail_request", "name": "missing"},
+        {"type": "memory_page_request", "name": "missing", "section": "entries"},
+    ],
+)
+async def test_data_browser_missing_memory_returns_correlated_error(db, read_request):
+    response = await _ios_admin_request(
+        _make_channel(db), {**read_request, "request_id": "missing-1"}
+    )
+    assert response == {
+        "type": "data_read_error",
+        "request_id": "missing-1",
+        "error": "This memory no longer exists.",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "read_request",
+    [
+        {"type": "prompt_logs_request", "offset": -1},
+        {"type": "memories_request", "query": []},
+    ],
+)
+async def test_data_browser_invalid_filters_return_correlated_error(db, read_request):
+    response = await _ios_admin_request(
+        _make_channel(db), {**read_request, "request_id": "invalid-1"}
+    )
+    assert response == {
+        "type": "data_read_error",
+        "request_id": "invalid-1",
+        "error": "Invalid data browser request.",
+    }

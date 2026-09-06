@@ -31,7 +31,7 @@ struct ConfigResponsePayload: Decodable {
     }
 }
 
-public enum RunOutcome: String, Codable {
+public enum RunOutcome: String, Codable, Sendable {
     case failed
     case noWork = "no_work"
     case worked
@@ -47,7 +47,7 @@ public enum RunHealthFlag: String, Codable, Sendable {
     case halfFormedSend = "half_formed_send"
 }
 
-public struct RunHealth: Decodable, Sendable {
+public struct RunHealth: Codable, Sendable {
     public let bailed: Bool
     public let noWrites: Bool
     public let incomplete: Bool
@@ -77,7 +77,7 @@ public struct RunHealth: Decodable, Sendable {
     }
 }
 
-public struct PromptLogRun: Decodable, Identifiable {
+public struct PromptLogRun: Codable, Identifiable, Sendable {
     public var id: String { runID }
     public let runID: String
     public let agentName: String
@@ -129,7 +129,7 @@ public struct PromptLogRun: Decodable, Identifiable {
     }
 }
 
-public struct PromptLogEntry: Decodable, Identifiable {
+public struct PromptLogEntry: Codable, Identifiable, Sendable {
     public let id: Int
     public let timestamp: String
     public let model: String
@@ -237,7 +237,7 @@ struct RunOutcomeUpdatePayload: Decodable {
     }
 }
 
-public enum MemoryType: String, Codable {
+public enum MemoryType: String, Codable, Sendable {
     case collection
     case log
 }
@@ -254,23 +254,20 @@ public enum MemoryRecall: String, Codable {
     case recent
 }
 
-public enum MemorySection: String, Codable {
+public enum MemorySection: String, Codable, Sendable {
     case entries
     case collectorRuns = "collector_runs"
 }
 
-public struct MemoryRecord: Decodable, Identifiable {
+public struct MemoryRecord: Codable, Identifiable, Sendable {
     public var id: String { name }
     public let name: String
     public let type: MemoryType
     public let description: String
-    public let intent: String?
-    public let inclusion: MemoryInclusion
-    public let recall: MemoryRecall
-    public let published: Bool
+    public let notificationsEnabled: Bool
     public let archived: Bool
     public let extractionPrompt: String?
-    public let collectorIntervalSeconds: Int?
+    public let schedule: String?
     public let lastCollectedAt: String?
     public let entryCount: Int
 
@@ -278,19 +275,16 @@ public struct MemoryRecord: Decodable, Identifiable {
         case name
         case type
         case description
-        case intent
-        case inclusion
-        case recall
-        case published
+        case notificationsEnabled = "published"
         case archived
         case extractionPrompt = "extraction_prompt"
-        case collectorIntervalSeconds = "collector_interval_seconds"
+        case schedule
         case lastCollectedAt = "last_collected_at"
         case entryCount = "entry_count"
     }
 }
 
-public struct MemoryEntryRecord: Decodable, Identifiable {
+public struct MemoryEntryRecord: Codable, Identifiable, Sendable {
     public let id: Int
     public let key: String?
     public let content: String
@@ -306,7 +300,7 @@ public struct MemoryEntryRecord: Decodable, Identifiable {
     }
 }
 
-public struct CursorRecord: Decodable, Identifiable {
+public struct CursorRecord: Codable, Identifiable, Sendable {
     public var id: String { logName }
     public let logName: String
     public let lastReadAt: String
@@ -317,13 +311,17 @@ public struct CursorRecord: Decodable, Identifiable {
     }
 }
 
-public struct MemoryDetail {
+public struct MemoryDetail: Decodable, Sendable {
     public let memory: MemoryRecord
     public var entries: [MemoryEntryRecord]
     public var entriesHasMore: Bool
     public var collectorRuns: [PromptLogRun]
     public var collectorRunsHasMore: Bool
     public var cursors: [CursorRecord]
+
+    public init(from decoder: Decoder) throws {
+        self.init(payload: try MemoryDetailResponsePayload(from: decoder))
+    }
 
     init(payload: MemoryDetailResponsePayload) {
         memory = payload.memory
@@ -335,12 +333,16 @@ public struct MemoryDetail {
     }
 }
 
-public struct MemoryPage {
+public struct MemoryPage: Decodable, Sendable {
     public let name: String
     public let section: MemorySection
     public let entries: [MemoryEntryRecord]
     public let runs: [PromptLogRun]
     public let hasMore: Bool
+
+    public init(from decoder: Decoder) throws {
+        self.init(payload: try MemoryPageResponsePayload(from: decoder))
+    }
 
     init(payload: MemoryPageResponsePayload) {
         name = payload.name
@@ -435,7 +437,7 @@ struct PermissionDismissPayload: Decodable {
     }
 }
 
-public enum JSONValue: Codable, Equatable {
+public enum JSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import httpx
 import websockets
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 from websockets.asyncio.server import Server, ServerConnection
 
@@ -85,6 +86,8 @@ from penny.channels.ios.models import (
     IosAgentProgress,
     IosAgentProgressTool,
     IosConversationState,
+    IosDataReadError,
+    IosDataReadRequest,
     IosEmbeddingRequest,
     IosEmbeddingResponse,
     IosHistoryRequest,
@@ -349,6 +352,8 @@ class IosChannel(MessageChannel):
             await self._handle_config_request(ws)
         elif msg_type == BROWSER_MSG_TYPE_CONFIG_UPDATE:
             await self._handle_config_update(ws, data)
+        elif msg_type in self._DATA_READ_TYPES and data.get("request_id") is not None:
+            await self._handle_correlated_read(ws, data)
         elif msg_type == BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST:
             await self._handle_prompt_logs_request(ws, data)
         elif msg_type == BROWSER_MSG_TYPE_MEMORIES_REQUEST:
@@ -511,6 +516,36 @@ class IosChannel(MessageChannel):
 
     _PROMPT_LOG_PAGE_SIZE = 50
 
+    _DATA_READ_TYPES = frozenset(
+        {
+            BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST,
+            BROWSER_MSG_TYPE_MEMORIES_REQUEST,
+            BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST,
+            BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST,
+        }
+    )
+
+    async def _handle_correlated_read(self, ws: ServerConnection, data: dict) -> None:
+        handlers = {
+            BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST: self._handle_prompt_logs_request,
+            BROWSER_MSG_TYPE_MEMORIES_REQUEST: self._handle_memories_request,
+            BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST: self._handle_memory_detail_request,
+            BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST: self._handle_memory_page_request,
+        }
+        try:
+            IosDataReadRequest(**data)
+            await handlers[data["type"]](ws, data)
+        except ValidationError, ValueError:
+            await self._send_read_error(ws, data, "Invalid data browser request.")
+        except SQLAlchemyError:
+            logger.error("Data browser database read failed")
+            await self._send_read_error(ws, data, "Unable to load Penny data. Try again.")
+
+    async def _send_read_error(self, ws: ServerConnection, data: dict, error: str) -> None:
+        request_id = data.get("request_id")
+        if isinstance(request_id, str):
+            await self._send_ws(ws, IosDataReadError(request_id=request_id, error=error))
+
     async def _handle_prompt_logs_request(self, ws: ServerConnection, data: dict) -> None:
         """Query prompt logs grouped by run_id and send them to iOS."""
         agent_name = data.get("agent_name") or None
@@ -530,6 +565,7 @@ class IosChannel(MessageChannel):
                 "type": BROWSER_RESP_TYPE_PROMPT_LOGS,
                 "runs": runs,
                 "has_more": (not flagged_only) and len(runs) == self._PROMPT_LOG_PAGE_SIZE,
+                **({"request_id": data["request_id"]} if "request_id" in data else {}),
             },
         )
 
@@ -541,7 +577,9 @@ class IosChannel(MessageChannel):
             memories = self._filter_memories(memories, query)
         counts = self._db.memories.entry_counts()
         records = [self._memory_to_record(m, counts.get(m.name, 0)) for m in memories]
-        await self._send_ws(ws, BrowserMemoriesResponse(memories=records))
+        await self._send_ws(
+            ws, BrowserMemoriesResponse(memories=records, request_id=data.get("request_id"))
+        )
 
     def _filter_memories(self, memories: list, query: str) -> list:
         """Keep memories matching query by metadata or entry content."""
@@ -564,11 +602,13 @@ class IosChannel(MessageChannel):
         try:
             req = BrowserMemoryDetailRequest(**data)
         except ValidationError:
-            logger.warning("Invalid memory_detail_request: %s", str(data)[:200])
+            logger.warning("Invalid memory_detail_request")
+            await self._send_read_error(ws, data, "Invalid memory detail request.")
             return
         memory = self._db.memories.get(req.name)
         if memory is None:
-            logger.warning("memory_detail_request for unknown memory: %s", req.name)
+            logger.warning("memory_detail_request for unknown memory")
+            await self._send_read_error(ws, data, "This memory no longer exists.")
             return
         await self._send_ws(ws, self._build_memory_detail(memory, data))
 
@@ -580,6 +620,7 @@ class IosChannel(MessageChannel):
         entries, entries_has_more = self._entries_page(memory, 0, query)
         runs, runs_has_more = self._collector_runs_page(memory, 0)
         return BrowserMemoryDetailResponse(
+            request_id=data.get("request_id"),
             memory=record,
             entries=entries,
             entries_has_more=entries_has_more,
@@ -593,11 +634,13 @@ class IosChannel(MessageChannel):
         try:
             req = BrowserMemoryPageRequest(**data)
         except ValidationError:
-            logger.warning("Invalid memory_page_request: %s", str(data)[:200])
+            logger.warning("Invalid memory_page_request")
+            await self._send_read_error(ws, data, "Invalid memory page request.")
             return
         memory = self._db.memories.get(req.name)
         if memory is None:
-            logger.warning("memory_page_request for unknown memory: %s", req.name)
+            logger.warning("memory_page_request for unknown memory")
+            await self._send_read_error(ws, data, "This memory no longer exists.")
             return
         await self._send_ws(ws, self._memory_page_payload(memory, req, data))
 
@@ -608,12 +651,20 @@ class IosChannel(MessageChannel):
         if req.section == MEMORY_SECTION_COLLECTOR_RUNS:
             runs, has_more = self._collector_runs_page(memory, req.offset)
             return BrowserMemoryPageResponse(
-                name=req.name, section=req.section, runs=runs, has_more=has_more
+                name=req.name,
+                section=req.section,
+                runs=runs,
+                has_more=has_more,
+                request_id=data.get("request_id"),
             )
         query = (data.get("query") or "").strip() or None
         entries, has_more = self._entries_page(memory, req.offset, query)
         return BrowserMemoryPageResponse(
-            name=req.name, section=req.section, entries=entries, has_more=has_more
+            name=req.name,
+            section=req.section,
+            entries=entries,
+            has_more=has_more,
+            request_id=data.get("request_id"),
         )
 
     async def _handle_collection_trigger(self, ws: ServerConnection, data: dict) -> None:

@@ -151,6 +151,16 @@ make signal-avatar    # Set Penny's Signal profile picture from penny.png
 make client-check     # Build the iOS client + run PennyClientTests on a simulator (requires Xcode)
 ```
 
+### iOS data browser
+
+PennyClient's top-left memories button presents a read-only Memories/Prompts browser.
+Memory details separate Entries, Activity, and Config; collector activity shares the
+expandable run/prompt/turn cards with global Prompts. `DataBrowserClient` owns
+correlated reads and cancellation in PennyServices; presentation state belongs to
+`DataBrowserViewModel`. The iOS read endpoints echo optional `request_id` values and
+return `data_read_error` for correlated failures. Deploy server support before the
+updated client; no memory schema migration is involved. See `penny-client/README.md`.
+
 ### Browser Extension Development
 
 ```bash
