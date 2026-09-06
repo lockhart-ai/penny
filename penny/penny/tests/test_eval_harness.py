@@ -3916,7 +3916,9 @@ def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> No
     probe over the raw turns would pass on a render that dropped one."""
     assert len(ported.arms) == 5, f"{ported.case_id}: five wordings, or the arms are not arms"
     for arm in ported.arms:
-        assert len(arm) == ported.turns, f"{ported.case_id}: {arm} is not {ported.turns} turn(s)"
+        assert len(arm) == ported.turns_per_arm, (
+            f"{ported.case_id}: {arm} is not {ported.turns_per_arm} turn(s)"
+        )
 
     documents = [
         build_framing_content(
@@ -3928,6 +3930,9 @@ def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> No
     for document in documents:
         for fact in ported.carries:
             assert fact in document, f"{ported.case_id}: an arm drops {fact!r}: {document!r}"
+        assert not ported.any_of or any(one in document for one in ported.any_of), (
+            f"{ported.case_id}: an arm states none of {ported.any_of}: {document!r}"
+        )
         for absent in ported.never:
             assert absent not in document, (
                 f"{ported.case_id}: an arm introduces {absent!r}: {document!r}"
