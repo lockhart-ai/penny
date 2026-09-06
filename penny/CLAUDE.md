@@ -778,7 +778,7 @@ and CLOSED UPSTREAM — coverage is `_labels_every_spot`'s and would run 15/15 b
 construction — so every claim it makes is about what the drawn lines SAY, and all four are
 the *nothing omitted* direction: the *nothing invented* one has no legal instrument for a
 draw whose open fields are an identifier and generic prose),
-`test_skill_framing.py` (#1830 — the run-end skill FRAMER over eight agreed asks
+`test_skill_framing.py` (#1830 — the run-end skill FRAMER over seven INLINE agreed asks
 spanning the three multiplicity shapes (one argument · two of the same type · two of
 different types): the parameter SET exactly, each expected family answered by exactly one
 drawn parameter and nothing else asked for, plus the structural check that the name and
@@ -791,17 +791,35 @@ check covers the PARAMETER lines as its own check too — the enforcement half o
 parameter-line contract — reading each line's SUBSTANCE, with any `(e.g., …)` clause
 stripped first, since the traces showed that garnish is appended after the line is
 decided; an instance token in the NAME, or a value standing as the whole description,
-still fails.  The eighth ask, `framer-mints-only-the-piece-that-varies`, is the ticker case
-PORTED to the cohort structure (#2006): one ask in five wordings, claiming the parameter SET
-by equality — one parameter answers the ticker family, and nothing else is asked for, which
-is where the negative direction lives, since the cadence and the notification are pieces the
-ask already settled.  Its PROVENANCE category is EMPTY and says so: a framing's open fields
-are an identifier and two lines of deliberately generic prose, and `unsourced_specifics` —
-the suite's one instrument for the invented direction — reads a Title-Cased correct framing
-as four inventions while passing a made-up exchange, so it does not transfer to them.  What
-it deliberately does NOT claim is genericity: that the name says the KIND of task and never
-THIS occasion fits none of the design's three assertion categories, being the converse of a
-provenance claim, so it stays a reading of the modal sample), `test_skill_binding.py` (#1867 — the skill BINDER over eight cases built
+still fails.  Beside them are **seven PORTED cases** (#2006/#2056) — the framer's decisions
+covered in ISOLATION, each one ask in five wordings pooled into a cohort of fifteen, claiming
+the parameter SET by equality under LANDED (one drawn parameter per piece the ask requires,
+and a COUNT claim for nothing else) and nothing else:
+`framer-mints-only-the-piece-that-varies` (the ticker — the negative direction is the cadence
+and the notification, pieces the ask already settled),
+`framer-keeps-two-of-a-kind-as-two-parameters` (two URLS, the world where run 1 measured all
+five samples folding both into one `sites — list of URLs`),
+`framer-mints-both-pieces-when-they-are-different-kinds` (a catalog page and a book looked up
+on it), the PAIR `framer-names-a-search-as-a-search` /
+`framer-names-a-page-as-a-page-and-invents-no-search` (opposite expected answers — the
+search-family parameter that is correct for the first is round 8's recorded invention for the
+second, so neither is passable by a framer that always answers the same way),
+`framer-frames-from-a-single-turn` (the purpose and the varying piece separated out of ONE
+sentence rather than read off two turns), and
+`framer-keeps-three-of-a-kind-as-three-parameters` (the same-kind ask at three).  Their STORE
+category is EMPTY — one call returns a typed result, moving no machine and writing to no
+store — and their PROVENANCE category is EMPTY and says so: a framing's open fields are an
+identifier and two lines of deliberately generic prose, and `unsourced_specifics` — the
+suite's one instrument for the invented direction — reads a Title-Cased correct framing as
+four inventions while passing a made-up exchange, so it does not transfer to them.  What they
+deliberately do NOT claim is genericity: that the name says the KIND of task and never THIS
+occasion fits none of the design's three assertion categories, being the converse of a
+provenance claim, so it stays a reading of the modal sample.  Nor do they claim what
+`_mints_a_usable_signature` already validates (a parameter minted at all, unique names, every
+value a literal span), which would run 15/15 by construction.  Each ported case's five
+wordings and the facts every one of them must carry are declared together as `PortedArms`,
+held by a `make check` probe that renders each arm through the shipped
+`build_framing_content`), `test_skill_binding.py` (#1867 — the skill BINDER over eight cases built
 from the idle→apply asks, both directions of the contract: five extraction cases (incl.
 the two-parameter bind, where the page and what to look for on it come out of one
 message) and two shortfall cases (an ask naming no page at all, and one supplying the

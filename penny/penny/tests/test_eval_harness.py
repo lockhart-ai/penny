@@ -297,6 +297,7 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
+from penny.tests.eval.framer.test_skill_framing import PORTED_ARMS as FRAMING_PORTED_ARMS
 from penny.tests.eval.framer.test_skill_framing import TICKER_ARMS
 from penny.tests.eval.labeller.test_skill_labelling import (
     _TWO_SOURCES,
@@ -3511,6 +3512,43 @@ def test_every_framing_arm_says_one_ask_in_different_words() -> None:
         assert any(word in document for word in ("moves", "changes", "shifts")), (
             f"every arm asks to be told when it moves: {arm}"
         )
+
+
+@pytest.mark.parametrize("ported", FRAMING_PORTED_ARMS, ids=lambda p: p.case_id)
+def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> None:
+    """Each ported framer case's arms (#2056): five wordings of ONE ask, over one set of facts.
+
+    Every claim a framing case makes hinges on what the ask REQUIRES — which family a
+    parameter answers, and how many the routine may ask for — so an arm that stopped carrying
+    one of the case's facts would have its three samples answering a different question under
+    the same case id, and the pooled rate would report that as instability.
+
+    The facts are read off the case's own ``PortedArms`` rather than restated here, so there
+    is one declaration for a wording and its facts to drift apart from.  The ``never``
+    substrings are just as load-bearing as the ``carries`` ones for the pair: the page case
+    claims no search is invented, and an arm that said "search" would be asking for the very
+    thing it claims is not asked for.
+
+    Documents are built through the SHIPPED renderer, because that is what the draw reads — a
+    probe over the raw turns would pass on a render that dropped one."""
+    assert len(ported.arms) == 5, f"{ported.case_id}: five wordings, or the arms are not arms"
+    for arm in ported.arms:
+        assert len(arm) == ported.turns, f"{ported.case_id}: {arm} is not {ported.turns} turn(s)"
+
+    documents = [
+        build_framing_content(
+            "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in arm]
+        )
+        for arm in ported.arms
+    ]
+    assert len(set(documents)) == 5, f"{ported.case_id}: two arms render one document"
+    for document in documents:
+        for fact in ported.carries:
+            assert fact in document, f"{ported.case_id}: an arm drops {fact!r}: {document!r}"
+        for absent in ported.never:
+            assert absent not in document, (
+                f"{ported.case_id}: an arm introduces {absent!r}: {document!r}"
+            )
 
 
 def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration() -> None:
