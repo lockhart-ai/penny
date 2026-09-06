@@ -1139,18 +1139,18 @@ def test_the_seeded_world_states_its_own_counts_not_its_renders():
     """The counts a closed fold shows come off the WORLD, so the label and the table it summarises
     cannot disagree — a summary derived from the markdown it summarises is the same mistake as
     diffing rendered prompts, and it silently read zero pages off a two-page world."""
-    from penny.tests.eval.utils.worlds import TWO_TEAM_NEWS
-
-    assert TWO_TEAM_NEWS.counts == (2, 6, 2)
+    assert worlds.TWO_TEAM_NEWS.counts == worlds.WorldFacts(
+        pages=2, collections=0, keeps=6, excludes=2
+    )
     tail = report.render_case_tail(
-        arms=[cohort.Arm(label="phrasing 1", text="watch them", world=TWO_TEAM_NEWS)]
+        arms=[cohort.Arm(label="phrasing 1", text="watch them", world=worlds.TWO_TEAM_NEWS)]
     )
     assert (
         "#### Test inputs\n\n"
         "<details><summary>1 phrasing · 2 pages · 6 must-keep, 2 must-not</summary>" in tail
     )
-    assert "Seeded pages — 2 pages · 6 must-keep, 2 must-not" in tail
-    assert "| 1 | `ridgelinefoxes` |" in tail, "and the table it labels is right there"
+    assert "Seeded ground — 2 pages · 6 must-keep, 2 must-not" in tail
+    assert "| 1 | page `ridgelinefoxes` |" in tail, "and the table it labels is right there"
 
 
 def _named(name: str, arm: str, tools: list[str], routine: str):

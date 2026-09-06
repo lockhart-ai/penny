@@ -1,16 +1,19 @@
 """What is TRUE while a case's ask is answered (#1995).
 
-A **world** is the ground a round reads: the pages its tools return, the facts it is
-supposed to keep, and the facts the ask tells it to leave alone.  A case declares one as a
-fixture and hands it to the driver; the assertions then read the world rather than a list
-of tokens restated at each call site, so "she kept what the page said" is one claim about
-two objects instead of a comparison somebody has to keep in sync by hand.
+A **world** is the ground a round reads: the pages its tools return, the entries already
+sitting in its store, the facts it is supposed to keep, and the facts the ask tells it to
+leave alone.  A case declares one as a fixture and hands it to the driver; the assertions
+then read the world rather than a list of tokens restated at each call site, so "she kept
+what the page said" is one claim about two objects instead of a comparison somebody has to
+keep in sync by hand.
 
 A case declares ONE world.  Its samples are hermetic — own database, own conversation, own
 pages — and every claim the case makes reads that world.
 """
 
 from __future__ import annotations
+
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,20 +22,70 @@ from penny.tests.eval.utils.fixtures import (
     LISTING_URL,
     TOPIC_PAGES,
     CannedPage,
+    SynthCollection,
 )
 
 
-class World(BaseModel):
-    """One world: the pages, what must be kept from each, and what must not be kept.
+class SourceKind(StrEnum):
+    """What one of a world's sources IS — the only thing a substrate changes about it.
 
-    ``keeps`` is one token set per SOURCE — tokens that appear ONLY on that page, so a stored
-    copy says which page it came from and an invented one matches neither.  They identify the
-    SOURCE; they are not a list of what the ask puts in scope.  That distinction is the whole
-    difference between "something from the seals page was written down" and "the seals page's
-    player was written down": the seals page's only item is an executive appointment, and a round
-    told to collect trades and signings can read the page, correctly find nothing in scope, and
-    still be right.  Requiring `volk`/`petra` failed such a round; the sibling case has always
-    asked the first question and passes 4/4.
+    A world stands on pages a tool returns, on entries seeded into the store, or on both,
+    and every reader asks the same question of all of them: what does it say, what must be
+    kept from it, what does a reader open to check that.  So the substrate is a field on the
+    source rather than a second list each reader has to remember to look in — which is what
+    it was, and why a store-backed world rendered no ground at all (#2108)."""
+
+    PAGE = "page"
+    COLLECTION = "collection"
+
+
+class WorldSource(BaseModel):
+    """ONE thing a world is made of: what it is called, what kind of thing it is, what it says.
+
+    THE definition of a world's ground.  ``World.says`` — the text a stored fact or a reply's
+    value is traced back to — and ``World.render`` — the table a reader checks that trace
+    against — both walk this one list, so a world cannot state one ground to a claim and a
+    different one to the report."""
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str
+    kind: SourceKind
+    text: str
+
+
+class WorldFacts(BaseModel):
+    """What a closed ground fold states about a world: how many sources of each kind, and how
+    many tokens each way.
+
+    Read off the world itself rather than counted back out of the rendered table — deriving a
+    summary from the markdown it summarises is the same mistake as diffing rendered prompts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pages: int = 0
+    collections: int = 0
+    keeps: int = 0
+    excludes: int = 0
+
+
+class World(BaseModel):
+    """One world: the sources, what must be kept from each, and what must not be kept.
+
+    ``pages`` are the sources a tool returns and ``stores`` are the ones already in the store
+    when the turn begins — the entries a case seeds into the user's own collections.  Both are
+    ground the sample is GIVEN, so the driver lays both down and every reader walks them
+    together as ``sources``; a world whose ground is entries rather than pages is not a world
+    with no ground.
+
+    ``keeps`` is one token set per SOURCE, in that same order — tokens that appear ONLY on that
+    source, so a stored copy says which one it came from and an invented one matches neither.
+    They identify the SOURCE; they are not a list of what the ask puts in scope.  That
+    distinction is the whole difference between "something from the seals page was written down"
+    and "the seals page's player was written down": the seals page's only item is an executive
+    appointment, and a round told to collect trades and signings can read the page, correctly
+    find nothing in scope, and still be right.  Requiring `volk`/`petra` failed such a round; the
+    sibling case has always asked the first question and passes 4/4.
 
     ``excludes`` are tokens that appear ONLY on a line the ask rules out, which is what makes a
     stored exclusion a read rather than a matter of taste.
@@ -58,11 +111,23 @@ class World(BaseModel):
     keeps: tuple[tuple[str, ...], ...]
     excludes: tuple[str, ...]
     answers: tuple[str, ...] = ()
+    stores: tuple[SynthCollection, ...] = ()
+
+    @property
+    def sources(self) -> tuple[WorldSource, ...]:
+        """Everything this world is made of, pages first — the ONE list every reader walks."""
+        return tuple(
+            WorldSource(label=page.match, kind=SourceKind.PAGE, text=page.text)
+            for page in self.pages
+        ) + tuple(
+            WorldSource(label=held.name, kind=SourceKind.COLLECTION, text=_holdings(held))
+            for held in self.stores
+        )
 
     @property
     def says(self) -> str:
-        """Every page's text — the ground a stored fact is traced to."""
-        return "\n".join(page.text for page in self.pages)
+        """Every source's text — the ground a stored fact or a reply's value is traced to."""
+        return "\n".join(source.text for source in self.sources)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -70,43 +135,81 @@ class World(BaseModel):
         return tuple(token for source in self.keeps for token in source)
 
     def render(self) -> str:
-        """This world as a table: one row per page, what must be kept from it, and — once — what
-        must not be kept from any of them.
+        """This world as a table: one row per SOURCE, what must be kept from it, and — once —
+        what must not be kept from any of them and what the reply owes.
 
         A table rather than stacked prose because these are the rows an assertion reads: "she
-        kept what the page said" is a comparison between a page and a token set, and putting them
-        in one row is what lets a reader check it at a glance. The page bodies stay openable
-        underneath, since the tokens are a claim ABOUT the text and not a substitute for it."""
-        if not self.pages:
+        kept what the source said" is a comparison between a source and a token set, and putting
+        them in one row is what lets a reader check it at a glance. The bodies stay openable
+        underneath, since the tokens are a claim ABOUT the text and not a substitute for it.
+
+        A page and a seeded collection render identically, in one table, in that one place — so
+        a report reads the same whichever substrate the world stands on, and a reader of a
+        store-backed case can see what the sample was answering against (#2108)."""
+        sources = self.sources
+        if not sources:
             return ""
         rows = "\n".join(
-            f"| {index + 1} | `{page.match}` | {_tokens(self._keeps_for(index))} |"
-            for index, page in enumerate(self.pages)
+            f"| {index + 1} | {source.kind.value} `{source.label}` | "
+            f"{_tokens(self._keeps_for(index))} |"
+            for index, source in enumerate(sources)
         )
-        bodies = "\n\n".join(
-            f"<details><summary>Page {index + 1} — `{page.match}` · {len(page.text):,} chars · "
-            f"keeps {_tokens(self._keeps_for(index)) or '—'}</summary>"
-            f"\n\n```\n{page.text}\n```\n\n</details>"
-            for index, page in enumerate(self.pages)
-        )
-        parts = [f"{_PAGE_HEAD}\n{rows}"]
+        bodies = "\n\n".join(self._body(index, source) for index, source in enumerate(sources))
+        parts = [f"{_SOURCE_HEAD}\n{rows}"]
         if self.excludes:
-            parts.append(f"**Must not be kept, from any page** — {_tokens(self.excludes)}")
+            parts.append(f"{_EXCLUDES_LEAD} — {_tokens(self.excludes)}")
+        if self.answers:
+            parts.append(f"{_ANSWERS_LEAD} — {_tokens(self.answers)}")
         parts.append(bodies)
         return "\n\n".join(parts)
 
     @property
-    def counts(self) -> tuple[int, int, int]:
-        """``(pages, must-keep tokens, must-not tokens)`` — what a closed fold states about this
-        world, read off the world itself rather than counted back out of its rendered table."""
-        return len(self.pages), len(self.names), len(self.excludes)
+    def counts(self) -> WorldFacts:
+        """What a closed fold states about this world, read off the world itself rather than
+        counted back out of its rendered table."""
+        return WorldFacts(
+            pages=len(self.pages),
+            collections=len(self.stores),
+            keeps=len(self.names),
+            excludes=len(self.excludes),
+        )
+
+    def _body(self, index: int, source: WorldSource) -> str:
+        """One source's own text, openable under the row that makes a claim about it."""
+        return (
+            f"<details><summary>{source.kind.value.title()} {index + 1} — `{source.label}` · "
+            f"{len(source.text):,} chars · keeps {_tokens(self._keeps_for(index)) or '—'}"
+            f"</summary>\n\n```\n{source.text}\n```\n\n</details>"
+        )
 
     def _keeps_for(self, index: int) -> tuple[str, ...]:
-        """The tokens this page contributes, or empty where the case named none for it."""
+        """The tokens this source contributes, or empty where the case named none for it."""
         return self.keeps[index] if index < len(self.keeps) else ()
 
 
-_PAGE_HEAD = "| # | page | must be kept |\n|---|---|---|"
+_SOURCE_HEAD = "| # | source | must be kept |\n|---|---|---|"
+_EXCLUDES_LEAD = "**Must not be kept, from any source**"
+# The reply-side contract, rendered beside the store-side one because it is the other half of
+# what the world claims and it had no home at all before: a case whose whole point is one anchor
+# token showed the ask, the claims and the numbers, and nowhere the token itself.
+_ANSWERS_LEAD = "**Must be stated by the reply**"
+
+
+def _holdings(held: SynthCollection) -> str:
+    """One seeded collection as the store will hold it: what it is FOR, then each entry under
+    the key the seeder derives for it.
+
+    Key and content both, because an assertion about the store reads the WHOLE entry — a fact
+    in the key and a blurb in the body is a perfectly good way to store it. The description is
+    here because it is ground too: the ambient store map renders it on every turn, so a reply
+    could state it with no call at all, and a case whose anchor leaked into a description is
+    measuring nothing."""
+    return "\n".join(
+        [
+            f"{held.name} — {held.description}",
+            *(f"{key}: {content}" for key, content in held.keyed),
+        ]
+    )
 
 
 def _tokens(tokens: tuple[str, ...]) -> str:
