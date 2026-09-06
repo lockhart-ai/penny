@@ -2668,9 +2668,9 @@ def routine_demonstrated_values(steps: Sequence[SkillStep]) -> list[str]:
     """Every string at the leaves of a routine's demonstrated call arguments.
 
     What the routine will actually fetch and look for each run — one altitude BELOW
-    ``render_skill_shape``, which carries no argument values at all.  Read by the same two
-    readers ``routine_names_a_destination`` is: the observation, off the registry rows a sample
-    left, and a fixture probe, off the drafts a world seeds.
+    ``render_skill_shape``, which carries no argument values at all.  Read by the observation
+    alone, off the registry rows a sample left; unlike ``routine_names_a_destination`` no
+    fixture probe asks it of a world's seeded drafts.
 
     A FLAT list rather than one keyed by tool or by argument position, for the reason nothing
     else in this path names a tool: a skill is an arbitrary tool sequence, so which call carries

@@ -35,7 +35,6 @@ from penny.tests.eval.utils.cohort import (
     StoredEntry,
     VarianceFeature,
     assertion_summary,
-    cadence_seconds,
     compare_to_ceiling,
     feature_variance,
     normalised_entropy,
@@ -933,7 +932,9 @@ def test_two_spellings_of_one_cadence_are_two_readings_here_and_one_on_the_claim
     per_sixty = _stood_up("new-job", notifies=True, schedule="FREQ=MINUTELY;INTERVAL=60")
     spread = feature_variance(JOB_TERMS, [_with_jobs("s1", hourly), _with_jobs("s2", per_sixty)])
     assert spread.distinct == 2, "the two rules read as two values"
-    assert cadence_seconds("FREQ=HOURLY") == cadence_seconds("FREQ=MINUTELY;INTERVAL=60") == 3600
+    # That the CLAIM reads them as one is pinned where the gap is read, in
+    # ``test_eval_harness.py`` — this module is the cohort's own dependency-light leaf and
+    # cannot import the rule grammar without dragging the database into it.
 
 
 def test_a_turn_that_stood_two_jobs_up_reads_both_in_a_stable_order():
