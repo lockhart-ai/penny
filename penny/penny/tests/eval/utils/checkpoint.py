@@ -30,7 +30,9 @@ CLI (invoked in-container by the Makefile, home = the mounted ``/penny/eval-arti
   ``python -m penny.tests.eval.utils.checkpoint resolve <home> <commit>``
       → prints the ONE unposted completed run dir measured at ``<commit>`` (exit 0), or an
       actionable multi-line message on stderr (exit 1) when there are none or several. Never
-      falls back to "most recent".
+      falls back to "most recent". ``UNKNOWN_COMMIT`` — what a tree records when git cannot read
+      its HEAD — is an identity every such tree shares, so it is refused rather than matched, on
+      either side.
   ``python -m penny.tests.eval.utils.checkpoint banner <home>``
       → prints the unreviewed-run banner to stdout when any exist, else nothing
       (always exit 0 — warn, never block).
@@ -43,7 +45,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
-from penny.tests.eval.utils.artifacts import MANIFEST_FILENAME
+from penny.tests.eval.utils.artifacts import MANIFEST_FILENAME, UNKNOWN_COMMIT
 
 # The marker a posted run dir carries (its content is the posted comment's URL). Mirrored by the
 # Makefile's `POSTED_MARKER` var — both must name the same file.
@@ -75,6 +77,14 @@ _ALREADY_POSTED = (
 _NO_MATCH_ACTION = "     run `make eval` on this tree, or post a named run with RUN=<run-dir>"
 _AMBIGUOUS_HEAD = "eval-report: {count} unposted runs under {home} were measured at {commit}:"
 _AMBIGUOUS_ACTION = "     name the one to post: make eval-report PR=<n> RUN=<run-dir>"
+_NO_HEAD_HEAD = (
+    "eval-report: git could not read this tree's HEAD, so there is no commit to resolve against"
+)
+_NO_HEAD_NOTE = (
+    "     every tree that cannot read its HEAD records the same `{commit}`, so matching on it "
+    "would post another tree's run"
+)
+_NO_HEAD_ACTION = "     name the run to post: make eval-report PR=<n> RUN=<run-dir>"
 
 
 def run_dirs(home: Path) -> list[Path]:
@@ -111,15 +121,17 @@ class RunIdentity(BaseModel):
 
 
 def measured_commit(run_dir: Path) -> str | None:
-    """The commit ``run_dir``'s manifest records, or ``None`` when the manifest cannot be read or
-    records no commit. Absence is ordinary — a manifest half-written by a concurrent run reads this
-    way — and ``None`` never equals a commit, so an unattributable run drops out of the candidates
-    instead of matching one and being posted to the wrong PR."""
+    """The commit ``run_dir``'s manifest records, or ``None`` when it records no usable one — the
+    manifest cannot be read, or it records ``UNKNOWN_COMMIT``, which is what EVERY tree writes when
+    git cannot read its HEAD and is therefore an identity shared by all of them, not this tree's.
+    Both are ordinary (a manifest half-written by a concurrent run reads the first way), and
+    ``None`` never equals a commit, so such a run drops out of the candidates instead of matching
+    one and being posted to the wrong PR."""
     try:
         manifest = RunIdentity.model_validate_json((run_dir / MANIFEST_FILENAME).read_bytes())
     except OSError, ValidationError:
         return None
-    return manifest.commit
+    return None if manifest.commit == UNKNOWN_COMMIT else manifest.commit
 
 
 def runs_at_commit(home: Path, commit: str) -> list[Path]:
@@ -167,10 +179,22 @@ def render_ambiguous(home: Path, commit: str, runs: list[Path]) -> str:
     return "\n".join(lines)
 
 
+def render_no_head(commit: str) -> str:
+    """The refusal when the CALLER has no HEAD to resolve against — git failed in the invoking
+    tree, so it passed ``UNKNOWN_COMMIT``. Refused before the candidates are even counted: that
+    sentinel is what every such tree records, so matching on it would post a sibling's run, which
+    is the mix-up this resolution exists to prevent."""
+    return "\n".join([_NO_HEAD_HEAD, _NO_HEAD_NOTE.format(commit=commit), _NO_HEAD_ACTION])
+
+
 def resolve(home: Path, commit: str) -> int:
     """Print the ONE unposted run under ``home`` measured at ``commit`` (exit 0), or the matching
     loud refusal on stderr (exit 1) for zero or several. This is the whole of the bare-``RUN``
-    default: three outcomes, no fourth."""
+    default: three outcomes, no fourth. A caller with no readable HEAD has no identity to resolve
+    against at all, and is refused before any of them."""
+    if commit == UNKNOWN_COMMIT:
+        print(render_no_head(commit), file=sys.stderr)
+        return 1
     candidates = runs_at_commit(home, commit)
     if len(candidates) == 1:
         print(candidates[0].name)

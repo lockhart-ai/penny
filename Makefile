@@ -88,8 +88,11 @@ POSTED_MARKER := .posted
 # that recorded value (#2098), so the two derivations must agree byte-for-byte or every bare
 # `make eval-report` becomes unresolvable. Derived HOST-side in the recipe shell, not in the
 # container: a worktree's `.git` is a file pointing at the primary checkout's gitdir, which the
-# container has neither mounted nor any reason to. Deferred (`=`), never `:=` or `$(shell …)`,
-# so it is shell text INSIDE the recipe — `make -n` prints it rather than running git.
+# container has neither mounted nor any reason to. Never `$(shell …)` — this stays shell text run
+# INSIDE the recipe, so `make -n` prints it rather than running git at parse time.
+# The `unknown` fallback must match `penny.tests.eval.utils.artifacts.UNKNOWN_COMMIT`, which the
+# resolver treats as NO identity rather than as a commit: every tree that cannot read its HEAD
+# records that same string, so matching on it would post a sibling's run.
 HEAD_COMMIT_CMD = git rev-parse HEAD 2>/dev/null || echo unknown
 # The line `penny.tests.eval.utils.endpoint_smoke` prints the answering provider on. Must match
 # `endpoint_smoke.PROVIDER_LINE_PREFIX` — the recipe reads the provider off it and forwards

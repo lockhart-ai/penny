@@ -1167,9 +1167,12 @@ into **both** recipe shells — `eval` records it as `EVAL_COMMIT` in the manife
 against that — so the two derivations cannot drift. It is derived **host-side**, because a worktree's
 `.git` is a file pointing at the primary checkout's gitdir that the container has no reason to mount; and
 it is a deferred (`=`) variable rather than `$(shell …)`, so `make -n eval-report PR=<n>` prints the
-resolution instead of running git. A run dir whose `manifest.json` cannot be read has **no** measured
-commit (`None`), which never equals one — so a manifest half-written by a concurrent run drops out of
-the candidates rather than matching anything.
+resolution instead of running git. **A sentinel is not an identity**: a run dir whose `manifest.json`
+cannot be read, records no `commit`, or records `UNKNOWN_COMMIT` (`"unknown"` — what *every* tree
+writes when git cannot read its HEAD) has **no** measured commit (`None`), which never equals one; and
+a caller passing that sentinel is refused before the candidates are counted. Otherwise two trees that
+both failed to read their HEAD would share one identity and post each other's runs — #2098 again,
+through the fix.
 
 **Past the 64K comment cap, a run posts as MANY comments (#1808).** GitHub refuses a comment body over
 65,536 characters, and `eval-report` had no split path — so an over-cap run could not be posted at all by

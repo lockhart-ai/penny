@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from penny.tests.eval.utils.artifacts import UNKNOWN_COMMIT
 from penny.tests.eval.utils.checkpoint import (
     POSTED_MARKER,
     USAGE,
@@ -25,6 +26,7 @@ from penny.tests.eval.utils.checkpoint import (
     posted_runs_at_commit,
     render_ambiguous,
     render_banner,
+    render_no_head,
     render_no_match,
     run_dirs,
     runs_at_commit,
@@ -74,17 +76,24 @@ def test_run_dirs_empty_when_home_absent(tmp_path: Path) -> None:
 
 def test_runs_at_commit_is_this_trees_unposted_runs_only(tmp_path: Path) -> None:
     """The candidate set is keyed to the COMMIT, not to recency: a sibling tree's run, this tree's
-    already-posted run, and a run whose manifest is unreadable all drop out. The sibling's run is
-    deliberately the newest and lexically last, so a recency fall back would surface it."""
+    already-posted run, a run whose manifest is unreadable or records no commit, and a run that
+    recorded the shared ``unknown`` sentinel all drop out. The sibling's run is deliberately the
+    newest and lexically last, so a recency fall back would surface it."""
     _make_run(tmp_path, "run-mine", commit=COMMIT_HERE)
     _make_run(tmp_path, "run-mine-posted", commit=COMMIT_HERE, posted=True)
+    _make_run(tmp_path, "run-headless", commit=UNKNOWN_COMMIT)
     half_written = _make_run(tmp_path, "run-half", commit=COMMIT_HERE)
     (half_written / "manifest.json").write_text('{"commit": "aaaa')  # a concurrent run mid-write
+    fieldless = _make_run(tmp_path, "run-fieldless", commit=COMMIT_HERE)
+    (fieldless / "manifest.json").write_text('{"model": "some-model"}')  # a manifest with no commit
     _make_run(tmp_path, "run-sibling", commit=COMMIT_SIBLING)  # created LAST, sorts LAST
     assert measured_commit(half_written) is None
+    assert measured_commit(fieldless) is None
+    assert measured_commit(tmp_path / "run-headless") is None
     assert [run.name for run in runs_at_commit(tmp_path, COMMIT_HERE)] == ["run-mine"]
     assert [run.name for run in posted_runs_at_commit(tmp_path, COMMIT_HERE)] == ["run-mine-posted"]
     assert runs_at_commit(tmp_path, COMMIT_UNMEASURED) == []
+    assert runs_at_commit(tmp_path, UNKNOWN_COMMIT) == []
 
 
 def test_unreviewed_runs_excludes_posted(tmp_path: Path) -> None:
@@ -151,6 +160,31 @@ def test_render_ambiguous_whole_render(tmp_path: Path) -> None:
         "whichever tree measured it\n"
         "     name the one to post: make eval-report PR=<n> RUN=<run-dir>"
     )
+
+
+def test_render_no_head_whole_render() -> None:
+    """The caller-has-no-HEAD refusal says why the sentinel is not an identity (exact literal)."""
+    assert render_no_head(UNKNOWN_COMMIT) == (
+        "eval-report: git could not read this tree's HEAD, so there is no commit to resolve "
+        "against\n"
+        "     every tree that cannot read its HEAD records the same `unknown`, so matching on it "
+        "would post another tree's run\n"
+        "     name the run to post: make eval-report PR=<n> RUN=<run-dir>"
+    )
+
+
+def test_cli_resolve_refuses_the_shared_unknown_sentinel(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tree whose HEAD git could not read passes ``unknown`` — the identity EVERY such tree
+    shares. Even with exactly one unposted ``unknown`` run sitting in the home, resolution refuses
+    and prints nothing on stdout: matching there would post whichever tree's run happened to be
+    the only one, which is the mix-up this resolution exists to prevent."""
+    _make_run(tmp_path, "run-headless", commit=UNKNOWN_COMMIT)
+    assert main(["resolve", str(tmp_path), UNKNOWN_COMMIT]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"{render_no_head(UNKNOWN_COMMIT)}\n"
 
 
 def test_cli_resolve_three_outcomes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
