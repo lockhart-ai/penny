@@ -132,7 +132,6 @@ from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
-    ROUTINE_NAME,
     ROUTINE_SHAPE,
     TOOL_SEQUENCE,
     TRANSITIONS,
@@ -813,7 +812,7 @@ def _probe_correction_world(case: _CorrectionCase) -> Preparer:
         assert_the_teach_round_is_parked(penny.db, case)
         assert_the_correction_registry_holds(penny.db, case)
         assert_the_correction_is_unsaid(penny.db, case)
-        assert_every_wording_names_the_corrected_line(case)
+        assert_every_wording_names_the_corrected_line()
 
     return probe
 
@@ -1028,20 +1027,24 @@ _CORRECTED_TRAIL = World(
 )
 
 
-def assert_every_wording_names_the_corrected_line(case: _CorrectionCase) -> None:
+def assert_every_wording_names_the_corrected_line() -> None:
     """Every arm names the line the correction redirects to, and none of them carries the answer.
 
     The facts are held constant across a cohort's arms because the assertions hinge on them, and
     both halves are load-bearing here: a wording that named no line would be a correction with no
     target, and one that spelled out the corrected VALUE would let a sample store it without
     reading anything.  The target is matched case-folded, since which case a person types is
-    exactly what a paraphrase is free to vary."""
-    for wording in (case.correction, *_CORRECTION_PHRASINGS):
+    exactly what a paraphrase is free to vary.
+
+    It takes no case, because it is not general: the wordings and the target it reads are this
+    module's own survivor.  A ``case`` parameter would read as generality it does not have —
+    hand it another correction and it would assert that this survivor's target is in it."""
+    for wording in (_SURVIVOR.correction, *_CORRECTION_PHRASINGS):
         assert _CORRECTED_TARGET in wording.lower(), (
-            f"{case.case_id}: this wording names no target — {wording!r}"
+            f"{_CASE_ID}: this wording names no target — {wording!r}"
         )
-        assert case.corrected.lower() not in wording.lower(), (
-            f"{case.case_id}: this wording carries its own answer {case.corrected!r} — {wording!r}"
+        assert _SURVIVOR.corrected.lower() not in wording.lower(), (
+            f"{_CASE_ID}: this wording carries its own answer {_SURVIVOR.corrected!r} — {wording!r}"
         )
 
 
@@ -1055,8 +1058,8 @@ def assert_every_wording_names_the_corrected_line(case: _CorrectionCase) -> None
 #
 # What no claim here reads is a TOOL NAME or a step ORDER: a skill is an arbitrary tool
 # sequence, so the question is what the registry holds afterwards and never which verb put it
-# there.  ``_demonstrated_values`` is flat for the same reason — which call carries the page and
-# which carries what to look for is not something a claim can know.
+# there.  ``RoutineRecord.demonstrated_values`` is flat for the same reason — which call carries
+# the page and which carries what to look for is not something a claim can know.
 
 
 _ROUND_ROUTINE = slug_skill_name(_SURVIVOR.skill.name)
@@ -1138,18 +1141,29 @@ def _the_round_container_is_still_inert(sample: SampleObservation, _world: World
     if row is None:
         return False, f"{_ROUND_CONTAINER!r} is no longer in the registry at all"
     terms = row.schedule is not None or row.notifies or row.expires
-    return not terms, f"{_ROUND_CONTAINER!r} carries a job: {row.schedule!r}"
+    return not terms, (
+        f"{_ROUND_CONTAINER!r} carries a job: schedule {row.schedule!r}, "
+        f"notifies {row.notifies}, expires {row.expires}"
+    )
 
 
-# What this case measures.  ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are IN, unlike every other
-# ported transition case: this is the one edge whose turn re-extracts, so what they read is the
-# round's own re-extraction against the world's constant five rather than the fixture alone.
+# What this case measures.  ``ROUTINE_SHAPE`` is IN, unlike every other ported transition case:
+# this is the one edge whose turn RE-EXTRACTS, so the shape it reads is the round's own new
+# program against the world's constant five rather than the fixture alone.
 #
-# ``JOB_TERMS`` is deliberately ABSENT: a correct correction stands nothing up, so on a correct
-# cohort it reads its absent value on every sample and the report would mark it blind in red for
-# behaving exactly as this case requires.  A sample that DID configure the round is caught by
-# the inert claim, where it is a miss rather than a variance rise.
-_MEASURED = (TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+# ``ROUTINE_NAME`` is OUT, and it is the near miss.  Since #1902 the re-extraction is keyed by
+# the name the round's framing PINNED — which is what this case's own one-routine claim asserts
+# — so on a correct cohort the feature reads the five seeded names plus one pinned one, the same
+# value on every sample: a reading of the FIXTURE, which is why the four sibling cases exclude
+# it.  And the one divergence it could report is a FORK, a different end state, while the
+# feature is declared cosmetic — so the finding would land in the wrong column.  The fork is
+# caught by ``_one_routine_stands_for_the_round``, where it is a miss rather than a spread.
+#
+# ``JOB_TERMS`` is ABSENT for the other reason: a correct correction stands nothing up, so on a
+# correct cohort it reads its absent value on every sample and the report would mark it blind in
+# red for behaving exactly as this case requires.  A sample that DID configure the round is
+# caught by the inert claim.
+_MEASURED = (TOOL_SEQUENCE, ROUTINE_SHAPE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)

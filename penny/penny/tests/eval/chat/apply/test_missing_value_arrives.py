@@ -95,15 +95,14 @@ from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
-    HOUR_PART,
     JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
     TRANSITIONS,
     SampleObservation,
     SpecCategory,
-    rule_parts,
 )
+from penny.tests.eval.utils.schedules import HOUR_PART, rule_parts
 from penny.tests.eval.utils.transition_ledger import _FAMILY
 from penny.tests.eval.utils.transition_world import (
     _NORTH_PIER_URL,
@@ -211,7 +210,7 @@ def _probe_parked_round(case: _RequestApplyCase) -> Preparer:
         assert_the_supply_completes_the_routine(penny.db, case)
         assert_the_job_has_no_container_yet(penny.db, case)
         assert_values_are_new(penny.db, case.case_id, case.supplies.values())
-        assert_every_wording_carries_the_value(case)
+        assert_every_wording_carries_the_value()
 
     return probe
 
@@ -254,7 +253,7 @@ def assert_the_job_has_no_container_yet(db: Database, case: _RequestApplyCase) -
     )
 
 
-def assert_every_wording_carries_the_value(case: _RequestApplyCase) -> None:
+def assert_every_wording_carries_the_value() -> None:
     """Every arm's wording supplies the value the round is waiting on.
 
     The facts are held constant across a cohort's arms because the assertions hinge on them,
@@ -262,8 +261,8 @@ def assert_every_wording_carries_the_value(case: _RequestApplyCase) -> None:
     answer that answers nothing, so its sample would stay parked in request and fail every
     claim for a reason that has nothing to do with the behaviour."""
     for wording in (_SUPPLY, *_SUPPLY_PHRASINGS):
-        missing = [value for value in case.supplies.values() if value not in wording]
-        assert not missing, f"{case.case_id}: this wording supplies none of {missing} — {wording!r}"
+        missing = [value for value in _CASE.supplies.values() if value not in wording]
+        assert not missing, f"{_CASE_ID}: this wording supplies none of {missing} — {wording!r}"
 
 
 # ── The one claim this case makes alone ───────────────────────────────────────

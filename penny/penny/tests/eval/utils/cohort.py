@@ -37,23 +37,12 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from enum import StrEnum
-from itertools import islice
 
-from dateutil.rrule import rrulestr
 from pydantic import BaseModel, ConfigDict, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
 
 from penny.tests.eval.utils.worlds import World
-
-# The stored schedule's own line and tag spellings, read from the tool that writes a rule
-# rather than restated — see "What a stored schedule SAYS" below.
-from penny.tools.collection_instantiation import (
-    _DTSTART_TAG,
-    _LINE_ESCAPE,
-    _RRULE_TAG,
-)
 
 # How far above the observed spread a proposed ceiling sits.  Measured: subsampling real
 # 32-sample cohorts down to 15 puts the sampling noise on normalised entropy at ~±0.11, so a
@@ -140,67 +129,6 @@ class MechanismRecord(BaseModel):
     notifies: bool
     schedule: str | None
     expires: bool
-
-
-# ── What a stored schedule SAYS ──────────────────────────────────────────────
-#
-# The reading of ``MechanismRecord.schedule``, beside the field it reads.  It lives here
-# rather than with the transition fixtures because three cases now claim on that field — the
-# three stand-up edges — and they reach it through ``assertions.py``, which the fixture module
-# cannot supply: ``assertions`` ← ``conftest`` ← ``transition_world`` is already a chain, so an
-# import the other way is a cycle.  The module that owns the field is the one every claimant
-# can import.
-#
-# The grammar's own literals come from the tool that WRITES the rule, never restated here: a
-# stored rule renders back as the copyable ``schedule`` input (#1857), and a second copy of the
-# line and tag spellings would be a second contract free to drift from it.
-
-# The rule part that ANCHORS a recurrence to a time of day.  Read as a PART of the stored
-# rule rather than off the parsed object, because dateutil defaults an unstated hour to the
-# start's — so the parsed rule cannot tell a stated hour from an inherited one, and only the
-# text says whether the model chose one.
-HOUR_PART = "BYHOUR"
-
-# Where a rule with no ``DTSTART`` of its own is anchored for measurement.  Any fixed instant
-# does: the cadence is the GAP between occurrences, and a gap does not move with the anchor.
-_MEASURING_ANCHOR = datetime(2000, 1, 1, tzinfo=UTC)
-
-# How many occurrences a gap needs.  Two — a rule that can only fire once (COUNT=1) has no
-# cadence to read, which is a real shape and reads as no cadence rather than as an error.
-_OCCURRENCES_FOR_A_GAP = 2
-
-
-def _rule_body(schedule: str) -> str:
-    """The stored schedule's RULE line — the ``DTSTART`` line dropped and any ``RRULE:``
-    tag stripped.  A schedule renders on one line with its newline written ``\\n`` (the form
-    the parser accepts back), so both spellings are unfolded first."""
-    lines = [line for line in schedule.replace(_LINE_ESCAPE, "\n").splitlines() if line.strip()]
-    body = next((line for line in reversed(lines) if not line.upper().startswith(_DTSTART_TAG)), "")
-    return body[len(_RRULE_TAG) :] if body.upper().startswith(_RRULE_TAG) else body
-
-
-def rule_parts(schedule: str) -> set[str]:
-    """Which PARTS the stored rule states, by name — the declared shape, read structurally
-    off the rule rather than by comparing its spelling to one we had in mind."""
-    return {part.partition("=")[0].strip().upper() for part in _rule_body(schedule).split(";")}
-
-
-def cadence_seconds(schedule: str) -> int | None:
-    """How often the stored rule FIRES, in seconds — the gap between its first two
-    occurrences, measured by walking the rule itself.
-
-    Reading the gap rather than the FREQ/INTERVAL pair is what makes the check answer the
-    question the acceptance asked ("every day") instead of a question about spelling: a
-    daily cadence written ``FREQ=DAILY``, ``FREQ=HOURLY;INTERVAL=24``, or
-    ``FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU`` all fire a day apart, and all three are the
-    same answer.  ``None`` when the rule fires at most once."""
-    text = schedule.replace(_LINE_ESCAPE, "\n")
-    anchored = _DTSTART_TAG in text.upper()
-    rule = rrulestr(text) if anchored else rrulestr(text, dtstart=_MEASURING_ANCHOR)
-    occurrences = list(islice(iter(rule), _OCCURRENCES_FOR_A_GAP))
-    if len(occurrences) < _OCCURRENCES_FOR_A_GAP:
-        return None
-    return int((occurrences[1] - occurrences[0]).total_seconds())
 
 
 class Arm(BaseModel):
