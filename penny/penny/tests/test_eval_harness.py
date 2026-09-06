@@ -85,9 +85,8 @@ from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
     assert_board_games_world,
 )
 from penny.tests.eval.chat.idle.test_chat_reply import (
-    _STORED_TITLES,
-    _carries,
-    _honest_about_the_duplicate,
+    ANSWERING_CASES,
+    SEEDED_ANSWER_CASES,
 )
 from penny.tests.eval.chat.idle.test_choose_dispatch import (
     _OPTIONS as _CHOOSE_OPTIONS,
@@ -4982,53 +4981,88 @@ def test_score_labelling_reads_the_two_structural_claims() -> None:
     )
 
 
-# ── The chat-reply scorer's two reply reads (#1919) ──────────────────────────
+# ── The idle answering cases' own fixtures (#2008) ───────────────────────────
 #
-# Both are pure functions over a reply string, and both were tuned against MEASURED
-# replies — so they belong inside `make check`, where the `eval` marker cannot deselect
-# them, rather than only under the GPU run they score.  Each is pinned in BOTH directions:
-# the reply that must now pass, and the one that must still fail.
+# The two reply READS this replaces — a stored-title containment and the duplicate-save
+# vocabulary — went with the port: the first is `fold_typography` now, and the second was a
+# phrasing match, which the design abolishes.  What is worth pinning in their place is the
+# FIXTURE, because every claim these cases make is answered against it and a drift is silent
+# on a run: a token no world carries fails a correct reply, and a token the store map already
+# renders passes a reply that read nothing.  Cheap and deterministic, so it runs here rather
+# than costing a GPU run to find.
 
 
-def test_a_title_typed_with_any_space_still_reads_as_that_title() -> None:
-    """A stored title the model typed with a NARROW NO-BREAK space is that title.
+def test_every_answering_case_asks_one_thing_in_five_wordings() -> None:
+    """A cohort is FIVE wordings of ONE ask, which is what makes its fifteen samples one
+    number rather than a pool of several behaviours.
 
-    Two measured from-store samples named a seeded title and were scored as naming
-    nothing, because the model put U+202F between the words where the token has a plain
-    space.  The fold is by whitespace CATEGORY, so the widths it has not met yet are
-    covered too — while a reply that genuinely names nothing stored still fails, which is
-    the half that keeps the check worth having."""
-    title = _STORED_TITLES[1]
-    assert title == "quarry hollow"
-
-    for space in (" ", " ", " ", " ", "　", "  ", "\n"):
-        typed = f"you had **Quarry{space}Hollow** on your shortlist 🎲"
-        assert _carries(typed, title), f"U+{ord(space[0]):04X} broke the title read"
-
-    assert not _carries("you're into board games and trail running 🎲", title)
+    Two ways to get it wrong and both are silent on a run: four wordings pool twelve samples
+    under a number recorded at fifteen, and a repeated wording pools one wording twice while
+    claiming the coverage of two."""
+    for case in ANSWERING_CASES:
+        assert len(case.also_phrased) == 4, (
+            f"{case.case_id}: a cohort is FIVE wordings of one ask, got "
+            f"{1 + len(case.also_phrased)}"
+        )
+        assert len({case.ask, *case.also_phrased}) == 5, (
+            f"{case.case_id}: two of its wordings are the same string"
+        )
 
 
-def test_the_duplicate_reply_read_fails_a_fresh_claim_not_a_neutral_one() -> None:
-    """A no-op save is honest as long as the reply does not claim it just happened.
+def test_every_claimed_answer_is_one_token_its_own_world_carries() -> None:
+    """Each case's ``answers`` tokens are single whitespace-free tokens, and each one appears
+    in the world the case is answered against.
 
-    Measured, a sample that had SEEN the write gate's already-there result confirmed the
-    present state neutrally ("it's logged in your interests") and was scored a miss for
-    reaching for the wrong words — a false negative, since it claimed nothing untrue.  So
-    the read now fails only a claim that THIS turn recorded it, and the genuine
-    fresh-claim replies must keep failing, which is real product signal."""
-    for honest in (
-        "already had that one — sea kayaking is on your list 🛶",
-        "got it — sea kayaking is logged in your interests 🛶",
-        "yep, sea kayaking 🛶",
-        "i just looked and it's already logged 🛶",
-    ):
-        assert _honest_about_the_duplicate(honest) == (True, None), honest
+    ONE TOKEN because ``fold_typography`` folds a declared SET of space characters rather than
+    the whole Unicode category — measured, two samples typed a seeded title with U+202F
+    between the words and were scored as naming nothing — so a multi-word token can be failed
+    by a space nobody has met yet, while a single token cannot.
 
-    fresh, claimed = _honest_about_the_duplicate("nice — sea kayaking is now safely logged 🛶")
-    assert (fresh, claimed) == (False, "claimed 'now safely logged'")
+    IN THE WORLD because a token no page carries fails a correct reply for a fact the fixture
+    never stated.  A world with no pages states its answer through its SEED instead, which the
+    sibling pin below reads out of the store."""
+    seeded = {case.case_id for case in SEEDED_ANSWER_CASES}
+    for case in ANSWERING_CASES:
+        for token in case.world.answers:
+            assert token.split() == [token], (
+                f"{case.case_id}: the answer token {token!r} carries whitespace, so a space "
+                "the fold has not met can fail a correct reply"
+            )
+            if case.case_id in seeded:
+                continue
+            assert token in case.world.says, (
+                f"{case.case_id}: no page in its world carries the answer token {token!r}"
+            )
 
-    fresh, claimed = _honest_about_the_duplicate("sea kayaking is officially on the radar 🛶")
-    assert (fresh, claimed) == (False, "claimed 'officially on the radar'")
+
+def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> None:
+    """Each case's world lays down cleanly and reads back as the world its claims assume — the
+    loud probe run here, against a real migrated database, rather than only under ``make eval``
+    where a raise costs a GPU run before it is seen.
+
+    Its own database per case, because that is what a sample gets.  The answer tokens ride
+    along for the seeded cases the pin above skips: the value has to be IN the store, since the
+    whole behaviour is that she went and read it."""
+    for index, case in enumerate(ANSWERING_CASES):
+        if case.seed is None and case.probe is None:
+            continue
+        db = migrated_db(str(tmp_path / f"answering-{index}.db"))
+        if case.seed is not None:
+            case.seed(db)
+        if case.probe is not None:
+            case.probe(db)
+        if case not in SEEDED_ANSWER_CASES:
+            continue
+        stored = " ".join(
+            f"{key} {content}"
+            for row in db.memories.list_all()
+            if row.type == MemoryType.COLLECTION
+            for key, content in collection_entries(db, row.name).items()
+        )
+        for token in case.world.answers:
+            assert token in stored, (
+                f"{case.case_id}: the seeded store does not carry the answer token {token!r}"
+            )
 
 
 def test_every_tool_name_read_is_sanitised_the_way_production_sanitises_it() -> None:

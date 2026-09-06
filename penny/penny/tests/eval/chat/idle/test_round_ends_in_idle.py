@@ -434,7 +434,8 @@ def _routines_of(case: _BailCase) -> list[str]:
 #
 #   * created           — a sample that stands the abandoned job up, or mints a container for
 #                         the subject the bail changed to, fails it.  The registry read is a
-#                         list of rows, so "nothing" is a count and not an inference.
+#                         list of rows, so "nothing" is a count and not an inference.  It is
+#                         the one that lives in ``assertions.py`` (below).
 #   * registry          — a sample whose turn was read as more of the teach round mints a
 #                         routine at run end (extraction fires in ``learn`` and nowhere else),
 #                         and one read as a correction replaces the row that is there.  Both
@@ -449,18 +450,16 @@ def _routines_of(case: _BailCase) -> list[str]:
 # What no claim here reads is a TOOL NAME: a skill is an arbitrary tool sequence, so the
 # question is what the store holds afterwards and never which verb got it there.
 #
-# All four stay LOCAL rather than graduating into ``assertions.py``.  The rule is that a claim
-# graduates at the second CUSTOMER, and the four cases below are one behaviour family in one
-# file answering one contract in four worlds — a second file is what would make one of these a
-# shared claim, and none of the eleven other edges has asked for it yet.  Two of them could not
-# graduate anyway: they are parametrised by the case's own world.
-
-
-def _nothing_was_created(sample: SampleObservation, _world: World) -> Answer:
-    """No collection was created — not an inert one, not a configured one, none.  A bail ends
-    the round, and a container built on the way out is a job nobody asked for."""
-    born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
-    return not born, f"created {born}"
+# The three that remain here stay LOCAL rather than graduating into ``assertions.py``.  The
+# rule is that a claim graduates at the second CUSTOMER, and the four cases below are one
+# behaviour family in one file answering one contract in four worlds — a second file is what
+# would make one of these a shared claim.  Two of them could not graduate anyway: they are
+# parametrised by the case's own world.
+#
+# The CREATED claim did reach a second file (#2008's idle answering cases say the same
+# sentence about a turn that answers rather than bails), so it lives in ``assertions.py`` now
+# as ``assert_no_mechanism_was_created`` and both files read the one definition — the label
+# being the key a report's history is joined on.
 
 
 def _registry_unchanged(case: _BailCase) -> Callable[[SampleObservation, World], Answer]:
@@ -519,11 +518,11 @@ def _the_round_container_was_archived(
     return answer
 
 
-# The three STORE labels every bail claims under.  Named once because a label is a diff-join
-# key: four copies of one sentence are four chances for a typo to split one claim's history
-# into two.  Deliberately case-NEUTRAL — one wording reads the same whether the abandoned
-# round was a teach loop, a negotiation, or no round at all.
-_NOTHING_CREATED = "state: no mechanism was created"
+# The two STORE labels every bail states for itself.  Named once because a label is a
+# diff-join key: four copies of one sentence are four chances for a typo to split one claim's
+# history into two.  Deliberately case-NEUTRAL — one wording reads the same whether the
+# abandoned round was a teach loop, a negotiation, or no round at all.  (The created claim's
+# own label lives on ``assert_no_mechanism_was_created`` for the same reason, one file up.)
 _REGISTRY_UNCHANGED = "state: the registry holds exactly the routines it already had"
 _TOUCHED_ONLY_ITS_OWN = "state: the only mechanism this turn changed is the one the round built"
 
@@ -574,7 +573,7 @@ async def test_elicit_to_idle_drops_the_task_and_answers_the_new_one(
     cohort.assert_machine_landed(ConversationState.IDLE)
 
     # STORE
-    cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
+    cohort.assert_no_mechanism_was_created()
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_ELICIT), SpecCategory.STORE)
     cohort.claim(
         _TOUCHED_ONLY_ITS_OWN,
@@ -605,7 +604,7 @@ async def test_learn_to_idle_archives_the_abandoned_round(chat_eval: ChatEval, m
     cohort.assert_machine_landed(ConversationState.IDLE)
 
     # STORE
-    cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
+    cohort.assert_no_mechanism_was_created()
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_LEARN), SpecCategory.STORE)
     cohort.claim(
         _TOUCHED_ONLY_ITS_OWN,
@@ -645,7 +644,7 @@ async def test_request_to_idle_drops_a_binding_that_was_half_settled(
     cohort.assert_machine_landed(ConversationState.IDLE)
 
     # STORE
-    cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
+    cohort.assert_no_mechanism_was_created()
     cohort.claim(
         _REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_HELD_BINDING), SpecCategory.STORE
     )
@@ -678,7 +677,7 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(
     cohort.assert_machine_landed(ConversationState.IDLE)
 
     # STORE
-    cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
+    cohort.assert_no_mechanism_was_created()
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BANTER_ON_IDLE), SpecCategory.STORE)
     cohort.claim(
         _TOUCHED_ONLY_ITS_OWN,
