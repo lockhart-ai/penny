@@ -88,7 +88,7 @@ from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import FailureCause
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
-from penny.tests.eval.utils.fixtures import ENACTING_TOOLS, CannedPage, SynthCollection
+from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
 from penny.tests.eval.utils.worlds import World
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.text_validity import (
@@ -2504,22 +2504,20 @@ def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
     )
 
 
-def _enacting_name(call: str) -> str | None:
-    """One logged call's enacting-tool name, or ``None`` where it enacted nothing.
+def _chat_tool_sequence(db: Database) -> list[str]:
+    """Every call this sample's CHAT turns made, in emission order.
 
-    The name is normalised through ``strip_harmony_control_tokens`` — the SAME function
-    production uses, not a second spelling of it.  That sanitiser runs at the boundary where a
-    tool name is read off the model response (``LlmToolCallFunction.name``), so every downstream
-    consumer — registry lookup, done-detection, dedup, result framing — already sees the clean
-    identifier.  This eval was the only consumer reading the raw one.
+    Keyed to NO name list.  Which tool names a turn issued is a structural fact in the prompt
+    log; which of them mean the behaviour happened is the CASE's claim, made against the world
+    the turn left.  A membership test here is the #1783 shape: it answers for the names someone
+    enumerated and reads ``no call`` for every other shape — an archive, a dispatch, a mute, a
+    log read, and every tool a plugin contributes — whatever the turn actually did.
 
-    What that cost: two samples in one run logged `collection_write<|channel|>commentary`.  The
-    runtime dispatched them fine and their entries are in the store, but a membership test on the
-    raw name read them as a tool nobody has heard of and dropped them, so the sequence rendered
-    as `browse` alone and a correct sample was reported as an outlier for a divergence that never
-    happened.  Re-implementing the strip here would leave the eval measuring a normalisation
-    production does not do the moment either spelling changed."""
-    return name if (name := strip_harmony_control_tokens(call)) in ENACTING_TOOLS else None
+    Names arrive already normalised: ``chat_run_tool_sequences`` reads each one through
+    ``tool_call_name``, which is production's own ``strip_harmony_control_tokens``, so a leaked
+    Harmony control token (`collection_write<|channel|>commentary`, seen on two samples of one
+    run) cannot hide a call whose entries are in the store."""
+    return [tool for run in chat_run_tool_sequences(db) for tool in run]
 
 
 def _machine_walk(db: Database) -> str:
@@ -2565,12 +2563,7 @@ def _observe_sample(
         held=_held_entries(db),
         mechanisms=_mechanism_records(db, before),
         delivered=outgoing_replies(db),
-        tool_sequence=[
-            tool
-            for run in chat_run_tool_sequences(db)
-            for tool in (_enacting_name(call) for call in run)
-            if tool is not None
-        ],
+        tool_sequence=_chat_tool_sequence(db),
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
         given=given_to_the_model(db),

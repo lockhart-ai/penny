@@ -200,9 +200,9 @@ from penny.tests.eval.conftest import (
     _assert_threshold,
     _bail_fired_check,
     _case_prompts,
+    _chat_tool_sequence,
     _classifier_snapshot,
     _cycle_recovered_check,
-    _enacting_name,
     _exclusion,
     _flush_sample_blocks,
     _frame_attributes_to,
@@ -280,6 +280,7 @@ from penny.tests.eval.utils.cohort import SampleObservation
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
+    ENACTING_TOOLS,
     LISTING_URL,
     CannedPage,
     SynthCollection,
@@ -4296,17 +4297,50 @@ def test_every_tool_name_read_is_sanitised_the_way_production_sanitises_it() -> 
     assert tool_call_name({}) == "", "a malformed call reads as no tool, never as a crash"
 
 
-def test_a_leaked_control_token_does_not_hide_a_call_that_ran() -> None:
-    """The runtime executed `collection_write<|channel|>commentary` — the entry is in the store —
-    and a bare membership test read it as a tool nobody has heard of and dropped it, so the
-    sample's tool sequence rendered as `browse` alone and it was reported as an outlier for a
-    divergence that never happened.
+def test_the_tool_sequence_reads_calls_no_name_list_names(tmp_path) -> None:
+    """The cohort's `tool sequence` feature reads what a chat turn CALLED, off the prompt log,
+    keyed to no name list — so a case whose behaviour is an archive, a dispatch or a log read is
+    measured rather than reading `no call` on every sample whatever the turn did.
 
-    Silently discarding a call the store can prove ran is the worst of the three options."""
-    assert _enacting_name("collection_write<|channel|>commentary") == "collection_write"
-    assert _enacting_name("collection_write") == "collection_write"
-    assert _enacting_name("browse") == "browse"
-    # A name that is genuinely not an enacting tool still drops — normalising a leaked token is
-    # not the same as widening what counts as enactment.
-    assert _enacting_name("find") is None
-    assert _enacting_name("not_a_tool<|channel|>x") is None
+    Two ways a call can vanish are pinned together.  A name nobody enumerated is read — none of
+    the three below is an ``ENACTING_TOOLS`` member, and a plugin can contribute a fourth
+    tomorrow — and a leaked Harmony control token is stripped the way production strips it, so a
+    call whose entries are in the store cannot render as a tool nobody has heard of.  A non-chat
+    row stays out: the agent filter is the one filter this reader keeps.
+
+    One chat row, so the order asserted is the emission order inside a response rather than a
+    race between two rows' timestamps."""
+    db = _make_db(tmp_path)
+    _log_prompt(
+        db,
+        response={
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": name, "arguments": "{}"}}
+                            for name in (
+                                "collection_archive",
+                                "log_read<|channel|>commentary",
+                                "choose",
+                            )
+                        ]
+                    }
+                }
+            ]
+        },
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+        run_id="turn-1",
+    )
+    _log_prompt(
+        db,
+        response=_tool_call_response("collection_write"),
+        agent_name=Collector.name,
+        run_id="cycle-1",
+    )
+
+    read = _chat_tool_sequence(db)
+    assert read == ["collection_archive", "log_read", "choose"]
+    assert not [name for name in read if name in ENACTING_TOOLS], (
+        "the premise holds: not one of these names is on the legacy enacting-tool list"
+    )

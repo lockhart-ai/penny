@@ -125,11 +125,17 @@ ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 BROWSER_DISCONNECTED = CannedPage(match="", text="", channel_outage=True)
 
 
-# The tools that MEAN she acted: a fetch, a write, an edit, a deletion, a job stood
+# Six tools that mean she acted: a fetch, a write, an edit, a deletion, a job stood
 # up.  ONE definition, because two case files ask the same question of a turn — the
 # state machine's elicitation edge, which must not act before it has been taught, and
 # the passing-mention guard, which must not act on something nobody asked for — and a
 # second copy would let the two drift into two policies.
+#
+# Both those readings are UNSCORED spine lines.  What each case ENFORCES is the world its
+# turn left — no collection created, nothing written, no page fetched — which is keyed to
+# no name.  A name list cannot carry an enforcing read: this one is silent on an archive, a
+# dispatch, a mute, a log read, and every tool a plugin contributes, so a turn that did one
+# of those reads as having acted on nothing.
 ENACTING_TOOLS = (
     "browse",
     "collection_write",
