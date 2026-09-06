@@ -1671,11 +1671,9 @@ class _ApplyCase(NamedTuple):
     holds.  ``acceptance`` is the turn under test.
 
     The rest is what the acceptance's own terms ask for, per case: ``cadence_seconds`` is
-    how far apart the job should fire, whatever rule spelling says so, and ``anchored``
-    whether the terms name a time of DAY rather than a period (so the rule has to state an
-    hour to run at); ``expects_expiry`` is whether they gave an
-    end condition at all (inventing one is a failure); ``bound`` is every value the
-    round supplied that the routine has to be pointed at, matched case-folded so a
+    how far apart the job should fire, whatever rule spelling says so; ``expects_expiry`` is
+    whether they gave an end condition at all (inventing one is a failure); ``bound`` is every
+    value the round supplied that the routine has to be pointed at, matched case-folded so a
     normalized copy of a scheme-less address still counts.
 
     ``confirmation`` is THIS case's reference reply — how she says the job is running — and
@@ -1702,7 +1700,6 @@ class _ApplyCase(NamedTuple):
     acceptance: str
     confirmation: str
     cadence_seconds: int
-    anchored: bool
     expects_expiry: bool
     bound: tuple[str, ...]
 
@@ -1723,7 +1720,6 @@ _AURORA_APPLY = _ApplyCase(
         "the price moves."
     ),
     cadence_seconds=3600,
-    anchored=False,
     expects_expiry=True,
     bound=(LISTING_URL,),
 )
@@ -1744,7 +1740,6 @@ _FERRY_APPLY = _ApplyCase(
         "sailing shows up."
     ),
     cadence_seconds=86400,
-    anchored=True,
     expects_expiry=False,
     bound=(_FERRY_TIMETABLE_URL, "late sailing"),
 )
@@ -1761,7 +1756,6 @@ _BAKERY_APPLY = _ApplyCase(
     acceptance="great — do that every day and tell me what the special is",
     confirmation="done — i'll check the specials every day and message you what's on.",
     cadence_seconds=86400,
-    anchored=False,
     expects_expiry=False,
     bound=(_BAKERY_SPECIALS_URL,),
 )
@@ -1780,7 +1774,6 @@ _COLONY_APPLY = _ApplyCase(
     acceptance="perfect — do that every week and let me know if the count drops",
     confirmation="done — i'll check the colony count every week and message you if it drops.",
     cadence_seconds=604800,
-    anchored=False,
     expects_expiry=False,
     bound=("harborseals.example/colony-count",),
 )
@@ -1804,7 +1797,6 @@ _ARRIVALS_APPLY = _ApplyCase(
         "month and message you the moment something new shows up."
     ),
     cadence_seconds=7200,
-    anchored=False,
     expects_expiry=True,
     bound=(_NEW_ARRIVALS_URL,),
 )
@@ -3490,10 +3482,8 @@ class _RequestApplyCase(NamedTuple):
     together, which is the whole shape of the edge.
 
     The rest is what the two turns' terms ask for: ``cadence_seconds`` is how far apart the
-    job should fire whatever rule spelling says so, ``anchored`` whether those terms name a
-    time of DAY rather than a period (so the rule has to state an hour to run at),
-    and ``expects_expiry`` whether an end condition was given at all (inventing one is a
-    failure).
+    job should fire whatever rule spelling says so, and ``expects_expiry`` whether an end
+    condition was given at all (inventing one is a failure).
 
     ``reference`` is how the supply would be answered WELL — a review target, read at joint
     review and never matched by a claim.  It is DATA rather than prose so a reader comparing
@@ -3506,7 +3496,6 @@ class _RequestApplyCase(NamedTuple):
     supply: str
     supplies: dict[str, str]
     cadence_seconds: int
-    anchored: bool
     expects_expiry: bool
     reference: str
 
@@ -3528,7 +3517,6 @@ _SUPPLIED_TIMETABLE = _RequestApplyCase(
     supply=_SUPPLY_TIMETABLE,
     supplies={"url": _NORTH_PIER_URL},
     cadence_seconds=86400,
-    anchored=True,
     expects_expiry=False,
     reference=(
         "done — i'll check the north pier timetable every morning and message you when "
@@ -3543,7 +3531,6 @@ _SUPPLIED_LISTING = _RequestApplyCase(
     supply=_SUPPLY_LISTING,
     supplies={"url": _KEEL_LANTERN_URL},
     cadence_seconds=7200,
-    anchored=False,
     expects_expiry=True,
     reference=(
         "done — i'll check that listing's price every couple of hours until sunday and "
@@ -3558,7 +3545,6 @@ _SUPPLIED_COUNT = _RequestApplyCase(
     supply=_SUPPLY_COUNT,
     supplies={"url": _RIVER_OTTERS_URL},
     cadence_seconds=604800,
-    anchored=False,
     expects_expiry=False,
     reference=("done — i'll check the otter count every week and message you if it drops."),
 )
@@ -3570,7 +3556,6 @@ _SUPPLIED_BAKERY = _RequestApplyCase(
     supply=_SUPPLY_BAKERY,
     supplies={"url": _NEW_BAKERY_URL},
     cadence_seconds=86400,
-    anchored=True,
     expects_expiry=True,
     reference=(
         "done — i'll grab the new bakery's special every morning until the end of the "
@@ -3585,7 +3570,6 @@ _SUPPLIED_PIER = _RequestApplyCase(
     supply=_SUPPLY_PIER,
     supplies={"keyword": "dawn sailing"},
     cadence_seconds=86400,
-    anchored=True,
     expects_expiry=False,
     reference=(
         "done — i'll check the north pier board every morning and message you when the "

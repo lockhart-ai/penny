@@ -122,7 +122,6 @@ from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
     assert_the_round_built_what_it_claims,
 )
 from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
-    _CORRECT_TO_SOUTH_LOOP,
     CORRECTION_CASES,
     assert_every_wording_names_the_corrected_line,
     assert_the_correction_is_unsaid,
@@ -337,12 +336,7 @@ from penny.tests.eval.utils.artifacts import (
 )
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
-from penny.tests.eval.utils.cohort import (
-    SampleObservation,
-    cadence_seconds,
-    rule_parts,
-    unsourced_specifics,
-)
+from penny.tests.eval.utils.cohort import SampleObservation, unsourced_specifics
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
@@ -356,10 +350,10 @@ from penny.tests.eval.utils.fixtures import (
     CannedPage,
     SynthCollection,
 )
+from penny.tests.eval.utils.schedules import cadence_seconds, rule_parts
 from penny.tests.eval.utils.transition_world import (
     _JOURNEYS,
     _SHORT_LISTING,
-    _SUPPLIED_TIMETABLE,
     _TEACH_HARBOUR_FLAG,
     APPLY_CASES,
     IDLE_LEARN_CASES,
@@ -812,10 +806,11 @@ def test_every_finishing_edge_holds_its_facts_constant_across_its_wordings() -> 
     value the derived container's name is built from, and the correction must name the line it
     redirects to WITHOUT carrying that line's own answer.
 
-    Pure and deterministic, so it runs here rather than at seed time in a paid run."""
+    Pure and deterministic, so it runs here as well as in each case's own prepare probe: the
+    probe fails a paid run at seed time, and this fails ``make check`` for free."""
     assert_every_wording_gives_the_terms()
-    assert_every_wording_carries_the_value(_SUPPLIED_TIMETABLE)
-    assert_every_wording_names_the_corrected_line(_CORRECT_TO_SOUTH_LOOP)
+    assert_every_wording_carries_the_value()
+    assert_every_wording_names_the_corrected_line()
 
 
 def test_every_short_ask_falls_one_value_short_of_the_routine_it_names() -> None:

@@ -35,11 +35,11 @@ from penny.tests.eval.utils.cohort import (
     MechanismRecord,
     SampleObservation,
     SpecCategory,
-    cadence_seconds,
     distinct_worlds,
     fold_typography,
     unsourced_specifics,
 )
+from penny.tests.eval.utils.schedules import cadence_seconds
 from penny.tests.eval.utils.worlds import World
 from penny.text_validity import (
     half_formed_send_reason,
