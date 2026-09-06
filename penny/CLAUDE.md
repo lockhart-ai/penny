@@ -819,7 +819,9 @@ provenance claim, so it stays a reading of the modal sample.  Nor do they claim 
 value a literal span), which would run 15/15 by construction.  Each ported case's five
 wordings and the facts every one of them must carry are declared together as `PortedArms`,
 held by a `make check` probe that renders each arm through the shipped
-`build_framing_content`), `test_skill_binding.py` (#1867 — the skill BINDER over eight cases built
+`build_framing_content` — `carries` for a fact spelled the same way on every arm, `any_of`
+for one that survives being REWORDED (being told when it moves / changes / shifts), which is
+otherwise the fact class that goes missing from one arm unnoticed), `test_skill_binding.py` (#1867 — the skill BINDER over eight cases built
 from the idle→apply asks, both directions of the contract: five extraction cases (incl.
 the two-parameter bind, where the page and what to look for on it come out of one
 message) and two shortfall cases (an ask naming no page at all, and one supplying the

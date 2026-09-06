@@ -158,12 +158,31 @@ def _page_family(label: str, *extra: str) -> ParameterFamily:
     return ParameterFamily(label, (*_PLACE_TOKENS, *extra), name_only=True)
 
 
-# The two ordinal families a same-kind ask is answered by.  Two things of one kind have no
-# type to tell them apart, so what a correct draw distinguishes them by is POSITION, and the
-# breadth is every ordinary way of writing that — the words, the digits, and (through
-# `_name_tokens`' letter-suffix reading) `_a`/`_b`.
-_FIRST_OF_A_KIND = ParameterFamily("first source", ("first", "one", "1", "primary"))
-_SECOND_OF_A_KIND = ParameterFamily("second source", ("second", "two", "2", "secondary", "other"))
+# The ordinal families a same-kind ask is answered by.  Two things of one kind have no type
+# to tell them apart, so what a correct draw distinguishes them by is POSITION, and the
+# breadth is every ordinary way of writing that — the ordinal word, the cardinal, the digit,
+# the latinate form, and (through `_name_tokens`' letter-suffix reading) `_a`/`_b`/`_c`.
+#
+# Declared ONCE, like `_page_family`, because the breadth is the code owner's and a
+# same-kind case that spelled its own copy would make widening it a several-site edit.
+_ORDINAL_BREADTH = (
+    ("first", "one", "1", "primary"),
+    ("second", "two", "2", "secondary"),
+    ("third", "three", "3", "tertiary"),
+)
+
+
+def _ordinal_family(label: str, position: int, *extra: str) -> ParameterFamily:
+    """The ``position``-th ordinal family (1-based), with any case-specific words.
+
+    ``extra`` is where a case states a word that only identifies a position IN THAT CASE:
+    "the other one" picks out the second of TWO and picks out nothing among three, so the
+    two-of-a-kind cases pass it and the three-of-a-kind case does not."""
+    return ParameterFamily(label, (*_ORDINAL_BREADTH[position - 1], *extra))
+
+
+_FIRST_OF_A_KIND = _ordinal_family("first source", 1)
+_SECOND_OF_A_KIND = _ordinal_family("second source", 2, "other")
 
 
 class PortedArms(NamedTuple):
@@ -175,15 +194,21 @@ class PortedArms(NamedTuple):
     second copy of the list in the probe would drift from the arms exactly as silently as no
     probe at all, so the probe reads this.
 
-    ``carries`` is a substring every arm must contain and ``never`` one no arm may; ``turns``
-    is how many turns an arm takes, since an ask is however many turns the user needed for
-    it and the single-turn case's whole subject is that number."""
+    ``carries`` is a substring every arm must contain and ``never`` one no arm may.
+    ``any_of`` is a fact stated as an ALTERNATION — every arm must carry one of its
+    substrings, which is how a fact that survives being reworded ("let me know" / "tell me" /
+    "ping me") is declared rather than left out.  Without it such a fact is invisible to the
+    probe and can go missing from one arm silently, which is the drift the probe exists for.
+
+    ``turns_per_arm`` is how many turns an arm takes, since an ask is however many turns the
+    user needed for it and the single-turn case's whole subject is that number."""
 
     case_id: str
     arms: tuple[tuple[str, ...], ...]
     carries: tuple[str, ...]
+    any_of: tuple[str, ...] = ()
     never: tuple[str, ...] = ()
-    turns: int = 2
+    turns_per_arm: int = 2
 
 
 def _answers(family: ParameterFamily, among: Sequence[ParameterFamily]) -> WorldClaim:
@@ -334,17 +359,21 @@ async def test_what_the_ask_named_bakes_and_the_page_survives(framer_eval: Frame
 # cases rather than one behaviour under two sets of facts.
 #
 # THE FACTS ARE CONSTANT across the five wordings: every arm names the same address, asks
-# whether the book is in stock, and carries a clause about being told when it is.  What
-# varies is only how a person says that.  No arm says "search" — the word is what the case
-# is about, so an arm carrying it would be asking for the very thing the case claims is not
-# asked for.
+# whether the book is in stock, and carries a clause about being TOLD when it is.  What
+# varies is only how a person says that.  The telling clause is load-bearing — it is the
+# second thing the case claims is not a parameter — so it is declared as an alternation
+# rather than left to be noticed, because it is the one fact here that survives being
+# reworded into different words on every arm.
+#
+# No arm says "search" — the word is what the case is about, so an arm carrying it would be
+# asking for the very thing the case claims is not asked for.
 _PAGE_ONLY_PHRASINGS = (
     (
         "could you watch bookbarn.example/atlas-of-clouds and tell me when it's in stock again",
         "open bookbarn.example/atlas-of-clouds, see whether it's in stock, and remember that",
     ),
     (
-        "i'd like bookbarn.example/atlas-of-clouds followed until it's back in stock",
+        "i'd like bookbarn.example/atlas-of-clouds followed — let me know once it's back in stock",
         "read bookbarn.example/atlas-of-clouds, find out whether it's in stock, and save that",
     ),
     (
@@ -361,6 +390,7 @@ PAGE_ONLY_ARMS = PortedArms(
     case_id="framer-names-a-page-as-a-page-and-invents-no-search",
     arms=(_AVAILABILITY.turns, *_PAGE_ONLY_PHRASINGS),
     carries=("bookbarn.example/atlas-of-clouds", "stock"),
+    any_of=("let me know", "tell me", "ping me", "say when"),
     never=("search", "query"),
 )
 
@@ -622,10 +652,12 @@ _TICKER_PHRASINGS = (
     ),
 )
 
-# The case's id and its five arms, named at module level so the deterministic probe in
-# ``make check`` can hold every arm against the facts it claims before any GPU time.
-TICKER_CASE_ID = "framer-mints-only-the-piece-that-varies"
-TICKER_ARMS = (_TICKER.turns, *_TICKER_PHRASINGS)
+TICKER_ARMS = PortedArms(
+    case_id="framer-mints-only-the-piece-that-varies",
+    arms=(_TICKER.turns, *_TICKER_PHRASINGS),
+    carries=("VLT", "share price"),
+    any_of=("moves", "changes", "shifts"),
+)
 
 # The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
 # Penny <does Y>."  The locus is the SHIPPED agent name.  The case id is a filename; this is
@@ -683,7 +715,7 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
     read by a person opening the modal sample, where the drawn name renders verbatim.
     """
     cohort = await framer_eval(
-        case_id=TICKER_CASE_ID,
+        case_id=TICKER_ARMS.case_id,
         behaviour=_TICKER_BEHAVIOUR,
         model=model,
         turns=_TICKER.turns,
@@ -754,7 +786,7 @@ SINGLE_TURN_ARMS = PortedArms(
     case_id="framer-frames-from-a-single-turn",
     arms=(_SINGLE_TURN.turns, *_SINGLE_TURN_PHRASINGS),
     carries=("weather.example/lisbon", "high temperature"),
-    turns=1,
+    turns_per_arm=1,
 )
 
 _SINGLE_TURN_BEHAVIOUR = (
@@ -851,9 +883,11 @@ async def test_a_search_is_the_parameter_and_the_cheapest_price_is_the_framing(
 # closes: a search-family parameter is the right answer here and the wrong one there.
 #
 # THE FACTS ARE CONSTANT across the five wordings: every arm names the same event, says the
-# look-up is a search, and asks for the cheapest ticket price.  No arm names an address at
-# all — an arm that did would give the draw a page to mint instead, which is the other
-# case's world and not this one.
+# look-up is a search, and asks for the cheapest ticket price.  No arm names an address — an
+# arm that did would give the draw a page to mint instead, which is the other case's world
+# and not this one.  What the probe can hold is the narrow half of that: no arm carries the
+# reserved `.example` domain these fixtures write every address with, so an address written
+# the way this suite writes one cannot get in unnoticed.
 _SEARCH_PHRASINGS = (
     (
         "could you watch what tickets for aurora fest are going for?",
@@ -1079,10 +1113,7 @@ _TWO_SYMBOLS = FramingFixture(
         "can you keep an eye on a couple of stocks for me?\n"
         "look up VLT and MERI, find each share price, and remember them"
     ),
-    parameters=(
-        ParameterFamily("first ticker", ("first", "one", "1", "primary")),
-        ParameterFamily("second ticker", ("second", "two", "2", "secondary", "other")),
-    ),
+    parameters=(_ordinal_family("first ticker", 1), _ordinal_family("second ticker", 2, "other")),
     instance_tokens=("vlt", "meri"),
 )
 
@@ -1103,14 +1134,16 @@ async def test_two_symbols_of_the_same_type_stay_two_scalar_parameters(framer_ev
 # news sites" starts to look like the tidier interface — and nothing has measured whether a
 # framer that keeps two apart keeps three apart.
 #
-# The ordinal families here are the shared pair's, with the second's "other" dropped: among
-# two things "the other one" identifies one of them, and among three it identifies nothing,
-# so keeping it would let a draw that told only two of the three apart answer the second
-# family off a word that says nothing about which page it means.
-_FIRST_OF_THREE = _FIRST_OF_A_KIND
-_SECOND_OF_THREE = ParameterFamily("second source", ("second", "two", "2", "secondary"))
-_THIRD_OF_THREE = ParameterFamily("third source", ("third", "three", "3", "tertiary"))
-_THREE_SOURCES_FAMILIES = (_FIRST_OF_THREE, _SECOND_OF_THREE, _THIRD_OF_THREE)
+# The ordinal families here are the shared breadth at three positions, and the second does
+# NOT take the two-of-a-kind cases' "other": among two things "the other one" identifies one
+# of them, and among three it identifies nothing, so keeping it would let a draw that told
+# only two of the three apart answer the second family off a word that says nothing about
+# which page it means.
+_THREE_SOURCES_FAMILIES = (
+    _ordinal_family("first source", 1),
+    _ordinal_family("second source", 2),
+    _ordinal_family("third source", 3),
+)
 
 # THE FACTS ARE CONSTANT across the five wordings: every arm names all three front pages and
 # asks for each site's top headline.
@@ -1209,11 +1242,10 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
     _measure_the_draw(cohort, positions=len(_THREE_SOURCES_FAMILIES))
 
 
-# Every ported case's arms, for the deterministic probe in ``make check`` — one place, so
-# the probe and the live runs can never be checking two different sets of wordings.  The
-# ticker case keeps its own probe: its facts include an alternation (told when it "moves" /
-# "changes" / "shifts") that a substring list cannot state.
+# EVERY ported case's arms, for the deterministic probe in ``make check`` — one place, so the
+# probe and the live runs can never be checking two different sets of wordings.
 PORTED_ARMS = (
+    TICKER_ARMS,
     PAGE_ONLY_ARMS,
     TWO_SOURCES_ARMS,
     SINGLE_TURN_ARMS,

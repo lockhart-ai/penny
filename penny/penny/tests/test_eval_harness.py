@@ -298,7 +298,6 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import PORTED_ARMS as FRAMING_PORTED_ARMS
-from penny.tests.eval.framer.test_skill_framing import TICKER_ARMS
 from penny.tests.eval.labeller.test_skill_labelling import (
     _TWO_SOURCES,
     OFFERED_SPOTS,
@@ -3487,33 +3486,6 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
         _registry_shortfall(db, "a-case", declared.model_copy(update={"settled": every_value}))
 
 
-def test_every_framing_arm_says_one_ask_in_different_words() -> None:
-    """The framer's arms (#2006): five wordings of ONE ask, over one set of facts.
-
-    The claims name a parameter family and a count, and both hinge on what the ask
-    REQUIRES — so every arm has to require the same thing.  Each carries the symbol, the
-    share price it is wanted for, and a clause about being told when it moves; an arm
-    missing the notification clause would drop the negative direction the case exists for,
-    and one missing the symbol would leave the family claim nothing to be answered by.
-
-    The documents are built through the SHIPPED renderer, because that is what the draw
-    reads — a probe over the raw turns would pass on a render that dropped one."""
-    assert len(TICKER_ARMS) == 5
-    documents = [
-        build_framing_content(
-            "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in arm]
-        )
-        for arm in TICKER_ARMS
-    ]
-    assert len(set(documents)) == 5, "five wordings, or the arms are not arms"
-    for arm, document in zip(TICKER_ARMS, documents, strict=True):
-        assert "VLT" in document, f"every arm names the symbol: {arm}"
-        assert "share price" in document, f"every arm asks for the share price: {arm}"
-        assert any(word in document for word in ("moves", "changes", "shifts")), (
-            f"every arm asks to be told when it moves: {arm}"
-        )
-
-
 @pytest.mark.parametrize("ported", FRAMING_PORTED_ARMS, ids=lambda p: p.case_id)
 def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> None:
     """Each ported framer case's arms (#2056): five wordings of ONE ask, over one set of facts.
@@ -3533,7 +3505,9 @@ def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> No
     probe over the raw turns would pass on a render that dropped one."""
     assert len(ported.arms) == 5, f"{ported.case_id}: five wordings, or the arms are not arms"
     for arm in ported.arms:
-        assert len(arm) == ported.turns, f"{ported.case_id}: {arm} is not {ported.turns} turn(s)"
+        assert len(arm) == ported.turns_per_arm, (
+            f"{ported.case_id}: {arm} is not {ported.turns_per_arm} turn(s)"
+        )
 
     documents = [
         build_framing_content(
@@ -3545,6 +3519,9 @@ def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> No
     for document in documents:
         for fact in ported.carries:
             assert fact in document, f"{ported.case_id}: an arm drops {fact!r}: {document!r}"
+        assert not ported.any_of or any(one in document for one in ported.any_of), (
+            f"{ported.case_id}: an arm states none of {ported.any_of}: {document!r}"
+        )
         for absent in ported.never:
             assert absent not in document, (
                 f"{ported.case_id}: an arm introduces {absent!r}: {document!r}"
