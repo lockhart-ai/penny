@@ -135,12 +135,14 @@ from penny.tests.eval.classifier.test_state_classifier import (
     _CROSS_DOMAIN_SKILLS,
     _FERRY_SKILL,
     _GRINDER_PAGE,
+    _KAYAK_ASK,
     _KAYAK_PAGE,
     _LIVE_TIMETABLE_PAGE,
     _NEAR_NEIGHBOUR_SKILLS,
     _PARKED_ON_THE_PRICE_WATCH,
     _PORTED_JOBS,
     _PRICE_SKILL,
+    _REQUEST_TURN,
     _TEACH_PAGE,
     COLD_ELICIT_ARMS,
     COLD_ELICIT_CASE_ID,
@@ -299,7 +301,7 @@ from penny.tests.eval.conftest import (
     _observe_extraction,
     _observe_framing,
     _observe_labelling,
-    _refuse_binding_off_request,
+    _refuse_binding_state_mismatch,
     _refuse_unscorable,
     _registry_shortfall,
     _sample_db_path,
@@ -3497,10 +3499,10 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
     db.skills.upsert(case.parked.skill, author=EVAL_SEED_AUTHOR)
     declared = ParkedRound(skill=case.parked.skill.name, settled=case.parked.settled)
 
-    _refuse_binding_off_request("a-case", ConversationState.REQUEST, declared)
-    _refuse_binding_off_request("a-case", ConversationState.IDLE, None)
+    _refuse_binding_state_mismatch("a-case", ConversationState.REQUEST, declared)
+    _refuse_binding_state_mismatch("a-case", ConversationState.IDLE, None)
     with pytest.raises(ValueError, match="only a round parked in request"):
-        _refuse_binding_off_request("a-case", ConversationState.IDLE, declared)
+        _refuse_binding_state_mismatch("a-case", ConversationState.IDLE, declared)
 
     assert _registry_shortfall(db, "a-case", declared).skill == slug_skill_name(
         case.parked.skill.name
@@ -4142,6 +4144,67 @@ def test_the_notify_pairs_world_really_stands_its_job_up(tmp_path, notify: bool)
     assert running[named].skill_name == _PRICE_SKILL, "and it must run the covering routine"
     assert running[named].notify is notify, "in the state its ask is about changing"
     assert len(jobs) > 1, f"and beside at least one other, or resolving it is no read: {jobs}"
+
+
+def test_the_request_classifier_cases_declare_the_round_their_arms_answer(tmp_path) -> None:
+    """The section the four REQUEST classifier cases put in front of the draw (#2099),
+    pinned WHOLE.
+
+    All four park on one round: the ask named a page to watch, the binder resolved that to
+    the seeded price watcher, and the page is the single parameter that routine declares —
+    described in the ask and never given — so the round is short of ``url`` and the section
+    says so.  That is the story every arm answers: one supplies the page, one calls the
+    round off, and two say the named routine was the wrong one.
+
+    Asserted as the whole section rather than by its parts, because the ways this can be
+    wrong are not the ways the fixture refuses.  A round settling a name the routine does
+    not declare, or settling all of them, is refused; a round declaring a DIFFERENT but
+    coherent routine renders cleanly, moves every number the four cases report, and shows
+    nothing for it."""
+    db = migrated_db(str(tmp_path / "request-case-parked-round.db"))
+    for draft in SEEDED_SKILLS:
+        db.skills.upsert(draft, author=EVAL_SEED_AUTHOR)
+
+    content = render_classifier_content(
+        _classifier_snapshot(
+            db,
+            case_id=VALUE_ARRIVED_CASE_ID,
+            state=ConversationState.REQUEST,
+            message=_KAYAK_PAGE,
+            penny_last_turn=_REQUEST_TURN,
+            task_anchor=_KAYAK_ASK,
+            parked_round=_PARKED_ON_THE_PRICE_WATCH,
+        ),
+        _KAYAK_PAGE,
+    )
+    assert _waiting_on_block(content) == (
+        "## The details this task is waiting on\n"
+        'skill: "watch a listing price for changes"\n'
+        "already given:\n"
+        "- nothing yet\n"
+        "still needed:\n"
+        "- url — the product or listing page whose price to watch"
+    )
+
+
+def test_a_request_case_that_declares_no_parked_round_is_refused() -> None:
+    """A case parking in REQUEST declares the round it is parked on, or it does not run
+    (#2099).
+
+    A round carries a binding exactly while it is parked in request, so the rule is a
+    biconditional and both halves of it are refused.  This is the half that keeps a REQUEST
+    case from being written lean: without it such a case reports its number as if the draw
+    had been shown the one section production always renders there, and nothing on the run
+    says otherwise — the refusal is the only thing that can.
+
+    The message is asserted WHOLE: the case author is its only reader, and a substring
+    match passes on one naming the wrong case or omitting the parameter to add."""
+    with pytest.raises(ValueError) as refusal:
+        _refuse_binding_state_mismatch("a-case", ConversationState.REQUEST, None)
+    assert str(refusal.value) == (
+        "a-case: every round parked in request waits on a binding — this case declares no "
+        "parked_round, so its draw would be shown none"
+    )
 
 
 def test_every_framing_arm_says_one_ask_in_different_words() -> None:

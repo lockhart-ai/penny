@@ -4721,6 +4721,10 @@ _PARKED_ROUND_OFF_REQUEST = (
     "{case_id}: only a round parked in request waits on a binding — this case parks in "
     "{state}, which carries none"
 )
+_PARKED_ROUND_MISSING = (
+    "{case_id}: every round parked in request waits on a binding — this case declares no "
+    "parked_round, so its draw would be shown none"
+)
 _PARKED_ROUND_UNSEEDED = (
     "{case_id}: the parked round names the routine {skill!r}, which this case's "
     "seed_skills do not register"
@@ -4734,16 +4738,22 @@ _PARKED_ROUND_COMPLETE = (
 )
 
 
-def _refuse_binding_off_request(
+def _refuse_binding_state_mismatch(
     case_id: str, state: ConversationState, parked: ParkedRound | None
 ) -> None:
-    """Refuse a parked round declared for a state that never carries one.
+    """Refuse a case whose parked round and whose state disagree, in either direction
+    (#2084/#2099).
 
-    ``MachineSnapshot.round_binding`` is present only while a round is parked in request,
-    so a case declaring one anywhere else would be measured against a section production
-    renders on no other state — the mirror of the gap this parameter closes."""
+    ``MachineSnapshot.round_binding`` is present exactly while a round is parked in
+    request, so the rule is a biconditional and both halves of it are wrong the same way —
+    the case is measured against a document the wiring cannot produce.  A case declaring a
+    round anywhere else gets a section production renders on no other state; a REQUEST case
+    declaring none is missing the one section production always renders there, and reports
+    its number as if it were not."""
     if parked is not None and state is not ConversationState.REQUEST:
         raise ValueError(_PARKED_ROUND_OFF_REQUEST.format(case_id=case_id, state=state.value))
+    if parked is None and state is ConversationState.REQUEST:
+        raise ValueError(_PARKED_ROUND_MISSING.format(case_id=case_id))
 
 
 def _registry_shortfall(db: Database, case_id: str, parked: ParkedRound) -> RoundShortfall:
@@ -5080,13 +5090,12 @@ def classifier_eval(
     snapshot is built PER SAMPLE by the production ``build_snapshot`` from the case's
     ``state`` + the sample's message — the same path the chat wiring calls.
 
-    A case parking in REQUEST should declare its ``parked_round`` (#2084): production
+    A case parking in REQUEST declares its ``parked_round`` (#2084/#2099): production
     reaches that state only through the binder, so every round parked there carries what it
     is waiting on, and a draw shown no waiting-on section is being asked to leave request
-    without the one block naming the gap — an input the wiring cannot produce.  SHOULD
-    rather than MUST while ``request-elicit`` is still unmigrated: the guard refuses a
-    ``parked_round`` on the wrong state and does not yet refuse a REQUEST case without one,
-    because that direction would refuse a landed case, and changing a case re-measures it.
+    without the one block naming the gap — an input the wiring cannot produce.  The guard
+    holds in both directions, so a REQUEST case cannot be written lean and no other state
+    can be handed a binding it never carries.
 
     ``fragile`` is the classifier's native recovery signal: DECIDED after more than one
     draw (a reroll) — a VARIANCE reading, never an assertion.  A poisoned draw group is
@@ -5132,7 +5141,7 @@ def classifier_eval(
         spoken = arms.spoken
         min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
         _refuse_unscorable(case_id, ported=bool(spoken), pool=pool)
-        _refuse_binding_off_request(case_id, state, parked_round)
+        _refuse_binding_state_mismatch(case_id, state, parked_round)
         driven = arms.driven if spoken else samples
 
         pending = (

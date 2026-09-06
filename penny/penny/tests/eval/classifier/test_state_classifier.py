@@ -610,6 +610,12 @@ async def test_switching_a_running_jobs_notifications_off_holds_idle(
 _REQUEST_QUESTION = "Sounds like my watch-a-listing-price skill — which page should I watch?"
 _KAYAK_ASK = "keep an eye on the price of the harbor kayak rental page for me"
 
+# THE ROUND THIS CASE IS PARKED ON is the one its three ported siblings declare (#2099) — the
+# price watcher, with nothing settled, since the ask named a subject and no address.  So it
+# reads ``_PARKED_ON_THE_PRICE_WATCH`` where that case defines it rather than a second copy
+# free to drift from it, and the draw is shown the same waiting-on section production renders
+# for every round parked here.
+
 # Wrong skill, task still wanted → elicit (teach me the right routine).
 _WRONG_SKILL_POOL = [
     "no, that's not what i meant — i want something different",
@@ -635,6 +641,7 @@ async def test_parked_details_wrong_skill_elicits(classifier_eval: ClassifierEva
         expected=ConversationState.ELICIT,
         penny_last_turn=_REQUEST_QUESTION,
         task_anchor=_KAYAK_ASK,
+        parked_round=_PARKED_ON_THE_PRICE_WATCH,
         seed_skills=SEEDED_SKILLS,
         min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
