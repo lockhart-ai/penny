@@ -2208,6 +2208,45 @@ class _ModelCallError(Exception):
 SampleDriver = Callable[[Penny, MockSignalServer, int, bool], Awaitable[SampleResult]]
 
 
+class _Drive(NamedTuple):
+    """What driving one case's samples produced — the three ways a sample can end.
+
+    ``results`` is the samples that RAN and were scored; ``voided`` is the named stand-ins
+    for the samples the rig never got started (#2070); a sample whose model call failed on
+    every attempt is in neither, exactly as it always was.  Three values rather than two
+    because the report has to account for all of them: a case whose cohort listed only the
+    samples that ran reported its losses as a smaller cohort instead of as losses.
+    """
+
+    results: list[SampleResult]
+    perf: _Perf
+    voided: list[eval_cohort.SampleObservation]
+
+
+def _never_started(
+    case_id: str, sample_index: int, error: Exception
+) -> eval_cohort.SampleObservation:
+    """The named void that stands in for a sample the rig never got started (#2070).
+
+    Recorded, then voided — never swallowed.  The sample is gone either way; what this
+    decides is whether the run can SEE that it is gone, and the surface that answers
+    "can this run be believed" is where an unaccounted-for sample does the most damage:
+    the pooled/excluded/driven counts have to add up, and the health block's cohort has
+    to be recorded at all.
+
+    The reason carries the exception CLASS and not its message, because the class is what
+    GROUPS — two samples killed by the same thing must land in one bucket for the report's
+    dominant-class line to name it, and a message carrying a URL or a timeout figure
+    differs per sample.  The message is printed beside the sample id where it happens.
+    """
+    return eval_cohort.SampleObservation(
+        name=f"{case_id}-{sample_index + 1}",
+        phrasing=NEVER_SPOKEN,
+        complete=False,
+        exclusion=SAMPLE_NEVER_STARTED.format(fault=type(error).__name__),
+    )
+
+
 async def _run_samples(
     make_config: Callable[..., Config],
     tmp_path,
@@ -2217,8 +2256,8 @@ async def _run_samples(
     drive: SampleDriver,
     attempts: int = 1,
     model: str = "",
-) -> tuple[list[SampleResult], _Perf]:
-    """Drive ``samples`` hermetic samples of one case; return their results and perf.
+) -> _Drive:
+    """Drive ``samples`` hermetic samples of one case; return what each of them produced.
 
     The skeleton every runner shares, in ONE place — which is what makes concurrency a
     one-line change rather than an eleven-line one.  A sample gets its own mock Signal
@@ -2231,43 +2270,70 @@ async def _run_samples(
     ``attempts`` above 1 re-drives a sample whose MODEL CALL failed (``_ModelCallError``)
     from a fresh world; a sample that exhausts its attempts is dropped rather than scored,
     exactly as before.
+
+    **Any OTHER failure voids that ONE sample and nothing else (#2070).**  Standing a
+    sample up runs a preflight against the live endpoint and waits on a channel, so it can
+    fail for reasons the model never touched — and the failure used to escape ``gather``,
+    which took the other fourteen samples' work with it AND skipped ``record_cohort``, so
+    the case died in a way the viability gate could not see.  It is classified into a
+    named exclusion and recorded BEFORE the sample is voided: this is not a broad except
+    that swallows, it is one that files.
     """
     limit = asyncio.Semaphore(EVAL_CONCURRENCY)
     perf = _Perf()
 
-    async def _sample(sample_index: int) -> SampleResult | None:
+    async def _attempt(sample_index: int, attempt: int) -> SampleResult:
+        """ONE attempt at one sample: its own channel, its own database, its own Penny."""
+        server = MockSignalServer()
+        await server.start()
+        try:
+            config = _real_model_config(
+                make_config,
+                signal_api_url=f"http://localhost:{server.port}",
+                db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
+                model=model,
+            )
+            async with eval_penny(config, server) as penny:
+                result = await drive(penny, server, sample_index, attempt + 1 < attempts)
+                perf.add(live_prompt_perf(penny.db))
+                return result
+        finally:
+            await server.stop()
+
+    async def _sample(sample_index: int) -> SampleResult | eval_cohort.SampleObservation | None:
+        """This sample's scored result, the named void that replaces it, or ``None`` when
+        its model call failed on every attempt."""
         async with limit:
             for attempt in range(attempts):
-                server = MockSignalServer()
-                await server.start()
                 try:
-                    config = _real_model_config(
-                        make_config,
-                        signal_api_url=f"http://localhost:{server.port}",
-                        db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
-                        model=model,
-                    )
-                    async with eval_penny(config, server) as penny:
-                        result = await drive(penny, server, sample_index, attempt + 1 < attempts)
-                        perf.add(live_prompt_perf(penny.db))
-                        return result
+                    return await _attempt(sample_index, attempt)
                 except _ModelCallError:
                     print(
                         f"  ↻ {case_id} sample {sample_index}: the model call failed — "
                         f"retrying ({attempt + 1} of {attempts})"
                     )
-                finally:
-                    await server.stop()
+                # BROAD ON PURPOSE, and it files rather than hides: an enumerated list here
+                # would cover the preflight timeout that motivated it and miss the next
+                # stand-up fault nobody has seen, which is the failure this whole path is
+                # about.  The class is recorded on the sample's exclusion, the message is
+                # printed here, and the cohort comes back one short — so a run can SEE it.
+                except Exception as error:
+                    print(
+                        f"  ✗ {case_id} sample {sample_index}: voided before it could be "
+                        f"measured — {type(error).__name__}: {error}"
+                    )
+                    return _never_started(case_id, sample_index, error)
         return None
 
     driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
     _flush_sample_blocks(case_id)
-    results = [result for result in driven if result is not None]
+    results = [outcome for outcome in driven if isinstance(outcome, SampleResult)]
+    voided = [outcome for outcome in driven if isinstance(outcome, eval_cohort.SampleObservation)]
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
     # the only place both numbers exist, and a case that dies on its threshold must still
     # contribute its cohort to the run's health block.
     run_health.record_cohort(case_id, intended=samples, completed=len(results))
-    return results, perf
+    return _Drive(results=results, perf=perf, voided=voided)
 
 
 # ── The cohort: one request, K phrasings, pooled (#1994/#1995) ───────────────
@@ -2306,6 +2372,22 @@ NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world th
 # counted in the report's harness section rather than absorbed, so the rate is readable;
 # whether an unwatched route belongs in the cohort at all is #2018's to decide.
 INJECTION_NEVER_FIRED = "the forced fault never fired — the turn ran unbroken, so no recovery"
+
+# The sample the rig never got STARTED (#2070).  Its siblings above are read off a live
+# database, because the sample ran and left one; this one is written by ``_run_samples``
+# when standing the world up raised — a preflight against an unreachable endpoint, a
+# readiness wait running out, a port that would not bind, a seed that failed.  It is a
+# HARNESS fault and never a provider one: the catch site covers every one of those causes,
+# so naming it after the endpoint would key it to the failure that happened to motivate it.
+# The run's provider tally stays a read of CHAT ATTEMPTS at one chokepoint, and a synthetic
+# entry there would either double-count a call the client already logged or add a fault
+# with no attempt behind it; what run health sees of this is structural instead — a cohort
+# short of its intended samples, which is what the viability verdict rules on.
+SAMPLE_NEVER_STARTED = "the sample never started — {fault} while standing its world up"
+
+# The arm a sample that never started ran: none.  A real label rather than an empty string,
+# because it renders beside the sample's id wherever a wording would.
+NEVER_SPOKEN = "never started"
 
 # The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
 # design — a value Penny invents early in a turn rides into the message history and would
@@ -2603,6 +2685,31 @@ def _reporting_model() -> str:
     models differ several-fold on the same feature."""
     run = eval_artifacts.active_run()
     return run.manifest.model if run is not None else ""
+
+
+def _driven_cohort(
+    case_id: str,
+    model: str,
+    results: Sequence[SampleResult],
+    voided: Sequence[eval_cohort.SampleObservation],
+    arms: Sequence[eval_cohort.Arm],
+) -> Cohort:
+    """The cohort a ported case makes its claims against — every sample the case drove.
+
+    Both halves, always: the samples that produced an observation, then the named void for
+    each sample that never started (#2070).  A cohort listing only what ran reports a lost
+    sample as a smaller cohort rather than as a loss, and the report's harness accounting
+    (``pooled + excluded = driven``) is the one surface that says whether a run can be
+    believed — a sample it cannot account for is how infrastructure failure gets read as
+    behaviour.  The voids come LAST because they wrote no transcript block, so the samples
+    that did keep the positions the assembler expands them by.
+    """
+    return Cohort(
+        case_id=case_id,
+        model=model or _reporting_model(),
+        samples=[r.observation for r in results if r.observation is not None] + list(voided),
+        arms=arms,
+    )
 
 
 def _no_scorer(db: Database, before: set[str], reply: str) -> list[Check]:
@@ -3270,7 +3377,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 observe=_observe(sample_index) if spoken else None,
             )
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config,
             tmp_path,
             case_id=case_id,
@@ -3295,12 +3402,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=arms.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
@@ -3814,7 +3916,7 @@ def collector_cycles_eval(
                 observe=_observer(sample_index) if arms else None,
             )
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven_count, drive=_drive, model=model
         )
         if not arms:
@@ -3830,12 +3932,7 @@ def collector_cycles_eval(
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=driving.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, driving.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven_count)
         return cohort
@@ -4046,7 +4143,8 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        # No exclusions section on this inline-scored runner — the void reaches run health.
+        results, perf, _voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
         )
         eval_artifacts.record_case(
@@ -4372,7 +4470,8 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        # No exclusions section on this inline-scored runner — the void reaches run health.
+        results, perf, _voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
         )
         eval_artifacts.record_case(
@@ -4431,7 +4530,8 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
             _stamp_cause(penny.db, result)
             return result
 
-        results, perf = await _run_samples(
+        # No exclusions section on this inline-scored runner — the void reaches run health.
+        results, perf, _voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
         )
         eval_artifacts.record_case(
@@ -4906,7 +5006,7 @@ def classifier_eval(
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
         if not spoken:
@@ -4922,12 +5022,7 @@ def classifier_eval(
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=arms.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
@@ -5832,7 +5927,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
         if not spoken:
@@ -5848,12 +5943,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=arms.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
@@ -5998,7 +6088,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
         if not spoken:
@@ -6014,12 +6104,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=arms.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
@@ -6409,7 +6494,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
         if not spoken:
@@ -6425,12 +6510,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=arms.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
@@ -6736,7 +6816,7 @@ def extractor_eval(
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
             return result
 
-        results, perf = await _run_samples(
+        results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
         if not spoken:
@@ -6752,12 +6832,7 @@ def extractor_eval(
                 samples,
             )
             return Cohort(case_id=case_id, model=model, samples=[])
-        cohort = Cohort(
-            case_id=case_id,
-            model=model or _reporting_model(),
-            samples=[r.observation for r in results if r.observation is not None],
-            arms=arms.arms,
-        )
+        cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
         assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
