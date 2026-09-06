@@ -649,7 +649,11 @@ async def test_the_page_binds_and_the_entry_is_reported_missing(
     cohort.measure(
         output_field(BIND_OUTCOME),
         output_field(BIND_MISSING),
-        output_field(bound_value_field(_SUPPLIED.parameter), consequence=Consequence.COSMETIC),
+        output_field(
+            bound_value_field(_SUPPLIED.parameter),
+            consequence=Consequence.COSMETIC,
+            absent=FIELD_UNSET,
+        ),
     )
 
 

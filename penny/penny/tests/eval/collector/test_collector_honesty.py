@@ -86,9 +86,9 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
+    CYCLE_SCRIPT,
     ENTRIES_STORED,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
 )
@@ -519,7 +519,7 @@ async def test_the_cycle_writes_nothing_when_every_read_fails(
 
     # REPLY_SPREAD is not measured: the job does not notify, so every sample's reply is
     # empty and a spread over no pair prints a number where there is no measurement.
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
 
 
 # ── the browse channel is down ───────────────────────────────────────────────
@@ -558,4 +558,4 @@ async def test_the_cycle_writes_nothing_when_the_browser_is_disconnected(
     # outage banner's whole job is to stop the url-variant retries, and how many reads a
     # cohort attempted against a dead channel is a route, so it is measured here rather
     # than asserted.  REPLY_SPREAD is omitted for the sibling's reason.
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)

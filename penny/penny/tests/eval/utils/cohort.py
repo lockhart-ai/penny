@@ -195,6 +195,13 @@ class SampleObservation(BaseModel):
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
+    # The ordered moves this sample's driver walked, in the VOCABULARY of the observer that
+    # read it: a chat sample carries the conversation machine's own walk (``idle→learn,
+    # learn→apply``, or ``no move`` when it recorded none), a collector sample the ordered
+    # shapes of its cycles (``wrote, quiet, wrote+told``).  One field because both answer
+    # "what did this run do, in order", and two features read it — :data:`TRANSITIONS` and
+    # :data:`CYCLE_SCRIPT` — because the readings they can produce are not the same set, and
+    # a feature's ``absent`` is a claim about the observer that fills it.
     walk: str = ""
     routines: list[RoutineRecord] = Field(default_factory=list)
     entries: list[StoredEntry] = Field(default_factory=list)
@@ -341,6 +348,15 @@ class Feature:
     # STRING is a legitimate declaration, not the absence of one — a distinction the earlier
     # ``str = ""`` default could not express, which is how a field populated only on one
     # outcome pooled to a serene 0.000 and proposed a gate on it.
+    #
+    # **It is a claim about the OBSERVER, and the observer must be able to produce it (#2061).**
+    # A declared value no observation on that path yields makes the blindness guard INERT
+    # exactly where it reads as armed — the guard cannot fire, so a cohort that really did read
+    # nothing would pool to 0.000 and render as agreement, which is the trap the declaration
+    # exists to close.  So the answer is per feature and per path, and where no observation can
+    # read nothing the honest declaration is ``None``: the pooler still catches a value that
+    # came back BLANK, which is the one "nothing" every feature shares.  Each declaration is
+    # pinned against its real observer in ``tests/test_eval_harness.py``.
     absent: str | None = None
 
 
@@ -371,14 +387,29 @@ ROUTINE_NAME = Feature(
     absent="none",
 )
 ENTRIES_STORED = Feature("entries stored", lambda o: str(len(o.entries)))
+# The CONVERSATION MACHINE's walk, as a chat observer reads it: ``no move`` is what it returns
+# for a sample whose machine recorded no transition at all, so the blindness guard has a
+# reading it can actually fire on.
 TRANSITIONS = Feature("transitions", lambda o: o.walk, absent="no move")
+# What a COLLECTOR's cycles did, in order — the same observation field read by the observer a
+# collector has instead of a machine walk, in that observer's own vocabulary (``wrote`` ·
+# ``quiet`` · ``…+told``).  It declares NO absent reading, because none exists among the samples
+# it is pooled over: every cycle that ran has one of those shapes, and the one shape that means
+# nothing ran (``no run``) EXCLUDES the sample before pooling.  Sharing ``transitions``' own
+# ``no move`` here would be a declaration this path can never produce (#2061).
+CYCLE_SCRIPT = Feature("cycle script", lambda o: o.walk)
 
 # Reply spread is pairwise rather than per-sample, so it is a marker the pooler recognises
 # rather than a value any one sample carries.
 REPLY_SPREAD = Feature("reply text", lambda o: o.reply, consequence=Consequence.COSMETIC)
 
 
-def output_field(name: str, *, consequence: Consequence = Consequence.CONSEQUENTIAL) -> Feature:
+def output_field(
+    name: str,
+    *,
+    consequence: Consequence = Consequence.CONSEQUENTIAL,
+    absent: str | None = None,
+) -> Feature:
     """One field of a draw's STRUCTURED OUTPUT, as a measured axis.
 
     A single-call context returns a typed result rather than leaving a trail through the
@@ -386,9 +417,18 @@ def output_field(name: str, *, consequence: Consequence = Consequence.CONSEQUENT
     compared across the cohort.  No new concept — this is :class:`Feature` reading
     ``SampleObservation.output`` instead of a chat-shaped attribute.
 
-    ``absent`` is :data:`FIELD_UNSET`, so a field the draw never returned reads as blind
-    rather than as fifteen samples agreeing."""
-    return Feature(name, lambda o: o.field(name), consequence=consequence, absent=FIELD_UNSET)
+    ``absent`` says WHETHER THE OBSERVER CAN OMIT THIS FIELD, which is the only thing that
+    decides whether :data:`FIELD_UNSET` is a reading this axis can ever take (#2061).  The
+    default is that it cannot: an observer that emits the field on every outcome — the
+    classifier's three, the extractor's three, the framer's name and description and count —
+    never produces :data:`FIELD_UNSET`, so declaring it would arm the blindness guard on a
+    value no observation yields.  What such a field CAN come back as is BLANK, and the
+    pooler catches an all-blank feature whatever it declares.  Pass ``absent=FIELD_UNSET``
+    for a field the observer omits on some outcomes — the binder's value for a parameter it
+    reported missing — where the omission IS the reading meaning the draw produced nothing
+    here, and a cohort where no sample filled it must read as blind rather than as fifteen
+    samples agreeing."""
+    return Feature(name, lambda o: o.field(name), consequence=consequence, absent=absent)
 
 
 class ExcludedSample(BaseModel):
