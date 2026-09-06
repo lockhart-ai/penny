@@ -32,8 +32,10 @@ from penny.tests.eval.utils.cohort import (
     Claim,
     ClaimOutcome,
     Feature,
+    MechanismRecord,
     SampleObservation,
     SpecCategory,
+    cadence_seconds,
     distinct_worlds,
     fold_typography,
     unsourced_specifics,
@@ -51,6 +53,9 @@ from penny.validation.conditions import ConditionKey
 # case-NEUTRAL, so one wording reads the same whether the round was abandoned, never started,
 # or is waiting on a value.
 _NOTHING_CREATED = "state: no mechanism was created"
+# Its sibling, and case-neutral for the same reason: one wording reads the same whether the
+# round was abandoned, corrected, or accepted and stood up.
+_TOUCHED_ONLY_ITS_OWN = "state: the only mechanism this turn changed is the one the round built"
 
 # The ground a claim is answered against by a cohort that declared no arms at all — the
 # unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
@@ -298,6 +303,82 @@ class Cohort:
             SpecCategory.STORE,
         )
 
+    def assert_only_the_rounds_own_mechanism_changed(self, container: str | None) -> None:
+        """The only mechanism this turn may change is the one the round built.
+
+        One sentence read against each case's own answer to "what did this round build" —
+        ``None`` where it built nothing, which is every round that never got as far as a
+        container.  The mechanisms already running are none of any turn's business, and that
+        is what this reads: a live turn's mutation cites a live run and every event a seeded
+        world wrote cites a seeded one, so "this turn changed nothing here" is a read rather
+        than a diff, and it is keyed to no field — a rebind, a schedule change, a description
+        edit and an archive all answer it the same way.
+
+        Distinct from :meth:`assert_no_running_mechanism_was_changed`, which exempts whatever
+        the turn CREATED: this exempts one named row that already existed, which is what a
+        round with a container of its own needs and what the born-this-run exemption cannot
+        express."""
+        self.claim(
+            _TOUCHED_ONLY_ITS_OWN, _only_the_rounds_own_changed(container), SpecCategory.STORE
+        )
+
+    def assert_the_job_is_the_container_its_values_derive(self, container: str) -> None:
+        """Exactly one mechanism was created, and it is the container this routine and these
+        values DERIVE — which is where the whole claim about identity lives.
+
+        The name is a pure function of the routine and the values it was pointed at
+        (``derive_collection_name``), so a container under it is a job anybody can find again
+        by asking for the same thing, and the jobs already running are exactly the names it
+        must not be.  It says both that a job exists and that it is the right job, in a key
+        that is strictly identifiable — which is why the routine the row runs and the values
+        bound into it are not claimed beside it: they are the same framing read twice.
+
+        A turn that minted a second container beside it fails this too: two containers is not
+        one job."""
+        self.claim(
+            "state: the job it stood up is the container its values derive",
+            _the_one_born_is(container),
+            SpecCategory.STORE,
+        )
+
+    def assert_the_job_fires_every(self, container: str, seconds: int) -> None:
+        """The job fires as often as the ask said.
+
+        Read as the GAP between the stored rule's first two occurrences, so every spelling of
+        one cadence is the same answer and the claim reads the value rather than the notation
+        — ``FREQ=HOURLY`` and ``FREQ=MINUTELY;INTERVAL=60`` are one reading.  The rationale
+        quotes the stored rule verbatim, because what a wrong gap came from is the rule."""
+        self.claim(
+            "state: the job fires on the cadence the ask gave",
+            _fires_every(container, seconds),
+            SpecCategory.STORE,
+        )
+
+    def assert_the_job_notifies(self, container: str) -> None:
+        """The job says something when what it watches moves.
+
+        A job that watches and never speaks is half of what every one of these asks
+        requested, and it is a boolean on the row — so nothing here reads the reply."""
+        self.claim(
+            "state: the job tells them when it changes", _notifies(container), SpecCategory.STORE
+        )
+
+    def assert_the_job_ends_when_asked(self, container: str, *, expected: bool) -> None:
+        """The job carries an end condition exactly when the ask gave one.
+
+        Its own claim rather than folded in with the notification: they are two independent
+        fields, and a report that failed them together could not say which one moved.  Read as
+        PRESENCE rather than value — which Sunday, and what hour of it, is a judgement the
+        model makes and no case asserts — and off the ROW rather than the drawn argument,
+        which is where an invented far-future date correctly reads as no end condition at all
+        (#1944).  Both directions are live: a job that never stops when the ask said to fails
+        it, and so does one that stops when nobody asked."""
+        self.claim(
+            "state: the job stops when the ask said to",
+            _ends_when_asked(container, expected=expected),
+            SpecCategory.STORE,
+        )
+
     def assert_no_delivered_message_is_an_unusable_draw(self) -> None:
         """Nothing that reached the user is a draw the loop was supposed to throw away.
 
@@ -482,6 +563,80 @@ def _named_the_routine(routine: str) -> WorldClaim:
             sample.decision_skill == routine,
             f"the move bound {sample.decision_skill!r}, the ask needs {routine!r}",
         )
+
+    return answer
+
+
+def _only_the_rounds_own_changed(container: str | None) -> WorldClaim:
+    """The changed-mechanism claim, bound to the one row the round built — or to no row at
+    all, for a round that built nothing."""
+    allowed = {container} if container is not None else set()
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        touched = sorted({one.name for one in sample.mechanisms if one.changed_this_run} - allowed)
+        return not touched, f"changed {touched}"
+
+    return answer
+
+
+def _the_one_born_is(container: str) -> WorldClaim:
+    """Exactly one mechanism was born this run, and it carries the derived name.
+
+    The rationale lists what WAS created, because a name that missed is a job under some other
+    key and the key is the only way to find it again."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
+        return born == [container], f"created {born}, expected [{container!r}]"
+
+    return answer
+
+
+def _job_row(sample: SampleObservation, container: str) -> MechanismRecord | None:
+    """The mechanism the turn's job runs as, by NAME.
+
+    By name rather than as "the one born this run", because the three edges that stand a job
+    up reach it differently: two mint the container in the turn under test and one settles the
+    terms of a container its round built earlier.  The name is the same reading in all three,
+    and a turn that configured some OTHER row leaves this one unfound — which is the answer
+    those cases want."""
+    return next((one for one in sample.mechanisms if one.name == container), None)
+
+
+def _fires_every(container: str, seconds: int) -> WorldClaim:
+    """The stored rule fires ``seconds`` apart, read as the gap rather than as a spelling."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        job = _job_row(sample, container)
+        if job is None or job.schedule is None:
+            return False, f"{container!r} carries no schedule"
+        drawn = cadence_seconds(job.schedule)
+        return (
+            drawn == seconds,
+            f"fires every {drawn}s on {job.schedule!r}, the ask says {seconds}s",
+        )
+
+    return answer
+
+
+def _notifies(container: str) -> WorldClaim:
+    """The job's notify flag is set — a boolean on the row, never a reading of the reply."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        job = _job_row(sample, container)
+        return job is not None and job.notifies, f"{container!r} says nothing when it changes"
+
+    return answer
+
+
+def _ends_when_asked(container: str, *, expected: bool) -> WorldClaim:
+    """The job carries an end condition exactly when the ask gave one."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        job = _job_row(sample, container)
+        if job is None:
+            return False, f"{container!r} was never stood up"
+        return job.expires == expected, f"an end condition is {'set' if job.expires else 'absent'}"
 
     return answer
 

@@ -106,15 +106,12 @@ from penny.database import Database
 from penny.database.skills import SkillDraft, derive_collection_name, slug_skill_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer
-from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
+    JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
     TRANSITIONS,
-    MechanismRecord,
-    SampleObservation,
-    SpecCategory,
 )
 from penny.tests.eval.utils.fixtures import CannedPage
 from penny.tests.eval.utils.transition_ledger import _FAMILY
@@ -127,7 +124,6 @@ from penny.tests.eval.utils.transition_world import (
     assert_composed_world,
     assert_the_registry_holds,
     assert_values_are_new,
-    cadence_seconds,
     seed_composed_world,
 )
 from penny.tests.eval.utils.worlds import World
@@ -248,11 +244,10 @@ _NEW_LISTING = World(
 # every sample — a reading of the FIXTURE rather than of the turn.  A sample that DID mint one
 # is caught by the registry claim, where it is a miss rather than a variance rise.
 #
-# What is NOT measured here and could be is the terms the model DREW — the schedule rule it
-# picked is genuine model output with a consequential reading.  A feature for it belongs in
-# ``cohort.py`` beside the others and would have exactly one customer today; tranche 3's two
-# stand-up edges are customers two and three, which is where it should be added.
-_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+# ``JOB_TERMS`` is the one thing left for the model to choose once the framing has supplied the
+# container, the routine and the values — the rule it wrote, whether the job speaks, whether it
+# stops.  Added with tranche 3's two stand-up edges (#2005), which made three customers for it.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, TRANSITIONS, REPLY_SPREAD)
 
 # Every cold ask, in one place — so the deterministic pin in ``test_eval_harness.py`` can check
 # the case's claim about the world without a GPU.
@@ -325,76 +320,13 @@ def assert_every_wording_names_the_space(case: _IdleApplyCase) -> None:
 # this is the positive direction of the reads a bail makes: what a turn that stands a job up
 # leaves behind is a row, and its terms are that row's own fields.  Nothing here reads a tool
 # name, and nothing reads the reply.  (The move naming the routine is the case's other kind of
-# claim and reads the machine's own row instead; it graduated into ``assertions.py``, the
-# idle → request case being its second customer.)
+# claim and reads the machine's own row instead.)
 #
-# These four stay LOCAL: each is parametrised by this case's own routine, page and terms, and
-# no other case has asked for any of them yet.  Tranche 3's two stand-up edges are where the
-# second customer arrives, and where they graduate.
-
-
-def _job_stood_up(sample: SampleObservation) -> MechanismRecord | None:
-    """The one mechanism this turn created, or ``None`` where it created none or several.
-
-    Read as "born this run" rather than "carries a routine", so a turn that stood a job up on
-    the WRONG routine is a bound-the-wrong-routine finding rather than a set-nothing-up one —
-    and a turn that minted two containers has not stood ONE job up, which is what each claim
-    below is about."""
-    born = [one for one in sample.mechanisms if one.born_this_run]
-    return born[0] if len(born) == 1 else None
-
-
-def _minted_the_derived_container(sample: SampleObservation, _world: World) -> Answer:
-    """Exactly one mechanism was created, and it is the container this routine and this listing
-    DERIVE — which is where the whole claim about identity lives.
-
-    The name is a pure function of the routine and the values it was pointed at, so a container
-    under it is a job anybody can find again by asking for the same thing, and the five already
-    running are exactly the names it must not be.  A turn that minted a second container beside
-    it fails this too: two containers is not one job."""
-    born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
-    return born == [_EXPECTED_CONTAINER], f"created {born}, expected [{_EXPECTED_CONTAINER!r}]"
-
-
-def _fires_on_the_cadence_the_ask_gave(sample: SampleObservation, _world: World) -> Answer:
-    """The job fires as often as the ask said.
-
-    Read as the GAP between the rule's first two occurrences, so every spelling of one cadence
-    is the same answer and the claim reads the value rather than the notation.  The rationale
-    quotes the stored rule verbatim, because what a wrong gap came from is the rule itself."""
-    job = _job_stood_up(sample)
-    if job is None or job.schedule is None:
-        return False, "no schedule was set"
-    drawn = cadence_seconds(job.schedule)
-    return (
-        drawn == _COLD_PRICE.cadence_seconds,
-        f"fires every {drawn}s on {job.schedule!r}, the ask says {_COLD_PRICE.cadence_seconds}s",
-    )
-
-
-def _tells_them_when_it_changes(sample: SampleObservation, _world: World) -> Answer:
-    """The job notifies.
-
-    A job that watches and never speaks is the failure this ask exists against — "let me know
-    when the price changes" is half of what was requested — and it is a boolean on the row, so
-    nothing here reads the reply."""
-    job = _job_stood_up(sample)
-    return job is not None and job.notifies, "the job does not notify"
-
-
-def _stops_when_the_ask_said_to(sample: SampleObservation, _world: World) -> Answer:
-    """The job carries an end condition, because this ask gave one.
-
-    Its own claim rather than folded in with the notification: they are two independent fields,
-    and a report that failed them together could not say which one moved.  Read as PRESENCE
-    rather than value — which Sunday, and what hour of it, is a judgement the model makes and
-    the case does not assert — and off the ROW rather than the drawn argument, which is where
-    an invented far-future date correctly reads as no end condition at all (#1944)."""
-    job = _job_stood_up(sample)
-    if job is None:
-        return False, "no job was stood up"
-    expected = _COLD_PRICE.expects_expiry
-    return job.expires == expected, f"an end condition is {'set' if job.expires else 'absent'}"
+# All four are in ``assertions.py``: tranche 3's two stand-up edges arrived as their second and
+# third customers (#2005), and each label went with its claim so one claim's history stays one
+# row.  The terms are now read off the container by NAME rather than off "the one born this
+# run", because the accepted offer settles the terms of a container its round built earlier —
+# the same reading in all three edges, where the born-this-run one holds in only two.
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -425,26 +357,10 @@ async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(
     cohort.assert_the_move_named_the_routine(_COVERING_ROUTINE)
 
     # STORE — what got created, and the terms it runs on.
-    cohort.claim(
-        "state: the job it stood up is the container derived for this routine and this listing",
-        _minted_the_derived_container,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: the job fires on the cadence the ask gave",
-        _fires_on_the_cadence_the_ask_gave,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        _NOTIFIES_CLAIM,
-        _tells_them_when_it_changes,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: the job stops when the ask said to",
-        _stops_when_the_ask_said_to,
-        SpecCategory.STORE,
-    )
+    cohort.assert_the_job_is_the_container_its_values_derive(_EXPECTED_CONTAINER)
+    cohort.assert_the_job_fires_every(_EXPECTED_CONTAINER, _COLD_PRICE.cadence_seconds)
+    cohort.assert_the_job_notifies(_EXPECTED_CONTAINER)
+    cohort.assert_the_job_ends_when_asked(_EXPECTED_CONTAINER, expected=_COLD_PRICE.expects_expiry)
     # And what it did NOT do: run the round now, teach anything, or reach into the five jobs
     # already going.
     cohort.assert_nothing_was_written()
