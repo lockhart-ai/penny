@@ -298,12 +298,8 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.framer.test_skill_framing import TICKER_ARMS
-from penny.tests.eval.labeller.test_skill_labelling import (
-    _TWO_SOURCES,
-    OFFERED_SPOTS,
-    TWO_SOURCES_ARMS,
-)
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.labeller.test_skill_labelling import PORTED_CASES as PORTED_NAMING_CASES
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
 from penny.tests.eval.utils.artifacts import (
@@ -3513,38 +3509,65 @@ def test_every_framing_arm_says_one_ask_in_different_words() -> None:
         )
 
 
-def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration() -> None:
-    """The labeller's arms (#2006): five wordings of one demonstration, over ONE ledger.
+@pytest.mark.parametrize("case", PORTED_NAMING_CASES, ids=lambda c: c.case_id)
+def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration(case) -> None:
+    """Every ported naming case's arms (#2006/#2058): five wordings of one demonstration,
+    over ONE ledger.
 
     The ledger is what decides which spots exist and what each is currently called, and
-    every claim in the case is keyed by those current names — so the arms must agree on
+    every claim in a case is keyed by those current names — so the arms must agree on
     them exactly.  They do because distillation is deterministic over the CALLS, which the
     arms do not vary at all; this says so rather than leaving it to be inferred.
 
-    What must differ is the conversation block: five distinct documents, each carrying both
-    addresses verbatim, since the case claims the two sources are told apart and an arm
-    naming one of them could not be answered."""
-    assert len(TWO_SOURCES_ARMS) == 5
+    What must differ is the conversation block: five distinct documents, each still carrying
+    the case's ANCHORS verbatim.  Five wordings of one demonstration means the facts hold and
+    only the words move, and an arm that dropped a demonstrated value the claims lean on would
+    be a different demonstration answered under the same case id.
+
+    Parametrised over every ported case rather than written once for the two-source one: each
+    new case's arms have to be held against the ledger they claim before any GPU time is spent
+    on them, and a probe that covers one case is a probe the next case silently escapes."""
+    assert len(case.arms) == 5, f"{case.case_id}: five wordings, or the arms are not arms"
+    ledger = case.ledger
     rendered = [
-        _labelling_input(_TWO_SOURCES.calls, _TWO_SOURCES.target, arm, _TWO_SOURCES.conversation)
-        for arm in TWO_SOURCES_ARMS
+        _labelling_input(ledger.calls, ledger.target, arm, ledger.conversation) for arm in case.arms
     ]
     documents = [content for content, _map in rendered]
-    assert len(set(documents)) == 5, "five wordings, or the arms are not arms"
+    assert len(set(documents)) == 5, f"{case.case_id}: five wordings, or the arms are not arms"
     maps = [tuple(sorted(by_value.items())) for _content, by_value in rendered]
-    assert len(set(maps)) == 1, f"the arms offer different spots: {maps}"
-    # A SET, not a sequence: the case's claims are keyed by name and its measured axes are
+    assert len(set(maps)) == 1, f"{case.case_id}: the arms offer different spots: {maps}"
+    # A SET, not a sequence: a case's claims are keyed by name and its measured axes are
     # one per spot, so what has to hold is that it names exactly the spots the ledger
     # offers.  The order the ledger's distillation happens to walk them in is a render
     # detail, and pinning it here would make an unrelated change to that walk read as the
     # case claiming a spot nobody offers.
     offered = set(dict(maps[0]).values())
-    assert offered == set(OFFERED_SPOTS), (
-        f"the case claims spots the ledger does not offer: {sorted(offered ^ set(OFFERED_SPOTS))}"
+    assert offered == set(case.offered), (
+        f"{case.case_id} claims spots the ledger does not offer: "
+        f"{sorted(offered ^ set(case.offered))}"
     )
-    for arm, document in zip(TWO_SOURCES_ARMS, documents, strict=True):
-        assert "citydesk.example/front" in document, f"every arm names the first source: {arm!r}"
-        assert "harborpost.example/front" in document, f"every arm names the second: {arm!r}"
+    for arm, document in zip(case.arms, documents, strict=True):
+        missing = [anchor for anchor in case.anchors if anchor not in document]
+        assert not missing, f"{case.case_id}: {arm!r} drops {missing}"
+
+
+def test_every_ported_naming_case_states_a_behaviour_and_a_distinct_id() -> None:
+    """The ported set's own bookkeeping (#2058).
+
+    Two things a reader of the report depends on and nothing else checks: every case states
+    the sentence that renders above its numbers, in the fixed form, naming the SHIPPED locus;
+    and no two cases share an id, since a duplicate would pool two demonstrations into one
+    cohort and report the spread of both as the instability of either."""
+    ids = [case.case_id for case in PORTED_NAMING_CASES]
+    assert len(set(ids)) == len(ids), f"duplicate ported case ids: {ids}"
+    locus = PennyConstants.SKILL_NAMING_AGENT_NAME
+    for case in PORTED_NAMING_CASES:
+        assert case.behaviour.startswith(f"In the {locus} micro-context, when "), (
+            f"{case.case_id} does not state its behaviour in the fixed form: {case.behaviour!r}"
+        )
+        assert ", Penny " in case.behaviour and case.behaviour.endswith("."), (
+            f"{case.case_id} does not say what Penny does: {case.behaviour!r}"
+        )
 
 
 def test_every_binding_arm_supplies_the_page_and_never_the_entry() -> None:
