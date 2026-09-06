@@ -5,6 +5,17 @@ RUFF_TARGETS = penny/
 PYTEST_ARGS = penny/tests/ -v -m "not eval"
 # -s streams the PERF lines (wall time + tok/s, printed per case) live.
 EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
+# The eval-harness modules that get imported COLD — first thing into a fresh
+# interpreter, not through an already-warm graph (#2082).  `make eval-report` enters
+# `checkpoint` and `assemble` exactly this way (`python -m`), and it does so AFTER the
+# samples are paid for, so an import cycle anywhere they pull from (`cohort`, `report`,
+# `artifacts`, …) is discovered only once a whole run has been spent.  pytest cannot
+# stand in for this: it imports `penny.penny` first, and every cycle in the eval utils
+# resolves against that warm graph.  So `check` imports each of these itself, before
+# pytest — each in its OWN interpreter, because the module the graph is entered through
+# is what decides whether a cycle closes, and importing them together would only ever
+# exercise the first one's order.
+EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.checkpoint penny.tests.eval.utils.report
 
 # --- Eval profiles -----------------------------------------------------------
 # HOW a run is driven, named rather than reassembled from six variables each time.
@@ -241,6 +252,7 @@ check: $(if $(LOCAL),,build)
 	$(RUN) ruff check $(RUFF_TARGETS)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
 	$(RUN) python -m penny.database.migrate --validate
+	$(RUN) sh -c 'for module in $(EVAL_COLD_IMPORTS); do echo "cold import: $$module" && python -c "import $$module" || exit 1; done'
 	$(RUN) pytest $(PYTEST_ARGS)
 	cd browser && npm install --silent && npm run typecheck && npm test
 

@@ -216,7 +216,7 @@ make prod-ios         # Run Penny as the iOS channel without starting signal-api
 make kill             # Tear down containers and remove local images
 make build            # Build the penny Docker image
 make browser-build    # Bundle the browser extension content script
-make check            # Format check, lint, typecheck, migrate-validate, pytest, tsc (browser)
+make check            # Format check, lint, typecheck, migrate-validate, eval cold imports, pytest, tsc (browser)
 make pytest           # Run integration tests
 make fix              # Format + autofix lint issues
 make typecheck        # Type check with ty
