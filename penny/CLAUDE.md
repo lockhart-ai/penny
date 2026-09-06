@@ -1135,8 +1135,8 @@ model-judgment, applied to the eval loop). The joint-checkpoint rule (run → po
 STOP for joint review before the next run) was prose-only — posting was a manual step separate from
 running, so skipping it left no visible debt and nothing interrupted the next run (a real violation ran
 4+ sequential report-runs without posting any). Two mechanisms:
-`make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]` assembles the named run — default: the
-**most-recent completed run** (newest dir holding a `manifest.json`) in the durable home — captures the
+`make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]` assembles the named run — default: **the run
+THIS TREE measured** (see the next paragraph) in the durable home — captures the
 containerized `python -m penny.tests.eval.utils.assemble` stdout **cleanly** (never `make assemble` piped
 through stripping), posts it **verbatim** to PR `<n>` via `GH_TOKEN=$(make token) gh pr comment`, then
 stamps a **`.posted` marker** (holding the comment URL) into the run dir. It **fails loudly** when `PR`
@@ -1148,11 +1148,28 @@ naming each (`⚠ N unreviewed eval run(s) … → post each: make eval-report P
 block** (a multi-run sweep stays possible; the debt is just undeniable). **Marker semantics**: a
 `manifest.json` = a completed run; a `.posted` marker = a posted (reviewed) run; a **lever-less
 ephemeral run writes no `manifest.json`** so it never appears in the banner (by design — nothing to
-review). The scan/latest/banner logic is pure, plain-tested `penny/tests/eval/utils/checkpoint.py`
-(`run_dirs` / `latest_run_dir` / `unreviewed_runs` / `render_banner` + a `latest`/`banner` CLI), invoked
+review). The scan/resolve/banner logic is pure, plain-tested `penny/tests/eval/utils/checkpoint.py`
+(`run_dirs` / `unreviewed_runs` / `runs_at_commit` / `render_banner` + a `resolve`/`banner` CLI), invoked
 in-container by the recipes so it reads the mounted home; the Makefile checks the marker host-side. Both
 recipes reuse the #1734 `EVAL_ARTIFACTS_HOST`/`_MOUNT` derivation, so `make -n eval-report` shows the
 same `-v <primary>/data/eval-artifacts:/penny/eval-artifacts` mount from any worktree.
+
+**A bare `RUN` resolves to THIS TREE'S run, or refuses (#2098).** That durable home is **shared by every
+worktree** — one mount, every fleet agent's runs in it — so "the most-recent completed run" was routinely
+a *sibling's*: one porting agent posted another agent's six reports to its own PR and stamped the
+sibling's run dir `.posted` under a comment URL on the wrong PR. The bare-`RUN` default is now keyed to
+the **invoking tree's `HEAD`**: candidates are the completed, **unposted** run dirs whose manifest
+`commit` equals it. **Exactly one** → post it; **zero** or **several** → the resolver refuses on stderr,
+naming the home, the commit, the runs it found (and any run already posted at that commit — whose next
+move is `RUN=<run-dir> FORCE=1`, not another eval). **There is no "most recent" fall back.** `HEAD` comes
+from the Makefile's single `HEAD_COMMIT_CMD` (`git rev-parse HEAD 2>/dev/null || echo unknown`), expanded
+into **both** recipe shells — `eval` records it as `EVAL_COMMIT` in the manifest, `eval-report` matches
+against that — so the two derivations cannot drift. It is derived **host-side**, because a worktree's
+`.git` is a file pointing at the primary checkout's gitdir that the container has no reason to mount; and
+it is a deferred (`=`) variable rather than `$(shell …)`, so `make -n eval-report PR=<n>` prints the
+resolution instead of running git. A run dir whose `manifest.json` cannot be read has **no** measured
+commit (`None`), which never equals one — so a manifest half-written by a concurrent run drops out of
+the candidates rather than matching anything.
 
 **Past the 64K comment cap, a run posts as MANY comments (#1808).** GitHub refuses a comment body over
 65,536 characters, and `eval-report` had no split path — so an over-cap run could not be posted at all by
