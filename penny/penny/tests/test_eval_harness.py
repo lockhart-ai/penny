@@ -84,6 +84,10 @@ from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
     _seed_board_games,
     assert_board_games_world,
 )
+from penny.tests.eval.chat.idle.test_chat_memory_stories import (
+    VERB_CASES,
+    probe_seeded_world,
+)
 from penny.tests.eval.chat.idle.test_chat_reply import (
     _STORED_TITLES,
     _carries,
@@ -1153,6 +1157,41 @@ def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> 
         case.world.seed(db)
         case.world.seeded(db)
         assert_the_round_built_what_it_claims(db, case)
+
+
+def test_every_memory_verb_case_is_answered_against_the_world_its_claims_assume(
+    tmp_path,
+) -> None:
+    """Each memory-verb case really lays down the entry condition its claims read, and really
+    lays down NOTHING the token they name would already satisfy.
+
+    The second half is the one worth a test.  Every claim in that file names a token —
+    ``mistforge``, ``alpine``, ``bouldering`` — and a seed that already carried it would make
+    the claim pass whatever the turn did, so a green fifteen would report the fixture rather
+    than the behaviour.  ``probe_seeded_world`` states that premise; this drives it on a real
+    post-migration database, where a raise costs a second rather than an hour of GPU.
+
+    The cohort's own arithmetic rides along: five wordings of one ask, all distinct, which is
+    what makes a case's fifteen samples one number rather than a pool of several behaviours.
+    And the world each case declares is checked against what its reply claim reads — an
+    ``answers`` token the seed does not hold is an assertion nothing could satisfy."""
+    for index, case in enumerate(VERB_CASES):
+        assert len(case.also_phrased) == 4, (
+            f"{case.case_id}: a cohort is FIVE wordings of one ask, got "
+            f"{1 + len(case.also_phrased)}"
+        )
+        assert len({case.ask, *case.also_phrased}) == 5, (
+            f"{case.case_id}: two of its wordings are the same string"
+        )
+        db = migrated_db(str(tmp_path / f"verb-{index}.db"))
+        case.seed(db)
+        probe_seeded_world(db, case)
+        seeded = " ".join(token for _, tokens in case.holds for token in tokens)
+        for token in case.world.answers:
+            assert token in seeded or token in case.ask.lower(), (
+                f"{case.case_id}: the reply claim requires {token!r}, which neither the seed "
+                f"holds nor the ask supplies — nothing could satisfy it"
+            )
 
 
 def test_every_teach_is_answered_against_a_world_that_knows_neither_page_nor_fact(
