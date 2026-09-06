@@ -23,12 +23,19 @@ enum DataBrowserFixtures {
             return .memories(try [memory("price-watch"), memory("notes"), memory("messages", type: "log"), memory("archived-notes", archived: true)])
         case .detail(let name, _):
             let record = try memory(name, type: name == "messages" ? "log" : "collection", archived: name == "archived-notes")
-            let entries = (1...3).map { index in
-                JSONValue.object([
-                    "id": .number(Double(index)), "key": name == "messages" ? .null : .string("Item \(index)"),
-                    "content": .string(index == 1 ? "Product: Example coffee beans\nLast observed price: $18\n**This is literal stored text.**" : String(repeating: "Long example content remains available in full.\n", count: 24)),
-                    "author": .string(index == 1 ? "user" : "collector"), "created_at": .string("2026-09-01T12:00:00Z")
-                ])
+            let entries: [JSONValue] = (1...3).map { index -> JSONValue in
+                let key: JSONValue = name == "messages" ? .null : .string("Item \(index)")
+                let content: String = index == 1
+                    ? "Product: Example coffee beans\nLast observed price: $18\n**This is literal stored text.**"
+                    : String(repeating: "Long example content remains available in full.\n", count: 24)
+                let fields: [String: JSONValue] = [
+                    "id": .number(Double(index)),
+                    "key": key,
+                    "content": .string(content),
+                    "author": .string(index == 1 ? "user" : "collector"),
+                    "created_at": .string("2026-09-01T12:00:00Z")
+                ]
+                return .object(fields)
             }
             let values: [String: JSONValue] = [
                 "memory": try jsonValue(record), "entries": .array(entries), "entries_has_more": .bool(false),
