@@ -3387,7 +3387,7 @@ def _scored_sample(
 
 
 def _guarded_injector(
-    wrapper: _InjectingClient | None, observe: Observer | None
+    wrapper: _InjectingClient | None, observe: object | None
 ) -> _InjectingClient | None:
     """The injector whose misfire is reported as a failed guard CHECK, or ``None``.
 
@@ -3779,6 +3779,12 @@ def _decoded_arguments(raw: object) -> dict:
 # collapse "it fetched but never spoke" and "it did nothing at all" into one number.
 CyclesScorer = Callable[[Database, "list[CycleObservation]"], "list[Check]"]
 CollectorCyclesEval = Callable[..., Awaitable["Cohort"]]
+# How a ported COLLECTOR case reads one sample: its live database, what its cycles left
+# behind, and — for a case that forced a fault — whether the injector actually fired.
+# ``None`` for the injector arm means the case installed none.
+CyclesObserver = Callable[
+    [Database, "_DrivenCycles", "bool | None"], "eval_cohort.SampleObservation"
+]
 
 
 def _require_seed(seed: Seeder | None) -> Seeder:
@@ -3920,22 +3926,29 @@ def cycle_script(cycles: Sequence[CycleObservation]) -> str:
     return ", ".join(_cycle_shape(cycle) for cycle in cycles)
 
 
-def _cycles_exclusion(db: Database, script: str) -> str | None:
+def _cycles_exclusion(db: Database, script: str, injected: bool | None) -> str | None:
     """Why a cycle-driven sample cannot be counted, or ``None`` when it can.
 
     A cycle the dispatcher REFUSED never ran against the world the case built, so every claim
     would be answered on a world the model never saw — the failure-cause partition would then
-    tag it behavioural, which is the one thing it is not."""
+    tag it behavioural, which is the one thing it is not.
+
+    ``injected`` is the injector's own account of whether it fired, and ``None`` for a case
+    that installs none — so the third condition is asked only of a RECOVERY case, whose
+    sample exercised no recovery when the sabotage never landed."""
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if CYCLE_DEAD in script:
         return NO_CYCLE
+    if injected is False:
+        return INJECTION_NEVER_FIRED
     return None
 
 
 def _observe_cycles(
     db: Database,
     driven: _DrivenCycles,
+    injected: bool | None,
     *,
     name: str,
     phrasing: str,
@@ -3957,7 +3970,7 @@ def _observe_cycles(
     BOUND collection on every entry, because it is the one container this job writes to and a
     claim reads the whole entry — key and content — exactly as a chat sample's does."""
     script = cycle_script(driven.observed)
-    exclusion = _cycles_exclusion(db, script)
+    exclusion = _cycles_exclusion(db, script, injected)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
@@ -3999,7 +4012,14 @@ def collector_cycles_eval(
 
     Each sample is hermetic (its own mock Signal server, DB and real-model Penny).  Seeds
     run first, then embeddings backfill, then ``prepare`` gets the constructed Penny — a
-    loud world probe, so a drifted seed fails in the seed rather than after GPU time."""
+    loud world probe, so a drifted seed fails in the seed rather than after GPU time.
+
+    ``wrap_client`` is the RECOVERY seam, chat's own (#2009) on the collector's client: a
+    case forces one bad call deterministically and the live model drives the recovery.  A
+    sample the sabotage never fired on ran an unbroken cycle and exercised no recovery, so
+    on the ported path it leaves the cohort as ``INJECTION_NEVER_FIRED`` — harness debris,
+    never a behavioural failure — and on the scorer path it fails the bail-fired guard,
+    which is where a case with no exclusions section can state the same fact."""
 
     _cohorts: dict[str, _PendingCase] = {}
 
@@ -4015,7 +4035,8 @@ def collector_cycles_eval(
         score: CyclesScorer | None,
         seed_skills: Sequence[SkillDraft] | None,
         prepare: Preparer | None,
-        observe: Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation] | None,
+        wrap_client: Callable[[LlmClient], _InjectingClient] | None,
+        observe: CyclesObserver | None,
     ) -> SampleResult:
         """ONE sample against a constructed Penny: lay its world down, probe it, drive its
         cycles, score them with the ran-guard folded in, and write its report block."""
@@ -4027,19 +4048,34 @@ def collector_cycles_eval(
             await _seed_eval_skills(penny, seed_skills)
         if prepare is not None:
             prepare(penny)
+        # A RECOVERY case wraps the COLLECTOR's model client to force one bad call
+        # deterministically.  The collector is the caller under test here — a cycle has no
+        # chat turn — so the wrap goes on ``penny.collector`` and needs no ``target_agent``.
+        # Keep the wrapper: ``bail_injected`` is the only proof the sabotage fired, since the
+        # synthetic response bypasses the persisting client and never reaches the promptlog.
+        wrapper: _InjectingClient | None = None
+        if wrap_client is not None:
+            wrapper = wrap_client(penny.collector._model_client)
+            penny.collector._model_client = wrapper
         driven = await _drive_cycles(penny, collection, cycles)
         # A ported case is graded from its cohort's CLAIMS, made once every sample has run, so
         # the sample scores nothing at drive time and carries only the ran-guard.
         scored: list[Check | str] = (
             list(score(penny.db, driven.observed)) if score is not None else []
         )
-        result = _guarded_graded(scored, [_cycles_ran_check(driven)])
+        guards = [_cycles_ran_check(driven)]
+        guarded = _guarded_injector(wrapper, observe)
+        if guarded is not None:
+            guards.append(_bail_fired_check(guarded.bail_injected))
+        result = _guarded_graded(scored, guards)
         _stamp_cause(penny.db, result)
         _write_sample_report(penny.db, case_id, sample_index, result=result)
         # Read while THIS sample's database is still open — the only moment what the cycles
         # left behind is available at all.
         if observe is not None:
-            result.observation = observe(penny.db, driven)
+            result.observation = observe(
+                penny.db, driven, wrapper.bail_injected if wrapper is not None else None
+            )
         _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
         return result
 
@@ -4056,6 +4092,7 @@ def collector_cycles_eval(
         model: str = "",
         seed_skills: Sequence[SkillDraft] | None = None,
         prepare: Preparer | None = None,
+        wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
         family: str | None = None,
@@ -4092,14 +4129,12 @@ def collector_cycles_eval(
             else None
         )
 
-        def _observer(
-            sample_index: int,
-        ) -> Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation]:
+        def _observer(sample_index: int) -> CyclesObserver:
             phrasing = driving.label(sample_index)
             arm = driving.index_of(sample_index)
             name = f"{case_id}-{sample_number(sample_index)} ({phrasing})"
-            return lambda db, ran: _observe_cycles(
-                db, ran, name=name, phrasing=phrasing, arm=arm, collection=collection
+            return lambda db, ran, injected: _observe_cycles(
+                db, ran, injected, name=name, phrasing=phrasing, arm=arm, collection=collection
             )
 
         async def _drive(
@@ -4117,6 +4152,7 @@ def collector_cycles_eval(
                 score=score,
                 seed_skills=seed_skills,
                 prepare=prepare,
+                wrap_client=wrap_client,
                 observe=_observer(sample_index) if arms else None,
             )
 
