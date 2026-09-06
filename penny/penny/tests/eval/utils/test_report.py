@@ -499,12 +499,17 @@ def test_a_case_declaring_nothing_shared_closes_with_nothing():
 # ── The three sections (#1997) ──────────────────────────────────────────────
 
 
-def _rows(*specs: tuple[str, int, int, str]) -> list[cohort.AssertionRow]:
+def _rows(*specs: tuple[str, int, int, str, list[str]]) -> list[cohort.AssertionRow]:
     return [
         cohort.AssertionRow(
-            label=label, passed=passed, total=total, kind=kind, category=cohort.SpecCategory.STORE
+            label=label,
+            passed=passed,
+            total=total,
+            kind=kind,
+            category=cohort.SpecCategory.STORE,
+            rationales=rationales,
         )
-        for label, passed, total, kind in specs
+        for label, passed, total, kind, rationales in specs
     ]
 
 
@@ -524,9 +529,9 @@ def test_every_claim_renders_the_same_way_and_none_carries_a_floor():
         case_id="c",
         model="m",
         assertions=_rows(
-            ("state: the machine landed in learn", 3, 3, "state"),
-            ("state: nothing excluded was stored", 2, 3, "state"),
-            ("reply: it names what this world says", 3, 3, "reply"),
+            ("state: the machine landed in learn", 3, 3, "state", []),
+            ("state: nothing excluded was stored", 2, 3, "state", ["stored `the withdrawn page`"]),
+            ("reply: it names what this world says", 3, 3, "reply", []),
         ),
     ).render()
 
@@ -541,6 +546,14 @@ def test_every_claim_renders_the_same_way_and_none_carries_a_floor():
     assert "nothing on the assertion side fails a run" in rendered, (
         "the report must SAY it is reported rather than enforced"
     )
+    assert "| claim | what a missed sample saw |" in rendered
+    assert "| state: nothing excluded was stored | stored `the withdrawn page` |" in rendered, (
+        "the claim that missed renders the note its sample carried, beside the claim"
+    )
+    for held in ("state: the machine landed in learn", "reply: it names what this world says"):
+        assert rendered.count(held) == 1, (
+            f"{held!r} held on every sample, so it renders in the table and nowhere else"
+        )
 
 
 def test_the_variance_section_reports_the_spread_and_names_the_wording_that_moved_it():
@@ -815,6 +828,11 @@ _PHRASING_LEAD = (
     "that produced a value no other wording did. Phrasings are a coverage mechanism, and the "
     "pooled number above hides exactly what they are for._"
 )
+_RATIONALE_LEAD = (
+    "_What each MISSED claim saw, deduplicated and in the order it first appeared. A claim every "
+    "sample held has nothing to explain and is absent — and so is a miss whose claim carried no "
+    "rationale, which is a claim that cannot fail legibly._"
+)
 _COST_NOTE = (
     "_Per SAMPLE, never per run — a total is not comparable across cohort sizes. Input is OURS "
     "(prompt and context design), so a rise is what a prompt edit regresses; output is the "
@@ -867,6 +885,7 @@ def test_the_three_sections_render_whole():
                 total=3,
                 kind="reply",
                 category=cohort.SpecCategory.PROVENANCE,
+                rationales=["unsourced: ['449']", "unsourced: ['05:20']"],
             ),
         ],
         variance=cohort.pool(samples, [cohort.ROUTINE_SHAPE, cohort.REPLY_SPREAD]),
@@ -930,6 +949,18 @@ def test_the_three_sections_render_whole():
                                 # 2 of 3 is amber on the ordinary scale, not grey.
                                 "| 🟡 | reply: every specific value in it is sourced | 2/3 | "
                                 "0.67 |",
+                            ]
+                        ),
+                        # The rate alone is a bare number; what the samples that missed SAW is
+                        # the diagnosis, and it was computed and dropped until #2047. The claim
+                        # every sample held is absent — it has nothing to explain.
+                        _RATIONALE_LEAD,
+                        "\n".join(
+                            [
+                                "| claim | what a missed sample saw |",
+                                "|---|---|",
+                                "| reply: every specific value in it is sourced | "
+                                "unsourced: ['449']<br>unsourced: ['05:20'] |",
                             ]
                         ),
                         _FLOOR_NOTE,
@@ -1239,6 +1270,9 @@ def test_every_spec_category_renders_including_the_empty_ones():
     assert "**landed**" in rendered
     for missing in ("store", "provenance"):
         assert f"**{missing}** — _no claim." in rendered, f"{missing} must render as a gap"
+    assert "what a missed sample saw" not in rendered, (
+        "nothing missed, so the section spends no table on why"
+    )
 
 
 def test_a_cosmetic_divergence_never_makes_an_outlier():

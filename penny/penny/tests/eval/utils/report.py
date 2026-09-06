@@ -508,6 +508,19 @@ _CATEGORY_HEADING = "**{category}**"
 # A category with no claims renders as a GAP rather than as an absence nobody notices: a case
 # that checks nothing of one kind is a finding, and a blank says nothing.
 _CATEGORY_GAP = "**{category}** — _no claim. This case asserts nothing in this category._"
+# What the samples that MISSED actually saw, under the table that counted them.  The rate alone
+# turns an absence claim back into a bare number and sends a reader to the sample transcripts,
+# which show what the model SAID rather than which row moved — a diagnosis that cost five
+# hand-written sqlite3 probes for a string the claim had already computed (#2047).
+_RATIONALE_LEAD = (
+    "_What each MISSED claim saw, deduplicated and in the order it first appeared. A claim every "
+    "sample held has nothing to explain and is absent — and so is a miss whose claim carried no "
+    "rationale, which is a claim that cannot fail legibly._"
+)
+_RATIONALE_HEAD = "| claim | what a missed sample saw |\n|---|---|"
+# The distinct notes STACK inside their cell rather than joining into a sentence: each one is a
+# whole reading of a whole sample, and a comma between two of them would read as one.
+_NOTE_SEPARATOR = "<br>"
 _VARIANCE_HEAD = (
     "|  | feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|---|"
 )
@@ -868,7 +881,25 @@ class CaseSections:
             blocks.append(
                 f"{_CATEGORY_HEADING.format(category=category.value)}\n\n{_ASSERTION_HEAD}\n{table}"
             )
-        return "\n\n".join([*blocks, _FLOOR_NOTE])
+        misses = self._rationales()
+        tail = [misses] if misses else []
+        return "\n\n".join([*blocks, *tail, _FLOOR_NOTE])
+
+    def _rationales(self) -> str:
+        """Why the misses missed: the note the samples that missed carried, per claim.
+
+        ABOVE the floor note, which closes the assertion side by naming what "the reading above"
+        is — a table under it would be below the sentence that summed it up.
+
+        Only claims that missed AND said something render.  A claim at full has nothing to
+        explain, and the notes are distinct-and-ordered rather than per-sample because that is
+        what the row carries: the cohort deduplicates on its way to the report, so the sample a
+        note came from is not available here to name."""
+        rows = [row for row in self.assertions if row.rationales]
+        if not rows:
+            return ""
+        body = "\n".join(_rationale_row(row) for row in rows)
+        return f"{_RATIONALE_LEAD}\n\n{_RATIONALE_HEAD}\n{body}"
 
     # ── B ────────────────────────────────────────────────────────────────
     def _variance(self) -> str:
@@ -935,6 +966,16 @@ def _assertion_row(row: cohort.AssertionRow) -> str:
     return (
         f"| {assertion_glyph(row)} | {row.label} | {row.passed}/{row.total} | {row.pass_rate:.2f} |"
     )
+
+
+def _rationale_row(row: cohort.AssertionRow) -> str:
+    """One claim's distinct miss notes, stacked inside a single cell.
+
+    The label renders exactly as it does in the table above — raw — so the two rows are the same
+    string a reader can match by eye.  The notes are ESCAPED: a rationale interpolates values the
+    model produced, and a pipe or a newline in one of those ends the row."""
+    seen = _NOTE_SEPARATOR.join(escape_cell(rationale) for rationale in row.rationales)
+    return f"| {row.label} | {seen} |"
 
 
 def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
