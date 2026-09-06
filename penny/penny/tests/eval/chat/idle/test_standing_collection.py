@@ -35,7 +35,12 @@ so ``idle`` is the contract rather than a hope, and a sample that lands in ``req
 
 **What is NOT claimed, and why.**  That she called ``collection_set`` is a ROUTE — many routes
 reach one end state, and a rule keyed to that name would simply not fire for a verb nobody
-enumerated — so it is measured in the tool sequence and never asserted.  On the retire case the
+enumerated — so it is measured in the tool sequence and never asserted.  How much of that the
+tool sequence can SEE differs by case, and the report says which: the chat observation narrows a
+sample's calls to ``ENACTING_TOOLS``, which carries ``collection_set`` and not
+``collection_archive``, so the two cases that reconfigure a job read a real spread while the
+retire case reads BLIND, in red.  Reported as a harness gap rather than worked around here.  On
+the retire case the
 switch and the cadence are not claimed unchanged either: an archived job is out of the
 dispatcher's reach whatever its switch says, so a turn that also silenced it did nothing the
 user can observe, and claiming it would fail a correct run over a difference with no
@@ -353,7 +358,14 @@ def seed_standing_jobs(*jobs: StandingJob) -> Seeder:
 
 
 def _stand_up(db: Database, job: StandingJob) -> None:
-    db.memories.create_collection(job.container, job.description)
+    # The creating run is STAMPED, and it is load-bearing rather than tidy: the store records a
+    # collection's birth as a mutation event citing whatever run created it, and an unstamped
+    # one cites nothing — which every reader of "did THIS turn touch this row" then counts as
+    # this turn's work, because a seeded run is recognised by its id and a missing id is not
+    # one.  Measured: the two jobs this world lends the log-read cases made their
+    # "no mechanism was created or changed" claim read 0 of 15 for a reason that had nothing to
+    # do with the turn.
+    db.memories.create_collection(job.container, job.description, created_by_run_id=_STOOD_UP_RUN)
     db.memories.update_collection_metadata(
         job.container,
         extraction_prompt=job.program,

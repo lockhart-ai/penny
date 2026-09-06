@@ -624,8 +624,12 @@ async def _drive(chat_eval: ChatEval, model: str, case: _LogReadCase) -> Cohort:
 # routines in the registry, and neither turn teaches one — so on a correct cohort they read the
 # world's own seeded routines on every sample and pool to a serene 0.000 that is neither
 # agreement nor blindness but a reading of the FIXTURE.  ``TOOL_SEQUENCE`` is where the
-# behaviour's own negative direction lives: a sample that browsed the topic instead of looking
-# back reads differently from every other one.
+# behaviour's own NEGATIVE direction lives, and only that half: the chat observation narrows a
+# sample's calls to ``ENACTING_TOOLS``, which carries ``browse`` and no read verb — so a sample
+# that went and looked the topic up reads differently from every other one, while a sample that
+# read her logs and a sample that did nothing at all both read "no call".  That is the right way
+# round for these two cases, since browsing is the failure they are named against; the missing
+# half is reported as a harness gap rather than worked around here.
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 

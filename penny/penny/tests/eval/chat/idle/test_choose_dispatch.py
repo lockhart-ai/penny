@@ -9,9 +9,14 @@ writes nothing, and changes no mechanism, so a fair pick and an opinion leave th
 same condition.  What separates them is entirely the ROUTE, and a route is measured rather than
 asserted — many routes reach one end state, and a rule keyed to the name ``choose`` would not
 fire for a verb nobody enumerated.  So ``choose-dispatch-no-fire`` is folded here as the stated
-negative rather than kept as a second case, and the divergence it exists to catch reads off the
-tool sequence, where a sample that flipped a coin over an opinion question stands apart from
-every other one.
+negative rather than kept as a second case.
+
+What that costs is worth naming rather than glossing, because the instrument cannot currently
+pay it: the tool sequence would be where such a divergence shows, and it reads BLIND here — the
+chat observation narrows a sample's calls to ``ENACTING_TOOLS``, a six-name whitelist carrying
+no ``choose``, so every sample reads "no call" whether the fair pick fired or not.  Reported as
+a harness gap.  Until it is closed, the claim below is what catches a free choice: a reply
+naming an option no record chose fails it, which is the same finding said from the end state.
 
 What the case DOES assert about the pick is the one thing an end state can carry: **the option
 the reply reports is the one the run's own record chose.**  A reply naming a different option
@@ -221,7 +226,13 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    # TOOL_SEQUENCE is where the DISPATCH is read, both directions of it: a sample that fired
-    # nothing and free-chose reads differently from every other one, and so does one that
-    # flipped a coin over a judgment ask.  Measured, never asserted.
+    # TOOL_SEQUENCE is measured and never asserted — the call is a route — and on this case it
+    # reads BLIND, which the report renders in red.  The chat observation narrows a sample's
+    # calls to ``ENACTING_TOOLS``, a six-name whitelist carrying no ``choose``, so every sample
+    # reads "no call" whether the fair pick fired or not.  What that costs is precisely the
+    # negative direction, and it is why the claim above carries the case rather than the
+    # feature: a sample that free-chose is invisible here and fails there, because the option it
+    # reports appears on no record.  Measured anyway, because a feature that prints a number
+    # either way has to say which of the two it is; the whitelist is reported as a harness gap
+    # rather than worked around here.
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
