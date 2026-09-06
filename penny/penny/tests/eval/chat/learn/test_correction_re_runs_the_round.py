@@ -1,16 +1,94 @@
-"""Chat in LEARN, entered from learn: the correction re-runs the round.
+"""learn → learn: the correction re-runs the round against the corrected target (#2005, t3).
 
-The round was taught and run; the user now corrects it -- a different target, a different
-filter, a value the routine is identified by. The turn re-runs the round on the corrected
-instructions and updates the routine, rather than keeping the first version, answering about the
-change without re-running, or shaking loose a term that was deferred rather than corrected.
+Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
+
+The round was taught and run, and Penny closed it by reporting what she stored.  The user now
+corrects what the demonstration was AIMED at — same page, one line over — and the turn re-runs
+the round on the corrected instructions: the corrected value lands in the round's own
+container, the value it replaced does not, and the routine the round left behind is updated in
+place rather than forked.
+
+**The survivor, and on what basis: MEASURED RATE.**  The edge's five variants have real
+per-variant numbers over the seven suite runs that carried all five.  Discounting the one run
+where every case in the suite collapsed together (0.54 on all five, an infrastructure failure
+rather than a behaviour), the corrected-parameter redirect leads on both readings that separate
+them: 0.500 of samples fully passing (the best of the five, against 0.433 · 0.400 · 0.367 ·
+0.267) and the highest floor, never below 0.89 mean where `-filter` and `-neighbour` both fall
+to 0.62.  Its mean, 0.945, is a third of a claim behind `-deferred-terms`' 0.948 on a
+fifteen-check case — noise, and the all-pass reading is what "already passes consistently"
+means at the sample level.
+
+Dominance agrees rather than competing.  What the correction moves here is a value the round's
+IDENTITY is derived from — the container's name is `derive_collection_name(routine, values)` —
+so keeping the round in one place is a real question on this world and an arithmetic certainty
+on the others, which is what makes it the world able to produce the fork this case's claims are
+about.
+
+The four dropped variants are quarantined rather than deleted, each with the temptation it
+probes: the storm-signal redirect (the plainest delta, one line over on the same page, and the
+one whose correction opens with a self-correction), `-filter` (the criterion swapped, with the
+old one retired in as many words), `-deferred-terms` (a notify condition the teach DEFERRED,
+which must not be shaken loose into a job by a correction), `-neighbour` (two rows of one board,
+so a careless re-read lands back on the value it already had).  Every `_CorrectionCase` fixture
+stays in this file, so any of them can come back deliberately.
+
+**What is claimed is the corrected round's END STATE, in two places.**  The STORE: the corrected
+value landed, in the round's own container, and the value it supersedes is not among this run's
+writes.  The REGISTRY: one routine stands for the round — replaced, not forked — and it now
+looks for what the correction named while still naming the page and still keeping what it finds.
+The registry half reads the routine's demonstrated values, flat and tool-agnostic, because a
+correction that reaches the reply and not the program leaves a routine that fetches the wrong
+thing every cycle.
+
+**Six source checks did not port** (the outward column):
+
+* ``_refetched_check`` — *the round re-ran on the page it was taught on*, read off the addresses
+  this turn asked a browse FOR.  A ROUTE: `LANDED`? no, a fetch is not a landing.  `STORE`? no,
+  nothing was stored by asking.  It is model output, and it is measured in section B, where a
+  cohort that stopped re-reading shows as a variance rise rather than as one sample's failed
+  check.  Its end-state form is the corrected-value claim below — the correction does not carry
+  its own answer and the world has never said or stored it, so a sample holding it read a page.
+  What that claim deliberately CANNOT distinguish is a re-fetch from a read of the round's own
+  page sitting in browse-results; the design's answer to that is the tool sequence, not a claim.
+* ``_superseded_check`` — the right question, read over this run's writes against a value spelled
+  out in the case.  It ports as ``assert_nothing_excluded_was_stored``, which asks it of the
+  world's own excluded token, so the comparison is a read of the page rather than a fixture
+  field the claim and the world could disagree about.
+* ``_kept_its_container_check`` — *the corrected round kept the container it already had*.  Ports
+  as ``assert_no_mechanism_was_created``: a round that shifted its identity mints a SIBLING
+  container, which is a created mechanism however the shift happened.
+* ``_correction_anchor_check`` — PRODUCTION ALREADY VALIDATES IT.  ``_next_anchor`` keeps the
+  anchor of a machine that is already parked, and the from-state is what this world seeds, so
+  both halves are entailed by the landing.
+* ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — a ROUTE keyed to
+  a tool NAME.  Its end-state form is *the round's container is still inert*, which catches a
+  configuration however it was reached and catches a plugin verb nobody enumerated.
+* ``*_round_reported_checks`` — PHRASING matches on the reply, which is the thing this design
+  exists to abolish.  ``test_eval_harness.py`` still drives them over all five references, which
+  is where a scorer that cannot pass the answer the case itself calls correct gets caught.
+
+**And the shape naming retires with the scorer.**  ``_correction_shape`` composed four readings
+into one phrase for the code owner to read; three of them now live where the design puts them —
+*stored* and *kept* are claims, *refetched* is the tool sequence — and the fourth (*said*) was a
+phrasing match.  What the phrase gave that no single row does is the COMBINATION, and the
+report's modal-sample reading is what replaces it.  Recorded here rather than silently dropped.
+
+**Two the inward column added**: PROVENANCE, of both kinds.  The source case made no claim of
+either, so a sample that stored a value nobody's page carries — or reported one — passed
+everything it had.
+
+**`answers` is EMPTY, and that is a report.**  A correction asks for no value: it says which
+line was meant, and the corrected reading is what the round goes and finds.  Requiring a token
+of the reply would fail a correct run for something nobody requested.
+
+REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
+accept once the numbers have been read.  Every page, url and job is synthetic, on an
+``example`` domain, because the repo is public.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from functools import partial
 from typing import NamedTuple
 
 import pytest
@@ -24,10 +102,9 @@ from penny.conversation_machine import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.models import Skill, StateTransition
+from penny.database.models import StateTransition
 from penny.database.skills import (
     SkillDraft,
-    SkillStep,
     slug_skill_name,
 )
 from penny.penny import Penny
@@ -45,16 +122,23 @@ from penny.penny import Penny
 # that is the question extraction already answers when it decides which leaves to mark.
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
+    EVAL_MODELS,
     ChatEval,
-    Check,
     Preparer,
     Seeder,
     collection_entries,
-    live_prompts,
-    new_collections,
-    outgoing_replies,
-    routing_clean,
-    tool_not_called,
+)
+from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    ROUTINE_NAME,
+    ROUTINE_SHAPE,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
+    RoutineRecord,
+    SampleObservation,
+    SpecCategory,
 )
 
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
@@ -68,15 +152,11 @@ from penny.tests.eval.conftest import (
 # one policy are two contracts free to drift.
 from penny.tests.eval.utils.transition_ledger import (
     _BROWSE_CALL_ID,
-    _BROWSE_TOOL,
     _FAMILY,
-    _SET_TOOL,
     _WRITE_CALL_ID,
     _drawn_state,
-    _entries_written_by_this_run,
     _journey_runs,
     _JourneyRuns,
-    _landed_state,
     _log_ask,
     _log_chat_step,
     _log_classifier_draw,
@@ -84,7 +164,6 @@ from penny.tests.eval.utils.transition_ledger import (
     _pages_fetched,
     _park,
     _seeded_response,
-    _written_texts,
 )
 from penny.tests.eval.utils.transition_world import (
     _CHOIR_REHEARSALS_URL,
@@ -93,7 +172,6 @@ from penny.tests.eval.utils.transition_world import (
     _HARBOUR_SIGNALS_URL,
     _IDLE_BANTER,
     _JOURNEYS,
-    _LIVE_JOB_CONTAINERS,
     _PLOT_RULES_URL,
     _TEACH_CLIFF_WALK,
     _TEACH_FREE_EVENT,
@@ -103,38 +181,26 @@ from penny.tests.eval.utils.transition_world import (
     _TOWN_HALL_EVENTS_URL,
     _assert_every_job_is_live,
     _assert_every_reply_is_threaded,
-    _attaches_nothing_checks,
     _candidate,
     _demonstrated_ledger,
     _DemonstratedRound,
-    _destination_subs,
-    _extraction_shape_checks,
     _first_divergence,
     _fixture_skill,
     _FixtureDraws,
     _framed,
-    _framed_checks,
-    _landed_in,
-    _learned_this_turn,
     _log_browse_extract,
     _mentions,
-    _mentions_any,
-    _round_framing,
-    _round_ran_checks,
-    _round_reported_checks,
     _row_tool_calls,
     _said_back,
     _seed_call_step,
     _seeded_ask_id,
-    _seeded_jobs_untouched_check,
-    _skill_steps,
     _spoken_and_stored,
     _TeachCase,
-    _wrote_into_the_container_check,
     expected_conversation,
     seed_composed_world,
     tool_call_name,
 )
+from penny.tests.eval.utils.worlds import World
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
 # read the way the loop really writes them, and a hand-written frame is a second copy of a
@@ -747,6 +813,7 @@ def _probe_correction_world(case: _CorrectionCase) -> Preparer:
         assert_the_teach_round_is_parked(penny.db, case)
         assert_the_correction_registry_holds(penny.db, case)
         assert_the_correction_is_unsaid(penny.db, case)
+        assert_every_wording_names_the_corrected_line(case)
 
     return probe
 
@@ -914,460 +981,239 @@ def assert_the_correction_is_unsaid(db: Database, case: _CorrectionCase) -> None
     )
 
 
-# ── Scoring: the shapes, told apart ──────────────────────────────────────────
+# ── The survivor, its wordings, and the world they are answered against ───────
+
+_CASE_ID = "transition-learn-to-learn"
+
+# The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  The case id is a filename; this is the contract.
+_BEHAVIOUR = (
+    "In the chat agent, when the user corrects what a demonstrated round was aimed at, Penny "
+    "re-runs the round against the corrected target — keeping what it says in the round's own "
+    "container, letting go of the value it replaces, and updating the routine she taught rather "
+    "than filing a second one beside it."
+)
+
+_SURVIVOR = _CORRECT_TO_SOUTH_LOOP
+
+# Four more wordings of that same correction.  What varies is only how a person says they meant
+# something else — which apology opens it, "use that one" or "go with that", whether the wrong
+# line is named at all.  What does NOT vary is WHICH line is meant: the case claims the value
+# that line carries, and it can only do that because the target is constant across the arms.
+_CORRECTION_PHRASINGS = (
+    "oops, i meant the south loop — use that one instead",
+    "actually it's the south loop line i want, not that one",
+    "my mistake — the south loop is the one, use that",
+    "sorry, wrong line — i meant the south loop, go with that",
+)
+
+# The round's own container and the token the correction names, read off the survivor rather
+# than restated: the container's name is derived from the routine and its values, and a second
+# copy of either here would be free to drift from the round the world actually seeds.
+_ROUND_CONTAINER = _SURVIVOR.framing.container
+_CORRECTED_TARGET = _SURVIVOR.target[0].lower()
+
+# The ground every arm is answered against: the one page the round was taught on, which is also
+# where the corrected reading lives.
+#
+# ``keeps`` is the corrected value's own distinctive token and ``excludes`` is the superseded
+# one's — a pair that is mutually exclusive and absent from everything else this page carries,
+# which is what lets the two claims read the page rather than a taste.  ``answers`` is EMPTY and
+# that is a report; the module docstring says why.
+_CORRECTED_TRAIL = World(
+    name=_CASE_ID,
+    pages=(_SURVIVOR.prior.page,),
+    keeps=((_SURVIVOR.corrected,),),
+    excludes=(_SURVIVOR.prior.stored,),
+)
 
 
-def _addresses_asked_for(db: Database) -> list[str]:
-    """Every address this turn asked a browse FOR — the queries it sent, deliberately not
-    the pages that came back (``_pages_fetched``, which reads the browse-results log).
+def assert_every_wording_names_the_corrected_line(case: _CorrectionCase) -> None:
+    """Every arm names the line the correction redirects to, and none of them carries the answer.
 
-    The two are different questions and this beat needs this one: what is being asked is
-    whether the round went and looked again, and the log it would otherwise be read from
-    already holds the page from the round being corrected."""
-    return [
-        query
-        for row in live_prompts(db)
-        for call in _row_tool_calls(row)
-        for query in _call_queries(call)
-    ]
-
-
-def _call_queries(call: dict) -> list[str]:
-    """The addresses one logged call asked for, or nothing at all — the browse tool's own
-    argument, decoded the way the ledger stores it (a JSON STRING, never a mapping).
-
-    An undecodable argument blob reads as no addresses rather than raising, the same reading
-    ``tool_call_arg_values`` makes: a malformed draw is a thing a live model produces, and a
-    scorer that died on one would lose the whole sample rather than score it."""
-    if tool_call_name(call) != _BROWSE_TOOL:
-        return []
-    try:
-        arguments = json.loads(call.get("function", {}).get("arguments") or "{}")
-    except json.JSONDecodeError, TypeError:
-        return []
-    return [query for query in arguments.get("queries") or [] if isinstance(query, str)]
+    The facts are held constant across a cohort's arms because the assertions hinge on them, and
+    both halves are load-bearing here: a wording that named no line would be a correction with no
+    target, and one that spelled out the corrected VALUE would let a sample store it without
+    reading anything.  The target is matched case-folded, since which case a person types is
+    exactly what a paraphrase is free to vary."""
+    for wording in (case.correction, *_CORRECTION_PHRASINGS):
+        assert _CORRECTED_TARGET in wording.lower(), (
+            f"{case.case_id}: this wording names no target — {wording!r}"
+        )
+        assert case.corrected.lower() not in wording.lower(), (
+            f"{case.case_id}: this wording carries its own answer {case.corrected!r} — {wording!r}"
+        )
 
 
-class _CorrectionReadings(NamedTuple):
-    """What this turn DID with the correction, read ONCE and shared by everything that
-    conditions on it — the same discipline ``_landed_in`` keeps for the turn's last move.
-
-    Two checks and the shape line all ask these same questions, and three independent
-    re-readings of the ledger are three answers waiting to disagree about one sample: a
-    report whose rows say the page was fetched again and whose shape line says it was not is
-    a report nobody can act on."""
-
-    fetched: list[str]
-    written: list[str]
-    refetched: bool
-    stored: bool
-    kept: bool
-    said: bool
+# ── The claims: what the corrected round left in the store and in the registry ─
+#
+# Four of them are local to this case, and each is parametrised by the correction's own target,
+# so none could graduate even at a second customer.  What they read is the routine the ROUND
+# owns — the row standing under the name its framing pinned — never "the routines", because the
+# world holds five more that its history taught and a claim over all of them would be answered
+# mostly by the fixture.
+#
+# What no claim here reads is a TOOL NAME or a step ORDER: a skill is an arbitrary tool
+# sequence, so the question is what the registry holds afterwards and never which verb put it
+# there.  ``_demonstrated_values`` is flat for the same reason — which call carries the page and
+# which carries what to look for is not something a claim can know.
 
 
-def _correction_readings(db: Database, case: _CorrectionCase) -> _CorrectionReadings:
-    """The observations, taken off the ledger together: what this turn asked a browse for,
-    what it wrote, and whether each of the two values in play turned up — in what it stored
-    and, for the corrected one, in what it said."""
-    fetched = _addresses_asked_for(db)
-    written = _written_texts(_entries_written_by_this_run(db))
-    return _CorrectionReadings(
-        fetched=fetched,
-        written=written,
-        refetched=any(_said_back(case.prior.url, query) for query in fetched),
-        stored=_mentions(case.corrected, written),
-        kept=_mentions(case.prior.stored, written),
-        said=_mentions(case.corrected, outgoing_replies(db)),
-    )
+_ROUND_ROUTINE = slug_skill_name(_SURVIVOR.skill.name)
+
+# The routines this world's history taught, which the round's own is NOT one of (the probe
+# asserts exactly that).  Named once because two claims subtract it.
+_WORLD_ROUTINES = frozenset(slug_skill_name(journey.round.skill.name) for journey in _JOURNEYS)
 
 
-def _refetched_check(readings: _CorrectionReadings) -> Check:
-    """The round RE-RAN: this turn asked for the page it was taught on.
+def _the_rounds_routine(sample: SampleObservation) -> RoutineRecord | None:
+    """The routine the round owns, by the name its framing pinned.
 
-    The distinction the beat turns on, and the reason it is the page rather than any fetch:
-    the corrected value is already in browse-results, so a turn can produce it without going
-    anywhere, and "did a browse happen" would score that identically to a real re-run.  The
-    address is matched with its scheme stripped, because a page named back in the user's own
-    scheme-less form is plainly the same page."""
-    fetched = readings.fetched
-    return Check(
-        "state: the round re-ran on the page it was taught on",
-        readings.refetched,
-        rationale=None
-        if readings.refetched
-        else (f"fetched {fetched}" if fetched else "nothing was fetched"),
-        kind="state",
-    )
+    ``None`` where nothing stands under that name, which is a real reading — a correction whose
+    re-extraction failed leaves the round with no routine at all — and every claim below answers
+    FALSE on it rather than returning early, because a routine that is not there does not point
+    at a page, does not look for anything, and does not keep what it finds."""
+    return next((one for one in sample.routines if one.name == _ROUND_ROUTINE), None)
 
 
-def _superseded_check(readings: _CorrectionReadings) -> Check:
-    """The value the correction REPLACED is not this round's result.
+def _one_routine_stands_for_the_round(sample: SampleObservation, _world: World) -> Answer:
+    """Exactly one routine stands for the round — the re-extraction REPLACED rather than forked.
 
-    Scored apart from "the corrected value landed" because the two miss for different
-    reasons: a round that stored the old value again re-ran without applying the correction,
-    while a round that stored both applied it without letting go of what it replaced.  Read
-    over this run's own writes, so the entry the seeded round left behind — which still
-    holds the old value, and legitimately — is none of this turn's business."""
-    return Check(
-        "state: the superseded value is not this round's result",
-        not readings.kept,
-        rationale=f"wrote {readings.written}" if readings.kept else None,
-        kind="state",
-    )
+    Two is the fork: the corrected round filed its routine beside the one the teach taught
+    rather than over it, leaving the user two routines for one job.  Counted against the world's
+    own five, so what is counted is what this round is responsible for however it ended up
+    named, and the count is a list length rather than an inference."""
+    for_the_round = sorted({one.name for one in sample.routines} - _WORLD_ROUTINES)
+    return for_the_round == [_ROUND_ROUTINE], f"the round's routines are {for_the_round}"
 
 
-def _one_routine_check(db: Database, learned: list[Skill]) -> Check:
-    """The correction left ONE routine for the task — re-extraction REPLACED rather than
-    forked (#1706/#1827).
+def _the_routine_looks_for_the_corrected_target(sample: SampleObservation, _world: World) -> Answer:
+    """The routine now looks for what the correction NAMED — the step that changed, present in
+    the program rather than only in the reply.
 
-    Read against the world's own five, so what is counted is the routines this round is
-    responsible for however the round ended up named.  Two is the fork: the re-extraction
-    filed beside the routine the teach taught rather than over it, leaving the user two
-    routines for one job.  Since #1902 the write is KEYED by the name the round's framing
-    pinned, so this is the gate case watching that — a regression there would put the second
-    routine back and nothing else would notice.
-
-    Not applicable when nothing was re-extracted, the same guard its three siblings carry:
-    the world arrives holding exactly one routine for this round, so a turn that learned
-    nothing would pass a check whose label claims a replacement happened — and that absence
-    is already the scored "a skill was learned from the round"."""
-    label = "state: one routine for the round (the re-extraction replaced rather than forked)"
-    if not learned:
-        return Check.na(label, kind="state")
-    world = {slug_skill_name(journey.round.skill.name) for journey in _JOURNEYS}
-    for_the_round = sorted({skill.name for skill in db.skills.list_all()} - world)
-    return Check(
-        label,
-        len(for_the_round) == 1,
-        rationale=None
-        if len(for_the_round) == 1
-        else f"{len(for_the_round)} routines for the round: {for_the_round}",
-        kind="state",
-    )
+    A routine that re-ran correctly and then distilled the instruction it was ORIGINALLY given
+    fetches the wrong thing every cycle, for ever, and nothing else here would see it."""
+    routine = _the_rounds_routine(sample)
+    if routine is None:
+        return False, f"no routine stands under {_ROUND_ROUTINE!r}"
+    values = " ".join(routine.demonstrated_values).lower()
+    return _CORRECTED_TARGET in values, f"the routine names {routine.demonstrated_values}"
 
 
-def _kept_its_container_check(db: Database, before: set[str], case: _CorrectionCase) -> Check:
-    """The corrected round ran into the container it already had — no SIBLING beside it.
+def _the_routine_still_names_its_page(sample: SampleObservation, _world: World) -> Answer:
+    """The routine still points at the page it was taught on — a step the correction said
+    nothing about, and the first way a delta loses the parts it did not touch.
 
-    The other half of the fork, on the store rather than the registry: find-or-create means
-    a round that keeps its identity derives the same name and continues into what it was
-    already writing, while one that shifts it builds a second container for what the user
-    experiences as one job.  Since #1902 a correction CARRIES the round's framing and
-    re-settles only the container, so this is the gate case watching that carry.
-
-    Conditioned on the machine landing in LEARN rather than on anything being learned, since
-    the container is settled by the ENTRY draw and a re-framing that minted a sibling and
-    then failed extraction has forked the store all the same.  A turn that went somewhere
-    else re-framed nothing, so there is no landing here to grade — that miss is the
-    landed-state advisory's."""
-    label = "state: the corrected round kept the container it already had"
-    if _landed_in(db.machine.latest_transition(), ConversationState.LEARN) is None:
-        return Check.na(label, kind="state")
-    minted = [row.name for row in new_collections(db, before)]
-    return Check(
-        label,
-        not minted,
-        rationale=f"minted {minted} beside {case.framing.container!r}" if minted else None,
-        kind="state",
-    )
+    Matched with the scheme stripped, because a page named back in the user's own scheme-less
+    form is plainly the same page."""
+    routine = _the_rounds_routine(sample)
+    if routine is None:
+        return False, f"no routine stands under {_ROUND_ROUTINE!r}"
+    named = any(_said_back(_SURVIVOR.prior.url, value) for value in routine.demonstrated_values)
+    return named, f"the routine names no page: {routine.demonstrated_values}"
 
 
-def _demonstrated_values(steps: list[SkillStep]) -> list[str]:
-    """Every string leaf the re-extracted routine's steps were demonstrated with — the
-    verbatim call arguments the ledger copied.
+def _the_routine_still_keeps_what_it_finds(sample: SampleObservation, _world: World) -> Answer:
+    """The routine still names somewhere to ACT — the other step the correction never mentioned.
 
-    Read as a flat list of VALUES rather than per tool or per argument, because a skill is an
-    arbitrary sequence of tool calls: which call carries the page and which carries what to
-    look for is not something a scorer can know, and a reading keyed to either would stop
-    firing the moment a round is demonstrated with a tool nobody enumerated."""
-    return [text for step in steps for text in _leaf_strings(step.arguments)]
-
-
-def _leaf_strings(node: object) -> list[str]:
-    """Every string at the leaves of one call's arguments, however deeply they nest."""
-    if isinstance(node, str):
-        return [node]
-    if isinstance(node, dict):
-        return [text for value in node.values() for text in _leaf_strings(value)]
-    if isinstance(node, list):
-        return [text for value in node for text in _leaf_strings(value)]
-    return []
+    Read off the ATTACHMENT MARK, which distillation sets on any leaf whose demonstrated value
+    named one of Penny's own collections, so it is true of a write, of a log append and of a
+    plugin verb nobody has heard of, and false of a routine that only browses.  Its own claim
+    rather than the shared one, which reads every routine in the registry and would be answered
+    here mostly by the world's seeded five."""
+    routine = _the_rounds_routine(sample)
+    if routine is None:
+        return False, f"no routine stands under {_ROUND_ROUTINE!r}"
+    return routine.names_a_destination, "the routine keeps nothing"
 
 
-def _kept_the_page_check(learned: list[Skill], case: _CorrectionCase) -> Check:
-    """The re-extracted routine still points at the page it was taught on — a step the
-    correction said nothing about, and the first way a delta loses the parts it did not
-    touch."""
-    label = "state: the re-extracted routine still points at the page it was taught on"
-    if not learned:
-        return Check.na(label, kind="state")
-    values = _demonstrated_values(_skill_steps(learned))
-    kept = any(_said_back(case.prior.url, value) for value in values)
-    return Check(
-        label,
-        kept,
-        rationale=None if kept else f"the routine names no page: {values}",
-        kind="state",
-    )
+def _the_round_container_is_still_inert(sample: SampleObservation, _world: World) -> Answer:
+    """The round's container carries no job — a correction TEACHES, it does not instantiate.
+
+    The end-state form of "she configured nothing", and the negative direction of the two
+    stand-up edges' terms claims: a correction that set the round running has answered an offer
+    the user never accepted.  A container that is gone entirely fails it too, since a retired
+    container is not an inert one."""
+    row = next((one for one in sample.mechanisms if one.name == _ROUND_CONTAINER), None)
+    if row is None:
+        return False, f"{_ROUND_CONTAINER!r} is no longer in the registry at all"
+    terms = row.schedule is not None or row.notifies or row.expires
+    return not terms, f"{_ROUND_CONTAINER!r} carries a job: {row.schedule!r}"
 
 
-def _kept_the_write_check(db: Database, learned: list[Skill]) -> Check:
-    """The re-extracted routine still KEEPS what it finds — the other uncorrected step.
-
-    Read the way every destination is read here (#1783/#1854): a leaf whose demonstrated
-    value names one of Penny's own collections, through the same registry policy extraction
-    marks on, so a routine that stores through a verb nobody enumerated still counts."""
-    label = "state: the re-extracted routine still keeps what it finds"
-    if not learned:
-        return Check.na(label, kind="state")
-    destinations = _destination_subs(db, _skill_steps(learned))
-    return Check(
-        label,
-        bool(destinations),
-        rationale=None if destinations else "the routine keeps nothing",
-        kind="state",
-    )
+# What this case measures.  ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are IN, unlike every other
+# ported transition case: this is the one edge whose turn re-extracts, so what they read is the
+# round's own re-extraction against the world's constant five rather than the fixture alone.
+#
+# ``JOB_TERMS`` is deliberately ABSENT: a correct correction stands nothing up, so on a correct
+# cohort it reads its absent value on every sample and the report would mark it blind in red for
+# behaving exactly as this case requires.  A sample that DID configure the round is caught by
+# the inert claim, where it is a miss rather than a variance rise.
+_MEASURED = (TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
-def _corrected_step_check(learned: list[Skill], case: _CorrectionCase) -> Check:
-    """The re-extracted routine looks for what the CORRECTION named — the step that did
-    change, present in the program rather than only in the reply.
-
-    A routine that re-ran correctly and then distilled the instruction it was originally
-    given is a routine that will fetch the wrong thing every cycle, which is the harm this
-    beat's re-extraction half is about."""
-    label = "state: the re-extracted routine looks for what the correction named"
-    if not learned:
-        return Check.na(label, kind="state")
-    values = _demonstrated_values(_skill_steps(learned))
-    named = _mentions_any(case.target, " ".join(values))
-    return Check(
-        label,
-        named,
-        rationale=None if named else f"names none of {list(case.target)}: {values}",
-        kind="state",
-    )
-
-
-def _correction_anchor_check(db: Database, case: _CorrectionCase) -> Check:
-    """The round stayed on its OWN anchor: the move came from learn and still points at the
-    teach that opened it (#1827's anchor rule — a correction continues a round rather than
-    starting one).
-
-    Scored only when the machine landed in learn, the same conditional every other beat's
-    anchor check uses: a misroute is already named by the landed-state advisory, and scoring
-    the anchor on top of it would recount one classifier miss as an enactment failure."""
-    label = "state: the correction continued the round it corrects (from learn, same anchor)"
-    latest = db.machine.latest_transition()
-    if latest is None or latest.to_state != ConversationState.LEARN.value:
-        return Check.na(label, kind="state")
-    taught = _seeded_ask_id(db, case.prior.teach, limit=_CORRECTION_MESSAGE_WINDOW)
-    continued = latest.from_state == ConversationState.LEARN.value
-    ok = continued and taught is not None and latest.anchor_message_id == taught
-    return Check(
-        label,
-        ok,
-        rationale=None
-        if ok
-        else (
-            f"came from {latest.from_state}, anchored to {latest.anchor_message_id} "
-            f"(the teach is {taught})"
-        ),
-        kind="state",
-    )
-
-
-# Every way a correction can be answered, named once — the phrases the report hands the code
-# owner, and diff-join keys like every other label here: two of them are asserted from the
-# deterministic pin as well, so a wording spelled out at both sites would drift a word at a
-# time.  There is one per combination of the three things a turn either did or did not do,
-# plus the claim, which is only evidence where nothing was fetched and nothing was written.
-SHAPE_RE_RAN_AND_APPLIED = "re-ran with the correction applied"
-SHAPE_RE_RAN_AND_KEPT_BOTH = "re-ran and stored both values"
-SHAPE_RE_RAN_UNAPPLIED = "re-ran without applying it"
-SHAPE_RE_RAN_AND_STORED_NOTHING = "re-ran and stored neither value"
-SHAPE_DELTA_WITHOUT_RE_RUNNING = "applied the delta without re-running"
-SHAPE_DELTA_AND_OLD_WITHOUT_RE_RUNNING = "stored both values without re-running"
-SHAPE_OLD_WITHOUT_RE_RUNNING = "re-stored the old value without re-running"
-SHAPE_CLAIMED_WITHOUT_RE_RUNNING = "claimed the corrected value without re-running"
-SHAPE_NEITHER = "neither ran nor applied"
-
-
-def _correction_shape(*, refetched: bool, stored: bool, kept: bool, said: bool) -> str:
-    """WHICH shape this sample landed in, in one phrase.
-
-    The checks above each answer one question, and the code owner's question is about the
-    COMBINATION — whether a delta reached the instructions at all, and whether the flow that
-    followed was the corrected one.  So the readings are named here once, together, rather
-    than left to be reassembled from three rows in a report.
-
-    Every combination of the three observations gets its own phrase.  Collapsing any pair is
-    the failure this exists to prevent, and the first draft did exactly that: a run that
-    stored the corrected value AND re-stored the one it replaced read as a clean delta-apply,
-    which is the difference between a small coherence miss and a routine that keeps both.
-    The CLAIM breaks a tie in one place only — where nothing was fetched and nothing was
-    written, a reply is the only evidence there is."""
-    if refetched:
-        if stored:
-            return SHAPE_RE_RAN_AND_KEPT_BOTH if kept else SHAPE_RE_RAN_AND_APPLIED
-        return SHAPE_RE_RAN_UNAPPLIED if kept else SHAPE_RE_RAN_AND_STORED_NOTHING
-    if stored:
-        return SHAPE_DELTA_AND_OLD_WITHOUT_RE_RUNNING if kept else SHAPE_DELTA_WITHOUT_RE_RUNNING
-    if kept:
-        return SHAPE_OLD_WITHOUT_RE_RUNNING
-    return SHAPE_CLAIMED_WITHOUT_RE_RUNNING if said else SHAPE_NEITHER
-
-
-def _correction_shape_advisory(readings: _CorrectionReadings) -> Check:
-    """The shape, as an ADVISORY row — the answer read at joint review, beside the scored
-    checks it is composed from and off the same reading they are, so the two can never
-    disagree about one sample."""
-    return Check(
-        "shape: how the correction was answered",
-        True,
-        rationale=_correction_shape(
-            refetched=readings.refetched,
-            stored=readings.stored,
-            kept=readings.kept,
-            said=readings.said,
-        ),
-        scored=False,
-        kind="state",
-    )
-
-
-def _re_extraction_checks(db: Database, learned: list[Skill], case: _CorrectionCase) -> list[Check]:
-    """What the RE-EXTRACTION left in the registry: one routine for the round, carrying the
-    step the correction changed over the two it never mentioned.
-
-    Grouped because they are one reading of one row — a correction's durable result is the
-    routine it leaves behind, and asking whether that routine is singular, still pointed at
-    its page, still keeping what it finds, and now looking for the right thing is four
-    questions about the same object."""
-    return [
-        _one_routine_check(db, learned),
-        _kept_the_page_check(learned, case),
-        _kept_the_write_check(db, learned),
-        _corrected_step_check(learned, case),
-    ]
-
-
-def _score_learn_to_learn(
-    db: Database, before: set[str], reply: str, *, case: _CorrectionCase
-) -> list[Check]:
-    """The correction was applied TO the instructions already given, and the whole corrected
-    flow was carried out.
-
-    The demonstrated round's own contract, re-run: the page read again, the CORRECTED value
-    landed in the round's container, and nothing set up.  Beside it, the claims that are this
-    beat's own — the page was really re-fetched, the superseded value is not the result, one
-    routine and one container came out of it, and the re-extracted program carries the
-    corrected step over the steps the correction never mentioned.
-
-    ONE scorer for all five cases, bound to the case's own page tokens.  The labels are
-    diff-join keys and the ones shared with the learn beats keep their wording, so all three
-    learn entries report under the same rows."""
-    created = new_collections(db, before)
-    framing = _round_framing(db)
-    learned = _learned_this_turn(db)
-    readings = _correction_readings(db, case)
-    return [
-        _refetched_check(readings),
-        *_round_ran_checks(db, case.corrected),
-        _superseded_check(readings),
-        *_framed_checks(db, framing),
-        _wrote_into_the_container_check(db, framing),
-        _kept_its_container_check(db, before, case),
-        Check("state: a skill was learned from the round", bool(learned), kind="state"),
-        *_re_extraction_checks(db, learned, case),
-        *_attaches_nothing_checks(db, created, already_running=_LIVE_JOB_CONTAINERS),
-        Check("state: she configured nothing", tool_not_called(db, _SET_TOOL), kind="state"),
-        *_extraction_shape_checks(db, learned),
-        _correction_anchor_check(db, case),
-        _seeded_jobs_untouched_check(db),
-        *_round_reported_checks(case.corrected, reply, outgoing_replies(db)),
-        _correction_shape_advisory(readings),
-        Check(
-            "calls: the machine landed in learn",
-            _landed_state(db) == ConversationState.LEARN.value,
-            rationale=f"landed in {_landed_state(db)}",
-            scored=False,
-            kind="spine",
-        ),
-        Check(
-            "calls: clean routing (no re-rolled draw or continue nudge)",
-            routing_clean(db),
-            scored=False,
-            kind="proc",
-        ),
-    ]
-
-
-async def _run_correction_case(chat_eval: ChatEval, case: _CorrectionCase) -> None:
-    """Drive one learn → learn case: the composed world with its taught round parked in it,
-    the five journeys' routines and this round's in the registry, the page its instructions
-    named installed so the corrected round reads a real one, and the shared scorer bound to
-    the tokens that page carries.  Report-only — the thresholds are the code owner's to set
-    once the numbers are read."""
-    await chat_eval(
-        case_id=case.case_id,
-        message=case.correction,
-        browse=[case.prior.page],
-        seed=seed_corrected_round(case),
-        seed_skills=[*(journey.round.skill for journey in _JOURNEYS), case.skill],
-        prepare=_probe_correction_world(case),
-        score=partial(_score_learn_to_learn, case=case),
-        min_pass_rate=None,
-        timeout=240.0,
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_learn_to_learn_re_runs_the_round_against_the_corrected_target(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """learn → learn: the round was taught on one line of the trail status and the user meant
+    the one below it.  The corrected round reads the page again, keeps what the corrected line
+    says, and the routine it leaves behind looks for that line from now on — in the container it
+    already had, with nothing set running."""
+    cohort = await chat_eval(
+        case_id=_CASE_ID,
+        behaviour=_BEHAVIOUR,
+        model=model,
+        seed=seed_corrected_round(_SURVIVOR),
+        seed_skills=[*(journey.round.skill for journey in _JOURNEYS), _SURVIVOR.skill],
+        prepare=_probe_correction_world(_SURVIVOR),
+        world=_CORRECTED_TRAIL,
+        ask=_SURVIVOR.correction,
+        also_phrased=_CORRECTION_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
+        timeout=240.0,
+    )
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.LEARN)
+
+    # STORE — what the corrected round kept, and where.
+    cohort.assert_something_from_each_page_was_written()
+    cohort.assert_the_write_landed_in_the_round_container()
+    cohort.assert_nothing_excluded_was_stored()
+    cohort.assert_no_mechanism_was_created()
+    cohort.assert_only_the_rounds_own_mechanism_changed(_ROUND_CONTAINER)
+    cohort.claim(
+        "state: the round's container carries no job",
+        _the_round_container_is_still_inert,
+        SpecCategory.STORE,
+    )
+    # STORE — and what it left in the registry.
+    cohort.claim(
+        "state: one routine stands for the round",
+        _one_routine_stands_for_the_round,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the routine looks for what the correction named",
+        _the_routine_looks_for_the_corrected_target,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the routine still points at the page it was taught on",
+        _the_routine_still_names_its_page,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the routine still keeps what it finds",
+        _the_routine_still_keeps_what_it_finds,
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE — the half the source case had none of.  A corrected round writes, so the store
+    # claim is live on every sample rather than answering over an empty set.
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-@pytest.mark.asyncio
-async def test_learn_to_learn_re_runs_the_round_on_the_corrected_target(
-    chat_eval: ChatEval,
-) -> None:
-    """learn → learn, the plainest delta: the round read today's flag and the storm signal
-    beside it is what was wanted.  The page is re-read, the storm signal's own value stored
-    in place of the flag's, the routine re-extracted over the corrected instruction, and the
-    offer made again with nothing set running."""
-    await _run_correction_case(chat_eval, _CORRECT_TO_STORM_SIGNAL)
-
-
-@pytest.mark.asyncio
-async def test_learn_to_learn_corrects_a_value_the_round_is_identified_by(
-    chat_eval: ChatEval,
-) -> None:
-    """learn → learn where the corrected piece is a VALUE the round's framing carries: the
-    routine was taught on the north loop and the south loop is what was meant.  The
-    container's name is derived from that value, so this is the case where keeping one job
-    in one place is a real question rather than an arithmetic certainty."""
-    await _run_correction_case(chat_eval, _CORRECT_TO_SOUTH_LOOP)
-
-
-@pytest.mark.asyncio
-async def test_learn_to_learn_swaps_the_filter_the_round_was_taught(chat_eval: ChatEval) -> None:
-    """learn → learn where the correction retires a FILTER: the round kept the free event
-    and the criterion is family-friendly now, with free explicitly no longer mattering.  The
-    page pulls the two apart, so a round that kept the old filter lands on a different
-    event and says so."""
-    await _run_correction_case(chat_eval, _CORRECT_TO_FAMILY_FRIENDLY)
-
-
-@pytest.mark.asyncio
-async def test_learn_to_learn_corrects_without_shaking_the_deferred_term_loose(
-    chat_eval: ChatEval,
-) -> None:
-    """learn → learn on the round whose teach also stated a NOTIFY condition: the correction
-    moves it from the watering restriction to the compost rules, and the condition stays
-    where it was — waiting for the turn that accepts the offer.  Configuring it here is the
-    teach-and-instantiate fold, reached this time through a correction."""
-    await _run_correction_case(chat_eval, _CORRECT_TO_COMPOST_RULES)
-
-
-@pytest.mark.asyncio
-async def test_learn_to_learn_moves_one_row_over_on_the_same_board(chat_eval: ChatEval) -> None:
-    """learn → learn on the tightest redirect: this week's piece was stored and next week's
-    is what was wanted — two rows of one board, both a piece's title — so a re-read that is
-    not careful lands back on the value the round already had."""
-    await _run_correction_case(chat_eval, _CORRECT_TO_NEXT_WEEK)
+    cohort.measure(*_MEASURED)
