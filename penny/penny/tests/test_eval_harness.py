@@ -37,6 +37,7 @@ from penny.conversation_machine import (
     RoundShortfall,
     build_snapshot,
     presented_edges,
+    render_classifier_content,
 )
 from penny.database import Database
 from penny.database.memory import MemoryType
@@ -182,6 +183,7 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.conftest import (
     _ACTOR,
+    EVAL_SEED_AUTHOR,
     INJECTION_NEVER_FIRED,
     NO_MEASURED_TURN,
     NO_REPLY,
@@ -193,10 +195,12 @@ from penny.tests.eval.conftest import (
     CycleObservation,
     FieldExpectation,
     ParameterFamily,
+    ParkedRound,
     SampleResult,
     _assert_threshold,
     _bail_fired_check,
     _case_prompts,
+    _classifier_snapshot,
     _cycle_recovered_check,
     _enacting_name,
     _exclusion,
@@ -208,7 +212,9 @@ from penny.tests.eval.conftest import (
     _InjectTextBail,
     _labelling_input,
     _mechanism_records,
+    _refuse_binding_off_request,
     _refuse_unscorable,
+    _registry_shortfall,
     _sample_turns,
     _score_binding,
     _score_extraction,
@@ -2897,6 +2903,129 @@ def test_every_passing_mention_arm_holds_a_door_open_it_must_decline(tmp_path) -
     assert ConversationState.APPLY in offered, "the apply door must be on offer to be declined"
     assert ConversationState.REQUEST in offered, "so must request"
     assert ConversationState.IDLE in offered, "and idle must be a door the state opens"
+
+
+# The section a REQUEST-parked round always renders (#1894) — as a literal, because what
+# #2084 fixed is that an isolated draw was shown a document this heading was missing from,
+# and a probe reading the same constant the render reads could not have said so.
+_WAITING_ON_HEADER = "## The details this task is waiting on"
+
+
+def _waiting_on_block(content: str) -> str:
+    """The waiting-on section of a rendered classifier document, alone.
+
+    Sections are joined by a blank line and the section itself carries none, so a split on
+    the blank line is the section boundary.  Exactly one, asserted rather than assumed: a
+    document carrying none is the #2084 defect itself, and one carrying two is a render
+    that has stopped meaning what the case reads it for."""
+    blocks = [one for one in content.split("\n\n") if one.startswith(_WAITING_ON_HEADER)]
+    assert len(blocks) == 1, f"expected exactly one waiting-on section, got {len(blocks)}"
+    return blocks[0]
+
+
+@pytest.mark.parametrize("case", REQUEST_APPLY_CASES, ids=lambda c: c.case_id)
+def test_an_isolated_request_draw_is_shown_the_binding_production_carries(case, tmp_path) -> None:
+    """The classifier fixture's REQUEST snapshot renders what the round is waiting on, and
+    renders it exactly as the parked round in situ does (#2084).
+
+    ``classifier_eval`` never passed ``round_binding``, so every isolated case drawn from
+    request was asked to decide request → apply / request → idle / request → elicit
+    without the one section naming the routine, what the user already gave and what is
+    still missing — an input the wiring cannot produce, since production reaches request
+    only through the binder and records what it settled on the move.  A pass on that
+    document proves less than the case claims, and a miss could be the harness's.
+
+    Driven against ONE database twice, so everything else in the two documents is a single
+    read and the binding is the only thing that could differ.  The reference is the in-situ
+    world's own recorded row — the very JSON ``ConversationMachine.shortfall()`` reads —
+    and what is checked against it is what the DRIVER builds, through ``_classifier_snapshot``
+    itself rather than a rebuild beside it, so reverting the wiring fails here.  Byte
+    identity is the claim: the two documents are one document, heading included."""
+    db = migrated_db(str(tmp_path / f"parked-classifier-{case.case_id}.db"))
+    seed_parked_in_request(case)(db)
+    # The routine the runner lays down after a case's seed — the row the fixture reads the
+    # description and declared order off.  No description embedding: the runner computes one
+    # so `resolve_by_meaning` can rank the skill, and nothing on the rendered path reads it.
+    db.skills.upsert(case.parked.skill, author=EVAL_SEED_AUTHOR)
+
+    parked = db.machine.latest_transition()
+    assert parked is not None and parked.round_shortfall is not None
+    recorded = RoundShortfall.model_validate_json(parked.round_shortfall)
+    declared = ParkedRound(skill=case.parked.skill.name, settled=case.parked.settled)
+    fixture = _registry_shortfall(db, case.case_id, declared)
+    assert fixture == recorded, (
+        f"{case.case_id}: the fixture must build the binding the parked round carries"
+    )
+
+    # The driver's own snapshot step, not a rebuild beside it: what #2084 fixed is an
+    # argument this call did not pass, and an assertion over a snapshot assembled here
+    # would stay green with the fix reverted.
+    isolated = render_classifier_content(
+        _classifier_snapshot(
+            db,
+            case_id=case.case_id,
+            state=ConversationState.REQUEST,
+            message=case.supply,
+            penny_last_turn=case.reply,
+            task_anchor=case.parked.ask,
+            parked_round=declared,
+        ),
+        case.supply,
+    )
+    in_situ = render_classifier_content(
+        build_snapshot(
+            db,
+            state=ConversationState.REQUEST,
+            message=case.supply,
+            penny_last_turn=case.reply,
+            task_anchor=case.parked.ask,
+            round_binding=recorded,
+        ),
+        case.supply,
+    )
+    assert _WAITING_ON_HEADER in isolated, (
+        f"{case.case_id}: a request-parked draw must be shown what the round waits on"
+    )
+    assert _waiting_on_block(isolated) == _waiting_on_block(in_situ)
+    assert isolated == in_situ
+
+
+def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) -> None:
+    """Every incoherent way to declare a ``parked_round`` is refused before a sample runs.
+
+    Each one would otherwise render a waiting-on section describing a round production
+    cannot produce, and every one of them is silent on a run — the case would report a
+    number as if the input were production's.  A binding on any state but request, since
+    that is the only state carrying one; a routine the case's ``seed_skills`` never
+    registered, which has no description or declared order to read; a value under a name
+    the routine does not declare, which is narrowed away, so the section would claim the
+    round gave nothing it in fact gave; and a round with nothing left missing, which the
+    binder would have FRAMED rather than parked.
+
+    The coherent declaration passes in the same breath, because a guard nothing gets past
+    is indistinguishable from one that refuses everything."""
+    case = REQUEST_APPLY_CASES[0]
+    db = migrated_db(str(tmp_path / "parked-round-refusals.db"))
+    db.skills.upsert(case.parked.skill, author=EVAL_SEED_AUTHOR)
+    declared = ParkedRound(skill=case.parked.skill.name, settled=case.parked.settled)
+
+    _refuse_binding_off_request("a-case", ConversationState.REQUEST, declared)
+    _refuse_binding_off_request("a-case", ConversationState.IDLE, None)
+    with pytest.raises(ValueError, match="only a round parked in request"):
+        _refuse_binding_off_request("a-case", ConversationState.IDLE, declared)
+
+    assert _registry_shortfall(db, "a-case", declared).skill == slug_skill_name(
+        case.parked.skill.name
+    )
+    with pytest.raises(ValueError, match="seed_skills do not register"):
+        _registry_shortfall(db, "a-case", ParkedRound(skill="a-routine-nobody-taught"))
+    with pytest.raises(ValueError, match="does not declare"):
+        _registry_shortfall(
+            db, "a-case", declared.model_copy(update={"settled": {"not_a_parameter": "x"}})
+        )
+    every_value = {one.name: "something the user said" for one in case.parked.skill.parameters}
+    with pytest.raises(ValueError, match="waiting on nothing"):
+        _registry_shortfall(db, "a-case", declared.model_copy(update={"settled": every_value}))
 
 
 def test_every_framing_arm_says_one_ask_in_different_words() -> None:

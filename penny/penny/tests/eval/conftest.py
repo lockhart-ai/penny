@@ -34,6 +34,7 @@ from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import BaseModel
 from similarity.embeddings import deserialize_embedding
 from sqlmodel import Session, col, select
 
@@ -41,7 +42,9 @@ from penny.config import Config
 from penny.constants import ChannelType, MutationEntityType, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
+    MachineSnapshot,
     RoundFraming,
+    RoundShortfall,
     StateClassifier,
     StateDecision,
     build_snapshot,
@@ -51,7 +54,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.message_store import MessageStore, PromptPerf
 from penny.database.models import MemoryRow, PromptLog, SendQueueItem
-from penny.database.skill_store import steps_from_json
+from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
     DistillInput,
     SkillDraft,
@@ -74,6 +77,7 @@ from penny.llm.models import (
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.responses import PennyResponse
+from penny.round_framing import round_shortfall
 from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
@@ -4564,6 +4568,132 @@ def _expected_edge(case_id: str, expected: ConversationState | None) -> Conversa
     return expected
 
 
+class ParkedRound(BaseModel):
+    """The round a REQUEST case's machine is parked on (#2084) — the routine it named and
+    the values the earlier turns already settled.
+
+    What a case DECLARES, which is the smaller half: production's binder reads the round's
+    words against the routine the registry holds, so the description, the declared order
+    and which parameters got nothing are all facts about the ROUTINE and are read off it
+    (:func:`_registry_shortfall`).  A case that stated them itself would be a second copy
+    of a scheme that can only drift, and the drift's whole symptom is a snapshot reading
+    leaner than production's while reporting a number as if it did not."""
+
+    skill: str
+    settled: dict[str, str] = {}
+
+
+# What a declared parked round is refused for, each naming the coherence it broke.  A
+# REQUEST case is measured on what the round is waiting for, so every one of these would
+# otherwise render a waiting-on section describing a round production cannot produce.
+_PARKED_ROUND_OFF_REQUEST = (
+    "{case_id}: only a round parked in request waits on a binding — this case parks in "
+    "{state}, which carries none"
+)
+_PARKED_ROUND_UNSEEDED = (
+    "{case_id}: the parked round names the routine {skill!r}, which this case's "
+    "seed_skills do not register"
+)
+_PARKED_ROUND_UNDECLARED = (
+    "{case_id}: the parked round settles {undeclared}, which {skill!r} does not declare"
+)
+_PARKED_ROUND_COMPLETE = (
+    "{case_id}: the parked round settles every parameter {skill!r} declares, so it is "
+    "waiting on nothing and the binder would have framed it"
+)
+
+
+def _refuse_binding_off_request(
+    case_id: str, state: ConversationState, parked: ParkedRound | None
+) -> None:
+    """Refuse a parked round declared for a state that never carries one.
+
+    ``MachineSnapshot.round_binding`` is present only while a round is parked in request,
+    so a case declaring one anywhere else would be measured against a section production
+    renders on no other state — the mirror of the gap this parameter closes."""
+    if parked is not None and state is not ConversationState.REQUEST:
+        raise ValueError(_PARKED_ROUND_OFF_REQUEST.format(case_id=case_id, state=state.value))
+
+
+def _registry_shortfall(db: Database, case_id: str, parked: ParkedRound) -> RoundShortfall:
+    """The declared parked round as the binding production would have recorded for it.
+
+    Built through the production constructor off the SEEDED REGISTRY ROW — the same row the
+    binder is handed — so the routine's name, its description and the declared order of
+    both lists come from where production gets them, and what is left for the case to say
+    is only what its earlier turns settled.  Everything the round is still waiting on
+    follows from that: a declared parameter the case did not settle is a parameter the
+    words gave nothing for, which is exactly what ``MissingParameters`` names."""
+    routine = db.skills.get(parked.skill)
+    if routine is None:
+        raise ValueError(_PARKED_ROUND_UNSEEDED.format(case_id=case_id, skill=parked.skill))
+    declared = parameters_from_json(routine.parameters)
+    missing = tuple(one.name for one in declared if one.name not in parked.settled)
+    _refuse_incoherent_parked_round(case_id, parked, declared, missing)
+    return round_shortfall(
+        routine, declared, parked.settled, MissingParameters(names=missing, values={})
+    )
+
+
+def _refuse_incoherent_parked_round(
+    case_id: str,
+    parked: ParkedRound,
+    declared: list[SkillParameter],
+    missing: tuple[str, ...],
+) -> None:
+    """Refuse a declared round the routine cannot be waiting on, before the draw.
+
+    Before the DRAW rather than before the sample, unlike its siblings: what these read is
+    the routine's declared parameters, and the registry does not hold the routine until the
+    sample has seeded it.  The refusal still precedes every model call the case makes.
+
+    Both ways of getting it wrong are silent on a run and each turns the case into a
+    measurement of something else: a value under a name the routine does not declare is
+    narrowed away, so the section claims the round gave nothing it in fact gave; and a
+    round with nothing missing is one the binder would have FRAMED, so the section renders
+    an empty ``still needed:`` and the turn is answered against a state production never
+    parks in."""
+    undeclared = sorted(set(parked.settled) - {one.name for one in declared})
+    if undeclared:
+        raise ValueError(
+            _PARKED_ROUND_UNDECLARED.format(
+                case_id=case_id, undeclared=undeclared, skill=parked.skill
+            )
+        )
+    if not missing:
+        raise ValueError(_PARKED_ROUND_COMPLETE.format(case_id=case_id, skill=parked.skill))
+
+
+def _classifier_snapshot(
+    db: Database,
+    *,
+    case_id: str,
+    state: ConversationState,
+    message: str,
+    penny_last_turn: str | None = None,
+    task_anchor: str | None = None,
+    parked_round: ParkedRound | None = None,
+) -> MachineSnapshot:
+    """What ONE classification sample's draw is given — the PRODUCTION builder, handed
+    everything production hands it.
+
+    A module-level step rather than four lines inside the driver so the wiring itself is
+    pinnable: the #2084 defect was an argument this call did not pass, which no assertion
+    over a snapshot built beside it could ever have seen.  ``round_binding`` is what a
+    round parked in request is waiting on, absent on every other state because production
+    carries one nowhere else."""
+    return build_snapshot(
+        db,
+        state=state,
+        message=message,
+        penny_last_turn=penny_last_turn,
+        task_anchor=task_anchor,
+        round_binding=(
+            None if parked_round is None else _registry_shortfall(db, case_id, parked_round)
+        ),
+    )
+
+
 def _classifier_world(state: ConversationState, known: int) -> World:
     """The one situation a classification case is answered against, as a :class:`World`.
 
@@ -4748,6 +4878,10 @@ def _write_classifier_report(
     _record_sample_block(case_id, sample_index, transcript)
 
 
+# Who a fixture skill is registered under — the runner's own author, named once so the
+# deterministic probe that lays the same draft down lays it down the same way.
+EVAL_SEED_AUTHOR = "eval-seed"
+
 # One structurally-valid placeholder step for an eval-seeded skill: the
 # classifier reads only name + description, but the draft stays real-typed.
 _SEED_SKILL_STEP = SkillStep(
@@ -4781,7 +4915,7 @@ async def _seed_eval_skills(penny: Penny, seed_skills: Sequence[SkillDraft]) -> 
     for draft in seed_skills:
         vector = await embed_text(penny.embedding_model_client, draft.description)
         assert vector is not None, f"seed skill embed failed: {draft.name}"
-        penny.db.skills.upsert(draft, author="eval-seed", description_embedding=vector)
+        penny.db.skills.upsert(draft, author=EVAL_SEED_AUTHOR, description_embedding=vector)
 
 
 @pytest.fixture
@@ -4806,10 +4940,19 @@ def classifier_eval(
 
     Each sample is hermetic (own DB + real-model Penny, mirroring ``startup_eval``); the
     snapshot is built PER SAMPLE by the production ``build_snapshot`` from the case's
-    ``state`` + the sample's message — the same path the chat wiring calls.  ``fragile`` is
-    the classifier's native recovery signal: DECIDED after more than one draw (a reroll) — a
-    VARIANCE reading, never an assertion.  A poisoned draw group is tagged pathology by the
-    standard response scan; a hung call is a harness timeout.
+    ``state`` + the sample's message — the same path the chat wiring calls.
+
+    A case parking in REQUEST should declare its ``parked_round`` (#2084): production
+    reaches that state only through the binder, so every round parked there carries what it
+    is waiting on, and a draw shown no waiting-on section is being asked to leave request
+    without the one block naming the gap — an input the wiring cannot produce.  SHOULD
+    rather than MUST while ``request-elicit`` is still unmigrated: the guard refuses a
+    ``parked_round`` on the wrong state and does not yet refuse a REQUEST case without one,
+    because that direction would refuse a landed case, and changing a case re-measures it.
+
+    ``fragile`` is the classifier's native recovery signal: DECIDED after more than one
+    draw (a reroll) — a VARIANCE reading, never an assertion.  A poisoned draw group is
+    tagged pathology by the standard response scan; a hung call is a harness timeout.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -4828,6 +4971,7 @@ def classifier_eval(
         expected_skill: str | None = None,
         penny_last_turn: str | None = None,
         task_anchor: str | None = None,
+        parked_round: ParkedRound | None = None,
         seed: Seeder | None = None,
         seed_skills: Sequence[SkillDraft] | None = None,
         samples: int = SAMPLES,
@@ -4850,6 +4994,7 @@ def classifier_eval(
         spoken = arms.spoken
         min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
         _refuse_unscorable(case_id, ported=bool(spoken), pool=pool)
+        _refuse_binding_off_request(case_id, state, parked_round)
         driven = arms.driven if spoken else samples
 
         pending = (
@@ -4884,13 +5029,16 @@ def classifier_eval(
             try:
                 # The PRODUCTION snapshot builder per sample, so the eval
                 # exercises the same path the wiring does — EVERY seeded
-                # skill offered, no ranking or cap (the #1706 ruling).
-                snapshot = build_snapshot(
+                # skill offered, no ranking or cap (the #1706 ruling), and a
+                # request-parked round carrying the binding it waits on (#2084).
+                snapshot = _classifier_snapshot(
                     penny.db,
+                    case_id=case_id,
                     state=state,
                     message=phrasing,
                     penny_last_turn=penny_last_turn,
                     task_anchor=task_anchor,
+                    parked_round=parked_round,
                 )
                 # What the draw is GIVEN, captured at the call site rather than
                 # reconstructed — the same document ``classify`` renders for it.
