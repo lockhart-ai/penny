@@ -111,6 +111,7 @@ from penny.tests.eval.utils.cohort import (
     TRANSITIONS,
     SampleObservation,
     SpecCategory,
+    fold_typography,
 )
 
 # The pages the lookup story reads, and the collection shape every seed is written as, read
@@ -121,6 +122,13 @@ from penny.tests.eval.utils.fixtures import (
     CannedPage,
     SynthCollection,
 )
+
+# ``_normalize`` is imported for the ONE legacy case at the bottom of this file and nothing
+# else.  Every ported claim folds through ``cohort.fold_typography`` instead — the single
+# definition the shared claims already use, so a dash the store claim tolerates cannot read as
+# an invention to the provenance claim standing beside it.  Two spellings of one intention
+# drift, and this pair already had: ``_normalize`` lowercases where the shared one casefolds,
+# and folds fewer apostrophes and spaces.
 from penny.tests.eval.utils.memory_world import (
     _FAMILY,
     _FOXES_TOKENS,
@@ -195,12 +203,13 @@ _GEAR_PRICE = "$499"
 # for.  Each is shrunk to the part with no alternative rendering and no other bearer in its
 # world: ``499`` and not ``$499`` (a draw that wrote the figure without the currency symbol
 # read the same entry), ``mistforge`` and not ``Mistforge Tactics`` (a draw that put the title
-# in the key and the blurb in the body read the same page), ``offices`` and not ``loud
-# offices`` (a reply calling them noisy read the same note).
+# in the key and the blurb in the body read the same page), ``office`` and not ``loud offices``
+# (a measured reply answered out of all three collections and wrote "loud office spaces", which
+# the plural failed — the singular is the part every correct rendering shares).
 
 _SUBJECT = "mistforge"  # the game the lookup story is about
 _PRICE = "499"  # the figure the cold recall has to state
-_AVOIDED = "offices"  # the one thing the avoid list already holds
+_AVOIDED = "office"  # the one thing the avoid list already holds
 _INTO_ANCHOR = "chess"  # the note the into-list holds in every world that seeds it
 _EDITED = "hiking"  # the note the update story names
 _DROPPED = "jazz"  # the note the forget story names
@@ -213,6 +222,15 @@ _DISLIKE = "coffee"  # the complaint it files somewhere else
 # naming that same note as the one to change.
 _FORGET_KEPT = (_INTO_ANCHOR, _EDITED)
 _UPDATE_KEPT = (_INTO_ANCHOR, _DROPPED)
+
+# What a correct REPLY must name, which is not the same token set the store claims read.  The
+# store holds the seeded text verbatim, so a claim about it can name the whole word; the reply
+# is the model's own prose, where an inflectable noun has no single correct rendering — a reply
+# saying "weekend hikes" answered the ask exactly as well as one saying "hiking", and requiring
+# the participle would fail it for a cosmetic reason.  So the reply-side token is the stem, and
+# it is still the SMALLEST unique one: no other seeded name, description or entry in any of
+# these worlds contains ``hik``.
+_FORGET_ANSWERS = (_INTO_ANCHOR, "hik")
 
 
 def _seed_collection(db: Database, synth: SynthCollection, *, run_id: str) -> None:
@@ -286,14 +304,16 @@ class _VerbCase(NamedTuple):
 def _collection_text(db: Database, name: str) -> str:
     """Every key and content one collection currently holds, normalized and joined."""
     entries = collection_entries(db, name)
-    return _normalize(" ".join([*entries.keys(), *entries.values()]))
+    return fold_typography(" ".join([*entries.keys(), *entries.values()]))
 
 
 def _store_text(db: Database) -> str:
     """Every key and content the WHOLE store currently holds — what a "nowhere yet" premise is
     read against, since a token sitting in a neighbouring collection would satisfy a claim just
     as well as one the turn wrote."""
-    return _normalize(" ".join(_collection_text(db, row.name) for row in db.memories.list_all()))
+    return fold_typography(
+        " ".join(_collection_text(db, row.name) for row in db.memories.list_all())
+    )
 
 
 def probe_seeded_world(db: Database, case: _VerbCase) -> None:
@@ -385,7 +405,7 @@ def _held_text(sample: SampleObservation, collection: str) -> str:
     The whole entry, always: a fact in the key and a blurb in the body is a perfectly good way
     to store it, and a content-only read once reported a 25/32 model failure that was entirely
     its own bug."""
-    return _normalize(
+    return fold_typography(
         " ".join(entry.text for entry in sample.held if entry.collection == collection)
     )
 
@@ -429,7 +449,7 @@ def _stored_the_subject(token: str) -> _ClaimFn:
     and the part they share is the fact."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
-        wrote = [_normalize(entry.text) for entry in sample.entries]
+        wrote = [fold_typography(entry.text) for entry in sample.entries]
         return any(token in text for text in wrote), f"this turn stored {wrote}"
 
     return answer
@@ -503,7 +523,7 @@ def _nothing_was_reconfigured(sample: SampleObservation, _world: World) -> Answe
 def _landed_in(sample: SampleObservation, collection: str, token: str) -> bool:
     """Whether an entry THIS TURN wrote into ``collection`` carries ``token``."""
     return any(
-        entry.collection == collection and token in _normalize(entry.text)
+        entry.collection == collection and token in fold_typography(entry.text)
         for entry in sample.entries
     )
 
@@ -513,7 +533,7 @@ def _filed_in(collection: str, token: str) -> _ClaimFn:
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         landed = sorted(
-            {entry.collection for entry in sample.entries if token in _normalize(entry.text)}
+            {entry.collection for entry in sample.entries if token in fold_typography(entry.text)}
         )
         return _landed_in(sample, collection, token), f"{token} landed in {landed}"
 
@@ -674,10 +694,14 @@ async def test_a_fact_from_a_previous_session_comes_back(chat_eval: ChatEval, mo
         SpecCategory.STORE,
     )
 
-    # PROVENANCE — the load-bearing half here: the price is a specific value, and a reply
+    # PROVENANCE — the reply half only, and its STORE half is EMPTY by entailment rather than
+    # by oversight: this turn writes nothing (the claim above), so there is no stored entry for
+    # a trace to be about, and asserting it would run at exactly the rate *answering a question
+    # wrote nothing* does while appearing to measure something else.
+    #
+    # The half that IS here is the load-bearing one: the price is a specific value, and a reply
     # carrying one that traces to nothing the model was GIVEN is the invention this case is
     # named against.
-    cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -762,8 +786,11 @@ async def test_one_ask_recalls_across_the_whole_store(chat_eval: ChatEval, model
         SpecCategory.STORE,
     )
 
-    # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment, exactly as on
+    # the cold recall: a reminder writes nothing, so no stored entry exists to trace, and the
+    # claim would run at the rate *a reminder wrote nothing* does under another name.  The
+    # reply half is where this case's invention would land — three collections asked about is
+    # three chances to name a fourth thing nobody stored.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -787,7 +814,7 @@ _FORGET = _VerbCase(
     # ("tell me what else is on my list").  The dropped note is deliberately NOT claimed absent
     # from the reply: "dropped jazz — you've still got chess and hiking" is a correct answer that
     # names it, so an absence claim there would fail a correct run.
-    world=World(name="one list", pages=(), keeps=(), excludes=(), answers=_FORGET_KEPT),
+    world=World(name="one list", pages=(), keeps=(), excludes=(), answers=_FORGET_ANSWERS),
     seed=_seeder(_INTO),
     ask="forget about jazz, then tell me what else is on my list of things i'm into",
     also_phrased=(
