@@ -104,6 +104,7 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
 from penny.tests.eval.utils.cohort import (
+    FIELD_UNSET,
     Consequence,
     SampleObservation,
     SpecCategory,
@@ -308,13 +309,20 @@ def _measure_the_draw(cohort: Cohort, positions: int) -> None:
     divergent sample alone, so its axis would read ``unset`` for the pack and score a
     disagreement as agreement.
 
+    The name, the description and the count are emitted on EVERY draw, so none of them can
+    come back ``unset`` and none declares an absent reading (#2073).  A per-parameter
+    position CAN be omitted — a draw that folded a same-kind ask into one list emits no
+    second position — and that omission IS the reading, so those axes declare
+    :data:`FIELD_UNSET` and a cohort where nobody filled the position reads BLIND rather
+    than as fifteen samples agreeing.
+
     No tool sequence and no reply spread: a single call makes neither."""
     cohort.measure(
         output_field(FRAME_PARAMETERS),
         output_field(FRAME_NAME, consequence=Consequence.COSMETIC),
         output_field(FRAME_DESCRIPTION, consequence=Consequence.COSMETIC),
         *[
-            output_field(field(position), consequence=Consequence.COSMETIC)
+            output_field(field(position), consequence=Consequence.COSMETIC, absent=FIELD_UNSET)
             for position in range(1, positions + 1)
             for field in (frame_parameter_name, frame_parameter_says)
         ],
