@@ -568,7 +568,13 @@ def assemble_case_comments(report_dir: Path) -> list[str]:
 
     Each carries its case's own report and nothing else: the case document already states the
     run's identity in its own table, so a run header above it would repeat every figure under
-    a second heading."""
+    a second heading.
+
+    There being no run header is exactly why the HEADING is settled here.  A case that computed
+    a cohort wrote its own and needs only the ``X/N`` a running case cannot know; a case that
+    did not wrote sample folds alone, and with the run header stripped as a duplicate its
+    comment named neither the case nor the commit.  ``report.headed`` gives both shapes one
+    line."""
     manifest = load_manifest(report_dir)
     by_id = {artifact.case_id: artifact for artifact in load_case_artifacts(report_dir)}
     documents = []
@@ -576,11 +582,37 @@ def assemble_case_comments(report_dir: Path) -> list[str]:
         artifact = by_id.get(case_id)
         if artifact is None:
             continue
-        body = report.with_case_index(
-            _transcript_block(report_dir, manifest, artifact), case_index(report_dir, case_id)
+        body = report.headed(
+            _transcript_block(report_dir, manifest, artifact),
+            glyph=_case_glyph(artifact),
+            case_id=case_id,
+            model=manifest.model,
+            index=case_index(report_dir, case_id),
+            run=_case_run_facts(manifest),
         )
         documents.append(f"{body}\n\n{render_footer(report_dir)}\n")
     return documents
+
+
+def _case_glyph(artifact: CaseArtifact) -> str:
+    """The colour a synthesized heading carries — its case's deterministic checks, coloured
+    the way every other reading of them is.
+
+    A case that declared none reads CLEAN rather than as a zero rate, the same answer the
+    cohort renderer gives for a case that asserted nothing."""
+    passed, total = _scored_checks(artifact)
+    return report.rate_glyph(passed / total) if total else report.PASS_GLYPH
+
+
+def _case_run_facts(manifest: RunManifest) -> report.RunFacts:
+    """Where the run came from, as a case's own table states it — the short commit, who
+    served it, the vector space it was scored in, and the run id."""
+    return report.RunFacts(
+        commit=_short(manifest.commit),
+        provider=manifest.provider or "",
+        embeddings=manifest.embedding_model,
+        run_id=manifest.run_id,
+    )
 
 
 def render_run_summary(report_dirs: Sequence[Path]) -> str:
