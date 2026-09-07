@@ -98,22 +98,17 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
-from penny.database.memory import EntryInput
 from penny.penny import Penny
-from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
     REPLY_ANCHOR,
     ChatEval,
     Check,
     Preparer,
-    Seeder,
     collection_entries,
     describes,
-    seeded_run_id,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
 from penny.tests.eval.utils.cohort import (
@@ -158,12 +153,6 @@ from penny.tests.eval.utils.worlds import (
 )
 
 pytestmark = pytest.mark.eval
-
-# The run id every seeded world writes under — a collection the user built in an earlier
-# session.  A seeded id, so ``is_seeded_run`` tells a handed-down entry from this sample's own
-# work and "what did THIS run write" stays answerable (#1846).
-_EARLIER_SESSION = seeded_run_id("earlier-session")
-
 
 # ── The collections the verbs act on (all user-built) ────────────────────────
 
@@ -244,38 +233,6 @@ _UPDATE_KEPT = (_INTO_ANCHOR, _DROPPED)
 # it is still the SMALLEST unique one: no other seeded name, description or entry in any of
 # these worlds contains ``hik``.
 _FORGET_ANSWERS = (_INTO_ANCHOR, "hik")
-
-
-def _seed_collection(db: Database, synth: SynthCollection, *, run_id: str) -> None:
-    """Lay down a collection the user built in an earlier session, through the production paths
-    a chat turn would have used: the store's own ``create_collection`` and the collection's own
-    ``write``.
-
-    The run stamp is what gives the seed entrance-condition fidelity — production stamps every
-    write with the run that made it (#1560), so an unstamped seed would make "stamped at all"
-    mean "written by this sample" and every read below would take a handed-down entry for this
-    turn's work."""
-    db.memories.create_collection(synth.name, synth.description, created_by_run_id=run_id)
-    require_memory(db, synth.name).write(
-        [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],
-        author=PennyConstants.CHAT_AGENT_NAME,
-        run_id=run_id,
-    )
-
-
-def seed_world(world: World) -> Seeder:
-    """A case's whole entry condition, read off the WORLD it declares.
-
-    ``World.stores`` is what the report renders as this case's ground (#2114), so deriving the
-    seeder from it is what stops the two drifting: a collection the world states and the seeder
-    forgot would render as ground no sample was given, and one the seeder laid down and the
-    world never mentioned would be ground no reader can see."""
-
-    def seed(db: Database) -> None:
-        for synth in world.stores:
-            _seed_collection(db, synth, run_id=_EARLIER_SESSION)
-
-    return seed
 
 
 # ── The case shape ───────────────────────────────────────────────────────────
@@ -364,7 +321,6 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
         case_id=case.case_id,
         behaviour=case.behaviour,
         model=model,
-        seed=seed_world(case.world),
         prepare=_probe(case),
         world=case.world,
         ask=case.ask,
@@ -421,7 +377,9 @@ def _wrote_into(collection: str) -> _ClaimFn:
     """This turn put an entry in the collection the ask NAMED.
 
     Read off the run stamp rather than off a count, so a seeded entry can never answer it: what
-    is being claimed is that this turn wrote there, not that something is there."""
+    is being claimed is that this turn wrote there, not that something is there.  The world's
+    own stores are laid down carrying NO run id at all, so every one of them reads as not this
+    run's work and the distinction holds by construction."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         landed = sorted({entry.collection for entry in sample.entries})
