@@ -1098,11 +1098,18 @@ not — and, being main-agent rows to the turn walk, their scoped slices surface
 by its ledger identity and each 🧩 row is labelled with it (`🧩 state-classifier → STATE: apply`),
 matching that context's system-prompt row. Where a batch splices is a declared **`MicroPlacement`** —
 the causal relationship, not the agent: `DURING_CALL` (browse-extract → after the `extract=` browse
-call that spawned it, the unchanged FIFO pairing) · `TURN_HEAD` (state-classifier → right after the
-user turn it decided, since the classifier runs before the chat agent) · `RUN_CLOSE` (skill-namer + skill-framer →
-closing the turn, after the final reply). One generic walk drains the ledger-ordered batch queue at
-those anchors, so a fourth customer is a row in `MICRO_CONTEXT_PLACEMENTS`, not new code; a batch
-left unmatched renders at the end rather than vanishing (collapsed never means dropped, #1753).
+call that spawned it, the unchanged FIFO pairing) · `TURN_HEAD` (state-classifier, skill-framer and
+skill-binder → right after the user turn they decide, all three drawing before the chat agent; the
+classifier names the routine and the binder fills what that routine declares from the same words, so
+the two render in ledger order) · `RUN_CLOSE` (skill-namer, and the notify composer closing a
+collector cycle → after the run's last action). One generic walk drains the ledger-ordered batch
+queue at those anchors, so a new customer is a row in `MICRO_CONTEXT_PLACEMENTS`, not new code; a
+batch left unmatched renders at the end rather than vanishing (collapsed never means dropped, #1753).
+**Completeness is pinned structurally (#2133)**: the binder shipped without joining the map and its
+draw simply never rendered — nothing raised, no batch was dropped, and every apply/request transcript
+showed the classifier's decision followed straight by the chat agent's first call, its reply
+reporting a bound value the reader was never shown being bound. A test now reads every agent name
+`micro_context.py` stamps on a draw, off that module's own AST, and fails when one is not in the map.
 Deterministic — proven by whole-render tests over fixture promptlog rows, no GPU.
 
 **A case reports THREE SECTIONS, and states what its samples SHARE exactly once (#1997).**
