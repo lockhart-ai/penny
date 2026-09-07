@@ -30,6 +30,10 @@ from penny.tools.collection_instantiation import (
     _RRULE_TAG,
 )
 
+# The tag that ANCHORS a recurrence, re-exported: a case claiming that an hour was chosen has
+# to accept the anchored spelling too, and ``rule_parts`` drops that line by construction.
+DTSTART_TAG = _DTSTART_TAG
+
 # The rule part that ANCHORS a recurrence to a time of day.  Read as a PART of the stored
 # rule rather than off the parsed object, because dateutil defaults an unstated hour to the
 # start's — so the parsed rule cannot tell a stated hour from an inherited one, and only the
