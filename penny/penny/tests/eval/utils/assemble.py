@@ -60,10 +60,10 @@ FLIPS_LABEL = "flips:"
 NO_TRANSCRIPT = "_(no transcript recorded)_"
 SECTION_SEPARATOR = "\n\n"
 
-# The most a single sample fold may render to before it is given internal seams (#1917).  The
-# splitter's own per-part budget, read from it rather than restated: a fold larger than one part
-# can never be packed into a postable comment however the document is cut, because a fold is
-# the finest seam the splitter has.
+# The most a single sample fold may render to — before it is given internal seams (#1917), and
+# then before it is REDUCED (#2135).  The splitter's own per-part budget, read from it rather
+# than restated: a fold larger than one part can never be packed into a postable comment however
+# the document is cut, because a fold is the finest seam the splitter has.
 SAMPLE_FOLD_BUDGET = comment_split.PART_BUDGET
 GATING_GLYPH = "⚖"
 FLIP_GLYPH = "✅→❌"
@@ -358,45 +358,57 @@ def _folded_transcript(
     """Order a case for the COMMENT: its scores, the sample it nominated with the prompts that
     sample was run with, then the case's own inputs and its outliers.
 
-    The two SIZE transforms live here and nowhere else (#1997), because the artifact on disk is
+    The SIZE transforms live here and nowhere else (#1997/#2135), because the artifact on disk is
     the complete record and this is the index into it: a sample the case did not nominate is
-    counted on one line, and an expanded sample has its thinking traces shortened to their head
-    and their length. Measured on the reference port, thinking was 68% of every sample and one
-    case ran to 787,681 characters. Neither transform can reach the ``.md``."""
+    counted on one line, an expanded sample has its thinking traces shortened to their head and
+    their length, and a fold that would still not fit a comment is REDUCED and says so. Measured
+    on the reference port, thinking was 68% of every sample and one case ran to 787,681
+    characters. None of them can reach the ``.md``.
+
+    Because they run HERE — over a case document already written — re-posting a finished run
+    (``make eval-report RUN=… FORCE=1``) picks every one of them up with no re-run."""
     head, prompts, tail = _split_case(transcript)
     preamble, sample_blocks = report.split_case_transcript(head)
     nominated = set(expand)
     kept = [f"{report.SAMPLE_ROW} {number}" for number in sorted(nominated)]
-    blocks = [preamble] if preamble else []
+    folds: list[report.BoundedFold] = []
     others: list[int] = []
     for block in sample_blocks:
         number, banner, body = report.parse_sample_block(block)
         if nominated and number not in nominated:
             others.append(number)
             continue
-        folded = report.summarise_thinking(body)
-        if not nominated:
-            # A case that named no representative keeps every sample in its own banner form —
-            # the unported path, unchanged.
-            blocks.append(report.fold_sample_parts(number, banner, folded, SAMPLE_FOLD_BUDGET))
-            continue
-        blocks.append(
-            report.titled_fold(
-                report.REPRESENTATIVE_HEADING,
-                report.representative_summary(banner, body.count("| step ")),
-                report.render_representative(
-                    banner=banner,
-                    number=number,
-                    prompts=report.elide_unused_prompts(prompts, kept),
-                    transcript=folded,
-                ),
-            )
-        )
+        folds.append(_bounded_fold(number, banner, body, prompts, kept, bool(nominated)))
+    reduced = sum(1 for fold in folds if fold.reduced)
+    blocks = [report.note_reduced_samples(preamble, reduced)] if preamble or reduced else []
+    blocks += [fold.text for fold in folds]
     if others:
         blocks.append(_accounting(artifact_counts))
     if tail:
         blocks.append(tail)
     return SECTION_SEPARATOR.join(blocks) if blocks else NO_TRANSCRIPT
+
+
+def _bounded_fold(
+    number: int, banner: str, body: str, prompts: str, kept: Sequence[str], nominated: bool
+) -> report.BoundedFold:
+    """One sample as the comment carries it, inside the fold budget.
+
+    The two shapes a sample can take here are the two the renderer bounds: a case that named a
+    REPRESENTATIVE carries that sample under its own heading with the prompts it was run with,
+    and one that named none keeps every sample in its own banner form — the unported path,
+    unchanged."""
+    folded = report.summarise_thinking(body)
+    if not nominated:
+        return report.bounded_sample_folds(number, banner, folded, SAMPLE_FOLD_BUDGET)
+    return report.bounded_representative(
+        banner=banner,
+        number=number,
+        prompts=report.elide_unused_prompts(prompts, kept),
+        transcript=folded,
+        turns=body.count(report.STEP_ROW_OPENS),
+        budget=SAMPLE_FOLD_BUDGET,
+    )
 
 
 def _accounting(counts: Mapping[str, int] | None) -> str:
@@ -460,7 +472,11 @@ def _write_comments(argv: list[str]) -> int:
 
     The SPLITTER still runs over each document, because a single case can outgrow the comment
     cap on its own — what changes is that it is given one case at a time rather than a whole
-    run, so its one legal seam has a document it can actually cut."""
+    run, so its one legal seam has a document it can actually cut.
+
+    Build noise is checked BEFORE anything is split: it is a caller error (a hand-piped
+    ``make assemble``) and refusing it is the answer, while a part over the cap is a renderer
+    bug the invariant raises."""
     if len(argv) < 2:
         print(USAGE, file=sys.stderr)
         return 2
@@ -475,21 +491,28 @@ def _write_comments(argv: list[str]) -> int:
     except FileNotFoundError as error:
         print(str(error), file=sys.stderr)
         return 1
+    refusal = _build_noise_refusal(documents)
+    if refusal:
+        print(f"assemble: refusing to post — {refusal}", file=sys.stderr)
+        return 1
     parts = [part for document in documents for part in comment_split.split_run_comment(document)]
-    refusal = next(
+    comment_split.enforce_part_cap(parts)
+    for name in comment_split.write_parts(parts, out_dir):
+        print(name)
+    return 0
+
+
+def _build_noise_refusal(documents: Sequence[str]) -> str | None:
+    """The first document that opens with ``make assemble``'s echoed build log, as the reason
+    to refuse the whole post — or ``None`` when every one is clean."""
+    return next(
         (
             reason
             for document in documents
             if (reason := comment_split.build_noise_reason(document))
         ),
         None,
-    ) or comment_split.unsplittable_reason(parts)
-    if refusal:
-        print(f"assemble: refusing to post — {refusal}", file=sys.stderr)
-        return 1
-    for name in comment_split.write_parts(parts, out_dir):
-        print(name)
-    return 0
+    )
 
 
 # ── One comment per case, and the run's own summary (#2020) ──────────────────

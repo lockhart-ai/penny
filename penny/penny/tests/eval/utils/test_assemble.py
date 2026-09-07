@@ -879,3 +879,106 @@ def test_a_case_document_is_postable_where_a_whole_run_was_not(tmp_path: Path) -
     assert len(report.split_sample_blocks(representative)) == 2, (
         "a representative fold opens a sample block, so the splitter has a legal cut there"
     )
+
+
+# ── A fold too big to post: the reduction at assemble time (#2135) ───────────
+_THRASHED_CALLS = 40
+
+
+def _thrashed_run(tmp_path: Path) -> CaseArtifact:
+    """A completed run whose one case nominated a sample that thrashed for its whole step
+    budget — the #2135 shape.
+
+    ONE step table, so the lossless seams have nothing to cut between, and results long enough
+    to fold a copy of themselves into a ``<details>``. The real fold this reproduces was 94,112
+    characters against a 65,536 cap, and its whole run went unposted while the sibling model's
+    posted normally."""
+    manifest = build_manifest(
+        commit="abba710a03ae3555148fea6a86712e9af020499a",
+        dirty_diff="",
+        model="gpt-oss:20b",
+        embedding_model="embeddinggemma",
+        samples=1,
+        lever="the reduction",
+        now=datetime(2026, 4, 2, 11, 30, 5, tzinfo=UTC),
+    )
+    artifact = CaseArtifact(
+        run_id=manifest.run_id,
+        case_id="chat-answer-one-link-deep",
+        family="chat-reply",
+        mean=1.0,
+        all_pass_rate=1.0,
+        pathology_excluded_mean=1.0,
+        samples=1,
+        expand_samples=[1],
+        sample_scores=[1.0],
+        sample_causes=[None],
+        sample_fragile=[False],
+        cause_counts=CauseCounts(),
+        checks=[CheckOutcome(label="names the maker", passed=1, total=1, scored=True, cells=[_P])],
+        timings=_TIMINGS,
+    )
+    sections = report.measure_table(
+        [(report.MEASURE_SAMPLES, "10 pooled + 5 excluded = 15 driven")]
+    )
+    head = f"{report.case_heading(report.PASS_GLYPH, artifact.case_id)}\n\n{sections}"
+    _write_run(tmp_path, manifest, [artifact], {})
+    (tmp_path / f"{artifact.case_id}.md").write_text(
+        f"{render_manifest_header(manifest)}\n{head}\n\n{_thrashed_sample()}"
+    )
+    return artifact
+
+
+def _thrashed_sample() -> str:
+    """The rendered sample block: one step, forty browse attempts, one reply."""
+    events = [report.Event(report.EventKind.USER, "who made it?")]
+    for index in range(1, _THRASHED_CALLS + 1):
+        events.append(
+            report.Event(
+                report.EventKind.CALL,
+                f"browse(attempt {index})",
+                thinking=f"weighing attempt {index} " + "t" * 700,
+            )
+        )
+        events.append(report.Event(report.EventKind.RESULT, f"page {index} " + "r" * 900))
+    events.append(
+        report.Event(report.EventKind.REPLY, "the maker was Corvander", thinking="answering")
+    )
+    checks = [
+        report.CheckView("C1", "names the maker", "end state", True, False, True, anchor_index=1)
+    ]
+    return report.render_sample(
+        report.build_sample(
+            number=1,
+            banner=report.render_banner(passed=True, duration_s=48, calls=51),
+            events=events,
+            checks=checks,
+            run_close_score="1/1",
+        )
+    )
+
+
+def test_an_oversized_fold_is_reduced_so_every_part_fits_the_cap(tmp_path: Path) -> None:
+    """The whole point: a run one of whose samples cannot be posted whole POSTS.
+
+    Every part comes back under GitHub's hard cap, the reduced fold says so in ONE marker, the
+    case's health block says how many samples it abridged, and what a reader is there for
+    survives — every tool call with its arguments, the claim, and the reply."""
+    artifact = _thrashed_run(tmp_path)
+    on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
+    assert len(on_disk) > comment_split.GITHUB_COMMENT_LIMIT, "the fixture is genuinely oversized"
+
+    documents = assemble.assemble_case_comments(tmp_path)
+    parts = [part for document in documents for part in comment_split.split_run_comment(document)]
+    comment_split.enforce_part_cap(parts)
+    assert all(len(part) <= comment_split.GITHUB_COMMENT_LIMIT for part in parts)
+
+    comment = documents[0]
+    marker = report.REDUCTION_MARKER.split("{", 1)[0]
+    assert comment.count(marker) == 1, "the abridgement states itself, once"
+    for index in range(1, _THRASHED_CALLS + 1):
+        assert f"browse(attempt {index})" in comment, "every tool-call row survives intact"
+    assert "C1 [end state]" in comment, "so does the claim"
+    assert "the maker was Corvander" in comment, "and the reply"
+    assert "15 driven · 1 sample reduced to fit the comment cap" in comment, "the health block"
+    assert len(on_disk) > len(comment), "and the artifact keeps the whole transcript regardless"
