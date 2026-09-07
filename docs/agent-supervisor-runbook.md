@@ -43,7 +43,8 @@ If it's a mixed bag, split it: sequence the small ones and anything needing the 
   2. How to read the ticket (`make token` from the primary checkout, `gh issue view N --comments`).
   3. **The decided direction** — if the ticket lists options, the supervisor (with the user) picks before dispatch; children don't make product decisions. Include known constraints/traps from your analysis.
   4. Scope boundary; whether it's model-facing (eval contract) or not (no eval).
-  5. "Report the PR URL + summary + gate result."
+  5. **The expected PR title** — `type(scope): title` per [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow), with the type, the scope, and (for a test port) the group name spelled out, so the log stays greppable by prefix and test PRs sort by group. The body states the change and closes its ticket; it carries no generated-with footer and no session URLs.
+  6. "Report the PR URL + summary + gate result."
 - Rules **not yet merged** into the SOP must be stated in the prompt (children read the SOP from `main`). And **verify the mechanism before relaying a rule** — test the command you're telling them to run (`make -n` is cheap); a silently-broken mechanism makes every child non-compliant while believing otherwise.
 
 ## 4. Wave planning

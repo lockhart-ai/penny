@@ -77,9 +77,46 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - **Mint inline, immediately before the call it authorizes — never stash a token in a file.** Shell state does not survive between commands, so the mint and the assertion belong on the same line as the `gh`/push they serve (`GH_TOKEN=$(make -C <main-checkout> token) gh …`), one mint per call, re-minted every time. Writing a token to scratch to "reuse it later" fails three ways: installation tokens expire in ~1 hour, the scratch area is shared and not stable storage, and a stale or half-written token file reads as empty — which is precisely the silent ambient-identity fallback the guard exists to prevent.
 - **Immediately before pushing: `git fetch origin main` and re-check whether `main` moved** since your branch point or last rebase. Another session can merge at any moment, and any earlier statement about `main`'s position — including your supervisor's — goes stale in minutes; the only valid check is your own, at push time. If it moved and the changes plausibly touch your files, rebase *before* pushing (CI verifies the rebased result — no local re-gate): a PR born CONFLICTING helps no one (this happened — a sibling PR merged in the two-minute window between "main hasn't moved" and the push).
 - **Push the branch first** (`GH_TOKEN=$TOK git push -u origin <branch>`), *then* `GH_TOKEN=$TOK gh pr create`.
+- **PR title: `type(scope): title`** — the merge queue squashes with the PR title, so what you write here becomes the git log line. The title itself **names the work** — verb, component, mechanism — in under about 15 words, and `Closes #<issue>` stays in the body, never the title. (Same convention as [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow), restated here in full so this contract stands alone.)
+
+  Exactly these six types:
+
+  | type | when |
+  |---|---|
+  | `feat` | new behaviour or capability |
+  | `fix` | wrong behaviour made right |
+  | `test` | eval cases and fixtures, nothing runtime changes |
+  | `refactor` | same behaviour, different shape |
+  | `chore` | build, deps, cleanup, retirements |
+  | `docs` | docs only |
+
+  One scope per surface:
+
+  | scope | surface |
+  |---|---|
+  | `penny` | the agent runtime — prompts, machine, tools, stores, plugins |
+  | `eval` | the cases: what Penny is expected to do, stated as cohorts, worlds, fixtures |
+  | `harness` | the instrument: eval drivers/conftest, cohort, report, assemble, artifacts, checkpoint, the Makefile eval recipes, `docs/eval-case-design.md` |
+  | `client` | penny-client |
+  | `browser` | the extension |
+  | `ci` | workflows, the gate, the Makefile outside eval |
+
+  **`eval` vs `harness` is the split you will actually have to make.** Cases and fixtures that *state what Penny is expected to do* are `eval`. The instrument that *runs and measures them* — drivers and conftest, cohort, report, assemble, artifacts, checkpoint, the Makefile eval recipes, `docs/eval-case-design.md` — is `harness`.
+
+  **Two surfaces? Scope by what the ticket is for**, not by what you edited: a port that needed a harness seam is still `test(eval)`; a harness fix that re-runs a case to prove itself is still `fix(harness)`.
+
+  **The body states the change and closes its ticket; it carries no generated-with footer and no session URLs.** The repo is public and a session URL is a private link.
+
+  **Most task-agent PRs are test PRs, so know that shape by heart: `test(eval): port <group>[ tranche N][ (<subset>)]`.** `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `state classifier`, `skill framer`, `skill binder`, `skill namer`, `browse extractor`) — named consistently, never as a free sentence, so the log sorts by group. A correction to existing cases is `fix(eval): <group> <what changed>`.
+
+  ```
+  test(eval): port skill binder
+  test(eval): port chat idle tranche 3 (standing jobs, mute, dispatch, log reads)
+  fix(eval): state classifier REQUEST-parked cases declare their round
+  ```
 - **Right after `gh pr create`: read back the PR's real state** — `gh pr view <n> --json mergeable,autoMergeRequest`. If `mergeable` is `CONFLICTING`, fix it *now* (rebase in place, `git push --force-with-lease`, re-flag `--auto`; CI verifies) — never leave a conflicted PR sitting while you report success.
 - **Green gate → flagged PR is ONE uninterrupted sequence.** Your deliverable is a PR that exists, is merge-when-ready flagged, and is being shepherded — not a commit. Do not end your turn anywhere between the green §4 gate and the flagged PR (two agents in one fleet stalled exactly in that window: work committed, nothing published, nothing left running to wake them).
-- Commit message ends with the `Co-Authored-By:` trailer; PR body ends with the `🤖 Generated with Claude Code` trailer.
+- Commit message ends with the `Co-Authored-By:` trailer. The PR body ends with its own last line of substance — no generated-with footer, no session URL.
 - **PR body format — REQUIRED, this exact shape:**
 
   ```markdown
