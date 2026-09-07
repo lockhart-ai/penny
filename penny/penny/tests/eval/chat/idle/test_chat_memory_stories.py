@@ -198,13 +198,14 @@ _AVOID = SynthCollection(
     entries=("loud offices — can't focus in them",),
 )
 
+_GEAR_PRICE_KEY = "aurora deck 2 price"
+_GEAR_PRICE = "$499"
+
 _GEAR_NOTES = SynthCollection(
     "gear-notes",
     "Notes about gear the user tracks: what a thing is, and what it was listed at.",
-    entries=(),
+    entries=(f"{_GEAR_PRICE_KEY} — {_GEAR_PRICE}",),
 )
-_GEAR_PRICE_KEY = "aurora deck 2 price"
-_GEAR_PRICE = "$499"
 
 
 # ── The smallest datum unique in each world ──────────────────────────────────
@@ -262,26 +263,19 @@ def _seed_collection(db: Database, synth: SynthCollection, *, run_id: str) -> No
     )
 
 
-def _seeder(*collections: SynthCollection) -> Seeder:
-    """A case's whole entry condition: the collections the user already had."""
+def seed_world(world: World) -> Seeder:
+    """A case's whole entry condition, read off the WORLD it declares.
+
+    ``World.stores`` is what the report renders as this case's ground (#2114), so deriving the
+    seeder from it is what stops the two drifting: a collection the world states and the seeder
+    forgot would render as ground no sample was given, and one the seeder laid down and the
+    world never mentioned would be ground no reader can see."""
 
     def seed(db: Database) -> None:
-        for synth in collections:
+        for synth in world.stores:
             _seed_collection(db, synth, run_id=_EARLIER_SESSION)
 
     return seed
-
-
-def _extra_gear_price(db: Database) -> None:
-    """The entry a previous session left in ``gear-notes`` — seeded through the collection's own
-    write path, under the key that session used, so the cold recall has something to find and
-    nothing in the conversation to find it from."""
-    _seed_collection(db, _GEAR_NOTES, run_id=_EARLIER_SESSION)
-    require_memory(db, _GEAR_NOTES.name).write(
-        [EntryInput(key=_GEAR_PRICE_KEY, content=_GEAR_PRICE)],
-        author=PennyConstants.CHAT_AGENT_NAME,
-        run_id=_EARLIER_SESSION,
-    )
 
 
 # ── The case shape ───────────────────────────────────────────────────────────
@@ -305,7 +299,6 @@ class _VerbCase(NamedTuple):
     case_id: str
     behaviour: str
     world: World
-    seed: Seeder
     ask: str
     also_phrased: tuple[str, ...]
     holds: tuple[tuple[str, tuple[str, ...]], ...] = ()
@@ -371,7 +364,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
         case_id=case.case_id,
         behaviour=case.behaviour,
         model=model,
-        seed=case.seed,
+        seed=seed_world(case.world),
         prepare=_probe(case),
         world=case.world,
         ask=case.ask,
@@ -389,11 +382,13 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
 # 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID
 # mint a routine is caught where it matters: it left idle, which the landing claim reads.
 #
-# ``TOOL_SEQUENCE`` is measured everywhere, including on the two recall cases where a correct
-# sample enacts nothing at all and the feature therefore reads its ``absent`` value on every
-# sample and is marked BLIND in red.  Measured anyway, because the divergence it exists to catch
-# on those two is exactly the one they are named for: a sample that wrote something, or went and
-# browsed, reads differently from every other one and the blindness lifts the moment it does.
+# ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so on the two
+# recall cases it is a live measurement rather than a blind one: a correct sample there reads the
+# store, and how it reaches the answer — one aimed read, a sweep of three, a ``find`` — is the
+# spread those cases exist to watch.  The two NO-FIRE cases are the ones where a correct sample
+# calls nothing at all, so the feature reads its ``absent`` value on every sample and is marked
+# BLIND in red.  That is measured anyway and stated at those cases: the divergence it exists to
+# catch is precisely the one they are named for, and the blindness lifts the moment a sample acts.
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
@@ -593,8 +588,7 @@ _SAVE = _VerbCase(
     # it to your games list" is a complete answer, so requiring a token would fail a correct run
     # for something nobody requested.  Widening an ask so it requests a value is a code owner's
     # call rather than an in-flight repair.
-    world=World(name="mistforge", pages=MULTIHOP_PAGES, keeps=(), excludes=()),
-    seed=_seeder(_GAMES),
+    world=World(name="mistforge", pages=MULTIHOP_PAGES, keeps=(), excludes=(), stores=(_GAMES,)),
     ask="can you look up Mistforge Tactics, read up on it, and save it to my games list?",
     also_phrased=(
         "could you find out about Mistforge Tactics and put it on my games list?",
@@ -666,8 +660,14 @@ _COLD_RECALL = _VerbCase(
     # is the ask's own request — the price — as the SMALLEST unique datum: ``499`` and not
     # ``$499``, because a reply that wrote the figure without the currency symbol read the same
     # entry, and the symbol is the model choosing how to render a number.
-    world=World(name="cold store", pages=(), keeps=(), excludes=(), answers=(_PRICE,)),
-    seed=_extra_gear_price,
+    world=World(
+        name="cold store",
+        pages=(),
+        keeps=(),
+        excludes=(),
+        answers=(_PRICE,),
+        stores=(_GEAR_NOTES,),
+    ),
     ask=(
         "hey — a while back I asked you to remember what the aurora deck 2 "
         "was listed at. what was the price?"
@@ -766,8 +766,8 @@ _SWEEP = _VerbCase(
         keeps=(),
         excludes=(),
         answers=tuple(token for _, token in _SWEPT),
+        stores=(_INTO, _AVOID, _GAMES_WITH_MISTFORGE),
     ),
-    seed=_seeder(_INTO, _AVOID, _GAMES_WITH_MISTFORGE),
     ask="remind me what i'm into, what i'd rather avoid, and what's on my games list",
     also_phrased=(
         "run me through what i'm into, what i'd rather avoid, and what's on my games list",
@@ -825,8 +825,14 @@ _FORGET = _VerbCase(
     # ("tell me what else is on my list").  The dropped note is deliberately NOT claimed absent
     # from the reply: "dropped jazz — you've still got chess and hiking" is a correct answer that
     # names it, so an absence claim there would fail a correct run.
-    world=World(name="one list", pages=(), keeps=(), excludes=(), answers=_FORGET_ANSWERS),
-    seed=_seeder(_INTO),
+    world=World(
+        name="one list",
+        pages=(),
+        keeps=(),
+        excludes=(),
+        answers=_FORGET_ANSWERS,
+        stores=(_INTO,),
+    ),
     ask="forget about jazz, then tell me what else is on my list of things i'm into",
     also_phrased=(
         "drop jazz from my list of things i'm into, then tell me what's left on it",
@@ -895,8 +901,7 @@ _UPDATE = _VerbCase(
     # ``answers`` is EMPTY: the ask is an instruction, so "done — your hiking note says alpine
     # trails now" and a bare "done" are both correct, and requiring a token would fail the second
     # for something nobody requested.
-    world=World(name="one list", pages=(), keeps=(), excludes=()),
-    seed=_seeder(_INTO),
+    world=World(name="one list", pages=(), keeps=(), excludes=(), stores=(_INTO,)),
     ask="change my hiking note to say I prefer alpine trails",
     also_phrased=(
         "update my hiking note — i prefer alpine trails",
@@ -971,8 +976,7 @@ _FAN_OUT = _VerbCase(
     ),
     # ``answers`` is EMPTY for the reason the update case's is: the ask is an instruction, and a
     # confirmation that names neither fact is still a correct answer to "jot these down".
-    world=World(name="two lists", pages=(), keeps=(), excludes=()),
-    seed=_seeder(_INTO, _AVOID),
+    world=World(name="two lists", pages=(), keeps=(), excludes=(), stores=(_INTO, _AVOID)),
     ask="jot down that I'm into bouldering, and that I can't stand instant coffee",
     also_phrased=(
         "note down that i'm into bouldering and that i can't stand instant coffee",
@@ -1051,12 +1055,11 @@ _NO_FIRE_NARRATION = _VerbCase(
     # pages, so nothing can be kept from one or excluded from one; and the message asks for no
     # value, so requiring a token in the reply would fail a correct run for something nobody
     # requested — "sounds like a good evening" is a complete answer to this.
-    world=World(name="empty store", pages=(), keeps=(), excludes=()),
+    world=World(name="empty store", pages=(), keeps=(), excludes=(), stores=()),
     # NOTHING is seeded, and that IS this case's setup: its whole identity is that the store
     # holds no collection the message's subject matches, which is what separates it from the
     # wistful case below.  A turn that decides to act therefore has to CREATE somewhere first,
     # which is what makes the created-nothing claim the sharp one here.
-    seed=_seeder(),
     ask="I looked up a lasagna recipe earlier and saved it in my notes app, good evening",
     also_phrased=(
         "found a lasagna recipe earlier and put it in my notes app — anyway, good evening",
@@ -1104,12 +1107,13 @@ _NO_FIRE_WISTFUL = _VerbCase(
         "about, Penny answers in conversation and writes nothing into it — a topical match is "
         "not a request."
     ),
-    world=World(name="a tempting list", pages=(), keeps=(), excludes=()),
+    world=World(
+        name="a tempting list", pages=(), keeps=(), excludes=(), stores=(_GAMES_WITH_MISTFORGE,)
+    ),
     # The temptation IS the setup: a games list holding a strategy game sits in the store while
     # the user muses about finishing a strategy game campaign.  Without it this case measures
     # nothing, which is why it cannot share the narration case's world.  The ask names no game,
     # so what it offers is a topical match and never a reference.
-    seed=_seeder(_GAMES_WITH_MISTFORGE),
     ask="I finally wrapped up that long strategy game campaign last night, felt so satisfying",
     also_phrased=(
         "finally finished that long strategy game campaign last night — so satisfying",
