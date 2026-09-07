@@ -31,11 +31,28 @@ class Message:
     history: tuple[str, ...] = ()
 
 
+# What separates an entry's key from the rest of what it says.  A seeded entry is written the
+# way a person writes one — the thing, then a dash, then what is true of it — so the key is the
+# part before the dash and the content is the whole line.
+SYNTH_KEY_SEPARATOR = " — "
+
+
 @dataclass(frozen=True)
 class SynthCollection:
     name: str
     description: str  # the content-reflective meaning anchor
     entries: tuple[str, ...]  # entry contents (for retrieval)
+
+    @property
+    def keyed(self) -> tuple[tuple[str, str], ...]:
+        """Each entry as the store will hold it — ``(key, content)``.
+
+        The collection's own answer, so the driver's seeder and the world render that shows a
+        reader what the sample was answering against read one definition: a report describing a
+        row keyed differently from the one the store holds describes a store nobody seeded.
+        Case files that seed a collection by hand still spell it out themselves and should
+        move onto this."""
+        return tuple((entry.split(SYNTH_KEY_SEPARATOR)[0], entry) for entry in self.entries)
 
 
 @dataclass(frozen=True)

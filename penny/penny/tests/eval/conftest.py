@@ -480,7 +480,11 @@ def seed_collection(
     schedule: str | None = None,
     notify: bool = False,
 ) -> None:
-    """Create a synthetic collection + its entries (key = text before ' — ')."""
+    """Create a synthetic collection + its entries, keyed as ``SynthCollection.keyed`` says.
+
+    The key derivation is the collection's own, not this function's, because the world render
+    shows these same rows to say what the sample was answering against — a report keying an
+    entry differently from the row this wrote describes a store nobody seeded."""
     db.memories.create_collection(
         synth.name,
         synth.description,
@@ -489,9 +493,20 @@ def seed_collection(
         notify=notify,
     )
     require_memory(db, synth.name).write(
-        [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],
+        [EntryInput(key=key, content=content) for key, content in synth.keyed],
         author="user",
     )
+
+
+def seed_world_stores(db: Database, world: World | None) -> None:
+    """Lay down the entries a world says are ALREADY in the store when the turn begins.
+
+    The world is what a sample is GIVEN — the driver already serves its ``pages`` as the
+    browse register — so its ``stores`` are seeded from the same declaration the report
+    renders. That is what closes the drift the report otherwise carries: a world cannot claim
+    a ground the sample never had, because the claim IS the seed (#2108)."""
+    for held in world.stores if world is not None else ():
+        seed_collection(db, held)
 
 
 # How far back ONE mechanism's mutation history is read when asking whether THIS sample
@@ -3026,15 +3041,17 @@ def _conversation_turns(message: str | None, messages: Sequence[str] | None) -> 
 async def _seed_sample(
     penny: Penny,
     *,
+    world: World | None,
     seed: Seeder | None,
     seed_skills: Sequence[SkillDraft] | None,
     browse: list[CannedPage] | None,
     prepare: Preparer | None,
 ) -> None:
-    """Lay a sample's world down before its first turn: the user, the case's own seed,
-    the embeddings those seeds need, any fixture skills, the canned browse, and the
-    case's late hook."""
+    """Lay a sample's world down before its first turn: the user, the world's own seeded
+    store, the case's own seed, the embeddings those seeds need, any fixture skills, the
+    canned browse, and the case's late hook."""
     seed_user(penny.db)
+    seed_world_stores(penny.db, world)
     if seed is not None:
         seed(penny.db)
     await _embed_seeds(penny)
@@ -3255,7 +3272,12 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
             await _seed_sample(
-                penny, seed=seed, seed_skills=seed_skills, browse=pages, prepare=prepare
+                penny,
+                world=world,
+                seed=seed,
+                seed_skills=seed_skills,
+                browse=pages,
+                prepare=prepare,
             )
             return await _drive_sample(
                 penny,
@@ -3706,6 +3728,7 @@ def collector_cycles_eval(
         case_id: str,
         sample_index: int,
         collection: str,
+        world: World | None,
         seed: Seeder,
         cycles: Sequence[list[CannedPage]],
         score: CyclesScorer | None,
@@ -3716,6 +3739,7 @@ def collector_cycles_eval(
         """ONE sample against a constructed Penny: lay its world down, probe it, drive its
         cycles, score them with the ran-guard folded in, and write its report block."""
         seed_user(penny.db)
+        seed_world_stores(penny.db, world)
         seed(penny.db)
         await _embed_seeds(penny)
         if seed_skills:
@@ -3806,6 +3830,7 @@ def collector_cycles_eval(
                 case_id=case_id,
                 sample_index=sample_index,
                 collection=collection,
+                world=arm.world if arm is not None else None,
                 seed=arm.seed if arm is not None else _require_seed(seed),
                 cycles=[arm.pages] if arm is not None else cycles,
                 score=score,

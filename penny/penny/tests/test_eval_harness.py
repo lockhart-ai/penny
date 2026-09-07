@@ -233,6 +233,7 @@ from penny.tests.eval.conftest import (
     sample_is_fragile,
     sample_log_path,
     sample_logging,
+    seed_world_stores,
     seeded_run_id,
     tool_call_name,
     tool_call_rejected,
@@ -271,7 +272,12 @@ from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import SampleObservation
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
-from penny.tests.eval.utils.fixtures import BOARD_GAMES, LISTING_URL
+from penny.tests.eval.utils.fixtures import (
+    BOARD_GAMES,
+    LISTING_URL,
+    CannedPage,
+    SynthCollection,
+)
 from penny.tests.eval.utils.transition_world import (
     APPLY_CASES,
     IDLE_LEARN_CASES,
@@ -296,6 +302,7 @@ from penny.tests.eval.utils.transition_world import (
     seed_learned_round,
     seed_parked_in_request,
 )
+from penny.tests.eval.utils.worlds import World
 from penny.tests.schema_template import migrated_db, schema_only_db
 
 # Production's own rule for a message worth delivering, read from where the send path and the
@@ -3128,6 +3135,274 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
     )
     assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
     assert seen == [WATCH_READINGS[0].name, WATCH_READINGS[1].name]
+
+
+# ── A world's ground, whichever substrate it stands on (#2108) ────────────────
+#
+# Two worlds of the same shape over different substrates: one page a browse returns, one
+# collection already sitting in the store.  Deliberately tiny, so the whole render is a
+# literal a reader can check against the fixtures right above it.
+
+_TIDE_ANCHOR = "06:40"
+_CLIMB_ANCHOR = "620"
+
+# The keep and the exclude sit on SEPARATE lines, which is what the fields mean: a `keeps`
+# token identifies the source, and an `excludes` token appears only on a line the ask rules
+# out.  On one line the exclusion could not be read — the anchor could not be stored without
+# it — and this fixture is where a case author will look for the worked example.
+_TIDE_PAGE = CannedPage(
+    match="harbourtides",
+    text=(
+        "Title: Harbour Tides — today | harbourtides\n"
+        "https://harbourtides.example/today\n"
+        "\n"
+        f"High water at {_TIDE_ANCHOR}.\n"
+        "The next low water is six hours later.\n"
+    ),
+)
+
+_SEEDED_ROUTES = SynthCollection(
+    "trail-notes",
+    "Trail routes worth running again: distance, climb, and what the footing is like.",
+    entries=(
+        f"Marrow Ridge loop — 14km with {_CLIMB_ANCHOR}m of climb, dry underfoot.",
+        "Fenwick Steps — 8km out and back, relentless stairs.",
+    ),
+)
+
+_PAGE_BACKED_WORLD = World(
+    name="the tide table the turn reads",
+    pages=(_TIDE_PAGE,),
+    keeps=((_TIDE_ANCHOR,),),
+    excludes=("low water",),
+    answers=(_TIDE_ANCHOR,),
+)
+
+_STORE_BACKED_WORLD = World(
+    name="the user's own collection",
+    pages=(),
+    keeps=(),
+    excludes=(),
+    answers=(_CLIMB_ANCHOR,),
+    stores=(_SEEDED_ROUTES,),
+)
+
+# The third shape, and the only one where the two substrates meet: `keeps` is indexed by
+# source, so its second token set belongs to the collection and reaching it means indexing
+# straight across the page→collection boundary.
+_MIXED_WORLD = World(
+    name="a page read beside the collection it is checked against",
+    pages=(_TIDE_PAGE,),
+    keeps=((_TIDE_ANCHOR,), (_CLIMB_ANCHOR,)),
+    excludes=("low water",),
+    answers=(_TIDE_ANCHOR, _CLIMB_ANCHOR),
+    stores=(_SEEDED_ROUTES,),
+)
+
+# A world declaring no ground at all — what a case that is not ported hands the cohort.  It
+# renders no ground fold, and the closed summary still has to state a substrate.
+_GROUNDLESS_WORLD = World(name="nothing declared", pages=(), keeps=(), excludes=())
+
+_PAGE_BACKED_TAIL = """\
+#### Test inputs
+
+<details><summary>1 phrasing · 1 page · 1 must-keep, 1 must-not</summary>
+
+<details><summary>Phrasings — 1 wording of one ask</summary>
+
+| # | ask |
+|---|---|
+| phrasing 1 | when is high water? |
+
+</details>
+
+<details><summary>Seeded ground — 1 page · 1 must-keep, 1 must-not</summary>
+
+| # | source | must be kept |
+|---|---|---|
+| 1 | page `harbourtides` | `06:40` |
+
+**Must not be kept, from any source** — `low water`
+
+**Must be stated by the reply** — `06:40`
+
+<details><summary>Page 1 — `harbourtides` · 140 chars · keeps `06:40`</summary>
+
+```
+Title: Harbour Tides — today | harbourtides
+https://harbourtides.example/today
+
+High water at 06:40.
+The next low water is six hours later.
+
+```
+
+</details>
+
+</details>
+
+</details>"""
+
+_STORE_BACKED_TAIL = """\
+#### Test inputs
+
+<details><summary>1 phrasing · 1 collection · 0 must-keep, 0 must-not</summary>
+
+<details><summary>Phrasings — 1 wording of one ask</summary>
+
+| # | ask |
+|---|---|
+| phrasing 1 | how much climb did i note down? |
+
+</details>
+
+<details><summary>Seeded ground — 1 collection · 0 must-keep, 0 must-not</summary>
+
+| # | source | must be kept |
+|---|---|---|
+| 1 | collection `trail-notes` |  |
+
+**Must be stated by the reply** — `620`
+
+<details><summary>Collection 1 — `trail-notes` · 241 chars · keeps —</summary>
+
+```
+trail-notes — Trail routes worth running again: distance, climb, and what the footing is like.
+Marrow Ridge loop: Marrow Ridge loop — 14km with 620m of climb, dry underfoot.
+Fenwick Steps: Fenwick Steps — 8km out and back, relentless stairs.
+```
+
+</details>
+
+</details>
+
+</details>"""
+
+_MIXED_TAIL = """\
+#### Test inputs
+
+<details><summary>1 phrasing · 1 page, 1 collection · 2 must-keep, 1 must-not</summary>
+
+<details><summary>Phrasings — 1 wording of one ask</summary>
+
+| # | ask |
+|---|---|
+| phrasing 1 | is the tide right for the marrow ridge loop? |
+
+</details>
+
+<details><summary>Seeded ground — 1 page, 1 collection · 2 must-keep, 1 must-not</summary>
+
+| # | source | must be kept |
+|---|---|---|
+| 1 | page `harbourtides` | `06:40` |
+| 2 | collection `trail-notes` | `620` |
+
+**Must not be kept, from any source** — `low water`
+
+**Must be stated by the reply** — `06:40`, `620`
+
+<details><summary>Page 1 — `harbourtides` · 140 chars · keeps `06:40`</summary>
+
+```
+Title: Harbour Tides — today | harbourtides
+https://harbourtides.example/today
+
+High water at 06:40.
+The next low water is six hours later.
+
+```
+
+</details>
+
+<details><summary>Collection 2 — `trail-notes` · 241 chars · keeps `620`</summary>
+
+```
+trail-notes — Trail routes worth running again: distance, climb, and what the footing is like.
+Marrow Ridge loop: Marrow Ridge loop — 14km with 620m of climb, dry underfoot.
+Fenwick Steps: Fenwick Steps — 8km out and back, relentless stairs.
+```
+
+</details>
+
+</details>
+
+</details>"""
+
+_GROUNDLESS_TAIL = """\
+#### Test inputs
+
+<details><summary>1 phrasing · 0 pages · 0 must-keep, 0 must-not</summary>
+
+<details><summary>Phrasings — 1 wording of one ask</summary>
+
+| # | ask |
+|---|---|
+| phrasing 1 | how's your day going? |
+
+</details>
+
+</details>"""
+
+
+@pytest.mark.parametrize(
+    ("world", "ask", "expected"),
+    [
+        pytest.param(
+            _PAGE_BACKED_WORLD, "when is high water?", _PAGE_BACKED_TAIL, id="page-backed"
+        ),
+        pytest.param(
+            _STORE_BACKED_WORLD,
+            "how much climb did i note down?",
+            _STORE_BACKED_TAIL,
+            id="store-backed",
+        ),
+        pytest.param(
+            _MIXED_WORLD,
+            "is the tide right for the marrow ridge loop?",
+            _MIXED_TAIL,
+            id="both-substrates",
+        ),
+        pytest.param(_GROUNDLESS_WORLD, "how's your day going?", _GROUNDLESS_TAIL, id="no-ground"),
+    ],
+)
+def test_a_world_renders_its_ground_whichever_substrate_it_stands_on(world, ask, expected) -> None:
+    """A store-backed world states its ground in the report where a page-backed one does.
+
+    ``World.render`` was built around pages and returned nothing at all for a world whose
+    ground is entries seeded into the store, so a case measured against the store showed the
+    ask, the claims and the numbers with no way to see what the sample was answering against
+    (#2108).  All four shapes go through the ONE path a report takes — same section, same
+    position, same table — so the renders differ only where the worlds do: the noun on the
+    row, the noun on the fold, and the counts the closed summary states.
+
+    Every shape the surface can render is here, because the boundary between them is where
+    this breaks: pages only, store only, BOTH (where ``keeps`` is indexed straight across the
+    page→collection boundary and the summary composes ``1 page, 1 collection``), and a world
+    declaring no ground at all, which renders no fold and still has to state a substrate.
+
+    Asserted WHOLE, because the defect was an absence: a substring check for what a
+    store-backed world does render says nothing about the section that was missing."""
+    arm = eval_cohort.Arm(label="phrasing 1", text=ask, world=world)
+    assert report.render_case_tail(arms=[arm]) == expected
+
+
+def test_the_rendered_ground_is_the_store_the_sample_was_actually_given(db) -> None:
+    """What the report shows and what the sample was handed are ONE declaration.
+
+    A world's ``stores`` are seeded by the driver through the production create-then-write
+    path, and that same declaration is what renders — so the report cannot describe a
+    collection nobody laid down, or key an entry differently from the row a provenance claim
+    traces an anchor back to.  Read off the store itself rather than off the seeder, since
+    agreeing with what actually wrote the rows is the thing the render has to prove."""
+    seed_world_stores(db, _STORE_BACKED_WORLD)
+    held = collection_entries(db, _SEEDED_ROUTES.name)
+    assert held == dict(_SEEDED_ROUTES.keyed)
+
+    rendered = _STORE_BACKED_WORLD.render()
+    for key, content in held.items():
+        assert f"{key}: {content}" in rendered, f"the report never shows the entry {key!r}"
+    assert _CLIMB_ANCHOR in rendered, "the anchor the reply owes must be visible in the ground"
 
 
 def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():

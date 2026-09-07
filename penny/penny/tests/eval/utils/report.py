@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from penny.tests.eval.utils import cohort
+from penny.tests.eval.utils.worlds import WorldFacts
 
 # ── Actor glyphs (the transcript-event vocabulary) ───────────────────────────
 ACTOR_USER = "👤"
@@ -1046,10 +1047,13 @@ def _value_list(values: Sequence[str]) -> str:
 
 PROMPT_VARIANTS_LABEL = "System prompts — {contexts} contexts · {shared} shared by every sample"
 PHRASINGS_LABEL = "Phrasings — {count} of one ask"
-WORLD_LABEL = "Seeded pages — {pages} · {keeps} must-keep, {excludes} must-not"
+# Named for the GROUND rather than for pages, because a world stands on pages, on entries
+# seeded into the store, or on both, and a label that names one substrate describes the other
+# one wrongly (#2108).
+WORLD_LABEL = "Seeded ground — {ground} · {keeps} must-keep, {excludes} must-not"
 # One arm's own ground, when the arms do not share one.  Named by the ARM so the fold, the
 # variance rows and the sample names all key on the same anchor.
-_ARM_WORLD_LABEL = "Seeded pages, {arm} — {pages}"
+_ARM_WORLD_LABEL = "Seeded ground, {arm} — {ground}"
 OUTLIERS_HEADING = "Outliers"
 OUTLIERS_SUMMARY = "{count} of {driven} samples · diverging on {features}"
 _EVERYWHERE_DISTINCT = (
@@ -1058,7 +1062,7 @@ _EVERYWHERE_DISTINCT = (
     "excluded from the divergences below, and from what makes a sample an outlier._"
 )
 TEST_INPUTS_HEADING = "Test inputs"
-TEST_INPUTS_SUMMARY = "{phrasings} · {pages}"
+TEST_INPUTS_SUMMARY = "{phrasings} · {ground}"
 REPRESENTATIVE_LABEL = "Representative sample"
 REPRESENTATIVE_HEADING = "Representative sample"
 REPRESENTATIVE_SUMMARY = "{turns} · {banner}"
@@ -1122,18 +1126,6 @@ def prompt_variants(prompts: Sequence[tuple[str, SystemPrompt]], total: int) -> 
     ]
 
 
-@dataclass(frozen=True)
-class WorldFacts:
-    """What a closed `Seeded pages` fold states: how many pages, and how many tokens each way.
-
-    Passed as DATA rather than counted back out of the rendered table — deriving a summary from
-    the markdown it summarises is the same mistake as diffing rendered prompts."""
-
-    pages: int = 0
-    keeps: int = 0
-    excludes: int = 0
-
-
 def render_prompt_variants(variants: Sequence[PromptVariant]) -> str:
     """Every distinct prompt, once — the contexts every sample shared first."""
     if not variants:
@@ -1167,13 +1159,26 @@ def render_phrasings(arms: Sequence[cohort.Arm]) -> str:
     )
 
 
+def render_ground(facts: WorldFacts) -> str:
+    """The sources a world stands on, named by WHAT THEY ARE — ``1 page`` · ``2 collections``
+    · ``1 page, 2 collections``.
+
+    Each substrate the world actually carries, and only those: a page-backed world says
+    nothing about collections, so a world that grew a substrate is legible as one that did.
+    A world carrying NO source still reads ``0 pages`` — the fold has to state a substrate,
+    and a page is the one every world can count."""
+    carried = ((facts.pages, "page"), (facts.collections, "collection"))
+    named = [plural(count, noun) for count, noun in carried if count]
+    return ", ".join(named) or plural(0, "page")
+
+
 def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
-    """The pages every sample was answered against, stated once."""
+    """The ground every sample was answered against, stated once."""
     if not world.strip():
         return ""
     counts = facts or WorldFacts()
     label = WORLD_LABEL.format(
-        pages=plural(counts.pages, "page"), keeps=counts.keeps, excludes=counts.excludes
+        ground=render_ground(counts), keeps=counts.keeps, excludes=counts.excludes
     )
     return fold(label, world)
 
@@ -1181,8 +1186,8 @@ def render_seeded_world(world: str, facts: WorldFacts | None = None) -> str:
 def render_arm_worlds(arms: Sequence[cohort.Arm]) -> str:
     """The ground the arms were answered against.
 
-    ONE fold when every arm shares a world — the chat shape, where the pages are a property of
-    the case and stating them per arm would print the same table five times.  One fold PER ARM
+    ONE fold when every arm shares a world — the chat shape, where the ground is a property of
+    the case and stating it per arm would print the same table five times.  One fold PER ARM
     when they differ, which is what a cohort varying the job's own inputs looks like: the
     fifth arm's page is the only place its bound values can be checked against what it read.
     """
@@ -1190,14 +1195,14 @@ def render_arm_worlds(arms: Sequence[cohort.Arm]) -> str:
     if not worlds:
         return ""
     if len(worlds) == 1:
-        return render_seeded_world(worlds[0].render(), WorldFacts(*worlds[0].counts))
+        return render_seeded_world(worlds[0].render(), worlds[0].counts)
     return "\n\n".join(
         fold(
-            _ARM_WORLD_LABEL.format(arm=arm.label, pages=plural(arm.world.counts[0], "page")),
+            _ARM_WORLD_LABEL.format(arm=arm.label, ground=render_ground(arm.world.counts)),
             arm.world.render(),
         )
         for arm in arms
-        if arm.world.pages
+        if arm.world.sources
     )
 
 
@@ -1312,7 +1317,7 @@ def render_case_tail(
     facts = _arm_world_facts(arms)
     summary = TEST_INPUTS_SUMMARY.format(
         phrasings=plural(len(arms), "phrasing"),
-        pages=f"{plural(facts.pages, 'page')} · {facts.keeps} must-keep, {facts.excludes} must-not",
+        ground=f"{render_ground(facts)} · {facts.keeps} must-keep, {facts.excludes} must-not",
     )
     parts = [
         titled_fold(TEST_INPUTS_HEADING, summary, inputs) if inputs else "",
@@ -1325,12 +1330,13 @@ def _arm_world_facts(arms: Sequence[cohort.Arm]) -> WorldFacts:
     """What the closed `Test inputs` fold states about the ground, summed over DISTINCT worlds.
 
     Summed rather than taken from the first arm: a cohort whose arms each brought their own
-    pages really did seed five of them, and reporting one would describe a fifth of the run."""
+    ground really did seed five of them, and reporting one would describe a fifth of the run."""
     counts = [world.counts for world in cohort.distinct_worlds(arms)]
     return WorldFacts(
-        pages=sum(one[0] for one in counts),
-        keeps=sum(one[1] for one in counts),
-        excludes=sum(one[2] for one in counts),
+        pages=sum(one.pages for one in counts),
+        collections=sum(one.collections for one in counts),
+        keeps=sum(one.keeps for one in counts),
+        excludes=sum(one.excludes for one in counts),
     )
 
 

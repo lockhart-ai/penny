@@ -655,7 +655,7 @@ Two other scope rules that come from the same place:
 |---|---|
 | `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
-| `penny/penny/tests/eval/utils/worlds.py` | `World` — the pages, the `keeps` token set per source, the `excludes`, and the `answers` the reply must state; carried per **arm** (`cohort.Arm`), not per cohort |
+| `penny/penny/tests/eval/utils/worlds.py` | `World` — the ground a sample is GIVEN: the `pages` a browse returns and the `stores` already in the store when the turn begins, walked together as `sources`, plus the `keeps` token set per source, the `excludes`, and the `answers` the reply must state; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
 | `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
