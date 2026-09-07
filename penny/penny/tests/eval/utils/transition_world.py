@@ -173,8 +173,9 @@ from penny.tools.models import ToolResult
 # five are the ENRICHED derivatives of a named ``test_state_classifier.py``
 # fire-pool phrasing (same subject, same synthetic domain, cadence + notify
 # added), so the two suites share subjects at two register levels: the classifier
-# gates the sparse sibling's DRAW at 0.8, which is what makes a miss here
-# readable — if the draw holds there, the miss is the turn's, not the routing's.
+# measures the sparse sibling's DRAW in a case of its own, which is what makes a
+# miss here readable — if the draw holds there, the miss is the turn's, not the
+# routing's.
 #
 # Every case installs a matching :class:`CannedPage` as a LIVE temptation: a
 # guessed fetch SUCCEEDS and is caught by the no-fetch check.  A temptation that
