@@ -118,7 +118,7 @@ from penny.tests.eval.utils.cohort import (
     SpecCategory,
     fold_typography,
 )
-from penny.tests.eval.utils.dispatch_world import collection_rows
+from penny.tests.eval.utils.dispatch_world import assert_surface_carries, collection_rows
 from penny.tests.eval.utils.transition_ledger import _seeded_response, _wire_tool_call
 from penny.tests.eval.utils.worlds import World
 
@@ -135,6 +135,13 @@ _WRITE = "collection_write"
 
 # The cross-collector index the run-record case's answer lives in.
 _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
+
+# The general store-addressing READ verbs a look-back can be answered through.  Asserted on the
+# surface before the turn, for the reason every dispatch story asserts its own: a case about
+# reading that is answered by a model never offered a read verb scores a model miss for a
+# HARNESS failure.  It is a premise about the SURFACE and not a route the case expects — which
+# verb she reaches for is hers, and the claims below read no tool name at all.
+_READ_VERBS = ("log_read", "read_similar")
 
 # Wide enough that a world seeding a conversation window is read WHOLE: the probe's answer has
 # to be "none of them", not "none of the first few".
@@ -185,10 +192,11 @@ class _LogReadCase(NamedTuple):
 
 
 def _probe(case: _LogReadCase) -> Preparer:
-    """The prepare hook: the case's own premise, plus the one half that only exists once the
-    runner has embedded the seeds."""
+    """The prepare hook: the chat surface these cases need, the case's own premise, and the one
+    half that only exists once the runner has embedded the seeds."""
 
     def probe(penny: Penny) -> None:
+        assert_surface_carries(penny, case.case_id, _READ_VERBS)
         case.premise(penny.db)
         _assert_the_seeded_turns_are_recallable(penny.db)
 
@@ -398,8 +406,8 @@ _SEEDED_CYCLES = (
         _TRAIL_JOB,
         "trail-cycle-1",
         RunOutcome.WORKED,
-        "Logged today's trail status.",
-        wrote=("today", "Verdant Hollow — muddy after rain."),
+        "Logged the Verdant Hollow trail status.",
+        wrote=("Verdant Hollow trail status", "Verdant Hollow — muddy after rain."),
     ),
     _SeededCycle(
         _PATCH_NOTES_JOB,
@@ -689,7 +697,10 @@ async def test_what_she_said_comes_back_out_of_her_own_messages(
         _the_answer_came_from_what_she_was_given,
         SpecCategory.PROVENANCE,
     )
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    # The STORE half of PROVENANCE is deliberately absent, and this is a report rather than an
+    # omission: the case already claims answering wrote nothing, so no stored entry exists for
+    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
+    # every sample by construction.  The two claims above carry the category.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -758,7 +769,10 @@ async def test_why_a_job_is_in_trouble_comes_out_of_the_run_record(
         _the_answer_came_from_what_she_was_given,
         SpecCategory.PROVENANCE,
     )
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    # The STORE half of PROVENANCE is deliberately absent, and this is a report rather than an
+    # omission: the case already claims answering wrote nothing, so no stored entry exists for
+    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
+    # every sample by construction.  The two claims above carry the category.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

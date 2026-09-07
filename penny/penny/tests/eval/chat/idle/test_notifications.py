@@ -190,10 +190,11 @@ async def test_an_explicit_mute_request_mutes_and_moves_nothing_else(
         "state: nothing but the notification switch moved", _nothing_else_moved, SpecCategory.STORE
     )
 
-    # PROVENANCE — the half the source case had none of.  A turn that filed a fact into a
-    # collection nobody's world mentions fails the first; a reply that states a value tracing to
-    # nothing the model was given fails the second.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    # PROVENANCE — the STORE half is deliberately absent, and this is a report rather than an
+    # omission: the case already claims the turn writes nothing, so no stored entry exists for
+    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
+    # every sample by construction — a guaranteed row in the denominator, measuring the claim
+    # beside it rather than the turn.  The REPLY half carries the category.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # TOOL_SEQUENCE is measured and never asserted — the call is a route — and on this case it

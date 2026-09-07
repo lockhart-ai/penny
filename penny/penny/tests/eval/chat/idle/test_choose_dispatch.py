@@ -12,11 +12,12 @@ fire for a verb nobody enumerated.  So ``choose-dispatch-no-fire`` is folded her
 negative rather than kept as a second case.
 
 What that costs is worth naming rather than glossing, because the instrument cannot currently
-pay it: the tool sequence would be where such a divergence shows, and it reads BLIND here — the
-chat observation narrows a sample's calls to ``ENACTING_TOOLS``, a six-name whitelist carrying
-no ``choose``, so every sample reads "no call" whether the fair pick fired or not.  Reported as
-a harness gap.  Until it is closed, the claim below is what catches a free choice: a reply
-naming an option no record chose fails it, which is the same finding said from the end state.
+pay it: the tool sequence would be where such a divergence shows, and it cannot see the call
+this case is about — the chat observation narrows a sample's calls to ``ENACTING_TOOLS``, a
+six-name whitelist carrying no ``choose``, so the fair pick reads as "no call" whether it fired
+or not.  Reported as a harness gap.  Until it is closed, the claim below is what catches a free
+choice: a reply naming an option no record chose fails it, which is the same finding said from
+the end state.
 
 What the case DOES assert about the pick is the one thing an end state can carry: **the option
 the reply reports is the one the run's own record chose.**  A reply naming a different option
@@ -223,16 +224,20 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
         SpecCategory.PROVENANCE,
         kind="reply",
     )
-    cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
+    # The STORE half of PROVENANCE is deliberately absent, and this is a report rather than an
+    # omission: the case already claims nothing durable changed, so no stored entry exists to
+    # trace and ``assert_every_stored_entry_traces_to_the_world`` would answer green on every
+    # sample by construction.  The two reply claims carry the category.
 
     # TOOL_SEQUENCE is measured and never asserted — the call is a route — and on this case it
-    # reads BLIND, which the report renders in red.  The chat observation narrows a sample's
-    # calls to ``ENACTING_TOOLS``, a six-name whitelist carrying no ``choose``, so every sample
-    # reads "no call" whether the fair pick fired or not.  What that costs is precisely the
-    # negative direction, and it is why the claim above carries the case rather than the
-    # feature: a sample that free-chose is invisible here and fails there, because the option it
-    # reports appears on no record.  Measured anyway, because a feature that prints a number
-    # either way has to say which of the two it is; the whitelist is reported as a harness gap
-    # rather than worked around here.
+    # cannot see the call it is about.  The chat observation narrows a sample's calls to
+    # ``ENACTING_TOOLS``, a six-name whitelist carrying no ``choose``, so the fair pick reads as
+    # "no call" whether it fired or not; what the feature reports is whatever ELSE a sample
+    # reached for, which on the measured runs was one sample's browse on one model and nothing
+    # at all on the other (so it read a spread there and blind, in red, here).  Either way the
+    # negative direction is invisible to it, which is why the claim above carries the case: a
+    # sample that free-chose reports an option no record holds.  Measured anyway, because the
+    # blindness is a fact about the instrument and a feature that prints a number either way has
+    # to say which of the two it is; the whitelist is reported as a harness gap.
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

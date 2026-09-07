@@ -33,6 +33,7 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
 from penny.constants import (
+    MutationAction,
     MutationActor,
     MutationEntityType,
     PennyConstants,
@@ -1965,13 +1966,13 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
 
 
 def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(tmp_path) -> None:
-    """``_mechanism_records`` reads a registry ROW rather than what it holds, and its three
-    booleans are what the round-ends-in-idle claims are answered from.
+    """``_mechanism_records`` reads a registry ROW rather than what it holds, and what it reads
+    is what the round-ends-in-idle and standing-collection claims are answered from.
 
     Every one of them is silent when it is wrong, which is why it is pinned here rather than
     discovered on a paid run.  ``born_this_run`` is a name-set diff against the snapshot taken
     AFTER the seed, so a seeded collection reading as newly created would fail "nothing was
-    created" on every sample.  ``changed_this_run`` is a mutation-ledger read filtered by run
+    created" on every sample.  ``touched_this_run`` is a mutation-ledger read filtered by run
     id, so a seeded event mistaken for a live one would fail "nothing was changed" on every
     sample — and the same read the other way round is what makes an archive visible at all.
     ``archived`` has to survive the row being retired, which is the one thing a reader that
@@ -1983,7 +1984,12 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     work (#2129).  The ledger and the entry stamps are asserted beside the booleans since the
     booleans are a read of them — a stamp that stopped reaching either would leave
     ``changed_this_run`` false for a different reason, and the run that catches that is paid
-    for."""
+    for.
+
+    What ``touched_this_run`` NAMES is pinned too, because the standing-collection cases claim
+    "only the field the ask named moved" against it: an update names the FIELDS it reported
+    changing, and an archive names its own ACTION, since the store records that as an action
+    rather than as a field edit and it carries no changed field to read."""
     db = _make_db(tmp_path)
     seeded_by = seeded_run_id(_SEEDED_ROUTES.name)
     seed_world_stores(db, _STORE_BACKED_WORLD)
@@ -2013,6 +2019,15 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run
+    assert retired.touched_this_run == [MutationAction.ARCHIVED.value], (
+        "an archive names its own ACTION — it reports no changed field for a claim to read"
+    )
+
+    db.memories.update_collection_metadata("a-minted-job", notify=True, run_id="live-2")
+    reconfigured = {record.name: record for record in _mechanism_records(db, before)}
+    assert reconfigured["a-minted-job"].touched_this_run == ["created", "notify"], (
+        "an update names the FIELDS it changed, beside the creation's own action"
+    )
 
 
 def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:

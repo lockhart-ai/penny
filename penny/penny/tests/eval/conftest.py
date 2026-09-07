@@ -53,6 +53,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.message_store import MessageStore, PromptPerf
 from penny.database.models import MemoryRow, PromptLog, SendQueueItem
+from penny.database.mutation_store import mutation_detail
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
     DistillInput,
@@ -2631,34 +2632,50 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
     and a reader that dropped retired rows would report the one thing the cleanup did as the
     container having vanished.
 
-    ``changed_this_run`` is read off the mutation ledger — a live turn's mutation cites a live
+    ``touched_this_run`` is read off the mutation ledger — a live turn's mutation cites a live
     run and every event a seeded world wrote cites a seeded one — so it is a read rather than a
-    diff against a remembered before-state, and it is keyed to no field: a rebind, a schedule
-    change, a description edit and an archive all answer it the same way.
+    diff against a remembered before-state, and it names what the STORE says it changed rather
+    than any field this file enumerates.
 
-    The four CONFIGURATION fields are the row's own, copied verbatim.  They exist for the claim
-    the ledger read cannot make — that on the one row this turn was told to change, only the
-    field the ask named moved — since ``changed_this_run`` is true of that row by construction
-    and says nothing about which field moved."""
+    The three configuration values beside it are the row's own, copied verbatim: the ledger says
+    what moved and never where it landed, so a claim naming a value has to read the row."""
     return [
         eval_cohort.MechanismRecord(
             name=row.name,
             archived=row.archived,
             notifies=row.notify,
             schedule=row.schedule,
-            routine=row.skill_name,
             program=row.extraction_prompt,
             born_this_run=row.name not in before,
-            changed_this_run=any(
-                not is_seeded_run(event.run_id)
-                for event in db.mutations.history(
-                    row.name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
-                )
-            ),
+            touched_this_run=_touched_this_run(db, row.name),
         )
         for row in db.memories.list_all()
         if row.type == MemoryType.COLLECTION
     ]
+
+
+def _touched_this_run(db: Database, name: str) -> list[str]:
+    """What this sample's own runs did to one registry row, in the store's own vocabulary.
+
+    An UPDATE names the fields it reported changing; every other action names ITSELF, because
+    the store deliberately names those by action rather than as a field edit — archiving carries
+    no changed field of its own, and a creation is not an edit to anything.  So a row this turn
+    archived reads ``['archived']`` and a row whose notify it flipped reads ``['notify']``,
+    which is what lets a claim say "only the field the ask named moved" without enumerating the
+    ones it did not.
+
+    Seeded events are excluded the way every other "what did THIS sample do" reader excludes
+    them — by the run id — so a world's own history never reads as the turn's work."""
+    touched: list[str] = []
+    for event in db.mutations.history(
+        name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
+    ):
+        if is_seeded_run(event.run_id):
+            continue
+        detail = mutation_detail(event)
+        moved = detail.changed_fields if detail is not None else []
+        touched += moved or [event.action]
+    return sorted(set(touched))
 
 
 def _written_by_a_live_run(entry) -> bool:

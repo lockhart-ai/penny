@@ -39,12 +39,14 @@ enumerated — so it is measured in the tool sequence and never asserted.  How m
 tool sequence can SEE differs by case, and the report says which: the chat observation narrows a
 sample's calls to ``ENACTING_TOOLS``, which carries ``collection_set`` and not
 ``collection_archive``, so the two cases that reconfigure a job read a real spread while the
-retire case reads BLIND, in red.  Reported as a harness gap rather than worked around here.  On
-the retire case the
-switch and the cadence are not claimed unchanged either: an archived job is out of the
-dispatcher's reach whatever its switch says, so a turn that also silenced it did nothing the
-user can observe, and claiming it would fail a correct run over a difference with no
-consequence.
+retire case reads no call at all.  Reported as a harness gap rather than worked around here.
+
+**What each case claims about the rest of the row is the STORE'S own account of what it
+changed**, never a list of fields written here: the row's settable surface is wider than any
+such list — its description, its expiry, its run quota, the values a rebind binds — and an
+enumeration exempts whatever it forgot.  That applies to the retire case too, since archiving
+is reversible: the same job asked for again revives this row, so a retire that also rebound the
+routine or re-timed the cadence hands back a different job under the same name.
 
 **The world is built the way production builds one (#1911/migration 0108: nothing is
 pre-seeded).**  Every collection here is one the user built: the container is created
@@ -75,6 +77,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from penny.agents.self_state import SelfStateHeader
+from penny.constants import MutationAction
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
@@ -426,11 +429,9 @@ _FINDS = StandingJob(
 # suite instead of surviving until someone spends GPU on it.
 _assert_the_job_can_run(_FINDS)
 
-# What the job's own row says before any turn runs — read ONCE and reused by the premise
-# probe and by every "nothing else moved" claim, so a fixture edit cannot leave a claim
-# quietly asserting the shape the job used to have.
-_SEEDED_ROUTINE = slug_skill_name(_FINDS.routine.name)
-_SEEDED_PROGRAM = _FINDS.program
+# What the job already holds before any turn runs — read ONCE off the fixture and asserted by
+# the premise probe, so a fixture edit cannot leave the kept-its-entries claim naming keys the
+# world stopped seeding.
 _HELD_KEYS = tuple(key for key, _ in _FINDS.holdings)
 
 # How the user refers to it: their own words for the job, never its derived name.  The
@@ -664,19 +665,6 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 _ClaimFn = Callable[[SampleObservation, World], Answer]
 
 
-def _the_job_is_still_registered(container: str) -> _ClaimFn:
-    """The job's row is still there.
-
-    A violating sample is nameable: one that DELETES the collection to stop it — which takes
-    the entries the user can still read with it — rather than archiving it as a tombstone."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        held = sorted(one.name for one in sample.mechanisms)
-        return _job_row(sample, container) is not None, f"the registry holds {held}"
-
-    return answer
-
-
 def _the_switch_is(container: str, *, on: bool) -> _ClaimFn:
     """The job's own notification switch reads the way the ask asked for.
 
@@ -732,48 +720,41 @@ def _the_job_is_still_live(container: str) -> _ClaimFn:
     return answer
 
 
-def _only_the_named_field_moved(container: str, *, moved: str) -> _ClaimFn:
-    """Nothing else on the job's own row moved.
+def _only_this_moved(container: str, *, moved: str) -> _ClaimFn:
+    """The one thing the ask named is the ONLY thing this turn did to the job's row.
 
-    The claim the mutation ledger cannot make: ``changed_this_run`` is true of this row by
-    construction — the turn was TOLD to change it — so what it did NOT change has to be read
-    off the fields.  Every field the ask did not name is compared against the value the job
-    was seeded with, and the one it did name is skipped by name.
+    Read off the STORE'S OWN account of what it changed (``touched_this_run``) rather than a
+    diff over fields this file lists: the row's settable surface is wider than any list a case
+    would think to write — its description, its expiry, its run quota, the values a rebind
+    binds — so an enumeration silently exempts whatever it forgot, which is the shape that
+    fails for a verb nobody enumerated.  A field the store learns to change tomorrow is
+    compared for free.
 
-    A violating sample is nameable: one that flips the switch and re-times the job on the way
-    through, one that rebinds it to another routine, and one that rewrites the program while
-    reporting only the flag."""
-    seeded = {
-        _NOTIFIES: _FINDS.notify,
-        _SCHEDULE: _FINDS.schedule,
-        _ROUTINE: _SEEDED_ROUTINE,
-        _PROGRAM: _SEEDED_PROGRAM,
-    }
+    ``moved`` is the store's own label for the axis the ask moved.  A wrong label can only make
+    this claim STRICTER — the named field would count as drift — so a typo fails loudly instead
+    of quietly passing, which is the safe direction for a guard.
+
+    A violating sample is nameable, and the rationale names the field: one that flips the switch
+    and re-times the job on the way through, one that rebinds it to another routine, one that
+    rewrites its program while reporting only the flag, and one that stamps an end date on a job
+    nobody asked to bound."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         row = _job_row(sample, container)
         if row is None:
             return False, f"{container!r} is no longer in the registry"
-        now = {
-            _NOTIFIES: row.notifies,
-            _SCHEDULE: row.schedule,
-            _ROUTINE: row.routine,
-            _PROGRAM: row.program,
-        }
-        drifted = sorted(
-            field for field, was in seeded.items() if field != moved and now[field] != was
-        )
-        return not drifted, f"also moved {drifted}"
+        others = sorted(set(row.touched_this_run) - {moved})
+        return not others, f"also moved {others}"
 
     return answer
 
 
-# The row fields a change is read off, named once because two readers agree on each of them:
-# the drift comparison above, which skips the one the ask named, and the label that names it.
+# The store's own labels for the axes these asks move — its update reports a field edit by the
+# field's name and an archive by its ACTION, and the claim above compares against whichever the
+# ask named.  Read from the shipped enum where one exists rather than retyped.
 _NOTIFIES = "notify"
 _SCHEDULE = "schedule"
-_ROUTINE = "routine"
-_PROGRAM = "program"
+_ARCHIVED = MutationAction.ARCHIVED.value
 
 
 def _the_rule_fires_at(container: str, hour: int) -> _ClaimFn:
@@ -842,7 +823,6 @@ def _nothing_was_silenced_everywhere(sample: SampleObservation, _world: World) -
 
 # The labels the three cases share.  Named once because a label is a diff-join key: three
 # copies of one sentence are three chances for a typo to split one claim's history in two.
-_STILL_REGISTERED = "state: the job is still in the registry"
 _STILL_LIVE = "state: the job is still live (active, scheduled, with a program to run)"
 _KEPT_ITS_ENTRIES = "state: what it gathered is still there"
 _NOTHING_ELSE_TOUCHED = "state: no other mechanism was created or changed"
@@ -891,9 +871,6 @@ async def test_turning_notifications_off_silences_only_that_job(
 
     # STORE — the field the ask named moved, and nothing else did.
     cohort.claim(
-        _STILL_REGISTERED, _the_job_is_still_registered(_FINDS.container), SpecCategory.STORE
-    )
-    cohort.claim(
         "state: the job's notifications are off",
         _the_switch_is(_FINDS.container, on=False),
         SpecCategory.STORE,
@@ -901,7 +878,7 @@ async def test_turning_notifications_off_silences_only_that_job(
     cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
     cohort.claim(
         "state: nothing else on the job's row moved",
-        _only_the_named_field_moved(_FINDS.container, moved=_NOTIFIES),
+        _only_this_moved(_FINDS.container, moved=_NOTIFIES),
         SpecCategory.STORE,
     )
     cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
@@ -946,23 +923,27 @@ _ARCHIVE = _OperationCase(
 async def test_retiring_a_job_archives_it_and_keeps_what_it_gathered(
     chat_eval: ChatEval, model: str
 ) -> None:
-    """The job is retired as a tombstone, with everything it collected still readable.
+    """The job is retired as a tombstone, with everything it collected still readable and
+    nothing else about it disturbed.
 
-    Its switch and its cadence are deliberately NOT claimed unchanged: an archived job is out
-    of the dispatcher's reach whatever either says, so a turn that also silenced it on the way
-    out did nothing the user can observe, and claiming it would fail a correct run over a
-    difference with no consequence."""
+    Retiring is REVERSIBLE — that is what archiving rather than deleting is for, and the same
+    job asked for again revives this row — so what the turn leaves on it is what the revived
+    job would run.  A retire that also rebound the routine, rewrote the program, re-timed the
+    cadence or flipped the switch hands back a different job under the same name, which is why
+    the drift claim below reads the whole row rather than the archive flag alone."""
     cohort = await _drive(chat_eval, model, _ARCHIVE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
     # STORE
     cohort.claim(
-        _STILL_REGISTERED, _the_job_is_still_registered(_FINDS.container), SpecCategory.STORE
-    )
-    cohort.claim(
         "state: the job is retired (archived)",
         _the_job_is_retired(_FINDS.container),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: retiring it is the only thing this turn did to the job's row",
+        _only_this_moved(_FINDS.container, moved=_ARCHIVED),
         SpecCategory.STORE,
     )
     cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
@@ -1052,9 +1033,6 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
 
     # STORE
     cohort.claim(
-        _STILL_REGISTERED, _the_job_is_still_registered(_FINDS.container), SpecCategory.STORE
-    )
-    cohort.claim(
         "state: the job now runs at the hour they asked for",
         _the_rule_fires_at(_FINDS.container, _FIXED_HOUR),
         SpecCategory.STORE,
@@ -1062,7 +1040,7 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
     cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
     cohort.claim(
         "state: nothing else on the job's row moved",
-        _only_the_named_field_moved(_FINDS.container, moved=_SCHEDULE),
+        _only_this_moved(_FINDS.container, moved=_SCHEDULE),
         SpecCategory.STORE,
     )
     cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
