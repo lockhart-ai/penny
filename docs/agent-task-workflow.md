@@ -78,6 +78,7 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - **Immediately before pushing: `git fetch origin main` and re-check whether `main` moved** since your branch point or last rebase. Another session can merge at any moment, and any earlier statement about `main`'s position — including your supervisor's — goes stale in minutes; the only valid check is your own, at push time. If it moved and the changes plausibly touch your files, rebase *before* pushing (CI verifies the rebased result — no local re-gate): a PR born CONFLICTING helps no one (this happened — a sibling PR merged in the two-minute window between "main hasn't moved" and the push).
 - **Push the branch first** (`GH_TOKEN=$TOK git push -u origin <branch>`), *then* `GH_TOKEN=$TOK gh pr create`.
 - **PR title: `type(scope): title`** — the merge queue squashes with the PR title, so what you write here becomes the git log line. The six types, the per-surface scopes, and the two-surfaces rule live in [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow); don't re-derive them. The title itself **names the work** — verb, component, mechanism — in under about 15 words, and `Closes #<issue>` stays in the body, never the title.
+  - **The body states the change and closes its ticket; it carries no generated-with footer and no session URLs.** The repo is public and a session URL is a private link.
   - **Most task-agent PRs are test PRs, so know that shape by heart: `test(eval): port <group>[ tranche N][ (<subset>)]`.** `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `state classifier`, `skill framer`, `skill binder`, `skill namer`, `browse extractor`) — named consistently, never as a free sentence, so the log sorts by group. A correction to existing cases is `fix(eval): <group> <what changed>`.
 
     ```
@@ -87,7 +88,7 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
     ```
 - **Right after `gh pr create`: read back the PR's real state** — `gh pr view <n> --json mergeable,autoMergeRequest`. If `mergeable` is `CONFLICTING`, fix it *now* (rebase in place, `git push --force-with-lease`, re-flag `--auto`; CI verifies) — never leave a conflicted PR sitting while you report success.
 - **Green gate → flagged PR is ONE uninterrupted sequence.** Your deliverable is a PR that exists, is merge-when-ready flagged, and is being shepherded — not a commit. Do not end your turn anywhere between the green §4 gate and the flagged PR (two agents in one fleet stalled exactly in that window: work committed, nothing published, nothing left running to wake them).
-- Commit message ends with the `Co-Authored-By:` trailer; PR body ends with the `🤖 Generated with Claude Code` trailer.
+- Commit message ends with the `Co-Authored-By:` trailer. The PR body ends with its own last line of substance — no generated-with footer, no session URL.
 - **PR body format — REQUIRED, this exact shape:**
 
   ```markdown
