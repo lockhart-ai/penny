@@ -14,11 +14,14 @@ from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.cohort import (
+    CYCLE_SCRIPT,
     ENTRIES_STORED,
     FIELD_UNSET,
     REPLY_SPREAD,
+    ROUTINE_NAME,
     ROUTINE_SHAPE,
     TOOL_SEQUENCE,
+    TRANSITIONS,
     Arm,
     AssertionRow,
     AssertionSummary,
@@ -874,6 +877,13 @@ def test_a_feature_that_read_nothing_on_every_sample_is_blind_not_agreed():
     assert seen.entropy == 0.0
     assert not seen.blind, "an agreed READING is agreement, not blindness"
 
+    # Every list-shaped feature that declares an absent reading returns it for an observation
+    # holding nothing — the same reachability the observer-side pins hold the walk and the
+    # structured fields to (#2061), read here off the feature's own lambda.
+    nothing = SampleObservation(name="s1", phrasing="p1")
+    for feature in (TOOL_SEQUENCE, ROUTINE_SHAPE, ROUTINE_NAME):
+        assert feature.read(nothing) == feature.absent, f"{feature.name} cannot read nothing"
+
 
 def test_a_blind_feature_proposes_no_ceiling():
     """A ceiling recorded on a feature that read nothing locks the blindness in as the
@@ -893,11 +903,33 @@ def test_a_blind_feature_proposes_no_ceiling():
 def test_a_feature_declaring_no_absent_reading_is_never_blind():
     """A feature that declares no saw-nothing reading, and reads a real value, is agreement —
     however uniform it is.  ``entries stored`` reading ``0`` on every sample is a fact about
-    the round, not a hole in the measurement."""
+    the round, not a hole in the measurement.
+
+    ``cycle script`` is the same statement about the collector path (#2061): every cycle that
+    ran has a shape, and the shape meaning nothing ran excludes the sample before pooling, so
+    the honest declaration is none — and a cohort of real scripts reads as the agreement it is
+    rather than as a measurement that never happened."""
     entries = feature_variance(
         ENTRIES_STORED, [_sample(f"s{index}", "p1", "shape") for index in range(6)]
     )
     assert entries.distinct == 1 and not entries.blind
+
+    assert CYCLE_SCRIPT.absent is None, "no collector observation reads nothing"
+    scripts = feature_variance(
+        CYCLE_SCRIPT,
+        [
+            _sample(f"s{index}", "p1", "shape", walk="wrote, quiet, wrote+told")
+            for index in range(6)
+        ],
+    )
+    assert scripts.distinct == 1 and not scripts.blind
+
+    # The chat walk's own declaration DOES fire — its observer really returns "no move" for a
+    # machine that recorded none, which is what makes the guard armed there and not here.
+    still = feature_variance(
+        TRANSITIONS, [_sample(f"s{index}", "p1", "shape", walk="no move") for index in range(6)]
+    )
+    assert still.blind and proposed_ceiling(still, _MODEL) is None
 
 
 def test_a_field_that_is_empty_on_every_sample_is_blind_whatever_it_declares():
@@ -973,7 +1005,33 @@ def test_a_field_the_draw_never_returned_reads_unset_rather_than_blank():
     — and the variance table gets a word rather than an empty cell."""
     sample = SampleObservation(name="s1", phrasing="the ask")
     assert sample.field("outcome") == FIELD_UNSET
-    assert output_field("outcome").absent == FIELD_UNSET
+
+
+def test_a_measured_field_declares_unset_only_where_its_observer_can_omit_it():
+    """``unset`` means the field was not in the draw's output AT ALL, so it is a reading only
+    an observer that OMITS the field on some outcomes can produce (#2061).
+
+    Declaring it for a field every observation carries arms the blindness guard on a value no
+    sample can ever read — inert exactly where §5 says it is armed.  So the default declares
+    none, and the omitting case asks for it."""
+    assert output_field("outcome").absent is None, "the observer emits this on every sample"
+    assert output_field("bound url", absent=FIELD_UNSET).absent == FIELD_UNSET
+
+    # Declaring none is not declaring nothing: a field every sample came back BLANK on is
+    # still blind, by the reading every feature shares.
+    blank = [
+        SampleObservation(
+            name=f"s{index}", phrasing="the ask", output=[OutputField(name="outcome", value="")]
+        )
+        for index in range(5)
+    ]
+    assert feature_variance(output_field("outcome"), blank).blind
+
+    # And the omitting field goes blind on the cohort where no sample filled it, which is the
+    # whole reason it asks for the declaration.
+    missing = [SampleObservation(name=f"s{index}", phrasing="the ask") for index in range(5)]
+    unfilled = feature_variance(output_field("bound url", absent=FIELD_UNSET), missing)
+    assert unfilled.blind and proposed_ceiling(unfilled, _MODEL) is None
 
 
 def test_a_single_call_sample_pools_even_though_it_has_no_reply_and_no_store():

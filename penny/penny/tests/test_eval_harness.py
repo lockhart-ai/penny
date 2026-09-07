@@ -31,7 +31,7 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
-from penny.constants import MutationActor, PennyConstants, RunOutcome
+from penny.constants import MutationActor, PennyConstants, RunOutcome, TransitionCause
 from penny.conversation_machine import (
     ConversationState,
     RoundShortfall,
@@ -184,8 +184,21 @@ from penny.tests.eval.collector.test_watch_cycles import (
 )
 from penny.tests.eval.conftest import (
     _ACTOR,
+    BIND_MISSING,
+    BIND_OUTCOME,
+    CLASSIFY_OUTCOME,
+    CLASSIFY_SKILL,
+    CLASSIFY_STATE,
+    CYCLE_DEAD,
     EVAL_SEED_AUTHOR,
+    EXTRACT_OUTCOME,
+    EXTRACT_REASON,
+    EXTRACT_VALUE,
+    FRAME_DESCRIPTION,
+    FRAME_NAME,
+    FRAME_PARAMETERS,
     INJECTION_NEVER_FIRED,
+    NO_CYCLE,
     NO_DRAW,
     NO_MEASURED_TURN,
     NO_REPLY,
@@ -201,19 +214,27 @@ from penny.tests.eval.conftest import (
     SampleResult,
     _assert_threshold,
     _bail_fired_check,
+    _binding_output,
     _case_prompts,
     _chat_tool_sequence,
+    _classification_output,
     _classifier_snapshot,
     _cycle_recovered_check,
+    _cycle_shape,
+    _cycles_exclusion,
     _draw_exclusion,
     _exclusion,
+    _extraction_output,
     _flush_sample_blocks,
     _frame_attributes_to,
+    _framing_output,
     _guarded_graded,
     _guarded_injector,
     _held_entries,
     _InjectTextBail,
     _labelling_input,
+    _labelling_output,
+    _machine_walk,
     _mechanism_records,
     _observe_binding,
     _observe_classification,
@@ -237,12 +258,18 @@ from penny.tests.eval.conftest import (
     _without_examples,
     _write_classifier_report,
     _write_sample_report,
+    bound_value_field,
     collection_entries,
     continue_nudge_fired,
     count_tool_calls,
+    cycle_script,
     draw_rerolled,
     env_seconds,
+    frame_parameter_name,
+    frame_parameter_says,
     is_seeded_run,
+    label_name_field,
+    label_says_field,
     live_prompt_perf,
     measured_turn_ran,
     routing_clean,
@@ -3120,6 +3147,184 @@ def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> No
     assert [one.parameter for one in fixture.expectations] == [
         parameter.name for parameter in fixture.parameters
     ]
+
+
+# ── Every declared absent reading is one its observer can produce (#2061) ────
+#
+# ``Feature.absent`` names the reading that means a feature saw NOTHING, and the pooler marks
+# a feature reading it on every sample BLIND — red, proposing no ceiling — so a ``0.000`` that
+# means "read nothing" is never taken for the ``0.000`` that means perfect agreement.  What
+# nothing checked was that the declared value is one the OBSERVER can ever return, and two were
+# not: the collector path's walk has no ``no move`` anywhere in its vocabulary, and every
+# structured field declared ``unset`` whether or not its own observer omits it.  A declaration
+# no observation yields leaves the guard inert exactly where the design reads as armed, so each
+# one is held against the observer that fills it, in ``make check``.
+
+
+def test_the_chat_walks_absent_reading_is_what_its_own_observer_returns(tmp_path) -> None:
+    """``transitions`` declares ``no move``, and ``_machine_walk`` really returns it — for a
+    machine that recorded no move at all, which is what a chat sample that never moved leaves
+    behind.  So the blindness guard on this path has a reading it can fire on."""
+    db = _make_db(tmp_path, "chat-walk")
+    assert _machine_walk(db) == eval_cohort.TRANSITIONS.absent
+
+    db.machine.record_transition(
+        from_state=ConversationState.IDLE,
+        to_state=ConversationState.LEARN,
+        cause=TransitionCause.CLASSIFIER,
+    )
+    assert _machine_walk(db) == "idle→learn", "a recorded move is a real reading"
+
+
+def test_a_collectors_cycle_script_has_no_absent_reading_and_declares_none(tmp_path) -> None:
+    """The collector fills the same ``walk`` field from its own observer, whose vocabulary
+    contains no ``no move`` at all — so ``cycle script`` declares none rather than borrowing a
+    value it could never read.
+
+    Declaring none is honest here rather than a hole: the one shape that means nothing ran
+    EXCLUDES the sample before it is pooled, so among the samples this feature is pooled over
+    there is no reading that means nothing was seen."""
+    assert eval_cohort.CYCLE_SCRIPT.absent is None
+
+    ran = [
+        _observed_cycle(index=0, before={}, after={"price": "84 zorkmids"}),
+        _observed_cycle(index=1, before={"price": "84"}, after={"price": "84"}),
+        _observed_cycle(index=2, before={"price": "84"}, after={"price": "91"}, sent=["it moved"]),
+        _observed_cycle(index=3, before={"p": "84"}, after={"p": "84"}, sent=["still 84"]),
+    ]
+    shapes = {_cycle_shape(cycle) for cycle in ran}
+    assert len(shapes) == 4, f"four cycles, four shapes: {sorted(shapes)}"
+    assert eval_cohort.TRANSITIONS.absent not in shapes, (
+        f"this observer cannot produce the chat walk's absent reading: {sorted(shapes)}"
+    )
+
+    # The one shape that DOES mean nothing ran, and the gate that keeps it out of the pool.
+    dead = CycleObservation(
+        index=0, before={}, after={}, sent=[], calls=[], served=[], outcome=None, reason=None
+    )
+    assert _cycle_shape(dead) == CYCLE_DEAD
+    db = _make_db(tmp_path, "cycle-script")
+    _log_prompt(db)
+    assert _cycles_exclusion(db, cycle_script(ran)) is None, "a cohort of real cycles pools"
+    assert _cycles_exclusion(db, cycle_script([*ran, dead])) == NO_CYCLE
+
+
+def _observed_cycle(
+    *, index: int, before: dict[str, str], after: dict[str, str], sent: list[str] | None = None
+) -> CycleObservation:
+    """One cycle that RAN — it made a call and closed with a run record, which is what makes
+    its shape one of the four a pooled collector sample can carry."""
+    return CycleObservation(
+        index=index,
+        before=before,
+        after=after,
+        sent=sent or [],
+        calls=[CycleCall(tool="browse", arguments={"queries": ["https://probe.example/page"]})],
+        served=["## browse: https://probe.example/page"],
+        outcome=RunOutcome.WORKED.value,
+        reason=None,
+    )
+
+
+def test_a_structured_fields_unset_is_declared_only_where_its_observer_omits_it() -> None:
+    """``unset`` means the field was not in the draw's output AT ALL, so it is a reading only
+    an observer that OMITS the field on some outcomes can produce.
+
+    The binder is that observer: a parameter it reports MISSING gets no value field, which is
+    what the binder case's bound-value axis declares ``absent=FIELD_UNSET`` on.  Every other
+    measured field is emitted on every outcome its own builder has, so ``unset`` is
+    unreachable for it and declaring none is the truth — the pooler still catches such a field
+    coming back BLANK, which is the reading every feature shares."""
+    supplied, unsupplied = _MISSING_KEYWORD.expectations
+    shortfall = eval_cohort.SampleObservation(
+        name="s1",
+        phrasing="the ask",
+        output=_binding_output(
+            MissingParameters(
+                names=(unsupplied.parameter,), values={supplied.parameter: supplied.anchor}
+            )
+        ),
+    )
+    assert shortfall.field(bound_value_field(unsupplied.parameter)) == eval_cohort.FIELD_UNSET
+    assert shortfall.field(bound_value_field(supplied.parameter)) == supplied.anchor
+
+    by_observer = _observer_outcomes()
+    for name, fields in _ALWAYS_EMITTED.items():
+        for outputs in by_observer[name]:
+            emitted = {field.name for field in outputs}
+            assert set(fields) <= emitted, f"{name} omits {sorted(set(fields) - emitted)}"
+
+
+# The measured fields whose observer emits them on EVERY outcome it has — so ``unset`` cannot
+# occur for them and ``output_field`` declares no absent reading.  The framer's per-position
+# fields are here because an ACCEPTED signature always carries at least one parameter (the
+# ``_mints_a_usable_signature`` floor), and a draw that mints none fails whole and excludes
+# the sample rather than pooling a position-less one.
+_ALWAYS_EMITTED = {
+    "binder": (BIND_OUTCOME, BIND_MISSING),
+    "classifier": (CLASSIFY_OUTCOME, CLASSIFY_STATE, CLASSIFY_SKILL),
+    "extractor": (EXTRACT_OUTCOME, EXTRACT_VALUE, EXTRACT_REASON),
+    "framer": (
+        FRAME_NAME,
+        FRAME_DESCRIPTION,
+        FRAME_PARAMETERS,
+        frame_parameter_name(1),
+        frame_parameter_says(1),
+    ),
+    "labeller": (label_name_field(OFFERED_SPOTS[0]), label_says_field(OFFERED_SPOTS[0])),
+}
+
+
+def _observer_outcomes() -> dict[str, list[list[eval_cohort.OutputField]]]:
+    """Each observer's output on every outcome its own draw can come back with — a bound
+    binding and a shortfall, a decided classification, both extraction readings, a one- and a
+    two-parameter signature, and a labelling that answered every spot beside one that answered
+    none."""
+    framing = {"name": "watch_price", "description": "watch a page's price"}
+    one = _drawn(name="url", description="the page to watch", value="https://probe.example/p")
+    two = _drawn(name="keyword", description="what to look for", value="price")
+    labelled = SkillLabels(
+        labels={
+            spot: LeafLabel(name=f"{spot}_value", description="what belongs there")
+            for spot in OFFERED_SPOTS
+        }
+    )
+    return {
+        "binder": [
+            _binding_output(BoundValues(values={"url": "https://probe.example/p"})),
+            _binding_output(MissingParameters(names=("keyword",), values={})),
+        ],
+        "classifier": [
+            _classification_output(
+                StateDecision(outcome=StateDrawOutcome.DECIDED, state=ConversationState.IDLE)
+            ),
+            _classification_output(
+                StateDecision(
+                    outcome=StateDrawOutcome.DECIDED,
+                    state=ConversationState.APPLY,
+                    skill="watch_price",
+                )
+            ),
+        ],
+        "extractor": [
+            _extraction_output(
+                MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value="84 zorkmids")
+            ),
+            _extraction_output(
+                MicroContextResult(
+                    outcome=MicroExtractOutcome.NOT_PRESENT, reason="no price is listed."
+                )
+            ),
+        ],
+        "framer": [
+            _framing_output(SkillSignature(**framing, parameters=(one,))),
+            _framing_output(SkillSignature(**framing, parameters=(one, two))),
+        ],
+        "labeller": [
+            _labelling_output(labelled, OFFERED_SPOTS),
+            _labelling_output(SkillLabels(labels={}), OFFERED_SPOTS),
+        ],
+    }
 
 
 # ── The microcontext arms: five wordings of ONE ask, over constant facts (#2006) ──

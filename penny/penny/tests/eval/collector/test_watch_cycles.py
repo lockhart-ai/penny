@@ -81,10 +81,10 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
+    CYCLE_SCRIPT,
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     StoredEntry,
@@ -705,7 +705,7 @@ async def test_the_watch_writes_the_first_reading(
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
 
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)
 
 
 # ── unchanged reading: the collection already holds what the page says ───────
@@ -751,7 +751,7 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
     # unasked; what it catches is a quiet cycle that wrote something the page never said.
     cohort.assert_every_stored_entry_traces_to_the_world()
 
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
 
 
 # ── moved reading: the collection holds the old price, the page shows a new one ──
@@ -791,4 +791,4 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
 
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)

@@ -6362,8 +6362,9 @@ def _binding_output(binding: SkillBinding) -> list[eval_cohort.OutputField]:
     A parameter the draw reported MISSING gets no field at all, deliberately.  An empty string
     would be a value every sample agreed on, which scores 0.000 — the same number a cohort in
     perfect agreement scores and the opposite finding; an absent field reads as
-    :data:`~penny.tests.eval.utils.cohort.FIELD_UNSET`, which is the reading
-    :func:`~penny.tests.eval.utils.cohort.output_field` declares as blind."""
+    :data:`~penny.tests.eval.utils.cohort.FIELD_UNSET`.  This omission is the ONLY thing that
+    makes that reading occur, so it is what the binder case's bound-value axis declares
+    ``absent=FIELD_UNSET`` on — and the two are held together by a test (#2061)."""
     missing = binding.names if isinstance(binding, MissingParameters) else ()
     return [
         eval_cohort.OutputField(name=BIND_OUTCOME, value=_binding_outcome(binding).value),

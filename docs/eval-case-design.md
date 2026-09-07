@@ -435,7 +435,7 @@ site. It decides how the feature is *read*, not whether it is measured:
 
 | class | means | features | what it makes a divergence |
 |---|---|---|---|
-| **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions | a finding about **that sample** — worth looking at on its own |
+| **consequential** (the default) | a divergence implies a different end state | tool sequence, routine shape, entries stored, transitions, cycle script | a finding about **that sample** — worth looking at on its own |
 | **cosmetic** | a divergence is a different word for the same outcome | routine name, reply text | a finding about the **system** — measured and reported, never a fact about one sample |
 
 A feature not in that table is classified by the question, not by the list: **does a divergence here
@@ -473,6 +473,18 @@ scores and the opposite finding. So a feature declares the reading that means it
 (`Feature.absent`), the pooler marks the case **blind**, and the report renders it red with no
 proposed ceiling. A variance feature that cannot see an outlier is worse than an absent one:
 the table prints a number either way, and only one of them is a measurement.
+
+**The declared value is a claim about the observer, and the observer has to be able to produce
+it.** A feature declaring a reading no observation on its path yields leaves the guard inert
+exactly where this section reads as armed: it can never fire, so a cohort that really did read
+nothing pools to `0.000` and renders as agreement — the trap, inside the machinery meant to
+close it. So each feature answers for its own path, and the answer is sometimes *there is no
+such reading*: every collector cycle that ran has a shape, and the one shape meaning nothing ran
+excludes the sample before pooling, so `cycle script` declares none. Declaring none is not
+declaring nothing — the pooler still marks a feature **blind** when every sample came back
+**blank**, which is the one "nothing" every feature shares whatever it calls its own. What is
+forbidden is inventing a reachable sentinel to make the guard fire; each declaration is pinned
+against its real observer by a deterministic test.
 
 The same rule covers a half-measure: a reply spread whose cosine half could be computed on no
 pair reports `0.000`, which in that table reads as *every pair maximally dissimilar* — the
