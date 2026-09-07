@@ -21,6 +21,39 @@ Branch protection is enabled on `main`. All changes must go through pull request
   - This generates a GitHub App installation token for authenticated `gh` CLI access
   - Agent containers already have `GH_TOKEN` set by the orchestrator — just use `gh` directly
 - The user reviews and approves the PR (code-owner review); the **merge queue** does the merging — flag the PR with `gh pr merge <n> --auto` ("merge when ready"; no strategy flag — the queue sets it and rejects `--squash`) so it enqueues itself once approved and green, runs the `merge_group` checks against latest `main`, and merges with no manual step. A force-push clears the flag — re-run it after every rebase push
+- **PR titles are `type(scope): title`.** The merge queue squashes with the PR title, so the title *is* the git log line — prefix it so the log stays greppable by kind and surface.
+
+  | type | when |
+  |---|---|
+  | `feat` | new behaviour or capability |
+  | `fix` | wrong behaviour made right |
+  | `test` | eval cases and fixtures, nothing runtime changes |
+  | `refactor` | same behaviour, different shape |
+  | `chore` | build, deps, cleanup, retirements |
+  | `docs` | docs only |
+
+  | scope | surface |
+  |---|---|
+  | `penny` | the agent runtime — prompts, machine, tools, stores, plugins |
+  | `eval` | the cases: what Penny is expected to do, stated as cohorts, worlds, fixtures |
+  | `harness` | the instrument: eval drivers/conftest, cohort, report, assemble, artifacts, checkpoint, the Makefile eval recipes, `docs/eval-case-design.md` |
+  | `client` | penny-client |
+  | `browser` | the extension |
+  | `ci` | workflows, the gate, the Makefile outside eval |
+
+  **Two surfaces? Scope by what the ticket is for.** A port that needed a harness seam is still `test(eval)`; a harness fix that re-runs a case to prove itself is still `fix(harness)`.
+
+  **The title names the work** — verb, component, mechanism — in under about 15 words. `Closes #N` stays in the body, never the title.
+
+  **Test PRs are named after the test group they implement, consistently** — not as free sentences: `test(eval): port <group>[ tranche N][ (<subset>)]`, where `<group>` is the group's name on the epic's map (`transitions`, `chat idle`, `collector recovery`, `state classifier`, `skill framer`, `skill binder`, `skill namer`, `browse extractor`). A correction to existing cases is `fix(eval): <group> <what changed>`.
+
+  ```
+  fix(harness): resolve a bare RUN on eval-report by the invoking tree's HEAD, not recency
+  fix(harness): read a chat sample's tool sequence off the prompt log, not a name list
+  test(eval): port state classifier tranche B (decisions inside covered edges)
+  refactor(client): memory and collector view
+  feat(penny): pass each step's thinking back between tool steps
+  ```
 
 ## Working Directory Discipline
 
