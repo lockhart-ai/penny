@@ -378,7 +378,7 @@ def _wrote_into(collection: str) -> _ClaimFn:
 
     Read off the run stamp rather than off a count, so a seeded entry can never answer it: what
     is being claimed is that this turn wrote there, not that something is there.  The world's
-    own stores are laid down carrying NO run id at all, so every one of them reads as not this
+    own stores are laid down citing a SEEDED run (#2129), so every one of them reads as not this
     run's work and the distinction holds by construction."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
