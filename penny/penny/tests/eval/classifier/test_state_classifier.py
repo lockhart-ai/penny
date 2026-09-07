@@ -22,44 +22,20 @@ native customer.  Snapshots are built PER SAMPLE by the production
 the empty-registry and populated-registry cases is exactly what varies in
 production: whether the registry holds skills.
 
-What the pooled cases below hold, until a ported case replaces each:
-
-**Two whole out-edges no chat transition case covers.**  elicit → elicit — a question
-back leaves the machine parked, because the teach question has not been answered
-yet (``test_parked_elicit_still_clarifying``); and request → elicit — the named
-skill was the wrong one but the task is still wanted, so the routine has to be
-taught (``test_parked_details_wrong_skill_elicits``).  Both are live in the
-runtime's ``OUT_EDGES`` table and reachable only from the parked state.
-
-**Boundary directions of edges the canonical suite covers plainly.**  The
-PASSING-MENTION hold, cold and again with candidates dangling: ordinary
-conversation that mentions a watchable thing — recurrence words describing the
-USER's own habit, topic twins of real asks — must not be chased into a teach
-loop, and must not be chased into a false apply once the registry has something
-to offer.  The UNCOVERED and CROSS-DOMAIN asks under a POPULATED registry: the
-false-apply guard, which every canonical idle → elicit world misses by
-construction because each asserts an EMPTY registry.  The ADJUSTMENT boundary,
-both directions: the skill-gated doors are about STARTING a task (#1927), so an
-ask that changes how something already set up behaves — turning one running job's
-notifications on, or off — holds idle while a watch-shaped routine sits in Known
-skills looking like it covers the subject.  Those two cases are the only ones here
-whose world stands a JOB up, and both directions of the guard are read off the same
-`## Jobs already running` section: the notify pair's subjects ARE listed there, while
-the two elicit cases seed none — so their section says `(none)`, and elicit is still
-drawn for a genuine setup ask.  A section that over-claimed would show up there, as an
-uncovered ask reading like a reference to something already running.  The MIXED message that
-carries chat and a covered ask together, where the routine half wins.  Mid-
-teaching STEPS arriving with watch-adjacent candidates rendered, so existing
-skills cannot demote teaching something new.  And the post-failure LEARN park,
-where a correction that carries instructions stays in learn while an engaged
-question that carries none falls to idle — learn never returns to elicit
-(code-owner ruling: elicit exists to GET instructions, and they have been given).
-
 A PORTED case does not sweep a pool: it takes ONE decision and says it five ways —
 five wordings of one ask, one world, one set of facts, pooled into a cohort of fifteen
 and claimed against ``docs/eval-case-design.md``.  A pool and five wordings are not the
 same mechanism: a pool is ten scenarios standing in for one edge's coverage, and
 averaging their rates reports ten behaviours as one number.
+
+QUARANTINE, AS THIS FILE READS IT (#2004: *"marked out of the gate, so the surviving set
+is small by construction"*).  A pooled case whose behaviour a ported case now carries is
+**left exactly where it is and taken out of the gate** — ``min_pass_rate=None``, so it
+still runs and still reports and can no longer fail a run.  Nothing is deleted: each pool
+probes a named temptation and its docstring is the record of which one, which is what the
+next porter reads instead of reinventing the reason it existed.  Every pooled case in this
+file is now quarantined, the twenty ported cases being the file's measurement; a pool that
+was already report-only needed no change to get there.
 
 Every ported case reports an EMPTY ``STORE`` and an EMPTY ``PROVENANCE``, and each says
 why in its own docstring — a single call moves no machine and writes to no store, and the
@@ -178,7 +154,7 @@ async def test_idle_holds_on_chat_and_passing_mentions(
         state=ConversationState.IDLE,
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -294,7 +270,7 @@ async def test_idle_still_elicits_when_no_candidate_covers(
         pool=_UNCOVERED_POOL,
         expected=ConversationState.ELICIT,
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -311,7 +287,7 @@ async def test_same_verb_different_domain_still_elicits(
         pool=_CROSS_DOMAIN_POOL,
         expected=ConversationState.ELICIT,
         seed_skills=_CROSS_DOMAIN_SKILLS,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -327,7 +303,7 @@ async def test_idle_holds_on_chat_with_candidates_dangling(
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -350,6 +326,11 @@ async def test_idle_holds_on_chat_with_candidates_dangling(
 # The case's id and its five arms, named at module level so the deterministic probe in
 # ``make check`` can hold them against the world they claim — that apply and request really
 # are on offer — before any GPU time is spent on a hold with no door to decline.
+# SURVIVOR, AND ON WHAT BASIS.  No per-variant rate exists — a pool reports one number over ten
+# scenarios — so the basis is DOMINANCE: the world that can produce the failure the behaviour is
+# about.  Only four of the pool's ten touch this boundary at all, and this is the one whose
+# subject a seeded routine plainly covers, so it is the entry a false apply is reachable from.
+# A greeting or a general-knowledge question holds idle for reasons that are not this one.
 HOLD_CASE_ID = "classifier-holds-idle-on-a-passing-mention"
 
 _PASSING_MENTION = "i've been checking the auction listings every day lately"
@@ -441,7 +422,7 @@ async def test_mixed_chat_plus_covered_ask_applies(
         expected=ConversationState.APPLY,
         expected_skill=_PRICE_SKILL,
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -596,7 +577,7 @@ async def test_switching_a_running_jobs_notifications_on_holds_idle(
         expected=ConversationState.IDLE,
         seed=_standing_jobs(_JOB_PAGES, notify=False),
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -618,7 +599,7 @@ async def test_switching_a_running_jobs_notifications_off_holds_idle(
         expected=ConversationState.IDLE,
         seed=_standing_jobs(_JOB_PAGES, notify=True),
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -655,7 +636,7 @@ async def test_parked_details_wrong_skill_elicits(classifier_eval: ClassifierEva
         penny_last_turn=_REQUEST_QUESTION,
         task_anchor=_KAYAK_ASK,
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -719,7 +700,7 @@ async def test_parked_elicit_steps_arrive_with_skills_populated(
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
         seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -734,7 +715,7 @@ async def test_parked_elicit_still_clarifying(classifier_eval: ClassifierEval) -
         expected=ConversationState.ELICIT,
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -776,7 +757,7 @@ async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEv
         expected=ConversationState.LEARN,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -808,7 +789,7 @@ async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEv
         expected=ConversationState.IDLE,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=0.8,
+        min_pass_rate=None,  # quarantined — a ported case carries this behaviour now
         family=_FAMILY,
     )
 
@@ -1346,6 +1327,10 @@ async def test_a_called_off_parked_request_falls_to_idle(
 # probe holds it as an ALTERNATION and never as a literal — pinning "again" would have let
 # the fifth arm drift out of the case while the check stayed green.
 
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  Of the pool's ten this
+# is the entry carrying a recurrence the user is DESCRIBING rather than asking for, which is the
+# reading that turns ordinary conversation into a job to be set up or taught; an entry with
+# nothing repeating in it cannot produce that failure.
 COLD_HOLD_CASE_ID = "classifier-holds-idle-on-chat-with-no-routines"
 
 _COLD_HOLD_ASK = "the ferry was packed again this morning, could barely get a seat"
@@ -1433,6 +1418,11 @@ _PORTED_JOBS = [
     (_CAFE_SKILL, "pinehollow.example/bakery"),
 ]
 
+# SURVIVOR, AND ON WHAT BASIS — for both directions.  Dominance, no per-variant rate existing:
+# the pooled pair names ten jobs, and the camera kit price watch is the subject a seeded routine
+# plainly covers.  A subject nothing covers holds idle by the no-coverage route and would score
+# green while proving nothing, so coverage is what leaves the adjustment boundary as the only
+# thing holding these samples.
 NOTIFY_ON_CASE_ID = "classifier-holds-idle-when-a-running-jobs-notifications-are-switched-on"
 NOTIFY_OFF_CASE_ID = "classifier-holds-idle-when-a-running-jobs-notifications-are-switched-off"
 
@@ -1716,6 +1706,10 @@ async def test_a_fully_supplied_cold_ask_names_its_routine(
 
 _GRINDER_PAGE = "beanhouse.example/grinders/ek43"
 
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  Every pool entry pairs
+# chat with a covered ask; this one's chat half is a plain greeting rather than a reply to
+# something Penny said, so nothing in it can be read as continuing an existing round and the
+# only question left is whether the chat half suppresses the routine half.
 MIXED_MESSAGE_CASE_ID = "classifier-applies-when-chat-carries-a-covered-ask"
 
 _MIXED_MESSAGE_ASK = f"morning! oh and can you watch the price on {_GRINDER_PAGE}?"
@@ -1793,6 +1787,10 @@ async def test_chat_carrying_a_covered_ask_draws_apply(
 # state, so the union is the same either way, and a round is parked in elicit BECAUSE
 # nothing covered the ask.
 
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  The pool mixes
+# questions back, hedges and partials; this entry asks what Penny would NEED, which is the
+# nearest a question gets to supplying requirements — so it is the entry a draw can most
+# plausibly misread as the teach question having been answered.
 STILL_CLARIFYING_CASE_ID = "classifier-stays-parked-when-the-teach-question-is-unanswered"
 
 _STILL_CLARIFYING_ASK = "what would you need from me to do that?"
@@ -1884,6 +1882,11 @@ async def test_an_unanswered_teach_question_stays_parked(
 # without it would put the rejection in front of a draw that was never shown the thing being
 # rejected, and any number it produced would describe a conversation production cannot have.
 
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  This edge's condition
+# has two halves — the routine was wrong, and the task is still wanted — and the pool's entries
+# vary in whether they state the second.  The survivor states both, because an arm carrying only
+# the rejection is the break-out to idle: a world that leaves the second half unsaid cannot tell
+# the two doors apart, so it cannot produce the failure this case is about.
 WRONG_ROUTINE_CASE_ID = "classifier-elicits-when-the-named-routine-was-wrong"
 
 _WRONG_ROUTINE_ASK = "no, that's not what i meant — but i do still need this doing"
@@ -1934,6 +1937,400 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     cohort.claim(
         "state: the draw returned the round to elicit",
         _drew(ConversationState.ELICIT),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── The five survivors with a legacy ancestor (#2055 tranche C) ────────────────
+#
+# Tranche A took the six edges nothing had ever drawn in isolation and tranche B the eight
+# decisions inside covered edges.  These five each have a POOLED ancestor in this file, and
+# porting one is not copying it: the pool's ten scenarios stand in for an edge's coverage,
+# so the port keeps the ancestor's TEMPTATION — named in its docstring, and repeated in each
+# ported case's — while replacing ten averaged behaviours with one said five ways.
+#
+# THE THREE CLAIM CATEGORIES ARE THE TRANCHE-A SECTION'S, unchanged and not restated: STORE
+# is empty because a micro-context is one call that writes to no store, and PROVENANCE is
+# empty because both fields the draw returns are closed sets the harness supplied.  What is
+# claimed is WHICH member the draw picked (``_drew``).  None of these five draws a
+# skill-gated state, so none of them makes a ``_bound`` claim.
+
+
+# ── idle → elicit: an ongoing job no seeded routine covers ────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording asks for the SAME ongoing job — a weekly count of
+# gym visits — and not one of them says HOW.  Both halves are the edge's own condition, so
+# an arm carrying steps would be the idle → learn behaviour wearing this case's id, and an
+# arm asking for something done once would be idle's.
+#
+# THE TEMPTATION IS THE FALSE APPLY, which is what the registry is for: two routines stand
+# in Known skills, so apply and request are really on offer, and the ask is plainly outside
+# both — a gym tally is neither a listing's price nor a cafe's menu.  Measured against an
+# empty registry this case would prove nothing, since ``presented_edges`` withholds both
+# gated doors there and an elicit drawn with nothing to decline is elicit by default.  That
+# is the cold-registry case (``classifier-elicits-on-a-cold-registry``), and this one is its
+# populated sibling: plausible candidates dangling in context are not coverage.
+
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing — but the pool's ten are
+# equally outside both seeded routines, so coverage does not discriminate among them and the
+# door that can actually be got wrong is the OTHER one: whether the ask reads as standing or as
+# something to do once, which idle's own definition owns.  The survivor is therefore the entry
+# whose standing component is plainest, and every arm carries a standing marker.
+UNCOVERED_ASK_CASE_ID = "classifier-elicits-when-no-routine-covers-the-ask"
+
+_UNCOVERED_ASK = "keep track of how many times i go to the gym each week"
+_UNCOVERED_ASK_PHRASINGS = (
+    "keep a weekly count of my gym visits going",
+    "i'd like a weekly count of my gym visits kept",
+    "keep a running count of my gym trips week by week",
+    "keep a running tally of my gym trips each week",
+)
+UNCOVERED_ASK_ARMS = (_UNCOVERED_ASK, *_UNCOVERED_ASK_PHRASINGS)
+
+_UNCOVERED_ASK_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when routines are "
+    "on offer and none of them covers what was asked for, Penny elicits — she asks to be "
+    "taught rather than applying a routine that does not cover it."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_uncovered_ask_still_elicits(classifier_eval: ClassifierEval, model: str) -> None:
+    """The false-apply guard: one ongoing job neither seeded routine covers, said five ways,
+    against a registry that really does put apply and request on offer.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    elicit binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=UNCOVERED_ASK_CASE_ID,
+        behaviour=_UNCOVERED_ASK_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_UNCOVERED_ASK,
+        also_asked=_UNCOVERED_ASK_PHRASINGS,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw opened a teach round in elicit",
+        _drew(ConversationState.ELICIT),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── idle → elicit: the same verb shape, a different world ─────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording asks for the SAME ongoing job — new restaurants
+# opening downtown, kept as a list — and none says how.
+#
+# THE TEMPTATION IS SHARPER THAN THE CASE ABOVE'S, and the registry is what makes it so: the
+# seeded discovery routine and the ask share their whole VERB SHAPE — find new X and keep
+# them — in starkly different domains.  A job-listings routine does not cover restaurants,
+# and the code-owner ruling this world records is why the domains are stark rather than
+# adjacent: a watch-shaped ask against a watch-shaped routine is legitimately COVERED, so a
+# near-miss pool measured a non-distinction.
+
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  Restaurants opening
+# downtown is the pool entry whose verb shape the seeded discovery routine matches most exactly
+# — find new X and keep them — so it is the entry a false apply is most reachable from, which is
+# the failure this case exists for.  Its standing component is carried by every arm, for the
+# reason the case above states.
+UNCOVERED_DOMAIN_CASE_ID = "classifier-elicits-when-a-routine-shares-the-verb-but-not-the-domain"
+
+_UNCOVERED_DOMAIN_ASK = "keep a list of new restaurants opening downtown"
+_UNCOVERED_DOMAIN_PHRASINGS = (
+    "keep a list going of new restaurants opening downtown",
+    "can you keep track of new restaurants opening downtown?",
+    "keep collecting the new restaurants that open downtown for me",
+    "keep a running list of new downtown restaurant openings",
+)
+UNCOVERED_DOMAIN_ARMS = (_UNCOVERED_DOMAIN_ASK, *_UNCOVERED_DOMAIN_PHRASINGS)
+
+_UNCOVERED_DOMAIN_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when a routine she "
+    "knows matches the ask's verb shape in a different world, Penny still elicits — the same "
+    "verb in another domain is not coverage."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_same_verb_different_domain_ask_still_elicits(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The stark non-coverage contract: one discovery ask said five ways, against a
+    discovery routine in another domain.
+
+    A different decision from the uncovered ask above rather than a second wording of it:
+    that case's routines share nothing with the ask at all, while this one's shares
+    everything except the world it is about — which is the reading a draw can plausibly get
+    wrong.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    elicit binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=UNCOVERED_DOMAIN_CASE_ID,
+        behaviour=_UNCOVERED_DOMAIN_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_UNCOVERED_DOMAIN_ASK,
+        also_asked=_UNCOVERED_DOMAIN_PHRASINGS,
+        seed_skills=_CROSS_DOMAIN_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw opened a teach round in elicit",
+        _drew(ConversationState.ELICIT),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── elicit → learn: the teach question is answered ────────────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording gives the SAME instructions — the same page, the
+# same thing to remember off it — in answer to the same teach question.  An arm asking
+# something back would be the parked self-edge, and an arm dropping the round would be the
+# break-out to idle.
+#
+# THE TEMPTATION IS THAT EXISTING ROUTINES DEMOTE THE TEACHING, which is why the registry is
+# seeded: the Known skills section renders two watch-adjacent candidates while the user is
+# mid-teaching something NEW, and neither covers a ferry timetable.  Teaching must not read
+# as still-clarifying, nor as a bail, because something that looks close is on the page.
+
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  The pool's ten answers
+# vary in how much of the routine they spell out; this one names the page, the read and the thing
+# to remember — the full shape of an answer — so a draw that still reads it as unanswered has
+# failed on the boundary rather than on a genuinely partial reply.
+STEPS_ANSWERED_CASE_ID = "classifier-draws-learn-when-the-teach-question-is-answered"
+
+_STEPS_ANSWERED_ASK = f"sure — read {_TEACH_PAGE} and remember the first sailing"
+_STEPS_ANSWERED_PHRASINGS = (
+    f"here's what to do: open {_TEACH_PAGE} and save the first sailing",
+    f"it's easy — read {_TEACH_PAGE} and keep the first sailing",
+    f"go to {_TEACH_PAGE} and write down the first sailing",
+    f"you'd read {_TEACH_PAGE} and note the first sailing off it",
+)
+STEPS_ANSWERED_ARMS = (_STEPS_ANSWERED_ASK, *_STEPS_ANSWERED_PHRASINGS)
+
+_STEPS_ANSWERED_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the reply to "
+    "the teach question carries the instructions it asked for, Penny takes the round into "
+    "learn — routines she already has do not demote teaching a new one."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_answered_teach_question_draws_learn(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The elicit → learn draw under the populated-registry stress: one set of instructions
+    said five ways, with watch-adjacent candidates rendered beside them.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    learn binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=STEPS_ANSWERED_CASE_ID,
+        behaviour=_STEPS_ANSWERED_BEHAVIOUR,
+        model=model,
+        state=ConversationState.ELICIT,
+        ask=_STEPS_ANSWERED_ASK,
+        also_asked=_STEPS_ANSWERED_PHRASINGS,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw took the round into learn",
+        _drew(ConversationState.LEARN),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── Parked learn after a failed round: the two directions, one world ──────────
+#
+# The demo round failed — the honest failure report is the assistant's last turn, and it says
+# the page would not load and nothing was saved — and the machine holds in learn.  What the
+# reply carries decides whether it stays there: a correction that is actionable NOW, or a
+# question that carries no instructions at all.
+#
+# WHAT EVERY ARM ON BOTH SIDES MAY SAY IS BOUNDED BY THAT REPORT.  A round that saved nothing
+# cannot be told it saved the wrong value, so the correction is one the failure leaves open —
+# the page has moved, here is the live one — and the questions are about the failure itself.
+# A world that could not have happened measures a reading of a contradiction rather than the
+# boundary the case names.
+#
+# THE TWO CASES SHARE ONE WORLD, deliberately.  They are the two directions of one boundary,
+# so the only thing allowed to differ between them is the reply; a world that moved as well
+# would make the delta between their rates uninterpretable.
+#
+# THAT WORLD SEEDS ROUTINES.  ``learn``'s out-edges carry a skill-gated state — apply, the
+# acceptance door — and ``presented_edges`` withholds it outright on an empty registry, so a
+# correction measured cold declines only idle and never faces the door it most resembles: a
+# "close! …" reading as acceptance.  Neither seeded routine covers a ferry timetable, so
+# apply is a door to decline rather than a defensible answer, and a round parked in learn
+# inside a real deployment is parked beside whatever else the registry holds.
+
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing, and bounded by the world
+# the pair shares: of the pool's corrections only some are open to a round that saved nothing, and
+# a replacement page is the one that carries new instruction content rather than a bare retry.
+# A bare "try it again" carries no instruction at all, which is the sibling case's condition, so
+# choosing it would have made the two directions measure the same reply.
+CORRECTION_CASE_ID = "classifier-stays-in-learn-on-a-correction"
+
+_LIVE_TIMETABLE_PAGE = "harborferries.example/timetable-v2"
+
+_CORRECTION_ASK = f"that link's dead — use {_LIVE_TIMETABLE_PAGE} instead"
+_CORRECTION_PHRASINGS = (
+    f"the old link is gone; read {_LIVE_TIMETABLE_PAGE}",
+    f"use {_LIVE_TIMETABLE_PAGE}, the page you tried has moved",
+    f"the page moved — {_LIVE_TIMETABLE_PAGE} is where it lives now",
+    f"{_LIVE_TIMETABLE_PAGE} is the live one, go there instead",
+)
+CORRECTION_ARMS = (_CORRECTION_ASK, *_CORRECTION_PHRASINGS)
+
+_CORRECTION_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the reply to a "
+    "failed demonstration corrects it and the correction is actionable now, Penny holds the "
+    "round in learn."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_correction_holds_the_round_in_learn(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The learn → learn self-edge: one correction said five ways, against the failure report
+    it answers — the correction-loop invariant, that a failed round holds its state.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    learn binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=CORRECTION_CASE_ID,
+        behaviour=_CORRECTION_BEHAVIOUR,
+        model=model,
+        state=ConversationState.LEARN,
+        ask=_CORRECTION_ASK,
+        also_asked=_CORRECTION_PHRASINGS,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw held the round in learn",
+        _drew(ConversationState.LEARN),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── learn → idle: the same failure, answered with a question ──────────────────
+#
+# THE FACTS ARE CONSTANT: every wording asks the SAME two things about the same failure —
+# what went wrong, and which page was opened — and not one carries an instruction.  An arm
+# saying to try again, or naming a different page, would be the correction above.
+#
+# THE TEMPTATION IS ELICIT, and it is unreachable: the reply is engaged and on-task, so it
+# reads like a round still being negotiated — but ``learn`` has no edge back to elicit
+# (code-owner ruling: elicit exists to GET instructions, and they have been given), so the
+# only home for a reply carrying none is idle.  What the draw can wrongly do is hold in
+# learn, reading engagement as instruction.
+
+# SURVIVOR, AND ON WHAT BASIS.  Dominance, no per-variant rate existing.  The pool's questions
+# range from idle curiosity to close engagement; this one asks what went wrong AND which page was
+# opened, which is the most engaged, most on-task shape a question can have — so it is the entry
+# a draw can most plausibly mistake for an instruction and hold in learn.
+POST_FAILURE_QUESTION_CASE_ID = (
+    "classifier-falls-to-idle-when-a-post-failure-reply-carries-no-instructions"
+)
+
+_POST_FAILURE_QUESTION_ASK = "what went wrong exactly? which page did you open?"
+_POST_FAILURE_QUESTION_PHRASINGS = (
+    "what went wrong there — which page did you try?",
+    "which page did you open, and what went wrong?",
+    "so what went wrong? which page was it you opened?",
+    "tell me what went wrong — which page did you actually open?",
+)
+POST_FAILURE_QUESTION_ARMS = (
+    _POST_FAILURE_QUESTION_ASK,
+    *_POST_FAILURE_QUESTION_PHRASINGS,
+)
+
+_POST_FAILURE_QUESTION_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the reply to a "
+    "failed demonstration is an engaged question carrying no instructions, Penny falls to "
+    "idle — learn has no path back to elicit."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_post_failure_question_falls_to_idle(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The learn → idle draw: one post-failure question said five ways, over the same world
+    the correction case runs on.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    idle binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=POST_FAILURE_QUESTION_CASE_ID,
+        behaviour=_POST_FAILURE_QUESTION_BEHAVIOUR,
+        model=model,
+        state=ConversationState.LEARN,
+        ask=_POST_FAILURE_QUESTION_ASK,
+        also_asked=_POST_FAILURE_QUESTION_PHRASINGS,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw broke the round out to idle",
+        _drew(ConversationState.IDLE),
         SpecCategory.LANDED,
     )
 
