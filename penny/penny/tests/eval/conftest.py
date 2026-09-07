@@ -4952,7 +4952,13 @@ def _write_classifier_report(
     ``agent_names`` selects the customers' rows, rendered in one ledger-ordered
     stream (the classifier by default; the run-end labeller AND shape draw for the
     skill cases, #1770/#1803) — each 🧩 pair carries its own context label, so two
-    customers read as the two actors they are."""
+    customers read as the two actors they are.
+
+    The sample's system prompts are deposited for the case document the same way the
+    chat path deposits them (#2062), off the SAME rows the transcript renders — so every
+    prompt the document states belongs to an actor the reader can see acting, and a
+    microcontext failure carries the state the draw was given rather than sending the
+    reader to the sample database for it."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
@@ -4965,6 +4971,7 @@ def _write_classifier_report(
             placeholder=report.NO_TURNS_PLACEHOLDER,
         )
     else:
+        _record_case_prompts(case_id, sample_index, _system_prompts(rows))
         events = _classifier_events(phrasing, rows)
         checks = _classifier_check_views(result, len(events) - 1, baseline_from_env(), case_id)
         passed_checks, total = _scored_counts(result)
