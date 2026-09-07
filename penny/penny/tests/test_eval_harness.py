@@ -23,6 +23,7 @@ import logging
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -44,8 +45,10 @@ from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.database.models import MemoryRow, PromptLog, Skill
 from penny.database.skills import (
+    SkillDraft,
     SkillParameter,
     build_binding_content,
+    derive_collection_name,
     render_spoken_turns,
     slug_skill_name,
 )
@@ -124,8 +127,33 @@ from penny.tests.eval.chat.request.test_ask_is_one_value_short import (
     _does_not_re_ask_check,
 )
 from penny.tests.eval.classifier.test_state_classifier import (
+    _ACCEPTED_ROUND_SKILLS,
+    _BOARD_PAGE,
+    _FERRY_SKILL,
+    _GRINDER_PAGE,
+    _KAYAK_PAGE,
+    _NEAR_NEIGHBOUR_SKILLS,
+    _PARKED_ON_THE_PRICE_WATCH,
+    _PORTED_JOBS,
+    _PRICE_SKILL,
+    _TEACH_PAGE,
+    COLD_ELICIT_ARMS,
+    COLD_HOLD_ARMS,
+    COVERED_ASK_ARMS,
+    ELICIT_CALLED_OFF_ARMS,
+    MIXED_MESSAGE_ARMS,
+    NOTIFY_OFF_ARMS,
+    NOTIFY_ON_ARMS,
+    OFFER_ACCEPTED_ARMS,
     PASSING_MENTION_ARMS,
+    REQUEST_CALLED_OFF_ARMS,
+    REQUEST_SHORT_ARMS,
     SEEDED_SKILLS,
+    STILL_CLARIFYING_ARMS,
+    UNPROMPTED_TEACH_ARMS,
+    VALUE_ARRIVED_ARMS,
+    WRONG_ROUTINE_ARMS,
+    _standing_jobs,
 )
 from penny.tests.eval.collector.test_collector_enactment import (
     _STOP_REASON as _STOP,
@@ -3484,6 +3512,465 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
     every_value = {one.name: "something the user said" for one in case.parked.skill.parameters}
     with pytest.raises(ValueError, match="waiting on nothing"):
         _registry_shortfall(db, "a-case", declared.model_copy(update={"settled": every_value}))
+
+
+# ── The six tranche-A classifier cases (#2055) ────────────────────────────────
+#
+# One row per ported case, as a NamedTuple because the row carries eight facts and a
+# positional tuple of eight stops saying which is which.  A table rather than six
+# near-identical functions: these probes ask the same four questions of six worlds, and
+# the answers, not the questions, are what differ.
+
+
+class _TrancheA(NamedTuple):
+    """One ported tranche-A case, as the deterministic probes read it."""
+
+    name: str
+    arms: tuple[str, ...]
+    state: ConversationState
+    skills: list[SkillDraft]
+    expected: ConversationState
+    # The routine the case's second LANDED claim names — None on an ungated draw, which
+    # binds nothing and makes no such claim.
+    routine: str | None
+    # What the case declares its parked round is waiting on (#2084) — None on any state but
+    # request, the only state production carries a binding on.
+    parked: ParkedRound | None
+    # The case's constant facts, and what its arms must never slip in.
+    carries: tuple[str, ...]
+    withholds: tuple[str, ...]
+
+
+_TRANCHE_A: list[_TrancheA] = [
+    _TrancheA(
+        name="request-short",
+        arms=REQUEST_SHORT_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.REQUEST,
+        routine=_PRICE_SKILL,
+        parked=None,
+        carries=("camera kit listing",),
+        withholds=(".example", "http"),
+    ),
+    _TrancheA(
+        name="unprompted-teach",
+        arms=UNPROMPTED_TEACH_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.LEARN,
+        routine=None,
+        parked=None,
+        carries=(_TEACH_PAGE, "morning", "first sailing", "remember"),
+        withholds=(),
+    ),
+    _TrancheA(
+        name="elicit-called-off",
+        arms=ELICIT_CALLED_OFF_ARMS,
+        state=ConversationState.ELICIT,
+        skills=[],
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("ferry timetable",),
+        withholds=("?",),
+    ),
+    _TrancheA(
+        name="offer-accepted",
+        arms=OFFER_ACCEPTED_ARMS,
+        state=ConversationState.LEARN,
+        skills=_ACCEPTED_ROUND_SKILLS,
+        expected=ConversationState.APPLY,
+        routine=_FERRY_SKILL,
+        parked=None,
+        carries=(),
+        withholds=(".example", "http", "?"),
+    ),
+    _TrancheA(
+        name="value-arrived",
+        arms=VALUE_ARRIVED_ARMS,
+        state=ConversationState.REQUEST,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.APPLY,
+        routine=_PRICE_SKILL,
+        parked=_PARKED_ON_THE_PRICE_WATCH,
+        carries=(_KAYAK_PAGE,),
+        withholds=(),
+    ),
+    _TrancheA(
+        name="request-called-off",
+        arms=REQUEST_CALLED_OFF_ARMS,
+        state=ConversationState.REQUEST,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=_PARKED_ON_THE_PRICE_WATCH,
+        carries=(),
+        withholds=(_KAYAK_PAGE, ".example", "http"),
+    ),
+]
+
+
+def _seeded_tranche_a(case: _TrancheA, path) -> Database:
+    """The case's world, laid down the way the runner lays it down.
+
+    ``EVAL_SEED_AUTHOR`` rather than a probe-local author because ``_registry_shortfall``
+    reads the row back: a probe seeding under its own name would be reading a row the
+    sample never has."""
+    db = migrated_db(str(path))
+    for draft in case.skills:
+        db.skills.upsert(draft, author=EVAL_SEED_AUTHOR)
+    return db
+
+
+def test_every_tranche_a_arm_set_says_one_decision_five_ways() -> None:
+    """The tranche-A arms (#2055): five wordings of ONE decision, over constant facts.
+
+    Each case declares what every arm must CARRY and what no arm may carry, and both
+    directions are load-bearing.  The carried tokens are the case's constant facts — the
+    subject, the routine being taught, the page the round is waiting on — and a cohort whose
+    arms disagree about them reports the spread of two behaviours as the instability of one.
+    The withheld tokens keep the arms on the edge the case names: an address in the
+    request-short arms would be the idle → apply behaviour wearing this case's id, a
+    question back in the called-off elicit arms would be the parked self-edge, and the page
+    in the request-called-off arms would supply exactly what makes the OTHER door right.
+
+    Two cases carry NO shared token, and that is a statement rather than a gap: an
+    acceptance and a plain call-off hold their facts in the WORLD — the demonstration being
+    accepted, the round being dropped — which the snapshot's own fields carry and the words
+    do not.  What each of those two declares instead is what its arms must not slip in,
+    which is the half a wording can get wrong.
+    """
+    for case in _TRANCHE_A:
+        assert len(case.arms) == 5, f"{case.name}: five arms"
+        assert len(set(case.arms)) == 5, f"{case.name}: five wordings, or the arms are not arms"
+        assert case.carries or case.withholds, (
+            f"{case.name}: an arm set states its facts in one direction"
+        )
+        for arm in case.arms:
+            for token in case.carries:
+                assert token in arm, f"{case.name}: every arm carries {token!r}: {arm!r}"
+            for token in case.withholds:
+                assert token not in arm, f"{case.name}: no arm may carry {token!r}: {arm!r}"
+
+
+def test_every_tranche_a_world_offers_the_door_its_case_claims(tmp_path) -> None:
+    """Each tranche-A case's world really opens the door its claim names (#2055).
+
+    Asserted from the PRODUCTION snapshot builder, so what this calls offered is what the
+    draw will be offered.  ``presented_edges`` withholds every skill-gated state when the
+    registry holds no candidates, so a case claiming apply or request against an empty
+    registry would be claiming a state the draw could never return — green by construction
+    on the negative direction and unreachable on the positive one.
+    """
+    for index, case in enumerate(_TRANCHE_A):
+        db = _seeded_tranche_a(case, tmp_path / f"tranche-a-{index}.db")
+        offered = presented_edges(build_snapshot(db, state=case.state, message=case.arms[0]))
+        assert case.expected in offered, (
+            f"{case.name}: {case.expected.value} must be a door {case.state.value} opens"
+        )
+
+
+def test_every_gated_tranche_a_case_offers_the_routine_it_claims(tmp_path) -> None:
+    """A ``SKILL:`` claim names a routine the snapshot actually offers (#2055).
+
+    The draw's skill is membership-validated against the offered candidates and re-rolled
+    while it is not one, so a claim naming a routine the registry does not hold is
+    unanswerable by construction: no valid draw could ever satisfy it, and the case would
+    report 0/15 as a model failure. It also holds the OTHER half — that more than one
+    routine is on offer — because with a single candidate, naming the right one is not a
+    choice and the claim measures nothing.
+    """
+    gated = [case for case in _TRANCHE_A if case.routine is not None]
+    assert len(gated) == 3, "three tranche-A cases draw a skill-gated state"
+    for index, case in enumerate(gated):
+        db = _seeded_tranche_a(case, tmp_path / f"tranche-a-gated-{index}.db")
+        snapshot = build_snapshot(db, state=case.state, message=case.arms[0])
+        offered = [candidate.name for candidate in snapshot.skill_candidates]
+        assert case.routine in offered, f"{case.name}: {case.routine!r} must be offered to be named"
+        assert len(offered) > 1, f"{case.name}: naming one of one is not a choice — {offered}"
+
+
+def test_every_parked_tranche_a_case_is_shown_what_its_round_waits_on(tmp_path) -> None:
+    """A tranche-A case parked in request declares its binding, and the draw is shown it
+    (#2055 over #2084).
+
+    Production reaches request only through the binder, so a round parked there always
+    carries what it is waiting on and the draw always reads that section.  The parameter
+    that carries it is OPTIONAL on the runner — deliberately, so migrating the landed
+    ``request-elicit`` case stays its own ticket — which means a case omitting it is silently
+    measured against a leaner document than production builds.  Asserted through the
+    DRIVER's own snapshot step rather than a rebuild beside it, so dropping the argument
+    from a case fails here.
+
+    Both directions: every request-parked case declares one, and no case on any other state
+    does — a binding rendered where production renders none is the same defect mirrored.
+    """
+    parked = [case for case in _TRANCHE_A if case.state is ConversationState.REQUEST]
+    assert len(parked) == 2, "two tranche-A cases park the machine in request"
+    for case in _TRANCHE_A:
+        declared = case.parked is not None
+        assert declared == (case.state is ConversationState.REQUEST), (
+            f"{case.name}: a parked round belongs to request and to no other state"
+        )
+    for index, case in enumerate(parked):
+        db = _seeded_tranche_a(case, tmp_path / f"tranche-a-parked-{index}.db")
+        content = render_classifier_content(
+            _classifier_snapshot(
+                db,
+                case_id=case.name,
+                state=case.state,
+                message=case.arms[0],
+                parked_round=case.parked,
+            ),
+            case.arms[0],
+        )
+        assert _WAITING_ON_HEADER in content, (
+            f"{case.name}: a request-parked draw must be shown what the round waits on"
+        )
+        assert _PRICE_SKILL in _waiting_on_block(content), (
+            f"{case.name}: the section must name the routine the round is parked on"
+        )
+
+
+# ── The eight tranche-B classifier cases (#2055) ──────────────────────────────
+#
+# The same table and the same three questions as tranche A's, over the eight decisions that
+# sit INSIDE edges the file already covers.  Two differences.  The second probe asserts a
+# negative direction as well: three of these cases seed NO routine, and for the two parked in
+# idle that withholding IS the case, so neither skill-gated door may be on offer.  And a row
+# can hold a fact as an ALTERNATION rather than as a literal — each group is a set of markers
+# of which every arm must carry at least one.
+#
+# The alternation exists because some facts a case holds constant have no single word.  The
+# cold hold's fact is that the thing being described RECURS, which four arms say with "again"
+# and one with "another"; the wrong-routine case's two facts are that the routine was
+# rejected and that the task is still wanted, and the whole point of its arms is that neither
+# is said the same way twice.  Pinning any one wording as a literal there would do the damage
+# the case exists to avoid: it would hold the arms to a phrase the shipped transition
+# condition already spells, so a draw that had learned the phrase would score exactly like
+# one that read the situation.
+_TrancheB = tuple[
+    str,
+    tuple[str, ...],
+    ConversationState,
+    list[SkillDraft],
+    ConversationState,
+    str | None,
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[tuple[str, ...], ...],
+]
+_TRANCHE_B: list[_TrancheB] = [
+    (
+        "cold-hold",
+        COLD_HOLD_ARMS,
+        ConversationState.IDLE,
+        [],
+        ConversationState.IDLE,
+        None,
+        ("ferry", "morning"),
+        ("watch", "every", "teach", ".example"),
+        (("again", "another"),),
+    ),
+    (
+        "notify-on",
+        NOTIFY_ON_ARMS,
+        ConversationState.IDLE,
+        SEEDED_SKILLS,
+        ConversationState.IDLE,
+        None,
+        ("notifications", "camera kit price watch"),
+        ("off", "disable", "set up", ".example"),
+        (),
+    ),
+    (
+        "notify-off",
+        NOTIFY_OFF_ARMS,
+        ConversationState.IDLE,
+        SEEDED_SKILLS,
+        ConversationState.IDLE,
+        None,
+        ("notifications", "camera kit price watch"),
+        ("notifications on", "enable", "set up", ".example"),
+        (),
+    ),
+    (
+        "cold-elicit",
+        COLD_ELICIT_ARMS,
+        ConversationState.IDLE,
+        [],
+        ConversationState.ELICIT,
+        None,
+        ("ferry timetable",),
+        ("read", "remember", "save", ".example"),
+        (),
+    ),
+    (
+        "covered-ask",
+        COVERED_ASK_ARMS,
+        ConversationState.IDLE,
+        _NEAR_NEIGHBOUR_SKILLS,
+        ConversationState.APPLY,
+        _PRICE_SKILL,
+        (_BOARD_PAGE, "price"),
+        ("teach", _PRICE_SKILL),
+        (),
+    ),
+    (
+        "mixed-message",
+        MIXED_MESSAGE_ARMS,
+        ConversationState.IDLE,
+        SEEDED_SKILLS,
+        ConversationState.APPLY,
+        _PRICE_SKILL,
+        ("morning", _GRINDER_PAGE, "price"),
+        ("teach", _PRICE_SKILL),
+        (),
+    ),
+    (
+        "still-clarifying",
+        STILL_CLARIFYING_ARMS,
+        ConversationState.ELICIT,
+        [],
+        ConversationState.ELICIT,
+        None,
+        ("what", "?"),
+        ("read", "remember", "never mind", "forget", ".example"),
+        (),
+    ),
+    (
+        "wrong-routine",
+        WRONG_ROUTINE_ARMS,
+        ConversationState.REQUEST,
+        SEEDED_SKILLS,
+        ConversationState.ELICIT,
+        None,
+        (),
+        # No arm may carry the transition condition's own "still want" collocation: the
+        # fixture must not hand the draw the phrase it is being scored on recognising.
+        ("never mind", "forget", "still want", ".example", "http"),
+        (("not", "wrong", "isn't"), ("still", "keep going", "the job itself is fine")),
+    ),
+]
+
+
+def test_every_tranche_b_arm_set_says_one_decision_five_ways() -> None:
+    """The tranche-B arms (#2055): five wordings of ONE decision, over constant facts.
+
+    Each case declares what every arm must CARRY, what no arm may carry, and which facts it
+    holds as an ALTERNATION.  The carried tokens are constant facts that happen to have one
+    word — the subject being talked about, the job whose notifications are switched, the page
+    the ask supplies — and a cohort whose arms disagree about them reports the spread of two
+    behaviours as the instability of one.
+
+    A fact with no single word is a group instead, and every arm must match one member of
+    every group.  That is not a weaker check, it is the check the case needs: the cold hold's
+    constant is that the thing RECURS ("again" ×4, "another" ×1), and the wrong-routine
+    case's two constants are the rejection and the task still being wanted, each said a
+    different way on every arm — deliberately, because the shipped transition condition spells
+    "still want the task done" and five arms ending in that clause would score a draw that
+    matched the phrase exactly like one that read the situation.
+
+    The withheld tokens keep the arms on the decision the case names, and each one is the
+    neighbouring edge it would otherwise slide onto: steps in the cold-elicit arms would be
+    idle → learn, an address in the still-clarifying arms would answer the teach question, a
+    call-off in the wrong-routine arms would be the break-out to idle, and the notify pair's
+    two directions must not carry each other's switch.  The wrong-routine case withholds one
+    more thing — the condition's own phrase — so the fixture cannot hand back the wording the
+    draw is being scored on recognising.
+    """
+    for name, arms, _s, _k, _e, _r, carries, withholds, groups in _TRANCHE_B:
+        assert len(arms) == 5, f"{name}: five arms"
+        assert len(set(arms)) == 5, f"{name}: five wordings, or the arms are not arms"
+        assert carries or groups, f"{name}: an arm set states the facts it holds constant"
+        assert withholds, f"{name}: and what would move it to a neighbouring edge"
+        for arm in arms:
+            for token in carries:
+                assert token in arm, f"{name}: every arm carries {token!r}: {arm!r}"
+            for token in withholds:
+                assert token not in arm, f"{name}: no arm may carry {token!r}: {arm!r}"
+            for group in groups:
+                assert any(token in arm for token in group), (
+                    f"{name}: every arm states the fact {group} holds constant: {arm!r}"
+                )
+
+
+def test_every_tranche_b_world_offers_the_door_its_case_claims(tmp_path) -> None:
+    """Each tranche-B case's world really opens the door its claim names (#2055).
+
+    Asserted from the PRODUCTION snapshot builder, so what this calls offered is what the
+    draw will be offered.  The second half is asserted for every case that seeds no routine,
+    and for the two parked in idle it is the case's whole point: ``presented_edges``
+    withholds every skill-gated state when the registry holds no candidates, so those two
+    choose from ``{learn, elicit, idle}``, which is a materially different decision from the
+    same edge drawn against a populated registry.  A case seeding nothing whose snapshot
+    still offered apply would not be that case at all.
+    """
+    for index, (name, arms, state, skills, expected, _r, _c, _w, _g) in enumerate(_TRANCHE_B):
+        db = migrated_db(str(tmp_path / f"tranche-b-{index}.db"))
+        for draft in skills:
+            db.skills.upsert(draft, author="probe")
+        offered = presented_edges(build_snapshot(db, state=state, message=arms[0]))
+        assert expected in offered, f"{name}: {expected.value} must be a door {state.value} opens"
+        if not skills:
+            assert ConversationState.APPLY not in offered, f"{name}: a cold registry offers none"
+            assert ConversationState.REQUEST not in offered, f"{name}: neither gated door"
+
+
+def test_every_gated_tranche_b_case_offers_the_routine_it_claims(tmp_path) -> None:
+    """A tranche-B ``SKILL:`` claim names a routine the snapshot actually offers (#2055).
+
+    The draw's skill is membership-validated against the offered candidates and re-rolled
+    while it is not one, so a claim naming a routine the registry does not hold could never
+    be satisfied and the case would report 0/15 as a model failure.  The other half — that
+    more than one routine is on offer — is what makes naming the right one a choice, and the
+    two gated cases here differ in exactly that: one seeds the pooled pair's two candidates,
+    the other four near neighbours.
+    """
+    gated = [row for row in _TRANCHE_B if row[5] is not None]
+    assert len(gated) == 2, "two tranche-B cases draw a skill-gated state"
+    for index, (name, arms, state, skills, _expected, routine, _c, _w, _g) in enumerate(gated):
+        db = migrated_db(str(tmp_path / f"tranche-b-gated-{index}.db"))
+        for draft in skills:
+            db.skills.upsert(draft, author="probe")
+        snapshot = build_snapshot(db, state=state, message=arms[0])
+        offered = [candidate.name for candidate in snapshot.skill_candidates]
+        assert routine in offered, f"{name}: {routine!r} must be offered to be named"
+        assert len(offered) > 1, f"{name}: naming one of one is not a choice — {offered}"
+
+
+@pytest.mark.parametrize("notify", [True, False])
+def test_the_notify_pairs_world_really_stands_its_job_up(tmp_path, notify: bool) -> None:
+    """The job the notify pair's ask names is really running, in the state its ask is about
+    changing (#2055/#1927).
+
+    This is the half of that pair's world no arm can state.  A message that says "turn
+    notifications on for the camera kit price watch" refers to something the SKILL registry
+    says nothing about, and the measured leak is the reader concluding from that silence
+    that nothing is running — so a case whose job never reached ``## Jobs already running``
+    would be scoring the hold against a world where holding is wrong, and would report a
+    model failure that is the fixture's.
+
+    The row is read back off the production snapshot builder, which selects configured
+    collections exactly as the dispatcher does, and its NOTIFY flag is asserted in the
+    direction the case seeds: the ON case wakes jobs that are silent and the OFF case
+    silences jobs that are talking, so a job already matching its own ask would be a
+    different case.
+    """
+    db = migrated_db(str(tmp_path / f"tranche-b-jobs-{notify}.db"))
+    for draft in SEEDED_SKILLS:
+        db.skills.upsert(draft, author="probe")
+    _standing_jobs(_PORTED_JOBS, notify=notify)(db)
+
+    arms = NOTIFY_OFF_ARMS if notify else NOTIFY_ON_ARMS
+    jobs = build_snapshot(db, state=ConversationState.IDLE, message=arms[0]).standing_jobs
+    named = derive_collection_name(_PRICE_SKILL, [_PORTED_JOBS[0][1]])
+    running = {job.name: job for job in jobs}
+    assert named in running, f"the job the ask names must be listed: {sorted(running)}"
+    assert running[named].skill_name == _PRICE_SKILL, "and it must run the covering routine"
+    assert running[named].notify is notify, "in the state its ask is about changing"
+    assert len(jobs) > 1, f"and beside at least one other, or resolving it is no read: {jobs}"
 
 
 def test_every_framing_arm_says_one_ask_in_different_words() -> None:
