@@ -17,6 +17,8 @@ from penny.tests.eval.utils.cohort import (
     CYCLE_SCRIPT,
     ENTRIES_STORED,
     FIELD_UNSET,
+    JOB_TERMS,
+    NO_JOB,
     REPLY_SPREAD,
     ROUTINE_NAME,
     ROUTINE_SHAPE,
@@ -25,6 +27,7 @@ from penny.tests.eval.utils.cohort import (
     Arm,
     AssertionRow,
     AssertionSummary,
+    MechanismRecord,
     OutputField,
     RoutineRecord,
     SampleObservation,
@@ -858,6 +861,99 @@ def test_a_case_that_measured_nothing_has_no_reading():
 # The two are the same 0.000 and opposite findings, and telling them apart is the whole of
 # the measurement-blindness guard: total agreement is the best result a feature can report,
 # while reading nothing on every sample is a feature that CANNOT report an outlier.
+
+
+# ── The terms a stand-up turn DREW (#2005) ───────────────────────────────────
+#
+# Three edges stand a job up, and once the round's framing has supplied the container, the
+# routine and the values, the terms are the whole of what the turn chose.
+
+
+def _mechanism(name: str, **kwargs) -> MechanismRecord:
+    """One collection row as a sample left it, defaulting to a job nobody touched."""
+    fields = {
+        "archived": False,
+        "born_this_run": False,
+        "changed_this_run": False,
+        "notifies": False,
+        "schedule": None,
+        "expires": False,
+        **kwargs,
+    }
+    return MechanismRecord(name=name, **fields)
+
+
+def _stood_up(name: str, **kwargs) -> MechanismRecord:
+    return _mechanism(name, born_this_run=True, changed_this_run=True, **kwargs)
+
+
+def _with_jobs(name: str, *mechanisms: MechanismRecord) -> SampleObservation:
+    return SampleObservation(name=name, phrasing="the ask", arm=0, mechanisms=list(mechanisms))
+
+
+def test_the_terms_feature_reads_only_the_jobs_this_turn_stood_up_or_configured():
+    """The jobs the world was ALREADY running are excluded by construction.
+
+    Every world these three edges are measured against carries live jobs of its own, so a
+    reading over every row would pool the fixture's schedules on every sample and report the
+    seed as agreement — the shape ``blind`` exists to catch, arriving through the other door."""
+    seeded = _mechanism("running-job", notifies=True, schedule="FREQ=DAILY")
+    minted = _stood_up("new-job", notifies=True, schedule="FREQ=HOURLY", expires=True)
+    assert JOB_TERMS.read(_with_jobs("s1", seeded, minted)) == "FREQ=HOURLY · tells · ends"
+
+    configured = _mechanism("round-container", changed_this_run=True, schedule="FREQ=HOURLY")
+    assert JOB_TERMS.read(_with_jobs("s2", seeded, configured)) == "FREQ=HOURLY · silent · runs on"
+
+
+def test_a_turn_that_stood_no_job_up_reads_the_absent_value_and_goes_blind():
+    """A correction, a bail and an ordinary remark all draw no terms, so the feature reads
+    nothing — which is not the same finding as a cohort that agreed on the terms it drew."""
+    quiet = [_with_jobs(f"s{index}", _mechanism("running-job")) for index in range(6)]
+    nothing = feature_variance(JOB_TERMS, quiet)
+    assert nothing.entropy == 0.0
+    assert nothing.blind, "every sample read JOB_TERMS' absent value"
+    assert proposed_ceiling(nothing, _MODEL) is None, "a blind feature locks in its blindness"
+
+    agreed = [
+        _with_jobs(f"s{index}", _stood_up("new-job", notifies=True, schedule="FREQ=HOURLY"))
+        for index in range(6)
+    ]
+    drawn = feature_variance(JOB_TERMS, agreed)
+    assert drawn.entropy == 0.0 and not drawn.blind, "an agreed READING is agreement"
+
+
+def test_two_spellings_of_one_cadence_are_two_readings_here_and_one_on_the_claim():
+    """The rule travels VERBATIM, so a divergence in how it was WRITTEN is a divergence here.
+
+    That is the pairing with the assertion side rather than a duplicate of it: the cases' cadence
+    claim reads the GAP, so a sample that merely spelled one cadence differently passes the claim
+    and shows up here as the row a reader should open."""
+    hourly = _stood_up("new-job", notifies=True, schedule="FREQ=HOURLY")
+    per_sixty = _stood_up("new-job", notifies=True, schedule="FREQ=MINUTELY;INTERVAL=60")
+    spread = feature_variance(JOB_TERMS, [_with_jobs("s1", hourly), _with_jobs("s2", per_sixty)])
+    assert spread.distinct == 2, "the two rules read as two values"
+    # That the CLAIM reads them as one is pinned where the gap is read, in
+    # ``test_eval_harness.py`` — this module is the cohort's own dependency-light leaf and
+    # cannot import the rule grammar without dragging the database into it.
+
+
+def test_a_turn_that_stood_two_jobs_up_reads_both_in_a_stable_order():
+    """Two jobs is a real reading rather than a choice between them, and it is sorted so two
+    samples that configured the same pair agree whatever order the rows come back in."""
+    first = _stood_up("job-a", schedule="FREQ=DAILY")
+    second = _stood_up("job-b", notifies=True, schedule="FREQ=HOURLY")
+    forwards = JOB_TERMS.read(_with_jobs("s1", first, second))
+    backwards = JOB_TERMS.read(_with_jobs("s2", second, first))
+    assert forwards == backwards
+    assert forwards == "FREQ=DAILY · silent · runs on | FREQ=HOURLY · tells · runs on"
+
+
+def test_a_job_stood_up_with_no_schedule_at_all_says_so():
+    """A turn that created the container and never set it running is a real end state, and it
+    must not read as the absent value — that is the sample this feature exists to surface."""
+    unscheduled = _stood_up("new-job", notifies=True)
+    assert JOB_TERMS.read(_with_jobs("s1", unscheduled)) == "unscheduled · tells · runs on"
+    assert JOB_TERMS.read(_with_jobs("s1", unscheduled)) != NO_JOB
 
 
 def test_a_feature_that_read_nothing_on_every_sample_is_blind_not_agreed():
