@@ -487,17 +487,29 @@ def seed_collection(
 
     The key derivation is the collection's own, not this function's, because the world render
     shows these same rows to say what the sample was answering against — a report keying an
-    entry differently from the row this wrote describes a store nobody seeded."""
+    entry differently from the row this wrote describes a store nobody seeded.
+
+    THE one place a mechanism is laid down for a sample, so the run its creation cites is
+    decided here rather than remembered at each call — the registry create and the entry write
+    both cite the collection's own seeded run (#2129).  A birth is itself a mutation event, and
+    ``is_seeded_run(None)`` is false, so an unstamped creation reads as a LIVE run's work: every
+    claim that this turn created or changed no mechanism failed on every sample, naming a
+    collection the turn never touched.  The run is named for the COLLECTION rather than for the
+    world or the case, because this is the only anchor available at a seam a case file calls
+    directly — and a parameter for it would be the thing a caller can forget."""
+    seeded_by = seeded_run_id(synth.name)
     db.memories.create_collection(
         synth.name,
         synth.description,
         extraction_prompt=extraction_prompt,
         schedule=schedule,
         notify=notify,
+        created_by_run_id=seeded_by,
     )
     require_memory(db, synth.name).write(
         [EntryInput(key=key, content=content) for key, content in synth.keyed],
         author="user",
+        run_id=seeded_by,
     )
 
 
@@ -507,7 +519,10 @@ def seed_world_stores(db: Database, world: World | None) -> None:
     The world is what a sample is GIVEN — the driver already serves its ``pages`` as the
     browse register — so its ``stores`` are seeded from the same declaration the report
     renders. That is what closes the drift the report otherwise carries: a world cannot claim
-    a ground the sample never had, because the claim IS the seed (#2108)."""
+    a ground the sample never had, because the claim IS the seed (#2108).
+
+    Through ``seed_collection`` rather than the store directly, so a declared store's creation
+    cites a seeded run without this loop having to know that it must (#2129)."""
     for held in world.stores if world is not None else ():
         seed_collection(db, held)
 
