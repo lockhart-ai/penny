@@ -5018,9 +5018,15 @@ def test_every_claimed_answer_is_one_token_its_own_world_carries() -> None:
     between the words and were scored as naming nothing — so a multi-word token can be failed
     by a space nobody has met yet, while a single token cannot.
 
-    IN THE WORLD because a token no page carries fails a correct reply for a fact the fixture
-    never stated.  A world with no pages states its answer through its SEED instead, which the
-    sibling pin below reads out of the store."""
+    ON EXACTLY ONE PAGE, which is the stronger half and the half a containment test misses.  A
+    token no page carries fails a correct reply for a fact the fixture never stated — and a
+    token carried by TWO pages is reachable without the hop the case exists to measure, which
+    is silent on a run because the reply states the answer either way.  That absence IS the
+    one-link-deep case's whole premise: the maker is credited on the gallery page and nowhere
+    on the index that points at it, so a reply naming him opened the second page.
+
+    A world with no pages states its answer through its SEED instead, which the sibling pin
+    below reads out of the store."""
     seeded = {case.case_id for case in SEEDED_ANSWER_CASES}
     for case in ANSWERING_CASES:
         for token in case.world.answers:
@@ -5030,8 +5036,15 @@ def test_every_claimed_answer_is_one_token_its_own_world_carries() -> None:
             )
             if case.case_id in seeded:
                 continue
-            assert token in case.world.says, (
-                f"{case.case_id}: no page in its world carries the answer token {token!r}"
+            carriers = [
+                number
+                for number, page in enumerate(case.world.pages, start=1)
+                if token in page.text
+            ]
+            assert len(carriers) == 1, (
+                f"{case.case_id}: the answer token {token!r} is carried by page(s) {carriers} "
+                f"of {len(case.world.pages)} — it must sit on exactly one, or the hop the case "
+                "measures is reachable without taking it"
             )
 
 
