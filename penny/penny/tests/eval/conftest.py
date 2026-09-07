@@ -262,10 +262,20 @@ class SampleResult:
     failed: list[str]
     total: int = 1
     checks: list[Check] = field(default_factory=list)  # full graded checks (empty = binary)
-    # The structural failure cause (#1695), stamped by the runner after scoring: ``None`` for
-    # a pass; ``behavioral`` / ``pathology`` / ``harness`` for a failure.  The artifact aggregate
-    # defaults an unstamped failure to behavioral, so a directly-constructed result is safe.
+    # The structural failure cause (#1695), settled wherever the score is: ``None`` for a pass;
+    # ``behavioral`` / ``pathology`` / ``harness`` for a failure.  The artifact aggregate defaults
+    # an unstamped failure to behavioral, so a directly-constructed result is safe.
     cause: FailureCause | None = None
+    # The two structural facts the cause is READ from, observed while the sample's database was
+    # live (#2125).  Carried rather than folded straight into ``cause`` because a ported case's
+    # score is not settled at drive time — its cohort's claims come back at case close, long
+    # after the database is gone — so the cause has to be re-derived there, and a derivation
+    # needs its inputs.
+    timed_out: bool = False
+    pathology: bool = False
+    # Why the cohort could not pool this sample, dealt out with the claims at the same seam
+    # (#2125).  ``None`` for a sample that was pooled, and for every case that drives no cohort.
+    excluded: str | None = None
     # Passed-but-shaky (#1725, #1694): the sample passed only after the loop refused/recovered a
     # tool call.  Stamped by ``_write_sample_report`` (same ``EVAL_REPORT_DIR`` gate as the artifact
     # write) so it rides into the ``CaseArtifact.sample_fragile`` list the assembler reads.
@@ -295,6 +305,38 @@ class SampleResult:
             graded.failed,
             graded.total,
             graded.checks,
+        )
+        self._settle_cause()
+
+    def exclude(self, reason: str) -> None:
+        """The cohort could not pool this sample, so record it as the LOSS it is (#2125).
+
+        An excluded sample answers no claim (``Cohort._answer`` skips it), and an empty answer
+        set grades a vacuous 1.0 — so the record reported a sample the case document names as
+        lost as a passing one, and a later run diffed against it saw no regression.  It scores
+        nothing, carries its reason where a failure's labels go, and reads as the infrastructure
+        fault it is rather than as the model getting anything wrong."""
+        self.excluded = reason
+        self.score, self.failed, self.total, self.checks = 0.0, [reason], 1, []
+        self._settle_cause()
+
+    def observe_faults(self, *, timed_out: bool, pathology: bool) -> None:
+        """The structural facts this sample's cause is read from, observed while its database
+        was live — and the cause settled from them."""
+        self.timed_out, self.pathology = timed_out, pathology
+        self._settle_cause()
+
+    def _settle_cause(self) -> None:
+        """Derive the failure cause from the carried facts — called wherever the score settles.
+
+        One derivation, applied at drive time and again when a cohort's claims arrive, so a
+        re-scored sample can never keep the cause its old score earned (#2125)."""
+        self.cause = eval_artifacts.classify_cause(
+            passed=self.passed,
+            # An exclusion is the same KIND of fact a timeout is: the sample produced nothing
+            # to judge, for a reason the model never touched.
+            timed_out=self.timed_out or self.excluded is not None,
+            pathology=self.pathology,
         )
 
     @classmethod
@@ -487,17 +529,29 @@ def seed_collection(
 
     The key derivation is the collection's own, not this function's, because the world render
     shows these same rows to say what the sample was answering against — a report keying an
-    entry differently from the row this wrote describes a store nobody seeded."""
+    entry differently from the row this wrote describes a store nobody seeded.
+
+    THE one place a mechanism is laid down for a sample, so the run its creation cites is
+    decided here rather than remembered at each call — the registry create and the entry write
+    both cite the collection's own seeded run (#2129).  A birth is itself a mutation event, and
+    ``is_seeded_run(None)`` is false, so an unstamped creation reads as a LIVE run's work: every
+    claim that this turn created or changed no mechanism failed on every sample, naming a
+    collection the turn never touched.  The run is named for the COLLECTION rather than for the
+    world or the case, because this is the only anchor available at a seam a case file calls
+    directly — and a parameter for it would be the thing a caller can forget."""
+    seeded_by = seeded_run_id(synth.name)
     db.memories.create_collection(
         synth.name,
         synth.description,
         extraction_prompt=extraction_prompt,
         schedule=schedule,
         notify=notify,
+        created_by_run_id=seeded_by,
     )
     require_memory(db, synth.name).write(
         [EntryInput(key=key, content=content) for key, content in synth.keyed],
         author="user",
+        run_id=seeded_by,
     )
 
 
@@ -507,7 +561,10 @@ def seed_world_stores(db: Database, world: World | None) -> None:
     The world is what a sample is GIVEN — the driver already serves its ``pages`` as the
     browse register — so its ``stores`` are seeded from the same declaration the report
     renders. That is what closes the drift the report otherwise carries: a world cannot claim
-    a ground the sample never had, because the claim IS the seed (#2108)."""
+    a ground the sample never had, because the claim IS the seed (#2108).
+
+    Through ``seed_collection`` rather than the store directly, so a declared store's creation
+    cites a seeded run without this loop having to know that it must (#2129)."""
     for held in world.stores if world is not None else ():
         seed_collection(db, held)
 
@@ -815,14 +872,14 @@ def run_exhibited_pathology(db: Database) -> bool:
 def _stamp_cause(db: Database, result: SampleResult, *, timed_out: bool = False) -> None:
     """Stamp the sample's structural failure cause (#1695) in place — ``None`` for a pass.
 
-    Scans for the pathology signal only when the sample actually failed (a pass carries no
-    cause, so the scan is skipped).  Called at every runner's per-sample append site so the
-    cause rides into the ``results.jsonl`` record and the RESULT-line cause tally."""
-    result.cause = eval_artifacts.classify_cause(
-        passed=result.passed,
-        timed_out=timed_out,
-        pathology=not result.passed and run_exhibited_pathology(db),
-    )
+    Called at every runner's per-sample append site so the cause rides into the
+    ``results.jsonl`` record and the RESULT-line cause tally.
+
+    The poison scan runs whatever the sample scored HERE, because on the cohort path what it
+    scored here is nothing: a ported sample is graded from its cohort's claims at case close,
+    long after this database is gone, so a scan skipped on a drive-time pass would leave every
+    later-failing sample unclassifiable (#2125)."""
+    result.observe_faults(timed_out=timed_out, pathology=run_exhibited_pathology(db))
 
 
 # ── Graded-scorer dispatch + framework guard-as-Check (the runners' scoring seam) ──
@@ -1364,7 +1421,7 @@ def _assert_threshold(
     # Failure-cause read (#1695): the pathology-excluded mean + the behavioral/pathology/harness
     # tally, on a second line, so a score sunk by model NOISE (a degeneracy spike) reads distinctly
     # from a score sunk by the model getting it WRONG (the signal the loop chases).
-    causes = [result.cause for result in results]
+    causes = eval_artifacts.sample_causes(results)
     excluded_mean, kept = eval_artifacts.pathology_excluded(
         [result.score for result in results], causes
     )
@@ -2910,12 +2967,21 @@ class _PendingCase:
         )
 
     def _grade(self) -> None:
-        """Every claim the cohort answered, redistributed to the sample that answered it — the
-        one seam where cohort-level claims meet per-sample grading."""
+        """Every claim the cohort answered, redistributed to the sample that answered it — and
+        every sample the cohort refused to pool, recorded as the loss it is.
+
+        The one seam where cohort-level claims meet per-sample grading, and therefore the one
+        place a ported sample's score, its failure cause and its exclusion are settled — so the
+        case document and ``results.jsonl`` render one scored object rather than two (#2125)."""
         by_sample = _cohort_checks(self.driven_cohort)
         for result in self.results:
-            if result.observation is not None:
-                result.adopt(by_sample.get(result.observation.name, []))
+            observation = result.observation
+            if observation is None:
+                continue
+            if observation.complete:
+                result.adopt(by_sample.get(observation.name, []))
+            else:
+                result.exclude(eval_cohort.exclusion_reason(observation))
 
     def _observations(self) -> list[eval_cohort.SampleObservation]:
         """Every sample the case drove."""

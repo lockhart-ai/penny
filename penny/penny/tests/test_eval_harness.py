@@ -20,6 +20,7 @@ import ast
 import asyncio
 import json
 import logging
+from collections import Counter
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -32,7 +33,13 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
-from penny.constants import MutationActor, PennyConstants, RunOutcome, TransitionCause
+from penny.constants import (
+    MutationActor,
+    MutationEntityType,
+    PennyConstants,
+    RunOutcome,
+    TransitionCause,
+)
 from penny.conversation_machine import (
     OUT_EDGES,
     SKILL_GATED_STATES,
@@ -258,6 +265,7 @@ from penny.tests.eval.conftest import (
     FRAME_NAME,
     FRAME_PARAMETERS,
     INJECTION_NEVER_FIRED,
+    MUTATION_HISTORY_WINDOW,
     NO_CYCLE,
     NO_DRAW,
     NO_MEASURED_TURN,
@@ -301,6 +309,8 @@ from penny.tests.eval.conftest import (
     _observe_extraction,
     _observe_framing,
     _observe_labelling,
+    _PendingCase,
+    _Perf,
     _refuse_binding_state_mismatch,
     _refuse_unscorable,
     _registry_shortfall,
@@ -372,8 +382,9 @@ from penny.tests.eval.utils.artifacts import (
     CauseCounts,
     CheckOutcome,
     FailureCause,
+    build_case_artifact,
 )
-from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import SampleObservation, unsourced_specifics
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
@@ -1935,7 +1946,7 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
     _seed_board_games(db)
     seeded = collection_entries(db, BOARD_GAMES.name)
 
-    assert _stored_entries(db) == [], "a seeded row carries no run stamp, so no round wrote it"
+    assert _stored_entries(db) == [], "a seeded row cites a seeded run, so no round wrote it"
     assert {entry.key for entry in _held_entries(db)} == set(seeded), "the store holds them all"
 
     require_memory(db, BOARD_GAMES.name).update(
@@ -1961,24 +1972,42 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     id, so a seeded event mistaken for a live one would fail "nothing was changed" on every
     sample — and the same read the other way round is what makes an archive visible at all.
     ``archived`` has to survive the row being retired, which is the one thing a reader that
-    skipped archived rows would lose."""
+    skipped archived rows would lose.
+
+    The seeded half is laid down by the SEEDER a world's declared store really goes through,
+    never by a create spelling the stamp out here: that second copy is what let this stay green
+    while ``seed_collection`` cited no run at all, and an unstamped birth reads as a live run's
+    work (#2129).  The ledger and the entry stamps are asserted beside the booleans since the
+    booleans are a read of them — a stamp that stopped reaching either would leave
+    ``changed_this_run`` false for a different reason, and the run that catches that is paid
+    for."""
     db = _make_db(tmp_path)
-    db.memories.create_collection(
-        "a-seeded-job", "A job the world was handed.", created_by_run_id=seeded_run_id("world")
-    )
+    seeded_by = seeded_run_id(_SEEDED_ROUTES.name)
+    seed_world_stores(db, _STORE_BACKED_WORLD)
     before = memory_names_now(db)
 
-    seeded = {record.name: record for record in _mechanism_records(db, before)}["a-seeded-job"]
+    records = {record.name: record for record in _mechanism_records(db, before)}
+    seeded = records[_SEEDED_ROUTES.name]
     assert not seeded.born_this_run, "the seed laid it down before the sample's turn began"
     assert not seeded.changed_this_run, "and its only event cites the run that seeded it"
     assert not seeded.archived
 
+    history = db.mutations.history(
+        _SEEDED_ROUTES.name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
+    )
+    assert [event.run_id for event in history] == [seeded_by], "the birth cites the seeded run"
+    held = require_memory(db, _SEEDED_ROUTES.name).read_all()
+    assert held, "the world declared entries, so the seed must have written some"
+    assert {(entry.created_by_run_id, entry.last_written_by_run_id) for entry in held} == {
+        (seeded_by, seeded_by)
+    }, "the entry write cites the same seeded run the creation does"
+
     db.memories.create_collection("a-minted-job", "One the turn made.", created_by_run_id="live-1")
-    db.memories.archive("a-seeded-job", actor=MutationActor.SYSTEM, run_id="live-1")
+    db.memories.archive(_SEEDED_ROUTES.name, actor=MutationActor.SYSTEM, run_id="live-1")
     records = {record.name: record for record in _mechanism_records(db, before)}
 
     assert records["a-minted-job"].born_this_run and records["a-minted-job"].changed_this_run
-    retired = records["a-seeded-job"]
+    retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run
 
@@ -2449,6 +2478,102 @@ def test_result_line_renders_cause_summary(capsys) -> None:
         "  pathology-excluded mean 1.00 (1 samples) · "
         "causes — behavioral 0 · pathology 1 · harness 0" in out
     )
+
+
+# ── A cohort case's record says what its case document says (#2125) ──────────
+#
+# The two renderings of one scored case: the document `make eval-report` posts, and the
+# `results.jsonl` record `baseline.py` and the flips index read.  They disagreed, because only
+# the document was rendered from the cohort's claims — the record kept the drive-time scores,
+# where a ported sample scores nothing and a vacuous 1.0 stands in.  So a case whose document
+# said `14 pooled + 1 excluded` recorded fifteen passes and no causes, and a later run diffed
+# against it saw no regression.
+
+_COHORT_RECORD_CASE = "cohort-record-case"
+_COHORT_RECORD_BEHAVIOUR = "In the chat agent, when the user teaches a round, Penny learns it."
+
+
+def _drive_time_result(db: Database, observation: SampleObservation) -> SampleResult:
+    """One sample as the COHORT PATH leaves it: scored nothing (its claims are answered after
+    every sample has run), its fault facts read off its own database, its observation attached."""
+    result = _guarded_graded([], [])
+    _stamp_cause(db, result)
+    result.observation = observation
+    return result
+
+
+def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_document_states(
+    tmp_path, capsys
+) -> None:
+    """One held claim, one missed, one sample the pool refused — through the real case close."""
+    db = _make_db(tmp_path, "cohort-record")
+    _log_prompt(db, response=_content_response("A perfectly ordinary draw."))
+    observations = [
+        SampleObservation(name="s-1", phrasing="the ask", landed=ConversationState.LEARN.value),
+        SampleObservation(name="s-2", phrasing="the ask", landed=ConversationState.IDLE.value),
+        SampleObservation(
+            name="s-3", phrasing="the ask", complete=False, exclusion=NO_MEASURED_TURN
+        ),
+    ]
+    cohort = Cohort(_COHORT_RECORD_CASE, "a-model", list(observations))
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    results = [_drive_time_result(db, observation) for observation in observations]
+
+    pending = _PendingCase(
+        case_id=_COHORT_RECORD_CASE,
+        family="chat",
+        module="penny.tests.eval.chat.learn.test_case",
+        min_pass_rate=None,
+        gate_pathology_excluded=False,
+        behaviour=_COHORT_RECORD_BEHAVIOUR,
+    )
+    pending.add(cohort, results, _Perf(), intended=len(results))
+    pending.finish()
+
+    # What the DOCUMENT states: two pooled samples holding one of two claim answers, and the
+    # third named as excluded rather than subtracted.
+    document = eval_cohort.pool(cohort.samples, cohort.features)
+    assertions = eval_cohort.assertion_summary(assertion_rows(cohort.claims))
+    assert (document.pooled, document.driven) == (2, 3)
+    assert [row.reason for row in document.excluded] == [NO_MEASURED_TURN]
+    assert (assertions.passed, assertions.total) == (1, 2)
+
+    # What the RECORD states — built exactly as `record_case` builds it, off the same results.
+    artifact = build_case_artifact(
+        run_id="run-x",
+        case_id=_COHORT_RECORD_CASE,
+        family="chat",
+        results=results,
+        timings=CaseTimings(calls=0, duration_ms=0, input_tokens=0, output_tokens=0),
+        standing_counts=Counter(
+            standing.standing.value
+            for standing in eval_cohort.standings(cohort.samples, cohort.features)
+        ),
+    )
+    assert artifact.samples == document.driven
+    assert artifact.sample_scores == [1.0, 0.0, 0.0]
+    assert artifact.sample_causes == [None, FailureCause.BEHAVIORAL, FailureCause.HARNESS]
+    assert artifact.cause_counts == CauseCounts(behavioral=1, harness=1)
+    # The excluded sample is present AS excluded: it scores nothing, carries the document's own
+    # reason, and reads as the infrastructure loss it is — never as a passing sample.
+    assert results[2].failed == [NO_MEASURED_TURN]
+    # And the record no longer contradicts itself — the sample its standings call dead is the
+    # sample its scores call lost.
+    assert artifact.standing_counts["dead"] == len(document.excluded)
+    pooled_scores = artifact.sample_scores[: document.pooled]
+    assert sum(pooled_scores) / len(pooled_scores) == assertions.rate
+
+    # And the console RESULT line prints that same tally.
+    out = capsys.readouterr().out
+    assert (
+        f"RESULT [{_COHORT_RECORD_CASE}] mean 0.33 · all-pass 1/3 across 3 samples (report-only)"
+        in out
+    )
+    assert (
+        "  pathology-excluded mean 0.33 (3 samples) · "
+        "causes — behavioral 1 · pathology 0 · harness 1" in out
+    )
+    assert f"  [3] 0.00 — {NO_MEASURED_TURN}" in out
 
 
 # ── Regression diff: a prior run's results.jsonl → REGRESSED marks (#1693) ──

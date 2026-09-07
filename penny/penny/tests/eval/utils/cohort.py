@@ -431,6 +431,19 @@ def output_field(
     return Feature(name, lambda o: o.field(name), consequence=consequence, absent=absent)
 
 
+# What an exclusion is called when the observation that carried it named no reason.
+UNEXPLAINED_EXCLUSION = "the measured turn never ran"
+
+
+def exclusion_reason(sample: SampleObservation) -> str:
+    """Why this sample could not be pooled, named.
+
+    ONE answer, because two surfaces state it — the pooled variance the case document renders,
+    and the per-sample record the artifact writes (#2125) — and a second spelling would let a
+    document and a record name the same lost sample two different ways."""
+    return sample.exclusion or UNEXPLAINED_EXCLUSION
+
+
 class ExcludedSample(BaseModel):
     name: str
     reason: str
@@ -729,9 +742,7 @@ def pool(samples: Sequence[SampleObservation], features: Sequence[Feature]) -> C
     than subtracted, so a run that lost half its cohort reads as one that lost half its cohort
     instead of as a suspiciously tidy one."""
     excluded = [
-        ExcludedSample(name=s.name, reason=s.exclusion or "the measured turn never ran")
-        for s in samples
-        if not s.complete
+        ExcludedSample(name=s.name, reason=exclusion_reason(s)) for s in samples if not s.complete
     ]
     kept = [sample for sample in samples if sample.complete]
     structural = [feature for feature in features if feature is not REPLY_SPREAD]
