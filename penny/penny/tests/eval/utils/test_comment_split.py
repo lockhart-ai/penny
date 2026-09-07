@@ -4,8 +4,8 @@ They drive the pure text helpers + the CLI over a SYNTHETIC oversized document b
 fold primitives (``report.fold_sample``), so they run inside ``make check``: no model, no GPU, no
 container, no artifacts. The four properties the ticket names are asserted directly — the part
 count, that no ``<details>`` straddles a boundary, that part 1 carries the run header, and that
-reassembling the parts is byte-identical to the input — plus the two refusals (build noise, an
-unsplittable fold).
+reassembling the parts is byte-identical to the input — plus the build-noise refusal and the
+over-the-cap INVARIANT (#2135), which is raised as a renderer bug rather than refused.
 """
 
 from __future__ import annotations
@@ -18,12 +18,13 @@ from penny.tests.eval.utils.comment_split import (
     GITHUB_COMMENT_LIMIT,
     PART_HEADER,
     USAGE,
+    OversizedPartError,
     build_noise_reason,
+    enforce_part_cap,
     main,
     partition_on_sample_folds,
     sample_fold_segments,
     split_run_comment,
-    unsplittable_reason,
 )
 from penny.tests.eval.utils.report import fold_sample
 
@@ -118,14 +119,21 @@ def test_build_noise_is_refused_with_an_actionable_reason() -> None:
     assert build_noise_reason(quoted) is None
 
 
-def test_an_oversized_single_fold_is_refused_not_cut() -> None:
-    """One sample fold over GitHub's hard cap cannot be cut without breaking its markup, so it is
-    refused loudly (naming the fold) rather than published broken; a normal split is accepted."""
+def test_a_part_over_the_cap_is_raised_as_the_renderer_bug_it_is() -> None:
+    """Since #2135 the renderer bounds every sample fold, so a part over the hard cap means a
+    fold came back over budget — a renderer bug, not a caller error, and nothing the caller
+    could do about it (a lower ``EVAL_SAMPLES`` changes the N a ceiling is keyed to, and a
+    re-roll spends money to hide a finding).
+
+    The message names the fold that overflowed rather than the part header this module wrote
+    above it, which is what the refusal it replaced quoted."""
     document = _document(samples=1, body_size=GITHUB_COMMENT_LIMIT + 1000)
-    reason = unsplittable_reason(split_run_comment(document))
-    assert reason is not None
-    assert "over GitHub's 65536 cap" in reason
-    assert unsplittable_reason(split_run_comment(_document(samples=8, body_size=25000))) is None
+    with pytest.raises(OversizedPartError) as raised:
+        enforce_part_cap(split_run_comment(document))
+    assert "over GitHub's 65536 cap" in str(raised.value)
+    assert "<details><summary>sample 1 — " in str(raised.value)
+    assert PART_HEADER.split("{", 1)[0] not in str(raised.value)
+    enforce_part_cap(split_run_comment(_document(samples=8, body_size=25000)))
 
 
 def test_cli_writes_parts_and_prints_their_names(

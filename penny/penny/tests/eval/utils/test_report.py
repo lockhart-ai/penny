@@ -1080,10 +1080,12 @@ def test_an_oversized_sample_renders_as_folds_the_splitter_can_cut_between() -> 
     nothing about parts.  Each part is complete markup on its own."""
     number, banner, body = _oversized_sample()
     budget = 6000
-    rendered = report.fold_sample_parts(number, banner, body, budget)
-    parts = report.split_sample_blocks(rendered)
+    parts = report.sample_folds(number, banner, body, budget)
 
     assert len(parts) > 1, "an oversized sample must be given internal seams"
+    assert report.split_sample_blocks(report.BLOCK_SEPARATOR.join(parts)) == parts, (
+        "and each opens on the sample seam the splitter cuts at"
+    )
     assert all(len(part) <= budget for part in parts), "every part must fit the budget"
     for index, part in enumerate(parts, start=1):
         recovered_number, recovered_banner, _ = report.parse_sample_block(part)
@@ -1102,7 +1104,7 @@ def test_the_split_parts_reassemble_byte_identical_to_the_unsplit_fold() -> None
     A seam that dropped a separator, reordered a block or ate a blank line would show here
     and nowhere else."""
     number, banner, body = _oversized_sample()
-    parts = report.split_sample_blocks(report.fold_sample_parts(number, banner, body, 6000))
+    parts = report.sample_folds(number, banner, body, 6000)
     bodies = [report.parse_sample_block(part)[2] for part in parts]
     assert report.BLOCK_SEPARATOR.join(bodies) == body
     assert report.fold_sample(number, banner, report.BLOCK_SEPARATOR.join(bodies)) == (
@@ -1115,9 +1117,9 @@ def test_a_sample_that_fits_is_rendered_exactly_as_it_always_was() -> None:
     ``fold_sample``, with no part suffix and no extra seam.  Every run that could already
     be posted posts the same way."""
     number, banner, body = _oversized_sample()
-    assert report.fold_sample_parts(number, banner, body, 500_000) == report.fold_sample(
-        number, banner, body
-    )
+    assert report.sample_folds(number, banner, body, 500_000) == [
+        report.fold_sample(number, banner, body)
+    ]
 
 
 def test_body_blocks_inverts_the_join_it_is_the_inverse_of() -> None:
@@ -1132,19 +1134,19 @@ def test_body_blocks_inverts_the_join_it_is_the_inverse_of() -> None:
     assert report.body_blocks(body) == blocks
 
 
-def test_a_single_block_over_budget_keeps_its_own_fold_for_the_guard_to_refuse() -> None:
+def test_a_single_block_over_budget_keeps_its_own_fold_for_the_reduction() -> None:
     """The seam rule outranks the budget, exactly as it does in the splitter: one step too
     big to fit gets its own over-budget fold rather than being cut mid-table.
 
-    That is what leaves the guard something to refuse — a sample whose smallest indivisible
-    piece exceeds the cap genuinely cannot be split losslessly, and saying so is the
-    contract."""
+    That is where the LOSSLESS path stops — a sample whose smallest indivisible piece exceeds
+    the budget cannot be split without breaking its markup — and the reduction (#2135) is what
+    picks the fold up from here."""
     huge = report.Step(
         number=1, user_message="x", verdict="", rows=[report.Row("a", "y" * 9000, [])]
     )
     small = report.Step(number=2, user_message="x", verdict="", rows=[report.Row("a", "z", [])])
     body = report.BLOCK_SEPARATOR.join([huge.render(), small.render()])
-    parts = report.split_sample_blocks(report.fold_sample_parts(7, "banner", body, 2000))
+    parts = report.sample_folds(7, "banner", body, 2000)
     assert len(parts) == 2
     assert max(len(part) for part in parts) > 2000
     assert report.BLOCK_SEPARATOR.join(report.parse_sample_block(part)[2] for part in parts) == body
@@ -1353,3 +1355,200 @@ def test_a_rejected_draw_is_quoted_verbatim_rather_than_rendered():
     assert "\n## a heading\nline two\n" in rendered, "and the text is verbatim"
     outside_fence = rendered.split("```")[0]
     assert "## a heading" not in outside_fence
+
+
+# ── A fold with no seam left to cut: the reduction (#2135) ───────────────────
+_THRASHED_CALLS = 40
+
+
+def _thrashing_sample() -> tuple[int, str, str]:
+    """ONE step carrying a long tool-call sequence — the shape #2135 was filed for.
+
+    A sample that thrashes for its whole step budget renders a single step table, so the
+    lossless seams have nothing to cut between and the whole fold is the smallest thing
+    there is.  Its results are long enough to fold a copy of themselves into a
+    ``<details>``, which is what the real 94K fold spent 53,319 of its characters on."""
+    rows = [report.Row(report.ROW_EXPECTED, "C1 [end state]⚖ the reply names the maker", [])]
+    for index in range(1, _THRASHED_CALLS + 1):
+        rows.append(report.thinking_row(f"weighing attempt {index} " + "t" * 700))
+        rows.append(report.Row(report.ROW_ACTUAL, f"{report.ACTOR_CALL} browse(attempt {index})"))
+        rows.append(
+            report.Row(report.ROW_ACTUAL, f"{report.ACTOR_RESULT} page {index} " + "r" * 900)
+        )
+    rows.append(report.Row(report.ROW_ACTUAL, f'{report.ACTOR_REPLY} "the maker was Corvander"'))
+    step = report.Step(number=1, user_message="who made it?", verdict="", rows=rows)
+    return 1, "✅ pass · fragile · 48s · 51 calls", step.render()
+
+
+def test_a_fold_with_no_internal_seam_is_reduced_until_it_fits() -> None:
+    """The case the lossless seams cannot reach: one step table, so nothing to cut between.
+
+    The fold comes back inside its budget with every tool call, the claim and the reply
+    still in it, and ONE marker saying what went — so the run posts instead of the whole
+    report being refused over one sample."""
+    number, banner, body = _thrashing_sample()
+    budget = len(report.fold_sample(number, banner, body)) // 3
+    bounded = report.bounded_sample_folds(number, banner, body, budget)
+
+    assert bounded.reduced, "a fold with no seam is reduced rather than left over budget"
+    assert len(bounded.text) <= budget
+    assert bounded.text.count(report.REDUCTION_MARKER.split("{", 1)[0]) == 1, "and says so, once"
+    for index in range(1, _THRASHED_CALLS + 1):
+        assert f"browse(attempt {index})" in bounded.text, "every tool call survives, in full"
+    assert "C1 [end state]" in bounded.text, "so does the claim"
+    assert '"the maker was Corvander"' in bounded.text, "and the reply"
+    assert report.parse_sample_block(bounded.text)[0] == number, "still one whole sample block"
+
+    # The middle is what goes: a result beside it is dropped while one at the far end stands.
+    surviving = [
+        index for index in range(1, _THRASHED_CALLS + 1) if f"page {index} " in bounded.text
+    ]
+    assert _THRASHED_CALLS in surviving and _THRASHED_CALLS // 2 not in surviving
+
+
+def _one_step_sample() -> str:
+    """A four-row step small enough to read WHOLE — the shape both reduction stages act on."""
+    step = report.Step(
+        number=1,
+        user_message="who made it?",
+        verdict="✅",
+        rows=[
+            report.Row(report.ROW_EXPECTED, "C1 [end state]⚖ the reply names the maker"),
+            report.thinking_row("the page did not say who made it, " + "so I kept reading. " * 30),
+            report.Row(report.ROW_ACTUAL, f"{report.ACTOR_CALL} browse(the gallery page)"),
+            report.Row(
+                report.ROW_ACTUAL,
+                f"{report.ACTOR_RESULT} the gallery page\n" + "every word of it. " * 40,
+            ),
+            report.Row(report.ROW_ACTUAL, f'{report.ACTOR_REPLY} "the maker was Corvander"'),
+        ],
+    )
+    return step.render()
+
+
+def test_the_reduction_renders_whole_at_each_stage() -> None:
+    """Both stages, each asserted as its OWN complete render — the literal IS the contract.
+
+    Stage one collapses every cell holding a second copy of its own text down to the summary
+    ``truncate_cell`` built for it, and drops no row at all: on the real fold that alone was
+    58,161 characters. Stage two gives rows up from the MIDDLE outward, results and reasoning
+    before tool calls, claims and the reply — so the 💭 row beside the middle goes while the
+    📥 row further out, the call, the claim and the reply all stand."""
+    body = _one_step_sample()
+    collapsed = report.reduce_sample_body(body, 1400)
+    assert collapsed.rows == 0
+    assert collapsed.text == (
+        '| step 1 · 👤 | "who made it?" | ✅ |\n'
+        "|---|---|---|\n"
+        "| expected | C1 [end state]⚖ the reply names the maker |  |\n"
+        "| … | _Reduced to fit GitHub's comment cap: 1,421 characters elided, 0 transcript rows "
+        "dropped whole. A folded cell keeps the summary line saying what it held; rows go from "
+        "the middle out, results and reasoning before tool calls, claims and the reply. The "
+        "whole transcript is in the run artifact — this case's `.md` and this sample's own "
+        "`.db`._ |  |\n"
+        "| 💭 | thinking — 603 chars |  |\n"
+        "| actual | 🔧 browse(the gallery page) |  |\n"
+        "| actual | 📥 the gallery page … (739 chars) |  |\n"
+        '| actual | 🤖 "the maker was Corvander" |  |'
+    )
+
+    dropped = report.reduce_sample_body(body, 600)
+    assert dropped.rows == 1
+    assert dropped.text == (
+        '| step 1 · 👤 | "who made it?" | ✅ |\n'
+        "|---|---|---|\n"
+        "| expected | C1 [end state]⚖ the reply names the maker |  |\n"
+        "| … | _Reduced to fit GitHub's comment cap: 1,453 characters elided, 1 transcript row "
+        "dropped whole. A folded cell keeps the summary line saying what it held; rows go from "
+        "the middle out, results and reasoning before tool calls, claims and the reply. The "
+        "whole transcript is in the run artifact — this case's `.md` and this sample's own "
+        "`.db`._ |  |\n"
+        "| actual | 🔧 browse(the gallery page) |  |\n"
+        "| actual | 📥 the gallery page … (739 chars) |  |\n"
+        '| actual | 🤖 "the maker was Corvander" |  |'
+    )
+
+
+def test_a_fold_that_fits_or_cannot_shrink_is_rendered_exactly_as_it_always_was() -> None:
+    """The overwhelmingly common case is untouched — no marker, no collapsed cell, byte for
+    byte what ``fold_sample`` renders.  Every run that could already be posted posts the same
+    way.
+
+    So is a fold with almost nothing to give up: the marker is a FIXED cost, so on a small
+    body it can cost more than it saves, and a "reduction" that leaves the fold bigger is a
+    worse fold with less evidence in it."""
+    number, banner, body = _thrashing_sample()
+    assert report.reduce_sample_body(body, len(body)).text == body
+    assert report.bounded_sample_folds(number, banner, body, 500_000) == report.BoundedFold(
+        report.fold_sample(number, banner, body)
+    )
+    bare = report.Step(number=1, user_message="hi", verdict="", rows=[]).render()
+    assert report.reduce_sample_body(bare, len(bare) - 1) == report.ReducedBody(bare)
+
+
+def test_the_representative_pays_for_its_framing_before_its_transcript() -> None:
+    """The heading, the finding its summary states, the sample's verdict line and the prompts
+    it was run with are what a reader opened the section for, and they are a fixed cost — so
+    they are priced first and only the transcript is reduced."""
+    number, banner, body = _thrashing_sample()
+    prompts = report.render_prompt_variants(
+        [report.PromptVariant(context="chat", text="P" * 3000, samples=["sample 1"], total=1)]
+    )
+    bounded = report.bounded_representative(
+        banner=banner, number=number, prompts=prompts, transcript=body, turns=1, budget=20000
+    )
+
+    assert bounded.reduced and len(bounded.text) <= 20000
+    assert "P" * 3000 in bounded.text, "the prompts the sample was run with are never reduced"
+    assert report.REPRESENTATIVE_HEADING in bounded.text
+    assert f"`{report.SAMPLE_ROW} {number}` · {banner}" in bounded.text, "nor its verdict line"
+
+
+def test_quoted_text_is_never_read_as_a_row_the_reduction_may_edit() -> None:
+    """A system prompt and a rejected draw are quoted VERBATIM inside a code fence, and a
+    quoted line that happens to open with ``|`` is the model's own words rather than markup.
+
+    Reading one as a table row would let the reduction edit evidence, which is the one thing
+    a report may never do — so the quoted line survives a reduction that gives up the REAL row
+    of the same shape sitting beside it."""
+    quoted_row = f"| {report.ROW_THINKING} | quoted, not a row |"
+    prompt = report.SystemPrompt(context="chat", text=f"{quoted_row}\nsecond line")
+    step = report.Step(
+        number=1,
+        user_message="hi",
+        verdict="",
+        rows=[report.thinking_row("real reasoning " + "t" * 900)],
+    )
+    body = report.BLOCK_SEPARATOR.join([prompt.render(), step.render()])
+    reduced = report.reduce_sample_body(body, len(body) // 2)
+
+    assert reduced.reduced
+    assert quoted_row in reduced.text, "the model's own quoted words are untouched"
+    assert "real reasoning" not in reduced.text, "while the real row of that shape is what goes"
+
+
+def test_the_health_row_states_how_many_samples_the_comment_abridged() -> None:
+    """An abridged transcript rides on the harness accounting — the one surface whose job is
+    to say whether what follows can be believed.  A case that states no such row still states
+    the fact: it is about the COMMENT rather than about the cohort."""
+    document = report.measure_table(
+        [(report.MEASURE_SAMPLES, "10 pooled + 5 excluded = 15 driven")]
+    )
+    assert report.note_reduced_samples(document, 1) == (
+        "| measure | reading |\n"
+        "|---|---|\n"
+        "| **samples** | 10 pooled + 5 excluded = 15 driven · 1 sample reduced to fit the "
+        "comment cap |"
+    )
+    assert report.note_reduced_samples(document, 0) == document, "a clean comment says nothing"
+    assert report.note_reduced_samples(document, 2).endswith(
+        "2 samples reduced to fit the comment cap |"
+    )
+
+    rowless = "### 🟢 `a-case`"
+    assert report.note_reduced_samples(rowless, 3) == (
+        "### 🟢 `a-case`\n"
+        "\n"
+        "_3 samples reduced to fit the comment cap — the whole transcripts are in the run "
+        "artifact._"
+    )

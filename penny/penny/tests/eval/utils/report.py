@@ -31,7 +31,7 @@ import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 from penny.tests.eval.utils import cohort
 from penny.tests.eval.utils.worlds import WorldFacts
@@ -79,6 +79,15 @@ ROW_THINKING = "💭"
 ROW_ACTUAL = "actual"
 ROW_BASELINE = "baseline"
 ROW_NOTE = "note"
+
+# The table-row grammar this module WRITES and reads back — one declaration, so a row's shape
+# cannot be spelled one way where it is rendered and another where it is parsed.
+ROW_OPENS = "| "
+ROW_CLOSES = " |"
+CELL_SEPARATOR = " | "
+# What a STEP's header row opens with: the seam ``body_blocks`` cuts on, and what counting a
+# sample's turns counts.
+STEP_ROW_OPENS = f"{ROW_OPENS}step "
 
 RUN_CLOSE_LABEL = "run-close"
 RUN_CLOSE_TITLE = "whole-conversation contracts"
@@ -297,7 +306,7 @@ class Step:
             opener = f'{ACTOR_USER} | "{escape_cell(self.user_message)}"'
         else:
             opener = f"| {NO_USER_TURN}"
-        header = f"| step {self.number} · {opener} | {self.verdict} |"
+        header = f"{STEP_ROW_OPENS}{self.number} · {opener} | {self.verdict} |"
         return "\n".join([header, TABLE_DIVIDER, *[row.render() for row in self.rows]])
 
 
@@ -504,6 +513,33 @@ def _indexed(heading: str, index: str) -> str:
     return f"{name}{index}{separator}{model}" if separator else f"{heading}{index}"
 
 
+def note_reduced_samples(document: str, count: int) -> str:
+    """``document`` with its health row stating how many of its samples the comment abridged.
+
+    The reduction happens at ASSEMBLE time, over a case document already written — so the
+    document cannot have said it while the case was closing, and the assembler says it here,
+    on the row that already accounts for what the run kept and lost.
+
+    A document that states no such row still states the fact, on a line of its own: the
+    abridgement is a property of the COMMENT rather than of the cohort, so a case that
+    computed no cohort must not lose it for want of a table to put it in."""
+    if count <= 0:
+        return document
+    samples = plural(count, _REDUCED_NOUN)
+    noted, hits = _SAMPLES_ROW.subn(
+        lambda match: (
+            f"| **{MEASURE_SAMPLES}** | {match.group('counts')}"
+            f"{SAMPLES_REDUCED.format(samples=samples)} |"
+        ),
+        document,
+        count=1,
+    )
+    if hits:
+        return noted
+    line = REDUCED_LINE.format(samples=samples)
+    return f"{document}\n\n{line}" if document else line
+
+
 # The topline scores are the TABLE, not a sentence above it.  Real column headers, because an
 # empty `| | |` renders as a blank band across the top of the table.
 _MEASURE_HEAD = "| measure | reading |\n|---|---|"
@@ -523,6 +559,21 @@ _LOWEST = " (lowest {glyph} {rate:.2f} `{label}`)"
 # sample it cannot account for is how infrastructure failure gets read as behaviour.
 _COUNTS = "{pooled} pooled + {excluded} excluded = {driven} driven"
 _NO_VARIANCE = "nothing pooled"
+# The measure that row is filed under, named once and read twice: the case writes it while it
+# closes, and the assembler finds it again to say what the COMMENT could not carry whole.
+MEASURE_SAMPLES = "samples"
+# What that row gains when a sample's transcript had to be abridged to post (#2135).  It rides
+# on the harness accounting — the one surface whose job is to say whether what follows can be
+# believed — because an abridged transcript is exactly the kind of fact a reader would
+# otherwise assume the opposite of.
+SAMPLES_REDUCED = " · {samples} reduced to fit the comment cap"
+# The same fact for a case that states no such row (one that computed no cohort): it is about
+# the COMMENT rather than about the cohort, so it cannot go unsaid for want of a table.
+REDUCED_LINE = (
+    "_{samples} reduced to fit the comment cap — the whole transcripts are in the run artifact._"
+)
+_REDUCED_NOUN = "sample"
+_SAMPLES_ROW = re.compile(rf"^\| \*\*{MEASURE_SAMPLES}\*\* \| (?P<counts>[^|]*) \|$", re.M)
 
 
 def measure_table(rows: Sequence[tuple[str, str]]) -> str:
@@ -804,7 +855,7 @@ class CaseSections:
             ),
             ("variance", _M_VARIANCE.format(glyph=self._variance_glyph(), spread=self._spread())),
             (
-                "samples",
+                MEASURE_SAMPLES,
                 _COUNTS.format(
                     pooled=self.variance.pooled,
                     excluded=len(self.variance.excluded),
@@ -1627,10 +1678,10 @@ SAMPLE_BLOCK_START = (
 #
 # Both standing rules survive verbatim.  NOTHING IS TRUNCATED — every block appears exactly
 # once, in order, and concatenating the parts' bodies reproduces the single fold's body
-# byte for byte (asserted by ``test_report.py``).  And the guard still REFUSES what cannot
-# be split losslessly: when one STEP alone exceeds the cap there is no seam inside it, and
-# ``comment_split.unsplittable_reason`` says so rather than posting something cut.
-_BODY_BLOCK_START = rf"(?:\| step |\| {RUN_CLOSE_LABEL} )"
+# byte for byte (asserted by ``test_report.py``).  And when one STEP alone exceeds the budget
+# there is no seam inside it, so this stops short and hands the fold to the reduction below
+# (#2135) — which is lossy, states that it is, and runs only where the lossless seam cannot.
+_BODY_BLOCK_START = rf"(?:{re.escape(STEP_ROW_OPENS)}|{re.escape(ROW_OPENS)}{RUN_CLOSE_LABEL} )"
 _BODY_BOUNDARY = re.compile(rf"\n\n(?={_BODY_BLOCK_START})")
 
 # What a part's banner gains so a reader knows the sample continues.  It rides INSIDE the
@@ -1650,27 +1701,27 @@ def body_blocks(body: str) -> list[str]:
     return _BODY_BOUNDARY.split(body) if body else []
 
 
-def fold_sample_parts(number: int, banner: str, body: str, budget: int) -> str:
-    """One sample rendered as folds that each fit ``budget`` — one fold when it already
+def sample_folds(number: int, banner: str, body: str, budget: int) -> list[str]:
+    """One sample as the folds it takes to stay within ``budget`` — one when it already
     does (byte-identical to ``fold_sample``, which is the overwhelmingly common case), and
-    otherwise its blocks packed greedily into as many folds as it takes.
+    otherwise its blocks packed greedily into as many as it takes.
 
     A single block bigger than ``budget`` still gets its own over-budget fold rather than
     being cut: the seam rule outranks the budget here exactly as it does in the splitter,
-    and the refusal belongs to the guard that knows the hard cap."""
+    and bringing THAT fold inside the budget is the reduction's job, below."""
     whole = fold_sample(number, banner, body)
     blocks = body_blocks(body)
     if len(whole) <= budget or len(blocks) < 2:
-        return whole
+        return [whole]
     groups = _packed_blocks(blocks, _block_budget(number, banner, budget))
-    return BLOCK_SEPARATOR.join(
+    return [
         fold_sample(
             number,
             banner + SAMPLE_PART_SUFFIX.format(number=index, total=len(groups)),
             BLOCK_SEPARATOR.join(group),
         )
         for index, group in enumerate(groups, start=1)
-    )
+    ]
 
 
 # What joins a sample's top-level blocks, and what joins the folds an oversized sample is
@@ -1704,6 +1755,276 @@ def _packed_blocks(blocks: list[str], budget: int) -> list[list[str]]:
     if current:
         groups.append(current)
     return groups
+
+
+# ── A fold with no seam left to cut: the REDUCTION (#2135) ───────────────────
+#
+# The seams above are LOSSLESS and are always tried first, but they cannot help a fold whose
+# smallest indivisible piece is already too big — and a real run produced exactly that: one
+# `chat-answer-one-link-deep` sample thrashed for its whole step budget and rendered ONE step
+# table of 78,258 characters inside a 94K fold, which made the whole gpt-oss report unpostable
+# while its gemma sibling posted normally.  Nothing about that measurement is wrong; it is the
+# posting route that could not carry it, and neither remedy the old refusal implied is
+# acceptable — a lower EVAL_SAMPLES changes the N a ceiling is keyed to, and a re-roll spends
+# money to hide a finding.
+#
+# So a fold the seams cannot bound is REDUCED.  What it gives up is ORDERED, so the same fold
+# always reduces the same way and a fold barely over budget loses almost nothing:
+#
+#   * first, every cell that folded a `<details>` copy of its own text collapses to the
+#     SUMMARY `truncate_cell` already built for it — the first line and the length.  That copy
+#     is the largest thing in a big fold (53,319 of the 78,258 above) and it is the one thing
+#     the artifact holds verbatim anyway.
+#   * then rows are given up FROM THE MIDDLE OUTWARD, in two tiers: what came BACK and what was
+#     thought (results, micro-context draws, thinking, baselines) before what was DONE and
+#     CLAIMED (tool calls with their arguments, expected rows, the reply).  The ends of a
+#     transcript are what a reader reads.
+#   * a STRUCTURAL row is never given up — a step's header, the divider, the run-close header —
+#     because dropping one breaks the table around the rows that stay.
+#
+# ONE marker records it, standing where the first gap opens: what went, how much of it, and
+# where the whole transcript still is.  Collapsed-never-means-removed still binds where
+# completeness is claimed, and the ARTIFACT is where it is claimed — this document is the index
+# into it (#1997).
+
+# The one marker a reduced fold carries.  A table row, because it stands inside the table whose
+# rows it is accounting for, and a loose line there would end the table around it.
+REDUCTION_MARKER = (
+    "| … | _Reduced to fit GitHub's comment cap: {characters:,} characters elided, {rows} "
+    "dropped whole. A folded cell keeps the summary line saying what it held; rows go from the "
+    "middle out, results and reasoning before tool calls, claims and the reply. The whole "
+    "transcript is in the run artifact — this case's `.md` and this sample's own `.db`._ |  |"
+)
+_ELIDED_NOUN = "transcript row"
+
+# What the reduction reads back off the markup this module owns — the row grammar declared at
+# the top, plus the two wrappers a cell can carry.  A structural rewrite, the same idiom
+# ``parse_sample_block`` and ``elide_unused_prompts`` already use.
+_FENCE_OPENS = "```"
+_DETAILS_OPENS = "<details><summary>"
+_CELL_FOLD = re.compile(r"<details><summary>(?P<summary>.*?)</summary>.*?</details>")
+
+
+class ElisionTier(IntEnum):
+    """The order a reduced fold gives its rows up in — declared, so "results before calls" is
+    a property of the data rather than a comparison somewhere in the loop."""
+
+    RETURNED = 0  # what came back and what was thought about it
+    DECIDED = 1  # what was done and what was claimed of it
+
+
+# Which rows land in which tier.  Named sets rather than a test on each line, so a row label
+# nobody enumerated is KEPT: an unrecognised row is evidence until something says otherwise,
+# and the middle elision can still reach it if the budget demands.
+_ELIDABLE_ROWS = (ROW_THINKING, ROW_BASELINE)
+_ESSENTIAL_ROWS = (ROW_EXPECTED, ROW_NOTE)
+# What Penny DID and what she finally SAID — the two things a reduced fold gives up last.
+_ESSENTIAL_ACTORS = (ACTOR_CALL, ACTOR_REPLY)
+_ACTORS = (ACTOR_USER, ACTOR_CALL, ACTOR_RESULT, ACTOR_REPLY, ACTOR_ASIDE, ACTOR_MICRO)
+
+
+@dataclass(frozen=True)
+class ReducedBody:
+    """A sample body as the comment can carry it, and what that cost: the rows dropped whole
+    and the characters gone from the body, counted against the body it was given."""
+
+    text: str
+    rows: int = 0
+    characters: int = 0
+
+    @property
+    def reduced(self) -> bool:
+        """Whether anything was given up — CHARACTERS, not rows: collapsing a folded cell to
+        its summary is a reduction a reader has to be told about even when every row stands."""
+        return self.characters > 0
+
+
+@dataclass(frozen=True)
+class BoundedFold:
+    """One sample as the comment carries it: the rendered fold (or folds), and whether the
+    reduction had to run to bring it inside the budget."""
+
+    text: str
+    reduced: bool = False
+
+
+def bounded_sample_folds(number: int, banner: str, body: str, budget: int) -> BoundedFold:
+    """One sample's fold(s), each within ``budget`` (the summary function): the lossless
+    internal seams where they suffice (#1917), the reduction where they do not (#2135)."""
+    folds = sample_folds(number, banner, body, budget)
+    if max(len(fold) for fold in folds) <= budget:
+        return BoundedFold(BLOCK_SEPARATOR.join(folds))
+    reduced = reduce_sample_body(body, _block_budget(number, banner, budget))
+    return BoundedFold(fold_sample(number, banner, reduced.text), reduced.reduced)
+
+
+def bounded_representative(
+    *, banner: str, number: int, prompts: str, transcript: str, turns: int, budget: int
+) -> BoundedFold:
+    """The representative section as the comment carries it, within ``budget``.
+
+    Its FRAMING is paid for first and is never reduced — the heading, the finding its summary
+    states, the sample's own verdict line, and the prompts it was run with.  Those are what a
+    reader opened the section for and they are a fixed cost; what is left is what the
+    transcript may spend.
+
+    The section has no internal seams to try first: it renders as ONE ``titled_fold`` under a
+    heading that names it, so the reduction is the only thing that can bound it."""
+    summary = representative_summary(banner, turns)
+    framing = _representative_section(banner, number, prompts, "", summary)
+    reduced = reduce_sample_body(transcript, budget - len(framing) - len(BLOCK_SEPARATOR))
+    section = _representative_section(banner, number, prompts, reduced.text, summary)
+    return BoundedFold(section, reduced.reduced)
+
+
+def _representative_section(
+    banner: str, number: int, prompts: str, transcript: str, summary: str
+) -> str:
+    """The representative's one composition, read twice — once to price its framing, once to
+    render it — so the fold measured and the fold posted cannot be two different shapes."""
+    return titled_fold(
+        REPRESENTATIVE_HEADING,
+        summary,
+        render_representative(banner=banner, number=number, prompts=prompts, transcript=transcript),
+    )
+
+
+def reduce_sample_body(body: str, budget: int) -> ReducedBody:
+    """``body`` brought inside ``budget`` — the ONE reduction, deterministic (the summary
+    function): collapse the folded cells, then give up rows from the middle outward in tier
+    order until it fits, and state what went in one marker at the first gap.
+
+    A body already inside its budget comes back untouched, which is the overwhelmingly common
+    case and byte-identical to what it always was — and so does one the reduction cannot make
+    SMALLER: the marker is a fixed cost, so on a body with almost nothing to give up it can
+    cost more than it saves, and a "reduction" that grows a fold is a worse fold with less
+    evidence in it."""
+    if len(body) <= budget:
+        return ReducedBody(body)
+    lines = body.split("\n")
+    labels = _row_labels(lines)
+    cells = [_collapsed(line) if labels[index] else line for index, line in enumerate(lines)]
+    dropped = _dropped_rows(labels, cells, budget - _marker_allowance(body, len(lines)))
+    characters = len(body) - len("\n".join(_kept(cells, dropped)))
+    if characters <= 0:
+        return ReducedBody(body)
+    marker = REDUCTION_MARKER.format(rows=plural(len(dropped), _ELIDED_NOUN), characters=characters)
+    text = _marked(lines, cells, dropped, marker)
+    if len(text) >= len(body):
+        return ReducedBody(body)
+    return ReducedBody(text, len(dropped), characters)
+
+
+def _kept(cells: Sequence[str], dropped: set[int]) -> list[str]:
+    """The lines that survive the reduction, in order."""
+    return [cell for index, cell in enumerate(cells) if index not in dropped]
+
+
+def _marked(lines: Sequence[str], cells: Sequence[str], dropped: set[int], marker: str) -> str:
+    """The surviving lines with the marker standing at the FIRST gap — the first line the
+    reduction dropped or collapsed, which is where a reader first meets what is missing."""
+    gap = next(
+        (index for index in range(len(lines)) if index in dropped or cells[index] != lines[index]),
+        len(lines),
+    )
+    before = sum(1 for index in range(gap) if index not in dropped)
+    kept = _kept(cells, dropped)
+    return "\n".join([*kept[:before], marker, *kept[before:]])
+
+
+def _dropped_rows(labels: Sequence[str], cells: Sequence[str], room: int) -> set[int]:
+    """Which rows the body gives up to fit ``room`` — in tier order, nearest the middle first,
+    and no more than it takes."""
+    size = len("\n".join(cells))
+    dropped: set[int] = set()
+    for index in _elision_order(labels, cells):
+        if size <= room:
+            break
+        dropped.add(index)
+        size -= len(cells[index]) + 1
+    return dropped
+
+
+def _elision_order(labels: Sequence[str], cells: Sequence[str]) -> list[int]:
+    """Every row that MAY be given up, in the order it is: each tier in turn, and within a tier
+    from the MIDDLE outward — the ends of a transcript are what a reader reads. Ties go to the
+    earlier row, so the order is total and the same fold always reduces the same way."""
+    middle = (len(labels) - 1) / 2
+    tiers: dict[ElisionTier, list[int]] = {tier: [] for tier in ElisionTier}
+    for index, label in enumerate(labels):
+        tier = _row_tier(label, cells[index])
+        if tier is not None:
+            tiers[tier].append(index)
+    return [
+        index
+        for tier in ElisionTier
+        for index in sorted(tiers[tier], key=lambda one: (abs(one - middle), one))
+    ]
+
+
+def _row_tier(label: str, row: str) -> ElisionTier | None:
+    """Which tier a row is given up in, or ``None`` for one that never is (a step header, a
+    divider, a line that is not a row at all)."""
+    if label in _ELIDABLE_ROWS:
+        return ElisionTier.RETURNED
+    if label in _ESSENTIAL_ROWS:
+        return ElisionTier.DECIDED
+    if label != ROW_ACTUAL:
+        return None
+    if _row_actor(label, row) in _ESSENTIAL_ACTORS:
+        return ElisionTier.DECIDED
+    return ElisionTier.RETURNED
+
+
+def _row_actor(label: str, row: str) -> str:
+    """The actor glyph an ``actual`` row's body opens on — through a folded cell's summary,
+    which opens on the same glyph, so a collapsed row classifies like the one it came from."""
+    body = row[len(ROW_OPENS) + len(label) + len(CELL_SEPARATOR) :]
+    body = body.removeprefix(_DETAILS_OPENS)
+    return next((actor for actor in _ACTORS if body.startswith(actor)), "")
+
+
+def _row_labels(lines: Sequence[str]) -> list[str]:
+    """Each line's table-row label, or ``""`` for a line that is not one.
+
+    FENCED text is never a row: a system prompt and a rejected draw are quoted verbatim inside
+    a code fence, and a quoted line that happens to open with ``|`` is content rather than
+    markup — reading it as a row would let the reduction edit the model's own words."""
+    labels: list[str] = []
+    quoted = False
+    for line in lines:
+        if line.lstrip().startswith(_FENCE_OPENS):
+            quoted = not quoted
+        labels.append("" if quoted else _row_label(line))
+    return labels
+
+
+def _row_label(line: str) -> str:
+    """The label in a table row's first column, or ``""`` when the line is not a row (the
+    divider included — it carries no cells, and nothing may drop it)."""
+    if not (line.startswith(ROW_OPENS) and line.endswith(ROW_CLOSES)):
+        return ""
+    label, separator, _ = line[len(ROW_OPENS) :].partition(CELL_SEPARATOR)
+    return label if separator else ""
+
+
+def _collapsed(row: str) -> str:
+    """One row with every cell that folded a copy of its own text collapsed to the summary
+    ``truncate_cell`` built for it — the first line and the length.
+
+    That is the truncation rule's own answer minus the full copy beneath it, so the cell still
+    says what it held and how much of it, and the copy stays where it is complete."""
+    return _CELL_FOLD.sub(lambda match: match.group("summary"), row)
+
+
+def _marker_allowance(body: str, rows: int) -> int:
+    """What the marker may cost, at its widest.
+
+    Its numbers are not known until the drops are decided, and the drops are decided against
+    the room it leaves — so the room is measured against the marker's MAXIMA (every line
+    dropped, the whole body gone), which is an upper bound on what it can render to."""
+    widest = REDUCTION_MARKER.format(rows=plural(rows, _ELIDED_NOUN), characters=len(body))
+    return len(widest) + 1
 
 
 _SAMPLE_BOUNDARY = re.compile(rf"\n\n(?={SAMPLE_BLOCK_START})")

@@ -1255,10 +1255,33 @@ reproduces the document byte for byte** — nothing dropped, summarised, or re-w
 GitHub's 64K comment cap; content verbatim)`; a run that FITS is ONE part with no header (posting is
 byte-identical to before); the run header opens the document so it lands on part 1; `.posted` holds the
 **first** part's URL so idempotency + the unreviewed-run banner stay honest; the budget is **~58K**, not
-64K (the header, and GitHub counting differently from `wc -c`). Two loud refusals guard what is posted:
+64K (the header, and GitHub counting differently from `wc -c`). One loud refusal guards what is posted:
 a body **opening with build noise** (`docker compose`, `GIT_COMMIT=`, `#1 [internal]` — what a hand-piped
-`make assemble` publishes; it happened, and eight comments had to be deleted), and a **single sample fold
-over the hard cap**, which no legal cut can shrink.
+`make assemble` publishes; it happened, and eight comments had to be deleted).
+
+**A fold bigger than one comment is REDUCED, not refused (#2135).** The seam rule means a single sample
+fold over the hard cap has no legal cut inside it, and that used to end the whole post: one
+`chat-answer-one-link-deep` sample thrashed for its whole step budget, rendered ONE step table of 78,258
+characters inside a 94K fold, and its entire gpt-oss report went unposted while the gemma sibling's posted
+normally. The measurement was correct (the thrashing itself is the filed Penny defect #2123) — it was the
+posting route that could not carry it, and both remedies the refusal implied were wrong: a lower
+`EVAL_SAMPLES` changes the N a ceiling is keyed to, and re-rolling for a smaller fold spends money to hide
+a finding. So `report.reduce_sample_body` is the ONE reduction, deterministic, and what it gives up is
+ORDERED so a fold barely over budget loses almost nothing: first every cell that folded a second copy of
+its own text collapses to the summary `truncate_cell` already built for it (the first line and the length
+— on the real fold that alone was 58,161 characters and no row went), then rows go **from the middle
+outward** in two tiers, what came BACK and what was thought (results, micro-context draws, thinking,
+baselines) before what was DONE and CLAIMED (tool calls with their arguments, expected rows, the reply).
+A structural row — a step header, a divider, the run-close header — is never given up, and fenced text is
+never read as a row, so the reduction can never edit the model's own quoted words. ONE marker stands at
+the first gap saying what was elided, how much, and that the whole transcript is in the run artifact; the
+case document's **health row** (`samples`) gains `· N reduced to fit the comment cap`, because an abridged
+transcript is exactly the kind of fact a reader would otherwise assume the opposite of. It runs at
+ASSEMBLE time over the case document already on disk — the same seam `summarise_thinking` and
+`elide_unused_prompts` run at — so re-posting a finished run (`make eval-report RUN=… FORCE=1`) picks it
+up with **no re-run**. With every fold bounded, a part over the cap is an INVARIANT VIOLATION rather than
+a case: `comment_split.enforce_part_cap` raises `OversizedPartError` as the renderer bug it is instead of
+refusing the caller.
 
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 

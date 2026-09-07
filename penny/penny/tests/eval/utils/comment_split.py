@@ -31,6 +31,12 @@ honest:
 Budget is ~58K rather than the full 64K: the part header, and GitHub counting a body's length
 differently from ``wc -c``, both eat into the cap.
 
+A fold LARGER than one part used to end the whole post — a real run's 94K sample fold made an
+entire gpt-oss report unpostable (#2135). It cannot end it any more: the renderer bounds every
+sample fold to ``PART_BUDGET`` before this module sees the document, so a part over the hard cap
+is now an INVARIANT VIOLATION rather than a case, and ``enforce_part_cap`` raises it as the
+renderer bug it is instead of refusing the caller.
+
 Pure text in, text out — no model, no git, no network — so it is exercised by plain (non-eval)
 tests in ``make check``, like ``checkpoint.py``.
 
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Sequence
 from itertools import pairwise
 from pathlib import Path
 
@@ -55,6 +62,9 @@ GITHUB_COMMENT_LIMIT = 65536
 PART_BUDGET = 58000
 
 PART_HEADER = "(report {number} of {total} — split for GitHub's 64K comment cap; content verbatim)"
+# What that header OPENS with, derived from it rather than spelled a second time — what tells a
+# part's own header from the content beneath it when the invariant has to name what overflowed.
+_PART_HEADER_OPENS = PART_HEADER.split("{", 1)[0]
 
 # The recipe/build lines `make assemble` echoes to stdout — the pollution a piped assemble puts at
 # the TOP of the body. Matched against the OPENING line only (the structural reading of "opens
@@ -96,8 +106,9 @@ def partition_on_sample_folds(document: str, budget: int = PART_BUDGET) -> list[
     folds. ``"".join(...)`` reproduces the document exactly.
 
     A single fold larger than ``budget`` becomes its own over-budget part rather than being cut —
-    the seam rule outranks the budget; ``unsplittable_reason`` is what refuses it when it also
-    exceeds the hard cap."""
+    the seam rule outranks the budget. Since #2135 the renderer bounds every fold to that same
+    budget before this ever sees one, so that case is the invariant ``enforce_part_cap`` holds
+    rather than a shape to expect."""
     parts: list[str] = []
     current = ""
     for segment in sample_fold_segments(document):
@@ -140,19 +151,41 @@ def build_noise_reason(document: str) -> str | None:
     return None
 
 
-def unsplittable_reason(parts: list[str]) -> str | None:
-    """The actionable reason a part cannot be posted — a single sample fold larger than GitHub's
-    hard cap, which no legal cut can shrink — or ``None`` when every part fits."""
+class OversizedPartError(RuntimeError):
+    """A part still over GitHub's cap after the renderer bounded every sample fold.
+
+    A RENDERER BUG rather than a caller error, which is why it is raised where it is found
+    instead of returned as a refusal: nothing the caller can do fixes it. It was a refusal once
+    (#1808), and the two remedies that refusal implied were both wrong — a lower ``EVAL_SAMPLES``
+    changes the N a ceiling is keyed to, and re-rolling for a smaller fold spends money to hide
+    a finding. Since #2135 an oversized fold is REDUCED instead, so reaching this means a fold
+    came back over its budget."""
+
+
+def enforce_part_cap(parts: Sequence[str]) -> None:
+    """The invariant every posted part holds: it fits GitHub's hard cap.
+
+    It holds by construction — the assembler bounds every sample fold to ``PART_BUDGET``
+    (``report.bounded_sample_folds`` / ``report.bounded_representative``, #2135) and this module
+    packs whole folds to that same budget. What the check still catches is the residue the
+    budget does not price: a part is one fold plus whatever case-level material trails it before
+    the next fold opens, and a case tail wide enough to spend the gap between the budget and the
+    cap would land here."""
     for number, part in enumerate(parts, start=1):
         if len(part) > GITHUB_COMMENT_LIMIT:
-            opening = part.strip().splitlines()[0] if part.strip() else ""
-            return (
+            raise OversizedPartError(
                 f"part {number} is {len(part)} characters — over GitHub's {GITHUB_COMMENT_LIMIT} "
-                f"cap and made of ONE sample fold, which cannot be cut without breaking its "
-                f"markup. Shrink the sample itself (the fold opening {opening[:80]!r}) — e.g. more "
-                f"shared-prompt hoisting — or run the case at a lower EVAL_SAMPLES."
+                f"cap after every sample fold was bounded, so a fold came back over budget. It "
+                f"opens {_part_opening(part)[:80]!r}."
             )
-    return None
+
+
+def _part_opening(part: str) -> str:
+    """The first line of a part's own CONTENT — past the ``report N of M`` header a split part
+    carries, which is this module's own line and says nothing about what overflowed."""
+    lines = [line for line in part.strip().splitlines() if line.strip()]
+    body = [line for line in lines if not line.startswith(_PART_HEADER_OPENS)]
+    return body[0] if body else ""
 
 
 # ── CLI: python -m penny.tests.eval.utils.comment_split <document> <out_dir> ────────
@@ -173,8 +206,9 @@ def write_parts(parts: list[str], out_dir: Path) -> list[str]:
 
 def main(argv: list[str]) -> int:
     """Split the document at ``argv[0]`` into ``argv[1]``, printing each part's file name. Refuses
-    (exit 1, actionable stderr) an unreadable or empty document, a body opening with build noise,
-    and a part no legal cut can bring under GitHub's cap. Bad args → 2."""
+    (exit 1, actionable stderr) an unreadable or empty document and a body opening with build
+    noise. Bad args → 2. A part still over the cap is the renderer's bug, not the caller's, so
+    ``enforce_part_cap`` raises rather than refusing."""
     if len(argv) != 2:
         print(USAGE, file=sys.stderr)
         return 2
@@ -186,11 +220,12 @@ def main(argv: list[str]) -> int:
     if not document.strip():
         print(f"comment_split: {document_path} is empty — nothing to post", file=sys.stderr)
         return 1
-    parts = split_run_comment(document)
-    reason = build_noise_reason(document) or unsplittable_reason(parts)
+    reason = build_noise_reason(document)
     if reason:
         print(f"comment_split: refusing to post — {reason}", file=sys.stderr)
         return 1
+    parts = split_run_comment(document)
+    enforce_part_cap(parts)
     for name in write_parts(parts, out_dir):
         print(name)
     return 0
