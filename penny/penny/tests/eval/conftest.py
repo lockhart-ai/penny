@@ -3387,7 +3387,7 @@ def _scored_sample(
 
 
 def _guarded_injector(
-    wrapper: _InjectingClient | None, observe: object | None
+    wrapper: _InjectingClient | None, observe: Observer | CyclesObserver | None
 ) -> _InjectingClient | None:
     """The injector whose misfire is reported as a failed guard CHECK, or ``None``.
 
@@ -4500,49 +4500,6 @@ class _InjectSendBail(_InjectAfterToolCall):
         )
 
 
-class _InjectDuplicateWrite(_InjectingClient):
-    """Forces ONE ``collection_write`` of one-or-more entries that each duplicate an
-    entry the target collection already holds, as the model's FIRST response.
-
-    Reproduces — deterministically against the live model — a collector that writes
-    something already saved.  The real dedup rejects it, and the rejection now BINDS
-    each matched existing key into an ``update_entry`` call; the live model must
-    recover (``update_entry`` on the bound key, or an honest ``done()``) instead of
-    re-using its own rejected key / re-reading / retrying variations until it burns
-    the step budget.  A multi-entry batch proves EVERY rejected key gets its match
-    bound, not just the first.  ``bail_injected`` records the scenario actually fired."""
-
-    def __init__(self, real, memory: str, entries: list[tuple[str, str]]) -> None:
-        super().__init__(real)
-        self._memory = memory
-        self._entries = entries
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        if not self.bail_injected:
-            self.bail_injected = True
-            return LlmResponse(
-                message=LlmMessage(
-                    role="assistant",
-                    tool_calls=[
-                        LlmToolCall(
-                            id="bail-dup-write",
-                            function=LlmToolCallFunction(
-                                name="collection_write",
-                                arguments={
-                                    "memory": self._memory,
-                                    "entries": [
-                                        {"key": key, "content": content}
-                                        for key, content in self._entries
-                                    ],
-                                },
-                            ),
-                        )
-                    ],
-                )
-            )
-        return await self._real.chat(messages, *args, tools=tools, **kwargs)
-
-
 class _InjectKeyMiss(_InjectingClient):
     """Forces ONE ``collection_get`` on a near-miss key — a key close to, but not
     equal to, one the target collection actually holds — as the model's FIRST
@@ -4653,85 +4610,6 @@ class _InjectBracketKey(_InjectingClient):
                 self.bail_injected = True
                 break
         return response
-
-
-# A guard-recovery runner: (collection, seed, wrap_client, score) -> asserts recovery.
-GuardRecoveryEval = Callable[..., Awaitable[None]]
-
-
-@pytest.fixture
-def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -> GuardRecoveryEval:
-    """Contract test for a runtime guard that refuses a bad tool call.
-
-    Drives a real collector cycle but forces one bad tool call via an injector
-    (``wrap_client(real) -> injector`` with a ``bail_injected`` flag).  The guard
-    must refuse it with an error tool response (not stop the cycle), and the live
-    model must recover.  Each sample asserts the bail actually fired AND the
-    case's ``score(db, sent) -> [fails]`` passed.  Mirrors ``nudge_eval`` but for
-    the coherent-but-wrong tool-call path rather than the plain-text-bail path."""
-
-    async def _run(
-        *,
-        case_id: str,
-        collection: str,
-        seed: Seeder,
-        wrap_client: Callable[[object], _InjectingClient],
-        score: Callable[[Database, list[str]], list[str] | list[Check]],
-        browse: list[CannedPage] | None = None,
-        samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
-        family: str | None = None,
-    ) -> None:
-        eval_artifacts.begin_case(case_id)
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            seed_user(penny.db)
-            seed(penny.db)
-            await _embed_seeds(penny)
-            if browse is not None:
-                install_browse(penny, browse)
-            sent_before = len(server.outgoing_messages)
-            wrapper = wrap_client(penny.collector._model_client)
-            penny.collector._model_client = wrapper
-            await penny.collector.run_for(collection)
-            sent = [item.content for item in penny.db.send_queue.pending_items()] + [
-                str(message.get("message", ""))
-                for message in server.outgoing_messages[sent_before:]
-            ]
-            scored = list(score(penny.db, sent))
-            if _scorer_is_graded(scored):
-                result = _guarded_graded(scored, [_bail_fired_check(wrapper.bail_injected)])
-            else:
-                fails = [s for s in scored if isinstance(s, str)]
-                if not wrapper.bail_injected:
-                    fails.append("forced bail never fired — contract not exercised")
-                result = SampleResult.binary(fails)
-            _stamp_cause(penny.db, result)
-            _write_sample_report(penny.db, case_id, sample_index, result=result)
-            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-            return result
-
-        # No exclusions section on this inline-scored runner — the void reaches run health.
-        results, perf, _voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
-        )
-        # This runner records its case without going through `_finish_case`, so it flushes at
-        # its own settle point: an inline sample is scored by the time its drive returns.
-        _flush_sample_blocks(case_id)
-        eval_artifacts.record_case(
-            case_id=case_id,
-            family=family,
-            module=request.module.__name__,
-            results=results,
-            perf=perf,
-            min_pass_rate=min_pass_rate,
-        )
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
-
-    return _run
 
 
 # A startup-eval runner: (case_id, commit_message, score) -> asserts threshold.

@@ -28,9 +28,11 @@ for one says nothing about the other.
     repeat and the seeded messages are byte-identical on every arm.
   * THE INJECTION IS HARNESS MACHINERY.  A sample the replay never fired on ran an unbroken
     cycle and exercised no recovery, so it leaves the cohort as a named exclusion rather
-    than counting as a behavioural failure.  THE COST, STATED (#2018): ``bail_injected``
-    says the repeat was ISSUED, not that the guard refused it — a mutating call landing
-    first clears the seen-calls cache (#1673), and such a sample leaves here too.
+    than counting as a behavioural failure.  THE COST, STATED (#2018): the exclusion reads
+    ``bail_injected``, which is set when the repeat is ISSUED — being issued is not being
+    EFFECTIVE.  A mutating call landing first clears the seen-calls cache (#1673), so the
+    replay would execute rather than be refused; that sample is POOLED AND JUDGED against
+    claims about a recovery it never had to make.  That is the residual hole, still open.
   * LANDED renders EMPTY, and that is the correct report: a collector moves no conversation
     machine.  The run record's outcome is a RECORD FIELD and is claimed under STORE.
   * the tool calls MEASURED rather than asserted — the route after a refusal is exactly

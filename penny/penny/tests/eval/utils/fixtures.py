@@ -543,11 +543,6 @@ RECIPE_BOX_EXTRACTION_PROMPT = (
 # candidate key differs from the matched key (the 47%-recovery embedding-match arm).
 RECIPE_BOX_DUP_KEY = "sheet pan chicken fajitas"
 RECIPE_BOX_DUP_CONTENT = "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F."
-# A second duplicate (of the OTHER seeded entry) for the multi-entry rejection case:
-# a batch of two duplicates, each matching a DIFFERENT existing key, proving every
-# rejected key gets its own match bound — not just the first.
-RECIPE_BOX_DUP_KEY_2 = "one pot lemon orzo"
-RECIPE_BOX_DUP_CONTENT_2 = "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min."
 # The keys the box holds after seeding (SynthCollection keys = text before ' — ').
 RECIPE_BOX_SEED_KEYS = ("Sheet-pan chicken fajitas", "One-pot lemon orzo")
 
@@ -555,20 +550,9 @@ RECIPE_BOX_SEED_KEYS = ("Sheet-pan chicken fajitas", "One-pot lemon orzo")
 # after a key-not-found rejection the model runs collection_keys / read_similar,
 # finds the entry under a slightly different key, then mis-picks collection_write
 # (→ duplicate-rejected) instead of update_entry.  The rejection now names the
-# write-vs-update decision.  This enrichment task hands the collector the SAME
-# recipe already saved, plus a richer detail (a marinade step) — so keeping the box
-# current means UPDATING the existing entry, not writing a fresh one.  Step 2 stays
-# tool-neutral ("record it so the box reflects it") so the write-vs-update choice
-# falls to the model + the rejection guidance, not to the prompt.
-RECIPE_BOX_ENRICH_PROMPT = (
-    "Keep the recipe box current with this weeknight recipe: sheet-pan chicken "
-    "fajitas — peppers, onion, chicken, 25 min at 425F, after a 10-minute lime "
-    "marinade.\n"
-    '1. collection_read_latest("recipe-box", k=20) — see what is already saved so '
-    "you do not duplicate one.\n"
-    "2. Record the recipe so the box reflects it, including the marinade step.\n"
-    "3. done()."
-)
+# write-vs-update decision, and the case that measures the recovery hands the
+# collector the SAME recipe the box already holds plus a detail it does not — so
+# keeping the box current means landing the change on the entry that exists.
 # The near-miss probe the injector forces first: the fajitas recipe is stored under
 # "Sheet-pan chicken fajitas", not this bare guess — so collection_get misses and
 # returns the key-not-found rejection the model must recover from.

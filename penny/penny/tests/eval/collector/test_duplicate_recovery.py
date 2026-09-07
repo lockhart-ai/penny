@@ -56,9 +56,11 @@ Both cases share the porting shape:
     other half of a browse-driven cycle's natural language.
   * THE INJECTION IS HARNESS MACHINERY.  A sample the forced write never fired on ran an
     unbroken cycle and exercised no recovery, so it leaves the cohort as a named exclusion
-    rather than counting as a behavioural failure.  THE COST, STATED (#2018):
-    ``bail_injected`` says the write was ISSUED, not that the gate classified it the way the
-    case is named for — a cycle whose collision took the exact-key door leaves here too.
+    rather than counting as a behavioural failure.  THE COST, STATED (#2018): the exclusion
+    reads ``bail_injected``, which is set when the write is ISSUED — being issued is not
+    being CLASSIFIED the way the case is named for.  A collision the gate resolved by the
+    exact-key door instead is POOLED AND JUDGED, against claims about a door it never went
+    through.  That is the residual hole, still open.
   * WHEN the write is forced is part of the design.  An injector's response is synthetic and
     bypasses the persisting client (#1695), so a forced call that ENDS the cycle leaves the
     run with no promptlog row at all — nothing for ``set_run_outcome`` to stamp, an empty
@@ -103,6 +105,7 @@ from penny.database.skills import (
     slug_skill_name,
 )
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.penny import Penny
 from penny.program import program_calls
 from penny.prompts import Prompt
 from penny.tests.conftest import require_memory
@@ -487,6 +490,29 @@ def _assert_the_box_entry_condition(db: Database) -> None:
     )
 
 
+def _assert_the_box_is_vectorised(penny: Penny) -> None:
+    """The precondition this case's whole result hangs on, probed where it is true.
+
+    The gate answers a reworded-key collision by the strict CONTENT signal, and that signal
+    is a cosine over the stored entry's content vector.  A stored entry carrying none cannot
+    score, so every collision classifies as DIVERGENT, the STOP never fires, and the case
+    reports a model failure for a world that was never built — silently, at one live cycle
+    per sample, which is the same class of quiet disarm the seed probe exists to stop.
+
+    It is a ``prepare`` probe rather than part of the seed because of WHEN the vectors
+    arrive: the runner lays the world down, backfills the embeddings, and only then hands
+    the constructed Penny to ``prepare``.  Asserted in the seed it would read the row a
+    moment before the value it is about exists, and fail every sample."""
+    entries = require_memory(penny.db, RECIPE_BOX.name).read_all()
+    unvectorised = sorted(entry.key or "" for entry in entries if not entry.content_embedding)
+    assert entries and not unvectorised, (
+        "every seeded recipe must carry a content vector before the cycle starts — the "
+        "same-value signal is a cosine over it, and without one the collision this case "
+        f"forces reads as divergent and the STOP can never fire.  Missing on "
+        f"{unvectorised or 'nothing: the box is empty'}"
+    )
+
+
 def _box_arms() -> list[CycleArm]:
     """This case's five arms — five wordings of one instruction over one set of facts."""
     return [
@@ -543,6 +569,7 @@ async def test_a_value_already_recorded_stops_the_cycle(
         collection=RECIPE_BOX.name,
         arms=_box_arms(),
         samples_per_phrasing=3,
+        prepare=_assert_the_box_is_vectorised,
         wrap_client=lambda real: _InjectDuplicateWriteAfterAStep(
             real, RECIPE_BOX.name, [(RECIPE_BOX_DUP_KEY, RECIPE_BOX_DUP_CONTENT)]
         ),
@@ -873,8 +900,19 @@ def _watch_world(reading: WatchReading) -> World:
     ``assert_something_from_each_page_was_written``, which this case never calls — and there
     is nothing they could usefully hold: a ``keeps`` token has to appear on ONE page so a
     stored copy says which page it came from, and every arm here reads the same url, the same
-    item and the same posting."""
-    return World(name=reading.name, pages=(_watch_page(reading),), keeps=(), excludes=())
+    item and the same posting.
+
+    ``answers`` is the reply-side counterpart and this case DOES make that claim: what the
+    user is told has to name the reading it moved to.  Declared on the world rather than read
+    off a module constant, so the token renders in the report's own ground beside the page it
+    came from, and the claim is answered against the arm that produced the sample."""
+    return World(
+        name=reading.name,
+        pages=(_watch_page(reading),),
+        keeps=(),
+        excludes=(),
+        answers=(_MOVED_AMOUNT,),
+    )
 
 
 def _watch_seeder(reading: WatchReading):
@@ -966,17 +1004,25 @@ def _assert_the_watch_program_parses(db: Database, reading: WatchReading) -> Non
 def _assert_the_watch_entry_condition(db: Database, reading: WatchReading) -> None:
     """The state the cycle starts from, and the two amounts the claims name.
 
-    Uniqueness is a property of the WORLD, not of the token: the page must carry the moved
-    amount and must NOT carry the stored one, or a correct write quoting the page could hold
-    both and the "no longer" half would fail a run that did everything right."""
+    Uniqueness is a property of the WORLD, not of the token, and it is asserted as a
+    SUBSTRING relation over the whole page rather than over the datum line alone: the claims
+    match ``96`` and ``128`` as substrings of the store, so a neighbouring ``$196`` would let
+    a wrong grab satisfy the first, and any mention of the old amount would let a correct
+    write quote it and fail the second."""
     held = collection_entries(db, _LANTERN_CONTAINER)
     assert held == {_LANTERN_KEY: _STORED_VALUE}, (
         f"the watch must hold exactly its last reading when the cycle starts, got {held}"
     )
-    assert _MOVED_AMOUNT in reading.body and _STORED_AMOUNT not in reading.body, (
-        f"this arm's page must carry {_MOVED_AMOUNT!r} and not {_STORED_AMOUNT!r} — the "
-        "claims name both amounts, and a page mentioning the old one would let a correct "
-        "write carry it honestly"
+    assert reading.body.count(_MOVED_AMOUNT) == 1, (
+        f"{_MOVED_AMOUNT!r} must appear exactly ONCE anywhere in this arm's page, as a "
+        f"SUBSTRING — the claim reads it out of the store as one, so a neighbouring "
+        f"$1{_MOVED_AMOUNT} would let a wrong grab satisfy it silently.  It appears "
+        f"{reading.body.count(_MOVED_AMOUNT)} times"
+    )
+    assert _STORED_AMOUNT not in reading.body, (
+        f"{_STORED_AMOUNT!r} must appear NOWHERE in this arm's page, as a substring — the "
+        "claim asserts the store no longer holds it, and a page mentioning it would let a "
+        "correct write carry it honestly and fail a run that did everything right"
     )
     assert reading.body.count(_DATUM) == 1, (
         f"the watched line {_DATUM!r} must appear exactly once on this arm's page — a second "
@@ -1042,19 +1088,19 @@ def _told_once(sample: SampleObservation, _world: World) -> Answer:
     return count == 1, f"{count} messages reached the send queue: {sample.notifications}"
 
 
-def _the_message_states_the_new_reading(sample: SampleObservation, _world: World) -> Answer:
+def _the_message_states_the_new_reading(sample: SampleObservation, world: World) -> Answer:
     """What reached the user names the reading it moved to.
 
     The COMPLETENESS half of being told: a message that reaches the queue, is whole, and
     names nothing the user did not already know has not told them their watch moved.  Read
-    on the bare amount, which is digits and therefore strictly identifiable; every other word
-    in the message is the model's to choose, which is why this claim is the ``reply`` kind and
-    is never offered a floor."""
+    off the WORLD's own ``answers`` tokens — the design's reply-side read — rather than off a
+    constant this function reaches for, so the claim is answered against the ground its own
+    arm ran on.  Each is digits and therefore strictly identifiable; every other word in the
+    message is the model's to choose, which is why the label opens ``reply:`` and the row is
+    never offered a floor."""
     said = "\n".join(sample.notifications)
-    return (
-        _MOVED_AMOUNT in said,
-        f"the message never states {_MOVED_AMOUNT}: {sample.notifications}",
-    )
+    missing = [token for token in world.answers if token not in said]
+    return not missing, f"the message never states {missing}: {sample.notifications}"
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -1113,7 +1159,6 @@ async def test_a_divergent_value_lands_on_the_entry_that_exists(
         f"reply: the message states the reading it moved to ({_MOVED_AMOUNT})",
         _the_message_states_the_new_reading,
         SpecCategory.STORE,
-        kind="reply",
     )
 
     # PROVENANCE
