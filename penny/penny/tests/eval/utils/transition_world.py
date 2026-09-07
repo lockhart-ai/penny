@@ -3616,8 +3616,14 @@ class _IdleRequestCase(NamedTuple):
     journeys: tuple[_Journey, ...] = _JOURNEYS
 
 
+# The ids these two carry swapped when #2005 collapsed the edge onto one canonical case: the
+# SURVIVOR takes the edge's id, because the epic is one case per EDGE and the edge is what an
+# id names, and the quarantined variant takes an id naming what it now is.  ONE id must never
+# name two cases — a fixture carrying a live case's id is a diagnostic pointing at the wrong
+# file, which is the same fix ``_AURORA_ROUND`` took.  Both survive as the parked half of a
+# request → apply case, which is why neither is deleted.
 _SHORT_TIMETABLE = _IdleRequestCase(
-    case_id="transition-idle-to-request",
+    case_id="short-ask-timetable",
     ask=_SHORT_ASK_TIMETABLE,
     skill=_FERRY_SKILL,
     settled={"keyword": "dawn sailing"},
@@ -3627,7 +3633,7 @@ _SHORT_TIMETABLE = _IdleRequestCase(
 )
 
 _SHORT_LISTING = _IdleRequestCase(
-    case_id="transition-idle-to-request-listing",
+    case_id="transition-idle-to-request",
     ask=_SHORT_ASK_LISTING,
     skill=_AURORA_SKILL,
     settled={},
