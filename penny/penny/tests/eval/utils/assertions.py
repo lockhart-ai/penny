@@ -56,6 +56,12 @@ _NOTHING_CREATED = "state: no mechanism was created"
 # Its sibling, and case-neutral for the same reason: one wording reads the same whether the
 # round was abandoned, corrected, or accepted and stood up.
 _TOUCHED_ONLY_ITS_OWN = "state: the only mechanism this turn changed is the one the round built"
+# The identity claim's label, KEPT verbatim from the first customer that made it (#2048): the
+# claim's logic did not change when it graduated, and a relabelled claim is a claim whose
+# history splits in two.
+_JOB_IS_THE_DERIVED_CONTAINER = (
+    "state: the job it stood up is the container derived for this routine and this listing"
+)
 
 # The ground a claim is answered against by a cohort that declared no arms at all — the
 # unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
@@ -336,7 +342,7 @@ class Cohort:
         A turn that minted a second container beside it fails this too: two containers is not
         one job."""
         self.claim(
-            "state: the job it stood up is the container its values derive",
+            _JOB_IS_THE_DERIVED_CONTAINER,
             _the_one_born_is(container),
             SpecCategory.STORE,
         )

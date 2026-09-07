@@ -566,7 +566,7 @@ class _CorrectionCase(NamedTuple):
 # is what was wanted.  The plainest delta of the five — same page, same kind of value, one
 # line over — and the one whose correction opens with a self-correction ("oh wait").
 _CORRECT_TO_STORM_SIGNAL = _CorrectionCase(
-    case_id="transition-learn-to-learn",
+    case_id="transition-learn-to-learn-storm-signal",
     prior=_TEACH_HARBOUR_FLAG,
     demonstrated=_SIGNALS_DEMONSTRATED,
     skill=_SIGNALS_SKILL,
@@ -589,7 +589,7 @@ _CORRECT_TO_STORM_SIGNAL = _CorrectionCase(
 # round's framing carries and the container's name is derived from — so this is the one
 # where keeping the job in one place is a real question rather than an arithmetic certainty.
 _CORRECT_TO_SOUTH_LOOP = _CorrectionCase(
-    case_id="transition-learn-to-learn-parameter",
+    case_id="transition-learn-to-learn",
     prior=_TEACH_CLIFF_WALK,
     demonstrated=_TRAIL_DEMONSTRATED,
     skill=_TRAIL_SKILL,
@@ -982,7 +982,15 @@ def assert_the_correction_is_unsaid(db: Database, case: _CorrectionCase) -> None
 
 # ── The survivor, its wordings, and the world they are answered against ───────
 
-_CASE_ID = "transition-learn-to-learn"
+_SURVIVOR = _CORRECT_TO_SOUTH_LOOP
+
+# The ids these two carry swapped when #2005 collapsed the edge onto one canonical case: the
+# SURVIVOR takes the edge's id, because the epic is one case per EDGE and the edge is what an
+# id names, and the quarantined variant takes an id naming what it now is.  ONE id must never
+# name two cases — ``case_id`` is threaded through the seeder and every probe assertion, so a
+# probe failure on the live case would print the quarantined fixture's name.  Read off the
+# survivor rather than restated, so the two can never disagree.
+_CASE_ID = _SURVIVOR.case_id
 
 # The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
 # Penny <does Y>."  The case id is a filename; this is the contract.
@@ -992,8 +1000,6 @@ _BEHAVIOUR = (
     "container, letting go of the value it replaces, and updating the routine she taught rather "
     "than filing a second one beside it."
 )
-
-_SURVIVOR = _CORRECT_TO_SOUTH_LOOP
 
 # Four more wordings of that same correction.  What varies is only how a person says they meant
 # something else — which apology opens it, "use that one" or "go with that", whether the wrong
