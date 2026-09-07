@@ -1,100 +1,141 @@
-"""The chat memory stories — what a user asks Penny's memory to do, end to end.
+"""The memory verbs: save · recall · forget · update · fan-out · no-fire (#2008, tranche 1).
 
-Each case drives the REAL chat path against the live model with the user's own words
-and scores PERSISTED state: the collections, the entries and their run stamps, the
-pages the browse log holds, the machine's own move, and the replies Penny sent.  Five
-stories, in the order a user meets them:
+Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-    1. remember it        "remember X for me"  → it is stored, and it comes back later
-                          (same conversation · a cold next session · off the ambient
-                          activity line · across the whole store)
-    4. look it up         "look it up and save it" → browse then write (one hop, two
-                          hops, the check-then-fill, and the lookup that UPDATES)
-    5. change it          "forget X" / "change my note" → exactly that entry, the rest
-                          untouched
-    6. leave it alone     a passing mention is not an instruction — nothing fetched,
-                          nothing written
-   11. two facts at once  one message carrying a like and a dislike → two writes, each
-                          into the collection that fits it
+**Eight cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
+different claims rather than scenarios standing in for one — saving, recalling, forgetting and
+updating are four contracts, and a sample that is correct for one is wrong for another.  Only
+*within* a verb is there paraphrase-collapsing to do, and each case here is one ask in five
+wordings against one world, with its facts held constant across the arms.
 
-Every story here is a turn that begins and ends in ``idle`` — the whole of it happens
-inside the one turn, and the ``state_transition`` rows read ``idle → idle`` for every
-case in the file.  That includes the ones whose message carries an instruction
-("remember it", "save it to my games list"): a message with no standing or scheduling
-component is handled in the conversation, so it never leaves idle.  Story 15's two
-teach cases DID leave it — they walk idle → elicit → learn — so they are the learn
-microcontext's and live in ``chat/learn/test_two_source_teach.py``.  What stayed from
-that world is its third case, the demonstration whose source is down, which is an
-ordinary idle turn like the rest.
+| behaviour | case | why this survivor |
+|---|---|---|
+| save | ``memory-look-up-and-save`` | one fetch, one write, one named place |
+| recall, from the store | ``memory-cold-recall`` | the fact exists ONLY in the store |
+| recall, across the store | ``memory-recall-across-the-store`` | a different sentence — see below |
+| forget | ``memory-forget-then-list`` | the only ask that owes the report half |
+| update | ``memory-change-a-note`` | a pure edit, no lookup folded into it |
+| fan-out | ``memory-a-like-and-a-dislike`` | the slot's only candidate |
+| no-fire | ``memory-no-fire-narration`` | the mention with nothing in the store to match it |
+| no-fire | ``memory-no-fire-wistful`` | the mention with a matching collection sitting there |
 
-The worlds are the CURRENT runtime's.  Nothing is pre-seeded any more (migration
-0108), so every collection a case starts with is one this file creates the way the
-user's own earlier turn would have — through ``create_collection`` and the
-collection's own ``write``, stamped with a seeded run id so "what did THIS sample
-write" stays answerable (``is_seeded_run``).  The old ``likes`` / ``dislikes``
-catch-alls are gone and no case leans on them.
+No per-variant pass rate exists for any of these slots — the file they come from scored each
+case as one mean over a scorer callback, never per candidate — so every survivor above is
+chosen by DOMINANCE, and the sentence beside it is the reason.
 
-WHERE a write lands is deliberately open where the story does not fix it: the durable
-checks read what THIS RUN wrote wherever it landed, and the destination is reported
-beside them, so a story that never named a destination is not scored on one.  Story 11
-is the exception, because there the destination IS the story: two facts, two fitting
-places.
+**RECALL SPLIT IN TWO, and that is deliberate.**  Its four candidates spanned three starting
+states, and the design's test — *would a correct sample for one be wrong for the other?* —
+answers differently for each pair:
 
-Check labels carry one of three prefixes — ``state:`` (end DB facts), ``reply:``
-(what Penny said, against what she did), ``calls:`` (call provenance).  State and
-reply checks are SCORED; the call spine, the state the machine landed in, and the
-loop-health verdict are ADVISORY (``scored=False``) unless that row IS the story's own
-claim — a lookup before a write is one, since a write with no browse is a fact that
-came from nowhere.  Where a scored claim only exists in a state a sample never
-reached, it reads ``Check.na(...)`` rather than ❌: a precondition nobody met is not a
-contract anybody failed.
+* *the same conversation* and *a previous session* differ only in where the fact came from,
+  and a reply that reads the store answers both.  One behaviour.
+* *across the whole store* asks something else: the failure it exists to catch is PARTIAL
+  recall — three collections asked about, two answered from — and a reply naming one stored
+  fact is correct for the cold case and wrong for this one.  It needs its own sentence
+  (*"when one message asks about several of her collections at once"*), and #2004's rule is
+  that a candidate needing a different sentence is a different behaviour.
 
-Every case is REPORT-ONLY (``min_pass_rate=None``): the thresholds are the code
-owner's to set once the numbers are read.  All content is synthetic — invented games,
-invented teams, invented markets — because the repo is public.
+So recall is two cases, not one with three worlds.  Splitting a behaviour in two is a smaller
+mistake than collapsing two into one; the pair is named together here.
+
+**THE NO-FIRE DIRECTION IS TWO CASES OF ITS OWN** (#2100).  The ruling: one case is one
+setup, one run, one set of assertions, and where a behaviour's positive and negative
+directions cannot both be produced from that one setup and run, they are two cases.  A
+no-fire ask expects the opposite end state from save's, so it cannot be an arm of it, and
+save's sentence no longer mentions it.
+
+Within the no-fire direction the same rule counts TWO, not one:
+
+* the WISTFUL pool needs a collection about the message's own subject sitting in the store —
+  that temptation is the entire thing it measures, and without it the case measures nothing;
+* the NARRATION pool's identity is the ABSENCE of one.  A narration ask answered against a
+  store that already holds a collection about its subject simply IS the wistful case, so the
+  two cannot be produced from one setup.
+
+They are also two ASKS rather than two wordings of one — a lasagna recipe saved in a notes
+app, and a strategy-game campaign finished last night — so folding them would put a scenario
+boundary inside one cohort, which is what §6 forbids: a different ask reaching the same end
+state is a different case with its own fifteen.  Pooled, the variance features would be
+measuring the change of subject rather than the model's own spread.
+
+**QUARANTINED, not deleted** — every candidate that did not survive, with the reason it can
+come back deliberately:
+
+* ``memory-remember-and-recall`` — TWO user turns, so two enactments: a save and a recall
+  folded into one case.  The count rule is the count wherever it is expressed, and its save
+  half is the save behaviour already.
+* ``memory-activity-window-recall`` — the same claim as the cold recall (the reply states the
+  price, nothing is written) against a world where the anchor is MORE reachable, since the
+  self-state activity line renders the key and the collection.  Same sentence, so it is the
+  same behaviour; it is the reachability probe worth restoring the day n≤1 is measured
+  directly.
+* ``memory-look-up-two-hops`` — its distinguishing claim is that the second page was opened,
+  which is *browse-and-answer*'s (``chat-answer-one-link-deep``, tranche 2), not save's.
+* ``memory-check-then-fill`` — save with a condition on the front that the store map already
+  satisfies ambiently, so the condition is not exercised.
+* ``memory-forget-one-entry`` — its ask ("what am I into these days? actually drop chess from
+  that") leaves the ORDER free, so a reply listing all three and then dropping one is correct;
+  that makes the *says what is left* half of the sentence unassertable on it.
+* ``memory-look-up-and-update`` — folds save's lookup into update, so a sample can fail it for
+  a reason that has nothing to do with editing in place.
+
+Both no-fire pools came OUT of quarantine under #2100 and are ported below.
+
+``memory-writes-landed-source-down`` is deliberately LEFT ALONE at the bottom of this file.
+It is #1946's was-state case and none of tranche 1's behaviours; the honest-failure slot it
+sits nearest is tranche 2's, on ``test_chat_reply.py``.
+
+REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
+accept once the numbers have been read.  Every collection, game, price and note is invented,
+because the repo is public.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
+from typing import NamedTuple
 
 import pytest
-from sqlmodel import Session
 
-from penny.agents.self_state import SelfStateHeader
-from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
-from penny.database.memory import EntryInput
-from penny.database.models import MemoryEntry, PromptLog
 from penny.penny import Penny
-from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
+    EVAL_MODELS,
     REPLY_ANCHOR,
     ChatEval,
     Check,
-    chat_run_tool_sequences,
+    Preparer,
     collection_entries,
     describes,
-    is_ordered_subsequence,
-    new_collections,
-    outgoing_replies,
-    seeded_run_id,
-    tool_call_arg_values,
-    tool_call_sequence,
-    tool_was_called,
+)
+from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
+    SampleObservation,
+    SpecCategory,
+    fold_typography,
 )
 
-# The enacting-tool set is read from the suite's shared fixtures, not restated here: the
-# state machine's elicitation edge asks the same question of a turn (nothing acted on
-# before it was taught), and one policy in two copies is two contracts.
+# The pages the lookup story reads, and the collection shape every seed is written as, read
+# from the suite's shared fixtures rather than restated: two copies of a page a case is
+# measured against are two contracts free to drift.
 from penny.tests.eval.utils.fixtures import (
-    ENACTING_TOOLS,
     MULTIHOP_PAGES,
     CannedPage,
     SynthCollection,
 )
+
+# ``_normalize`` is imported for the ONE legacy case at the bottom of this file and nothing
+# else.  Every ported claim folds through ``cohort.fold_typography`` instead — the single
+# definition the shared claims already use, so a dash the store claim tolerates cannot read as
+# an invention to the provenance claim standing beside it.  Two spellings of one intention
+# drift, and this pair already had: ``_normalize`` lowercases where the shared one casefolds,
+# and folds fewer apostrophes and spaces.
 from penny.tests.eval.utils.memory_world import (
     _FAMILY,
     _FOXES_TOKENS,
@@ -102,48 +143,18 @@ from penny.tests.eval.utils.memory_world import (
     TWO_SOURCE_ASK,
     _carries,
     _entries_this_run_wrote,
-    _entry_text,
     _landing_advisory,
     _normalize,
-    _pages_fetched,
     _routing_advisory,
 )
-
-# Standing a ROUND up before the measured turn is the transition suite's idiom, read from
-# where that suite declares it rather than restated here: a seeded machine state, a seeded
-# conversation turn and a seeded ledger row are one shape, and a second copy of it would be
-# a second contract free to drift from the one every edge case is measured against.
-#
-# Its PROBES are deliberately restated instead (``_assert_parked_in_elicit`` below): that
-# suite's are keyed to its own ``_ElicitRound`` case type, which this file has no shape
-# for.  What a probe asserts is the seed it stands beside, so the honest cost of not
-# widening a neighbour's fixture type is one restated probe, named here rather than left
-# for a reader to notice.
 from penny.tests.eval.utils.worlds import (
     FOXES_NEWS,
+    World,
 )
 
 pytestmark = pytest.mark.eval
 
-# The reads a scorer asks "was the answer backed by storage" through.  ``find`` is the
-# guess-free route and carries no ``memory`` argument, so it is checked by name alone.
-_SCOPED_READ_TOOLS = ("collection_read_latest", "collection_get", "read_similar")
-_FIND_TOOL = "find"
-
-_BROWSE_TOOL = "browse"
-_WRITE_TOOL = "collection_write"
-_UPDATE_TOOL = "update_entry"
-_DELETE_TOOL = "collection_delete_entry"
-
-# The run ids the seeded worlds write under: a collection the user built in an earlier
-# session, and the recent run whose write the activity line renders.  Both are seeded
-# ids, so ``live_prompts`` and the run-stamp readers below tell them from this sample's
-# own work (#1846).
-_EARLIER_SESSION = seeded_run_id("earlier-session")
-_RECENT_RUN = seeded_run_id("recent-run")
-
-
-# ── The collections the stories start from (all user-built) ──────────────────
+# ── The collections the verbs act on (all user-built) ────────────────────────
 
 _GAMES = SynthCollection(
     "games",
@@ -151,15 +162,13 @@ _GAMES = SynthCollection(
     entries=(),
 )
 
-# The one game the lookup stories are about — invented, so it exists on no real site
-# and cannot be answered from what the model already knows.  The key is the text before
-# the em dash, the way every seeded entry in this suite is written.
+# The one game the lookup story is about — invented, so it exists on no real site and cannot be
+# answered from what the model already knows.  Its key is the text before the em dash, the way
+# every seeded entry in this suite is written.
 _MISTFORGE_ENTRY = "Mistforge Tactics — a turn-based strategy game."
 
 _GAMES_WITH_MISTFORGE = SynthCollection(
-    _GAMES.name,
-    _GAMES.description,
-    entries=(_MISTFORGE_ENTRY,),
+    _GAMES.name, _GAMES.description, entries=(_MISTFORGE_ENTRY,)
 )
 
 _INTO = SynthCollection(
@@ -178,863 +187,964 @@ _AVOID = SynthCollection(
     entries=("loud offices — can't focus in them",),
 )
 
+_GEAR_PRICE_KEY = "aurora deck 2 price"
+_GEAR_PRICE = "$499"
+
 _GEAR_NOTES = SynthCollection(
     "gear-notes",
     "Notes about gear the user tracks: what a thing is, and what it was listed at.",
-    entries=(),
+    entries=(f"{_GEAR_PRICE_KEY} — {_GEAR_PRICE}",),
 )
-_GEAR_PRICE_KEY = "aurora deck 2 price"
-_GEAR_PRICE = "$499"
-# The probe is the FIGURE, not the formatted value: a stored "499" and a stored "$499"
-# are the same fact remembered, and a scorer that demanded the currency symbol would
-# report a correct memory as a miss.
-_PRICE_FACT = "499"
 
 
-def _seed_collection(db: Database, synth: SynthCollection, *, run_id: str) -> None:
-    """Lay down a collection the user built in an earlier session, through the
-    production paths a chat turn would have used: the store's own
-    ``create_collection`` and the collection's own ``write``.
+# ── The smallest datum unique in each world ──────────────────────────────────
+#
+# Named once each, because two readers have to agree on every one of them: the PREMISE probe,
+# which asserts the token is not in the store before the turn, and the CLAIM, which asserts it
+# is after — and a token spelled twice would let the premise stop guarding the claim it exists
+# for.  Each is shrunk to the part with no alternative rendering and no other bearer in its
+# world: ``499`` and not ``$499`` (a draw that wrote the figure without the currency symbol
+# read the same entry), ``mistforge`` and not ``Mistforge Tactics`` (a draw that put the title
+# in the key and the blurb in the body read the same page), ``office`` and not ``loud offices``
+# (a measured reply answered out of all three collections and wrote "loud office spaces", which
+# the plural failed — the singular is the part every correct rendering shares).
 
-    The run stamp is what gives the seed entrance-condition fidelity — production
-    stamps every write with the run that made it (#1560), so an unstamped seed would
-    make "stamped at all" mean "written by this sample" and every reader below would
-    read a handed-down entry as this turn's work."""
-    db.memories.create_collection(synth.name, synth.description, created_by_run_id=run_id)
-    require_memory(db, synth.name).write(
-        [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],
-        author=PennyConstants.CHAT_AGENT_NAME,
-        run_id=run_id,
-    )
+_SUBJECT = "mistforge"  # the game the lookup story is about
+_PRICE = "499"  # the figure the cold recall has to state
+_AVOIDED = "office"  # the one thing the avoid list already holds
+_INTO_ANCHOR = "chess"  # the note the into-list holds in every world that seeds it
+_EDITED = "hiking"  # the note the update story names
+_DROPPED = "jazz"  # the note the forget story names
+_NEW_WORDING = "alpine"  # what the edited note must say afterwards
+_LIKE = "bouldering"  # the enthusiasm the fan-out story files
+_DISLIKE = "coffee"  # the complaint it files somewhere else
+
+# What each edit must leave exactly as it was — the seeded notes it did not name.  Derived from
+# the three above rather than listed again, so a case can never claim a note is untouched while
+# naming that same note as the one to change.
+_FORGET_KEPT = (_INTO_ANCHOR, _EDITED)
+_UPDATE_KEPT = (_INTO_ANCHOR, _DROPPED)
+
+# What a correct REPLY must name, which is not the same token set the store claims read.  The
+# store holds the seeded text verbatim, so a claim about it can name the whole word; the reply
+# is the model's own prose, where an inflectable noun has no single correct rendering — a reply
+# saying "weekend hikes" answered the ask exactly as well as one saying "hiking", and requiring
+# the participle would fail it for a cosmetic reason.  So the reply-side token is the stem, and
+# it is still the SMALLEST unique one: no other seeded name, description or entry in any of
+# these worlds contains ``hik``.
+_FORGET_ANSWERS = (_INTO_ANCHOR, "hik")
 
 
-def _stored_text(db: Database, name: str) -> str:
-    """Every key and content a collection currently holds, normalized and joined."""
+# ── The case shape ───────────────────────────────────────────────────────────
+
+
+class _VerbCase(NamedTuple):
+    """One memory verb: the world it acts on, the ask in five wordings, and the premise its
+    claims stand on.
+
+    ``ask`` and ``also_phrased`` are five wordings of ONE message against one world — the
+    cohort's arms.  What varies is only how a person says it; the collections, the subject, the
+    value and the end state expected of the turn are constant, which is what makes the fifteen
+    samples one number and what lets a claim name a value at all.
+
+    ``holds`` / ``empty`` / ``withholds`` are the seeded world's own PREMISE, asserted loudly
+    before the turn runs: what each collection must already carry, which must start empty, and
+    which tokens must appear nowhere in the store.  Every one of them is the precondition of a
+    claim below — ``withholds`` most of all, because a token already in the store would make
+    the claim that names it pass without the turn doing anything."""
+
+    case_id: str
+    behaviour: str
+    world: World
+    ask: str
+    also_phrased: tuple[str, ...]
+    holds: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    empty: tuple[str, ...] = ()
+    withholds: tuple[str, ...] = ()
+
+
+def _collection_text(db: Database, name: str) -> str:
+    """Every key and content one collection currently holds, normalized and joined."""
     entries = collection_entries(db, name)
-    return _normalize(" ".join([*entries.keys(), *entries.values()]))
+    return fold_typography(" ".join([*entries.keys(), *entries.values()]))
 
 
-def _landed_in(db: Database, fact: str) -> set[str]:
-    """The collections where THIS run's own writes carry ``fact``."""
-    needle = _normalize(fact)
-    return {name for name, entry in _entries_this_run_wrote(db) if needle in _entry_text(entry)}
-
-
-def _read_backed(db: Database, name: str) -> bool:
-    """Whether the answer was backed by a storage read: ``find`` (the guess-free
-    route) or a read aimed at the collection holding the fact."""
-    if tool_was_called(db, _FIND_TOOL):
-        return True
-    targets = {
-        target for tool in _SCOPED_READ_TOOLS for target in tool_call_arg_values(db, tool, "memory")
-    }
-    return name in targets
-
-
-def _enacting_calls(db: Database) -> list[str]:
-    """Every enacting call this sample made, in order — what a no-fire guard names
-    when it fails, and what an elicitation turn must not carry."""
-    return [tool for run in chat_run_tool_sequences(db) for tool in run if tool in ENACTING_TOOLS]
-
-
-def _reply_names(reply: str, tokens: tuple[str, ...]) -> list[Check]:
-    """The reply must NAME what it acted on (the #1478 recap prong): one graded check
-    per subject, anchored to the reply row, matched as a normalized substring — never
-    against a wording list, which proved brittle three times over."""
-    normalized = _normalize(reply)
-    return [
-        Check(
-            f"reply: names '{token}'",
-            _normalize(token) in normalized,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        )
-        for token in tokens
-    ]
-
-
-# ═══ Story 1 — "remember it" ═════════════════════════════════════════════════
-#
-# The atom every other story stands on: a fact the USER states is stored, and comes
-# back when it is asked for.  Four depths, in order of how little conversation is left
-# to answer from — the same conversation, a previous session, an ambient run line, and
-# a sweep of the whole store.  No browse fixture is installed for the first three, so
-# a value in the reply can only have come out of storage or out of the conversation,
-# never off a page.
-
-_REMEMBER_TURNS = [
-    "hey, can you remember that the aurora deck 2 is listed at $499 for me?",
-    "thanks — what did I say the aurora deck 2 was listed at?",
-]
-
-
-def _score_remember_and_recall(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The registry starts EMPTY (nothing is pre-seeded since migration 0108), so
-    there is nowhere for the fact to go and making somewhere is part of the story —
-    which is what the deleted empty-registry variant used to measure separately.
-
-    No provenance check on the read-back: answering a one-turn-old fact from the
-    conversation window is correct behaviour, and the cold case below owns provenance
-    absolutely."""
-    created = new_collections(db, before)
-    replies = outgoing_replies(db)
-    stored = _landed_in(db, _PRICE_FACT)
-    first_reply = replies[0] if replies else ""
-    final_reply = replies[-1] if replies else ""
-    return [
-        Check(
-            "state: the fact landed durably in a collection",
-            bool(stored),
-            rationale=None if stored else "no collection holds it",
-            kind="state",
-        ),
-        Check(
-            "state: exactly one collection was created (there was nowhere to put it)",
-            len(created) == 1,
-            rationale=f"created {[row.name for row in created]}",
-            kind="state",
-        ),
-        Check(
-            # A word list proved brittle (a valid confirmation phrased outside it).
-            # The honest signal is the FACT: a turn-1 reply restating the stored value
-            # is an acknowledgment, and claiming it while storage failed is the
-            # dishonest case this scores against.
-            "reply: turn 1 claims exactly what it stored",
-            bool(replies) and (bool(stored) == (_PRICE_FACT in first_reply)),
-            kind="reply",
-        ),
-        Check(
-            "reply: the read-back states the price",
-            _PRICE_FACT in final_reply,
-            kind="reply",
-        ),
-        Check(
-            "state: the fact landed in one place, not several",
-            len(stored) <= 1,
-            rationale=f"landed in {sorted(stored)}" if len(stored) > 1 else None,
-            kind="state",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_remembered_fact_comes_back_in_the_same_conversation(
-    chat_eval: ChatEval,
-) -> None:
-    """Story 1, the atom: "remember X" lands the fact somewhere durable and the next
-    turn answers with it — with no page installed, so nothing could have been looked
-    up instead."""
-    await chat_eval(
-        case_id="memory-remember-and-recall",
-        messages=_REMEMBER_TURNS,
-        score=_score_remember_and_recall,
-        min_pass_rate=None,
-        family=_FAMILY,
+def _store_text(db: Database) -> str:
+    """Every key and content the WHOLE store currently holds — what a "nowhere yet" premise is
+    read against, since a token sitting in a neighbouring collection would satisfy a claim just
+    as well as one the turn wrote."""
+    return fold_typography(
+        " ".join(_collection_text(db, row.name) for row in db.memories.list_all())
     )
 
 
-# ── 1b: the cold next session — storage is the only route ───────────────────
-#
-# The fact was stored in a PREVIOUS session, so no conversation carries it and an echo
-# is impossible: the answer exists only in the store.  This is the n≤1 invariant's
-# absolute test — the entry is reached through ``find`` or a correctly-aimed read —
-# so unlike the warm case above, provenance is scored.
+def probe_seeded_world(db: Database, case: _VerbCase) -> None:
+    """The case's premise, re-read against a live database — what must be there, what must be
+    empty, and what must be nowhere.
 
-_COLD_TURN = (
-    "hey — a while back I asked you to remember what the aurora deck 2 "
-    "was listed at. what was the price?"
+    Separate from the ``Preparer`` that wraps it so the same assertions run without a model:
+    a premise that quietly stopped holding turns a scored claim into a claim about the
+    fixture, and the cheapest place to catch that is ``make check``."""
+    for name, tokens in case.holds:
+        text = _collection_text(db, name)
+        for token in tokens:
+            assert token in text, (
+                f"{case.case_id}: {name!r} must already hold {token!r} — it holds {text!r}"
+            )
+    for name in case.empty:
+        entries = collection_entries(db, name)
+        assert not entries, (
+            f"{case.case_id}: {name!r} must start empty, or the claim that it gained an entry "
+            f"is answered by the seed — it holds {entries}"
+        )
+    everywhere = _store_text(db)
+    for token in case.withholds:
+        assert token not in everywhere, (
+            f"{case.case_id}: nothing may hold {token!r} before the turn, or the claim that "
+            f"names it passes without the turn acting — the store holds {everywhere!r}"
+        )
+
+
+def _probe(case: _VerbCase) -> Preparer:
+    """The prepare hook: the case's premise, asserted inside the sample it belongs to."""
+
+    def probe(penny: Penny) -> None:
+        probe_seeded_world(penny.db, case)
+
+    return probe
+
+
+async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
+    """Drive one verb case: the collections an earlier session left, the pages the ask may
+    reach for, and the premise re-asserted before the turn."""
+    return await chat_eval(
+        case_id=case.case_id,
+        behaviour=case.behaviour,
+        model=model,
+        prepare=_probe(case),
+        world=case.world,
+        ask=case.ask,
+        also_phrased=case.also_phrased,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+        timeout=240.0,
+    )
+
+
+# What every case measures, and why the two registry features are absent.  ``ROUTINE_SHAPE``
+# and ``ROUTINE_NAME`` read the routines in the registry, and none of these turns teaches one —
+# so on a correct cohort they read the same empty registry on every sample and pool to a serene
+# 0.000 that is neither agreement nor blindness but a reading of the FIXTURE.  A sample that DID
+# mint a routine is caught where it matters: it left idle, which the landing claim reads.
+#
+# ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so on the two
+# recall cases it is a live measurement rather than a blind one: a correct sample there reads the
+# store, and how it reaches the answer — one aimed read, a sweep of three, a ``find`` — is the
+# spread those cases exist to watch.  The two NO-FIRE cases are the ones where a correct sample
+# calls nothing at all, so the feature reads its ``absent`` value on every sample and is marked
+# BLIND in red.  That is measured anyway and stated at those cases: the divergence it exists to
+# catch is precisely the one they are named for, and the blindness lifts the moment a sample acts.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+
+
+# ── The claims, as pure functions over one sample ────────────────────────────
+#
+# Every one is a read of what the turn LEFT BEHIND — the collections, the entries and their run
+# stamps, the registry rows, the message it sent.  None reads a tool NAME: an entry cannot leave
+# a collection by accident, so the end state already says whether the edit happened, and a rule
+# keyed to ``collection_delete_entry`` would simply not fire for a plugin verb nobody enumerated.
+#
+# They stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the second
+# CUSTOMER, and the six cases below are one behaviour family in one file: a second FILE asking
+# one of these questions is what would make it shared, and no other slot has asked yet.
+
+_ClaimFn = Callable[[SampleObservation, World], Answer]
+
+
+def _held_text(sample: SampleObservation, collection: str) -> str:
+    """Everything one collection HOLDS as the sample left it, key and content, normalized.
+
+    The whole entry, always: a fact in the key and a blurb in the body is a perfectly good way
+    to store it, and a content-only read once reported a 25/32 model failure that was entirely
+    its own bug."""
+    return fold_typography(
+        " ".join(entry.text for entry in sample.held if entry.collection == collection)
+    )
+
+
+def _wrote_into(collection: str) -> _ClaimFn:
+    """This turn put an entry in the collection the ask NAMED.
+
+    Read off the run stamp rather than off a count, so a seeded entry can never answer it: what
+    is being claimed is that this turn wrote there, not that something is there.  The world's
+    own stores are laid down citing a SEEDED run (#2129), so every one of them reads as not this
+    run's work and the distinction holds by construction."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        landed = sorted({entry.collection for entry in sample.entries})
+        return collection in landed, f"this turn wrote into {landed}"
+
+    return answer
+
+
+def _wrote_nowhere_but(collection: str) -> _ClaimFn:
+    """Nothing was written outside the one place the ask named — the negative direction, on a
+    world where an ask does exist.
+
+    A violating sample is nameable: one that mints a container of its own for the subject and
+    files the fact there as well, or instead.  The rationale names every other destination it
+    reached, so the miss reads as a place rather than as a number."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        elsewhere = sorted(
+            {entry.collection for entry in sample.entries if entry.collection != collection}
+        )
+        return not elsewhere, f"also wrote into {elsewhere}"
+
+    return answer
+
+
+def _stored_the_subject(token: str) -> _ClaimFn:
+    """What this turn stored carries the subject — the SMALLEST datum that is unique in the
+    world, matched as a substring of the whole entry.
+
+    ``mistforge`` rather than ``Mistforge Tactics``: a draw that stored the title in the key and
+    the blurb in the body read the same page as one that wrote the full name into a sentence,
+    and the part they share is the fact."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        wrote = [fold_typography(entry.text) for entry in sample.entries]
+        return any(token in text for text in wrote), f"this turn stored {wrote}"
+
+    return answer
+
+
+def _wrote_nothing(sample: SampleObservation, _world: World) -> Answer:
+    """This turn wrote no entry anywhere.
+
+    A violating sample is nameable: one that answers a question by filing the answer, one that
+    deletes a note and writes a "removed jazz" record beside the rest, one that rebuilds the
+    surviving notes instead of leaving them alone."""
+    wrote = sorted(f"{entry.collection}:{entry.key}" for entry in sample.entries)
+    return not wrote, f"wrote {wrote}"
+
+
+def _holds(collection: str, token: str) -> _ClaimFn:
+    """The collection still holds a fact, whoever put it there — the read that answers *what
+    did she leave alone*, which a list of this turn's writes cannot: there, an entry never
+    touched and an entry deleted are both simply absent."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        held = _held_text(sample, collection)
+        return token in held, f"{collection} holds {held!r}"
+
+    return answer
+
+
+def _no_longer_holds(collection: str, token: str) -> _ClaimFn:
+    """The one thing the ask named is gone from the collection.
+
+    A violating sample is nameable: one that left it in place, one that dropped a neighbour
+    instead, one that "removed" it by rewriting its content while the key still carries it —
+    which is why the read is over the WHOLE entry."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        held = _held_text(sample, collection)
+        return token not in held, f"{collection} still holds {held!r}"
+
+    return answer
+
+
+def _holds_exactly(collection: str, count: int) -> _ClaimFn:
+    """The collection holds the number of entries it started with — an edit landed IN the note
+    it was told to change rather than beside it.
+
+    A violating sample is nameable: one that writes the new wording as a fourth note and leaves
+    the third standing, which is the exact defect this behaviour is named for."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        keys = sorted(entry.key or "" for entry in sample.held if entry.collection == collection)
+        return len(keys) == count, f"{collection} holds {len(keys)}: {keys}"
+
+    return answer
+
+
+def _nothing_was_reconfigured(sample: SampleObservation, _world: World) -> Answer:
+    """No mechanism was created, retired or edited.
+
+    Read off the MUTATION LEDGER rather than off a field-by-field diff (``MechanismRecord``):
+    what an edit to one entry must not do is touch the container AT ALL, and a comparison keyed
+    to a list of fields silently exempts whichever field nobody enumerated.  A violating sample
+    is nameable: one that archives the whole list instead of dropping the note it was told to
+    drop, one that rewrites the collection's description while it is in there, one that stands a
+    new container up for a fact that already has a home."""
+    touched = sorted(
+        one.name for one in sample.mechanisms if one.changed_this_run or one.born_this_run
+    )
+    return not touched, f"created or changed {touched}"
+
+
+def _landed_in(sample: SampleObservation, collection: str, token: str) -> bool:
+    """Whether an entry THIS TURN wrote into ``collection`` carries ``token``."""
+    return any(
+        entry.collection == collection and token in fold_typography(entry.text)
+        for entry in sample.entries
+    )
+
+
+def _filed_in(collection: str, token: str) -> _ClaimFn:
+    """One of the message's two facts landed in the collection that fits it."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        landed = sorted(
+            {entry.collection for entry in sample.entries if token in fold_typography(entry.text)}
+        )
+        return _landed_in(sample, collection, token), f"{token} landed in {landed}"
+
+    return answer
+
+
+def _not_filed_in(collection: str, token: str) -> _ClaimFn:
+    """Neither fact was ALSO filed in the other one's collection.
+
+    Not entailed by the pair of destination claims above: a turn that opened one list and wrote
+    both facts into it, then opened the other and wrote both again, satisfies both of them while
+    filing nothing anywhere in particular — which is the failure this behaviour exists to catch."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        return not _landed_in(sample, collection, token), f"{token} also landed in {collection}"
+
+    return answer
+
+
+# ═══ save ════════════════════════════════════════════════════════════════════
+#
+# The value comes off a PAGE rather than out of the user's mouth, and the ask names exactly one
+# place for it to go.  The subject is the invented game *Mistforge Tactics*, which exists on no
+# real site, so the model has to read rather than answer from what it already knows.
+
+_SAVE = _VerbCase(
+    case_id="memory-look-up-and-save",
+    behaviour=(
+        "In the chat agent, when the user asks her to look a subject up and put it in a list "
+        "they name, Penny reads about it, writes it into that list and nowhere else, and the "
+        "subject is still there when the turn ends."
+    ),
+    # ``keeps`` is EMPTY and that is a REPORT.  A keeps token set identifies which SOURCE an
+    # entry came from, and this world's two pages are a search hit and the detail page it links
+    # to, which share the subject's own name — so no token identifies one page rather than the
+    # other, and the detail page is not required reading for this ask anyway.  What the ask
+    # requires kept is the subject, which this case's own STORE claim names directly.
+    #
+    # ``excludes`` is EMPTY for the same kind of reason: the ask rules nothing out in as many
+    # words, and a token nobody excluded would assert one reading of the pages rather than a
+    # read of the ask.  The negative direction is claimed structurally instead — see
+    # ``_wrote_nowhere_but``.
+    #
+    # ``answers`` is EMPTY because the ask is an instruction and owes the reply no value: "saved
+    # it to your games list" is a complete answer, so requiring a token would fail a correct run
+    # for something nobody requested.  Widening an ask so it requests a value is a code owner's
+    # call rather than an in-flight repair.
+    world=World(name="mistforge", pages=MULTIHOP_PAGES, keeps=(), excludes=(), stores=(_GAMES,)),
+    ask="can you look up Mistforge Tactics, read up on it, and save it to my games list?",
+    also_phrased=(
+        "could you find out about Mistforge Tactics and put it on my games list?",
+        "have a look at Mistforge Tactics, read up on it, and add it to my games list",
+        "go read about Mistforge Tactics and save what you find to my games list",
+        "look Mistforge Tactics up for me and stick it on my games list",
+    ),
+    empty=(_GAMES.name,),
+    withholds=(_SUBJECT,),
 )
 
 
-def _seed_cold_fact(db: Database) -> None:
-    """The collection and the entry an earlier session left behind, stamped with that
-    session's run."""
-    _seed_collection(db, _GEAR_NOTES, run_id=_EARLIER_SESSION)
-    require_memory(db, _GEAR_NOTES.name).write(
-        [EntryInput(key=_GEAR_PRICE_KEY, content=_GEAR_PRICE)],
-        author=PennyConstants.CHAT_AGENT_NAME,
-        run_id=_EARLIER_SESSION,
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval, model: str) -> None:
+    """The ask names a subject to read about and one list to put it in, and the list is empty
+    when the turn starts — so everything in it afterwards is this turn's work.
+
+    The *no mechanism was created* claim its three siblings carry is deliberately ABSENT here,
+    and this is the one case where its absence is not an omission: a turn that reads the ask as
+    a routine to be taught frames its round on the way in and builds a container for it, which
+    is the machine working rather than the verb failing.  What that would durably cost is the
+    fact going somewhere the user did not name, and *nothing was written outside the list the
+    ask named* is exactly that question asked about the writes."""
+    cohort = await _drive(chat_eval, model, _SAVE)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the sentence's two halves, then its negative direction.
+    cohort.claim(
+        "state: the list the ask named holds an entry this turn wrote",
+        _wrote_into(_GAMES.name),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: what this turn stored names the subject",
+        _stored_the_subject(_SUBJECT),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: nothing was written outside the list the ask named",
+        _wrote_nowhere_but(_GAMES.name),
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE — the half the source case had none of.  The subject exists on no real site, so
+    # a stored fact naming something neither page mentions was invented, and once it is in a
+    # collection a collector re-reads it for ever.
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-def _score_cold_recall(db: Database, before: set[str], reply: str) -> list[Check]:
-    backed = _read_backed(db, _GEAR_NOTES.name)
-    return [
-        Check(
-            "reply: the recall states the price",
-            _PRICE_FACT in reply,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        ),
-        Check(
-            "calls: the answer is backed by a storage read",
-            backed,
-            rationale=None if backed else f"called {tool_call_sequence(db)}",
-            kind="spine",
-        ),
-        Check(
-            "state: nothing was written to answer a question",
-            not _entries_this_run_wrote(db),
-            kind="state",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
+    cohort.measure(*_MEASURED)
+
+
+# ═══ recall, from the store ══════════════════════════════════════════════════
+#
+# The fact was stored in a PREVIOUS session, so no conversation carries it and an echo is
+# impossible: the answer exists only in the store.  No page is installed either, so a browse
+# comes back empty — a reply carrying the price read the entry or invented it, and nothing else.
+
+_COLD_RECALL = _VerbCase(
+    case_id="memory-cold-recall",
+    behaviour=(
+        "In the chat agent, when the user asks for a fact they had her remember in an earlier "
+        "session and nothing in the conversation carries it, Penny brings it back out of the "
+        "store and states it, leaving the store exactly as she found it."
+    ),
+    # No pages: the fact is in the store and nowhere else, which is the whole point.  ``keeps``
+    # and ``excludes`` are empty because there is no source to keep anything from.  ``answers``
+    # is the ask's own request — the price — as the SMALLEST unique datum: ``499`` and not
+    # ``$499``, because a reply that wrote the figure without the currency symbol read the same
+    # entry, and the symbol is the model choosing how to render a number.
+    world=World(
+        name="cold store",
+        pages=(),
+        keeps=(),
+        excludes=(),
+        answers=(_PRICE,),
+        stores=(_GEAR_NOTES,),
+    ),
+    ask=(
+        "hey — a while back I asked you to remember what the aurora deck 2 "
+        "was listed at. what was the price?"
+    ),
+    also_phrased=(
+        "a while back i had you note down the aurora deck 2's listed price — what was it?",
+        "you saved the aurora deck 2's price for me a while ago. what did it say?",
+        "what was the aurora deck 2 listed at? i asked you to remember it a while back",
+        "remind me of the aurora deck 2 price i had you keep from a while back",
+    ),
+    holds=((_GEAR_NOTES.name, (_PRICE,)),),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_fact_from_a_previous_session_comes_back(chat_eval: ChatEval, model: str) -> None:
+    """A fact stored in a previous session, retrieved with zero conversational trace — the
+    absolute test of one-call reachability, since there is nothing else it could come from."""
+    cohort = await _drive(chat_eval, model, _COLD_RECALL)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the reply states the value the world carries (the *nothing omitted* direction: a
+    # reply that answers nothing at all satisfies every other claim here vacuously), and the
+    # store is left as it was.
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.claim(
+        "state: answering a question wrote nothing",
+        _wrote_nothing,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the note she read is still there",
+        _holds(_GEAR_NOTES.name, _PRICE),
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE — the reply half only, and its STORE half is EMPTY by entailment rather than
+    # by oversight: this turn writes nothing (the claim above), so there is no stored entry for
+    # a trace to be about, and asserting it would run at exactly the rate *answering a question
+    # wrote nothing* does while appearing to measure something else.
+    #
+    # The half that IS here is the load-bearing one: the price is a specific value, and a reply
+    # carrying one that traces to nothing the model was GIVEN is the invention this case is
+    # named against.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+# ═══ recall, across the store ════════════════════════════════════════════════
+#
+# One ask spanning THREE collections.  The failure it exists to catch is PARTIAL recall — a
+# reminder that reaches two of the three and reads as complete — which is why the claim is the
+# reply's COMPLETENESS and not how many reads it took.
+
+# One token per collection, the same three the world's ``answers`` names, so what the reply is
+# read for and what the store is read for cannot drift apart.
+_SWEPT = (
+    (_INTO.name, _INTO_ANCHOR),
+    (_AVOID.name, _AVOIDED),
+    (_GAMES.name, _SUBJECT),
+)
+
+
+def _sweep_left_everything(sample: SampleObservation, _world: World) -> Answer:
+    """Every collection the ask named still holds what it held.
+
+    Beside "a reminder wrote nothing" rather than folded into it, because they are different
+    facts about the same rows: a delete is not a write, so a turn that tidied a list on its way
+    through satisfies the first and fails this one."""
+    missing = [
+        f"{collection}:{token}"
+        for collection, token in _SWEPT
+        if token not in _held_text(sample, collection)
     ]
+    return not missing, f"no longer holds {missing}"
 
 
-async def test_a_fact_from_a_previous_session_comes_back(chat_eval: ChatEval) -> None:
-    """Story 1, cold: a fact stored in a previous session is retrieved with zero
-    conversational trace — the absolute test of one-call reachability."""
-    await chat_eval(
-        case_id="memory-cold-recall",
-        message=_COLD_TURN,
-        seed=_seed_cold_fact,
-        score=_score_cold_recall,
-        min_pass_rate=None,
-        family=_FAMILY,
+_SWEEP = _VerbCase(
+    case_id="memory-recall-across-the-store",
+    behaviour=(
+        "In the chat agent, when one message asks about several of her collections at once, "
+        "Penny answers out of every one of them rather than the first she opens, and changes "
+        "nothing while doing it."
+    ),
+    # ``answers`` is ONE token per collection, and that is the claim: the reminder reached each
+    # of the three.  Not every entry of every list — the ask does not quantify a list, so
+    # requiring three tokens out of ``things-im-into`` would assert one reading of "what i'm
+    # into" rather than reading the ask.  Each token is the smallest unique one in the world:
+    # ``offices`` rather than ``loud offices``, since a reply calling them noisy read the same
+    # entry.
+    world=World(
+        name="three lists",
+        pages=(),
+        keeps=(),
+        excludes=(),
+        answers=tuple(token for _, token in _SWEPT),
+        stores=(_INTO, _AVOID, _GAMES_WITH_MISTFORGE),
+    ),
+    ask="remind me what i'm into, what i'd rather avoid, and what's on my games list",
+    also_phrased=(
+        "run me through what i'm into, what i'd rather avoid, and what's on my games list",
+        "what am i into, what would i rather avoid, and what's on my games list?",
+        "give me a rundown of the things i'm into, the things i'd rather avoid, and my games list",
+        "can you remind me what i'm into, what i'd rather avoid, and what's on my games list?",
+    ),
+    holds=tuple((collection, (token,)) for collection, token in _SWEPT),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_one_ask_recalls_across_the_whole_store(chat_eval: ChatEval, model: str) -> None:
+    """One message asks for three collections at once, and the reminder names something out of
+    each.  How many reads it took is measured, never asserted — a subset of reads answers the
+    ask just as well, and many routes reach one end state."""
+    cohort = await _drive(chat_eval, model, _SWEEP)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.claim("state: a reminder wrote nothing", _wrote_nothing, SpecCategory.STORE)
+    cohort.claim(
+        "state: each list still holds what it held",
+        _sweep_left_everything,
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment, exactly as on
+    # the cold recall: a reminder writes nothing, so no stored entry exists to trace, and the
+    # claim would run at the rate *a reminder wrote nothing* does under another name.  The
+    # reply half is where this case's invention would land — three collections asked about is
+    # three chances to name a fourth thing nobody stored.
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-# ── 1c: off the ambient activity line ────────────────────────────────────────
+    cohort.measure(*_MEASURED)
+
+
+# ═══ forget ══════════════════════════════════════════════════════════════════
 #
-# The fact was written by a RECENT RUN rather than by a conversation, so the self-state
-# activity block renders the write ambiently (#1641):
-#
-#   run <id> · <when> · gear-notes → WORKED (2 calls) · wrote 'aurora deck 2 price'
-#   → `gear-notes`
-#
-# Awareness costs zero calls and the retrieval is one call whose arguments are both
-# on that line, verbatim.  The VALUE is not: the line names the key and the collection
-# and nothing else, so a reply carrying the price had to read the entry.  The probe
-# holds that premise against the SHIPPED render — if the clause ever stops rendering,
-# this case must say so rather than quietly becoming a second cold-recall case.
+# The user edits what is already stored, and the whole contract is EXACTNESS: the note they
+# named goes, every other one is exactly where it was, and the reply reports what is left.  The
+# collection is matched by MEANING rather than by a name repeated back — "my list of things i'm
+# into" never says ``things-im-into``.
 
-_ACTIVITY_TURN = "hey — remind me, what was the aurora deck 2 listed at?"
+_FORGET = _VerbCase(
+    case_id="memory-forget-then-list",
+    behaviour=(
+        "In the chat agent, when the user names one note to drop from a list, Penny drops that "
+        "note and leaves every other one exactly as it was, and tells them what is still on the "
+        "list."
+    ),
+    # ``answers`` is the two notes that SURVIVE, because the ask asks for them in as many words
+    # ("tell me what else is on my list").  The dropped note is deliberately NOT claimed absent
+    # from the reply: "dropped jazz — you've still got chess and hiking" is a correct answer that
+    # names it, so an absence claim there would fail a correct run.
+    world=World(
+        name="one list",
+        pages=(),
+        keeps=(),
+        excludes=(),
+        answers=_FORGET_ANSWERS,
+        stores=(_INTO,),
+    ),
+    ask="forget about jazz, then tell me what else is on my list of things i'm into",
+    also_phrased=(
+        "drop jazz from my list of things i'm into, then tell me what's left on it",
+        "take jazz off my list of things i'm into and tell me what else is on there",
+        "get rid of jazz on my list of things i'm into, then say what remains",
+        "remove jazz from the things i'm into, and let me know what's still on the list",
+    ),
+    holds=((_INTO.name, (*_FORGET_KEPT, _DROPPED)),),
+)
 
 
-def _seed_recent_run_write(db: Database) -> None:
-    """A completed run 20 minutes ago that wrote the fact — the row the activity block
-    renders, plus the entry it wrote, joined by the run id exactly as production joins
-    them."""
-    when = datetime.now(UTC) - timedelta(minutes=20)
-    response = '{"choices": [{"message": {"tool_calls": [{"id": "0"}, {"id": "1"}]}}]}'
-    _seed_collection(db, _GEAR_NOTES, run_id=_RECENT_RUN)
-    with Session(db.engine) as session:
-        session.add(
-            PromptLog(
-                model="test-model",
-                messages="[]",
-                response=response,
-                agent_name=PennyConstants.CHAT_AGENT_NAME,
-                run_id=_RECENT_RUN,
-                run_outcome="worked",
-                run_reason="",
-                run_target=_GEAR_NOTES.name,
-                timestamp=when,
-            )
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_forgetting_then_reporting_names_what_is_left(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """One note named for removal, two left standing, and a report of what remains."""
+    cohort = await _drive(chat_eval, model, _FORGET)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — gone, the rest untouched, and nothing rebuilt.  "Untouched" is TWO claims because
+    # it is two facts: the notes are still there, and this turn did not rewrite them.  A sample
+    # that emptied the list and typed the survivors back in satisfies the first and fails the
+    # second, and it is the second that says the list was left alone.
+    cohort.claim(
+        "state: the note it was told to drop is gone",
+        _no_longer_holds(_INTO.name, _DROPPED),
+        SpecCategory.STORE,
+    )
+    for token in _FORGET_KEPT:
+        cohort.claim(
+            f"state: the {token!r} note is still there",
+            _holds(_INTO.name, token),
+            SpecCategory.STORE,
         )
-        session.add(
-            MemoryEntry(
-                memory_name=_GEAR_NOTES.name,
-                key=_GEAR_PRICE_KEY,
-                content=_GEAR_PRICE,
-                author=PennyConstants.CHAT_AGENT_NAME,
-                created_at=when,
-                created_by_run_id=_RECENT_RUN,
-                last_written_by_run_id=_RECENT_RUN,
-            )
+    cohort.claim("state: nothing was rewritten", _wrote_nothing, SpecCategory.STORE)
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
+    )
+    cohort.assert_the_reply_answers_the_ask()
+
+    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment, the same reading
+    # the two recall cases make: *nothing was rewritten* is claimed above, so no stored entry
+    # exists for a trace to be about and the claim would run at that one's rate under another
+    # name.  The reply half stays, since a report of what is left is prose that can invent.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+# ═══ update ══════════════════════════════════════════════════════════════════
+#
+# The note already exists, so the new wording belongs IN it.  No page is installed: the new
+# wording comes out of the user's own message, which is what makes "she edited the note" a claim
+# about the store rather than about a lookup.
+
+_UPDATE = _VerbCase(
+    case_id="memory-change-a-note",
+    behaviour=(
+        "In the chat agent, when the user says a note they already have should now say something "
+        "else, Penny rewrites that note in place — the list neither grows nor loses anything — "
+        "and touches nothing outside it."
+    ),
+    # ``answers`` is EMPTY: the ask is an instruction, so "done — your hiking note says alpine
+    # trails now" and a bare "done" are both correct, and requiring a token would fail the second
+    # for something nobody requested.
+    world=World(name="one list", pages=(), keeps=(), excludes=(), stores=(_INTO,)),
+    ask="change my hiking note to say I prefer alpine trails",
+    also_phrased=(
+        "update my hiking note — i prefer alpine trails",
+        "edit the hiking note to say i prefer alpine trails",
+        "my hiking note should say i prefer alpine trails now",
+        "rewrite my hiking note so it says i prefer alpine trails",
+    ),
+    holds=((_INTO.name, (*_UPDATE_KEPT, _EDITED)),),
+    withholds=(_NEW_WORDING,),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_changing_a_note_rewrites_only_that_note(chat_eval: ChatEval, model: str) -> None:
+    """One note is rewritten with what the user now says, and the list neither grows nor loses
+    anything else."""
+    cohort = await _drive(chat_eval, model, _UPDATE)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.claim(
+        "state: the list now says the new thing",
+        _holds(_INTO.name, _NEW_WORDING),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        # The count comes off the SEED rather than being typed out, so a fixture that grows a
+        # fourth note cannot leave this claim quietly asserting the old shape.
+        "state: the list holds the notes it started with (rewritten in place, not added beside)",
+        _holds_exactly(_INTO.name, len(_INTO.entries)),
+        SpecCategory.STORE,
+    )
+    for token in _UPDATE_KEPT:
+        cohort.claim(
+            f"state: the {token!r} note is still there",
+            _holds(_INTO.name, token),
+            SpecCategory.STORE,
         )
-        session.commit()
-
-
-def _probe_activity_line(penny: Penny) -> None:
-    """The world really does render the write on the activity line — asserted through
-    the shipped renderer, never a restatement of it, so the case cannot pass on a
-    premise that has silently gone away."""
-    rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
-    clause = SelfStateHeader._collection_writes(_GEAR_NOTES.name, [_GEAR_PRICE_KEY])
-    assert clause in rendered, (
-        f"memory-activity-window-recall: the seeded write must render on the activity "
-        f"line as {clause!r} — the header reads:\n{rendered}"
+    cohort.claim(
+        "state: nothing was written outside that list",
+        _wrote_nowhere_but(_INTO.name),
+        SpecCategory.STORE,
     )
-    assert _GEAR_PRICE not in rendered, (
-        "memory-activity-window-recall: the activity line must NOT carry the value — "
-        "otherwise the reply proves nothing about the read"
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE — the new wording is the user's own, so a note that came back carrying a trail
+    # name, a distance or a season nobody said was invented into the store for good.
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-def _score_activity_window_recall(db: Database, before: set[str], reply: str) -> list[Check]:
-    backed = _read_backed(db, _GEAR_NOTES.name)
-    return [
-        Check(
-            "reply: the recall states the price (the write is ambient, the value is not)",
-            _PRICE_FACT in reply,
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-        ),
-        Check(
-            "calls: the answer is backed by a storage read",
-            backed,
-            rationale=None if backed else f"called {tool_call_sequence(db)}",
-            kind="spine",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
+    cohort.measure(*_MEASURED)
 
 
-async def test_a_fact_a_recent_run_wrote_comes_back(chat_eval: ChatEval) -> None:
-    """Story 1, ambient: the run line names the key and the collection, so the read is
-    one call with both arguments copied rather than guessed — and the value, which the
-    line withholds, comes back in the reply."""
-    await chat_eval(
-        case_id="memory-activity-window-recall",
-        message=_ACTIVITY_TURN,
-        seed=_seed_recent_run_write,
-        prepare=_probe_activity_line,
-        score=_score_activity_window_recall,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# ── 1d: recall across the whole store ────────────────────────────────────────
+# ═══ fan-out ═════════════════════════════════════════════════════════════════
 #
-# One ask spanning THREE collections.  The old scorer demanded three
-# ``collection_read_latest`` calls and scored 4/5 → 2/5 → 5/5 → 1/5 across runs
-# because the reminder is right either way: a subset of reads, or the conversation
-# window, can answer it correctly.  So the OUTCOME is what is scored — a reminder
-# naming something from each of the three — and the reads are reported beside it.
+# One message carrying TWO facts of opposite sign.  This is the verb where the DESTINATION is
+# the claim: two fitting collections already exist, so a correct turn fans the facts out — the
+# enthusiasm into the one for things she is into, the complaint into the one for things she
+# avoids — rather than folding both into whichever it opened first.
 
-_SWEEP_TURN = "remind me what i'm into, what i'd rather avoid, and what's on my games list"
-
-
-def _seed_three_collections(db: Database) -> None:
-    _seed_collection(db, _INTO, run_id=_EARLIER_SESSION)
-    _seed_collection(db, _AVOID, run_id=_EARLIER_SESSION)
-    _seed_collection(db, _GAMES_WITH_MISTFORGE, run_id=_EARLIER_SESSION)
-
-
-def _score_recall_sweep(db: Database, before: set[str], reply: str) -> list[Check]:
-    swept = set(tool_call_arg_values(db, "collection_read_latest", "memory"))
-    expected = {_INTO.name, _AVOID.name, _GAMES.name}
-    return [
-        *_reply_names(reply, ("chess", "loud offices", "mistforge")),
-        Check(
-            "state: a reminder changed nothing",
-            not _entries_this_run_wrote(db),
-            kind="state",
-        ),
-        Check(
-            "calls: each collection was read",
-            expected <= swept,
-            rationale=f"read {sorted(swept)}",
-            scored=False,
-            kind="spine",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
+_FAN_OUT = _VerbCase(
+    case_id="memory-a-like-and-a-dislike",
+    behaviour=(
+        "In the chat agent, when one message carries two facts of different kinds and a fitting "
+        "list already exists for each, Penny files each fact in the list that fits it and neither "
+        "in the other, standing no new list up for either."
+    ),
+    # ``answers`` is EMPTY for the reason the update case's is: the ask is an instruction, and a
+    # confirmation that names neither fact is still a correct answer to "jot these down".
+    world=World(name="two lists", pages=(), keeps=(), excludes=(), stores=(_INTO, _AVOID)),
+    ask="jot down that I'm into bouldering, and that I can't stand instant coffee",
+    also_phrased=(
+        "note down that i'm into bouldering and that i can't stand instant coffee",
+        "remember that i'm into bouldering, and that i can't stand instant coffee",
+        "keep a note that i'm into bouldering, and that instant coffee is something i can't stand",
+        "write down that bouldering is something i'm into and that i can't stand instant coffee",
+    ),
+    holds=((_INTO.name, (_INTO_ANCHOR,)), (_AVOID.name, (_AVOIDED,))),
+    withholds=(_LIKE, _DISLIKE),
+)
 
 
-async def test_one_ask_recalls_across_the_whole_store(chat_eval: ChatEval) -> None:
-    """Story 1, breadth: one message asks for three collections at once, and the
-    reminder names something out of each.  How many reads it took is reported, not
-    scored — the user's outcome is the reminder."""
-    await chat_eval(
-        case_id="memory-recall-across-the-store",
-        message=_SWEEP_TURN,
-        seed=_seed_three_collections,
-        score=_score_recall_sweep,
-        min_pass_rate=None,
-        family=_FAMILY,
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> None:
+    """Two facts in one message, and each belongs somewhere different."""
+    cohort = await _drive(chat_eval, model, _FAN_OUT)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.claim(
+        "state: the enthusiasm landed in the list for things she is into",
+        _filed_in(_INTO.name, _LIKE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the complaint landed in the list for things she avoids",
+        _filed_in(_AVOID.name, _DISLIKE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the enthusiasm was not ALSO filed with the things she avoids",
+        _not_filed_in(_AVOID.name, _LIKE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the complaint was not ALSO filed with the things she is into",
+        _not_filed_in(_INTO.name, _DISLIKE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE
+    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-# ═══ Story 4 — "look it up and save it" ══════════════════════════════════════
+    cohort.measure(*_MEASURED)
+
+
+# ═══ no-fire ═════════════════════════════════════════════════════════════════
 #
-# The value comes off a PAGE rather than out of the user's mouth, so the browse is the
-# story: a write with no fetch behind it is a fact that came from nowhere, which is why
-# the lookup-before-write ordering is scored here and nowhere else.  The subject is the
-# invented game *Mistforge Tactics* (``MULTIHOP_PAGES``), which exists on no real site,
-# so the model must read rather than answer from what it already knows.
-
-
-def _seed_games(db: Database) -> None:
-    _seed_collection(db, _GAMES, run_id=_EARLIER_SESSION)
-
-
-def _seed_games_with_mistforge(db: Database) -> None:
-    _seed_collection(db, _GAMES_WITH_MISTFORGE, run_id=_EARLIER_SESSION)
-
-
-def _lookup_first_check(db: Database, write_tool: str) -> Check:
-    """The claim only a call can carry: the page was READ before the store was written.
-    A write with no fetch behind it is a fact that came from nowhere, which no end-state
-    read can tell from one that was looked up properly."""
-    sequence = tool_call_sequence(db)
-    in_order = is_ordered_subsequence([_BROWSE_TOOL, write_tool], sequence)
-    return Check(
-        f"calls: the page was read before {write_tool}",
-        in_order,
-        kind="spine",
-        anchor=f"{write_tool}(",
-        rationale=None if in_order else f"called {sequence}",
-    )
-
-
-def _landed_checks(db: Database, fact: str) -> list[Check]:
-    """The looked-up fact is durably stored, and WHERE it landed is reported beside it
-    — a learn round is framed on the way in, so Penny may have a container of her own
-    for it, and the story is that the fact survives the turn."""
-    landed = _landed_in(db, fact)
-    return [
-        Check(
-            "state: the looked-up fact landed durably",
-            bool(landed),
-            kind="state",
-            rationale=None if landed else "no collection holds it",
-        ),
-        Check(
-            "state: where the fact landed",
-            bool(landed),
-            rationale=f"landed in {sorted(landed)}" if landed else "nowhere",
-            scored=False,
-            kind="state",
-        ),
-    ]
-
-
-def _lookup_checks(db: Database, fact: str, write_tool: str) -> list[Check]:
-    """The two claims a plain lookup story makes, in order."""
-    return [_lookup_first_check(db, write_tool), *_landed_checks(db, fact)]
-
-
-def _score_look_up_and_save(db: Database, before: set[str], reply: str) -> list[Check]:
-    return [
-        *_lookup_checks(db, "mistforge", _WRITE_TOOL),
-        *_reply_names(reply, ("mistforge",)),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval) -> None:
-    """Story 4: "look it up, read up on it, and save it" — one fetch, one write, and
-    the subject survives the turn."""
-    await chat_eval(
-        case_id="memory-look-up-and-save",
-        message="can you look up Mistforge Tactics, read up on it, and save it to my games list?",
-        seed=_seed_games,
-        browse=list(MULTIHOP_PAGES),
-        score=_score_look_up_and_save,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# The release year lives ONLY on the linked detail page, so a stored 2031 is proof the
-# second hop happened — the one fact in this file no first-hop read could supply.
-_DETAIL_PAGE_YEAR = "2031"
-
-
-def _score_two_hops(db: Database, before: set[str], reply: str) -> list[Check]:
-    return [
-        *_lookup_checks(db, _DETAIL_PAGE_YEAR, _WRITE_TOOL),
-        *_reply_names(reply, ("mistforge", _DETAIL_PAGE_YEAR)),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_lookup_follows_the_link_it_needs(chat_eval: ChatEval) -> None:
-    """Story 4, two hops: the exact date is on the linked page, not the first one, so
-    the stored value proves she opened it."""
-    await chat_eval(
-        case_id="memory-look-up-two-hops",
-        message=(
-            "find Mistforge Tactics, open the official page for the exact release date, "
-            "and record it in my games list"
-        ),
-        seed=_seed_games,
-        browse=list(MULTIHOP_PAGES),
-        score=_score_two_hops,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-async def test_a_conditional_lookup_fills_the_gap(chat_eval: ChatEval) -> None:
-    """Story 4, check-then-fill: an empty games list plus "if you don't have it, look
-    it up".
-
-    The CHECK is satisfied ambiently — the store map is already in front of her, so no
-    explicit read is owed for it — which leaves the same two claims the plain lookup
-    makes: the condition holds, the page is read, and the gap is filled."""
-    await chat_eval(
-        case_id="memory-check-then-fill",
-        message=(
-            "do you have anything on Mistforge Tactics saved? if not, look it "
-            "up and save it to games"
-        ),
-        seed=_seed_games,
-        browse=list(MULTIHOP_PAGES),
-        score=_score_look_up_and_save,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-def _score_look_up_and_update(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The entry already exists, so the lookup's value belongs IN it: an update, not a
-    second entry beside the first."""
-    stored = _stored_text(db, _GAMES.name)
-    has_coop = "co-op" in stored or "cooperat" in stored
-    entries = collection_entries(db, _GAMES.name)
-    return [
-        _lookup_first_check(db, _UPDATE_TOOL),
-        Check(
-            "state: the Mistforge entry gained the co-op detail",
-            has_coop,
-            kind="state",
-            rationale=None if has_coop else f"holds {entries}",
-        ),
-        Check(
-            "state: the list still holds one entry (updated, not duplicated)",
-            len(entries) == 1,
-            kind="state",
-            rationale=f"holds {sorted(entries)}" if len(entries) != 1 else None,
-        ),
-        *_reply_names(reply, ("mistforge",)),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_lookup_updates_the_entry_it_belongs_to(chat_eval: ChatEval) -> None:
-    """Story 4, the lookup that edits: the game is already saved, so the co-op detail
-    goes into the entry that is there rather than beside it."""
-    await chat_eval(
-        case_id="memory-look-up-and-update",
-        message=(
-            "look up the co-op details for Mistforge Tactics and update its entry in my games list"
-        ),
-        seed=_seed_games_with_mistforge,
-        browse=list(MULTIHOP_PAGES),
-        score=_score_look_up_and_update,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# ═══ Story 5 — "forget that" / "change my note" ══════════════════════════════
+# The negative direction, in its own two cases (#2100).  A message that mentions a subject and
+# asks for nothing must leave the store exactly as it was — and the failure both cases exist to
+# catch is acting at all, so every claim either makes is a negative.
 #
-# The user edits what is already stored, and the whole contract is EXACTNESS: the entry
-# they named changes or goes, and every other one is exactly where it was.  The
-# collection is one they built in an earlier session, matched by MEANING rather than by
-# a name they repeat back ("what am I into" never says ``things-im-into``).
-#
-# Which tool did it is reported, not scored: an entry cannot leave a collection by
-# accident, so the end state already says whether the edit happened.
+# What is deliberately NOT claimed: that no page was fetched.  That asserts a browse CALL
+# happened or did not, which is a ROUTE and belongs in the tool sequence, where a cohort that
+# started browsing shows up as a variance rise rather than as one sample's failed check.  It is
+# measured, and on a correct cohort here the feature reads its ``absent`` value on every sample
+# and is marked BLIND in red — the same honest report the ``transition-idle-to-idle`` floor
+# makes, and for the same reason: the divergence it exists to catch is precisely the one these
+# cases are named for.
+
+_NO_FIRE_NARRATION = _VerbCase(
+    case_id="memory-no-fire-narration",
+    behaviour=(
+        "In the chat agent, when the user reports something they already did elsewhere and asks "
+        "for nothing, Penny answers in conversation and writes nothing down — standing no list "
+        "up for a subject nobody asked her to keep."
+    ),
+    # ``keeps``, ``excludes`` and ``answers`` are all EMPTY, and each is a report.  There are no
+    # pages, so nothing can be kept from one or excluded from one; and the message asks for no
+    # value, so requiring a token in the reply would fail a correct run for something nobody
+    # requested — "sounds like a good evening" is a complete answer to this.
+    world=World(name="empty store", pages=(), keeps=(), excludes=(), stores=()),
+    # NOTHING is seeded, and that IS this case's setup: its whole identity is that the store
+    # holds no collection the message's subject matches, which is what separates it from the
+    # wistful case below.  A turn that decides to act therefore has to CREATE somewhere first,
+    # which is what makes the created-nothing claim the sharp one here.
+    ask="I looked up a lasagna recipe earlier and saved it in my notes app, good evening",
+    also_phrased=(
+        "found a lasagna recipe earlier and put it in my notes app — anyway, good evening",
+        "i saved a lasagna recipe to my notes app earlier today. evening!",
+        "earlier on i looked up a lasagna recipe and kept it in my notes app, good evening",
+        "good evening — i looked a lasagna recipe up earlier and it's in my notes app now",
+    ),
+    # The premise stated as a read: nothing in the store is about what the message mentions.
+    # That is what the empty seeder produces today, and stating it as a token keeps the case
+    # honest the day somebody seeds a world into it.
+    withholds=("lasagna",),
+)
 
 
-def _seed_into(db: Database) -> None:
-    _seed_collection(db, _INTO, run_id=_EARLIER_SESSION)
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_narrating_something_already_done_fires_nothing(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """The user reports what they did elsewhere and says good evening.  There is no ask in it,
+    so there is nothing to do."""
+    cohort = await _drive(chat_eval, model, _NO_FIRE_NARRATION)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
 
-
-def _kept_and_dropped(db: Database, *, dropped: str, kept: tuple[str, ...]) -> list[Check]:
-    """The exactness pair every edit story makes: the named entry is gone, and each
-    other one is still there."""
-    remaining = _stored_text(db, _INTO.name)
-    return [
-        Check(
-            f"state: '{dropped}' is gone from the list",
-            dropped not in remaining,
-            kind="state",
-        ),
-        *[
-            Check(f"state: '{other}' is untouched", other in remaining, kind="state")
-            for other in kept
-        ],
-    ]
-
-
-def _score_forget_one(db: Database, before: set[str], reply: str) -> list[Check]:
-    return [
-        *_kept_and_dropped(db, dropped="chess", kept=("hiking", "jazz")),
-        *_reply_names(reply, ("chess",)),
-        Check(
-            f"calls: {_DELETE_TOOL} fired",
-            tool_was_called(db, _DELETE_TOOL),
-            rationale=f"called {tool_call_sequence(db)}",
-            scored=False,
-            kind="spine",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
-
-
-async def test_forgetting_one_thing_leaves_the_rest(chat_eval: ChatEval) -> None:
-    """Story 5: a list request and a removal in one message — chess goes, hiking and
-    jazz stay exactly as they were.  The order is free: reading the remainder first
-    answers the question just as well as dropping it first."""
-    await chat_eval(
-        case_id="memory-forget-one-entry",
-        message="what am I into these days? actually drop chess from that",
-        seed=_seed_into,
-        score=_score_forget_one,
-        min_pass_rate=None,
-        family=_FAMILY,
+    # STORE — both negatives, and each names its own violating sample: one that files the recipe
+    # away, and one that stands a list up to file it in.
+    cohort.claim("state: nothing was written anywhere", _wrote_nothing, SpecCategory.STORE)
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment: the claim above
+    # is that nothing was written, so no stored entry exists for a trace to be about.
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-def _score_forget_then_list(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The other direction of the same contract: the removal first, then the report —
-    and the report must be of what REMAINS, so naming the dropped subject as still
-    there is the failure."""
-    return [
-        *_kept_and_dropped(db, dropped="jazz", kept=("chess", "hiking")),
-        *_reply_names(reply, ("chess", "hiking")),
-        Check(
-            f"calls: {_DELETE_TOOL} fired",
-            tool_was_called(db, _DELETE_TOOL),
-            rationale=f"called {tool_call_sequence(db)}",
-            scored=False,
-            kind="spine",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
+    cohort.measure(*_MEASURED)
 
 
-async def test_forgetting_then_reporting_names_what_is_left(chat_eval: ChatEval) -> None:
-    """Story 5, the report direction: drop one thing and say what is still on the
-    list."""
-    await chat_eval(
-        case_id="memory-forget-then-list",
-        message="forget about jazz, then tell me what else is on my list of things i'm into",
-        seed=_seed_into,
-        score=_score_forget_then_list,
-        min_pass_rate=None,
-        family=_FAMILY,
+_NO_FIRE_WISTFUL = _VerbCase(
+    case_id="memory-no-fire-wistful",
+    behaviour=(
+        "In the chat agent, when the user muses about something a list she already keeps is "
+        "about, Penny answers in conversation and writes nothing into it — a topical match is "
+        "not a request."
+    ),
+    world=World(
+        name="a tempting list", pages=(), keeps=(), excludes=(), stores=(_GAMES_WITH_MISTFORGE,)
+    ),
+    # The temptation IS the setup: a games list holding a strategy game sits in the store while
+    # the user muses about finishing a strategy game campaign.  Without it this case measures
+    # nothing, which is why it cannot share the narration case's world.  The ask names no game,
+    # so what it offers is a topical match and never a reference.
+    ask="I finally wrapped up that long strategy game campaign last night, felt so satisfying",
+    also_phrased=(
+        "finally finished that long strategy game campaign last night — so satisfying",
+        "i wrapped up that big strategy game campaign last night, felt really good",
+        "last night i finally got to the end of that long strategy game campaign, so satisfying",
+        "that long strategy game campaign is finally done as of last night, felt great",
+    ),
+    holds=((_GAMES.name, (_SUBJECT,)),),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) -> None:
+    """A games list is sitting right there and the user muses about finishing a game.  A topical
+    match is not a request."""
+    cohort = await _drive(chat_eval, model, _NO_FIRE_WISTFUL)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.claim("state: nothing was written anywhere", _wrote_nothing, SpecCategory.STORE)
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        # Beside the two above rather than folded into them: a delete is not a write and not a
+        # mechanism change, so a turn that "tidied" the list on its way past satisfies both and
+        # fails this one.
+        "state: the list it was tempted by still holds what it held",
+        _holds(_GAMES.name, _SUBJECT),
+        SpecCategory.STORE,
     )
 
+    # PROVENANCE — the reply half only, its STORE half empty by the same entailment.
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
-def _score_change_a_note(db: Database, before: set[str], reply: str) -> list[Check]:
-    """An edit of ONE note: the hiking entry says something new, the list is the same
-    size (changed in place, not appended to), and the neighbours are untouched."""
-    entries = collection_entries(db, _INTO.name)
-    stored = _stored_text(db, _INTO.name)
-    return [
-        Check(
-            "state: the hiking note now mentions alpine trails",
-            "alpine" in stored,
-            kind="state",
-            rationale=None if "alpine" in stored else f"holds {entries}",
-        ),
-        Check(
-            "state: the list still holds three notes (changed in place)",
-            len(entries) == 3,
-            kind="state",
-            rationale=f"holds {sorted(entries)}" if len(entries) != 3 else None,
-        ),
-        Check("state: 'chess' is untouched", "chess" in stored, kind="state"),
-        Check("state: 'jazz' is untouched", "jazz" in stored, kind="state"),
-        *_reply_names(reply, ("hiking", "alpine")),
-        Check(
-            f"calls: {_UPDATE_TOOL} fired",
-            tool_was_called(db, _UPDATE_TOOL),
-            rationale=f"called {tool_call_sequence(db)}",
-            scored=False,
-            kind="spine",
-        ),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
+    cohort.measure(*_MEASURED)
 
 
-async def test_changing_a_note_rewrites_only_that_note(chat_eval: ChatEval) -> None:
-    """Story 5, the edit: one note is rewritten with what the user now says, and the
-    list neither grows nor loses anything else."""
-    await chat_eval(
-        case_id="memory-change-a-note",
-        message="change my hiking note to say I prefer alpine trails",
-        seed=_seed_into,
-        score=_score_change_a_note,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
+# Every ported case, in one place — so the deterministic probe in ``test_eval_harness.py`` can
+# drive each one's seeder and premise without a GPU.
+VERB_CASES = (
+    _SAVE,
+    _COLD_RECALL,
+    _SWEEP,
+    _FORGET,
+    _UPDATE,
+    _FAN_OUT,
+    _NO_FIRE_NARRATION,
+    _NO_FIRE_WISTFUL,
+)
 
 
-# ═══ Story 6 — a passing mention is not an instruction ═══════════════════════
+# ═══ NOT tranche 1's — left exactly as it was ════════════════════════════════
 #
-# The guard on the surviving half of ``Prompt.IDLE_INSTRUCTION``: "don't act on
-# something they only mentioned in passing — no lookup or browse they didn't ask for".
-# The canonical idle → idle row is deliberately loose about this (a browse there is
-# explicitly not a miss), so these two cases are that clause's only regression net.
+# ``memory-writes-landed-source-down`` is #1946's was-state case: what the STORE holds against
+# what the reply says, when half the sources are down.  It is none of the five memory verbs
+# above and belongs to no slot on #2004's map, so it is neither ported nor quarantined here —
+# it is left untouched, with its own scorer, for whoever owns the honest-failure slot.
 #
-# Two shapes, one scorer: a plain narration of something already done, and the
-# temptation-loaded variant where a collection about exactly that topic is sitting
-# right there.  What is scored is the DURABLE half — nothing fetched, nothing written,
-# nothing created; a read is reported, because orientation reads are fine everywhere
-# else in the suite and a rule that fires here and nowhere else would not be one.
-
-
-def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
-    fetched = _pages_fetched(db)
-    written = _entries_this_run_wrote(db)
-    created = new_collections(db, before)
-    enacted = _enacting_calls(db)
-    called = tool_call_sequence(db)
-    return [
-        Check(
-            "state: no page was fetched",
-            not fetched,
-            rationale=f"fetched {len(fetched)} pages" if fetched else None,
-            kind="state",
-        ),
-        Check(
-            "state: nothing was written anywhere",
-            not written,
-            rationale=f"wrote {[name for name, _ in written]}" if written else None,
-            kind="state",
-        ),
-        Check(
-            "state: no collection was created",
-            not created,
-            rationale=f"created {[row.name for row in created]}" if created else None,
-            kind="state",
-        ),
-        Check(
-            "calls: nothing was enacted",
-            not enacted,
-            rationale=f"enacted {enacted}" if enacted else None,
-            scored=False,
-            kind="spine",
-        ),
-        Check(
-            "calls: no tool was called at all",
-            not called,
-            rationale=f"called {called}" if called else None,
-            scored=False,
-            kind="spine",
-        ),
-        _landing_advisory(db, ConversationState.IDLE),
-        _routing_advisory(db),
-    ]
-
-
-async def test_narrating_something_already_done_fires_nothing(chat_eval: ChatEval) -> None:
-    """Story 6: the user reports what they did elsewhere and says good evening.  There
-    is no ask in it, so there is nothing to do."""
-    await chat_eval(
-        case_id="memory-no-fire-narration",
-        message="I looked up a lasagna recipe earlier and saved it in my notes app, good evening",
-        score=_score_no_fire,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval) -> None:
-    """Story 6, tempted: a games collection is sitting right there and the user muses
-    about finishing a game.  A topical match is not a request."""
-    await chat_eval(
-        case_id="memory-no-fire-wistful",
-        message=(
-            "I finally wrapped up that long strategy game campaign last night, felt so satisfying"
-        ),
-        seed=_seed_games_with_mistforge,
-        score=_score_no_fire,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# ═══ Story 11 — a like and a dislike in one message ══════════════════════════
+# The same two-source demonstration as the learn close, with ONE source unreachable — the same
+# ASK, deliberately, so a difference in the reply is attributable to what the browse layer
+# answered rather than to a second ask written a second way.
 #
-# One message carrying TWO facts of opposite sign.  This is the one story where the
-# destination is the claim: two fitting collections already exist, so a correct turn
-# fans the facts OUT — the enthusiasm into the one for things she is into, the
-# complaint into the one for things she avoids — rather than folding both into
-# whichever it opened first.
-
-_LIKE = "bouldering"
-_DISLIKE = "coffee"
-
-
-def _seed_preference_pair(db: Database) -> None:
-    _seed_collection(db, _INTO, run_id=_EARLIER_SESSION)
-    _seed_collection(db, _AVOID, run_id=_EARLIER_SESSION)
-
-
-def _score_two_writes(db: Database, before: set[str], reply: str) -> list[Check]:
-    like_landed = _landed_in(db, _LIKE)
-    dislike_landed = _landed_in(db, _DISLIKE)
-    fanned = bool(like_landed) and bool(dislike_landed) and like_landed.isdisjoint(dislike_landed)
-    return [
-        Check(
-            "state: the like landed in the collection for things she's into",
-            _INTO.name in like_landed,
-            kind="state",
-            rationale=f"landed in {sorted(like_landed)}" if like_landed else "landed nowhere",
-        ),
-        Check(
-            "state: the dislike landed in the collection for things she avoids",
-            _AVOID.name in dislike_landed,
-            kind="state",
-            rationale=(
-                f"landed in {sorted(dislike_landed)}" if dislike_landed else "landed nowhere"
-            ),
-        ),
-        Check(
-            "state: the two facts went to two different places",
-            fanned,
-            kind="state",
-            rationale=f"like {sorted(like_landed)}, dislike {sorted(dislike_landed)}",
-        ),
-        *_reply_names(reply, (_LIKE, _DISLIKE)),
-        _landing_advisory(db),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval) -> None:
-    """Story 11: "I'm into bouldering, and I can't stand instant coffee" is two facts,
-    and each belongs somewhere different."""
-    await chat_eval(
-        case_id="memory-a-like-and-a-dislike",
-        message="jot down that I'm into bouldering, and that I can't stand instant coffee",
-        seed=_seed_preference_pair,
-        score=_score_two_writes,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# ── Story 15, half the sources down: what LANDED, not what was attempted (#1946) ──
-#
-# The same two-source demonstration as the learn close above, with ONE source unreachable —
-# the same ASK, deliberately, so a difference in the reply is attributable to what the
-# browse layer answered rather than to a second ask written a second way.
-#
-# It no longer shares that case's WORLD.  The learn close seeds the round it closes, because
-# its every claim is about a learn round (#1989); this case's scored claims are about what
-# the STORE holds against what the reply says, which no state gates — so it stands on the
-# cold machine it always did, and where it lands is reported beside its checks.  Whether it
-# would read differently from inside a learn round is an open question rather than a
-# settled one, recorded here as the reason the two worlds diverged.
-#
-# What it measures is the asymmetry the writes-landed frame exists for.  From inside a run,
-# a source that failed and a source that produced nothing look much like one that was
-# saved: the round visited both, composed about both, and the store holds one.  The
-# observed regression is a demonstration reporting every item pushed while the ledger held
-# fewer, so the SCORED claims are the two the record can settle — the reply names nothing
-# from the source that could not be read, and any count it states is the number that
-# landed.  Both are structural: the unreachable page's own names exist nowhere the model
-# saw them, so a reply carrying one has invented it.
+# What it measures is the asymmetry the writes-landed frame exists for.  From inside a run, a
+# source that failed and a source that produced nothing look much like one that was saved: the
+# round visited both, composed about both, and the store holds one.  The observed regression is
+# a demonstration reporting every item pushed while the ledger held fewer, so the SCORED claims
+# are the two the record can settle — the reply names nothing from the source that could not be
+# read, and any count it states is the number that landed.  Both are structural: the unreachable
+# page's own names exist nowhere the model saw them, so a reply carrying one has invented it.
 #
 # Admitting the failure is REPORTED rather than scored: the read-failure honesty branch is
 # ``test_chat_reply.py``'s contract, and one claim scored in two suites is two contracts.
