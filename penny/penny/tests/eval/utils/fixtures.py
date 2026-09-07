@@ -614,3 +614,31 @@ KNOWLEDGE_PAGE_CONTENT = (
     "of the ancient Olympic Games. It is widely regarded as the oldest known example "
     "of an analog computer.\n"
 )
+
+
+# ── A micro-context answer carrying the contract's own vocabulary (#2078) ────
+#
+# The measured shape, reconstructed on synthetic names: a page with headlines and bylines
+# and no times, answered a line per story ending in the tag for the field the page lacks.
+# The tag's TAIL then glues across the line break to the next story's first capitalised
+# word — `PRESENT Harbour` here — which is a name phrase the page does not carry, and the
+# provenance probe read it as an invention on correct draws until the haystack became the
+# whole prompt.  Shared by the probe's own tests and by the observer gate, so the two
+# layers weigh one answer rather than two copies of it free to drift.
+EXTRACT_TAGGED_PAGE = (
+    "## browse: https://sports-beta.example/hockey\n"
+    "Ridgeline Foxes sign veteran goalie Aurelio Brandt\n"
+    "by Marisol Vance\n\n"
+    "Harbour bridge reopens after a two-year refit\n"
+    "by Marisol Vance\n"
+)
+EXTRACT_TAGGED_ASK = "the headline, the byline and the published time for each story"
+EXTRACT_TAGGED_ANSWER = (
+    "Ridgeline Foxes sign veteran goalie Aurelio Brandt, Marisol Vance, NOT_PRESENT\n"
+    "Harbour bridge reopens after a two-year refit, Marisol Vance, NOT_PRESENT\n"
+    "EXTRACTED Ridgeline Foxes coverage only"
+)
+# The byline the page supplies, and a name nowhere in the prompt — swapping one for the
+# other is how the over-correction guard asks for a real invention back.
+EXTRACT_TAGGED_BYLINE = "Marisol Vance"
+EXTRACT_UNSOURCED_NAME = "Casimir Oyelaran"
