@@ -87,7 +87,6 @@ from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
 from penny.tests.eval.chat.idle.test_chat_memory_stories import (
     VERB_CASES,
     probe_seeded_world,
-    seed_world,
 )
 from penny.tests.eval.chat.idle.test_chat_reply import (
     _STORED_TITLES,
@@ -1185,7 +1184,7 @@ def test_every_memory_verb_case_is_answered_against_the_world_its_claims_assume(
             f"{case.case_id}: two of its wordings are the same string"
         )
         db = migrated_db(str(tmp_path / f"verb-{index}.db"))
-        seed_world(case.world)(db)
+        seed_world_stores(db, case.world)
         probe_seeded_world(db, case)
         seeded = " ".join(token for _, tokens in case.holds for token in tokens)
         for token in case.world.answers:
