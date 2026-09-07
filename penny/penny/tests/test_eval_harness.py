@@ -101,6 +101,9 @@ from penny.tests.eval.chat.idle.test_choose_dispatch import (
     picks_on_the_record,
     reply_reports,
 )
+from penny.tests.eval.chat.idle.test_choose_dispatch import (
+    assert_no_fire_world as assert_choose_no_fire_world,
+)
 from penny.tests.eval.chat.idle.test_command_tools import (
     IMAGE_CASES,
     _claims_no_picture_check,
@@ -114,6 +117,9 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
     install_mailbox,
 )
 from penny.tests.eval.chat.idle.test_notifications import assert_mute_world
+from penny.tests.eval.chat.idle.test_notifications import (
+    assert_no_fire_world as assert_mute_no_fire_world,
+)
 from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
     BAIL_CASES,
     assert_the_round_built_what_it_claims,
@@ -1385,7 +1391,11 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
     mock_llm, running_penny, test_config
 ) -> None:
     """Every dispatch story's loud probe passes against a REAL migrated database and a REAL
-    chat surface — both halves of all three, inside ``make check``.
+    chat surface — both halves of every one of them, inside ``make check``.
+
+    The two NO-FIRE probes are here for a reason of their own: a case claiming a tool was not
+    reached is answered trivially by a world that never offered it, so a surface probe that
+    could not pass is exactly the shape a green no-fire number would hide.
 
     The probes run at eval time only, so the ``eval`` marker is exactly what let a probe
     that could never pass reach a live run through green CI.  Driving them here against the
@@ -1401,7 +1411,9 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
         for image_case in IMAGE_CASES:
             assert_image_world(penny, image_case)
         assert_choose_world(penny)
+        assert_choose_no_fire_world(penny)
         assert_mute_world(penny)
+        assert_mute_no_fire_world(penny)
 
 
 def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> None:
