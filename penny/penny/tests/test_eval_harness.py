@@ -61,11 +61,13 @@ from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER, require_memory
-from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.binder.test_skill_binding import (
+    _MISSING_KEYWORD,
     PHRASINGS_PER_COHORT,
     PORTED_BINDINGS,
+    PortedBinding,
 )
+from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
     IDLE_APPLY_CASES,
     assert_new_space_is_unknown,
@@ -3546,7 +3548,25 @@ def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration()
         assert "harborpost.example/front" in document, f"every arm names the second: {arm!r}"
 
 
-def _binding_arm_documents(ported) -> list[str]:
+def _assert_the_behaviour_reads_as_a_sentence(ported: PortedBinding) -> None:
+    """The case states its behaviour in the mandated form: *In <the locus>, when <X>, Penny
+    <does Y>.*
+
+    The ``, Penny `` clause is required AFTER the ``, when `` one, which is the whole point of
+    checking at all: every sentence in this file names Penny somewhere — "when a routine Penny
+    already knows is pointed at something new" satisfies a bare membership test while saying
+    nothing about what she does.  A case id is a filename; this sentence is the contract, and
+    it renders above every number in the report."""
+    form = "In <the locus>, when <X>, Penny <does Y>."
+    assert ported.behaviour.startswith("In "), f"{ported.case_id}: the behaviour reads '{form}'"
+    when = ported.behaviour.find(", when ")
+    assert when != -1, f"{ported.case_id}: the behaviour reads '{form}': {ported.behaviour}"
+    assert ", Penny " in ported.behaviour[when:], (
+        f"{ported.case_id}: the behaviour names no thing Penny DOES: {ported.behaviour}"
+    )
+
+
+def _binding_arm_documents(ported: PortedBinding) -> list[str]:
     """Each arm's document, through the SHIPPED renderers — what the draw really reads.
 
     A probe over the raw turns would pass on a render that dropped one."""
@@ -3561,7 +3581,7 @@ def _binding_arm_documents(ported) -> list[str]:
     ]
 
 
-def _assert_every_arm_carries_the_facts(ported) -> None:
+def _assert_every_arm_carries_the_facts(ported: PortedBinding) -> None:
     """Every span the case's claims read appears verbatim in every arm, and exactly once.
 
     Presence is what makes a claim answerable at all; the COUNT is what makes an anchor the
@@ -3589,7 +3609,7 @@ def _assert_every_arm_carries_the_facts(ported) -> None:
             )
 
 
-def _assert_the_claims_can_decide(ported) -> None:
+def _assert_the_claims_can_decide(ported: PortedBinding) -> None:
     """No two spans a claim matches against the same value can be satisfied by one string.
 
     An anchor inside another anchor makes "bound to the one that answers it" undecidable; a
@@ -3620,7 +3640,7 @@ def _assert_the_claims_can_decide(ported) -> None:
 
 
 @pytest.mark.parametrize("ported", PORTED_BINDINGS, ids=lambda p: p.case_id)
-def test_every_ported_binding_arm_says_one_ask_over_one_signature(ported) -> None:
+def test_every_ported_binding_arm_says_one_ask_over_one_signature(ported: PortedBinding) -> None:
     """The binder's ported arms (#2006/#2057), each case against its own declared facts.
 
     A cohort pools five wordings into ONE number, which is only legal if the arms differ in
@@ -3636,10 +3656,7 @@ def test_every_ported_binding_arm_says_one_ask_over_one_signature(ported) -> Non
     ever moved the split would return the whole document on both sides and pass on anything.
     """
     assert len(ported.arms) == PHRASINGS_PER_COHORT, f"{ported.case_id}: a cohort is five wordings"
-    assert ported.behaviour.startswith("In "), (
-        f"{ported.case_id}: the behaviour reads 'In <the locus>, when <X>, Penny <does Y>.'"
-    )
-    assert ", when " in ported.behaviour and " Penny " in ported.behaviour, ported.behaviour
+    _assert_the_behaviour_reads_as_a_sentence(ported)
 
     documents = _binding_arm_documents(ported)
     assert len(set(documents)) == len(ported.arms), (

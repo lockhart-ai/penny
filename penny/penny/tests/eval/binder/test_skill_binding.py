@@ -1064,6 +1064,12 @@ async def test_two_parameters_take_the_two_spans_that_answer_them(
     claim and the cross-slot check is a third one: taking the whole clause for both satisfies
     each anchor while binding neither parameter to what answers it.
 
+    The span claims are CONTAINMENT, so an over-long bind that stops short of the other
+    parameter's span still satisfies them (#1884 item 2) — a full rate here means each value
+    came from the right part of the ask, not that it stops where that part stops.  Closing it
+    needs a term forbidden on ONE arm rather than on the case, which the arms contract does
+    not have and which is a harness change, not a fixture one.
+
     See the section note above for the empty STORE category and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _TWO_PARAMETERS_PORT, model)
@@ -1113,6 +1119,13 @@ async def test_two_parameters_take_the_two_spans_that_answer_them(
 # slots is likeliest exactly there.  The addresses carry no hint of the roles either, so the
 # assignment can only be read out of the words around them, which is why those words are the
 # case's own ``also_states``.
+#
+# TWO OF THE FIVE ARMS NAME THE RETURN FIRST, and that is what makes the claims mean
+# anything: with every arm mentioning the outbound first, a binder that never reads the role
+# words at all — taking the addresses in the order they appear and filling the signature in
+# its declared order — scores full marks, and the case would report a positional habit as
+# comprehension.  Which leg is on which page is IDENTICAL on every arm; only where each is
+# mentioned moves, which is layout, which is wording, which is the arm axis.
 #
 # Reference values (read at review, never matched):
 #   outbound_url = https://northpier.example/departures
@@ -1164,8 +1177,8 @@ _CROSSING = BindingFixture(
 
 _CROSSING_PHRASINGS = (
     (
-        "the outbound is on https://northpier.example/departures and the return is on "
-        "https://southquay.example/departures — compare the fares every monday please",
+        "the return is on https://southquay.example/departures and the outbound is on "
+        "https://northpier.example/departures — compare the fares every monday please",
     ),
     (
         "every monday could you compare the outbound fare at "
@@ -1178,8 +1191,8 @@ _CROSSING_PHRASINGS = (
         "whichever is cheaper",
     ),
     (
-        "would you mind pricing the outbound at https://northpier.example/departures and "
-        "the return at https://southquay.example/departures every monday?",
+        "would you mind pricing the return at https://southquay.example/departures and "
+        "the outbound at https://northpier.example/departures every monday?",
     ),
 )
 
@@ -1207,10 +1220,15 @@ async def test_two_same_kinded_slots_take_the_pages_the_ask_gives_each(
 
     Two declared parameters of the same kind, both supplied, and the addresses say nothing
     about which is which — so the only evidence for the assignment is the word the ask puts
-    beside each one.  A draw that swaps them binds a routine pointed at the right pages in
-    the wrong roles, which every downstream check would read as a correct binding: the names
-    match the signature, both values are spans of what the user said, and the container's
-    derived name carries both.  Nothing but this case looks at which went where.
+    beside each one, and two arms name the return first so that reading it is the only way
+    through.  A draw that swaps them binds a routine pointed at the right pages in the wrong
+    roles, which every downstream check would read as a correct binding: the names match the
+    signature, both values are spans of what the user said, and the container's derived name
+    carries both.  Nothing but this case looks at which went where.
+
+    The span claims are CONTAINMENT, so an over-long bind that swallowed its neighbouring
+    clause satisfies them (#1884 item 2) — reading a full rate here means the roles were told
+    apart, not that each value stops where it should.
 
     See the section note above for the empty STORE category and the three claims closed
     upstream."""
@@ -1294,8 +1312,8 @@ async def test_an_ask_with_no_page_in_it_reports_the_page_missing(
 
     Naming the parameter missing is the answer the contract asks for, and since #1885 it is
     what ROUTES the turn into request — an enumerated outcome the machine acts on, never a
-    failed draw.  The claims are the two halves of that answer plus the one thing a wrong
-    draw would leave behind: whatever it bound instead.
+    failed draw.  Two claims: which of the two enumerated answers the draw wrote, and the one
+    thing a wrong draw would leave behind — whatever it bound instead.
 
     A correct draw binds nothing, so the bound-value axis is deliberately not MEASURED — it
     would read unset on every sample, which the pooler reports as blind rather than as
@@ -1304,15 +1322,17 @@ async def test_an_ask_with_no_page_in_it_reports_the_page_missing(
     See the section note above for the empty STORE category and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _MISSING_PAGE_PORT, model)
-    # LANDED — the two CLOSED fields, asserted by equality.
+    # LANDED — the one CLOSED field with any discretion in it, asserted by equality.
+    #
+    # WHICH parameter it named is NOT claimed here, and on this signature that is closed the
+    # same way a complete binding's "it names nothing missing" is: the routine declares ONE
+    # parameter, and `_fills_the_declared_signature` accepts a draw only when the drawn names
+    # equal the declared names as a multiset — so a shortfall at all IS a shortfall naming the
+    # url, and a claim over it would run 15/15 by construction.  It is a real claim on the
+    # two-parameter sibling, where the draw chooses between two names, and it is made there.
     cohort.claim(
         "state: the draw reported a shortfall rather than a complete binding",
         _reported_a_shortfall,
-        SpecCategory.LANDED,
-    )
-    cohort.claim(
-        "state: it names the url as the one thing nothing supplies",
-        _names_exactly_missing(_MISSING_PAGE_PORT, "url"),
         SpecCategory.LANDED,
     )
 
@@ -1327,7 +1347,10 @@ async def test_an_ask_with_no_page_in_it_reports_the_page_missing(
         SpecCategory.PROVENANCE,
     )
 
-    cohort.measure(output_field(BIND_OUTCOME), output_field(BIND_MISSING))
+    # What the draw reported missing is NOT measured, for the reason it is not claimed: it is
+    # fully determined by the outcome on a one-parameter signature, so its H would be 0.000
+    # whatever happened — a number that reads as agreement where there was no discretion.
+    cohort.measure(output_field(BIND_OUTCOME))
 
 
 # ── Ported: the completion draw, when the value finally arrives ───────────────
@@ -1413,6 +1436,14 @@ async def test_the_still_open_parameter_is_filled_from_the_turn_that_arrived(
     offered ones, and the completed binding would derive a perfectly ordinary container name.
 
     The other direction is the case's point: the value comes from the turn that just arrived.
+
+    **What these claims cannot see is an OVER-LONG bind** (#1884 item 2): the span claim is
+    containment and the no-terms claim reads a per-case list every arm must carry, so a draw
+    binding the whole arriving turn — "the dawn sailing — that's the one i'm after" — carries
+    the anchor, carries no forbidden term, and scores a full mark.  A full rate here means the
+    value came from the right turn, not that it stops where the entry stops.  Closing it needs
+    a term forbidden on ONE arm rather than on the case, which the arms contract does not have
+    and which is a harness change, not a fixture one.
 
     See the section note above for the empty STORE category and the three claims closed
     upstream."""
