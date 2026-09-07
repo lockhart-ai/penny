@@ -80,9 +80,9 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
+    CYCLE_SCRIPT,
     ENTRIES_STORED,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
 )
@@ -420,4 +420,4 @@ async def test_a_refused_repeat_still_leaves_the_entry_it_owed(
 
     # REPLY_SPREAD is not measured: this job is silent, so a correct cohort sends nothing and
     # a reply-spread reading would be blind on every sample by construction.
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
