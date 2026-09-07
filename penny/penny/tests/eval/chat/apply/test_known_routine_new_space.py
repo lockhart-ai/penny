@@ -324,9 +324,17 @@ def assert_every_wording_names_the_space(case: _IdleApplyCase) -> None:
 #
 # All four are in ``assertions.py``: tranche 3's two stand-up edges arrived as their second and
 # third customers (#2005), and each label went with its claim so one claim's history stays one
-# row.  The terms are now read off the container by NAME rather than off "the one born this
-# run", because the accepted offer settles the terms of a container its round built earlier —
-# the same reading in all three edges, where the born-this-run one holds in only two.
+# row.
+#
+# ONE READING CHANGED when they graduated, and it is worth stating because it changes what these
+# claims answer on a WRONG sample.  They used to read the single row BORN this run, and ``None``
+# where the turn minted none or several — so a turn that built nothing failed them for want of a
+# job.  They now read the container BY NAME, born or not, because the accepted offer settles the
+# terms of a container its round built EARLIER and the born-this-run reading holds in only two
+# of the three edges.  Here the two coincide on a correct sample, since the derived container is
+# the row this turn mints; where they part is a turn that configured a row it did not create,
+# which the name reading answers on its own terms and the born reading could only report as an
+# absence.
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)

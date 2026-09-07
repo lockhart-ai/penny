@@ -69,9 +69,11 @@ which is the claim's own first half.  Both would run at exactly the rate it does
   What the second was reaching for — whether the reply describes what actually landed — is not
   answerable from prose.
 
-**And two the inward column added**: PROVENANCE, of both kinds.  The source case made no claim
-of either, so a sample that confirmed a sailing time or an address nobody gave passed
-everything it carried.
+**And the inward column added PROVENANCE**, which the source case made no claim of, so a
+sample that confirmed a sailing time or an address nobody gave passed everything it carried.
+Only its REPLY half is made: the store half is entailed by ``assert_nothing_was_written`` on a
+turn that must write nothing, so it is stated empty with that reason at the claim site rather
+than run as a guaranteed pass.
 
 **`keeps`, `excludes` and `answers` are all EMPTY, and each is a report.**  The turn sets a job
 to run LATER; it reads nothing and keeps nothing, so a keeps set would state a contract the
@@ -102,6 +104,7 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
 )
+from penny.tests.eval.utils.schedules import DTSTART_TAG as _DTSTART_TAG
 from penny.tests.eval.utils.schedules import HOUR_PART, rule_parts
 from penny.tests.eval.utils.transition_ledger import _FAMILY
 from penny.tests.eval.utils.transition_world import (
@@ -274,17 +277,25 @@ def _states_an_hour_to_run_at(sample: SampleObservation, _world: World) -> Answe
     "Every morning" is not a period, it is a moment: a rule stating only its frequency fires at
     whatever instant the collection happened to be created, so a job set up at four in the
     afternoon checks the timetable every afternoon for ever.  WHICH hour is not claimed — the
-    code owner's leeway ruling — only that one was chosen at all, read as a PART the rule
-    states rather than off the parsed object, since dateutil defaults an unstated hour to the
-    start's and cannot tell a chosen hour from an inherited one.
+    code owner's leeway ruling — only that one was chosen at all.
+
+    EITHER SPELLING counts, because production accepts both and teaches the second: an hour can
+    be stated as a ``BYHOUR`` part of the rule, or by anchoring the recurrence with a
+    ``DTSTART`` line, which is the shape ``collection_instantiation``'s own worked example
+    carries.  A draw answering with ``DTSTART:…T070000Z`` + ``FREQ=DAILY`` has chosen seven in
+    the morning as surely as one writing ``BYHOUR=7``, and reading only the rule line would
+    fail it for its notation — the same class as matching ``$449`` against ``449``, one level
+    up.  ``rule_parts`` drops the ``DTSTART`` line by construction, so the anchor is read off
+    the stored text beside it.
 
     Local, and it stays local: it is the only ported case whose terms name a time of day, so
-    there is no second customer for it to graduate to.  A violating sample stores something
-    like ``FREQ=DAILY`` with no ``BYHOUR`` part and is named by the rationale."""
+    there is no second customer for it to graduate to.  A violating sample stores a bare
+    ``FREQ=DAILY`` — no ``BYHOUR``, no anchor — and is named by the rationale."""
     job = next((one for one in sample.mechanisms if one.name == _EXPECTED_CONTAINER), None)
     if job is None or job.schedule is None:
         return False, f"{_EXPECTED_CONTAINER!r} carries no schedule"
-    return HOUR_PART in rule_parts(job.schedule), f"states {sorted(rule_parts(job.schedule))}"
+    stated = HOUR_PART in rule_parts(job.schedule) or _DTSTART_TAG in job.schedule.upper()
+    return stated, f"the rule is {job.schedule!r}"
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -329,11 +340,13 @@ async def test_request_to_apply_composes_both_turns_and_stands_the_job_up(
     cohort.assert_nothing_was_written()
     cohort.assert_no_running_mechanism_was_changed()
 
-    # PROVENANCE — the half the source case had none of.  The store claim answers over an empty
-    # set on a correct sample and names the invention on one that opened the page and kept what
-    # it found; the reply claim is live throughout, since a turn confirming a job it has just
-    # set up is exactly where a sailing time or an address nobody gave gets stated.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    # PROVENANCE — the reply half only, and the store half is EMPTY with a reason.
+    # ``assert_every_stored_entry_traces_to_the_world`` is ENTAILED here by
+    # ``assert_nothing_was_written``: the store claim can only fail on an entry, and any entry
+    # at all already fails the stricter one, so it would run 15/15 by construction and measure
+    # the entailment rather than the turn.  The reply claim is live throughout, since a turn
+    # confirming a job it has just set up is exactly where a sailing time or an address nobody
+    # gave gets stated.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
