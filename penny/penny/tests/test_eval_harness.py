@@ -3501,12 +3501,22 @@ def test_every_ported_framing_case_says_one_ask_in_different_words(ported) -> No
     claims no search is invented, and an arm that said "search" would be asking for the very
     thing it claims is not asked for.
 
+    ``demonstrates`` is held against the arm's LAST turn — the demonstration — because the
+    store verb is what it states, and a first turn opening "keep tabs on" would satisfy the
+    bare verb over a demonstration that never said to keep anything.
+
     Documents are built through the SHIPPED renderer, because that is what the draw reads — a
     probe over the raw turns would pass on a render that dropped one."""
     assert len(ported.arms) == 5, f"{ported.case_id}: five wordings, or the arms are not arms"
     for arm in ported.arms:
         assert len(arm) == ported.turns_per_arm, (
             f"{ported.case_id}: {arm} is not {ported.turns_per_arm} turn(s)"
+        )
+
+    for arm in ported.arms:
+        assert any(one in arm[-1] for one in ported.demonstrates), (
+            f"{ported.case_id}: the demonstration turn states none of "
+            f"{ported.demonstrates}: {arm[-1]!r}"
         )
 
     documents = [

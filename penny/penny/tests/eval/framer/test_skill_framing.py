@@ -158,33 +158,6 @@ def _page_family(label: str, *extra: str) -> ParameterFamily:
     return ParameterFamily(label, (*_PLACE_TOKENS, *extra), name_only=True)
 
 
-# The ordinal families a same-kind ask is answered by.  Two things of one kind have no type
-# to tell them apart, so what a correct draw distinguishes them by is POSITION, and the
-# breadth is every ordinary way of writing that — the ordinal word, the cardinal, the digit,
-# the latinate form, and (through `_name_tokens`' letter-suffix reading) `_a`/`_b`/`_c`.
-#
-# Declared ONCE, like `_page_family`, because the breadth is the code owner's and a
-# same-kind case that spelled its own copy would make widening it a several-site edit.
-_ORDINAL_BREADTH = (
-    ("first", "one", "1", "primary"),
-    ("second", "two", "2", "secondary"),
-    ("third", "three", "3", "tertiary"),
-)
-
-
-def _ordinal_family(label: str, position: int, *extra: str) -> ParameterFamily:
-    """The ``position``-th ordinal family (1-based), with any case-specific words.
-
-    ``extra`` is where a case states a word that only identifies a position IN THAT CASE:
-    "the other one" picks out the second of TWO and picks out nothing among three, so the
-    two-of-a-kind cases pass it and the three-of-a-kind case does not."""
-    return ParameterFamily(label, (*_ORDINAL_BREADTH[position - 1], *extra))
-
-
-_FIRST_OF_A_KIND = _ordinal_family("first source", 1)
-_SECOND_OF_A_KIND = _ordinal_family("second source", 2, "other")
-
-
 class PortedArms(NamedTuple):
     """One ported case's five wordings, together with the facts every one of them carries.
 
@@ -200,6 +173,13 @@ class PortedArms(NamedTuple):
     "ping me") is declared rather than left out.  Without it such a fact is invisible to the
     probe and can go missing from one arm silently, which is the drift the probe exists for.
 
+    ``demonstrates`` is an alternation held against the arm's LAST turn rather than the whole
+    document — the store verb, which every case states as a constant fact and every arm
+    rewords (remember / save / keep / store).  It is per-turn because a whole-document check
+    on the bare verbs is hollow here: a first turn opening "keep tabs on" or "keep an eye on"
+    would satisfy `keep` while the demonstration said nothing about keeping anything.  The
+    demonstration is the arm's last turn on every case, single-turn ones included.
+
     ``turns_per_arm`` is how many turns an arm takes, since an ask is however many turns the
     user needed for it and the single-turn case's whole subject is that number."""
 
@@ -207,12 +187,15 @@ class PortedArms(NamedTuple):
     arms: tuple[tuple[str, ...], ...]
     carries: tuple[str, ...]
     any_of: tuple[str, ...] = ()
+    demonstrates: tuple[str, ...] = ()
     never: tuple[str, ...] = ()
     turns_per_arm: int = 2
 
 
-def _answers(family: ParameterFamily, among: Sequence[ParameterFamily]) -> WorldClaim:
-    """A claim that EXACTLY ONE minted parameter answers one piece the ask requires.
+def _answers(
+    family: ParameterFamily, among: Sequence[ParameterFamily], expected: int
+) -> WorldClaim:
+    """A claim that EXACTLY ``expected`` minted parameters answer one piece the ask requires.
 
     The parameter set is a CLOSED field, so this is asserted by equality under LANDED rather
     than traced under PROVENANCE — but it is still one half of a pair, and its other half is
@@ -227,8 +210,17 @@ def _answers(family: ParameterFamily, among: Sequence[ParameterFamily]) -> World
     than a string to match.  Which is what makes this an assertion rather than a reading —
     a differently-worded correct answer passes, and no correct draw can answer it twice.
 
-    Nothing at all answering it is a piece the routine can no longer be pointed at; two
-    answering it is the same piece asked for twice.
+    Too few is a piece the routine can no longer be pointed at; too many is the same piece
+    asked for more times than the ask names it.
+
+    ``expected`` is how many parameters that piece takes.  It is ONE for a piece the ask
+    names once, and N for an ask that points the routine at N things of the SAME kind —
+    which have no type to tell them apart, so they answer one family N times rather than N
+    families once each.  Telling those N apart is the framer's own naming judgment and is
+    NOT asserted here: a lexicon of ordinal words is a guess at a label the model composes,
+    which the design's not-assertable column rules out, and the two it was tried with failed
+    correct draws twice before being widened twice.  What the behaviour needs is that N
+    re-suppliable pieces of that kind survive into the interface, which this counts.
 
     ``among`` is the case's WHOLE family set and the classification runs over it ONCE, not
     once per family.  Classifying against one family at a time would break the discipline it
@@ -246,7 +238,7 @@ def _answers(family: ParameterFamily, among: Sequence[ParameterFamily]) -> World
             )
             if family_of is not None and family_of.label == family.label
         ]
-        return len(matched) == 1, f"{len(matched)} answer it: {matched or 'none'}"
+        return len(matched) == expected, f"{len(matched)} answer it: {matched or 'none'}"
 
     return answer
 
@@ -269,26 +261,35 @@ def _asks_for_nothing_else(required: int) -> WorldClaim:
     return answer
 
 
-def _claim_the_parameter_set(cohort: Cohort, families: Sequence[ParameterFamily]) -> None:
+def _claim_the_parameter_set(
+    cohort: Cohort, families: Sequence[ParameterFamily], answers: int = 1
+) -> None:
     """The LANDED block every ported framing case makes, over the families its ask requires.
 
     A framing draw has no enumerated outcome to land on — a signature came back or nothing
     did, and nothing is the completeness gate's — so the parameter SET is what this category
-    holds for this shape, asserted by equality: one drawn parameter per piece the ask
-    requires, and no parameter for anything it does not.
+    holds for this shape, asserted by equality: a drawn parameter per piece the ask requires,
+    and no parameter for anything it does not.
+
+    The two shapes an ask has are the same statement with the multiplicity in different
+    places.  Pieces of DIFFERENT kinds are several families answered once each (a page and a
+    title).  N pieces of the SAME kind are ONE family answered ``answers`` times — they have
+    no type to tell them apart, so there is no second family for the second one to answer.
 
     Shared rather than repeated at each case because there is more than one customer for it
     now; what stays per-case is the family set, which is where each case's own behaviour
     lives."""
     for one in families:
         cohort.claim(
-            f"state: exactly one parameter answers the {one.label}",
-            _answers(one, families),
+            f"state: exactly {answers} parameter(s) answer the {one.label}"
+            if answers > 1
+            else f"state: exactly one parameter answers the {one.label}",
+            _answers(one, families, answers),
             SpecCategory.LANDED,
         )
     cohort.claim(
         "state: the routine asks for nothing else",
-        _asks_for_nothing_else(len(families)),
+        _asks_for_nothing_else(len(families) * answers),
         SpecCategory.LANDED,
     )
 
@@ -392,6 +393,7 @@ PAGE_ONLY_ARMS = PortedArms(
     carries=("bookbarn.example/atlas-of-clouds", "stock"),
     any_of=("let me know", "tell me", "ping me", "say when"),
     never=("search", "query"),
+    demonstrates=("remember", "save", "keep", "store"),
 )
 
 _PAGE_ONLY_BEHAVIOUR = (
@@ -471,7 +473,10 @@ _TWO_SOURCES = FramingFixture(
         "read citydesk.example/front and harborpost.example/front, and remember each "
         "site's top headline"
     ),
-    parameters=(_FIRST_OF_A_KIND, _SECOND_OF_A_KIND),
+    parameters=(
+        ParameterFamily("first source", ("first", "one", "1", "primary")),
+        ParameterFamily("second source", ("second", "two", "2", "secondary", "other")),
+    ),
     instance_tokens=("citydesk", "harborpost"),
 )
 
@@ -523,7 +528,15 @@ TWO_SOURCES_ARMS = PortedArms(
     case_id="framer-keeps-two-of-a-kind-as-two-parameters",
     arms=(_TWO_SOURCES.turns, *_TWO_SOURCES_PHRASINGS),
     carries=("citydesk.example/front", "harborpost.example/front", "top headline"),
+    demonstrates=("remember", "save", "keep", "store"),
 )
+
+# The ONE family a same-kind ask is answered by, at whatever multiplicity the ask names.
+# Grounded: every arm says "read <address> and <address>", so `url`/`site`/`page` are words
+# the ask itself puts in front of the draw, and a parameter named at that breadth is a piece
+# the routine can be pointed at.  What is NOT claimed is how the draw tells the several
+# apart — see `_answers`.
+_SAME_KIND_SOURCE = _page_family("source")
 
 _TWO_SOURCES_BEHAVIOUR = (
     f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when one ask points a "
@@ -574,13 +587,13 @@ async def test_two_of_a_kind_stay_two_distinct_parameters(
         family=_FAMILY,
     )
     # LANDED
-    _claim_the_parameter_set(cohort, _TWO_SOURCES.parameters)
+    _claim_the_parameter_set(cohort, (_SAME_KIND_SOURCE,), answers=2)
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=len(_TWO_SOURCES.parameters))
+    _measure_the_draw(cohort, positions=2)
 
 
 # ── Case 3: cadence and notification are not signature ────────────────────────
@@ -657,6 +670,7 @@ TICKER_ARMS = PortedArms(
     arms=(_TICKER.turns, *_TICKER_PHRASINGS),
     carries=("VLT", "share price"),
     any_of=("moves", "changes", "shifts"),
+    demonstrates=("remember", "save", "keep", "store"),
 )
 
 # The one sentence this case exists to check, in the fixed form: "In <the locus>, when <X>,
@@ -787,6 +801,7 @@ SINGLE_TURN_ARMS = PortedArms(
     arms=(_SINGLE_TURN.turns, *_SINGLE_TURN_PHRASINGS),
     carries=("weather.example/lisbon", "high temperature"),
     turns_per_arm=1,
+    demonstrates=("remember", "save", "keep", "store"),
 )
 
 _SINGLE_TURN_BEHAVIOUR = (
@@ -912,12 +927,13 @@ SEARCH_ARMS = PortedArms(
     arms=(_SEARCH.turns, *_SEARCH_PHRASINGS),
     carries=("aurora fest", "search", "cheapest ticket price"),
     never=("example",),
+    demonstrates=("remember", "save", "keep", "store"),
 )
 
 _SEARCH_BEHAVIOUR = (
     f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when the look-up an ask "
-    "describes is a text search rather than an address, Penny mints one parameter named for "
-    "the search."
+    "describes is a text search rather than an address, Penny mints one parameter for the "
+    "thing being searched for, and none for a page."
 )
 
 
@@ -1039,6 +1055,7 @@ PAGE_AND_TITLE_ARMS = PortedArms(
     arms=(_PAGE_AND_TITLE.turns, *_PAGE_AND_TITLE_PHRASINGS),
     carries=("town-library.example/catalog", "The Glass Harbour", "available"),
     never=("search",),
+    demonstrates=("remember", "save", "keep", "store"),
 )
 
 _PAGE_AND_TITLE_BEHAVIOUR = (
@@ -1113,7 +1130,10 @@ _TWO_SYMBOLS = FramingFixture(
         "can you keep an eye on a couple of stocks for me?\n"
         "look up VLT and MERI, find each share price, and remember them"
     ),
-    parameters=(_ordinal_family("first ticker", 1), _ordinal_family("second ticker", 2, "other")),
+    parameters=(
+        ParameterFamily("first ticker", ("first", "one", "1", "primary")),
+        ParameterFamily("second ticker", ("second", "two", "2", "secondary", "other")),
+    ),
     instance_tokens=("vlt", "meri"),
 )
 
@@ -1133,17 +1153,6 @@ async def test_two_symbols_of_the_same_type_stay_two_scalar_parameters(framer_ev
 # more tempting than it is at two — three scalars is where a description that promises "the
 # news sites" starts to look like the tidier interface — and nothing has measured whether a
 # framer that keeps two apart keeps three apart.
-#
-# The ordinal families here are the shared breadth at three positions, and the second does
-# NOT take the two-of-a-kind cases' "other": among two things "the other one" identifies one
-# of them, and among three it identifies nothing, so keeping it would let a draw that told
-# only two of the three apart answer the second family off a word that says nothing about
-# which page it means.
-_THREE_SOURCES_FAMILIES = (
-    _ordinal_family("first source", 1),
-    _ordinal_family("second source", 2),
-    _ordinal_family("third source", 3),
-)
 
 # THE FACTS ARE CONSTANT across the five wordings: every arm names all three front pages and
 # asks for each site's top headline.
@@ -1185,6 +1194,7 @@ THREE_SOURCES_ARMS = PortedArms(
         "riverchronicle.example/front",
         "top headline",
     ),
+    demonstrates=("remember", "save", "keep", "store"),
 )
 
 _THREE_SOURCES_BEHAVIOUR = (
@@ -1233,13 +1243,13 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
         family=_FAMILY,
     )
     # LANDED
-    _claim_the_parameter_set(cohort, _THREE_SOURCES_FAMILIES)
+    _claim_the_parameter_set(cohort, (_SAME_KIND_SOURCE,), answers=3)
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=len(_THREE_SOURCES_FAMILIES))
+    _measure_the_draw(cohort, positions=3)
 
 
 # EVERY ported case's arms, for the deterministic probe in ``make check`` — one place, so the
