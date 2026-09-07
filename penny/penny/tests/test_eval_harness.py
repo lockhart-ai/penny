@@ -86,7 +86,6 @@ from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
 )
 from penny.tests.eval.chat.idle.test_chat_reply import (
     ANSWERING_CASES,
-    SEEDED_ANSWER_CASES,
 )
 from penny.tests.eval.chat.idle.test_choose_dispatch import (
     _OPTIONS as _CHOOSE_OPTIONS,
@@ -5018,33 +5017,27 @@ def test_every_claimed_answer_is_one_token_its_own_world_carries() -> None:
     between the words and were scored as naming nothing — so a multi-word token can be failed
     by a space nobody has met yet, while a single token cannot.
 
-    ON EXACTLY ONE PAGE, which is the stronger half and the half a containment test misses.  A
-    token no page carries fails a correct reply for a fact the fixture never stated — and a
-    token carried by TWO pages is reachable without the hop the case exists to measure, which
-    is silent on a run because the reply states the answer either way.  That absence IS the
+    ON EXACTLY ONE SOURCE, which is the stronger half and the half a containment test misses.
+    A token no source carries fails a correct reply for a fact the fixture never stated — and
+    a token carried by TWO is reachable without the hop the case exists to measure, which is
+    silent on a run because the reply states the answer either way.  That absence IS the
     one-link-deep case's whole premise: the maker is credited on the gallery page and nowhere
     on the index that points at it, so a reply naming him opened the second page.
 
-    A world with no pages states its answer through its SEED instead, which the sibling pin
-    below reads out of the store."""
-    seeded = {case.case_id for case in SEEDED_ANSWER_CASES}
+    SOURCES rather than pages, since #2114: a world's ground is its pages AND the collections
+    it declares already in the store, so a store-backed case is held to the same rule as a
+    page-backed one instead of being skipped for having no pages."""
     for case in ANSWERING_CASES:
         for token in case.world.answers:
             assert token.split() == [token], (
                 f"{case.case_id}: the answer token {token!r} carries whitespace, so a space "
                 "the fold has not met can fail a correct reply"
             )
-            if case.case_id in seeded:
-                continue
-            carriers = [
-                number
-                for number, page in enumerate(case.world.pages, start=1)
-                if token in page.text
-            ]
+            carriers = [source.label for source in case.world.sources if token in source.text]
             assert len(carriers) == 1, (
-                f"{case.case_id}: the answer token {token!r} is carried by page(s) {carriers} "
-                f"of {len(case.world.pages)} — it must sit on exactly one, or the hop the case "
-                "measures is reachable without taking it"
+                f"{case.case_id}: the answer token {token!r} is carried by {carriers} of "
+                f"{len(case.world.sources)} source(s) — it must sit on exactly one, or the "
+                "hop the case measures is reachable without taking it"
             )
 
 
@@ -5053,18 +5046,21 @@ def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> No
     loud probe run here, against a real migrated database, rather than only under ``make eval``
     where a raise costs a GPU run before it is seen.
 
-    Its own database per case, because that is what a sample gets.  The answer tokens ride
-    along for the seeded cases the pin above skips: the value has to be IN the store, since the
-    whole behaviour is that she went and read it."""
+    Its own database per case, because that is what a sample gets, and seeded through the
+    DRIVER's own seam (``seed_world_stores``) rather than a second copy of it — the world's
+    declaration is what the sample gets and what the report renders, so it is what this must
+    exercise.
+
+    The answer tokens ride along for a store-backed world: the value has to be in the store
+    the world declares, since the whole behaviour is that she went and read it."""
     for index, case in enumerate(ANSWERING_CASES):
-        if case.seed is None and case.probe is None:
+        if not case.world.stores and case.probe is None:
             continue
         db = migrated_db(str(tmp_path / f"answering-{index}.db"))
-        if case.seed is not None:
-            case.seed(db)
+        seed_world_stores(db, case.world)
         if case.probe is not None:
             case.probe(db)
-        if case not in SEEDED_ANSWER_CASES:
+        if not case.world.stores:
             continue
         stored = " ".join(
             f"{key} {content}"

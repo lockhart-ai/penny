@@ -118,9 +118,7 @@ from penny.tests.eval.conftest import (
     EVAL_MODELS,
     ChatEval,
     Preparer,
-    Seeder,
     collection_entries,
-    seed_collection,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
 from penny.tests.eval.utils.cohort import (
@@ -303,19 +301,6 @@ _INTERESTS = SynthCollection(
 )
 
 
-def _seed_the_users_routes(db: Database) -> None:
-    """The two collections a couple of ordinary chat turns would have left behind, through
-    the production create-then-write path and authored by the user."""
-    seed_collection(db, _TRAIL_RUNS)
-    seed_collection(db, _TABLETOP_SHORTLIST)
-
-
-def _seed_the_stored_interest(db: Database) -> None:
-    """The entry condition the duplicate case runs into: a collection the user built that
-    ALREADY holds the interest they are about to ask her to record."""
-    seed_collection(db, _INTERESTS)
-
-
 # ── The loud probes: the world really is what the case says it is ────────────
 
 
@@ -477,12 +462,13 @@ _GALLERY_WORLD = World(
     answers=(_GALLERY_MAKER,),
 )
 
-# No pages at all: the answer is in the user's own collection, and a browse in this world
-# reaches the mock's no-results page.  The world's real ground is the SEED, which the report
-# cannot render — see the case's own note.
+# No pages at all: the answer is in the user's own collections, which the world DECLARES so
+# the driver seeds them and the report renders the same rows the sample was answering against
+# (#2114).  A browse in this world reaches the mock's no-results page.
 _STORE_WORLD = World(
     name="the user's own collections",
     pages=(),
+    stores=(_TRAIL_RUNS, _TABLETOP_SHORTLIST),
     keeps=(),
     excludes=(),
     answers=(_CLIMB,),
@@ -501,6 +487,7 @@ _COLD_STORE_WORLD = World(
 _ALREADY_STORED_WORLD = World(
     name="the interest is already in the user's collection",
     pages=(),
+    stores=(_INTERESTS,),
     keeps=(),
     excludes=(),
     answers=(),
@@ -558,9 +545,10 @@ class _AnsweringCase(NamedTuple):
     in.
 
     ``ask`` and ``also_phrased`` are five wordings of ONE message against one world — the
-    cohort's arms.  ``seed`` lays the world's store down through the production write path and
-    ``probe`` re-reads it once the sample's Penny is up, which is where a drift that would
-    otherwise be invisible fails naming itself."""
+    cohort's arms.  What the store already holds is the WORLD's (``World.stores``), so the
+    driver seeds it from the same declaration the report renders; ``probe`` re-reads it once
+    the sample's Penny is up, which is where a drift that would otherwise be invisible fails
+    naming itself."""
 
     case_id: str
     behaviour: str
@@ -568,7 +556,6 @@ class _AnsweringCase(NamedTuple):
     world: World
     ask: str
     also_phrased: tuple[str, ...]
-    seed: Seeder | None = None
     probe: Callable[[Database], None] | None = None
     timeout: float = 180.0
 
@@ -624,7 +611,6 @@ _ANSWER_FROM_STORE = _AnsweringCase(
     world=_STORE_WORLD,
     ask=_CLIMB_ASK,
     also_phrased=_CLIMB_PHRASINGS,
-    seed=_seed_the_users_routes,
     probe=assert_the_routes_are_stored,
 )
 
@@ -667,7 +653,6 @@ _SAYS_ALREADY_THERE = _AnsweringCase(
     world=_ALREADY_STORED_WORLD,
     ask=_RECORD_ASK,
     also_phrased=_RECORD_PHRASINGS,
-    seed=_seed_the_stored_interest,
     probe=assert_the_interest_is_stored_once,
 )
 
@@ -682,10 +667,6 @@ ANSWERING_CASES = (
     _SAYS_ALREADY_THERE,
 )
 
-# The cases whose answer is stated by a SEED rather than by a page — what a world-coherence
-# pin has to read the store for, since ``World.says`` is empty for them.
-SEEDED_ANSWER_CASES = (_ANSWER_FROM_STORE,)
-
 
 async def _drive(chat_eval: ChatEval, model: str, case: _AnsweringCase) -> Cohort:
     """Drive one answering case: its own world, its own seeded store, and the loud probe that
@@ -694,7 +675,6 @@ async def _drive(chat_eval: ChatEval, model: str, case: _AnsweringCase) -> Cohor
         case_id=case.case_id,
         behaviour=case.behaviour,
         model=model,
-        seed=case.seed,
         prepare=_probe(case),
         world=case.world,
         ask=case.ask,
