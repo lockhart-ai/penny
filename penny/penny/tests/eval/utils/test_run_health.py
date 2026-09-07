@@ -9,14 +9,19 @@ reports a healthy run forever.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import httpx
 import openai
 import pytest
 
+from penny.database.message_store import PromptPerf
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmFault, LlmResponseError
-from penny.tests.eval.utils import run_health
+from penny.tests.eval import conftest as eval_conftest
+from penny.tests.eval.utils import cohort as eval_cohort
+from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import worker_filename
 from penny.tests.eval.utils.run_health import (
     CohortRecord,
@@ -264,3 +269,108 @@ class TestMergingWhatSeveralProcessesSaw:
 
     def test_an_empty_dir_reads_as_a_run_that_measured_nothing(self, tmp_path) -> None:
         assert run_health.load_health(tmp_path) == RunHealth()
+
+
+# ── The sample the rig never started (#2070) ─────────────────────────────────
+#
+# A boot failure escaped ``asyncio.gather``, so ONE sample's preflight timing out
+# discarded the other fourteen AND skipped ``record_cohort`` — the case died in the one
+# way the viability gate could not see, its health row never written at all. These drive
+# the real ``_run_samples`` skeleton every runner shares, with the world stood up by a
+# stub: no model, no GPU, no network.
+_VOIDED_SAMPLE = 7
+_STAND_UP_FAULT = "the sample never started — RuntimeError while standing its world up"
+
+
+def _stubbed_world(monkeypatch, *, stands_up: bool = True) -> None:
+    """Stand every sample's Penny up without a model — or refuse to, as the incident did."""
+
+    @asynccontextmanager
+    async def _penny(config, server):
+        if not stands_up:
+            raise RuntimeError("LLM endpoint unreachable: Request timed out")
+        yield SimpleNamespace(db=None)
+
+    monkeypatch.setattr(eval_conftest, "eval_penny", _penny)
+    monkeypatch.setattr(
+        eval_conftest, "live_prompt_perf", lambda _db: PromptPerf(1, 10, 2, 3, 0, 0, 0)
+    )
+    monkeypatch.setattr(run_health, "_cohorts", [])
+    monkeypatch.delenv("EVAL_REPORT_DIR", raising=False)
+
+
+class TestASampleTheRigNeverStarted:
+    """One sample's boot failure voids that sample, and NOTHING else."""
+
+    @pytest.mark.asyncio
+    async def test_the_others_pool_and_the_void_is_named(self, make_config, tmp_path, monkeypatch):
+        """The whole chain, on the numbers the incident lost: 14 pooled, one named void."""
+        _stubbed_world(monkeypatch)
+
+        async def _drive(penny, server, sample_index, retryable):
+            if sample_index == _VOIDED_SAMPLE:
+                raise RuntimeError("LLM endpoint unreachable: Request timed out")
+            return eval_conftest.SampleResult(
+                1.0,
+                [],
+                1,
+                observation=eval_cohort.SampleObservation(
+                    name=f"boot-failure-{sample_index + 1}", phrasing="the ask"
+                ),
+            )
+
+        results, perf, voided = await eval_conftest._run_samples(
+            make_config, tmp_path, case_id="boot-failure", samples=15, drive=_drive
+        )
+
+        assert len(results) == 14
+        # The void carries the exception CLASS, which is what groups two samples killed by
+        # the same thing — a message carrying a URL or a timeout figure differs per sample.
+        assert [(s.name, s.complete, s.exclusion) for s in voided] == [
+            ("boot-failure-8", False, _STAND_UP_FAULT)
+        ]
+        # The cohort the viability gate rules on: the case asked for 15 and got 14.
+        assert run_health.process_health().cohorts == [
+            CohortRecord(case_id="boot-failure", intended=15, completed=14)
+        ]
+        # A sample that never started spent nothing, so the per-sample cost stays honest.
+        assert perf.calls == 14
+
+        cohort = eval_conftest._driven_cohort("boot-failure", "test-model", results, voided, ())
+        pooled = eval_cohort.pool(cohort.samples, cohort.features)
+        assert (pooled.pooled, len(pooled.excluded), pooled.driven) == (14, 1, 15)
+
+        document = report.CaseSections(case_id="boot-failure", variance=pooled).render()
+        assert (
+            f"#### 🔴 Excluded samples\n"
+            f"\n"
+            f"<details><summary>1 of 15 · dominant: {_STAND_UP_FAULT}</summary>\n"
+            f"\n"
+            f"Dominant failure class: **{_STAND_UP_FAULT}** (1 of 1).\n"
+            f"\n"
+            f"- `boot-failure-8` — {_STAND_UP_FAULT}\n"
+            f"\n"
+            f"</details>"
+        ) in document
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_lost_every_sample_this_way_is_refused(
+        self, make_config, tmp_path, monkeypatch
+    ):
+        """A failure standing the world up — the door the incident came through — voids the
+        sample the same way, and a cohort that lost all of them REFUSES the run."""
+        _stubbed_world(monkeypatch, stands_up=False)
+
+        async def _drive(penny, server, sample_index, retryable):
+            raise AssertionError("the drive is unreachable when the world never stands up")
+
+        results, _perf, voided = await eval_conftest._run_samples(
+            make_config, tmp_path, case_id="dead-cohort", samples=3, drive=_drive
+        )
+
+        assert results == []
+        assert [sample.exclusion for sample in voided] == [_STAND_UP_FAULT] * 3
+        health = run_health.process_health()
+        assert health.cohorts == [CohortRecord(case_id="dead-cohort", intended=3, completed=0)]
+        assert not health.viable
+        assert "REFUSED: 1 case(s) scored a fraction of their intended cohort" in health.render()
