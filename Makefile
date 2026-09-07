@@ -83,6 +83,17 @@ EVAL_REMOTE_API_KEY_VAR := OPENROUTER_API_KEY
 # The marker `make eval-report` stamps into a posted run dir (#1757). Must match
 # `penny.tests.eval.utils.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
 POSTED_MARKER := .posted
+# How the invoking tree's HEAD is derived — ONE definition, expanded into BOTH eval recipes.
+# `eval` records it in the run manifest as EVAL_COMMIT; `eval-report` matches a bare RUN against
+# that recorded value (#2098), so the two derivations must agree byte-for-byte or every bare
+# `make eval-report` becomes unresolvable. Derived HOST-side in the recipe shell, not in the
+# container: a worktree's `.git` is a file pointing at the primary checkout's gitdir, which the
+# container has neither mounted nor any reason to. Never `$(shell …)` — this stays shell text run
+# INSIDE the recipe, so `make -n` prints it rather than running git at parse time.
+# The `unknown` fallback must match `penny.tests.eval.utils.artifacts.UNKNOWN_COMMIT`, which the
+# resolver treats as NO identity rather than as a commit: every tree that cannot read its HEAD
+# records that same string, so matching on it would post a sibling's run.
+HEAD_COMMIT_CMD = git rev-parse HEAD 2>/dev/null || echo unknown
 # The line `penny.tests.eval.utils.endpoint_smoke` prints the answering provider on. Must match
 # `endpoint_smoke.PROVIDER_LINE_PREFIX` — the recipe reads the provider off it and forwards
 # it as EVAL_PROVIDER, so the manifest records WHERE the model was served from (#1996).
@@ -395,7 +406,7 @@ eval: $(if $(LOCAL),,build)
 		done; \
 	fi; \
 	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
-	commit="$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	commit="$$($(HEAD_COMMIT_CMD))"; \
 	run_key="$$stamp-$$(printf '%05d' $$$$)"; \
 	run_id="$${EVAL_RUN_ID:-run-$$run_key-$$(printf %.8s "$$commit")}"; \
 	report_dir="$${EVAL_REPORT_DIR}"; \
@@ -447,7 +458,7 @@ assemble: $(if $(LOCAL),,build)
 
 # Post a completed eval run's assembled report to its iteration PR as a comment — the ONE-SHOT that
 # makes the joint-checkpoint rule (run → report → STOP for joint review) STRUCTURAL (#1757). It
-# assembles the named run (RUN=run-<stamp>) or, by default, the MOST-RECENT completed run under the
+# assembles the named run (RUN=run-<stamp>) or, by default, THE RUN THIS TREE MEASURED, out of the
 # durable artifact home (the same #1734 EVAL_ARTIFACTS_HOST/_MOUNT derivation eval/assemble use),
 # posts the assembled markdown VERBATIM to PR=<n>, then stamps a `.posted` marker holding the comment
 # URL into the run dir. The assemble output is captured CLEANLY by invoking the containerized module
@@ -456,6 +467,13 @@ assemble: $(if $(LOCAL),,build)
 # existing comment URL and exits 0. Fails loudly (never a silent no-op) when PR is unset, the run dir
 # is missing, the token is empty, or the assembled output is empty. `make -n eval-report PR=<n>`
 # shows the same durable-home resolution (`-v <primary>/data/eval-artifacts:/penny/eval-artifacts`).
+# THE BARE-`RUN` DEFAULT IS KEYED TO THIS TREE'S HEAD (#2098): that home is SHARED by every
+# worktree, so "the most recent completed run" was routinely a SIBLING AGENT'S — one agent posted
+# another's six reports to its own PR and stamped the sibling's run dir `.posted`. The candidates
+# are now the completed, UNPOSTED runs whose manifest `commit` equals `$(HEAD_COMMIT_CMD)` (the
+# same derivation `eval` records as EVAL_COMMIT). Exactly one → post it; zero or several → the
+# resolver refuses on stderr, naming the home and the commit, and the recipe adds the host path.
+# There is no "most recent" fall back.
 # OVER THE 64K CAP (#1808): GitHub refuses a comment body over 65,536 chars and an 8-sample chat beat
 # assembles to ~290K, so the body is staged into <run>/$(COMMENT_SUBDIR)/ and cut there by
 # `penny.tests.eval.utils.comment_split` — on SAMPLE-FOLD boundaries only, each part headed `report N of M`,
@@ -469,11 +487,11 @@ eval-report: $(if $(LOCAL),,build)
 	fi; \
 	run="$(if $(filter command line,$(origin RUN)),$(RUN),)"; \
 	if [ -z "$$run" ]; then \
-		run="$$($(EVAL_RUN) python -m penny.tests.eval.utils.checkpoint latest "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null)"; \
-		if [ -z "$$run" ]; then \
-			echo "eval-report: no completed run dirs under $(EVAL_ARTIFACTS_HOST) — run make eval first" >&2; \
+		commit="$$($(HEAD_COMMIT_CMD))"; \
+		run="$$($(EVAL_RUN) python -m penny.tests.eval.utils.checkpoint resolve "$(EVAL_ARTIFACTS_MOUNT)" "$$commit")" || { \
+			echo "eval-report: that home is $(EVAL_ARTIFACTS_HOST) on this host" >&2; \
 			exit 1; \
-		fi; \
+		}; \
 	fi; \
 	primary="$${run%% *}"; \
 	host_dir="$(EVAL_ARTIFACTS_HOST)/$$primary"; \
