@@ -1338,10 +1338,13 @@ async def test_a_called_off_parked_request_falls_to_idle(
 # request are structurally absent, so the only doors beside idle are the two that would
 # read ordinary conversation as a job to be set up or taught.
 #
-# The subject carries a recurrence word ("again") deliberately.  A message with nothing
-# repeating in it holds idle for reasons that have nothing to do with this decision — the
-# temptation the case is about is a recurrence the user is DESCRIBING rather than asking
-# for, which is exactly what elicit's own condition is worded to exclude.
+# Every arm carries a RECURRENCE MARKER deliberately — "again" on four of them, "another" on
+# the fifth.  A message with nothing repeating in it holds idle for reasons that have nothing
+# to do with this decision; the temptation the case is about is a recurrence the user is
+# DESCRIBING rather than asking for, which is exactly what elicit's own condition is worded
+# to exclude.  Since it is the RECURRENCE that is constant and not any one word for it, the
+# probe holds it as an ALTERNATION and never as a literal — pinning "again" would have let
+# the fifth arm drift out of the case while the check stayed green.
 
 COLD_HOLD_CASE_ID = "classifier-holds-idle-on-chat-with-no-routines"
 
@@ -1738,10 +1741,13 @@ async def test_chat_carrying_a_covered_ask_draws_apply(
     """The mixed-message boundary: a greeting and a covered ask in one message, said five
     ways, against the two seeded routines.
 
-    A different decision from the cold covered ask above, and the world says which: that
-    case seeds four near neighbours so the routine is a choice among plausible ones, while
-    this one keeps the pooled pair's two and moves the preamble instead.  A correct sample
-    for one would be wrong for the other.
+    A different case from the cold covered ask above under §6's SCENARIO rule, not under the
+    correct-sample one: a sample drawing apply and binding the price watcher is correct for
+    both, so nothing here would be wrong there.  What makes them two is that they are two
+    asks reaching one end state, each carrying its own fifteen — and folding them would
+    average two behaviours into one score and report the spread as instability.  The asks
+    differ in what tempts the draw away: there, four near neighbours, so the open question is
+    WHICH routine; here, two, with a chat half that could suppress the ask entirely.
 
     STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
     because this state is skill-gated: which state, and which routine.
@@ -1846,14 +1852,29 @@ async def test_an_unanswered_teach_question_stays_parked(
 
 # ── request → elicit: the routine the assistant named was the wrong one ───────
 #
-# THE FACTS ARE CONSTANT in both halves the edge's condition names: every wording says the
-# routine was not what they meant, and every one says they still want the task done.  An arm
-# carrying only the rejection would be the break-out to idle, and an arm supplying the page
-# would be the move to apply.
+# THE FACTS ARE CONSTANT in both halves the edge's condition names — the routine named was
+# the wrong one, and the task is still wanted — and the WORDS for both halves move.  That
+# separation is the point here rather than a nicety: the condition reads "they say that skill
+# is not what they meant, and still want the task done", so five arms all ending in "i still
+# want it done" would measure one wording of the discriminating clause against a lexical
+# match, and would score green on a draw that had learned the phrase rather than read the
+# situation.  So no arm carries that clause: the task is still wanted by "still need this
+# doing", "still like it set up", "keep going", or "the job itself is fine", and the probe
+# holds the fact as an ALTERNATION rather than pinning any one of them.
+#
+# An arm carrying only the rejection would be the break-out to idle, and an arm supplying the
+# page would be the move to apply.
 #
 # The registry is seeded so both of the other doors are really on offer — with no candidates
 # ``presented_edges`` withholds apply outright, and the rejection would be declining a door
 # that was never open.
+#
+# THE ANCHOR ASK IS ONE THE PRICE WATCHER PLAINLY COVERS, and the arms nonetheless say it is
+# a different kind of thing.  That is coherent only because the condition makes the user's
+# word decisive: this edge fires on what they SAY about the routine, not on a fresh coverage
+# judgement, so the draw is being asked to take the rejection at face value against a
+# candidate that still looks like a fit.  A world where the routine visibly did not cover the
+# ask would measure the coverage read instead, which the idle → elicit cases already own.
 #
 # WHAT THIS CASE MEASURES IS A LEANER INPUT THAN PRODUCTION, pending #2084.  A round parked
 # in request carries a partial binding, and ``render_classifier_content`` gives it its own
@@ -1866,12 +1887,12 @@ async def test_an_unanswered_teach_question_stays_parked(
 
 WRONG_ROUTINE_CASE_ID = "classifier-elicits-when-the-named-routine-was-wrong"
 
-_WRONG_ROUTINE_ASK = "no, that's not what i meant — i still want it done, just not that way"
+_WRONG_ROUTINE_ASK = "no, that's not what i meant — but i do still need this doing"
 _WRONG_ROUTINE_PHRASINGS = (
-    "that's not the right routine for this, but i do still want it done",
-    "not that one — it's a different kind of thing, and i still want it done",
-    "not the routine i'm after, though i do still want it done",
-    "that is not what i had in mind. i still want it done, just something else",
+    "that's the wrong routine for this, i'd still like it set up",
+    "the job itself is fine, it's the routine that's wrong",
+    "not that one — keep going, just not with that skill",
+    "that isn't the one i had in mind, and i'd still like the job done",
 )
 WRONG_ROUTINE_ARMS = (_WRONG_ROUTINE_ASK, *_WRONG_ROUTINE_PHRASINGS)
 
