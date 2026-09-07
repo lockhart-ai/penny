@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -322,6 +323,7 @@ from penny.tests.eval.utils.artifacts import (
     CauseCounts,
     CheckOutcome,
     FailureCause,
+    active_run,
     build_case_artifact,
 )
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
@@ -2442,6 +2444,21 @@ def _drive_time_result(db: Database, observation: SampleObservation) -> SampleRe
     return result
 
 
+def _close_cohort_case(cohort: Cohort, results: Sequence[SampleResult]) -> None:
+    """Close the case the way the runner fixture closes it — the real seam where a cohort's
+    claims are dealt back out to the samples that answered them."""
+    pending = _PendingCase(
+        case_id=cohort.case_id,
+        family="chat",
+        module="penny.tests.eval.chat.learn.test_case",
+        min_pass_rate=None,
+        gate_pathology_excluded=False,
+        behaviour=_COHORT_RECORD_BEHAVIOUR,
+    )
+    pending.add(cohort, results, _Perf(), intended=len(results))
+    pending.finish()
+
+
 def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_document_states(
     tmp_path, capsys
 ) -> None:
@@ -2459,16 +2476,7 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
     cohort.assert_machine_landed(ConversationState.LEARN)
     results = [_drive_time_result(db, observation) for observation in observations]
 
-    pending = _PendingCase(
-        case_id=_COHORT_RECORD_CASE,
-        family="chat",
-        module="penny.tests.eval.chat.learn.test_case",
-        min_pass_rate=None,
-        gate_pathology_excluded=False,
-        behaviour=_COHORT_RECORD_BEHAVIOUR,
-    )
-    pending.add(cohort, results, _Perf(), intended=len(results))
-    pending.finish()
+    _close_cohort_case(cohort, results)
 
     # What the DOCUMENT states: two pooled samples holding one of two claim answers, and the
     # third named as excluded rather than subtracted.
@@ -2514,6 +2522,100 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
         "causes — behavioral 1 · pathology 0 · harness 1" in out
     )
     assert f"  [3] 0.00 — {NO_MEASURED_TURN}" in out
+
+
+# ── A cohort sample's fragile flag and its banner state the SETTLED verdict (#2127) ──
+#
+# Two more stamps that were taken at DRIVE TIME, where a ported sample "passes" vacuously
+# because nothing has been scored yet.  `fragile` was `passed and <rerolled>`, so with `passed`
+# always true it degenerated into "the run rerolled" and marked claim-FAILING samples fragile on
+# the banner and in the record.  The transcript banner was rendered while the sample's database
+# was live, so a sample the claims failed — or the pooler excluded — carried `✅ pass` over its
+# whole transcript.
+
+_COHORT_FRAGILE_CASE = "cohort-fragile-case"
+_COHORT_BANNER_CASE = "cohort-banner-case"
+# What a run that recovered from a refused tool call leaves behind — the reroll `fragile` reads.
+_REFUSED_BROWSE = "You tried to use `browse` but it didn't work: down"
+
+
+def _rerolled_cohort(tmp_path, case_id: str) -> tuple[list[SampleResult], Cohort]:
+    """Three cohort samples that ALL recovered from a refused draw — one the case's claim holds
+    for, one it fails, and one the pool refuses — driven and reported exactly as a runner does,
+    before the case closes."""
+    db = _make_db(tmp_path, case_id)
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "user", "content": "look it up"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "browse"}}]},
+            {"role": "tool", "content": _REFUSED_BROWSE},
+        ],
+    )
+    observations = [
+        SampleObservation(name="s-1", phrasing="the ask", landed=ConversationState.LEARN.value),
+        SampleObservation(name="s-2", phrasing="the ask", landed=ConversationState.IDLE.value),
+        SampleObservation(
+            name="s-3", phrasing="the ask", complete=False, exclusion=NO_MEASURED_TURN
+        ),
+    ]
+    cohort = Cohort(case_id, "a-model", list(observations))
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    results = []
+    for index, observation in enumerate(observations):
+        result = _drive_time_result(db, observation)
+        _write_sample_report(db, case_id, index, result=result, reply="found it")
+        results.append(result)
+    return results, cohort
+
+
+def test_a_cohort_samples_fragile_flag_answers_to_its_claims_not_to_the_reroll(
+    tmp_path, monkeypatch
+) -> None:
+    """All three rerolled; only the one whose claim the cohort held is a fragile PASS."""
+    assert active_run() is None  # off-report: `record_case*` write nothing, order-independently
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    results, cohort = _rerolled_cohort(tmp_path, _COHORT_FRAGILE_CASE)
+
+    # At drive time a ported sample passes VACUOUSLY — it has answered no claim yet — so the
+    # reroll was all the flag had to go on and every sample carried it.
+    assert [result.fragile for result in results] == [True, True, True]
+
+    _close_cohort_case(cohort, results)
+
+    # Settled: neither the sample the claims failed nor the one the pool refused is fragile —
+    # each is a failure, and its cause says which kind.
+    assert [(result.passed, result.fragile) for result in results] == [
+        (True, True),
+        (False, False),
+        (False, False),
+    ]
+    artifact = build_case_artifact(
+        run_id="run-x",
+        case_id=_COHORT_FRAGILE_CASE,
+        family="chat",
+        results=results,
+        timings=CaseTimings(calls=0, duration_ms=0, input_tokens=0, output_tokens=0),
+    )
+    assert artifact.sample_fragile == [True, False, False]
+    assert artifact.sample_causes == [None, FailureCause.BEHAVIORAL, FailureCause.HARNESS]
+
+
+def test_a_cohort_samples_banner_states_the_verdict_its_claims_settled(
+    tmp_path, monkeypatch
+) -> None:
+    """The block a reader opens is bannered with the case's verdict, not the drive-time one."""
+    assert active_run() is None  # off-report: the file holds the sample blocks and nothing else
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    results, cohort = _rerolled_cohort(tmp_path, _COHORT_BANNER_CASE)
+    _close_cohort_case(cohort, results)
+
+    text = _sample_report_text(tmp_path, _COHORT_BANNER_CASE)
+    assert [line for line in text.splitlines() if line.startswith("<details><summary>sample ")] == [
+        "<details><summary>sample 1 — ✅ pass · fragile · 0s · 1 calls</summary>",
+        "<details><summary>sample 2 — ❌ fail · behavioral · 0s · 1 calls</summary>",
+        "<details><summary>sample 3 — ❌ fail · harness · 0s · 1 calls</summary>",
+    ]
 
 
 # ── Regression diff: a prior run's results.jsonl → REGRESSED marks (#1693) ──

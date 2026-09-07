@@ -15,6 +15,8 @@ truncation + escaping, #1759) and the fold/parse seam the assembler's re-normali
 
 from __future__ import annotations
 
+import pytest
+
 from penny.tests.eval.utils import cohort, report, worlds
 from penny.tests.eval.utils.fixtures import CannedPage
 
@@ -1239,6 +1241,16 @@ def test_the_representative_fold_carries_no_verdict():
     assert (
         report.without_verdict("❌ fail · behavioral · 3s · 1 calls") == "behavioral · 3s · 1 calls"
     )
+
+
+def test_a_transcript_with_no_settled_verdict_refuses_to_render():
+    """A ported sample's transcript is assembled while its database is live, long before its
+    cohort's claims settle a verdict — so it legitimately exists unbannered (#2127), and rendering
+    one is a programming error rather than a summary line that trails off after the number."""
+    with pytest.raises(ValueError) as excinfo:
+        report.SampleTranscript(3, None, [], placeholder=report.NO_TURNS_PLACEHOLDER).render()
+
+    assert "sample 3 was rendered before its case settled a verdict" in str(excinfo.value)
 
 
 def test_a_thinking_trace_shorter_than_its_own_label_renders_inline():

@@ -885,7 +885,12 @@ case prints `mean … · all-pass K/N` — the partial-credit mean (what the cas
 the strict all-pass count (samples that passed EVERY applicable check). In the per-sample
 report a sample that passed but only after the loop refused/recovered a tool call (derived from
 the promptlog via `sample_is_fragile` / `tool_call_rejected`, no new model judgment) is marked
-`✅ PASS · fragile`, so real-but-shaky reads distinctly from clean green.
+`✅ PASS · fragile`, so real-but-shaky reads distinctly from clean green. **The flag is DERIVED
+from the settled score, the way the cause is (#2127)**: the runner observes the reroll while the
+sample's database is live (`SampleResult.observe_rerolled`) and `_settle_fragile` reads the flag
+off that fact and the score the case settled on. Stamped instead from the drive-time `passed` —
+which a ported sample earns vacuously, having answered no claim yet — it degenerated into "the
+run rerolled" and marked claim-FAILING samples fragile, on the banner and in the record.
 
 **A re-rolled draw is read from the REPEATED CONTEXT, not from a marker (#1841).** The uniform
 loop-health advisory every case reports (`routing_clean` in `tests/eval/conftest.py` — the
@@ -1128,6 +1133,16 @@ said `14 pooled + 1 excluded` recorded fifteen passes and no causes — while it
 `standing_counts` said `dead: 1` — and a later run diffed against that record saw no regression.
 The exclusion reason itself comes from `cohort.exclusion_reason` on both sides, so the document and
 the record cannot name one lost sample two ways.
+
+**A sample's BANNER states the verdict its case settled on, so the block is rendered LATE (#2127).**
+The banner is the one line a reader sees before opening anything, and it was built while the
+sample's database was live — where a ported sample has no verdict, so it read `✅ pass` above a
+sample the claims failed or the pooler excluded. A sample's transcript is still ASSEMBLED at that
+moment (its promptlog exists nowhere else), but it is held as a `_HeldSample` — the transcript, the
+result, and the cost read off the live database — and RENDERED at the flush, which each path runs
+where its own scores settle: `_PendingCase.finish` right after `_grade` for a ported case, and
+`_finish_case` for one scored inline. So `_sample_banner` stays the one and only place a banner is
+made, and there is no second rendering to disagree with the first.
 
 Around the sections, `report.render_case_document` states what every sample shares: **the ask in
 its K wordings** (listed once — a sample names which it used), **the seeded world**
