@@ -185,6 +185,7 @@ from penny.tests.eval.conftest import (
     _ACTOR,
     EVAL_SEED_AUTHOR,
     INJECTION_NEVER_FIRED,
+    NO_DRAW,
     NO_MEASURED_TURN,
     NO_REPLY,
     PENNY_LOGGER,
@@ -203,6 +204,7 @@ from penny.tests.eval.conftest import (
     _chat_tool_sequence,
     _classifier_snapshot,
     _cycle_recovered_check,
+    _draw_exclusion,
     _exclusion,
     _flush_sample_blocks,
     _frame_attributes_to,
@@ -215,6 +217,7 @@ from penny.tests.eval.conftest import (
     _refuse_binding_off_request,
     _refuse_unscorable,
     _registry_shortfall,
+    _sample_db_path,
     _sample_turns,
     _score_binding,
     _score_extraction,
@@ -235,11 +238,13 @@ from penny.tests.eval.conftest import (
     env_seconds,
     is_seeded_run,
     live_prompt_perf,
+    measured_turn_ran,
     routing_clean,
     run_exhibited_pathology,
     sample_is_fragile,
     sample_log_path,
     sample_logging,
+    sample_number,
     seed_world_stores,
     seeded_run_id,
     tool_call_name,
@@ -495,7 +500,7 @@ def test_tool_not_called_reads_the_promptlog(tmp_path) -> None:
     assert tool_not_called(db, "send_message")
 
 
-def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path) -> None:
+def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path, monkeypatch) -> None:
     """The per-sample log file (#1909): every line the penny loggers emit while a sample
     runs is written beside that sample's DB, under the same stem.
 
@@ -504,7 +509,24 @@ def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path) -> None:
     pytest captures and then discards for every sample that passes.  Unfiltered by
     design: a DEBUG line lands as readily as the WARNING the client logs when a chat
     call fails.  Scoped to one sample, so the handler and the raised level are both gone
-    afterwards and nothing leaks into the next sample or the rest of the suite."""
+    afterwards and nothing leaks into the next sample or the rest of the suite.
+
+    The stem is the sample's own NUMBER — the one the report calls it by (#2076).  The two
+    were once different numbers for the same sample: a report naming ``-11`` sent a reader
+    to ``-10.db``, the NEXT sample's database, which had run cleanly — so a correct
+    exclusion read as a harness defect and was filed as one.  Pinned from the index a runner
+    actually holds, both ends, so the report's name and the file it points at cannot drift
+    apart again."""
+    monkeypatch.delenv("EVAL_REPORT_DIR", raising=False)
+    assert _sample_db_path(tmp_path, "watch-a-page", 0) == str(tmp_path / "watch-a-page-1.db")
+    assert _sample_db_path(tmp_path, "watch-a-page", 10) == str(tmp_path / "watch-a-page-11.db")
+    assert sample_log_path(_sample_db_path(tmp_path, "watch-a-page", 10)).name == (
+        f"watch-a-page-{sample_number(10)}.log"
+    ), "the log follows the DB's stem, so it carries the report's number too"
+    assert _sample_db_path(tmp_path, "watch-a-page", 10, attempt=1) == str(
+        tmp_path / "watch-a-page-11-attempt2.db"
+    ), "a re-driven sample keeps its own file and its own number"
+
     db_path = str(tmp_path / "watch-a-page-0.db")
     logger = logging.getLogger("penny.agents.base")
     level_before = logging.getLogger("penny").level
@@ -561,6 +583,41 @@ def test_every_runner_stands_its_sample_up_through_the_logging_seam() -> None:
 # parses — located off the package the runners live in, never off a string path.
 _SAMPLE_SEAM = "run_penny_with_server"
 _EVAL_CONFTEST = Path(str(eval_package.__file__)).parent / "conftest.py"
+
+
+def test_a_sample_is_numbered_in_exactly_one_place() -> None:
+    """``sample_number`` is the only place the harness turns a sample INDEX into the number a
+    reader sees (#2076) — every surface reads it rather than spelling the arithmetic again.
+
+    Structural, off the module's own AST, because the rule is one a rebase quietly breaks: the
+    numbering was inconsistent for as long as it was open-coded, and a runner added while this
+    branch was in flight wrote a fresh ``sample_index + 1`` of its own. A second spelling is
+    invisible while it agrees and catastrophic when it stops — a report naming a sample whose
+    files belong to its neighbour hands a reader facts about the wrong sample, which is how a
+    correct exclusion came to be filed as a harness defect."""
+    tree = ast.parse(_EVAL_CONFTEST.read_text())
+    spellers = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.BinOp)
+        and isinstance(inner.op, ast.Add)
+        and isinstance(inner.left, ast.Name)
+        and inner.left.id == _SAMPLE_INDEX
+        and isinstance(inner.right, ast.Constant)
+        and inner.right.value == 1
+    }
+    assert spellers == {sample_number.__name__}, (
+        f"only {sample_number.__name__} may number a sample — "
+        f"{sorted(spellers - {sample_number.__name__})} derive it again, so the report and the "
+        f"artifacts it points at can disagree"
+    )
+
+
+# The runner-local index the numbering pin reads by name: 0-based, because that is what a range
+# produces, and the one thing no other surface may turn into a number on its own.
+_SAMPLE_INDEX = "sample_index"
 
 
 def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
@@ -1423,15 +1480,52 @@ def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
     assert tool_not_called(db, "browse"), "a seeded prior turn's call is not this sample's"
     assert count_tool_calls(db, "browse") == 0
     assert live_prompt_perf(db).calls == 0, "a seeded row is not one of this sample's calls"
+    assert not measured_turn_ran(db), "a world and nothing added to it is the dead sample"
 
     _log_prompt(db, response=_tool_call_response("browse"), run_id="r1")
     assert tool_was_called(db, "browse"), "the sample's own call still reads"
     assert count_tool_calls(db, "browse") == 1, "only the live call is counted"
     assert live_prompt_perf(db).calls == 1
+    assert measured_turn_ran(db), "the sample's own row is the turn having run"
 
     assert is_seeded_run(seeded_run_id("learn-turn"))
     assert not is_seeded_run("r1")
     assert not is_seeded_run(None), "an unstamped row is a live row, not a seeded one"
+
+
+# Every micro-context that draws on the cohort path, by the ledger identity its rows carry.
+# Listed because the completeness gate has to hold for each of them and the framer's is the
+# only one a run has ever exercised through it (#2076).
+_MICRO_CONTEXT_AGENTS = (
+    PennyConstants.SKILL_FRAME_AGENT_NAME,
+    PennyConstants.SKILL_BIND_AGENT_NAME,
+    PennyConstants.SKILL_NAMING_AGENT_NAME,
+    PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+    PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+)
+
+
+@pytest.mark.parametrize("agent_name", _MICRO_CONTEXT_AGENTS)
+def test_a_micro_context_draw_over_a_seeded_world_is_a_measured_turn(tmp_path, agent_name) -> None:
+    """A single-call sample's completeness gate reads the SAME window a chat sample's does
+    (#2076): the promptlog minus the seeded prior turns, so a micro-context's own row makes
+    the turn a measured one exactly like a chat run's does.
+
+    Both directions over every micro-context on the cohort path, because the gate voids a
+    sample rather than failing it — a false exclusion is a correct sample silently dropped
+    from the pool, and the pooled rate is then computed over one fewer.  The window is keyed
+    on the sample's own run identity and on nothing else, so an agent name nobody has drawn
+    with yet is covered by construction; parametrized anyway, since the whole cost of
+    trusting that in the framer's case was a filed harness defect that did not exist."""
+    db = _make_db(tmp_path, name=agent_name)
+    _log_prompt(db, response=_content_response("a prior round"), run_id=seeded_run_id("world"))
+    assert not measured_turn_ran(db), "the seeded world alone is not this sample's work"
+    assert _draw_exclusion(db, "a signature") == NO_MEASURED_TURN
+
+    _log_prompt(db, response=_content_response("NAME: x"), agent_name=agent_name, run_id="live")
+    assert measured_turn_ran(db), f"a live {agent_name} row IS the measured turn"
+    assert _draw_exclusion(db, "a signature") is None, "a draw that came back is countable"
+    assert _draw_exclusion(db, "") == NO_DRAW, "the turn ran; the draw is what failed"
 
 
 def test_tool_call_rejected_matches_backticked_tool_name_form(tmp_path) -> None:

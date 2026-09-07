@@ -613,7 +613,9 @@ take (`chat/apply/test_offer_accepted.py` is apply entered from learn).
 
 Where a case belongs is decidable from evidence, not taste: the `state_transition`
 rows in a run's per-sample DB (`data/eval-artifacts/<run>/<case>-N.db`) say which
-states a case walks, and `promptlog.agent_name` says which agents it drove.
+states a case walks, and `promptlog.agent_name` says which agents it drove. `N` is the
+sample's own number — the one its report banner and its cohort name carry (`sample_number`),
+so a name the report renders opens that sample's own evidence and never a neighbour's.
 
 **An isolated draw is handed what production hands it — a REQUEST case declares its
 `parked_round` (#2084).** `classifier_eval` builds each sample's snapshot through the
@@ -927,7 +929,13 @@ module name (`test_<x>` → `<x>`) or is set explicitly via a `family=` arg on a
 
 **Per-sample penny logs (#1909).** Beside each sample's DB (`<case_id>-<n>.db`) the harness
 writes that sample's own logger output as `<case_id>-<n>.log` — the fourth durable per-sample
-artifact, alongside the DB and the `<case_id>.md` transcript. A model call that FAILS raises
+artifact, alongside the DB and the `<case_id>.md` transcript. `<n>` is `sample_number` — the
+number the report calls that sample, so its name resolves to its own files (#2076: it did not,
+and a reader following a report's name to the next sample's clean database read a correct
+exclusion as a harness defect and filed it as one). One place derives it and every surface reads
+it, **held by a structural pin** like the logging seam below: `make check` parses the harness's
+own AST and refuses any second spelling of `sample_index + 1`, because a duplicate is invisible
+while it agrees and a rebase is exactly where it stops agreeing. A model call that FAILS raises
 before the client's persist step, so it writes no promptlog row: everything the run said about
 the failure ("LLM chat failed", a timeout attempt, each discarded draw's reroll condition)
 existed only as logger output, which pytest captures and then discards for every sample that
