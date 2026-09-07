@@ -35,11 +35,8 @@ so ``idle`` is the contract rather than a hope, and a sample that lands in ``req
 
 **What is NOT claimed, and why.**  That she called ``collection_set`` is a ROUTE — many routes
 reach one end state, and a rule keyed to that name would simply not fire for a verb nobody
-enumerated — so it is measured in the tool sequence and never asserted.  How much of that the
-tool sequence can SEE differs by case, and the report says which: the chat observation narrows a
-sample's calls to ``ENACTING_TOOLS``, which carries ``collection_set`` and not
-``collection_archive``, so the two cases that reconfigure a job read a real spread while the
-retire case reads no call at all.  Reported as a harness gap rather than worked around here.
+enumerated — so it is measured in the tool sequence and never asserted, where a divergence reads
+as a sample worth opening rather than as a claim about which verb was right.
 
 **What each case claims about the rest of the row is the STORE'S own account of what it
 changed**, never a list of fields written here: the row's settable surface is wider than any
@@ -554,8 +551,13 @@ class _OperationCase(NamedTuple):
     def ground(self) -> World:
         """The world every arm of this case is answered against.
 
-        Every field is EMPTY, and each is a report rather than an omission.  ``pages`` is
-        empty because these asks are about a job's configuration and no page answers one —
+        Every field is EMPTY, and each is a report rather than an omission.  ``stores`` is
+        empty although the world DOES seed a collection, because a declared store is laid down
+        as plain entries and this one is a JOB: its container is stood up through the production
+        instantiation seam, with a program, a cadence, a switch and its provenance, which is the
+        whole thing these cases operate on.  Declaring it here would seed its holdings a second
+        time.  ``pages`` is empty because these asks are about a job's configuration and no page
+        answers one —
         a page set here would hand a sample that went browsing something to talk about
         instead of letting the wrong turn read as one.  ``keeps`` states what a round must
         have written down and none of these turns is asked to write anything;

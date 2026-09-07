@@ -185,7 +185,12 @@ class _LogReadCase(NamedTuple):
 
         ``pages`` is EMPTY and that is the point rather than an omission: the answer lives in a
         log and nowhere else, so a browse comes back with nothing and going looking is a dead
-        end instead of a second source.  ``keeps`` and ``excludes`` are empty because the turn
+        end instead of a second source.  ``stores`` is empty for a different reason: the
+        run-record world seeds two collections, but they are JOBS stood up through the production
+        instantiation seam rather than plain holdings, and a declared store is laid down as
+        entries alone — declaring them would seed what their cycles wrote a second time.
+
+        ``keeps`` and ``excludes`` are empty because the turn
         answers a question and is asked to write nothing, so either would state a contract the
         ask never made.  ``answers`` is the one token the ask requests."""
         return World(name=self.case_id, pages=(), keeps=(), excludes=(), answers=(self.answer,))
@@ -631,13 +636,10 @@ async def _drive(chat_eval: ChatEval, model: str, case: _LogReadCase) -> Cohort:
 # What both cases measure.  ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are absent: they read the
 # routines in the registry, and neither turn teaches one — so on a correct cohort they read the
 # world's own seeded routines on every sample and pool to a serene 0.000 that is neither
-# agreement nor blindness but a reading of the FIXTURE.  ``TOOL_SEQUENCE`` is where the
-# behaviour's own NEGATIVE direction lives, and only that half: the chat observation narrows a
-# sample's calls to ``ENACTING_TOOLS``, which carries ``browse`` and no read verb — so a sample
-# that went and looked the topic up reads differently from every other one, while a sample that
-# read her logs and a sample that did nothing at all both read "no call".  That is the right way
-# round for these two cases, since browsing is the failure they are named against; the missing
-# half is reported as a harness gap rather than worked around here.
+# agreement nor blindness but a reading of the FIXTURE.  ``TOOL_SEQUENCE`` is where a sample
+# that went and looked the topic up stands apart from one that looked back — the divergence
+# these cases are named against — and it is measured rather than asserted, because WHICH read
+# verb answers a look-back is hers to choose and the claims below name none.
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 

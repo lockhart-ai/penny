@@ -190,15 +190,9 @@ async def test_an_explicit_mute_request_mutes_and_moves_nothing_else(
     # beside it rather than the turn.  The REPLY half carries the category.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    # TOOL_SEQUENCE is measured and never asserted — the call is a route — and on this case it
-    # reads BLIND, which the report renders in red.  The chat observation narrows a sample's
-    # calls to ``ENACTING_TOOLS``, a six-name whitelist carrying no notification verb, so every
-    # sample reads "no call" whether the mute tool fired or not.  Measured anyway, because a
-    # feature that prints a number either way has to say which of the two it is — and because
-    # the blindness is a fact about the INSTRUMENT rather than about the cohort.  What separates
-    # the directions is read off the modal sample until that whitelist is settled; it is
-    # reported as a harness gap rather than worked around here, since a second copy of "which
-    # calls count" is a second policy.
+    # TOOL_SEQUENCE is measured and never asserted — the call is a route, and which verb reached
+    # the switch is hers.  What a divergence here means is a sample that took a different path to
+    # the same end state, which is a sample worth opening rather than a claim worth making.
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 

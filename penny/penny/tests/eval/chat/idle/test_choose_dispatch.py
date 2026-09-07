@@ -228,16 +228,10 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
     # trace and ``assert_every_stored_entry_traces_to_the_world`` would answer green on every
     # sample by construction.  The two reply claims carry the category.
 
-    # TOOL_SEQUENCE is measured and never asserted — the call is a route — and on this case it
-    # cannot see the call it is about.  The chat observation narrows a sample's calls to
-    # ``ENACTING_TOOLS``, a six-name whitelist carrying no ``choose``, so the fair pick reads as
-    # "no call" whether it fired or not; what the feature reports is whatever ELSE a sample
-    # reached for, which on the measured runs was one sample's browse on one model and nothing
-    # at all on the other (so it read a spread there and blind, in red, here).  Either way the
-    # negative direction is invisible to it, which is why the claim above carries the case: a
-    # sample that free-chose reports an option no record holds.  Measured anyway, because the
-    # blindness is a fact about the instrument and a feature that prints a number either way has
-    # to say which of the two it is; the whitelist is reported as a harness gap.
+    # TOOL_SEQUENCE is measured and never asserted — the call is a route.  It shows how a sample
+    # got to the pick, not whether the pick is right: what the reply DID with it is the claim
+    # above, and a sample that free-chose is caught there rather than here, since it reports an
+    # option no record holds.
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
