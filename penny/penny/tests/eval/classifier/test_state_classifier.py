@@ -1876,14 +1876,13 @@ async def test_an_unanswered_teach_question_stays_parked(
 # candidate that still looks like a fit.  A world where the routine visibly did not cover the
 # ask would measure the coverage read instead, which the idle → elicit cases already own.
 #
-# WHAT THIS CASE MEASURES IS A LEANER INPUT THAN PRODUCTION, pending #2084.  A round parked
-# in request carries a partial binding, and ``render_classifier_content`` gives it its own
-# ``## The details this task is waiting on`` section — the routine named, what is already
-# given, what is still needed.  The classifier harness never passes ``round_binding`` to
-# ``build_snapshot``, so that section is absent here and the draw judges the rejection
-# against the assistant's turn alone.  The seam is left as it stands rather than worked
-# around: a fixture reaching past the harness would measure a render this eval cannot
-# produce.  This case is re-run once #2084 lands.
+# THE ROUND'S BINDING IS DECLARED (#2084), the same one its two sibling request cases
+# declare: production reaches request only through the binder, so a draw parked here is
+# always shown the `## The details this task is waiting on` section naming the routine, what
+# is already given and what is still needed.  That section is what this case's rejection is
+# ABOUT — the user is saying the routine named on it was the wrong one — so a snapshot
+# without it would put the rejection in front of a draw that was never shown the thing being
+# rejected, and any number it produced would describe a conversation production cannot have.
 
 WRONG_ROUTINE_CASE_ID = "classifier-elicits-when-the-named-routine-was-wrong"
 
@@ -1911,8 +1910,7 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     the routine has to be taught.
 
     The other edge no chat transition case reaches, so this case is its only isolated
-    coverage — and it measures a leaner snapshot than production renders, pending #2084 (the
-    section comment above says exactly what is missing).
+    coverage.
 
     STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
     elicit binds no routine.
@@ -1926,6 +1924,7 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
         also_asked=_WRONG_ROUTINE_PHRASINGS,
         penny_last_turn=_REQUEST_TURN,
         task_anchor=_KAYAK_ASK,
+        parked_round=_PARKED_ON_THE_PRICE_WATCH,
         seed_skills=SEEDED_SKILLS,
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
