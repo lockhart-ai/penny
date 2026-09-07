@@ -266,19 +266,23 @@ class SampleResult:
     # ``behavioral`` / ``pathology`` / ``harness`` for a failure.  The artifact aggregate defaults
     # an unstamped failure to behavioral, so a directly-constructed result is safe.
     cause: FailureCause | None = None
-    # The two structural facts the cause is READ from, observed while the sample's database was
-    # live (#2125).  Carried rather than folded straight into ``cause`` because a ported case's
-    # score is not settled at drive time — its cohort's claims come back at case close, long
-    # after the database is gone — so the cause has to be re-derived there, and a derivation
-    # needs its inputs.
+    # The structural facts the cause and the fragile flag are READ from, observed while the
+    # sample's database was live (#2125, #2127).  Carried rather than folded straight into the
+    # verdict because a ported case's score is not settled at drive time — its cohort's claims
+    # come back at case close, long after the database is gone — so both derivations have to run
+    # again there, and a derivation needs its inputs.
     timed_out: bool = False
     pathology: bool = False
+    rerolled: bool = False
     # Why the cohort could not pool this sample, dealt out with the claims at the same seam
     # (#2125).  ``None`` for a sample that was pooled, and for every case that drives no cohort.
     excluded: str | None = None
-    # Passed-but-shaky (#1725, #1694): the sample passed only after the loop refused/recovered a
-    # tool call.  Stamped by ``_write_sample_report`` (same ``EVAL_REPORT_DIR`` gate as the artifact
-    # write) so it rides into the ``CaseArtifact.sample_fragile`` list the assembler reads.
+    # Passed-but-shaky (#1725, #1694): the sample reached its result only after the loop
+    # refused/recovered a draw.  DERIVED from the settled score (#2127), the way the cause is —
+    # stamped instead from the drive-time ``passed``, which a ported sample earns VACUOUSLY
+    # before it has answered a claim, it degenerated into "the run rerolled" and marked
+    # claim-FAILING samples fragile.  It renders on the sample's own banner (the flag, and the
+    # legend note that flag pulls in) and rides into ``CaseArtifact.sample_fragile``.
     fragile: bool = False
     # What this sample LEFT BEHIND, read while its database was still live (#1995) — the whole
     # of what a ported case asserts or measures.  ``None`` for every case that has not been
@@ -306,7 +310,7 @@ class SampleResult:
             graded.total,
             graded.checks,
         )
-        self._settle_cause()
+        self._settle()
 
     def exclude(self, reason: str) -> None:
         """The cohort could not pool this sample, so record it as the LOSS it is (#2125).
@@ -318,19 +322,34 @@ class SampleResult:
         fault it is rather than as the model getting anything wrong."""
         self.excluded = reason
         self.score, self.failed, self.total, self.checks = 0.0, [reason], 1, []
-        self._settle_cause()
+        self._settle()
 
     def observe_faults(self, *, timed_out: bool, pathology: bool) -> None:
-        """The structural facts this sample's cause is read from, observed while its database
+        """The structural facts this sample's CAUSE is read from, observed while its database
         was live — and the cause settled from them."""
         self.timed_out, self.pathology = timed_out, pathology
         self._settle_cause()
 
+    def observe_rerolled(self, *, rerolled: bool) -> None:
+        """The structural fact this sample's FRAGILE flag is read from — did it reach its result
+        only after a draw was refused, rejected or nudged — observed while its database was live,
+        and the flag settled from it."""
+        self.rerolled = rerolled
+        self._settle_fragile()
+
+    def _settle(self) -> None:
+        """Re-derive everything the SCORE decides — called wherever the score itself settles.
+
+        Each derivation also runs where its own fact is observed; this is the seam that runs
+        BOTH, because a new score moves the answer to both questions at once (#2125, #2127)."""
+        self._settle_cause()
+        self._settle_fragile()
+
     def _settle_cause(self) -> None:
-        """Derive the failure cause from the carried facts — called wherever the score settles.
+        """Why this sample failed, derived from the carried facts (#2125).
 
         One derivation, applied at drive time and again when a cohort's claims arrive, so a
-        re-scored sample can never keep the cause its old score earned (#2125)."""
+        re-scored sample can never keep the cause its old score earned."""
         self.cause = eval_artifacts.classify_cause(
             passed=self.passed,
             # An exclusion is the same KIND of fact a timeout is: the sample produced nothing
@@ -338,6 +357,14 @@ class SampleResult:
             timed_out=self.timed_out or self.excluded is not None,
             pathology=self.pathology,
         )
+
+    def _settle_fragile(self) -> None:
+        """Whether this sample is a PASSED-but-shaky one, derived the same way (#2127).
+
+        A sample the claims failed is never fragile: it is a failure, and its cause says which
+        kind.  Stamped instead from the drive-time ``passed`` — which a ported sample earns
+        vacuously, before it has answered a claim — the flag said only that the run rerolled."""
+        self.fragile = self.passed and self.rerolled
 
     @classmethod
     def graded(cls, checks: list[Check]) -> SampleResult:
@@ -2136,18 +2163,22 @@ def _scored_counts(result: SampleResult) -> tuple[int, int]:
     return sum(1 for check in scored if check.ok), len(scored)
 
 
-def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> str:
-    """The per-sample banner tail from the sample's promptlog perf and its scored result.
+def _sample_banner(cost: PromptPerf, result: SampleResult) -> str:
+    """The per-sample banner tail from what the sample COST and the verdict its case settled on.
+
+    The ONE place a banner is made, and it is made at the flush rather than when the sample's
+    database closes: a ported sample has no verdict then — its cohort's claims are answered at
+    case close — so a banner built at drive time read ``✅ pass`` above a sample the claims
+    failed or the pooler excluded (#2127).
 
     No per-sample RATE: the cohort is the unit of scoring, so a sample carries only what is true
     of it alone — whether it reached an answer, whether it got there shakily, what it cost."""
-    perf = live_prompt_perf(db)
     return report.render_banner(
         passed=result.passed,
         cause=_cause_word(result.cause),
         fragile=result.fragile,
-        duration_s=round(perf.duration_ms / 1000),
-        calls=perf.calls,
+        duration_s=round(cost.duration_ms / 1000),
+        calls=cost.calls,
     )
 
 
@@ -2170,8 +2201,12 @@ def _main_rows(rows: list[PromptLog]) -> list[PromptLog]:
     return [row for row in rows if (row.agent_name or "") not in MICRO_CONTEXT_PLACEMENTS]
 
 
+# A transcript assembled before its case has settled a verdict carries NO banner — one is built
+# at the flush, and rendering an unbannered transcript is refused rather than left blank (#2127).
+_UNSETTLED_BANNER = None
+
+
 def _build_transcript(
-    db: Database,
     result: SampleResult,
     turns: list[tuple[str, str]],
     main_rows: list[PromptLog],
@@ -2181,11 +2216,16 @@ def _build_transcript(
     sample_index: int,
     delivered: Sequence[str] = (),
 ) -> report.SampleTranscript:
-    """Assemble the ``report.SampleTranscript`` for one sample from its turns + scored result."""
+    """Assemble the ``report.SampleTranscript`` for one sample from its turns + scored result.
+
+    Everything here is read while the sample's database is live EXCEPT the banner, which states
+    a verdict the case may not have settled yet — that one line is built at the flush."""
     if not turns:
-        banner = _sample_banner(db, result, evaluated=False)
         return report.SampleTranscript(
-            sample_number(sample_index), banner, [], placeholder=report.NO_TURNS_PLACEHOLDER
+            sample_number(sample_index),
+            _UNSETTLED_BANNER,
+            [],
+            placeholder=report.NO_TURNS_PLACEHOLDER,
         )
     events, turn_to_event = _turns_to_events(
         turns, _thinking_by_content(main_rows), _micro_batches(rows)
@@ -2197,7 +2237,7 @@ def _build_transcript(
     _record_case_prompts(case_id, sample_index, _system_prompts(rows))
     return report.build_sample(
         number=sample_number(sample_index),
-        banner=_sample_banner(db, result, evaluated=True),
+        banner=_UNSETTLED_BANNER,
         events=events,
         checks=checks,
         run_close_score=f"{passed_checks}/{total}",
@@ -2222,24 +2262,54 @@ def _record_case_prompts(
     _case_prompts.setdefault(case_id, []).extend((label, prompt) for prompt in prompts)
 
 
-# Rendered sample blocks, held per case and written in SAMPLE order when the case closes.
+@dataclass
+class _HeldSample:
+    """One sample's block, held from the moment its database closes until its case's scores
+    settle (#2127).
+
+    The transcript is assembled while the sample's promptlog is still readable — that is the
+    only moment it exists — but the block's BANNER states the sample's VERDICT, and a ported
+    sample has none then: its cohort's claims are answered at case close.  So the block is
+    RENDERED at the flush, its banner built there from the score the case settled on and the
+    cost read while the database was live."""
+
+    index: int
+    transcript: report.SampleTranscript
+    result: SampleResult
+    cost: PromptPerf
+
+    def render(self) -> str:
+        """The block, bannered with the verdict its case settled on."""
+        self.transcript.banner = _sample_banner(self.cost, self.result)
+        return report.render_sample(self.transcript)
+
+
+# Sample blocks, held per case and written in SAMPLE order when the case's scores settle.
 # Samples may run concurrently (``EVAL_CONCURRENCY``), and appending as each one finishes
 # would lay a case's ``<case_id>.md`` down in COMPLETION order — sample 4 above sample 2 —
 # which is the one thing a report read top-to-bottom cannot do.  Buffering keeps the file
 # byte-identical to a sequential run at any concurrency.  Emptied by the flush, so a run
 # holds only the case in flight.
-_sample_blocks: dict[str, list[tuple[int, str]]] = {}
+_sample_blocks: dict[str, list[_HeldSample]] = {}
 
 
 def _record_sample_block(
-    case_id: str, sample_index: int, transcript: report.SampleTranscript
+    case_id: str,
+    sample_index: int,
+    transcript: report.SampleTranscript,
+    result: SampleResult,
+    cost: PromptPerf,
 ) -> None:
-    """Hold one rendered sample block until its case closes."""
-    _sample_blocks.setdefault(case_id, []).append((sample_index, report.render_sample(transcript)))
+    """Hold one sample block until its case's scores settle."""
+    _sample_blocks.setdefault(case_id, []).append(
+        _HeldSample(sample_index, transcript, result, cost)
+    )
 
 
 def _flush_sample_blocks(case_id: str) -> None:
-    """Append a case's held blocks to ``EVAL_REPORT_DIR/<case_id>.md`` in sample order."""
+    """Render a case's held blocks and append them to ``EVAL_REPORT_DIR/<case_id>.md`` in sample
+    order — called wherever the case's scores settle, which is the earliest moment a block can
+    state a verdict.  It POPS, so the first flush a path reaches is the one that renders."""
     blocks = _sample_blocks.pop(case_id, [])
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir or not blocks:
@@ -2247,8 +2317,8 @@ def _flush_sample_blocks(case_id: str) -> None:
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / f"{case_id}.md").open("a") as handle:
-        for _, rendered in sorted(blocks):
-            handle.write(rendered + "\n\n")
+        for held in sorted(blocks, key=lambda block: block.index):
+            handle.write(held.render() + "\n\n")
 
 
 def _write_sample_report(
@@ -2273,14 +2343,15 @@ def _write_sample_report(
     rows = _sample_prompt_rows(db)
     main_rows = _main_rows(rows)
     baseline = baseline_from_env()
-    # Stamp fragile (same EVAL_REPORT_DIR gate as the artifact write) so it rides into the artifact.
-    result.fragile = result.passed and sample_is_fragile(db)
+    # Observe the reroll (same EVAL_REPORT_DIR gate as the artifact write) so the fragile flag
+    # it settles rides into the artifact.
+    result.observe_rerolled(rerolled=sample_is_fragile(db))
     delivered = _delivered_replies(db)
     turns = _sample_turns(main_rows, reply, driven, delivered)
     transcript = _build_transcript(
-        db, result, turns, main_rows, rows, baseline, case_id, sample_index, delivered
+        result, turns, main_rows, rows, baseline, case_id, sample_index, delivered
     )
-    _record_sample_block(case_id, sample_index, transcript)
+    _record_sample_block(case_id, sample_index, transcript, result, live_prompt_perf(db))
 
 
 # How many times a sample is driven when the MODEL CALL ITSELF fails — the transport
@@ -2424,7 +2495,6 @@ async def _run_samples(
         return None
 
     driven = await asyncio.gather(*(_sample(index) for index in range(samples)))
-    _flush_sample_blocks(case_id)
     results = [outcome for outcome in driven if isinstance(outcome, SampleResult)]
     voided = [outcome for outcome in driven if isinstance(outcome, eval_cohort.SampleObservation)]
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
@@ -2943,6 +3013,9 @@ class _PendingCase:
     def finish(self) -> None:
         """Deal the claims back out to their samples, record, report, and gate."""
         self._grade()
+        # The claims have settled every sample's score, so the blocks can state a verdict — and
+        # they go down BEFORE the document's head is written over them (#2127).
+        _flush_sample_blocks(self.case_id)
         observations = self._observations()
         # Computed ONCE and used by both halves: the document renders the standings, and the
         # ASSEMBLER needs to know which sample to expand in the posted comment.  Deriving them
@@ -3110,6 +3183,9 @@ def _finish_case(
     variance: Sequence[eval_artifacts.VarianceReading] = (),
 ) -> None:
     """Record the case's artifact, print its perf line, and apply its gate."""
+    # Where an inline case's scores settle, and the blocks state their verdict.  A no-op for a
+    # ported case, whose blocks `_PendingCase.finish` already rendered off its graded claims.
+    _flush_sample_blocks(case_id)
     _record_unported_prompts(case_id, driven)
     eval_artifacts.record_case(
         case_id=case_id,
@@ -4275,6 +4351,9 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
         results, perf, _voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
         )
+        # This runner records its case without going through `_finish_case`, so it flushes at
+        # its own settle point: an inline sample is scored by the time its drive returns.
+        _flush_sample_blocks(case_id)
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -4602,6 +4681,9 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
         results, perf, _voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
         )
+        # This runner records its case without going through `_finish_case`, so it flushes at
+        # its own settle point: an inline sample is scored by the time its drive returns.
+        _flush_sample_blocks(case_id)
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
@@ -4659,6 +4741,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
             return result
 
         # No exclusions section on this inline-scored runner — the void reaches run health.
+        # It writes no sample report either, so it holds no block and has nothing to flush.
         results, perf, _voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
         )
@@ -5063,7 +5146,7 @@ def _write_classifier_report(
     if not rows:
         transcript = report.SampleTranscript(
             sample_number(sample_index),
-            _sample_banner(db, result, evaluated=False),
+            _UNSETTLED_BANNER,
             [],
             placeholder=report.NO_TURNS_PLACEHOLDER,
         )
@@ -5074,12 +5157,12 @@ def _write_classifier_report(
         passed_checks, total = _scored_counts(result)
         transcript = report.build_sample(
             number=sample_number(sample_index),
-            banner=_sample_banner(db, result, evaluated=True),
+            banner=_UNSETTLED_BANNER,
             events=events,
             checks=checks,
             run_close_score=f"{passed_checks}/{total}",
         )
-    _record_sample_block(case_id, sample_index, transcript)
+    _record_sample_block(case_id, sample_index, transcript, result, live_prompt_perf(db))
 
 
 # Who a fixture skill is registered under — the runner's own author, named once so the
@@ -5258,7 +5341,7 @@ def classifier_eval(
                     )
                 )
                 result = _guarded_graded(list(scored), [])
-                result.fragile = result.passed and len(_classifier_rows(penny.db)) > 1
+                result.observe_rerolled(rerolled=len(_classifier_rows(penny.db)) > 1)
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no decision within timeout"])
@@ -6176,7 +6259,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 # has run, so the sample itself scores nothing at drive time.
                 scored = [] if spoken else _score_framing(signature, parameters, instance_tokens)
                 result = _guarded_graded(list(scored), [])
-                result.fragile = result.passed and _run_end_rerolled(penny.db)
+                result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no framing draw within timeout"])
@@ -6335,7 +6418,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                     else _score_labelling(labels, by_value, leaves, distinct_names, shared_spot)
                 )
                 result = _guarded_graded(list(scored), [])
-                result.fragile = result.passed and _run_end_rerolled(penny.db)
+                result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no label within timeout"])
@@ -6745,7 +6828,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 # has run, so the sample itself scores nothing at drive time.
                 scored = [] if spoken else _score_binding(binding, expectations, forbidden)
                 result = _guarded_graded(list(scored), [])
-                result.fragile = result.passed and _binder_rerolled(penny.db)
+                result.observe_rerolled(rerolled=_binder_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no binding draw within timeout"])
@@ -7065,7 +7148,7 @@ def extractor_eval(
                 # run, so the sample itself scores nothing at drive time.
                 scored = [] if spoken else _score_extraction(extracted, expectations)
                 result = _guarded_graded(list(scored), [])
-                result.fragile = result.passed and _extract_rerolled(penny.db)
+                result.observe_rerolled(rerolled=_extract_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no extraction draw within timeout"])

@@ -1406,27 +1406,42 @@ def without_verdict(banner: str) -> str:
 
 
 # ── The whole sample ─────────────────────────────────────────────────────────
+# What rendering a sample whose case has not settled a verdict is REFUSED with (#2127) — loudly,
+# because the alternative is a summary line that trails off after the sample's number and reads
+# as a sample with nothing to say about itself.
+UNSETTLED_BANNER_RENDER = (
+    "sample {number} was rendered before its case settled a verdict for it — a transcript is "
+    "bannered at the flush, from the score its case settled on"
+)
+
+
 @dataclass
 class SampleTranscript:
     """One sample rendered end-to-end: the banner, its step tables, and the run-close table.
 
     ``banner`` is the full verdict tail after ``sample N — `` (verdict · k/n (score) · cause ·
-    fragile · duration · calls).  A sample renders only its OWN sequence — the turns it was given,
-    the calls it made, what came back, what it replied.  Its system prompts are not here: every
-    sample in a cohort is handed the same ones, so they are stated once on the case document
+    fragile · duration · calls), and ``None`` until the sample's case has SETTLED one (#2127): a
+    ported sample's transcript is assembled while its database is live, long before its cohort's
+    claims are answered, so a transcript legitimately exists unbannered and rendering one is a
+    programming error rather than a blank summary line.  A sample renders only its OWN sequence —
+    the turns it was given, the calls it made, what came back, what it replied.  Its system
+    prompts are not here: every sample in a cohort is handed the same ones, so they are stated
+    once on the case document
     rather than restated eighteen times.  **Every** sample block folds whole under its banner
     summary — the uniform-collapse default (#1753); the visible skeleton is the banner rows,
     everything below one click deep.  ``placeholder`` (F2) replaces the body for a sample that
     produced no completed turn (a harness timeout), so the report never silently omits it."""
 
     number: int
-    banner: str
+    banner: str | None
     steps: list[Step]
     run_close: RunClose | None = None
     placeholder: str | None = None
     rejected: list[str] = field(default_factory=list)
 
     def render(self) -> str:
+        if self.banner is None:
+            raise ValueError(UNSETTLED_BANNER_RENDER.format(number=self.number))
         return fold_sample(self.number, self.banner, self._body())
 
     def _body(self) -> str:
@@ -1947,7 +1962,7 @@ def _event_rows(event: Event, verdicts: list[Verdict]) -> list[Row]:
 def build_sample(
     *,
     number: int,
-    banner: str,
+    banner: str | None,
     events: list[Event],
     checks: list[CheckView],
     run_close_score: str,
@@ -1959,7 +1974,9 @@ def build_sample(
     Steps segment on ``USER`` events. A check anchored to an event renders its ``expected`` row
     atop that event's step and its verdict on that event's ``actual`` row; a check with no anchor
     event falls to the run-close table. A nudge event renders ``⚠ recovery event``. Every sample
-    folds whole at render (#1753) — the builder no longer decides fold-or-not."""
+    folds whole at render (#1753) — the builder no longer decides fold-or-not. ``banner`` is
+    ``None`` for a sample whose case has not settled a verdict yet (#2127), which `render`
+    refuses rather than rendering blank."""
     if placeholder is not None:
         return SampleTranscript(number, banner, [], placeholder=placeholder)
     by_event: dict[int, list[CheckView]] = {}
