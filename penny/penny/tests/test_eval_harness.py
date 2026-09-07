@@ -3736,9 +3736,20 @@ def test_every_parked_tranche_a_case_is_shown_what_its_round_waits_on(tmp_path) 
 # ── The eight tranche-B classifier cases (#2055) ──────────────────────────────
 #
 # The same table and the same three questions as tranche A's, over the eight decisions that
-# sit INSIDE edges the file already covers.  One difference in what the second probe asks:
-# three of these cases seed NO routine, and for those the withholding is the case — so the
-# probe asserts the negative direction too, that neither skill-gated door is on offer.
+# sit INSIDE edges the file already covers.  Two differences.  The second probe asserts a
+# negative direction as well: three of these cases seed NO routine, and for the two parked in
+# idle that withholding IS the case, so neither skill-gated door may be on offer.  And a row
+# can hold a fact as an ALTERNATION rather than as a literal — each group is a set of markers
+# of which every arm must carry at least one.
+#
+# The alternation exists because some facts a case holds constant have no single word.  The
+# cold hold's fact is that the thing being described RECURS, which four arms say with "again"
+# and one with "another"; the wrong-routine case's two facts are that the routine was
+# rejected and that the task is still wanted, and the whole point of its arms is that neither
+# is said the same way twice.  Pinning any one wording as a literal there would do the damage
+# the case exists to avoid: it would hold the arms to a phrase the shipped transition
+# condition already spells, so a draw that had learned the phrase would score exactly like
+# one that read the situation.
 _TrancheB = tuple[
     str,
     tuple[str, ...],
@@ -3748,6 +3759,7 @@ _TrancheB = tuple[
     str | None,
     tuple[str, ...],
     tuple[str, ...],
+    tuple[tuple[str, ...], ...],
 ]
 _TRANCHE_B: list[_TrancheB] = [
     (
@@ -3759,6 +3771,7 @@ _TRANCHE_B: list[_TrancheB] = [
         None,
         ("ferry", "morning"),
         ("watch", "every", "teach", ".example"),
+        (("again", "another"),),
     ),
     (
         "notify-on",
@@ -3769,6 +3782,7 @@ _TRANCHE_B: list[_TrancheB] = [
         None,
         ("notifications", "camera kit price watch"),
         ("off", "disable", "set up", ".example"),
+        (),
     ),
     (
         "notify-off",
@@ -3779,6 +3793,7 @@ _TRANCHE_B: list[_TrancheB] = [
         None,
         ("notifications", "camera kit price watch"),
         ("notifications on", "enable", "set up", ".example"),
+        (),
     ),
     (
         "cold-elicit",
@@ -3789,6 +3804,7 @@ _TRANCHE_B: list[_TrancheB] = [
         None,
         ("ferry timetable",),
         ("read", "remember", "save", ".example"),
+        (),
     ),
     (
         "covered-ask",
@@ -3799,6 +3815,7 @@ _TRANCHE_B: list[_TrancheB] = [
         _PRICE_SKILL,
         (_BOARD_PAGE, "price"),
         ("teach", _PRICE_SKILL),
+        (),
     ),
     (
         "mixed-message",
@@ -3809,6 +3826,7 @@ _TRANCHE_B: list[_TrancheB] = [
         _PRICE_SKILL,
         ("morning", _GRINDER_PAGE, "price"),
         ("teach", _PRICE_SKILL),
+        (),
     ),
     (
         "still-clarifying",
@@ -3819,6 +3837,7 @@ _TRANCHE_B: list[_TrancheB] = [
         None,
         ("what", "?"),
         ("read", "remember", "never mind", "forget", ".example"),
+        (),
     ),
     (
         "wrong-routine",
@@ -3827,8 +3846,11 @@ _TRANCHE_B: list[_TrancheB] = [
         SEEDED_SKILLS,
         ConversationState.ELICIT,
         None,
-        ("not", "still want it done"),
-        ("never mind", "forget", ".example", "http"),
+        (),
+        # No arm may carry the transition condition's own "still want" collocation: the
+        # fixture must not hand the draw the phrase it is being scored on recognising.
+        ("never mind", "forget", "still want", ".example", "http"),
+        (("not", "wrong", "isn't"), ("still", "keep going", "the job itself is fine")),
     ),
 ]
 
@@ -3836,27 +3858,42 @@ _TRANCHE_B: list[_TrancheB] = [
 def test_every_tranche_b_arm_set_says_one_decision_five_ways() -> None:
     """The tranche-B arms (#2055): five wordings of ONE decision, over constant facts.
 
-    Each case declares what every arm must CARRY and what no arm may carry.  The carried
-    tokens are the case's constant facts — the subject being talked about, the job whose
-    notifications are switched, the page the ask supplies, the half of a rejection that says
-    the task is still wanted — and a cohort whose arms disagree about them reports the
-    spread of two behaviours as the instability of one.
+    Each case declares what every arm must CARRY, what no arm may carry, and which facts it
+    holds as an ALTERNATION.  The carried tokens are constant facts that happen to have one
+    word — the subject being talked about, the job whose notifications are switched, the page
+    the ask supplies — and a cohort whose arms disagree about them reports the spread of two
+    behaviours as the instability of one.
+
+    A fact with no single word is a group instead, and every arm must match one member of
+    every group.  That is not a weaker check, it is the check the case needs: the cold hold's
+    constant is that the thing RECURS ("again" ×4, "another" ×1), and the wrong-routine
+    case's two constants are the rejection and the task still being wanted, each said a
+    different way on every arm — deliberately, because the shipped transition condition spells
+    "still want the task done" and five arms ending in that clause would score a draw that
+    matched the phrase exactly like one that read the situation.
 
     The withheld tokens keep the arms on the decision the case names, and each one is the
     neighbouring edge it would otherwise slide onto: steps in the cold-elicit arms would be
     idle → learn, an address in the still-clarifying arms would answer the teach question, a
     call-off in the wrong-routine arms would be the break-out to idle, and the notify pair's
-    two directions must not carry each other's switch.
+    two directions must not carry each other's switch.  The wrong-routine case withholds one
+    more thing — the condition's own phrase — so the fixture cannot hand back the wording the
+    draw is being scored on recognising.
     """
-    for name, arms, _state, _skills, _expected, _routine, carries, withholds in _TRANCHE_B:
+    for name, arms, _s, _k, _e, _r, carries, withholds, groups in _TRANCHE_B:
         assert len(arms) == 5, f"{name}: five arms"
         assert len(set(arms)) == 5, f"{name}: five wordings, or the arms are not arms"
-        assert carries and withholds, f"{name}: an arm set states its facts in both directions"
+        assert carries or groups, f"{name}: an arm set states the facts it holds constant"
+        assert withholds, f"{name}: and what would move it to a neighbouring edge"
         for arm in arms:
             for token in carries:
                 assert token in arm, f"{name}: every arm carries {token!r}: {arm!r}"
             for token in withholds:
                 assert token not in arm, f"{name}: no arm may carry {token!r}: {arm!r}"
+            for group in groups:
+                assert any(token in arm for token in group), (
+                    f"{name}: every arm states the fact {group} holds constant: {arm!r}"
+                )
 
 
 def test_every_tranche_b_world_offers_the_door_its_case_claims(tmp_path) -> None:
@@ -3870,7 +3907,7 @@ def test_every_tranche_b_world_offers_the_door_its_case_claims(tmp_path) -> None
     same edge drawn against a populated registry.  A case seeding nothing whose snapshot
     still offered apply would not be that case at all.
     """
-    for index, (name, arms, state, skills, expected, _r, _c, _w) in enumerate(_TRANCHE_B):
+    for index, (name, arms, state, skills, expected, _r, _c, _w, _g) in enumerate(_TRANCHE_B):
         db = migrated_db(str(tmp_path / f"tranche-b-{index}.db"))
         for draft in skills:
             db.skills.upsert(draft, author="probe")
@@ -3893,7 +3930,7 @@ def test_every_gated_tranche_b_case_offers_the_routine_it_claims(tmp_path) -> No
     """
     gated = [row for row in _TRANCHE_B if row[5] is not None]
     assert len(gated) == 2, "two tranche-B cases draw a skill-gated state"
-    for index, (name, arms, state, skills, _expected, routine, _c, _w) in enumerate(gated):
+    for index, (name, arms, state, skills, _expected, routine, _c, _w, _g) in enumerate(gated):
         db = migrated_db(str(tmp_path / f"tranche-b-gated-{index}.db"))
         for draft in skills:
             db.skills.upsert(draft, author="probe")
