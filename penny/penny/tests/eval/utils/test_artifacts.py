@@ -230,8 +230,8 @@ def test_default_family_strips_test_prefix() -> None:
 
 
 def test_build_case_artifact_aggregates_scores_and_checks() -> None:
-    # A rationale on the failing c2 + a fragile s2 exercise the v2 per-sample cells, the advisory
-    # flag, and the fragile list the summary table renders from the artifact alone (#1725).
+    # A failing c2 + a fragile s2 exercise the v2 per-sample cells, the advisory flag, and the
+    # fragile list the flips index reads from the artifact alone (#1725).
     fragile_sample = SampleResult.graded(
         [
             Check("c1", ok=True),
@@ -259,11 +259,13 @@ def test_build_case_artifact_aggregates_scores_and_checks() -> None:
         ("c2", 1, 2),
         ("advice", 2, 2),
     ]
-    # Per-sample cells (aligned with sample_scores), the advisory flag, and the miss rationale.
+    # What a check outcome records, WHOLE: its counts, the advisory flag, and one cell per
+    # sample — and nothing more, so a field nothing reads cannot ride along unnoticed.  c2's
+    # note is not among them; it renders on that sample's own verdict row instead.
     by_label = {c.label: c for c in artifact.checks}
+    assert by_label["c2"].model_dump().keys() == {"label", "passed", "total", "scored", "cells"}
     assert by_label["c1"].cells == [CheckCell.PASSED, CheckCell.PASSED]
     assert by_label["c2"].cells == [CheckCell.PASSED, CheckCell.FAILED]
-    assert by_label["c2"].rationales == ["expected 3 reads, saw 1"]
     assert by_label["c2"].scored is True
     assert by_label["advice"].scored is False
     assert artifact.timings == _TIMINGS

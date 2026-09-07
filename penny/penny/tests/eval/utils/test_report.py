@@ -499,17 +499,16 @@ def test_a_case_declaring_nothing_shared_closes_with_nothing():
 # ── The three sections (#1997) ──────────────────────────────────────────────
 
 
-def _rows(*specs: tuple[str, int, int, str, list[str]]) -> list[cohort.AssertionRow]:
+def _rows(*specs: tuple[str, int, int, list[str]]) -> list[cohort.AssertionRow]:
     return [
         cohort.AssertionRow(
             label=label,
             passed=passed,
             total=total,
-            kind=kind,
             category=cohort.SpecCategory.STORE,
             rationales=rationales,
         )
-        for label, passed, total, kind, rationales in specs
+        for label, passed, total, rationales in specs
     ]
 
 
@@ -529,9 +528,9 @@ def test_every_claim_renders_the_same_way_and_none_carries_a_floor():
         case_id="c",
         model="m",
         assertions=_rows(
-            ("state: the machine landed in learn", 3, 3, "state", []),
-            ("state: nothing excluded was stored", 2, 3, "state", ["stored `the withdrawn page`"]),
-            ("reply: it names what this world says", 3, 3, "reply", []),
+            ("state: the machine landed in learn", 3, 3, []),
+            ("state: nothing excluded was stored", 2, 3, ["stored `the withdrawn page`"]),
+            ("reply: it names what this world says", 3, 3, []),
         ),
     ).render()
 
@@ -883,7 +882,6 @@ def test_the_three_sections_render_whole():
                 label="reply: every specific value in it is sourced",
                 passed=2,
                 total=3,
-                kind="reply",
                 category=cohort.SpecCategory.PROVENANCE,
                 rationales=["unsourced: ['449']", "unsourced: ['05:20']"],
             ),

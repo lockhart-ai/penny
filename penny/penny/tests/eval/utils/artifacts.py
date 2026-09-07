@@ -286,20 +286,21 @@ class CheckCell(StrEnum):
 
 class CheckOutcome(BaseModel):
     """One check's aggregate across a case's samples — passed / present, plus the per-sample
-    outcome cells + rationales the v2 check summary table renders from the artifact alone (#1725).
+    outcome cells the flips index reads from the artifact alone (#1725).
 
     ``passed``/``total`` are unchanged (ok-count / present-count). ``scored`` is the advisory
     flag (False → the check renders but is out of the score). ``cells`` carries one outcome per
-    sample (aligned with ``sample_scores``); ``rationales`` collects the distinct
-    observed-vs-expected notes from the samples that failed the check.
-    """
+    sample (aligned with ``sample_scores``), which is what names the samples a regression
+    flipped in.
+
+    A miss's observed-vs-expected note is not among them: ``Check.rationale`` renders inline on
+    that sample's own verdict row, where it still says which sample saw what."""
 
     label: str
     passed: int
     total: int
     scored: bool = True
     cells: list[CheckCell] = Field(default_factory=list)
-    rationales: list[str] = Field(default_factory=list)
 
 
 class CaseTimings(BaseModel):
@@ -426,14 +427,12 @@ def aggregate_checks(results: Sequence[ScoredSample]) -> list[CheckOutcome]:
 
     ``passed``/``total`` are unchanged (ok-count / present-count). ``cells`` records each sample's
     outcome (passed/failed/na, or ``absent`` when the scorer emitted no such check that sample), so
-    the v2 summary table renders one row per label with a column per sample; ``rationales`` collects
-    the distinct observed-vs-expected notes from the samples that failed the check."""
+    the flips index can name the samples a regression flipped in."""
     order: list[str] = []
     passed: dict[str, int] = {}
     total: dict[str, int] = {}
     scored: dict[str, bool] = {}
     cells: dict[str, list[CheckCell]] = {}
-    rationales: dict[str, list[str]] = {}
     sample_count = len(results)
     for index, result in enumerate(results):
         for check in result.checks:
@@ -441,13 +440,9 @@ def aggregate_checks(results: Sequence[ScoredSample]) -> list[CheckOutcome]:
                 order.append(check.label)
                 scored[check.label] = check.scored
                 cells[check.label] = [CheckCell.ABSENT] * sample_count
-                rationales[check.label] = []
             total[check.label] = total.get(check.label, 0) + 1
             passed[check.label] = passed.get(check.label, 0) + (1 if check.ok else 0)
             cells[check.label][index] = _check_cell(check)
-            missed = not check.ignored and not check.ok
-            if missed and check.rationale and check.rationale not in rationales[check.label]:
-                rationales[check.label].append(check.rationale)
     return [
         CheckOutcome(
             label=label,
@@ -455,7 +450,6 @@ def aggregate_checks(results: Sequence[ScoredSample]) -> list[CheckOutcome]:
             total=total[label],
             scored=scored[label],
             cells=cells[label],
-            rationales=rationales[label],
         )
         for label in order
     ]
