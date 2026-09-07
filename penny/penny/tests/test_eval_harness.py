@@ -3432,8 +3432,17 @@ def test_a_collectors_cycle_script_has_no_absent_reading_and_declares_none(tmp_p
     assert _cycle_shape(dead) == CYCLE_DEAD
     db = _make_db(tmp_path, "cycle-script")
     _log_prompt(db)
-    assert _cycles_exclusion(db, cycle_script(ran)) is None, "a cohort of real cycles pools"
-    assert _cycles_exclusion(db, cycle_script([*ran, dead])) == NO_CYCLE
+    assert _cycles_exclusion(db, cycle_script(ran), None) is None, "a cohort of real cycles pools"
+    assert _cycles_exclusion(db, cycle_script([*ran, dead]), None) == NO_CYCLE
+
+    # The RECOVERY arm (#2060): a case that forced a fault passes the injector's own account of
+    # whether it fired.  ``None`` above is a case that installed none, so the condition is not
+    # asked; ``True`` is a fault that fired and the sample pools; ``False`` is one that never
+    # did, so the cycle exercised no recovery and leaves as harness debris rather than as a
+    # model failure.  Being ISSUED is all this reads — an issued fault that took no effect
+    # still pools, which is the residual hole #2018 holds.
+    assert _cycles_exclusion(db, cycle_script(ran), True) is None, "a fired fault pools"
+    assert _cycles_exclusion(db, cycle_script(ran), False) == INJECTION_NEVER_FIRED
 
 
 def _observed_cycle(
