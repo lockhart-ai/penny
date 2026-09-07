@@ -818,34 +818,27 @@ class SpecCategory(StrEnum):
     The rules themselves live in #1994 §A and #2011; they are deliberately not restated here,
     because a third copy is a third thing to drift.
 
-    Distinct from ``kind`` (``state`` / ``reply`` / ``spine`` / ``proc``), which is a
-    render-and-gating class: ``kind`` decides how a claim renders and whether it can carry a
-    floor, ``category`` says which part of the design it satisfies.  Neither is derivable from
-    the other — PROVENANCE has both a gated store-side claim and an ungated reply-side one."""
+    Distinct from ``Claim.kind`` (``state`` / ``reply`` / ``spine`` / ``proc``), which says
+    where a claim was READ FROM and so decides how its per-sample check renders and what it
+    anchors to, while ``category`` says which part of the design it satisfies.  Neither is
+    derivable from the other — PROVENANCE has both a store-side claim and a reply-side one."""
 
     LANDED = "landed"
     STORE = "store"
     PROVENANCE = "provenance"
 
 
-# A claim read out of PROSE THE MODEL WROTE, as against one read out of the machine, the
-# registry or the store.  It decides how a claim RENDERS and how its per-sample check is
-# anchored; it does not decide anything about gating, because assertions are not gated.
-REPLY_KIND = "reply"
-
-
 class AssertionRow(BaseModel):
     """One claim's aggregate across the cohort — the section-A row.
 
-    ``kind`` rides along because it says where the claim was read FROM, which is what anchors
-    its per-sample check; it no longer sorts claims into gated and ungated, because nothing on
-    this side is gated."""
+    Where a claim was read from stays on the claim.  ``Claim.kind`` decides how the PER-SAMPLE
+    check renders and what it anchors to, and the aggregate row is neither of those — nothing
+    on this side is gated, so there is no decision here for it to make."""
 
     label: str
     passed: int
     total: int
     category: SpecCategory
-    kind: str = "state"
     rationales: list[str] = Field(default_factory=list)
 
     @property

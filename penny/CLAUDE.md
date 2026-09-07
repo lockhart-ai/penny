@@ -1071,7 +1071,7 @@ at eval time, #1752) — NOT from a re-read of the volatile env at assemble time
 renders the same flips the per-row REGRESSED badges were baked from, even when it carries no
 `EVAL_BASELINE` (an explicit `EVAL_BASELINE` at assemble time still overrides, for an ad-hoc re-diff).
 Additive artifact fields carry it:
-`CheckOutcome` gained `scored`/`cells[]`/`rationales[]`, `Check` gained `kind`, `CaseArtifact` gained
+`CheckOutcome` gained `scored`/`cells[]`, `Check` gained `kind`, `CaseArtifact` gained
 `sample_fragile[]` + `min_pass_rate`/`gate_metric`; `RunManifest` gained `baseline` (#1752). **No artifact is committed** — the PR comment is
 the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
 `EVAL_BASELINE` diffs those local paths (#1725 policy). The format is pinned by whole-render tests
@@ -1096,16 +1096,17 @@ Deterministic — proven by whole-render tests over fixture promptlog rows, no G
 **A case reports THREE SECTIONS, and states what its samples SHARE exactly once (#1997).**
 `report.py` was organised around `Verdict` — one pass/fail per check, rendered per sample as
 `expected`/`actual` rows — a shape that cannot express variance at all and reads the harness
-bucket as behavioural failure. Under #1994 a case reports **assertions** (pass counts against a
-floor), **variance** (entropy and textual spread against a ceiling) and **harness** (samples too
-broken to count), so `report.CaseSections` renders those three as the document's structure. It
-RENDERS and never computes: the numbers, the proposed floors and ceilings and the standings are
+bucket as behavioural failure. Under #1994 a case reports **assertions** (pass counts, reported
+and never gated), **variance** (entropy and textual spread against a ceiling) and **harness**
+(samples too broken to count), so `report.CaseSections` renders those three as the document's
+structure. It RENDERS and never computes: the numbers, the proposed ceilings and the standings are
 all `cohort.py`'s, so a reader comparing document against data compares one arithmetic to one
-rendering. Two claims the sections make carefully: a **floor is proposed only for a STRUCTURAL
-claim** — one read out of the machine, the registry or the store — because across two runs of
-identical code a reply-content rate moved ±3 of 18 against ±1 for a structural one, so a
-reply-content claim is *reported and never floored at this N* even at full marks
-(`cohort.AssertionRow.kind` carries the distinction, `proposed_floor` enforces it); and the
+rendering. Two claims the sections make carefully: **no assertion carries a floor** — a
+deterministic check is expected to be strictly true of the run, so a threshold under one either
+never fires or sits below the observed rate and blesses the defect as the contract, which the
+table says in as many words where it ends. A reply-content claim is therefore not a special case:
+it counts and colours on its own rate like any other, and where it was read from
+(`cohort.Claim.kind`) decides only how its per-sample check renders and what it anchors to. And the
 harness section names its **dominant failure class**, computed from the cohort's own exclusions
 rather than from `run_health`'s run-level tally, which is per process and cannot say which case a
 fault landed in.

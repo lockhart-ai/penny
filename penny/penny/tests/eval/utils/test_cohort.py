@@ -12,7 +12,7 @@ import math
 
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
-from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     FIELD_UNSET,
@@ -265,12 +265,12 @@ def test_a_claim_read_out_of_model_prose_is_counted_like_every_other():
     """The gated/ungated split existed only to decide which claims could carry a floor.
 
     With no floors it has nothing left to decide, so a reply claim is one more claim: it enters
-    the same total and colours on its own rate rather than rendering grey."""
+    the same total and colours on its own rate rather than rendering grey.  The row does not
+    carry where it was read from at all, so a prose claim is one here only by its label."""
     prose = AssertionRow(
         label="reply: every specific value in it is sourced",
         passed=13,
         total=15,
-        kind="reply",
         category=SpecCategory.PROVENANCE,
     )
     structural = AssertionRow(label="s", passed=15, total=15, category=SpecCategory.STORE)
@@ -431,6 +431,21 @@ def test_a_sample_that_wrote_nothing_fails_the_claim_about_where_its_write_lande
     verdicts = {outcome.sample: outcome.ok for outcome in claim.outcomes}
     assert verdicts == {"wrote-into-it": True, "wrote-elsewhere": False, "wrote-nothing": False}
     assert "nothing was written" in claim.rationales
+
+    # What the section-A projection carries, WHOLE.  The counts and the missed samples' notes
+    # cross; where the claim was READ FROM does not — that anchors the per-sample check and is
+    # the claim's, so a field the row has no reader for cannot ride across unnoticed.
+    (row,) = assertion_rows(cohort.claims)
+    assert row.model_dump() == {
+        "label": "state: the demonstrated write landed in the round's container",
+        "passed": 1,
+        "total": 3,
+        "category": SpecCategory.STORE,
+        "rationales": [
+            "wrote into ['round-box'] instead of 'other-box'",
+            "nothing was written",
+        ],
+    }
 
 
 def test_an_unframed_round_fails_the_only_claim_that_reads_the_framing():
@@ -710,9 +725,7 @@ def test_the_summary_counts_a_reply_claim_exactly_like_a_state_one():
     """One reading over every check, with no claim able to sit outside it."""
     rows = [
         AssertionRow(label="state: x", passed=15, total=15, category=SpecCategory.STORE),
-        AssertionRow(
-            label="reply: y", passed=13, total=15, kind="reply", category=SpecCategory.PROVENANCE
-        ),
+        AssertionRow(label="reply: y", passed=13, total=15, category=SpecCategory.PROVENANCE),
     ]
     assert assertion_summary(rows) == AssertionSummary(passed=28, total=30)
 

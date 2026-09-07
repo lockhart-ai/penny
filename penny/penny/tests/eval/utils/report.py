@@ -338,11 +338,8 @@ class SystemPrompt:
 # cases is ~100 lines a person can page through, and any case opens to its full detail.
 #
 # The scale is a THRESHOLD scale, not a set of states: a rate of 0.61 should look like a warning
-# at a glance rather than sharing a glyph with 0.05.  Colour is reserved for what is GATED —
-# grey means measured with no threshold behind it, which is most of the report today and must
-# never read as passing.  A reply-content claim at 1.00 is grey for exactly that reason: it has
-# no floor and cannot carry one at this N, so a green tick would re-imply the gate the noise
-# measurement says does not exist.
+# at a glance rather than sharing a glyph with 0.05.  Grey means measured with no threshold
+# behind it — a proposed ceiling, a cost band — and must never read as passing.
 
 PASS_GLYPH = "🟢"
 WARN_GLYPH = "🟡"
@@ -403,9 +400,9 @@ def variance_glyph(feature: cohort.VarianceFeature) -> str:
 # mixed: whether Penny was CORRECT (A), whether she was STABLE (B), and whether the run can be
 # believed at all (C).  C is read FIRST even though it renders last.
 #
-# Everything here RENDERS; nothing computes.  The numbers, the proposed floors and ceilings, the
-# standings and the divergences are the cohort's, so a reader comparing the document against the
-# data compares one arithmetic to one rendering rather than two.
+# Everything here RENDERS; nothing computes.  The numbers, the proposed ceilings, the standings
+# and the divergences are the cohort's, so a reader comparing the document against the data
+# compares one arithmetic to one rendering rather than two.
 
 # Declarative labels.  A heading NAMES the thing; the explanation belongs in the body, or
 # nowhere — a reader scanning a hundred cases reads labels, not prose.

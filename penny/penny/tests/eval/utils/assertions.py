@@ -295,8 +295,8 @@ class Cohort:
         taken from the page the ask is answered against, so this is the same containment
         read ``keeps`` makes about the store, pointed at the reply.  It is a STORE claim
         because the delivered message is a record the sample's database holds, and it is
-        the reply KIND because it reads prose — which carries a wider noise floor than a
-        structural claim and must never be offered a floor as if it did not."""
+        the reply KIND because it reads prose — which is what anchors its per-sample check
+        to the reply rather than to a tool call."""
         self.claim(
             "reply: it states the answer the world carries",
             _reply_answers_the_ask,
@@ -491,18 +491,15 @@ _normalise = fold_typography
 
 
 def assertion_rows(claims: Sequence[Claim]) -> list[AssertionRow]:
-    """Project claims onto the report's section-A rows.
-
-    ``kind`` travels with the row because it decides whether the rate is LOCKABLE at all — a
-    claim read out of model prose has a noise floor several times wider than a structural one —
-    and dropping it here is what would silently offer a floor nothing could hold to."""
+    """Project claims onto the report's section-A rows — label, counts, category and the
+    distinct notes its missed samples carried.  ``kind`` stays on the claim; ``AssertionRow``
+    says why."""
     return [
         AssertionRow(
             label=claim.label,
             passed=claim.passed,
             total=claim.total,
             category=claim.category,
-            kind=claim.kind,
             rationales=claim.rationales,
         )
         for claim in claims
