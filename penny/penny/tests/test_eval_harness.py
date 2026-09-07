@@ -32,7 +32,13 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.agents.collector import Collector
-from penny.constants import MutationActor, PennyConstants, RunOutcome, TransitionCause
+from penny.constants import (
+    MutationActor,
+    MutationEntityType,
+    PennyConstants,
+    RunOutcome,
+    TransitionCause,
+)
 from penny.conversation_machine import (
     ConversationState,
     RoundShortfall,
@@ -199,6 +205,7 @@ from penny.tests.eval.conftest import (
     FRAME_NAME,
     FRAME_PARAMETERS,
     INJECTION_NEVER_FIRED,
+    MUTATION_HISTORY_WINDOW,
     NO_CYCLE,
     NO_DRAW,
     NO_MEASURED_TURN,
@@ -1879,7 +1886,7 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
     _seed_board_games(db)
     seeded = collection_entries(db, BOARD_GAMES.name)
 
-    assert _stored_entries(db) == [], "a seeded row carries no run stamp, so no round wrote it"
+    assert _stored_entries(db) == [], "a seeded row cites a seeded run, so no round wrote it"
     assert {entry.key for entry in _held_entries(db)} == set(seeded), "the store holds them all"
 
     require_memory(db, BOARD_GAMES.name).update(
@@ -1905,24 +1912,42 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     id, so a seeded event mistaken for a live one would fail "nothing was changed" on every
     sample — and the same read the other way round is what makes an archive visible at all.
     ``archived`` has to survive the row being retired, which is the one thing a reader that
-    skipped archived rows would lose."""
+    skipped archived rows would lose.
+
+    The seeded half is laid down by the SEEDER a world's declared store really goes through,
+    never by a create spelling the stamp out here: that second copy is what let this stay green
+    while ``seed_collection`` cited no run at all, and an unstamped birth reads as a live run's
+    work (#2129).  The ledger and the entry stamps are asserted beside the booleans since the
+    booleans are a read of them — a stamp that stopped reaching either would leave
+    ``changed_this_run`` false for a different reason, and the run that catches that is paid
+    for."""
     db = _make_db(tmp_path)
-    db.memories.create_collection(
-        "a-seeded-job", "A job the world was handed.", created_by_run_id=seeded_run_id("world")
-    )
+    seeded_by = seeded_run_id(_SEEDED_ROUTES.name)
+    seed_world_stores(db, _STORE_BACKED_WORLD)
     before = memory_names_now(db)
 
-    seeded = {record.name: record for record in _mechanism_records(db, before)}["a-seeded-job"]
+    records = {record.name: record for record in _mechanism_records(db, before)}
+    seeded = records[_SEEDED_ROUTES.name]
     assert not seeded.born_this_run, "the seed laid it down before the sample's turn began"
     assert not seeded.changed_this_run, "and its only event cites the run that seeded it"
     assert not seeded.archived
 
+    history = db.mutations.history(
+        _SEEDED_ROUTES.name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
+    )
+    assert [event.run_id for event in history] == [seeded_by], "the birth cites the seeded run"
+    held = require_memory(db, _SEEDED_ROUTES.name).read_all()
+    assert held, "the world declared entries, so the seed must have written some"
+    assert {(entry.created_by_run_id, entry.last_written_by_run_id) for entry in held} == {
+        (seeded_by, seeded_by)
+    }, "the entry write cites the same seeded run the creation does"
+
     db.memories.create_collection("a-minted-job", "One the turn made.", created_by_run_id="live-1")
-    db.memories.archive("a-seeded-job", actor=MutationActor.SYSTEM, run_id="live-1")
+    db.memories.archive(_SEEDED_ROUTES.name, actor=MutationActor.SYSTEM, run_id="live-1")
     records = {record.name: record for record in _mechanism_records(db, before)}
 
     assert records["a-minted-job"].born_this_run and records["a-minted-job"].changed_this_run
-    retired = records["a-seeded-job"]
+    retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run
 
