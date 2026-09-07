@@ -188,6 +188,19 @@ class Cohort:
             SpecCategory.STORE,
         )
 
+    def assert_no_mechanism_was_created(self) -> None:
+        """No collection was created — not an inert one, not a configured one, none.
+
+        A turn that answers, bails, or leaves a running job alone builds nothing, and a
+        container minted on the way past is a job nobody asked for.  Read off the REGISTRY as
+        a list of rows, so "nothing" is a count rather than an inference.
+
+        Graduated here at its second FILE customer (#2008): the bail cases stated it first
+        (#2043) and the idle answering cases state the same sentence about a different story,
+        so the label — which is the key a report's history is joined on — is one string in one
+        place rather than two copies waiting to be typed apart."""
+        self.claim("state: no mechanism was created", _nothing_was_created, SpecCategory.STORE)
+
     def assert_something_from_each_page_was_written(self) -> None:
         """One claim per SOURCE: an ask that says "from each" is not met by keeping one.
 
@@ -367,6 +380,11 @@ class Cohort:
 def _names_a_destination(sample: SampleObservation, _world: World) -> Answer:
     missing = [r.name for r in sample.routines if not r.names_a_destination]
     return bool(sample.routines) and not missing, f"no destination in {missing}"
+
+
+def _nothing_was_created(sample: SampleObservation, _world: World) -> Answer:
+    born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
+    return not born, f"created {born}"
 
 
 def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
