@@ -1,13 +1,12 @@
-"""The memory verbs: save · recall · forget · update · fan-out (#2008, tranche 1).
+"""The memory verbs: save · recall · forget · update · fan-out · no-fire (#2008, tranche 1).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Six cases, five behaviours.**  What a user asks Penny's memory to do splits into verbs
-that are genuinely different claims rather than five scenarios standing in for one — saving,
-recalling, forgetting and updating are four contracts, and a sample that is correct for one
-is wrong for another.  Only *within* a verb is there paraphrase-collapsing to do, and each
-case here is one ask in five wordings against one world, with its facts held constant across
-the arms because every claim it makes hinges on them.
+**Eight cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
+different claims rather than scenarios standing in for one — saving, recalling, forgetting and
+updating are four contracts, and a sample that is correct for one is wrong for another.  Only
+*within* a verb is there paraphrase-collapsing to do, and each case here is one ask in five
+wordings against one world, with its facts held constant across the arms.
 
 | behaviour | case | why this survivor |
 |---|---|---|
@@ -17,6 +16,8 @@ the arms because every claim it makes hinges on them.
 | forget | ``memory-forget-then-list`` | the only ask that owes the report half |
 | update | ``memory-change-a-note`` | a pure edit, no lookup folded into it |
 | fan-out | ``memory-a-like-and-a-dislike`` | the slot's only candidate |
+| no-fire | ``memory-no-fire-narration`` | the mention with nothing in the store to match it |
+| no-fire | ``memory-no-fire-wistful`` | the mention with a matching collection sitting there |
 
 No per-variant pass rate exists for any of these slots — the file they come from scored each
 case as one mean over a scorer callback, never per candidate — so every survivor above is
@@ -37,16 +38,25 @@ answers differently for each pair:
 So recall is two cases, not one with three worlds.  Splitting a behaviour in two is a smaller
 mistake than collapsing two into one; the pair is named together here.
 
-**The no-fire direction is STATED, never a case.**  ``memory-no-fire-narration`` and
-``memory-no-fire-wistful`` are the negative direction of save — a subject mentioned in
-passing is not an instruction — and #2008's ruling is that they are not a separate
-behaviour.  They cannot be ARMS either: an arm is one wording of an ask whose expected end
-state is the case's, and a no-fire ask expects the opposite end state, which makes it a
-scenario rather than a phrasing.  So save's sentence states both directions and save carries
-the negative as a claim its own world can answer — *nothing was written outside the list the
-ask named* — which is the same harm (acting where nobody asked) read off the world where an
-ask does exist.  Recorded as a doc gap: #2004 says a negative direction with its own expected
-outcome is its own case, and #2008 rules the opposite for this pair.
+**THE NO-FIRE DIRECTION IS TWO CASES OF ITS OWN** (#2100).  The ruling: one case is one
+setup, one run, one set of assertions, and where a behaviour's positive and negative
+directions cannot both be produced from that one setup and run, they are two cases.  A
+no-fire ask expects the opposite end state from save's, so it cannot be an arm of it, and
+save's sentence no longer mentions it.
+
+Within the no-fire direction the same rule counts TWO, not one:
+
+* the WISTFUL pool needs a collection about the message's own subject sitting in the store —
+  that temptation is the entire thing it measures, and without it the case measures nothing;
+* the NARRATION pool's identity is the ABSENCE of one.  A narration ask answered against a
+  store that already holds a collection about its subject simply IS the wistful case, so the
+  two cannot be produced from one setup.
+
+They are also two ASKS rather than two wordings of one — a lasagna recipe saved in a notes
+app, and a strategy-game campaign finished last night — so folding them would put a scenario
+boundary inside one cohort, which is what §6 forbids: a different ask reaching the same end
+state is a different case with its own fifteen.  Pooled, the variance features would be
+measuring the change of subject rather than the model's own spread.
 
 **QUARANTINED, not deleted** — every candidate that did not survive, with the reason it can
 come back deliberately:
@@ -68,6 +78,8 @@ come back deliberately:
   that makes the *says what is left* half of the sentence unassertable on it.
 * ``memory-look-up-and-update`` — folds save's lookup into update, so a sample can fail it for
   a reason that has nothing to do with editing in place.
+
+Both no-fire pools came OUT of quarantine under #2100 and are ported below.
 
 ``memory-writes-landed-source-down`` is deliberately LEFT ALONE at the bottom of this file.
 It is #1946's was-state case and none of tranche 1's behaviours; the honest-failure slot it
@@ -564,8 +576,7 @@ _SAVE = _VerbCase(
     behaviour=(
         "In the chat agent, when the user asks her to look a subject up and put it in a list "
         "they name, Penny reads about it, writes it into that list and nowhere else, and the "
-        "subject is still there when the turn ends — while a subject the user only mentions in "
-        "passing is written nowhere at all."
+        "subject is still there when the turn ends."
     ),
     # ``keeps`` is EMPTY and that is a REPORT.  A keeps token set identifies which SOURCE an
     # entry came from, and this world's two pages are a search hit and the detail page it links
@@ -859,8 +870,10 @@ async def test_forgetting_then_reporting_names_what_is_left(
     )
     cohort.assert_the_reply_answers_the_ask()
 
-    # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment, the same reading
+    # the two recall cases make: *nothing was rewritten* is claimed above, so no stored entry
+    # exists for a trace to be about and the claim would run at that one's rate under another
+    # name.  The reply half stays, since a report of what is left is prose that can invent.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -1013,9 +1026,143 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
     cohort.measure(*_MEASURED)
 
 
+# ═══ no-fire ═════════════════════════════════════════════════════════════════
+#
+# The negative direction, in its own two cases (#2100).  A message that mentions a subject and
+# asks for nothing must leave the store exactly as it was — and the failure both cases exist to
+# catch is acting at all, so every claim either makes is a negative.
+#
+# What is deliberately NOT claimed: that no page was fetched.  That asserts a browse CALL
+# happened or did not, which is a ROUTE and belongs in the tool sequence, where a cohort that
+# started browsing shows up as a variance rise rather than as one sample's failed check.  It is
+# measured, and on a correct cohort here the feature reads its ``absent`` value on every sample
+# and is marked BLIND in red — the same honest report the ``transition-idle-to-idle`` floor
+# makes, and for the same reason: the divergence it exists to catch is precisely the one these
+# cases are named for.
+
+_NO_FIRE_NARRATION = _VerbCase(
+    case_id="memory-no-fire-narration",
+    behaviour=(
+        "In the chat agent, when the user reports something they already did elsewhere and asks "
+        "for nothing, Penny answers in conversation and writes nothing down — standing no list "
+        "up for a subject nobody asked her to keep."
+    ),
+    # ``keeps``, ``excludes`` and ``answers`` are all EMPTY, and each is a report.  There are no
+    # pages, so nothing can be kept from one or excluded from one; and the message asks for no
+    # value, so requiring a token in the reply would fail a correct run for something nobody
+    # requested — "sounds like a good evening" is a complete answer to this.
+    world=World(name="empty store", pages=(), keeps=(), excludes=()),
+    # NOTHING is seeded, and that IS this case's setup: its whole identity is that the store
+    # holds no collection the message's subject matches, which is what separates it from the
+    # wistful case below.  A turn that decides to act therefore has to CREATE somewhere first,
+    # which is what makes the created-nothing claim the sharp one here.
+    seed=_seeder(),
+    ask="I looked up a lasagna recipe earlier and saved it in my notes app, good evening",
+    also_phrased=(
+        "found a lasagna recipe earlier and put it in my notes app — anyway, good evening",
+        "i saved a lasagna recipe to my notes app earlier today. evening!",
+        "earlier on i looked up a lasagna recipe and kept it in my notes app, good evening",
+        "good evening — i looked a lasagna recipe up earlier and it's in my notes app now",
+    ),
+    # The premise stated as a read: nothing in the store is about what the message mentions.
+    # That is what the empty seeder produces today, and stating it as a token keeps the case
+    # honest the day somebody seeds a world into it.
+    withholds=("lasagna",),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_narrating_something_already_done_fires_nothing(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """The user reports what they did elsewhere and says good evening.  There is no ask in it,
+    so there is nothing to do."""
+    cohort = await _drive(chat_eval, model, _NO_FIRE_NARRATION)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — both negatives, and each names its own violating sample: one that files the recipe
+    # away, and one that stands a list up to file it in.
+    cohort.claim("state: nothing was written anywhere", _wrote_nothing, SpecCategory.STORE)
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment: the claim above
+    # is that nothing was written, so no stored entry exists for a trace to be about.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+_NO_FIRE_WISTFUL = _VerbCase(
+    case_id="memory-no-fire-wistful",
+    behaviour=(
+        "In the chat agent, when the user muses about something a list she already keeps is "
+        "about, Penny answers in conversation and writes nothing into it — a topical match is "
+        "not a request."
+    ),
+    world=World(name="a tempting list", pages=(), keeps=(), excludes=()),
+    # The temptation IS the setup: a games list holding a strategy game sits in the store while
+    # the user muses about finishing a strategy game campaign.  Without it this case measures
+    # nothing, which is why it cannot share the narration case's world.  The ask names no game,
+    # so what it offers is a topical match and never a reference.
+    seed=_seeder(_GAMES_WITH_MISTFORGE),
+    ask="I finally wrapped up that long strategy game campaign last night, felt so satisfying",
+    also_phrased=(
+        "finally finished that long strategy game campaign last night — so satisfying",
+        "i wrapped up that big strategy game campaign last night, felt really good",
+        "last night i finally got to the end of that long strategy game campaign, so satisfying",
+        "that long strategy game campaign is finally done as of last night, felt great",
+    ),
+    holds=((_GAMES.name, (_SUBJECT,)),),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) -> None:
+    """A games list is sitting right there and the user muses about finishing a game.  A topical
+    match is not a request."""
+    cohort = await _drive(chat_eval, model, _NO_FIRE_WISTFUL)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.claim("state: nothing was written anywhere", _wrote_nothing, SpecCategory.STORE)
+    cohort.claim(
+        "state: no mechanism was created or changed",
+        _nothing_was_reconfigured,
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        # Beside the two above rather than folded into them: a delete is not a write and not a
+        # mechanism change, so a turn that "tidied" the list on its way past satisfies both and
+        # fails this one.
+        "state: the list it was tempted by still holds what it held",
+        _holds(_GAMES.name, _SUBJECT),
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE — the reply half only, its STORE half empty by the same entailment.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
 # Every ported case, in one place — so the deterministic probe in ``test_eval_harness.py`` can
 # drive each one's seeder and premise without a GPU.
-VERB_CASES = (_SAVE, _COLD_RECALL, _SWEEP, _FORGET, _UPDATE, _FAN_OUT)
+VERB_CASES = (
+    _SAVE,
+    _COLD_RECALL,
+    _SWEEP,
+    _FORGET,
+    _UPDATE,
+    _FAN_OUT,
+    _NO_FIRE_NARRATION,
+    _NO_FIRE_WISTFUL,
+)
 
 
 # ═══ NOT tranche 1's — left exactly as it was ════════════════════════════════
