@@ -20,6 +20,7 @@ import ast
 import asyncio
 import json
 import logging
+from collections import Counter
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -241,6 +242,8 @@ from penny.tests.eval.conftest import (
     _observe_extraction,
     _observe_framing,
     _observe_labelling,
+    _PendingCase,
+    _Perf,
     _refuse_binding_off_request,
     _refuse_unscorable,
     _registry_shortfall,
@@ -312,8 +315,9 @@ from penny.tests.eval.utils.artifacts import (
     CauseCounts,
     CheckOutcome,
     FailureCause,
+    build_case_artifact,
 )
-from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import SampleObservation, unsourced_specifics
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
@@ -2389,6 +2393,102 @@ def test_result_line_renders_cause_summary(capsys) -> None:
         "  pathology-excluded mean 1.00 (1 samples) · "
         "causes — behavioral 0 · pathology 1 · harness 0" in out
     )
+
+
+# ── A cohort case's record says what its case document says (#2125) ──────────
+#
+# The two renderings of one scored case: the document `make eval-report` posts, and the
+# `results.jsonl` record `baseline.py` and the flips index read.  They disagreed, because only
+# the document was rendered from the cohort's claims — the record kept the drive-time scores,
+# where a ported sample scores nothing and a vacuous 1.0 stands in.  So a case whose document
+# said `14 pooled + 1 excluded` recorded fifteen passes and no causes, and a later run diffed
+# against it saw no regression.
+
+_COHORT_RECORD_CASE = "cohort-record-case"
+_COHORT_RECORD_BEHAVIOUR = "In the chat agent, when the user teaches a round, Penny learns it."
+
+
+def _drive_time_result(db: Database, observation: SampleObservation) -> SampleResult:
+    """One sample as the COHORT PATH leaves it: scored nothing (its claims are answered after
+    every sample has run), its fault facts read off its own database, its observation attached."""
+    result = _guarded_graded([], [])
+    _stamp_cause(db, result)
+    result.observation = observation
+    return result
+
+
+def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_document_states(
+    tmp_path, capsys
+) -> None:
+    """One held claim, one missed, one sample the pool refused — through the real case close."""
+    db = _make_db(tmp_path, "cohort-record")
+    _log_prompt(db, response=_content_response("A perfectly ordinary draw."))
+    observations = [
+        SampleObservation(name="s-1", phrasing="the ask", landed=ConversationState.LEARN.value),
+        SampleObservation(name="s-2", phrasing="the ask", landed=ConversationState.IDLE.value),
+        SampleObservation(
+            name="s-3", phrasing="the ask", complete=False, exclusion=NO_MEASURED_TURN
+        ),
+    ]
+    cohort = Cohort(_COHORT_RECORD_CASE, "a-model", list(observations))
+    cohort.assert_machine_landed(ConversationState.LEARN)
+    results = [_drive_time_result(db, observation) for observation in observations]
+
+    pending = _PendingCase(
+        case_id=_COHORT_RECORD_CASE,
+        family="chat",
+        module="penny.tests.eval.chat.learn.test_case",
+        min_pass_rate=None,
+        gate_pathology_excluded=False,
+        behaviour=_COHORT_RECORD_BEHAVIOUR,
+    )
+    pending.add(cohort, results, _Perf(), intended=len(results))
+    pending.finish()
+
+    # What the DOCUMENT states: two pooled samples holding one of two claim answers, and the
+    # third named as excluded rather than subtracted.
+    document = eval_cohort.pool(cohort.samples, cohort.features)
+    assertions = eval_cohort.assertion_summary(assertion_rows(cohort.claims))
+    assert (document.pooled, document.driven) == (2, 3)
+    assert [row.reason for row in document.excluded] == [NO_MEASURED_TURN]
+    assert (assertions.passed, assertions.total) == (1, 2)
+
+    # What the RECORD states — built exactly as `record_case` builds it, off the same results.
+    artifact = build_case_artifact(
+        run_id="run-x",
+        case_id=_COHORT_RECORD_CASE,
+        family="chat",
+        results=results,
+        timings=CaseTimings(calls=0, duration_ms=0, input_tokens=0, output_tokens=0),
+        standing_counts=Counter(
+            standing.standing.value
+            for standing in eval_cohort.standings(cohort.samples, cohort.features)
+        ),
+    )
+    assert artifact.samples == document.driven
+    assert artifact.sample_scores == [1.0, 0.0, 0.0]
+    assert artifact.sample_causes == [None, FailureCause.BEHAVIORAL, FailureCause.HARNESS]
+    assert artifact.cause_counts == CauseCounts(behavioral=1, harness=1)
+    # The excluded sample is present AS excluded: it scores nothing, carries the document's own
+    # reason, and reads as the infrastructure loss it is — never as a passing sample.
+    assert results[2].failed == [NO_MEASURED_TURN]
+    # And the record no longer contradicts itself — the sample its standings call dead is the
+    # sample its scores call lost.
+    assert artifact.standing_counts["dead"] == len(document.excluded)
+    pooled_scores = artifact.sample_scores[: document.pooled]
+    assert sum(pooled_scores) / len(pooled_scores) == assertions.rate
+
+    # And the console RESULT line prints that same tally.
+    out = capsys.readouterr().out
+    assert (
+        f"RESULT [{_COHORT_RECORD_CASE}] mean 0.33 · all-pass 1/3 across 3 samples (report-only)"
+        in out
+    )
+    assert (
+        "  pathology-excluded mean 0.33 (3 samples) · "
+        "causes — behavioral 1 · pathology 0 · harness 1" in out
+    )
+    assert f"  [3] 0.00 — {NO_MEASURED_TURN}" in out
 
 
 # ── Regression diff: a prior run's results.jsonl → REGRESSED marks (#1693) ──
