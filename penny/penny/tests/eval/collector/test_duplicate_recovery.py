@@ -119,10 +119,10 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
+    CYCLE_SCRIPT,
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     StoredEntry,
@@ -599,7 +599,7 @@ async def test_a_value_already_recorded_stops_the_cycle(
     # REPLY_SPREAD is not measured, and that is the point of the case: a correct cohort sends
     # nothing, so a reply-spread reading would be blind on every sample by construction.  A
     # sample that DID speak is caught by the send-queue claim.
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
 
 
 # ══ The divergent world: a watch whose tracked value has moved ════════════════
@@ -1164,4 +1164,4 @@ async def test_a_divergent_value_lands_on_the_entry_that_exists(
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
 
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)

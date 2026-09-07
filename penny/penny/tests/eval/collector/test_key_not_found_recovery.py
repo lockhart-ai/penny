@@ -78,9 +78,9 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
+    CYCLE_SCRIPT,
     ENTRIES_STORED,
     TOOL_SEQUENCE,
-    TRANSITIONS,
     SampleObservation,
     SpecCategory,
     StoredEntry,
@@ -526,4 +526,4 @@ async def test_key_not_found_recovers_onto_the_key_the_box_uses(
 
     # REPLY_SPREAD is not measured: this job is silent, so a correct cohort sends nothing and
     # a reply-spread reading would be blind on every sample by construction.
-    cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED)
+    cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
