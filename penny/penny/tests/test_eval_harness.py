@@ -3519,10 +3519,18 @@ def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration(c
     them exactly.  They do because distillation is deterministic over the CALLS, which the
     arms do not vary at all; this says so rather than leaving it to be inferred.
 
-    What must differ is the conversation block: five distinct documents, each still carrying
-    the case's ANCHORS verbatim.  Five wordings of one demonstration means the facts hold and
-    only the words move, and an arm that dropped a demonstrated value the claims lean on would
-    be a different demonstration answered under the same case id.
+    What must differ is the conversation block: five distinct documents, and each ARM's OWN
+    WORDS still carrying the case's anchors.  Five wordings of one demonstration means the
+    facts hold and only the words move, and an arm that dropped a demonstrated value the claims
+    lean on would be a different demonstration answered under the same case id.
+
+    **The anchor check reads the ARM, never the rendered document, and that is the whole
+    point.**  Every anchor is a demonstrated value, and the document ends with the placeholder
+    block built from the CALLS — which are byte-identical across the arms — so every anchor
+    appears in every document whatever the arm said.  Asserting against the document is
+    therefore true by construction: it cannot fail, and a check that cannot fail is not a
+    check.  The documents are still built here, because the distinct-documents and offered-set
+    assertions above genuinely read them.
 
     Parametrised over every ported case rather than written once for the two-source one: each
     new case's arms have to be held against the ledger they claim before any GPU time is spent
@@ -3546,8 +3554,8 @@ def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration(c
         f"{case.case_id} claims spots the ledger does not offer: "
         f"{sorted(offered ^ set(case.offered))}"
     )
-    for arm, document in zip(case.arms, documents, strict=True):
-        missing = [anchor for anchor in case.anchors if anchor not in document]
+    for arm in case.arms:
+        missing = [anchor for anchor in case.anchors if anchor not in arm]
         assert not missing, f"{case.case_id}: {arm!r} drops {missing}"
 
 

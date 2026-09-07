@@ -581,6 +581,12 @@ _LONGER_ROUTINE = LabellingFixture(
 _FIRST_SOURCE = "queries"
 _SECOND_SOURCE = "queries-2"
 
+# The longer routine's two DESTINATIONS, by the same current-name convention: the collection it
+# writes readings into and the log it appends a line to.  Two different places, offered under
+# one base name, which is what makes a collapse onto a single name possible here and nowhere
+# else in the set.
+_LONGER_ROUTINE_COLLECTIONS = ("memory", "memory-2")
+
 
 class PortedNamingCase(NamedTuple):
     """One ported case: which ledger it drives, in which five wordings, over which spots.
@@ -739,14 +745,32 @@ def _drawn_names(sample: SampleObservation, spots: Sequence[str]) -> dict[str, s
     return {spot: sample.field(label_name_field(spot)) for spot in spots}
 
 
+def _hardened(raw: str) -> str:
+    """A name as the ECHO and DISTINCTNESS comparisons see it — the shipped hardener with
+    hyphens folded the way it already folds whitespace.
+
+    ``slug_parameter_name`` turns whitespace into ``_`` and then DROPS every remaining
+    non-identifier character, so the offered spot ``memory-2`` hardens to ``memory2`` while a
+    draw that wrote ``memory 2`` hardens to ``memory_2`` — two spellings of one name that
+    never compare equal, and an echo that escapes on the very case built to have a hyphenated
+    spot.  Folding the hyphen the same way on BOTH sides is what makes the comparison mean
+    "the same name, however it was punctuated"."""
+    return slug_parameter_name(raw.replace("-", " "))
+
+
 def _hardens_to_a_key(spots: Sequence[str]) -> WorldClaim:
     """Every spot's name survives the SHIPPED hardener as something a binding can use.
 
     Imported, never re-implemented: a name becomes a key through ``slug_parameter_name`` at
     instantiation, so what a case calls usable and what production calls a key are one
-    definition.  A name that hardens to nothing — punctuation, an empty line after the
-    separator — leaves the spot named by nothing, which is the answer OMITTED rather than
-    given.
+    definition.
+
+    **A CHEAP TRIPWIRE, expected at 15/15.**  The only shape left that can fail it is a name
+    that is nothing but punctuation: an empty name is a malformed line the grammar refuses
+    upstream, so the draw is re-rolled and never reaches a claim.  It is kept because the
+    thing it guards — that a name is still a key by the time production hardens it — is the
+    premise every other claim here rests on, and a premise nobody checks is one that breaks
+    silently.
 
     One claim over all the spots rather than one each: every spot is offered under the same
     contract, so which of them failed is the rationale's job.  (An extract instruction naming
@@ -770,11 +794,7 @@ def _not_handed_back_its_own_name(spots: Sequence[str]) -> WorldClaim:
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         drawn = _drawn_names(sample, spots)
-        echoed = [
-            spot
-            for spot, name in drawn.items()
-            if slug_parameter_name(name) == slug_parameter_name(spot)
-        ]
+        echoed = [spot for spot, name in drawn.items() if _hardened(name) == _hardened(spot)]
         return not echoed, f"echoed the argument name: {echoed}"
 
     return answer
@@ -785,7 +805,12 @@ def _says_what_belongs_there(spots: Sequence[str]) -> WorldClaim:
 
     The description is the grammar's one optional field, so a line that stops after its name
     is well-formed and reaches the caller — the spot is named and nobody can tell what goes in
-    it.  The instruction asks for both halves; a blank omits one."""
+    it.  The instruction asks for both halves; a blank omits one.
+
+    **A CHEAP TRIPWIRE, expected at 15/15**, for the same reason as the hardening claim: it
+    guards a premise rather than hunting a failure.  What it cannot see is a description that
+    is present and WRONG — that is the wrong-but-stable row a person reads the modal sample
+    for."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         silent = [spot for spot in spots if not sample.field(label_says_field(spot)).strip()]
@@ -855,19 +880,26 @@ async def _run_ported_case(
     )
 
 
-def _the_two_sources_drew_different_names(sample: SampleObservation, _world: World) -> Answer:
-    """The two sites are two spots, and they read back as two.
+def _distinct_names(pair: tuple[str, str]) -> WorldClaim:
+    """Two spots the ledger keeps apart read back as two.
 
-    The demonstration SUPPLIES the distinction — each site takes its own value every run — so
-    a draw calling both of them ``news_page`` has omitted it, and at run time one name for two
-    spots cannot say which site is which.  Compared HARDENED, because that is what the names
-    become: ``News Page`` and ``news_page`` are one key, not two."""
-    drawn = _drawn_names(sample, (_FIRST_SOURCE, _SECOND_SOURCE))
-    hardened = (
-        slug_parameter_name(drawn[_FIRST_SOURCE]),
-        slug_parameter_name(drawn[_SECOND_SOURCE]),
-    )
-    return hardened[0] != hardened[1], f"both drew {hardened[0]!r}"
+    The demonstration SUPPLIES the distinction — each of the pair takes its own value every
+    run — so a draw calling both of them one name has omitted it, and at run time one name for
+    two spots cannot say which is which.  Compared HARDENED, because that is what the names
+    become: ``News Page`` and ``news_page`` are one key, not two.
+
+    Parameterised by the pair because two cases structurally create one: the two-source ledger
+    puts two sites on ONE argument, and the longer routine writes to TWO collections, so its
+    ``memory`` / ``memory-2`` spots are the same trap reached by a different road — and the
+    argument-derived names it offers are the least informative in the set, which is exactly
+    where a collapse is easiest."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        drawn = _drawn_names(sample, pair)
+        first, second = (_hardened(drawn[spot]) for spot in pair)
+        return first != second, f"both drew {first!r}"
+
+    return answer
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -915,7 +947,7 @@ async def test_two_sources_are_named_apart_however_the_demonstration_is_worded(
     _claim_every_spot_was_named_for_this_routine(cohort, TWO_SOURCES_CASE.offered)
     cohort.claim(
         "state: the two sources drew different names",
-        _the_two_sources_drew_different_names,
+        _distinct_names((_FIRST_SOURCE, _SECOND_SOURCE)),
         SpecCategory.PROVENANCE,
     )
     _measure_what_each_spot_was_called(cohort, TWO_SOURCES_CASE.offered)
@@ -1014,8 +1046,10 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
 ) -> None:
     """One demonstration in five wordings, over a FOUR-step routine offering SEVEN spots.
 
-    **This case asserts nothing the two-sources case does not already assert.**  Same three
-    claims, a bigger demonstration; its value is the modal sample and the naming-spread axis.
+    **Beyond the three shared claims this case adds one, and only one.**  The three are the
+    same ones every naming case makes; the fourth is the collapse claim below, which this
+    ledger earns structurally.  Its wider value is still the modal sample and the naming-spread
+    axis rather than a new kind of assertion.
 
     What it supplies is LENGTH, which nothing else in the set has.  Every other ledger here is
     ``browse -> collection_write`` — the shortest routine that can exist — while #1824's own
@@ -1026,6 +1060,15 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
     than one — so two spots share the base name ``memory`` and are offered as ``memory`` and
     ``memory-2``, which is the concrete way a longer routine makes the argument-derived names
     less informative.
+
+    **That pair is why the case CLAIMS distinctness.**  Building two spots under one base name
+    and then not checking they stay apart would leave a draw that calls both of them
+    ``collection_name`` collapsing two DIFFERENT collections — one the routine writes readings
+    into, one it appends a log line to — with nothing counting it.  It is the same claim the
+    two-source case makes, reached by a different road: there, two sites on one argument; here,
+    two destinations the routine keeps apart.  The vocabularies measured on this ledger already
+    overlap (``delivery_storage_collection`` beside ``check_log_collection``, ``log_storage``),
+    so the collapse is reachable rather than theoretical.
 
     **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
     re-rolls) — and on seven spots it is doing more work than on four, so a rise in excluded
@@ -1038,6 +1081,11 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
     # STORE — empty by construction; see the docstring.
     # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
     _claim_every_spot_was_named_for_this_routine(cohort, LONGER_ROUTINE_CASE.offered)
+    cohort.claim(
+        "state: the two collections drew different names",
+        _distinct_names(_LONGER_ROUTINE_COLLECTIONS),
+        SpecCategory.PROVENANCE,
+    )
     _measure_what_each_spot_was_called(cohort, LONGER_ROUTINE_CASE.offered)
 
 
