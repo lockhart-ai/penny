@@ -138,9 +138,16 @@ _SECTION = (
 )
 
 # An ordinary listing that answers everything asked of it — the control, where nothing about
-# a per-field read should show at all.  It is the house listing (`LISTING_URL`), at the price
-# every other case in the suite reads it at: a page and a value the whole suite shares cannot
-# drift into a shape only this file expects.
+# a per-field read should show at all.  It is at the house url (`LISTING_URL`) and the house
+# price (`499`), which is what the rest of the suite shares and what the claims below name.
+#
+# The PAGE ITSELF is local, and deliberately not `fixtures.AURORA_LISTING_499`.  This case is
+# the one that needs THREE fields answered, and the shared listing carries two: it has a title,
+# a price, a seller and a self-link, and it says nothing about stock.  Adding a stock line to it
+# would change the page every browse-driven case in the suite reads, which is a measurement this
+# port has not taken and is not the port's to take.  So the copy is real and this is why it
+# exists.  The url is IMPORTED (`LISTING_URL`) rather than retyped; the price is the same `499`
+# the shared listing prints, held against this page by the coherence probe in `make check`.
 _LISTING = (
     "Aurora Deck 2, handheld console\n"
     "\n"
@@ -164,13 +171,24 @@ _LISTING = (
 # holds both, since a span appearing twice would be satisfied by the wrong one.
 _ITEM_ANCHOR = "Aurora Deck 2"
 _PRICE_ANCHOR = "499"
-# The known residual on this case, stated rather than repaired.  The ask is "whether it is in
-# stock" — a BOOLEAN, and a draw that answers "yes, in stock" has answered it without ever
-# saying how many are left, so this anchor can fail a correct run.  Shrinking does not reach it
-# (the count is not a rendering of the boolean, it is a different fact); what would is WIDENING
-# the ask to request the number, which changes the behaviour being measured and can move any
-# number in either direction — a code owner's call, raised with the numbers, never folded into a
-# port.
+# The count — the part of the stock line that carries the FACT.  The word after it ("left") and
+# the clause around it are phrasing the draw chooses, exactly as the currency symbol is on the
+# price, so the anchor stops before them.
+#
+# TWO residuals sit on it, both stated rather than repaired, because repairing either changes
+# what is being measured and that is a code owner's call raised with the numbers.
+#
+# The ASK is a BOOLEAN — "whether it is in stock" — so a draw that answers "yes, in stock" has
+# answered it without ever saying how many are left, and this anchor then fails a correct run.
+# Shrinking does not reach that: the count is not a rendering of the boolean, it is a different
+# fact.  What would reach it is WIDENING the ask to request the number, which moves the
+# behaviour being measured and can move any number in either direction.
+#
+# And the page writes the count as a WORD.  `three` is not strictly identifiable the way `499`
+# is: a draw that read the page perfectly may legitimately write `3`, and that is notation, the
+# one thing an anchor must never carry.  As the page presents this field there is no small
+# unique datum to shrink to — so the honest options are to drop the stock claim, or to print the
+# count in digits AND widen the ask together, neither of which a port decides on its own.
 _STOCK_ANCHOR = "three"
 
 _HEADLINE_ANCHOR = "Lantern festival"
