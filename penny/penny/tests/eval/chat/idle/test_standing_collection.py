@@ -358,13 +358,19 @@ def seed_standing_jobs(*jobs: StandingJob) -> Seeder:
 
 
 def _stand_up(db: Database, job: StandingJob) -> None:
-    # The creating run is STAMPED, and it is load-bearing rather than tidy: the store records a
-    # collection's birth as a mutation event citing whatever run created it, and an unstamped
-    # one cites nothing — which every reader of "did THIS turn touch this row" then counts as
-    # this turn's work, because a seeded run is recognised by its id and a missing id is not
-    # one.  Measured: the two jobs this world lends the log-read cases made their
-    # "no mechanism was created or changed" claim read 0 of 15 for a reason that had nothing to
-    # do with the turn.
+    # Laid down HERE rather than through ``seed_collection``, which is otherwise the one place a
+    # mechanism is seeded (#2129): that seam writes a container and its entries, and a standing
+    # JOB is the routine provenance beside them — the skill it runs and the values it is
+    # pointed at — with its program rendered through the instantiation seam's three steps.  A
+    # container seeded without those is not the thing these cases operate on.
+    #
+    # What it DOES take from that seam is the stamp, and that is load-bearing rather than tidy:
+    # the store records a collection's birth as a mutation event citing whatever run created it,
+    # and an unstamped one cites nothing — which every reader of "did THIS turn touch this row"
+    # then counts as this turn's work, because a seeded run is recognised by its id and a
+    # missing id is not one.  Measured: the two jobs this world lends the log-read cases made
+    # their "no mechanism was created or changed" claim read 0 of 15 for a reason that had
+    # nothing to do with the turn.
     db.memories.create_collection(job.container, job.description, created_by_run_id=_STOOD_UP_RUN)
     db.memories.update_collection_metadata(
         job.container,
