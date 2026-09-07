@@ -24,6 +24,7 @@ from collections import Counter
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import NamedTuple, cast
 
 import pytest
 
@@ -40,6 +41,8 @@ from penny.constants import (
     TransitionCause,
 )
 from penny.conversation_machine import (
+    OUT_EDGES,
+    SKILL_GATED_STATES,
     ConversationState,
     RoundShortfall,
     StateDecision,
@@ -51,8 +54,10 @@ from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.database.models import MemoryRow, PromptLog, Skill
 from penny.database.skills import (
+    SkillDraft,
     SkillParameter,
     build_binding_content,
+    derive_collection_name,
     render_spoken_turns,
     slug_skill_name,
 )
@@ -130,9 +135,64 @@ from penny.tests.eval.chat.request.test_ask_is_one_value_short import (
     _asks_for_what_is_missing_check,
     _does_not_re_ask_check,
 )
+from penny.tests.eval.classifier import test_state_classifier as classifier_cases
 from penny.tests.eval.classifier.test_state_classifier import (
+    _ACCEPTED_ROUND_SKILLS,
+    _BOARD_PAGE,
+    _CROSS_DOMAIN_SKILLS,
+    _FERRY_SKILL,
+    _GRINDER_PAGE,
+    _KAYAK_ASK,
+    _KAYAK_PAGE,
+    _LIVE_TIMETABLE_PAGE,
+    _NEAR_NEIGHBOUR_SKILLS,
+    _PARKED_ON_THE_PRICE_WATCH,
+    _PORTED_JOBS,
+    _PRICE_SKILL,
+    _REQUEST_TURN,
+    _TEACH_PAGE,
+    COLD_ELICIT_ARMS,
+    COLD_ELICIT_CASE_ID,
+    COLD_HOLD_ARMS,
+    COLD_HOLD_CASE_ID,
+    CORRECTION_ARMS,
+    CORRECTION_CASE_ID,
+    COVERED_ASK_ARMS,
+    COVERED_ASK_CASE_ID,
+    ELICIT_CALLED_OFF_ARMS,
+    ELICIT_CALLED_OFF_CASE_ID,
+    HOLD_CASE_ID,
+    MIXED_MESSAGE_ARMS,
+    MIXED_MESSAGE_CASE_ID,
+    NOTIFY_OFF_ARMS,
+    NOTIFY_OFF_CASE_ID,
+    NOTIFY_ON_ARMS,
+    NOTIFY_ON_CASE_ID,
+    OFFER_ACCEPTED_ARMS,
+    OFFER_ACCEPTED_CASE_ID,
     PASSING_MENTION_ARMS,
+    POST_FAILURE_QUESTION_ARMS,
+    POST_FAILURE_QUESTION_CASE_ID,
+    REQUEST_CALLED_OFF_ARMS,
+    REQUEST_CALLED_OFF_CASE_ID,
+    REQUEST_SHORT_ARMS,
+    REQUEST_SHORT_CASE_ID,
     SEEDED_SKILLS,
+    STEPS_ANSWERED_ARMS,
+    STEPS_ANSWERED_CASE_ID,
+    STILL_CLARIFYING_ARMS,
+    STILL_CLARIFYING_CASE_ID,
+    UNCOVERED_ASK_ARMS,
+    UNCOVERED_ASK_CASE_ID,
+    UNCOVERED_DOMAIN_ARMS,
+    UNCOVERED_DOMAIN_CASE_ID,
+    UNPROMPTED_TEACH_ARMS,
+    UNPROMPTED_TEACH_CASE_ID,
+    VALUE_ARRIVED_ARMS,
+    VALUE_ARRIVED_CASE_ID,
+    WRONG_ROUTINE_ARMS,
+    WRONG_ROUTINE_CASE_ID,
+    _standing_jobs,
 )
 from penny.tests.eval.collector.test_collector_enactment import (
     _STOP_REASON as _STOP,
@@ -251,7 +311,7 @@ from penny.tests.eval.conftest import (
     _observe_labelling,
     _PendingCase,
     _Perf,
-    _refuse_binding_off_request,
+    _refuse_binding_state_mismatch,
     _refuse_unscorable,
     _registry_shortfall,
     _sample_db_path,
@@ -3455,37 +3515,9 @@ def _observer_outcomes() -> dict[str, list[list[eval_cohort.OutputField]]]:
 # ── The microcontext arms: five wordings of ONE ask, over constant facts (#2006) ──
 #
 # Every ported microcontext case pools five arms into one number, which is only legal if
-# the arms differ in their WORDS and agree on their FACTS.  Each probe below states that
-# for its own case, in ``make check``, before any GPU time — a cohort whose arms disagree
-# about the world reports the spread of two behaviours as the instability of one.
-
-
-def test_every_passing_mention_arm_holds_a_door_open_it_must_decline(tmp_path) -> None:
-    """The classifier's arms (#2006): five ways of mentioning the same thing in passing,
-    against a registry that really does put the routine doors on offer.
-
-    The second half is what makes the case's one claim mean anything.  ``presented_edges``
-    withholds every skill-gated state when the snapshot has no candidates, so a hold
-    measured against an empty registry is a hold with no door to decline — it would score
-    green while proving nothing.  Asserted from the PRODUCTION snapshot builder, so what
-    the probe calls offered is what the draw will be offered.
-
-    The arms themselves: five distinct wordings, each naming the subject a seeded routine
-    plainly covers, and none of them asking for anything."""
-    assert len(PASSING_MENTION_ARMS) == 5
-    assert len(set(PASSING_MENTION_ARMS)) == 5, "five wordings, or the arms are not arms"
-    for arm in PASSING_MENTION_ARMS:
-        assert "auction listings" in arm, f"every arm names the same subject: {arm!r}"
-
-    db = migrated_db(str(tmp_path / "classifier-arms.db"))
-    for draft in SEEDED_SKILLS:
-        db.skills.upsert(draft, author="probe")
-    offered = presented_edges(
-        build_snapshot(db, state=ConversationState.IDLE, message=PASSING_MENTION_ARMS[0])
-    )
-    assert ConversationState.APPLY in offered, "the apply door must be on offer to be declined"
-    assert ConversationState.REQUEST in offered, "so must request"
-    assert ConversationState.IDLE in offered, "and idle must be a door the state opens"
+# the arms differ in their WORDS and agree on their FACTS.  The probes below state that in
+# ``make check``, before any GPU time — a cohort whose arms disagree about the world reports
+# the spread of two behaviours as the instability of one.
 
 
 # The section a REQUEST-parked round always renders (#1894) — as a literal, because what
@@ -3592,10 +3624,10 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
     db.skills.upsert(case.parked.skill, author=EVAL_SEED_AUTHOR)
     declared = ParkedRound(skill=case.parked.skill.name, settled=case.parked.settled)
 
-    _refuse_binding_off_request("a-case", ConversationState.REQUEST, declared)
-    _refuse_binding_off_request("a-case", ConversationState.IDLE, None)
+    _refuse_binding_state_mismatch("a-case", ConversationState.REQUEST, declared)
+    _refuse_binding_state_mismatch("a-case", ConversationState.IDLE, None)
     with pytest.raises(ValueError, match="only a round parked in request"):
-        _refuse_binding_off_request("a-case", ConversationState.IDLE, declared)
+        _refuse_binding_state_mismatch("a-case", ConversationState.IDLE, declared)
 
     assert _registry_shortfall(db, "a-case", declared).skill == slug_skill_name(
         case.parked.skill.name
@@ -3609,6 +3641,695 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
     every_value = {one.name: "something the user said" for one in case.parked.skill.parameters}
     with pytest.raises(ValueError, match="waiting on nothing"):
         _registry_shortfall(db, "a-case", declared.model_copy(update={"settled": every_value}))
+
+
+# ── The twenty ported classifier cases (#2041/#2055) ──────────────────────────
+#
+# ONE table, five questions.  Every ported case in ``classifier/test_state_classifier.py``
+# is a row here, and each probe below asks its one question of every row.  A table rather
+# than a set of probes per tranche: the questions are identical for all twenty cases and only
+# the ANSWERS differ, so a per-tranche copy is the same probe written three times, with three
+# places for it to drift.
+#
+# A row states its constant facts in whichever of three forms the fact has.  A fact with ONE
+# WORD is a literal in ``carries``.  A fact with no single word is a GROUP in ``groups``, of
+# which every arm must carry one member — the cold hold's constant is that the thing RECURS
+# ("again" ×4, "another" ×1), and the wrong-routine case's two constants are the rejection
+# and the task still being wanted, each said differently on every arm, deliberately, because
+# the shipped transition condition spells "still want the task done" and five arms ending in
+# that clause would score a draw that matched the phrase exactly like one that read the
+# situation.  And the STANDING fact is its own column, because it is the one ``carries``
+# structurally cannot state: a subject token says what the ask is ABOUT, never whether it
+# asks for something that keeps running, and idle owns every message with no standing or
+# scheduling component whatever it resembles.  Four arms drifted onto one-off asks with
+# their subject tokens intact and passed every probe here; every miss they produced was
+# `idle`.
+
+
+class _PortedClassifierCase(NamedTuple):
+    """One ported classifier case, as the five probes below read it.
+
+    ``case_id`` is the case's OWN public constant rather than a label invented here, so a row
+    and the case it describes are joined by the thing the report is keyed on — which is what
+    lets the last probe read the case's real driver call and refuse a row that has drifted
+    from it."""
+
+    case_id: str
+    arms: tuple[str, ...]
+    state: ConversationState
+    skills: list[SkillDraft]
+    expected: ConversationState
+    # The routine the case's second LANDED claim names — None on an ungated draw, which binds
+    # nothing and makes no such claim.
+    routine: str | None
+    # What the case declares its parked round is waiting on (#2084) — None on any state but
+    # request, the only state production carries a binding on.
+    parked: ParkedRound | None
+    # The case's constant facts as literals, and what its arms must never slip in.
+    carries: tuple[str, ...]
+    withholds: tuple[str, ...]
+    # The constant facts that have no single word: every arm carries one member of each group.
+    groups: tuple[tuple[str, ...], ...]
+    # The standing markers, one of which every arm must carry — required of a case whose door
+    # starts a job, refused of every other.
+    standing: tuple[str, ...]
+
+
+_PORTED_CLASSIFIER_CASES: list[_PortedClassifierCase] = [
+    _PortedClassifierCase(
+        case_id=HOLD_CASE_ID,
+        arms=PASSING_MENTION_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("auction listings",),
+        withholds=("?", "can you", "watch", "price"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=REQUEST_SHORT_CASE_ID,
+        arms=REQUEST_SHORT_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.REQUEST,
+        routine=_PRICE_SKILL,
+        parked=None,
+        carries=("camera kit listing",),
+        withholds=(".example", "http"),
+        groups=(),
+        standing=("keep an eye on", "watch", "track", "keep tabs on"),
+    ),
+    _PortedClassifierCase(
+        case_id=UNPROMPTED_TEACH_CASE_ID,
+        arms=UNPROMPTED_TEACH_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.LEARN,
+        routine=None,
+        parked=None,
+        carries=(_TEACH_PAGE, "morning", "first sailing", "remember"),
+        withholds=(),
+        groups=(),
+        standing=("each morning", "every morning"),
+    ),
+    _PortedClassifierCase(
+        case_id=ELICIT_CALLED_OFF_CASE_ID,
+        arms=ELICIT_CALLED_OFF_ARMS,
+        state=ConversationState.ELICIT,
+        skills=[],
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("ferry timetable",),
+        withholds=("?",),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=OFFER_ACCEPTED_CASE_ID,
+        arms=OFFER_ACCEPTED_ARMS,
+        state=ConversationState.LEARN,
+        skills=_ACCEPTED_ROUND_SKILLS,
+        expected=ConversationState.APPLY,
+        routine=_FERRY_SKILL,
+        parked=None,
+        carries=(),
+        withholds=(".example", "http", "?"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=VALUE_ARRIVED_CASE_ID,
+        arms=VALUE_ARRIVED_ARMS,
+        state=ConversationState.REQUEST,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.APPLY,
+        routine=_PRICE_SKILL,
+        parked=_PARKED_ON_THE_PRICE_WATCH,
+        carries=(_KAYAK_PAGE,),
+        withholds=(),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=REQUEST_CALLED_OFF_CASE_ID,
+        arms=REQUEST_CALLED_OFF_ARMS,
+        state=ConversationState.REQUEST,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=_PARKED_ON_THE_PRICE_WATCH,
+        carries=(),
+        withholds=(_KAYAK_PAGE, ".example", "http"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=COLD_HOLD_CASE_ID,
+        arms=COLD_HOLD_ARMS,
+        state=ConversationState.IDLE,
+        skills=[],
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("ferry", "morning"),
+        withholds=("watch", "every", "teach", ".example"),
+        groups=(("again", "another"),),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=NOTIFY_ON_CASE_ID,
+        arms=NOTIFY_ON_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("notifications", "camera kit price watch"),
+        withholds=("off", "disable", "set up", ".example"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=NOTIFY_OFF_CASE_ID,
+        arms=NOTIFY_OFF_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("notifications", "camera kit price watch"),
+        withholds=("notifications on", "enable", "set up", ".example"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=COLD_ELICIT_CASE_ID,
+        arms=COLD_ELICIT_ARMS,
+        state=ConversationState.IDLE,
+        skills=[],
+        expected=ConversationState.ELICIT,
+        routine=None,
+        parked=None,
+        carries=("ferry timetable",),
+        withholds=("read", "remember", "save", ".example"),
+        groups=(),
+        standing=("keep an eye on", "watch", "keep track of", "stay on top of", "keep tabs on"),
+    ),
+    _PortedClassifierCase(
+        case_id=COVERED_ASK_CASE_ID,
+        arms=COVERED_ASK_ARMS,
+        state=ConversationState.IDLE,
+        skills=_NEAR_NEIGHBOUR_SKILLS,
+        expected=ConversationState.APPLY,
+        routine=_PRICE_SKILL,
+        parked=None,
+        carries=(_BOARD_PAGE, "price"),
+        withholds=("teach", _PRICE_SKILL),
+        groups=(),
+        standing=("watch", "keep an eye on", "track", "keep tabs on"),
+    ),
+    _PortedClassifierCase(
+        case_id=MIXED_MESSAGE_CASE_ID,
+        arms=MIXED_MESSAGE_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.APPLY,
+        routine=_PRICE_SKILL,
+        parked=None,
+        carries=("morning", _GRINDER_PAGE, "price"),
+        withholds=("teach", _PRICE_SKILL),
+        groups=(),
+        standing=("watch", "keep an eye on", "track", "keep tabs on"),
+    ),
+    _PortedClassifierCase(
+        case_id=STILL_CLARIFYING_CASE_ID,
+        arms=STILL_CLARIFYING_ARMS,
+        state=ConversationState.ELICIT,
+        skills=[],
+        expected=ConversationState.ELICIT,
+        routine=None,
+        parked=None,
+        carries=("what", "?"),
+        withholds=("read", "remember", "never mind", "forget", ".example"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=WRONG_ROUTINE_CASE_ID,
+        arms=WRONG_ROUTINE_ARMS,
+        state=ConversationState.REQUEST,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.ELICIT,
+        routine=None,
+        parked=_PARKED_ON_THE_PRICE_WATCH,
+        carries=(),
+        # No arm may carry the transition condition's own "still want" collocation: the
+        # fixture must not hand the draw the phrase it is being scored on recognising.
+        withholds=("never mind", "forget", "still want", ".example", "http"),
+        groups=(("not", "wrong", "isn't"), ("still", "keep going", "the job itself is fine")),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=UNCOVERED_ASK_CASE_ID,
+        arms=UNCOVERED_ASK_ARMS,
+        state=ConversationState.IDLE,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.ELICIT,
+        routine=None,
+        parked=None,
+        carries=("gym", "week"),
+        withholds=("price", "menu", "read", "remember", ".example"),
+        groups=(),
+        standing=("keep track of", "keep a weekly count", "keep a running", "visits kept"),
+    ),
+    _PortedClassifierCase(
+        case_id=UNCOVERED_DOMAIN_CASE_ID,
+        arms=UNCOVERED_DOMAIN_ARMS,
+        state=ConversationState.IDLE,
+        skills=_CROSS_DOMAIN_SKILLS,
+        expected=ConversationState.ELICIT,
+        routine=None,
+        parked=None,
+        carries=("restaurant", "downtown"),
+        withholds=("job", "price", "read", "remember", ".example"),
+        groups=(),
+        standing=("keep a list", "keep track of", "keep collecting", "keep a running list"),
+    ),
+    _PortedClassifierCase(
+        case_id=STEPS_ANSWERED_CASE_ID,
+        arms=STEPS_ANSWERED_ARMS,
+        state=ConversationState.ELICIT,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.LEARN,
+        routine=None,
+        parked=None,
+        carries=(_TEACH_PAGE, "first sailing"),
+        withholds=("?", "never mind", "forget"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=CORRECTION_CASE_ID,
+        arms=CORRECTION_ARMS,
+        state=ConversationState.LEARN,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.LEARN,
+        routine=None,
+        parked=None,
+        carries=(_LIVE_TIMETABLE_PAGE,),
+        withholds=("?", "never mind", "forget"),
+        groups=(),
+        standing=(),
+    ),
+    _PortedClassifierCase(
+        case_id=POST_FAILURE_QUESTION_CASE_ID,
+        arms=POST_FAILURE_QUESTION_ARMS,
+        state=ConversationState.LEARN,
+        skills=SEEDED_SKILLS,
+        expected=ConversationState.IDLE,
+        routine=None,
+        parked=None,
+        carries=("went wrong", "page", "?"),
+        withholds=("try again", "instead", "remember", "never mind", ".example"),
+        groups=(),
+        standing=(),
+    ),
+]
+
+
+def _seeded_ported_world(case: _PortedClassifierCase, path) -> Database:
+    """The case's world, laid down the way the runner lays it down.
+
+    ``EVAL_SEED_AUTHOR`` rather than a probe-local author because ``_registry_shortfall``
+    reads the row back: a probe seeding under its own name would be reading a row the sample
+    never has."""
+    db = migrated_db(str(path))
+    for draft in case.skills:
+        db.skills.upsert(draft, author=EVAL_SEED_AUTHOR)
+    return db
+
+
+def test_every_ported_classifier_arm_set_says_one_decision_five_ways() -> None:
+    """Every ported classifier case says ONE decision five ways, over constant facts (#2055).
+
+    The carried tokens are the constant facts that happen to have one word, and a cohort
+    whose arms disagree about them reports the spread of two behaviours as the instability of
+    one.  A fact with no single word is a GROUP instead, and every arm must match one member
+    of every group — not a weaker check but the check those cases need, since pinning one
+    wording of the wrong-routine case's discriminating clause would score a draw that matched
+    the shipped condition's own phrase exactly like one that read the situation.
+
+    The withheld tokens keep the arms on the edge the case names, each one the neighbouring
+    edge a wording would otherwise slide onto: an address in the request-short arms would be
+    the idle → apply behaviour wearing that case's id, steps in the cold-elicit arms would be
+    idle → learn, a question back in the called-off elicit arms would be the parked self-edge,
+    a call-off in the wrong-routine arms would be the break-out to idle, an instruction in the
+    post-failure-question arms would be the correction beside it, and the notify pair's two
+    directions must not carry each other's switch.
+
+    Two cases state their facts in the withheld direction ALONE, and that is a statement
+    rather than a gap: an acceptance and a plain call-off hold their facts in the WORLD — the
+    demonstration being accepted, the round being dropped — which the snapshot's own fields
+    carry and the words do not.
+
+    The STANDING alternation is the direction the other three could not state.  A message
+    with no standing or scheduling component stays idle whatever it resembles — idle's own
+    definition — so on a case whose door is one of the three that START a job, an arm phrased
+    as something to do once is a different behaviour wearing the case's id.  Four arms drifted
+    exactly that way with their subject tokens intact, and every miss they produced was
+    `idle`.  Declaring the set is therefore required of any case parked in idle whose claim is
+    not idle, and refused of every other — a standing marker demanded where the door does not
+    read one is the same defect mirrored.
+    """
+    assert len(_PORTED_CLASSIFIER_CASES) == 20, "every ported classifier case is a row here"
+    ids = [case.case_id for case in _PORTED_CLASSIFIER_CASES]
+    assert len(set(ids)) == len(ids), f"one row per case: {ids}"
+    for case in _PORTED_CLASSIFIER_CASES:
+        assert len(case.arms) == 5, f"{case.case_id}: five arms"
+        assert len(set(case.arms)) == 5, f"{case.case_id}: five wordings, or they are not arms"
+        assert case.carries or case.groups or case.withholds, (
+            f"{case.case_id}: an arm set states its facts in one direction"
+        )
+        starts_a_job = case.state is ConversationState.IDLE and case.expected is not case.state
+        assert bool(case.standing) == starts_a_job, (
+            f"{case.case_id}: a case whose door starts a job declares its standing markers, "
+            "and one whose door does not declares none"
+        )
+        for arm in case.arms:
+            for token in case.carries:
+                assert token in arm, f"{case.case_id}: every arm carries {token!r}: {arm!r}"
+            for token in case.withholds:
+                assert token not in arm, f"{case.case_id}: no arm may carry {token!r}: {arm!r}"
+            for group in case.groups:
+                assert any(token in arm for token in group), (
+                    f"{case.case_id}: every arm states the fact {group} holds constant: {arm!r}"
+                )
+            assert not case.standing or any(marker in arm for marker in case.standing), (
+                f"{case.case_id}: every arm states the ask is standing, one of "
+                f"{case.standing}: {arm!r}"
+            )
+
+
+def test_every_ported_classifier_world_offers_the_doors_its_registry_implies(tmp_path) -> None:
+    """Each ported case's world opens the door its claim names, and gates the rest (#2055).
+
+    Asserted from the PRODUCTION snapshot builder, so what this calls offered is what the
+    draw will be offered.  A case claiming a state its snapshot never presents is
+    unanswerable by construction: no valid draw could return it, and the case would report
+    0/15 as a model failure that is the fixture's.
+
+    The second half reads the SKILL-GATED doors in both directions, off the registry the case
+    seeds.  ``presented_edges`` withholds apply and request when there are no candidates, so a
+    case seeding routines has them on offer — which is what makes a HOLD mean anything, since
+    a hold with no door to decline scores green while proving nothing — and a case seeding
+    none does not, which for the cold-registry cases is the whole point: the same edge drawn
+    from a union of three is a materially different decision from the same edge drawn from a
+    union of five.
+    """
+    for index, case in enumerate(_PORTED_CLASSIFIER_CASES):
+        db = _seeded_ported_world(case, tmp_path / f"ported-classifier-{index}.db")
+        offered = presented_edges(build_snapshot(db, state=case.state, message=case.arms[0]))
+        assert case.expected in offered, (
+            f"{case.case_id}: {case.expected.value} must be a door {case.state.value} opens"
+        )
+        for door in OUT_EDGES[case.state]:
+            if door.value not in SKILL_GATED_STATES:
+                continue
+            assert (door in offered) is bool(case.skills), (
+                f"{case.case_id}: {door.value} is on offer exactly when the registry holds one"
+            )
+
+
+def test_every_gated_ported_classifier_case_offers_the_routine_it_claims(tmp_path) -> None:
+    """A ``SKILL:`` claim names a routine the snapshot actually offers (#2055).
+
+    The draw's skill is membership-validated against the offered candidates and re-rolled
+    while it is not one, so a claim naming a routine the registry does not hold could never be
+    satisfied.  The other half — that more than one routine is on offer — is what makes naming
+    the right one a choice rather than the only option available, and the gated cases differ
+    in exactly how much of a choice it is: one seeds four near neighbours that all read a page
+    and record something from it, the rest two or three.
+    """
+    gated = [case for case in _PORTED_CLASSIFIER_CASES if case.routine is not None]
+    assert len(gated) == 5, "five ported classifier cases draw a skill-gated state"
+    for index, case in enumerate(gated):
+        db = _seeded_ported_world(case, tmp_path / f"ported-classifier-gated-{index}.db")
+        snapshot = build_snapshot(db, state=case.state, message=case.arms[0])
+        offered = [candidate.name for candidate in snapshot.skill_candidates]
+        assert case.routine in offered, f"{case.case_id}: {case.routine!r} must be offered"
+        assert len(offered) > 1, f"{case.case_id}: naming one of one is no choice — {offered}"
+
+
+def test_every_parked_ported_classifier_case_is_shown_what_its_round_waits_on(tmp_path) -> None:
+    """A case parked in request declares its binding, and the draw is shown it (#2055/#2084).
+
+    Production reaches request only through the binder, so a round parked there always
+    carries what it is waiting on and the draw always reads that section.  The parameter that
+    carries it is OPTIONAL on the runner, which means a case omitting it is silently measured
+    against a leaner document than production builds.  Asserted through the DRIVER's own
+    snapshot step rather than a rebuild beside it, so dropping the argument from a case fails
+    here.
+
+    Both directions: every request-parked case declares one, and no case on any other state
+    does — a binding rendered where production renders none is the same defect mirrored.
+    """
+    parked = [case for case in _PORTED_CLASSIFIER_CASES if case.state is ConversationState.REQUEST]
+    assert len(parked) == 3, "three ported cases park the machine in request"
+    for case in _PORTED_CLASSIFIER_CASES:
+        assert (case.parked is not None) == (case.state is ConversationState.REQUEST), (
+            f"{case.case_id}: a parked round belongs to request and to no other state"
+        )
+    for index, case in enumerate(parked):
+        db = _seeded_ported_world(case, tmp_path / f"ported-classifier-parked-{index}.db")
+        content = render_classifier_content(
+            _classifier_snapshot(
+                db,
+                case_id=case.case_id,
+                state=case.state,
+                message=case.arms[0],
+                parked_round=case.parked,
+            ),
+            case.arms[0],
+        )
+        assert _WAITING_ON_HEADER in content, (
+            f"{case.case_id}: a request-parked draw must be shown what the round waits on"
+        )
+        assert _PRICE_SKILL in _waiting_on_block(content), (
+            f"{case.case_id}: the section must name the routine the round is parked on"
+        )
+
+
+class _DrivenClassifierCase(NamedTuple):
+    """What a ported case's own body says it drives — read off the case file, not the table."""
+
+    case_id: str
+    state: ConversationState
+    skills: list[SkillDraft]
+    arms: tuple[str, ...]
+    parked: ParkedRound | None
+    drew: ConversationState
+    bound: str | None
+
+
+def _resolve_case_value(node: ast.expr) -> object:
+    """One argument of a ported case's driver call or claim, resolved to its live value.
+
+    Every such argument is a module constant or an enum member — the case file names its
+    facts rather than inlining them — so resolving is a lookup in the module that declares
+    them.  Anything else is refused loudly: a probe that silently skipped an argument shape
+    it did not know would report agreement it never checked.
+    """
+    if isinstance(node, ast.Name):
+        return getattr(classifier_cases, node.id)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return getattr(getattr(classifier_cases, node.value.id), node.attr)
+    raise AssertionError(f"the probe cannot resolve {ast.dump(node)}")
+
+
+def _claimed_state_and_routine(body: list[ast.stmt]) -> tuple[ConversationState, str | None]:
+    """The state a case's ``_drew`` claim names, and the routine its ``_bound`` claim does."""
+    drew: ConversationState | None = None
+    bound: str | None = None
+    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id == "_drew":
+            drew = cast(ConversationState, _resolve_case_value(node.args[0]))
+        elif node.func.id == "_bound":
+            bound = cast(str, _resolve_case_value(node.args[0]))
+    assert drew is not None, "a ported case makes a _drew claim"
+    return drew, bound
+
+
+def _driven_classifier_cases() -> dict[str, _DrivenClassifierCase]:
+    """Every ported case in the case file, as its own body drives it.
+
+    A ported case is one whose driver call states a ``behaviour`` — the cohort path's own
+    required argument — which is exactly what tells it apart from a legacy pooled case in the
+    same file without keying on anything a rename could break.
+    """
+    source = Path(str(classifier_cases.__file__)).read_text()
+    driven: dict[str, _DrivenClassifierCase] = {}
+    for function in ast.parse(source).body:
+        if not isinstance(function, ast.AsyncFunctionDef):
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            if node.func.id != "classifier_eval":
+                continue
+            arguments = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+            if "behaviour" not in arguments:
+                continue
+            drew, bound = _claimed_state_and_routine(function.body)
+            case_id = cast(str, _resolve_case_value(arguments["case_id"]))
+            seeded = arguments.get("seed_skills")
+            round_state = arguments.get("parked_round")
+            driven[case_id] = _DrivenClassifierCase(
+                case_id=case_id,
+                state=cast(ConversationState, _resolve_case_value(arguments["state"])),
+                skills=cast(list[SkillDraft], _resolve_case_value(seeded)) if seeded else [],
+                arms=(
+                    cast(str, _resolve_case_value(arguments["ask"])),
+                    *cast(tuple[str, ...], _resolve_case_value(arguments["also_asked"])),
+                ),
+                parked=(
+                    cast(ParkedRound, _resolve_case_value(round_state)) if round_state else None
+                ),
+                drew=drew,
+                bound=bound,
+            )
+    return driven
+
+
+def test_every_ported_classifier_row_describes_the_case_it_names() -> None:
+    """Each table row matches the case its id names, read off that case's own body (#2055).
+
+    The four probes above check a row against a world THE ROW describes, so a row and its
+    case can disagree with no symptom: change a case's ``seed_skills`` and its row still
+    reports green about a registry nothing drives, and every claim the row made about doors
+    and candidates is then a claim about a world the model never saw.
+
+    So the row's world is derived rather than restated — the case file's own AST is the
+    source, the way the harness's `eval_penny` seam is pinned — and the row is required to
+    agree with it on all five things a probe here reads: the state the machine is parked in,
+    the registry seeded, the five arms, the round's declared binding, and the state and
+    routine the case's claims name.  Both directions of the join are asserted too, so a ported
+    case with no row is as loud as a row naming no case.
+    """
+    driven = _driven_classifier_cases()
+    rows = {case.case_id: case for case in _PORTED_CLASSIFIER_CASES}
+    assert sorted(rows) == sorted(driven), (
+        "every ported case has a row and every row names a ported case — "
+        f"rows without a case: {sorted(set(rows) - set(driven))}, "
+        f"cases without a row: {sorted(set(driven) - set(rows))}"
+    )
+    for case_id, row in rows.items():
+        case = driven[case_id]
+        assert row.state is case.state, f"{case_id}: parked in {case.state.value}"
+        assert row.skills == case.skills, f"{case_id}: the registry the case seeds"
+        assert row.arms == case.arms, f"{case_id}: the arms the case drives"
+        assert row.parked == case.parked, f"{case_id}: the binding the round declares"
+        assert row.expected is case.drew, f"{case_id}: the state the case claims"
+        assert row.routine == case.bound, f"{case_id}: the routine the case claims"
+
+
+@pytest.mark.parametrize("notify", [True, False])
+def test_the_notify_pairs_world_really_stands_its_job_up(tmp_path, notify: bool) -> None:
+    """The job the notify pair's ask names is really running, in the state its ask is about
+    changing (#2055/#1927).
+
+    This is the half of that pair's world no arm can state.  A message that says "turn
+    notifications on for the camera kit price watch" refers to something the SKILL registry
+    says nothing about, and the measured leak is the reader concluding from that silence
+    that nothing is running — so a case whose job never reached ``## Jobs already running``
+    would be scoring the hold against a world where holding is wrong, and would report a
+    model failure that is the fixture's.
+
+    The row is read back off the production snapshot builder, which selects configured
+    collections exactly as the dispatcher does, and its NOTIFY flag is asserted in the
+    direction the case seeds: the ON case wakes jobs that are silent and the OFF case
+    silences jobs that are talking, so a job already matching its own ask would be a
+    different case.
+    """
+    db = migrated_db(str(tmp_path / f"tranche-b-jobs-{notify}.db"))
+    for draft in SEEDED_SKILLS:
+        db.skills.upsert(draft, author="probe")
+    _standing_jobs(_PORTED_JOBS, notify=notify)(db)
+
+    arms = NOTIFY_OFF_ARMS if notify else NOTIFY_ON_ARMS
+    jobs = build_snapshot(db, state=ConversationState.IDLE, message=arms[0]).standing_jobs
+    named = derive_collection_name(_PRICE_SKILL, [_PORTED_JOBS[0][1]])
+    running = {job.name: job for job in jobs}
+    assert named in running, f"the job the ask names must be listed: {sorted(running)}"
+    assert running[named].skill_name == _PRICE_SKILL, "and it must run the covering routine"
+    assert running[named].notify is notify, "in the state its ask is about changing"
+    assert len(jobs) > 1, f"and beside at least one other, or resolving it is no read: {jobs}"
+
+
+def test_the_request_classifier_cases_declare_the_round_their_arms_answer(tmp_path) -> None:
+    """The section the four REQUEST classifier cases put in front of the draw (#2099),
+    pinned WHOLE.
+
+    All four park on one round: the ask named a page to watch, the binder resolved that to
+    the seeded price watcher, and the page is the single parameter that routine declares —
+    described in the ask and never given — so the round is short of ``url`` and the section
+    says so.  That is the story every arm answers: one supplies the page, one calls the
+    round off, and two say the named routine was the wrong one.
+
+    Asserted as the whole section rather than by its parts, because the ways this can be
+    wrong are not the ways the fixture refuses.  A round settling a name the routine does
+    not declare, or settling all of them, is refused; a round declaring a DIFFERENT but
+    coherent routine renders cleanly, moves every number the four cases report, and shows
+    nothing for it."""
+    db = migrated_db(str(tmp_path / "request-case-parked-round.db"))
+    for draft in SEEDED_SKILLS:
+        db.skills.upsert(draft, author=EVAL_SEED_AUTHOR)
+
+    content = render_classifier_content(
+        _classifier_snapshot(
+            db,
+            case_id=VALUE_ARRIVED_CASE_ID,
+            state=ConversationState.REQUEST,
+            message=_KAYAK_PAGE,
+            penny_last_turn=_REQUEST_TURN,
+            task_anchor=_KAYAK_ASK,
+            parked_round=_PARKED_ON_THE_PRICE_WATCH,
+        ),
+        _KAYAK_PAGE,
+    )
+    assert _waiting_on_block(content) == (
+        "## The details this task is waiting on\n"
+        'skill: "watch a listing price for changes"\n'
+        "already given:\n"
+        "- nothing yet\n"
+        "still needed:\n"
+        "- url — the product or listing page whose price to watch"
+    )
+
+
+def test_a_request_case_that_declares_no_parked_round_is_refused() -> None:
+    """A case parking in REQUEST declares the round it is parked on, or it does not run
+    (#2099).
+
+    A round carries a binding exactly while it is parked in request, so the rule is a
+    biconditional and both halves of it are refused.  This is the half that keeps a REQUEST
+    case from being written lean: without it such a case reports its number as if the draw
+    had been shown the one section production always renders there, and nothing on the run
+    says otherwise — the refusal is the only thing that can.
+
+    The message is asserted WHOLE: the case author is its only reader, and a substring
+    match passes on one naming the wrong case or omitting the parameter to add."""
+    with pytest.raises(ValueError) as refusal:
+        _refuse_binding_state_mismatch("a-case", ConversationState.REQUEST, None)
+    assert str(refusal.value) == (
+        "a-case: every round parked in request waits on a binding — this case declares no "
+        "parked_round, so its draw would be shown none"
+    )
 
 
 def test_every_framing_arm_says_one_ask_in_different_words() -> None:
