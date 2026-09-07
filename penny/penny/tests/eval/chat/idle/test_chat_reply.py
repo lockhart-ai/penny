@@ -83,10 +83,13 @@ that supplies the value it went looking for.
 
 **Two claims are deliberately NOT made, and this is where that is said.**
 
-* ``assert_every_stored_entry_traces_to_the_world`` — ENTAILED, on every case here.  Five of
-  the six claim that nothing was written at all, which makes the trace vacuous; the sixth is
-  asked to record something the user just said, so a copy of it traces to the user's own
-  words by construction and the claim could not fail.
+* ``assert_every_stored_entry_traces_to_the_world`` — ENTAILED on FIVE of the six, and made on
+  the sixth.  The five claim that nothing was written at all, which makes the trace vacuous.
+  The duplicate case is the exception both ways: its turn may legitimately write, and its own
+  store claim counts entries carrying the SUBJECT — so a sample that rewrites the seeded entry
+  with a figure nobody supplied still leaves exactly one and passes it.  That case therefore
+  makes the trace claim, and it is the only place in this file where a stored specific can be
+  wrong.
 * *the reply states no admission price* / *no climb figure* — the named-token form of the
   honest-failure absence.  ENTAILED by
   ``assert_every_value_in_the_reply_is_sourced``: the page was never served and the store
@@ -422,6 +425,12 @@ _CLIMB_PHRASINGS = (
 )
 
 _RECORD_ASK = "make sure you've got that i'm into sea kayaking"
+# The third wording is the one arm where a correct reply CONTRADICTS the user: the others
+# hedge ("if you haven't already", "if it isn't there"), and this one states a belief the
+# store disproves.  Same ask, same world, same end state — one copy stored and a reply that
+# reports it was already there — so it pools like any other wording; what it varies is how
+# much the reply has to push back, which is why a per-phrasing outlier here is worth reading
+# before it is read as instability.
 _RECORD_PHRASINGS = (
     "put sea kayaking down as one of my interests if you haven't already",
     "can you save sea kayaking as something i'm into? want to be sure it's on record",
@@ -884,7 +893,14 @@ async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
     )
     cohort.assert_no_mechanism_was_created()
 
-    # PROVENANCE
+    # PROVENANCE — the ONE case here that claims BOTH halves, because it is the one whose
+    # turn may legitimately write.  The store claim above counts entries carrying the
+    # subject, so a sample that REWRITES the seeded entry — same key, same subject, a figure
+    # or a place nobody supplied folded into the content — still leaves exactly one and
+    # passes it.  This is the claim that sees that: a rewrite re-stamps the entry with the
+    # live run, so it enters what the sample WROTE and every specific in it is traced back to
+    # what the round was given.
+    cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
