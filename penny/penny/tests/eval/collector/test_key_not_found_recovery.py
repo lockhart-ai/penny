@@ -25,9 +25,13 @@ different decisions, so a correct sample for one says nothing about the other.
     the near-miss probe, the box and the recipe are byte-identical on every arm.
   * THE INJECTION IS HARNESS MACHINERY.  A sample the probe never fired on ran an unbroken
     cycle and exercised no recovery, so it leaves the cohort as a named exclusion rather
-    than counting as a behavioural failure.  THE COST, STATED (#2018): ``bail_injected``
-    says the probe was ISSUED, not that the store answered it with the key-not-found
-    rejection — a cycle whose first call took an unwatched route leaves here too.
+    than counting as a behavioural failure.  THE COST, STATED (#2018): the exclusion reads
+    ``bail_injected``, which is set when the probe is ISSUED — being issued is not being
+    ANSWERED with the key-not-found rejection.  A probe the store answered some other way
+    is POOLED AND JUDGED against claims about a recovery it never had to make.  That is the
+    residual hole, still open.  This injector hijacks the FIRST model call whatever it is,
+    so the exclusion is in practice unreachable here: a cycle that reached the model at all
+    issued the probe, and one that did not is already excluded as a dead cycle.
   * LANDED renders EMPTY, and that is the correct report: a collector moves no conversation
     machine, so there is no walk to read a landing off.  The run record's outcome is a
     RECORD FIELD and is claimed under STORE.
