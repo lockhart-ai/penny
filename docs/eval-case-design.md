@@ -69,6 +69,11 @@ not raise**. `assert_*` states the case's claim and answers it for every sample,
 the total — it never goes red on a miss and never stops a run. **Whether a number is a failure is a
 person's call**, made against the reported count.
 
+That person needs the **violating value**, not the rate. Each missed claim's distinct rationales
+render under the assertions table, so write the rationale to name what the sample actually did —
+`changed ['<key>']` — never to restate the claim. A miss with no rationale prints a bare number and
+sends its reader to the transcripts, which show what the model *said* rather than which row moved.
+
 ### The closed list
 
 **Three categories. Nothing else is an assertion.**
