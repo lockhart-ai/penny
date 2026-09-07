@@ -731,22 +731,29 @@ migration 0097 had left crashing at seed time and whose chitchat case the canoni
 `transition-idle-to-idle` already covers on a stronger world — the one thing that case
 carried alone, the emoji voice check, rides every case here as an advisory rather than
 retiring with it),
-`test_standing_collection.py` (operating a job that is already running — turn its
-notifications off, turn them back on, retire it — plus reading back what its routine does;
-the two notify cases are the ensemble the per-collection switch needs to be reachable at
-all: the state renders it, the tool description names it, the ask says it in as many words,
-and a prepare-time probe asserts the row carried it before the turn ran. Broadening a job's
-scope is NOT here — that is a re-teach of the routine, not an edit (code-owner ruling). Its
-seeded world is a taught routine stood up through the production instantiation seam, which
-`test_speakable_log_reads.py` reuses for the jobs its collector-runs case reads about.
-`standing-schedule-fix-prior` (#1946) is the WAS-STATE case on that same world: the job
-runs at a seeded hour, the user says it checks too early and names only the NEW hour, and
-what is scored is that every clock time the reply names is one the job has had — any third
-hour is invented, since the ask supplies one and the seed the other. Which state the turn
-lands in is reported beside it, because it decides whether the record frame was in front of
-the model at all: changing how a running job behaves is idle by the machine's own boundary
-(#1927), and the applied-configuration record that carries the before→after is stamped on an
-apply turn),
+`test_standing_collection.py` (operating a job that is already running, PORTED to the
+cohort structure (#2008, tranche 3): THREE cases, because #2008's one sentence names three
+ACTIONS and a correct sample for one is wrong for another — `standing-notify-off` (the
+switch flips and the job keeps running), `standing-archive` (retired as a tombstone that
+still holds what it gathered) and `standing-schedule-fix-prior` (re-timed, and the reply
+names no hour the job never ran at). Each is one ask in five wordings against one seeded
+world, claiming the job's own ROW: the field the ask named moved and every other field is
+the value it was seeded with, read off `MechanismRecord`'s configuration fields, since
+`changed_this_run` is true of that row by construction and cannot say WHICH field moved.
+Every case also claims that notifications were not silenced everywhere instead — the
+neighbouring lever, and the measured wrong one — and that the machine landed in `idle`,
+which is the contract rather than a hope (#1927: changing how a running job behaves is idle
+by the machine's own boundary). The re-timing case reads the hour the stored RULE fires at
+through production's own `next_occurrence`, not the clause a draw happened to write, and
+its provenance claim is that every clock time the reply names is one the job has had — any
+third hour is invented, since the ask supplies one and the seed the other (#1946).
+`standing-notify-on` is quarantined: the same sentence in the other entry condition, and
+the OFF direction dominates because it is the only one whose world can produce the failure
+the behaviour is about. Broadening a job's scope is NOT here — that is a re-teach of the
+routine, not an edit (code-owner ruling). Its seeded world is a taught routine stood up
+through the production instantiation seam, which `test_speakable_log_reads.py` reuses for
+the jobs its collector-runs case reads about; `standing-describe-routine` (reading a
+routine back) is on no slot of #2004's map and is left untouched with its own scorer),
 `test_collector_honesty.py`, `test_retrieval.py`,
 `test_browse_extract_fields.py` (#1942 — the browse EXTRACTION micro-context over a page
 that HALF answers its instruction, driven directly by the `extractor_eval` runner with no
@@ -757,15 +764,38 @@ nothing (because the contract is about what the page carries, not how the ask wa
 and a page carrying none of it, which must still say so. The page each case is given is
 what the content script now returns for it, so the two halves of #1942 meet in the
 fixtures; a coherence probe in `make check` holds every anchor against its own page),
-`test_notifications.py` (the muting contracts that retired `/mute` +
-`/unmute` — TWO dispatch cases (an explicit mute request against an unmuted world, an
-explicit unmute request against a muted one: the tool fired · the MuteState row after ·
-nothing else touched) plus the no-fire guard, each additionally verifying the mute state
-was IN the sample's own persisted chat system prompt, since the header rendering it
-(#1919) is half of what a muting turn stands on; the four naive-register phrasings they
-replace are recorded in the measurement history on PR #1925), `test_command_tools.py` (NL-dispatch
-contracts for the command-retirement tools), `test_email_dispatch.py`
-(NL-dispatch of the email tools that retired `/email` + `/zoho`),
+`test_notifications.py` (the muting contract that retired `/mute` + `/unmute`, PORTED to
+the cohort structure (#2008, tranche 3): ONE case, `explicit-mute-request-mutes`, in five
+wordings against the production cold start — the mute state afterwards, and nothing else
+moved. The MUTE direction survives because its end state cannot be answered by the seed
+(*the user is muted afterwards* is false of a fresh database by construction, while *no
+longer muted* is true of an unseeded one), so `explicit-unmute-request-unmutes` is
+quarantined; `notifications-no-fire` is folded as the stated negative per #2008's ruling.
+That the header carried the switch — half of what a muting turn stands on (#1919) — is now
+a prepare-time PREMISE rather than a claim, rendered and asserted before the turn; the four
+naive-register phrasings the case replaced are recorded in the measurement history on PR
+#1925), `test_choose_dispatch.py` (dispatch, PORTED to the cohort structure (#2008, tranche
+3): ONE case, `choose-dispatch-fires`, because on the END-STATE axis both directions agree —
+`choose` is read-shaped, so a fair pick and an opinion leave the store identical and the
+whole difference is a ROUTE, measured in the tool sequence. What it asserts about the pick
+is the one thing an end state carries: the option the reply reports is the one the run's own
+record chose, read off the tool's shipped result template. `choose-dispatch-no-fire` is
+folded as the stated negative), `test_command_tools.py` (NL-dispatch contracts for the
+command-retirement tools), `test_email_dispatch.py` (NL-dispatch of the email tools that
+retired `/email` + `/zoho`), `test_speakable_log_reads.py` (looking back at her own logs,
+PORTED to the cohort structure (#2008, tranche 3, folding #2001): TWO cases, because the
+ALTERNATIVE differs and the alternative is what each rules out —
+`speak-logread-penny-messages-recall` (asked what she SAID, where the wrong answer is
+browsing the topic) and `speak-logread-collector-runs` (asked WHY a job is in trouble, where
+the wrong answer is the ambient header). Both worlds are built so the answer is reachable by
+exactly ONE route — an invented word that exists only in the out-of-window turn, and a failed
+cycle's stamped reason, which the header never carries and no collection holds — so the
+provenance claim is simply that the answer token is in what the round was GIVEN, which is
+false for a sample that browsed, recalled it off its own prior turn, or invented it. #2001's
+world-integrity probe rides along, asserted per sample and pinned deterministically.
+`speak-logread-browse-results` is quarantined (its ask names no topic, so the negative
+direction is unreachable) and `speak-logread-user-messages-act` is quarantined as *save* with
+a log as the source, tranche 1's behaviour),
 `test_skill_labelling.py` (#1828 — the run-end LEAF
 labeller over six FIXTURE demonstrations: every offered spot draws a usable semantic
 name and one line of what belongs there, with the two-sources and shared-spot cases

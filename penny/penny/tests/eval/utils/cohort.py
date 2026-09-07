@@ -95,18 +95,40 @@ class MechanismRecord(BaseModel):
     held, so a claim read off the entries cannot tell a retired job from a live one.
 
     ``born_this_run`` is a REGISTRY read — the row's name was absent when the sample started.
-    ``changed_this_run`` is the mutation ledger's answer to the same row: an event on it citing
-    a run this sample made.  The ledger rather than a field-by-field diff, because what a bail
-    must not do is touch a running job AT ALL, and a comparison keyed to a list of fields
-    silently exempts whichever field nobody enumerated — a description edit, a rebind, an
-    archive.  The two are separate facts about one row and neither derives the other: a
-    creation is also a change, and a change to a row that already existed is not a creation.
+
+    ``touched_this_run`` is the mutation ledger's answer about the same row: WHAT this sample's
+    runs did to it, named the way the store names it — the fields an update reported changed,
+    or the ACTION where the store names one instead (archiving is an action rather than a field
+    edit, and carries no changed field of its own).  It is the ledger rather than a
+    field-by-field diff for the reason the ledger exists: a comparison keyed to a list of
+    fields silently exempts whichever field nobody enumerated, and the row's settable surface is
+    wider than any list a case would think to write — a description, an expiry, a run quota, a
+    rebind's bound values.  A field the store learns to change tomorrow joins this for free.
+
+    Two consequences worth stating.  A turn that RESTATES a value it was not asked to touch is
+    reported as having changed it, because the store reports what an update stated rather than
+    what differed — which is the right reading for a claim about a turn reaching past the field
+    it was asked for.  And ``changed_this_run`` is a PROPERTY over this rather than a field
+    beside it: two facts that always agree are one fact stored twice.
+
+    ``notifies`` / ``schedule`` / ``program`` are the row's own configuration as the sample left
+    it, read because claims name those VALUES — which way the switch is set, which hour the rule
+    fires at, whether the job still has a program to run — questions the ledger cannot answer,
+    since it says what moved and never where it landed.
     """
 
     name: str
     archived: bool
     born_this_run: bool
-    changed_this_run: bool
+    touched_this_run: list[str]
+    notifies: bool
+    schedule: str | None
+    program: str | None
+
+    @property
+    def changed_this_run(self) -> bool:
+        """Whether this sample's runs touched the row at all."""
+        return bool(self.touched_this_run)
 
 
 class Arm(BaseModel):
@@ -223,6 +245,17 @@ class SampleObservation(BaseModel):
     # rather than derived from it, because they answer different questions about the same
     # rows: ``held`` is what a container contains, this is what the container IS.
     mechanisms: list[MechanismRecord] = Field(default_factory=list)
+    # Whether PROACTIVE NOTIFICATIONS are muted for the user when the sample ends — the
+    # global switch, one level up from a mechanism's own ``notifies``.  It is a row in the
+    # store like every other end state (present = muted), and it is the only place two
+    # neighbouring behaviours can be told apart: silencing ONE running job and silencing
+    # EVERYTHING look identical on a mechanism's row, and the second is what a measured
+    # sample reached for when it read the first as unavailable.
+    #
+    # Read by the CHAT observer, which is the only shape whose turns can move it.  A shape
+    # that writes its own observation leaves the default, which is what a database nobody
+    # muted holds — and no non-chat case claims it.
+    muted: bool = False
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
