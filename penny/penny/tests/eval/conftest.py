@@ -1896,7 +1896,16 @@ class MicroPlacement(StrEnum):
 MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
     PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
+    # The binder draws on the SAME message the classifier just decided (#1867): the decision
+    # names the routine, and the binder fills that routine's declared parameters from the
+    # words that named it — ``ConversationMachine.advance`` runs the two back to back, before
+    # the chat agent's first call.  Same causal relationship, same placement; the pair renders
+    # after the classifier's because the queue drains in ledger order.
+    PennyConstants.SKILL_BIND_AGENT_NAME: MicroPlacement.TURN_HEAD,
     PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    # The notify composer closes a collector CYCLE rather than a chat turn (#1911) — it draws
+    # after the cycle's last action, which is the run-close relationship the labeller has.
+    PennyConstants.NOTIFY_COMPOSE_AGENT_NAME: MicroPlacement.RUN_CLOSE,
     # The framer moved to learn ENTRY (#1868): it draws before the chat agent, on the
     # message that opens the round, so its events belong at the head of the turn it frames
     # — the same causal relationship the state classifier has, and now the same placement.

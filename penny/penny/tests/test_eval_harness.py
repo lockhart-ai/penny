@@ -206,6 +206,7 @@ from penny.tests.eval.conftest import (
     FRAME_NAME,
     FRAME_PARAMETERS,
     INJECTION_NEVER_FIRED,
+    MICRO_CONTEXT_PLACEMENTS,
     MUTATION_HISTORY_WINDOW,
     NO_CYCLE,
     NO_DRAW,
@@ -373,6 +374,7 @@ from penny.tests.schema_template import migrated_db, schema_only_db
 # run-health classifier read it — so the tripwire below pins the agreed reference replies
 # against the same definition the ported claim answers with, never a second copy of it.
 from penny.text_validity import half_formed_send_reason
+from penny.tools import micro_context as micro_context_module
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import (
@@ -384,6 +386,7 @@ from penny.tools.micro_context import (
     SKILL_FRAME_SYSTEM_PROMPT,
     SKILL_NAMING_SYSTEM_PROMPT,
     STATE_CLASSIFIER_SYSTEM_PROMPT,
+    VALUE_TAG,
     BoundValues,
     FramedParameter,
     LeafLabel,
@@ -2947,6 +2950,186 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "| 💭 | thinking (skill-namer) — 14 chars: "
         "a generic name |  |\n"
         "| actual | 🧩 skill-namer → NAME: look-up-lake-depth |  |\n"
+        "\n"
+        "</details>\n"
+        "\n"
+    )
+
+
+# ── Every micro-context declares a placement, and the apply path renders its pair (#2133) ────
+
+# How a micro-context's ledger identity is spelled on ``PennyConstants``, and the module that
+# stamps one on every draw — read as a FILE, like the harness's other structural pins.
+_AGENT_NAME_SUFFIX = "_AGENT_NAME"
+_MICRO_CONTEXT_MODULE = Path(str(micro_context_module.__file__))
+
+
+def _shipped_micro_context_agents() -> set[str]:
+    """Every micro-context ledger identity ``micro_context.py`` NAMES, off the module's own AST.
+
+    What REGISTERS as a micro-context is the ``agent_name`` its promptlog rows are written
+    under, and this module is where each one is stamped — so the shipped names are read where
+    they are used rather than from a list somebody maintains beside them. It reads every
+    ``PennyConstants.*_AGENT_NAME`` the module mentions, which is the whole set of them: the
+    keyword each customer hands ``_valid_draw``, and the browse extractor's default."""
+    tree = ast.parse(_MICRO_CONTEXT_MODULE.read_text())
+    return {
+        getattr(PennyConstants, node.attr)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == PennyConstants.__name__
+        and node.attr.endswith(_AGENT_NAME_SUFFIX)
+    }
+
+
+def test_every_micro_context_declares_where_its_draw_renders() -> None:
+    """``MICRO_CONTEXT_PLACEMENTS`` claims to hold EVERY micro-context customer, and nothing
+    held it to that: the binder shipped in #1867 and never joined, so a turn it drew on
+    rendered the classifier's decision and then the chat agent's first call with the fill
+    invisible between them — a transcript whose reply reports a bound value the reader is
+    never shown being bound (#2133).
+
+    Structural, off ``micro_context.py``'s own AST, because a missing customer is silent in
+    both directions: its rows fall through to the main-agent walk, so nothing raises and no
+    batch is dropped — the draw simply never renders, and its scoped slice is one seeded-turn
+    filter away from opening a phantom step of its own. The next micro-context is covered
+    without anybody remembering this rule."""
+    shipped = _shipped_micro_context_agents()
+    assert shipped, "micro_context.py stamps its customers' agent names — none were read"
+    assert set(MICRO_CONTEXT_PLACEMENTS) == shipped, (
+        "every micro-context declares where its draw renders — invisible: "
+        f"{sorted(shipped - set(MICRO_CONTEXT_PLACEMENTS))}, "
+        f"named but not stamped: {sorted(set(MICRO_CONTEXT_PLACEMENTS) - shipped)}"
+    )
+
+
+_APPLY_ASK = "watch https://example.test/lantern and tell me when the price moves"
+_APPLY_SLICE = f"current: idle · newest message: {_APPLY_ASK}"
+# The binder's document and its drawn line, both from the SHIPPED definitions — the document
+# through ``build_binding_content`` (the function the binding eval already drives, so this
+# fixture cannot drift from what production hands the draw) and the line in the two-field carve
+# ``SKILL_BIND_SHAPE`` declares, ``VALUE <parameter_name>: <value>``.  A fixture that invented
+# either would sit under a docstring claiming fidelity, in the file people copy fixtures from.
+_BIND_DOCUMENT = build_binding_content(
+    render_spoken_turns([_APPLY_ASK]),
+    "monitor_price",
+    "Monitors a web listing and reports when its price changes.",
+    [SkillParameter(name="url", description="The URL of the listing to watch")],
+)
+_BIND_DRAW = f"{VALUE_TAG} url: https://example.test/lantern"
+_SET_ARGS = '{"name": "monitor-price-lantern", "schedule": "FREQ=HOURLY", "notify": true}'
+_SET_CALL = {"function": {"name": "collection_set", "arguments": _SET_ARGS}}
+_SET_RESULT = "You updated `monitor-price-lantern`'s settings: (collection_set result)"
+_APPLY_REPLY = "Set — I'll check that listing hourly and message you when the price moves."
+
+
+def _apply_turn_ledger(db: Database) -> None:
+    """One apply turn's promptlog in the order production writes it (#1867/#2133): the state
+    classifier draws first and names the routine, the binder fills that routine's declared
+    parameter from the same words, and only then does the chat agent run — ``advance`` calls
+    the two back to back, each under its own ``agent_name`` and its own run id.
+
+    The binder's rows are the SHIPPED shapes on both sides — its document from
+    ``build_binding_content``, its draw in the carve ``SKILL_BIND_SHAPE`` declares — since a
+    fixture that invented either would still render (the walk copies a draw verbatim and never
+    parses it) while teaching a wire format that does not exist."""
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": "Pick one state."},
+            {"role": "user", "content": _APPLY_SLICE},
+        ],
+        response=_content_response("STATE: apply\nSKILL: monitor_price"),
+        thinking="the routine covers it",
+        run_id="classify",
+    )
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.SKILL_BIND_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": "Fill each parameter."},
+            {"role": "user", "content": _BIND_DOCUMENT},
+        ],
+        response=_content_response(_BIND_DRAW),
+        thinking="the url is in their words",
+        run_id="bind",
+    )
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": _APPLY_ASK},
+        ],
+        response={"choices": [{"message": {"tool_calls": [_SET_CALL]}}]},
+        thinking="set the schedule and turn notifications on",
+        run_id="turn",
+    )
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": _APPLY_ASK},
+            {"role": "assistant", "tool_calls": [_SET_CALL]},
+            {"role": "tool", "content": _SET_RESULT},
+        ],
+        response=_content_response(_APPLY_REPLY),
+        thinking="say back what it will do",
+        run_id="turn",
+    )
+
+
+def test_the_binder_renders_between_the_classifier_and_the_chat_agent(
+    tmp_path, monkeypatch
+) -> None:
+    """The apply path's three actors render in the order they ran (#2133): the classifier's
+    pair, then the binder's, then the chat agent's first call.
+
+    Both draws are ``TURN_HEAD`` and the queue drains in LEDGER order, so the order is read
+    off the promptlog rather than off the map's spelling — a customer whose draw moves keeps
+    rendering where it ran. Whole-render literal, so the pair cannot go missing again without
+    this failing."""
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    _apply_turn_ledger(db)
+    result = SampleResult.graded(
+        [Check("configured the job", ok=True, anchor="collection_set(", kind="spine")]
+    )
+    _case_prompts.pop("binder-order", None)
+    _write_sample_report(db, "binder-order", 0, result=result, reply=_APPLY_REPLY)
+
+    assert _sample_report_text(tmp_path, "binder-order") == (
+        "<details><summary>sample 1 — ✅ pass · 0s · 4 calls</summary>\n"
+        "\n"
+        '| step 1 · 👤 | "watch https://example.test/lantern and tell me when the price '
+        'moves" | ✅ |\n'
+        "|---|---|---|\n"
+        "| expected | C1 [spine]⚖ configured the job |  |\n"
+        "| actual | 🧩 state-classifier ← user turn: current: idle · newest message: "
+        "watch https://example.test/lantern and tell me when the price moves |  |\n"
+        "| 💭 | thinking (state-classifier) — 21 chars: the routine covers it |  |\n"
+        "| actual | 🧩 state-classifier → STATE: apply<br>SKILL: monitor_price |  |\n"
+        "| actual | 🧩 skill-binder ← user turn: The routine that has been asked for:<br>"
+        "name: monitor_price<br>"
+        "what it is for: Monitors a web listing and reports when its price changes.<br><br>"
+        "What it needs, one line each:<br>"
+        "- url: The URL of the listing to watch<br><br>"
+        "What the user said, in their own words:<br>"
+        "watch https://example.test/lantern and tell me when the price moves |  |\n"
+        "| 💭 | thinking (skill-binder) — 25 chars: the url is in their words |  |\n"
+        "| actual | 🧩 skill-binder → VALUE url: https://example.test/lantern |  |\n"
+        "| 💭 | <details><summary>thinking — 42 chars</summary>"
+        "set the schedule and turn notifications on</details> |  |\n"
+        '| actual | 🔧 collection_set({"name": "monitor-price-lantern", '
+        '"schedule": "FREQ=HOURLY", "notify": true}) | ✅ C1 |\n'
+        "| actual | 📥 You updated `monitor-price-lantern`'s settings: "
+        "(collection_set result) |  |\n"
+        "| 💭 | <details><summary>thinking — 24 chars</summary>"
+        "say back what it will do</details> |  |\n"
+        "| actual | 🤖 \"Set — I'll check that listing hourly and message you when the "
+        'price moves." |  |\n'
         "\n"
         "</details>\n"
         "\n"
