@@ -71,8 +71,9 @@ from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.binder.test_skill_binding import (
     _MISSING_KEYWORD,
-    _TWO_PARAMETERS,
-    MISSING_KEYWORD_ARMS,
+    PHRASINGS_PER_COHORT,
+    PORTED_BINDINGS,
+    PortedBinding,
 )
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
@@ -3957,50 +3958,130 @@ def test_every_naming_arm_offers_the_same_spots_over_a_different_demonstration()
         assert "harborpost.example/front" in document, f"every arm names the second: {arm!r}"
 
 
-def test_every_binding_arm_supplies_the_page_and_never_the_entry() -> None:
-    """The binder's arms (#2006): five wordings of one ask, over one signature.
+def _assert_the_behaviour_reads_as_a_sentence(ported: PortedBinding) -> None:
+    """The case states its behaviour in the mandated form: *In <the locus>, when <X>, Penny
+    <does Y>.*
 
-    Three facts have to hold on every arm or a claim is answered against ground its own
-    sample never saw: the ADDRESS the url claim anchors on, the CADENCE the no-terms claim
-    forbids (byte-identical, since the claim matches it literally), and the ABSENCE of
-    anything naming a timetable entry — which is what makes the shortfall a property of the
-    ask rather than of one phrasing.
+    The ``, Penny `` clause is required AFTER the ``, when `` one, which is the whole point of
+    checking at all: every sentence in this file names Penny somewhere — "when a routine Penny
+    already knows is pointed at something new" satisfies a bare membership test while saying
+    nothing about what she does.  A case id is a filename; this sentence is the contract, and
+    it renders above every number in the report."""
+    form = "In <the locus>, when <X>, Penny <does Y>."
+    assert ported.behaviour.startswith("In "), f"{ported.case_id}: the behaviour reads '{form}'"
+    when = ported.behaviour.find(", when ")
+    assert when != -1, f"{ported.case_id}: the behaviour reads '{form}': {ported.behaviour}"
+    assert ", Penny " in ported.behaviour[when:], (
+        f"{ported.case_id}: the behaviour names no thing Penny DOES: {ported.behaviour}"
+    )
 
-    The signature is asserted constant too: an arm binding a different routine would be a
-    different behaviour under one case id."""
-    assert len(MISSING_KEYWORD_ARMS) == 5
-    spoken_by_arm = [render_spoken_turns(arm) for arm in MISSING_KEYWORD_ARMS]
-    documents = [
+
+def _binding_arm_documents(ported: PortedBinding) -> list[str]:
+    """Each arm's document, through the SHIPPED renderers — what the draw really reads.
+
+    A probe over the raw turns would pass on a render that dropped one."""
+    return [
         build_binding_content(
-            spoken,
-            _MISSING_KEYWORD.skill,
-            _MISSING_KEYWORD.intent,
-            _MISSING_KEYWORD.parameters,
+            render_spoken_turns(arm),
+            ported.fixture.skill,
+            ported.fixture.intent,
+            ported.fixture.parameters,
         )
-        for spoken in spoken_by_arm
+        for arm in ported.arms
     ]
-    assert len(set(documents)) == 5, "five wordings, or the arms are not arms"
-    supplied, unsupplied = _MISSING_KEYWORD.expectations
-    # What an ask that DOES supply the keyword says, read off the sibling case drawn against
-    # the same signature — so "no arm names an entry" is anchored to a real one rather than to
-    # a phrase spelled here.
-    timetable_entry = _TWO_PARAMETERS.expectations[1].anchor
-    for arm, spoken in zip(MISSING_KEYWORD_ARMS, spoken_by_arm, strict=True):
-        assert supplied.anchor in spoken, f"every arm names the page: {arm}"
-        for term in _MISSING_KEYWORD.forbidden:
-            assert term in spoken, f"every arm states the cadence verbatim: {arm}"
-        assert timetable_entry not in spoken, f"no arm names a timetable entry: {arm}"
-    assert not unsupplied.anchor, "the keyword is the parameter the ask supplies nothing for"
-    # BLANK the one span that moves and the five documents collapse to one: the signature
-    # block renders identically on every arm, so nothing outside the user's own turns varies.
-    # Read by REMOVING the turns rather than by splitting on the header they sit under — a
-    # header spelled here would be a second copy of a production literal, and if it ever moved
-    # the split would return the whole document on both sides and pass on anything.
+
+
+def _assert_every_arm_carries_the_facts(ported: PortedBinding) -> None:
+    """Every span the case's claims read appears verbatim in every arm, and exactly once.
+
+    Presence is what makes a claim answerable at all; the COUNT is what makes an anchor the
+    smallest datum that identifies ONE span rather than a token the ask happens to repeat.
+    Compared through the shipped ``spoken_form``, the same fold the claims use, so the probe
+    matches the text a draw is really matched against.
+
+    ``never_states`` reads the ARRIVING turn — the last one, which for a single-turn ask is
+    the whole of it.  The completion case's parked turn names the page on purpose; what must
+    not name it is the reply whose value the draw has to read."""
+    for arm in ported.arms:
+        spoken = spoken_form(render_spoken_turns(arm))
+        for fact in ported.states:
+            assert spoken_form(fact) in spoken, (
+                f"{ported.case_id}: every arm states {fact!r}: {arm}"
+            )
+        for anchor in ported.anchors:
+            assert spoken.count(spoken_form(anchor)) == 1, (
+                f"{ported.case_id}: {anchor!r} must identify ONE span of the ask: {arm}"
+            )
+        arriving = spoken_form(arm[-1])
+        for absent in ported.never_states:
+            assert spoken_form(absent) not in arriving, (
+                f"{ported.case_id}: no arm's arriving turn states {absent!r}: {arm}"
+            )
+
+
+def _assert_the_claims_can_decide(ported: PortedBinding) -> None:
+    """No two spans a claim matches against the same value can be satisfied by one string.
+
+    An anchor inside another anchor makes "bound to the one that answers it" undecidable; a
+    forbidden term inside an anchor makes a correct bind fail the no-terms claim, and an
+    anchor inside a forbidden term makes a correct bind impossible.  All three are matched
+    against the same bound value, so all three pairs have to be disjoint.
+
+    And a case claiming a parameter is UNSUPPLIED has to say what an arm may not carry: with
+    no ``never_states`` nothing holds the arms to supplying nothing for it, and the shortfall
+    becomes a property of the wordings rather than of the ask."""
+    for one in ported.anchors:
+        for other in ported.anchors:
+            assert one == other or spoken_form(one) not in spoken_form(other), (
+                f"{ported.case_id}: the anchor {one!r} sits inside {other!r}"
+            )
+        for term in ported.forbids:
+            assert spoken_form(term) not in spoken_form(one), (
+                f"{ported.case_id}: the forbidden {term!r} sits inside the anchor {one!r}"
+            )
+            assert spoken_form(one) not in spoken_form(term), (
+                f"{ported.case_id}: the anchor {one!r} sits inside the forbidden {term!r}"
+            )
+    if any(not one.anchor for one in ported.fixture.expectations):
+        assert ported.never_states, (
+            f"{ported.case_id}: a case claiming a parameter unsupplied must say what an arm "
+            "may not carry"
+        )
+
+
+@pytest.mark.parametrize("ported", PORTED_BINDINGS, ids=lambda p: p.case_id)
+def test_every_ported_binding_arm_says_one_ask_over_one_signature(ported: PortedBinding) -> None:
+    """The binder's ported arms (#2006/#2057), each case against its own declared facts.
+
+    A cohort pools five wordings into ONE number, which is only legal if the arms differ in
+    their WORDS and agree on their FACTS — so this holds, per case, in ``make check``, before
+    any GPU time: the case states its behaviour in the mandated form; its arms are five
+    distinct documents; every span its claims read is in every arm exactly once and nothing
+    its shortfall depends on is; no two spans matched against one value can both be satisfied
+    by one string; and the SIGNATURE is constant, since an arm binding a different routine
+    would be a different behaviour under one case id.
+
+    The signature check blanks each arm's own turns rather than splitting on the header they
+    sit under: a header spelled here would be a second copy of a production literal, and if it
+    ever moved the split would return the whole document on both sides and pass on anything.
+    """
+    assert len(ported.arms) == PHRASINGS_PER_COHORT, f"{ported.case_id}: a cohort is five wordings"
+    _assert_the_behaviour_reads_as_a_sentence(ported)
+
+    documents = _binding_arm_documents(ported)
+    assert len(set(documents)) == len(ported.arms), (
+        f"{ported.case_id}: five wordings, or the arms are not arms"
+    )
+    _assert_every_arm_carries_the_facts(ported)
+    _assert_the_claims_can_decide(ported)
+
     blanked = {
-        document.replace(spoken, "")
-        for document, spoken in zip(documents, spoken_by_arm, strict=True)
+        document.replace(render_spoken_turns(arm), "")
+        for document, arm in zip(documents, ported.arms, strict=True)
     }
-    assert len(blanked) == 1, f"the arms differ outside the user's turns: {sorted(blanked)}"
+    assert len(blanked) == 1, (
+        f"{ported.case_id}: the arms differ outside the user's turns: {sorted(blanked)}"
+    )
 
 
 def test_every_watch_arm_lays_down_one_program_differing_only_in_its_extract() -> None:
