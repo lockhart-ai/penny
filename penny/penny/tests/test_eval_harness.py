@@ -300,6 +300,7 @@ from penny.tests.eval.framer.test_skill_framing import FIXTURES as FRAMING_FIXTU
 from penny.tests.eval.framer.test_skill_framing import TICKER_ARMS
 from penny.tests.eval.labeller.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.labeller.test_skill_labelling import PORTED_CASES as PORTED_NAMING_CASES
+from penny.tests.eval.labeller.test_skill_labelling import TWO_SOURCES_CASE
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
 from penny.tests.eval.utils.artifacts import (
@@ -3267,7 +3268,10 @@ _ALWAYS_EMITTED = {
         frame_parameter_name(1),
         frame_parameter_says(1),
     ),
-    "labeller": (label_name_field(OFFERED_SPOTS[0]), label_says_field(OFFERED_SPOTS[0])),
+    "labeller": (
+        label_name_field(TWO_SOURCES_CASE.offered[0]),
+        label_says_field(TWO_SOURCES_CASE.offered[0]),
+    ),
 }
 
 
@@ -3282,7 +3286,7 @@ def _observer_outcomes() -> dict[str, list[list[eval_cohort.OutputField]]]:
     labelled = SkillLabels(
         labels={
             spot: LeafLabel(name=f"{spot}_value", description="what belongs there")
-            for spot in OFFERED_SPOTS
+            for spot in TWO_SOURCES_CASE.offered
         }
     )
     return {
@@ -3317,8 +3321,8 @@ def _observer_outcomes() -> dict[str, list[list[eval_cohort.OutputField]]]:
             _framing_output(SkillSignature(**framing, parameters=(one, two))),
         ],
         "labeller": [
-            _labelling_output(labelled, OFFERED_SPOTS),
-            _labelling_output(SkillLabels(labels={}), OFFERED_SPOTS),
+            _labelling_output(labelled, TWO_SOURCES_CASE.offered),
+            _labelling_output(SkillLabels(labels={}), TWO_SOURCES_CASE.offered),
         ],
     }
 
