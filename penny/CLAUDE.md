@@ -966,8 +966,15 @@ bypasses the persisting client, so it never lands in a persisted `response`; rea
 (never the input `messages`) makes the scan structurally immune to it, so a `bail_injected` sample is
 tagged pathology only if the LIVE model additionally produced its own poison. Cause ordering:
 pathology outranks a timeout (the poison is the root cause, the timeout its symptom), then harness,
-then behavioral. `classify_cause` (pure, in `artifacts.py`) encodes the partition. The runner stamps
-each sample's `cause`, and the `CaseArtifact` (`results.jsonl`) carries `sample_causes` (per-sample,
+then behavioral. `classify_cause` (pure, in `artifacts.py`) encodes the partition. **The cause is
+DERIVED from carried facts, wherever the score settles (#2125)**: the runner observes the two
+structural facts while the sample's database is live (`SampleResult.observe_faults` — did it time
+out, did its persisted output carry poison) and one derivation reads the cause off them. A ported
+sample scores nothing at drive time — its cohort's claims arrive at case close, long after that
+database is gone — so `adopt` settles the cause again there against the score it just took on, and
+a re-scored sample can never keep the cause its old score earned. `sample_causes` (in `artifacts.py`)
+is the one list BOTH renderings read, so the record and the console tally cannot print different
+numbers for one case. The `CaseArtifact` (`results.jsonl`) carries `sample_causes` (per-sample,
 aligned with `sample_scores`; `null` = passed), `cause_counts`, and `pathology_excluded_mean` — the
 honest read of model behaviour, the mean over every sample that is NOT a pathology failure, so a
 degeneracy spike can't sink a case's score while its raw mean + pathology count stay visible. The
@@ -1110,6 +1117,17 @@ it counts and colours on its own rate like any other, and where it was read from
 harness section names its **dominant failure class**, computed from the cohort's own exclusions
 rather than from `run_health`'s run-level tally, which is per process and cannot say which case a
 fault landed in.
+
+**The RECORD is the same scored object, not a second scoring of it (#2125).** `_PendingCase._grade`
+is the one seam where a cohort's claims meet per-sample grading, so it settles everything the
+`results.jsonl` record reports: a pooled sample `adopt`s the claims answered about it, and a sample
+the pool refused is `exclude`d — score 0.0, the document's own exclusion reason where a failure's
+labels go, and the `harness` cause an infrastructure loss earns. It used to be skipped, and an
+excluded sample answers no claim, so `graded([])` scored it a vacuous **1.0**: a case whose document
+said `14 pooled + 1 excluded` recorded fifteen passes and no causes — while its own
+`standing_counts` said `dead: 1` — and a later run diffed against that record saw no regression.
+The exclusion reason itself comes from `cohort.exclusion_reason` on both sides, so the document and
+the record cannot name one lost sample two ways.
 
 Around the sections, `report.render_case_document` states what every sample shares: **the ask in
 its K wordings** (listed once — a sample names which it used), **the seeded world**

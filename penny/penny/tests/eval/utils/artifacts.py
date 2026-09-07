@@ -464,6 +464,16 @@ def _sample_cause(sample: ScoredSample) -> FailureCause | None:
     return sample.cause or FailureCause.BEHAVIORAL
 
 
+def sample_causes(results: Sequence[ScoredSample]) -> list[FailureCause | None]:
+    """A case's per-sample causes, aligned with its sample scores.
+
+    Public because BOTH renderings of a scored case read it — the ``results.jsonl`` record and
+    the console RESULT line's tally — and reading the stamps directly on one side while the
+    other applied the unstamped-failure default is how the two came to print different numbers
+    for the same case (#2125)."""
+    return [_sample_cause(result) for result in results]
+
+
 def gate_metric_label(min_pass_rate: float | None, *, gate_pathology_excluded: bool) -> str | None:
     """Which score a gated case compares — ``None`` when report-only (no ``min_pass_rate``), else
     ``pathology-excluded mean`` (the honest-threshold opt-in, #1698) or plain ``mean``."""
@@ -490,7 +500,7 @@ def build_case_artifact(
     mean = sum(result.score for result in results) / count if count else 0.0
     all_pass = sum(1 for result in results if result.passed) / count if count else 0.0
     scores = [result.score for result in results]
-    causes = [_sample_cause(result) for result in results]
+    causes = sample_causes(results)
     excluded_mean, _kept = pathology_excluded(scores, causes)
     metric = gate_metric_label(min_pass_rate, gate_pathology_excluded=gate_pathology_excluded)
     return CaseArtifact(
