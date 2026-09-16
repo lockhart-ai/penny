@@ -41,8 +41,7 @@ mistake than collapsing two into one; the pair is named together here.
 **THE NO-FIRE DIRECTION IS TWO CASES OF ITS OWN** (#2100).  The ruling: one case is one
 setup, one run, one set of assertions, and where a behaviour's positive and negative
 directions cannot both be produced from that one setup and run, they are two cases.  A
-no-fire ask expects the opposite end state from save's, so it cannot be an arm of it, and
-save's sentence no longer mentions it.
+no-fire ask expects the opposite end state from save's, so it cannot be an arm of it.
 
 Within the no-fire direction the same rule counts TWO, not one:
 
@@ -341,10 +340,13 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
 # ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so on the two
 # recall cases it is a live measurement rather than a blind one: a correct sample there reads the
 # store, and how it reaches the answer — one aimed read, a sweep of three, a ``find`` — is the
-# spread those cases exist to watch.  The two NO-FIRE cases are the ones where a correct sample
-# calls nothing at all, so the feature reads its ``absent`` value on every sample and is marked
-# BLIND in red.  That is measured anyway and stated at those cases: the divergence it exists to
-# catch is precisely the one they are named for, and the blindness lifts the moment a sample acts.
+# spread those cases exist to watch.  On the two NO-FIRE cases it is where ACTING shows up: a
+# cohort that answered and moved on reads the feature's ``absent`` value on every sample and is
+# marked BLIND in red, and a sample that reached for a tool is the spread beside it.
+# ``ENTRIES_STORED`` carries the same reading one level down — ``0`` on every sample that
+# answered and moved on, and the sample that wrote something is the divergence.  Both are
+# measured rather than claimed, because whether a passing mention is worth keeping is hers to
+# decide, and a spread is the honest place a decision that varies is reported.
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
@@ -470,19 +472,30 @@ def _holds_exactly(collection: str, count: int) -> _ClaimFn:
     return answer
 
 
-def _nothing_was_reconfigured(sample: SampleObservation, _world: World) -> Answer:
-    """No mechanism was created, retired or edited.
+def _the_list_itself_survived(collection: str) -> _ClaimFn:
+    """The list the ask named is still the live container it was — the read that answers *what
+    did she leave standing*, one level up from what it holds.
+
+    ``_holds`` reads a container's CONTENTS; this reads the container.  An archived list still
+    holds every entry it held, so an edit that retired the whole list rather than changing the
+    one note it was told to change passes every claim about the notes and fails this one.
 
     Read off the MUTATION LEDGER rather than off a field-by-field diff (``MechanismRecord``):
-    what an edit to one entry must not do is touch the container AT ALL, and a comparison keyed
+    what an edit to one entry must not do is touch the container itself, and a comparison keyed
     to a list of fields silently exempts whichever field nobody enumerated.  A violating sample
     is nameable: one that archives the whole list instead of dropping the note it was told to
-    drop, one that rewrites the collection's description while it is in there, one that stands a
-    new container up for a fact that already has a home."""
-    touched = sorted(
-        one.name for one in sample.mechanisms if one.changed_this_run or one.born_this_run
-    )
-    return not touched, f"created or changed {touched}"
+    drop, one that rewrites the collection's description while it is in there."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        rows = [one for one in sample.mechanisms if one.name == collection]
+        state = (
+            ", ".join(f"archived={one.archived} changed={one.changed_this_run}" for one in rows)
+            or "no longer in the registry"
+        )
+        standing = any(not one.archived and not one.changed_this_run for one in rows)
+        return standing, f"{collection} is {state}"
+
+    return answer
 
 
 def _landed_in(sample: SampleObservation, collection: str, token: str) -> bool:
@@ -528,8 +541,8 @@ _SAVE = _VerbCase(
     case_id="memory-look-up-and-save",
     behaviour=(
         "In the chat agent, when the user asks her to look a subject up and put it in a list "
-        "they name, Penny reads about it, writes it into that list and nowhere else, and the "
-        "subject is still there when the turn ends."
+        "they name, Penny reads about it and writes it into that list, and the subject is "
+        "still there when the turn ends."
     ),
     # ``keeps`` is EMPTY and that is a REPORT.  A keeps token set identifies which SOURCE an
     # entry came from, and this world's two pages are a search hit and the detail page it links
@@ -539,8 +552,7 @@ _SAVE = _VerbCase(
     #
     # ``excludes`` is EMPTY for the same kind of reason: the ask rules nothing out in as many
     # words, and a token nobody excluded would assert one reading of the pages rather than a
-    # read of the ask.  The negative direction is claimed structurally instead — see
-    # ``_wrote_nowhere_but``.
+    # read of the ask.
     #
     # ``answers`` is EMPTY because the ask is an instruction and owes the reply no value: "saved
     # it to your games list" is a complete answer, so requiring a token would fail a correct run
@@ -562,19 +574,13 @@ _SAVE = _VerbCase(
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval, model: str) -> None:
     """The ask names a subject to read about and one list to put it in, and the list is empty
-    when the turn starts — so everything in it afterwards is this turn's work.
-
-    The *no mechanism was created* claim its three siblings carry is deliberately ABSENT here,
-    and this is the one case where its absence is not an omission: a turn that reads the ask as
-    a routine to be taught frames its round on the way in and builds a container for it, which
-    is the machine working rather than the verb failing.  What that would durably cost is the
-    fact going somewhere the user did not name, and *nothing was written outside the list the
-    ask named* is exactly that question asked about the writes."""
+    when the turn starts — so everything in it afterwards is this turn's work."""
     cohort = await _drive(chat_eval, model, _SAVE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the sentence's two halves, then its negative direction.
+    # STORE — the sentence's two halves: the list the ask named gained an entry, and what
+    # landed in it is the subject she was sent to read about.
     cohort.claim(
         "state: the list the ask named holds an entry this turn wrote",
         _wrote_into(_GAMES.name),
@@ -583,11 +589,6 @@ async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval, mod
     cohort.claim(
         "state: what this turn stored names the subject",
         _stored_the_subject(_SUBJECT),
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: nothing was written outside the list the ask named",
-        _wrote_nowhere_but(_GAMES.name),
         SpecCategory.STORE,
     )
 
@@ -811,10 +812,13 @@ async def test_forgetting_then_reporting_names_what_is_left(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — gone, the rest untouched, and nothing rebuilt.  "Untouched" is TWO claims because
-    # it is two facts: the notes are still there, and this turn did not rewrite them.  A sample
-    # that emptied the list and typed the survivors back in satisfies the first and fails the
-    # second, and it is the second that says the list was left alone.
+    # STORE — the named note gone, the rest untouched, and the list itself still standing.
+    # "Untouched" is TWO claims because it is two facts: the notes are still there, and this
+    # turn did not rewrite them.  A sample that emptied the list and typed the survivors back
+    # in satisfies the first and fails the second, and it is the second that says the list was
+    # left alone.  The third is one level up, about the container rather than its contents: a
+    # turn that archived the whole list instead of dropping one note leaves every remaining
+    # note exactly where it was, so only a read of the container itself catches it.
     cohort.claim(
         "state: the note it was told to drop is gone",
         _no_longer_holds(_INTO.name, _DROPPED),
@@ -828,8 +832,8 @@ async def test_forgetting_then_reporting_names_what_is_left(
         )
     cohort.claim("state: nothing was rewritten", _wrote_nothing, SpecCategory.STORE)
     cohort.claim(
-        "state: no mechanism was created or changed",
-        _nothing_was_reconfigured,
+        "state: the list itself is still the one she was given",
+        _the_list_itself_survived(_INTO.name),
         SpecCategory.STORE,
     )
     cohort.assert_the_reply_answers_the_ask()
@@ -905,8 +909,8 @@ async def test_changing_a_note_rewrites_only_that_note(chat_eval: ChatEval, mode
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: no mechanism was created or changed",
-        _nothing_was_reconfigured,
+        "state: the list itself is still the one she was given",
+        _the_list_itself_survived(_INTO.name),
         SpecCategory.STORE,
     )
 
@@ -929,8 +933,8 @@ _FAN_OUT = _VerbCase(
     case_id="memory-a-like-and-a-dislike",
     behaviour=(
         "In the chat agent, when one message carries two facts of different kinds and a fitting "
-        "list already exists for each, Penny files each fact in the list that fits it and neither "
-        "in the other, standing no new list up for either."
+        "list already exists for each, Penny files each fact in the list that fits it and "
+        "neither in the other."
     ),
     # ``answers`` is EMPTY for the reason the update case's is: the ask is an instruction, and a
     # confirmation that names neither fact is still a correct answer to "jot these down".
@@ -975,11 +979,6 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
         _not_filed_in(_INTO.name, _DISLIKE),
         SpecCategory.STORE,
     )
-    cohort.claim(
-        "state: no mechanism was created or changed",
-        _nothing_was_reconfigured,
-        SpecCategory.STORE,
-    )
 
     # PROVENANCE
     cohort.assert_every_stored_entry_traces_to_the_world()
@@ -991,23 +990,27 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
 # ═══ no-fire ═════════════════════════════════════════════════════════════════
 #
 # The negative direction, in its own two cases (#2100).  A message that mentions a subject and
-# asks for nothing must leave the store exactly as it was — and the failure both cases exist to
-# catch is acting at all, so every claim either makes is a negative.
+# asks for nothing is answered in conversation, and the round ends where it began: the machine
+# back in idle, and whatever the store already held still there.  Those two — the landing, and
+# what survives — are what these cases assert.
 #
-# What is deliberately NOT claimed: that no page was fetched.  That asserts a browse CALL
-# happened or did not, which is a ROUTE and belongs in the tool sequence, where a cohort that
-# started browsing shows up as a variance rise rather than as one sample's failed check.  It is
-# measured, and on a correct cohort here the feature reads its ``absent`` value on every sample
-# and is marked BLIND in red — the same honest report the ``transition-idle-to-idle`` floor
-# makes, and for the same reason: the divergence it exists to catch is precisely the one these
-# cases are named for.
+# What they do NOT assert is that she refrained.  Whether a passing mention is worth keeping is
+# hers to decide — "I made a good recipe today" is a reasonable thing to remember and a
+# reasonable thing to let go — so a claim forbidding a write would be scoring discretion, and
+# discretion varies.  It is MEASURED instead: ``ENTRIES_STORED`` and ``TOOL_SEQUENCE`` read
+# every sample, a cohort that answered and moved on agrees at nothing stored and no call, and
+# the sample that acted is the spread.  A correct cohort therefore reads ``TOOL_SEQUENCE``'s
+# ``absent`` value throughout and is marked BLIND in red, which is the honest report: the
+# blindness lifts the moment a sample acts, and that is exactly when there is something to see.
+#
+# The same reading covers the page: whether a browse happened is a ROUTE, so the tool sequence
+# measures it and no assertion names it.
 
 _NO_FIRE_NARRATION = _VerbCase(
     case_id="memory-no-fire-narration",
     behaviour=(
         "In the chat agent, when the user reports something they already did elsewhere and asks "
-        "for nothing, Penny answers in conversation and writes nothing down — standing no list "
-        "up for a subject nobody asked her to keep."
+        "for nothing, Penny answers in conversation and the round ends back in idle."
     ),
     # ``keeps``, ``excludes`` and ``answers`` are all EMPTY, and each is a report.  There are no
     # pages, so nothing can be kept from one or excluded from one; and the message asks for no
@@ -1016,8 +1019,9 @@ _NO_FIRE_NARRATION = _VerbCase(
     world=World(name="empty store", pages=(), keeps=(), excludes=(), stores=()),
     # NOTHING is seeded, and that IS this case's setup: its whole identity is that the store
     # holds no collection the message's subject matches, which is what separates it from the
-    # wistful case below.  A turn that decides to act therefore has to CREATE somewhere first,
-    # which is what makes the created-nothing claim the sharp one here.
+    # wistful case below.  A turn that decides to act therefore has to stand somewhere up
+    # first, so acting is visible in both measured readings at once — a call in the sequence
+    # and an entry in the count.
     ask="I looked up a lasagna recipe earlier and saved it in my notes app, good evening",
     also_phrased=(
         "found a lasagna recipe earlier and put it in my notes app — anyway, good evening",
@@ -1037,22 +1041,21 @@ async def test_narrating_something_already_done_fires_nothing(
     chat_eval: ChatEval, model: str
 ) -> None:
     """The user reports what they did elsewhere and says good evening.  There is no ask in it,
-    so there is nothing to do."""
+    so the turn is a conversation and the round ends where it began."""
     cohort = await _drive(chat_eval, model, _NO_FIRE_NARRATION)
-    # LANDED
+    # LANDED — the whole of what this case can claim about where the machine went, and the
+    # sharp one here: a turn that read the message as a routine to be taught leaves idle.
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — both negatives, and each names its own violating sample: one that files the recipe
-    # away, and one that stands a list up to file it in.
-    cohort.claim("state: nothing was written anywhere", _wrote_nothing, SpecCategory.STORE)
-    cohort.claim(
-        "state: no mechanism was created or changed",
-        _nothing_was_reconfigured,
-        SpecCategory.STORE,
-    )
+    # STORE — EMPTY, and that is a REPORT rather than an omission.  This world seeds nothing,
+    # so there is no entry and no list for a survival claim to be about; what the store holds
+    # afterwards is hers, and it is measured below rather than claimed.
 
-    # PROVENANCE — the reply half only.  Its STORE half is EMPTY by entailment: the claim above
-    # is that nothing was written, so no stored entry exists for a trace to be about.
+    # PROVENANCE — both halves, and the store half is the one the empty world makes sharp: a
+    # sample that DID decide the recipe was worth keeping may only have written what the user
+    # actually said, and an entry naming a dish, a source or a step nobody mentioned was
+    # invented into the store for good.
+    cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -1062,8 +1065,8 @@ _NO_FIRE_WISTFUL = _VerbCase(
     case_id="memory-no-fire-wistful",
     behaviour=(
         "In the chat agent, when the user muses about something a list she already keeps is "
-        "about, Penny answers in conversation and writes nothing into it — a topical match is "
-        "not a request."
+        "about, Penny answers in conversation and the list she keeps about it is left as it "
+        "was."
     ),
     world=World(
         name="a tempting list", pages=(), keeps=(), excludes=(), stores=(_GAMES_WITH_MISTFORGE,)
@@ -1086,28 +1089,26 @@ _NO_FIRE_WISTFUL = _VerbCase(
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) -> None:
     """A games list is sitting right there and the user muses about finishing a game.  A topical
-    match is not a request."""
+    match is not a request, so the round ends where it began and the list is left as it was."""
     cohort = await _drive(chat_eval, model, _NO_FIRE_WISTFUL)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE
-    cohort.claim("state: nothing was written anywhere", _wrote_nothing, SpecCategory.STORE)
+    # STORE — what SURVIVES, which is the whole of what a tempting list lets this case assert.
+    # Adding to the list is hers; taking something off it is not, and a turn that "tidied" the
+    # list on its way past — dropping the entry it read as finished — took something the user
+    # kept.  A delete leaves no write behind, so only a read of what the list still HOLDS
+    # catches it.
     cohort.claim(
-        "state: no mechanism was created or changed",
-        _nothing_was_reconfigured,
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        # Beside the two above rather than folded into them: a delete is not a write and not a
-        # mechanism change, so a turn that "tidied" the list on its way past satisfies both and
-        # fails this one.
         "state: the list it was tempted by still holds what it held",
         _holds(_GAMES.name, _SUBJECT),
         SpecCategory.STORE,
     )
 
-    # PROVENANCE — the reply half only, its STORE half empty by the same entailment.
+    # PROVENANCE — both halves.  A sample that did write something into the list may only have
+    # written what the user said: a campaign, a title or a date the message never carried is an
+    # invention, and it is in the collection for good.
+    cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
