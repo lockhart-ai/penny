@@ -121,6 +121,40 @@ paraphrase at the token level, and an assertion must target the part with no alt
 |---|---|
 | counts · closed enums · record fields · digits · proper nouns · urls · keys | sentences · summaries · a label the model composed · notation · units · reply text |
 
+### Assert what survives — never that the model refrained
+
+A second question, asked after identifiability, and it is the one a structural check passes by
+accident:
+
+> **Whose call was this? A fact the turn was responsible for → assertion. A choice the model was
+> free to make → variance.**
+
+**A `STORE` claim states what SURVIVES the turn.** The value the ask said to keep is where it was
+asked to keep it; what the store held before the turn still holds it, unchanged, unless the ask
+named it; and a fact is not mis-stored — a dislike filed under likes is a false fact, not a
+choice about how to work. `PROVENANCE` states that nothing stored or said was invented. `LANDED`
+states where the machine landed. That is the whole of what may be claimed.
+
+**No case may assert restraint.** *Wrote nothing · created no mechanism · opened no page · wrote
+nowhere else.* Whether to note, look up, or remember something the user merely mentioned is the
+model's own call on what it was shown — "I made a good recipe today!" is a reasonable thing to
+remember and a reasonable thing to pass over — so a claim forbidding it asserts one reading of a
+free choice, which is the judgement-call non-negotiable below reading a database instead of a
+fixture. It is also the rational-actor doctrine's shape: a case cannot order the model out of a
+decision its own state made reasonable. **Absence of action is measured, never asserted** — the
+entries-stored and tool-sequence features carry it as spread, and a feature reading **absent** on
+every sample renders blind (§5), which is the honest report that nothing happened rather than a
+check calling it correct.
+
+**A no-fire case asserts `LANDED` — the state Penny stays in — plus `PROVENANCE` and the
+preservation of what was already there, and nothing more.** It remains its own case; what changes
+is its behaviour sentence, which names the state she stays in rather than the action she refrains
+from.
+
+The near boundary: *nothing the ask excluded was stored* **is** an assertion, because an excluded
+token appears only on a line the ask rules out in as many words (§11). The ask named it, so a
+stored exclusion is a wrong fact rather than a matter of taste.
+
 ### It differs by shape
 
 The three shapes the drivers serve read the rule differently, because what the model returns is
@@ -216,6 +250,7 @@ assert a large one.**
 |---|---|---|
 | **Never assert a route.** Assert a *property* of the routine ("it has a write step", "it names somewhere to act"), never its shape or its tool names. | Many routes reach one end state, and a skill is an arbitrary tool sequence — a name-keyed rule simply will not fire for a shape nobody enumerated. | #1993: three different tools all correctly reached the run record; the check had pinned one. |
 | **A judgement call in the fixture is variance, not an assertion.** | Asserting a count asserts one reading of an ambiguous world. | Whether an appointment counts as a "signing" is genuinely ambiguous. |
+| **Assert what SURVIVES the turn, never that the model refrained.** *Wrote nothing · created no mechanism · wrote nowhere else* police discretion, however structural they read. | Noting or looking up a passing mention is the model's call on what it was shown, so a claim forbidding it asserts one reading of a free choice. Absence belongs in section B, where it is spread. | #2077: three claims read off the sample database — *nothing was written anywhere*, *no mechanism was created or changed*, *nothing was written outside the named list*. |
 | **An assertion about the store reads the WHOLE entry** — key *and* content. | A fact in the key and a blurb in the body is a perfectly good way to store it. | A prototype reported a 25/32 model failure that was entirely its own bug: it read content only. |
 | **A sample `.db` exists from sample START, not completion.** Gate on completeness before pooling; file counts are not completions. | Otherwise dead samples are pooled as behaviour. | 17 dead samples of 31 in one prototype run; `run_health.py` is the machinery that closes it |
 | **Never match a phrasing.** A reply check looking for a token you guessed in advance is the thing this design replaces. | Measurably both too strict and too loose in the same suite. | 31 replies that stated the recorded cadence correctly were failed; elsewhere an infra error string and a raw thinking leak both scored *passed* (#1994 §1). |
@@ -259,6 +294,7 @@ Two checks that fit no category, as worked examples of how to recognise one:
 |---|---|---|
 | `assert_each_page_was_read` — reads `sample.pages_read` | asserts that a **browse call happened**. That is a route. `LANDED`? No — a fetch is not a landing. `STORE`? No — nothing was stored. It is model output. | section B, inside tool sequence |
 | `assert_the_reply_reports_what_was_stored` — asserts the reply text contains a token | a **phrasing match** — a token somebody guessed in advance, which is the thing this design exists to abolish. | delete. Whether the reply describes what actually landed is a real question and is not answerable from prose — see §9 |
+| `assert_nothing_was_written_anywhere` — reads the sample's entries | asserts the model **chose not to** note something. It reads the database, so it wears `STORE` convincingly — but what survives a turn that wrote nothing is what the store already held, and *that* is the claim. Discretion is not an end state. | rewrite as preservation of what was already there; the rest is entries-stored, in section B |
 
 Note what makes the first one seductive: it distinguishes "read the page and correctly found
 nothing in scope" from "never looked", which is a real distinction worth having. It is still a
@@ -383,7 +419,8 @@ async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
     # PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
     cohort.claim("state: <what the page supplies arrived>", _carries(<ANCHOR>),
                  SpecCategory.PROVENANCE)
-    cohort.claim("state: <nothing else did>", _nothing_invented, SpecCategory.PROVENANCE)
+    cohort.claim("state: <nothing the page does not supply arrived>", _nothing_invented,
+                 SpecCategory.PROVENANCE)
 
     cohort.measure(output_field(OUTCOME),
                    output_field(VALUE, consequence=Consequence.COSMETIC))
