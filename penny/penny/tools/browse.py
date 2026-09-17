@@ -122,6 +122,12 @@ _EXTRACT_UNAVAILABLE = (
     "Couldn't extract {instruction!r} — no extraction model is configured for this browse. "
     "{handle_clause}"
 )
+# A FAILED extraction hands back the page's own links (#2141).  The page body never
+# enters the conversation when ``extract`` is set, so a failure that says only that it
+# failed leaves the model with no anchor for its next call — it re-searches, lands on
+# the same page, and loops.  The links are the one part of the page the model can act
+# on, so they come back with the failure sentence.
+_EXTRACT_LINKS_HEADER = "Links on the page:"
 
 # Type alias for the browser request function
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None]]]
@@ -152,6 +158,21 @@ def _trim_search_result(text: str, context_lines: int = 2) -> str:
 
     trimmed = "\n".join(lines[i] for i in sorted(keep))
     return f"{Prompt.SEARCH_RESULT_HEADER}\n\n{trimmed}"
+
+
+def _links_clause(text: str) -> str:
+    """The standalone markdown links in ``text``, capped at MAX_SEARCH_LINKS, as the
+    tail a failed extraction appends — empty when the page carries none.
+
+    Same solo-link detection the search trim uses (``_LINK_RE``): a line that is
+    nothing but a link is a link the model can open, and prose merely containing one
+    is not.
+    """
+    links = [line.strip() for line in text.split("\n") if _LINK_RE.match(line)]
+    if not links:
+        return ""
+    listed = "\n".join(links[: PennyConstants.MAX_SEARCH_LINKS])
+    return f"\n{_EXTRACT_LINKS_HEADER}\n{listed}"
 
 
 class BrowseTool(Tool):
@@ -236,8 +257,10 @@ class BrowseTool(Tool):
                         "page has for each of them, so a detail a page lacks costs you "
                         "only that detail. When set, the full page content is read in a "
                         "separate scoped context and only the extracted value is returned "
-                        "here — the page body never enters this conversation. Omit to "
-                        "receive the page content itself."
+                        "here — the page body never enters this conversation. A search "
+                        "query comes back as its list of links whatever you set here, so "
+                        "pick one and read it in a follow-up call. Omit to receive the "
+                        "page content itself."
                     ),
                 },
             },
@@ -350,8 +373,11 @@ class BrowseTool(Tool):
         page renders honestly in its own section without masking another page's
         extracted value.  Signal sections (read errors, dropped-query notes, channel
         outage) stay verbatim in place; a failed fetch keeps its ``## browse error:``
-        section with no micro-context.  Each stored page-read carries its OWN fetch
-        handle (a search section carries none — it was never stored).
+        section with no micro-context.  **A SEARCH section stays verbatim too (#2141)**
+        — titles and links only, by its own header's words, so there is nothing on it
+        to extract and it comes back as the list of links it is.  Each stored page-read
+        carries its OWN fetch handle (a search section carries none — it was never
+        stored).
 
         The page batch is drawn CONCURRENTLY (#1941).  The per-page contexts are
         independent by construction — a fresh single-shot context, its own document,
@@ -367,7 +393,7 @@ class BrowseTool(Tool):
         renders, same per-draw reroll machinery."""
         micro_context = self._micro_context
         if micro_context is None:
-            return self._extract_unavailable_result(instruction, stored)
+            return self._extract_unavailable_result(sections, stored, instruction)
         batch = self._extract_batch(sections, stored)
         drawn = await asyncio.gather(
             *[
@@ -381,14 +407,19 @@ class BrowseTool(Tool):
             message=PennyConstants.SECTION_SEPARATOR.join(
                 self._merge_extracted(sections, batch, extracted)
             ),
-            success=any(succeeded for _, succeeded in extracted),
+            success=self._read_anything(sections, extracted),
         )
 
+    @staticmethod
     def _extract_batch(
-        self, sections: list[str], stored: list[MemoryEntry]
+        sections: list[str], stored: list[MemoryEntry]
     ) -> list[tuple[int, str, MemoryEntry | None]]:
-        """Plan the concurrent batch — one ``(slot, section, handle)`` per CONTENT
+        """Plan the concurrent batch — one ``(slot, section, handle)`` per PAGE-READ
         section, in page order.
+
+        Only a page read is extracted from (#2141): a search section is titles and
+        links, so it is left where it stands and the merge renders it verbatim, beside
+        the error / dropped / outage signals.
 
         The fetch handles are consumed HERE, sequentially, aligned 1:1 with the
         page-read sections in order, so which page owns which handle is settled before
@@ -398,11 +429,19 @@ class BrowseTool(Tool):
         handles = iter(stored)
         batch: list[tuple[int, str, MemoryEntry | None]] = []
         for slot, section in enumerate(sections):
-            if not self._is_content_section(section):
-                continue  # error / dropped / outage — kept verbatim by the merge
-            page_read = section.startswith(PennyConstants.BROWSE_PAGE_HEADER)
-            batch.append((slot, section, next(handles, None) if page_read else None))
+            if not section.startswith(PennyConstants.BROWSE_PAGE_HEADER):
+                continue  # search / error / dropped / outage — kept verbatim by the merge
+            batch.append((slot, section, next(handles, None)))
         return batch
+
+    @staticmethod
+    def _read_anything(sections: list[str], extracted: list[tuple[str, bool]]) -> bool:
+        """Whether the call came back with something the model can work from: a page
+        whose extraction succeeded (or honestly reported the fact absent), or a search
+        section — which is returned verbatim, so no draw speaks for it (#2141)."""
+        if any(section.startswith(PennyConstants.BROWSE_SEARCH_HEADER) for section in sections):
+            return True
+        return any(succeeded for _, succeeded in extracted)
 
     @staticmethod
     def _drawn_pages(drawn: list[tuple[str, bool] | BaseException]) -> list[tuple[str, bool]]:
@@ -451,23 +490,31 @@ class BrowseTool(Tool):
         whether it was a successful read: NOT_PRESENT is a *successful read of an
         absent fact* (the page was fetched and read; the fact isn't there), so only
         the failure outcomes (no usable tagged output / poison) report False."""
-        header_line = section.partition("\n")[0]
         micro = await micro_context.extract(section, instruction, run_target=self._author)
         stored = [entry] if entry is not None else []
-        body = self._render_micro_result(micro, instruction, stored)
+        body = self._render_micro_result(micro, instruction, stored, _links_clause(section))
         succeeded = micro.outcome in (
             MicroExtractOutcome.EXTRACTED,
             MicroExtractOutcome.NOT_PRESENT,
         )
-        return f"{header_line}\n{body}", succeeded
+        return self._under_page_header(section, body), succeeded
 
     def _render_micro_result(
-        self, micro: MicroContextResult, instruction: str, stored: list[MemoryEntry]
+        self,
+        micro: MicroContextResult,
+        instruction: str,
+        stored: list[MemoryEntry],
+        links: str,
     ) -> str:
         """The main-loop body for one micro-context outcome — on success the extracted
         value LABELLED with the instruction it answers (#1918; no handle clause — see
         _EXTRACT_SUCCESS), or the not-present reason / an honest enumerated failure, each
-        carrying the fetch handle to the stored full content as its remedy."""
+        carrying the fetch handle to the stored full content as its remedy.
+
+        A FAILURE additionally carries the page's own links (#2141) — the body never
+        entered the conversation, so they are the only anchor the next call has.  A
+        NOT_PRESENT does not: the page was read and the answer is that the fact is not
+        there, which is a finding rather than something to recover from."""
         if micro.outcome == MicroExtractOutcome.EXTRACTED:
             return _EXTRACT_SUCCESS.format(instruction=instruction, value=micro.value)
         handle_clause = self._handle_clause(stored)
@@ -476,24 +523,57 @@ class BrowseTool(Tool):
                 instruction=instruction, reason=micro.reason, handle_clause=handle_clause
             )
         if micro.outcome == MicroExtractOutcome.EXTRACTION_FAILED:
-            return _EXTRACT_FAILED.format(instruction=instruction, handle_clause=handle_clause)
-        return _EXTRACT_POISON.format(
-            instruction=instruction,
-            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
-            handle_clause=handle_clause,
-        )
+            failure = _EXTRACT_FAILED.format(instruction=instruction, handle_clause=handle_clause)
+        else:
+            failure = _EXTRACT_POISON.format(
+                instruction=instruction,
+                attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
+                handle_clause=handle_clause,
+            )
+        return f"{failure}{links}"
 
     def _extract_unavailable_result(
-        self, instruction: str, stored: list[MemoryEntry]
+        self, sections: list[str], stored: list[MemoryEntry], instruction: str
     ) -> ToolResult:
         """Honest degradation when ``extract`` is requested but no model client is
-        wired for the micro-context — the page content is still stored and named
-        by its handle, so the request fails visibly rather than dumping the body."""
-        logger.error("browse(extract=...) requested but no model client is wired for extraction")
-        message = _EXTRACT_UNAVAILABLE.format(
+        wired for the micro-context — each page read renders the named failure under
+        its own section header, with its fetch handle to the stored content and the
+        page's own links, so the request fails visibly and still leaves an anchor
+        rather than dumping the body.  Search and signal sections stay verbatim, as
+        they do on every other extract path — so a browse that only searched is served
+        whole by a tool with no extraction model, and says nothing about one."""
+        batch = self._extract_batch(sections, stored)
+        if batch:
+            logger.error(
+                "browse(extract=...) requested but no model client is wired for extraction"
+            )
+        unavailable = [
+            (self._unavailable_section(section, instruction, entry), False)
+            for _, section, entry in batch
+        ]
+        return ToolResult(
+            message=PennyConstants.SECTION_SEPARATOR.join(
+                self._merge_extracted(sections, batch, unavailable)
+            ),
+            success=self._read_anything(sections, unavailable),
+        )
+
+    def _unavailable_section(
+        self, section: str, instruction: str, entry: MemoryEntry | None
+    ) -> str:
+        """One page read's no-model degradation, under that page's own header."""
+        stored = [entry] if entry is not None else []
+        body = _EXTRACT_UNAVAILABLE.format(
             instruction=instruction, handle_clause=self._handle_clause(stored)
         )
-        return ToolResult(message=message, success=False)
+        return self._under_page_header(section, f"{body}{_links_clause(section)}")
+
+    @staticmethod
+    def _under_page_header(section: str, body: str) -> str:
+        """Render a micro-context body under the page's OWN ``## browse …:`` header,
+        so every result stays attributed to the page it came from."""
+        header_line = section.partition("\n")[0]
+        return f"{header_line}\n{body}"
 
     def _handle_clause(self, stored: list[MemoryEntry]) -> str:
         """The fetch-handle clause — the typed ``browse-results#<id>`` anchors for
@@ -510,14 +590,6 @@ class BrowseTool(Tool):
         return (
             f"{PennyConstants.MEMORY_BROWSE_RESULTS_LOG}"
             f"{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.id}"
-        )
-
-    @staticmethod
-    def _is_content_section(section: str) -> bool:
-        """A readable page/search section (bulk content for the micro-context), vs.
-        a short signal section (error / dropped-query note) the main loop keeps."""
-        return section.startswith(
-            (PennyConstants.BROWSE_PAGE_HEADER, PennyConstants.BROWSE_SEARCH_HEADER)
         )
 
     def _build_tasks(self, queries: list[str]) -> list[tuple[str, str, Any]]:

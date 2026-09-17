@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import urllib.parse
 from collections import Counter
 from contextlib import suppress
 from types import SimpleNamespace
@@ -42,6 +43,7 @@ from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
+from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.base import Tool
@@ -89,6 +91,32 @@ _PAGE_TEXT_3 = f"Title: Lot 7\n{_PAGE_BODY_3}"
 _EXTRACTED_VALUE_3 = "The current bid is 3 zorkmids."
 _TAGGED_VALUE_3 = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE_3}"
 _MARKER_3 = "Copper Sundial"  # page 3's body phrase
+
+# A SEARCH query (#2141).  Plain text is routed through the configured search URL, and
+# what comes back is rendered by ``_trim_search_result`` — the "titles and links only"
+# header plus the lines around each solo link.  It is never extracted from, so its
+# whole render is the literal the main loop reads.
+_SEARCH_QUERY = "antique compass auctions"
+_SEARCH_PAGE_URL = f"https://duckduckgo.com/?q={urllib.parse.quote(_SEARCH_QUERY)}"
+_SEARCH_RESULT_LINK = "[Lot 42 — the compass lot](https://auctions.example/lot/42)"
+_SEARCH_PAGE_TEXT = (
+    "Title: antique compass auctions — results\n"
+    "Zephyr compasses are eighteenth-century navigation instruments.\n"
+    f"{_SEARCH_RESULT_LINK}\n"
+    "Bidding closes Friday."
+)
+_TRIMMED_SEARCH_RESULT = f"{Prompt.SEARCH_RESULT_HEADER}\n\n{_SEARCH_PAGE_TEXT}"
+
+# A PAGE READ carrying standalone markdown links — the anchor a FAILED extraction hands
+# back (#2141), since the body itself never enters the conversation.
+_CATALOGUE_URL = "https://auctions.example/catalogue"
+_CATALOGUE_BODY = "Bidding opens Friday."
+_CATALOGUE_LINK_1 = "[Lot 42 — the compass lot](https://auctions.example/lot/42)"
+_CATALOGUE_LINK_2 = "[Lot 99 — the orrery lot](https://auctions.example/lot/99)"
+_CATALOGUE_TEXT = (
+    f"Title: Spring catalogue\n{_CATALOGUE_BODY}\n{_CATALOGUE_LINK_1}\n{_CATALOGUE_LINK_2}"
+)
+_LINKS_CLAUSE = f"Links on the page:\n{_CATALOGUE_LINK_1}\n{_CATALOGUE_LINK_2}"
 
 # The grace window a probe draw waits on its gate before giving up.  It is only ever
 # SPENT on the failure path — in a concurrent batch every gate is already set and
@@ -361,8 +389,10 @@ async def test_browse_without_extract_is_rejected_at_the_gate(tmp_path):
 
 @pytest.mark.asyncio
 async def test_extract_without_model_client_degrades_visibly(tmp_path):
-    """An ``extract`` requested with no model client wired fails visibly (named,
-    not a silent body dump) while still storing the content by handle."""
+    """An ``extract`` requested with no model client wired fails visibly (named, not a
+    silent body dump) under the page's OWN section header, while still storing the
+    content by handle — and it hands back the page's links like every other extraction
+    failure (#2141), because a model-less browse is no less of a dead end."""
     db = _make_db(tmp_path)
     tool = BrowseTool(
         max_calls=3,
@@ -370,16 +400,21 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
         embedding_client=cast(Any, MockLlmClient()),
         author="widget-watch",
     )
-    tool.set_browse_provider(_provider(_PAGE_TEXT))
+    tool.set_browse_provider(_provider(_CATALOGUE_TEXT))
 
-    result = await tool.execute(queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
 
-    assert result.success is False
-    assert "no extraction model is configured" in result.message
-    assert _BODY_PHRASE not in result.message
     stored_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert stored_log is not None
-    assert stored_log.read_all()  # content still stored
+    stored = stored_log.read_all()  # content still stored
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_CATALOGUE_URL}\n"
+        "Couldn't extract 'the current bid amount' — no extraction model is configured "
+        f"for this browse. Full page content saved to browse-results#{stored[-1].id} — "
+        f"read it there for anything more.\n{_LINKS_CLAUSE}"
+    )
+    assert result.success is False
+    assert _CATALOGUE_BODY not in result.message
 
 
 # ── Whole-render literals: the enumerated micro-result forms (via execute) ─────
@@ -596,6 +631,99 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot_and_its_siblings_handle
     # nowhere, so the un-stored failed fetch slid no handle onto its neighbour.
     assert f"browse-results#{handles[_MARKER_1]}" not in result.message
     assert result.success is True
+
+
+# ── A search is links; a failed page extraction keeps the page's (#2141) ──────
+
+
+@pytest.mark.asyncio
+async def test_search_section_is_returned_as_links_and_never_extracted(tmp_path):
+    """A SEARCH query under ``extract`` comes back as its trimmed list of links, and no
+    micro-context is drawn for it (#2141).
+
+    ``_page_section`` prepends ``Prompt.SEARCH_RESULT_HEADER`` — an instruction written
+    for the CHAT model, telling it to pick a URL and read it.  Handing that to the
+    extractor had the extractor obey it: its output was a bare URL, which violates the
+    declared ``EXTRACTED:``/``NOT_PRESENT:`` shape, was re-rolled the whole budget, and
+    rendered as "the extractor returned nothing usable" over a page of perfectly good
+    links.  So a search is left exactly as the header says it is — titles and links, to
+    be picked from — and the call still reports success, since something readable came
+    back even though no draw speaks for it."""
+    db = _make_db(tmp_path)
+    model = MockLlmClient()
+    tool = _multi_extract_tool(db, model, _provider(_SEARCH_PAGE_TEXT))
+
+    result = await tool.execute(queries=[_SEARCH_QUERY], extract=_INSTRUCTION)
+
+    assert result.message == (
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}"
+    )
+    assert model.requests == []  # the extractor was never asked to read a link list
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
+    """A batch of a search AND a page read draws ONE micro-context — the page's (#2141).
+
+    The search keeps its slot verbatim beside the extracted page, and the page's own
+    fetch handle is unaffected: only the page read was stored, so the handle iterator
+    the batch consumes has exactly one entry to give it.  The routed mock raises on any
+    draw whose content isn't page 1's, so a draw over the search results would fail the
+    test rather than pass unnoticed."""
+    db = _make_db(tmp_path)
+    model = _responds_routed({_MARKER_1: _TAGGED_VALUE})
+    tool = _multi_extract_tool(
+        db,
+        model,
+        _provider_by_url({_SEARCH_PAGE_URL: _SEARCH_PAGE_TEXT, _PAGE_URL: _PAGE_TEXT}),
+    )
+
+    result = await tool.execute(queries=[_SEARCH_QUERY, _PAGE_URL], extract=_INSTRUCTION)
+
+    assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
+        f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}",
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n{_INSTRUCTION}: {_EXTRACTED_VALUE}",
+    ]
+    assert len(model.requests) == 1  # one page read, one draw
+    # Only the page read was stored, so the search consumed no handle.
+    browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
+    assert browse_log is not None
+    assert [entry.content.partition("\n")[0] for entry in browse_log.read_all()] == [
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}"
+    ]
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
+    """A page read whose extractor never produces a usable tagged line renders the
+    failure sentence AND the page's own standalone links (#2141).
+
+    With ``extract`` set the body never enters the conversation, so a failure saying
+    only that it failed left the chat model nothing to open — it re-searched, landed on
+    the same page, and looped until the pathology gate stopped it.  The links are the
+    one part of the page it can act on, so they come back with the failure: the fetch
+    handle remedies the body, the links remedy the next call."""
+    db = _make_db(tmp_path)
+    model = _responds(_UNTAGGED_APOLOGY)
+    tool = _multi_extract_tool(db, model, _provider(_CATALOGUE_TEXT))
+
+    result = await tool.execute(queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
+
+    browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
+    assert browse_log is not None
+    handle_id = browse_log.read_all()[-1].id
+    assert result.message == (
+        f"{PennyConstants.BROWSE_PAGE_HEADER}{_CATALOGUE_URL}\n"
+        "Couldn't extract 'the current bid amount' from the page — the extractor returned "
+        f"nothing usable. Full page content saved to browse-results#{handle_id} — read it "
+        f"there for anything more.\n{_LINKS_CLAUSE}"
+    )
+    assert result.success is False
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    # The links are the anchor; the page's prose body still never enters the context.
+    assert _CATALOGUE_BODY not in result.message
 
 
 # ── Concurrent page batch (#1941) ─────────────────────────────────────────────
@@ -849,7 +977,12 @@ def test_extract_parameter_description_whole_render(db: Database):
     extra detail "makes the read come back empty when the page lacks them" — true when a
     partly-answered instruction flipped the whole page to NOT_PRESENT, and false now that
     the read degrades per thing asked for.  A description stating a consequence the
-    system no longer has is worse than one stating none."""
+    system no longer has is worse than one stating none.
+
+    #2141 added the SEARCH clause for the same reason: a search is never extracted from,
+    so "only the extracted value is returned here" stopped being true of a search query,
+    and a description that is false about half its own argument's inputs is worse than
+    one that names the exception."""
     tool = _extract_tool(db, _responds(_TAGGED_VALUE))
     assert tool.parameters["properties"]["extract"]["description"] == (
         "Optional. One instruction naming what to pull out of the fetched "
@@ -859,8 +992,10 @@ def test_extract_parameter_description_whole_render(db: Database):
         "page has for each of them, so a detail a page lacks costs you "
         "only that detail. When set, the full page content is read in a "
         "separate scoped context and only the extracted value is returned "
-        "here — the page body never enters this conversation. Omit to "
-        "receive the page content itself."
+        "here — the page body never enters this conversation. A search "
+        "query comes back as its list of links whatever you set here, so "
+        "pick one and read it in a follow-up call. Omit to receive the "
+        "page content itself."
     )
 
 
@@ -935,21 +1070,41 @@ def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):
     on the FAILURE renders, where it is the remedy.  A successful extraction
     renders the value alone: the old "saved to browse-results#N" tail read as
     the remembering being done at exactly the moment a chat teach round held
-    the value (2026-07-19), so success carries no handle clause."""
+    the value (2026-07-19), so success carries no handle clause.
+
+    The page's LINKS follow the same split (#2141): they are handed to every render, and
+    only the FAILURE renders append them.  NOT_PRESENT is a successful read of an absent
+    fact — the page was fetched and the answer is that the fact isn't there — so there is
+    nothing for a link to recover from, and offering one would invite a re-read of a page
+    already read."""
     tool = BrowseTool(max_calls=1, embedding_client=cast(Any, MockLlmClient()))
     stored = [cast(Any, SimpleNamespace(id=7))]
+    links = f"\n{_LINKS_CLAUSE}"
     body = tool._render_micro_result(
         MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=_EXTRACTED_VALUE),
         _INSTRUCTION,
         stored,
+        links,
     )
     assert body == f"{_INSTRUCTION}: {_EXTRACTED_VALUE}"
     body = tool._render_micro_result(
         MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason="no bid listed."),
         _INSTRUCTION,
         stored,
+        links,
     )
     assert body == (
         "The page doesn't contain 'the current bid amount' — no bid listed. "
         "Full page content saved to browse-results#7 — read it there for anything more."
+    )
+    body = tool._render_micro_result(
+        MicroContextResult(outcome=MicroExtractOutcome.POISON_REROLL_FAILED),
+        _INSTRUCTION,
+        stored,
+        links,
+    )
+    assert body == (
+        "Couldn't extract 'the current bid amount' from the page — the extractor output "
+        "was unusable after 3 attempts. Full page content saved to browse-results#7 — "
+        f"read it there for anything more.\n{_LINKS_CLAUSE}"
     )
