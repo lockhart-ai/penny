@@ -458,7 +458,7 @@ class Prompt:
     # verify case; steer that case to a non-identical call instead.  Agent-neutral (no
     # ``done()`` / "cycle" wording — chat shares this guard and has no ``done``).
     # Shipped with the live-model recovery contract in
-    # ``tests/eval/test_dedup_call_recovery.py``.
+    # ``tests/eval/collector/test_dedup_call_recovery.py``.
     DUPLICATE_CALL_REJECTION_SUCCEEDED = (
         "You already made this exact tool call earlier in this run (same tool, same "
         "arguments), so it was not run again — its result is already in the messages "
