@@ -68,6 +68,13 @@ class RoutineRecord(BaseModel):
     # and the labeller names every spot unconditionally — so a leftover one means the draw FELL
     # BACK and the routine kept its arg-derived names.
     open_parameters: list[str] = Field(default_factory=list)
+    # Every string at the leaves of the demonstrated call arguments the routine records — what
+    # it will actually fetch and look for each run, as against ``shape``, which is one altitude
+    # up and carries no argument values at all.  A FLAT list rather than one keyed by tool or
+    # by argument position: a skill is an arbitrary tool sequence, so which call carries the
+    # page and which carries what to look for is not something a reader can know, and a reading
+    # keyed to either stops firing for a shape nobody enumerated.
+    demonstrated_values: list[str] = Field(default_factory=list)
 
 
 class StoredEntry(BaseModel):
@@ -101,12 +108,27 @@ class MechanismRecord(BaseModel):
     silently exempts whichever field nobody enumerated — a description edit, a rebind, an
     archive.  The two are separate facts about one row and neither derives the other: a
     creation is also a change, and a change to a row that already existed is not a creation.
+
+    The rest is the row's CONFIGURATION — the TERMS a turn that stands a job up committed to:
+    the schedule it fires on, whether it tells the user, and whether it stops.  Read as named
+    fields rather than through the ledger because this is the opposite direction from
+    ``changed_this_run``: there the question is whether ANYTHING moved, which no field list
+    can answer, and here it is what the turn chose, which only the fields say.  Which ROUTINE
+    the row runs is deliberately absent: a turn configuring a framed round is handed it
+    framework-side off the round's own framing, so it is the container's name read twice.
+
+    ``schedule`` travels VERBATIM — the stored rule is what a claim about cadence reads a gap
+    off and what its rationale has to quote, and two spellings of one cadence are the same
+    answer, so the string is carried and the reading is the case's.
     """
 
     name: str
     archived: bool
     born_this_run: bool
     changed_this_run: bool
+    notifies: bool
+    schedule: str | None
+    expires: bool
 
 
 class Arm(BaseModel):
@@ -195,6 +217,17 @@ class SampleObservation(BaseModel):
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
+    # The routine the move NAMED, off the landed transition's own ``skill_name`` — which
+    # routine the decision recognised as covering the ask, before anything was stood up.
+    # Beside ``landed`` because it is the same row and the same reading: where the machine
+    # went, and what it went there about.  ``None`` where the move named none, which is a
+    # real reading (an ordinary chat turn names no routine) and not a missing one.
+    decision_skill: str | None = None
+    # The parameters the round is still WAITING ON, off the landed transition's own
+    # ``round_shortfall`` — their declared names, in the routine's declared order.  Empty
+    # where the move recorded no shortfall, which is the ordinary reading (only a move landing
+    # in request carries one) and not a missing one.
+    awaiting: list[str] = Field(default_factory=list)
     # The ordered moves this sample's driver walked, in the VOCABULARY of the observer that
     # read it: a chat sample carries the conversation machine's own walk (``idle→learn,
     # learn→apply``, or ``no move`` when it recorded none), a collector sample the ordered
@@ -398,6 +431,69 @@ TRANSITIONS = Feature("transitions", lambda o: o.walk, absent="no move")
 # nothing ran (``no run``) EXCLUDES the sample before pooling.  Sharing ``transitions``' own
 # ``no move`` here would be a declaration this path can never produce (#2061).
 CYCLE_SCRIPT = Feature("cycle script", lambda o: o.walk)
+
+# What ``JOB_TERMS`` reads on a turn that stood no job up — and the words the three terms are
+# rendered in.  Named because a feature's value is a diff-join key exactly as a claim's label
+# is: one respelling splits a feature's history into two distributions.
+NO_JOB = "no job"
+_UNSCHEDULED = "unscheduled"
+_TELLS = "tells"
+_SILENT = "silent"
+_ENDS = "ends"
+_RUNS_ON = "runs on"
+_TERM_SEPARATOR = " · "
+_JOB_SEPARATOR = " | "
+
+
+def _terms_drawn_for(mechanism: MechanismRecord) -> str:
+    """One job's terms as the turn committed to them: the rule VERBATIM, whether it says
+    anything, and whether it stops."""
+    return _TERM_SEPARATOR.join(
+        (
+            mechanism.schedule or _UNSCHEDULED,
+            _TELLS if mechanism.notifies else _SILENT,
+            _ENDS if mechanism.expires else _RUNS_ON,
+        )
+    )
+
+
+def _job_terms(observation: SampleObservation) -> str:
+    """The terms of every job THIS TURN stood up or configured, sorted.
+
+    Born OR changed, because standing a job up looks different from either end of a round: a
+    cold ask mints the container and configures it in one turn, while a round that was framed
+    already built its container earlier and this turn only settles its terms.  Both are the
+    same event — a turn deciding how a job will run — and a reading keyed to only one of them
+    would go blind on half the edges that draw terms at all.
+
+    Sorted rather than in registry order so two samples that configured the same jobs agree
+    whatever order the rows come back in, and the jobs the world was ALREADY running are
+    excluded by construction: a feature reading every row would pool the fixture's five
+    schedules on every sample and report the seed as agreement."""
+    stood_up = sorted(
+        _terms_drawn_for(one)
+        for one in observation.mechanisms
+        if one.born_this_run or one.changed_this_run
+    )
+    return _JOB_SEPARATOR.join(stood_up) or NO_JOB
+
+
+# The TERMS a stand-up turn DREW.  The container's name, the routine it runs and the values it
+# is pointed at are all supplied framework-side from the round's framing (#1869), so what is
+# left for the model to choose is exactly this: how often it fires, whether it says anything,
+# and whether it stops.  Three edges draw them — a cold apply, an accepted offer, and a binding
+# completed over two turns — and until now nothing measured them at all.
+#
+# The rule travels VERBATIM rather than through ``cadence_seconds``, because §5's rule is to
+# measure the value at what it VARIES at and the gap is computed downstream of the rule the
+# draw actually wrote.  That pairs with the assertion side rather than duplicating it: the
+# cases' cadence claim reads the GAP, so a sample that merely spelled one cadence differently
+# passes the claim and shows here as a divergence — which is the row a reader should open.
+#
+# CONSEQUENTIAL: a different cadence, a different hour to fire at, a job that says nothing or
+# one that never stops are all a different job, and a sample that drew one is worth reading on
+# its own.
+JOB_TERMS = Feature("job terms", _job_terms, absent=NO_JOB)
 
 # Reply spread is pairwise rather than per-sample, so it is a marker the pooler recognises
 # rather than a value any one sample carries.
