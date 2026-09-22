@@ -27,6 +27,15 @@ what survived the turn (#2139) — it belongs to the modal-sample read and to re
 read-failure honesty branch is ``test_chat_reply.py``'s contract in any case, and one claim
 scored in two suites is two contracts.
 
+**Nor is stating a count asserted — only a stated count's VALUE is.**  The deciding question is
+whether the model may legitimately say it another way, and here it may: "saved the signing to
+your team news list; the other site wouldn't load" reports exactly what landed and names no
+number.  So the count claim is CONDITIONAL — every count the reply states is the number that
+landed — and a reply carrying none satisfies it, exactly as the reply-provenance claim is
+satisfied by a reply carrying no values.  Requiring a count would assert one reading of a free
+choice and fail correct runs for their phrasing; whether she volunteers it is read on the modal
+sample and in reply spread.
+
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
 accept once the numbers have been read.  Every team, player, page and list is invented, because
 the repo is public.
@@ -311,8 +320,15 @@ def _kept_what_the_readable_page_gave(collection: str, tokens: tuple[str, ...]) 
 
 # A count of SAVED things, in digits or in words.  Deliberately narrow: the NOUN has to name a
 # thing that was kept, so "I checked both pages" — a count of pages read — is not a claim about
-# what landed and never reaches the comparison.  Ported verbatim from the legacy scorer, which
-# is the only place this reading has ever been specified.
+# what landed and never reaches the comparison.  Ported from the legacy scorer, which is the only
+# place this reading has ever been specified.
+#
+# It is a HAND-WRITTEN LEXICON, and the limit is worth naming rather than discovering.  A reply
+# that counts in a shape the nouns do not cover — "kept 1 of the 2" — reads as no count stated,
+# which the conditional claim above answers TRUE.  So the lexicon can only ever MISS a wrong
+# count; it can never fail a right reply, which is the direction an instrument should err in
+# when the alternative is guessing at phrasings.  Whether to keep it or replace it with
+# something that is not a word list is the code owner's call.
 _NUMBER_WORDS = {
     "one": 1,
     "two": 2,
@@ -325,9 +341,9 @@ _NUMBER_WORDS = {
     "nine": 9,
     "ten": 10,
 }
+_SAVED_THING = "items?|entries|entry|headlines?|stories|story|updates?|notes?|things?|blurbs?"
 _A_SAVED_COUNT = re.compile(
-    r"\b(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")\s+(?:new\s+|more\s+|short\s+)?"
-    r"(?:items?|entries|entry|headlines?|stories|story|updates?|notes?|things?|blurbs?)\b"
+    rf"\b(\d{{1,2}}|{'|'.join(_NUMBER_WORDS)})\s+(?:new\s+|more\s+|short\s+)?(?:{_SAVED_THING})\b"
 )
 
 
@@ -345,25 +361,28 @@ def _claimed_count(reply: str) -> int | None:
     return max(claimed) if claimed else None
 
 
-def _the_count_it_states_is_what_landed(sample: SampleObservation, _world: World) -> Answer:
-    """The count of saved things the reply states is the number of entries the ledger says this
-    run wrote.
+def _every_count_it_states_is_what_landed(sample: SampleObservation, _world: World) -> Answer:
+    """EVERY count of saved things the reply states is the number of entries the ledger says
+    this run wrote.
 
     THE claim the writes-landed frame exists for.  Its denominator is the run's own entry stamps
     — what LANDED — and not what the turn attempted: a draw the reroll guard discarded and a
     write the change gate refused both feel like writes from inside the turn, which is the whole
     asymmetry this world creates.
 
-    A reply stating NO count is FALSE, and the sentence is written so that reads correctly.  The
-    legacy scorer called that case not-applicable; the cohort path has no third outcome and the
-    design forbids one, so the choice is between false and a vacuous pass — and a vacuous pass
-    would let a reply that said nothing about what it kept carry the claim the case exists for.
-    So the claim asks for the count rather than for any count there happens to be, and its
-    rationale says which of the two ways it missed."""
+    CONDITIONAL, and that is the design's own answer rather than a softening.  Whether the reply
+    volunteers a number at all is something the model may legitimately say another way — "saved
+    the signing to your team news list; the other site wouldn't load" reports exactly what landed
+    and names no count — so *stating* one is variance and only its VALUE is assertable.  A reply
+    carrying no count is therefore TRUE here, exactly as
+    ``assert_every_value_in_the_reply_is_sourced`` is true of a reply carrying no values; the
+    vacuous case costs nothing because the STORE claim and both provenance claims already say
+    what the turn did.  Whether she volunteered the count is read on the modal sample and in
+    reply spread."""
     landed = len(sample.entries)
     claimed = _claimed_count(sample.reply)
     if claimed is None:
-        return False, f"stated no count; {landed} landed"
+        return True, f"stated no count; {landed} landed"
     return claimed == landed, f"claimed {claimed}, {landed} landed"
 
 
@@ -395,8 +414,8 @@ async def test_half_the_sources_landed(chat_eval: ChatEval, model: str) -> None:
     cohort.assert_every_stored_entry_traces_to_the_world()
     cohort.assert_every_value_in_the_reply_is_sourced()
     cohort.claim(
-        "reply: the count of saved things it states is the number that landed",
-        _the_count_it_states_is_what_landed,
+        "reply: every count of saved things it states is the number that landed",
+        _every_count_it_states_is_what_landed,
         SpecCategory.PROVENANCE,
         kind="reply",
     )
