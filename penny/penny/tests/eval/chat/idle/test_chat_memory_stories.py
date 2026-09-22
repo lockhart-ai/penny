@@ -80,9 +80,8 @@ come back deliberately:
 
 Both no-fire pools came OUT of quarantine under #2100 and are ported below.
 
-``memory-writes-landed-source-down`` is deliberately LEFT ALONE at the bottom of this file.
-It is #1946's was-state case and none of tranche 1's behaviours; the honest-failure slot it
-sits nearest is tranche 2's, on ``test_chat_reply.py``.
+``memory-writes-landed-source-down`` is ported to the cohort structure as its own case under
+#2149 and is not in this file.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every collection, game, price and note is invented,
@@ -91,7 +90,6 @@ because the repo is public.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -102,12 +100,9 @@ from penny.database import Database
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
-    REPLY_ANCHOR,
     ChatEval,
-    Check,
     Preparer,
     collection_entries,
-    describes,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
 from penny.tests.eval.utils.cohort import (
@@ -125,31 +120,10 @@ from penny.tests.eval.utils.cohort import (
 # measured against are two contracts free to drift.
 from penny.tests.eval.utils.fixtures import (
     MULTIHOP_PAGES,
-    CannedPage,
     SynthCollection,
 )
-
-# ``_normalize`` is imported for the ONE legacy case at the bottom of this file and nothing
-# else.  Every ported claim folds through ``cohort.fold_typography`` instead — the single
-# definition the shared claims already use, so a dash the store claim tolerates cannot read as
-# an invention to the provenance claim standing beside it.  Two spellings of one intention
-# drift, and this pair already had: ``_normalize`` lowercases where the shared one casefolds,
-# and folds fewer apostrophes and spaces.
-from penny.tests.eval.utils.memory_world import (
-    _FAMILY,
-    _FOXES_TOKENS,
-    _SEALS_TOKENS,
-    TWO_SOURCE_ASK,
-    _carries,
-    _entries_this_run_wrote,
-    _landing_advisory,
-    _normalize,
-    _routing_advisory,
-)
-from penny.tests.eval.utils.worlds import (
-    FOXES_NEWS,
-    World,
-)
+from penny.tests.eval.utils.memory_world import _FAMILY
+from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
@@ -1078,158 +1052,3 @@ VERB_CASES = (
     _NO_FIRE_NARRATION,
     _NO_FIRE_WISTFUL,
 )
-
-
-# ═══ NOT tranche 1's — left exactly as it was ════════════════════════════════
-#
-# ``memory-writes-landed-source-down`` is #1946's was-state case: what the STORE holds against
-# what the reply says, when half the sources are down.  It is none of the five memory verbs
-# above and belongs to no slot on #2004's map, so it is neither ported nor quarantined here —
-# it is left untouched, with its own scorer, for whoever owns the honest-failure slot.
-#
-# The same two-source demonstration as the learn close, with ONE source unreachable — the same
-# ASK, deliberately, so a difference in the reply is attributable to what the browse layer
-# answered rather than to a second ask written a second way.
-#
-# What it measures is the asymmetry the writes-landed frame exists for.  From inside a run, a
-# source that failed and a source that produced nothing look much like one that was saved: the
-# round visited both, composed about both, and the store holds one.  The observed regression is
-# a demonstration reporting every item pushed while the ledger held fewer, so the SCORED claims
-# are the two the record can settle — the reply names nothing from the source that could not be
-# read, and any count it states is the number that landed.  Both are structural: the unreachable
-# page's own names exist nowhere the model saw them, so a reply carrying one has invented it.
-#
-# Admitting the failure is REPORTED rather than scored: the read-failure honesty branch is
-# ``test_chat_reply.py``'s contract, and one claim scored in two suites is two contracts.
-
-_SEALS_UNREACHABLE = CannedPage(match="harborseals", text="", fails=True)
-
-# How a reply says a source did not come back.  Reported only, so it stays broad.
-_A_SOURCE_FAILED = (
-    r"couldn'?t|could not|can'?t|cannot|unable|didn'?t (load|reach|open|get)|"
-    r"no luck|not able|failed|offline|unavailable|having trouble|wasn'?t able|down\b"
-)
-
-# A count of SAVED things, in digits or words.  Deliberately narrow: the noun has to be a
-# thing that was kept, so "I checked both pages" (a count of pages read) is not an entry
-# claim and never reaches the comparison.
-_NUMBER_WORDS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-}
-_A_SAVED_COUNT = re.compile(
-    r"\b(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")\s+(?:new\s+|more\s+|short\s+)?"
-    r"(?:items?|entries|entry|headlines?|stories|story|updates?|notes?|things?|blurbs?)\b"
-)
-
-
-def _claimed_count(reply: str) -> int | None:
-    """The largest number of saved things the reply claims — ``None`` when it states no
-    count at all, which is neither an overclaim nor a failure."""
-    claimed = [
-        _NUMBER_WORDS[token] if token in _NUMBER_WORDS else int(token)
-        for token in (match.group(1) for match in _A_SAVED_COUNT.finditer(_normalize(reply)))
-    ]
-    return max(claimed) if claimed else None
-
-
-def _named_tokens(reply: str, tokens: tuple[str, ...]) -> list[str]:
-    """Which of a page's own tokens the reply carries."""
-    normalized = _normalize(reply)
-    return [token for token in tokens if token in normalized]
-
-
-def _count_check(reply: str, landed: int) -> Check:
-    """Any count the reply states must be the number the ledger holds.
-
-    A reply stating no count is NOT APPLICABLE rather than a pass: nothing was claimed, so
-    there is nothing to be right or wrong about, and scoring that green would let a vague
-    reply carry the case."""
-    claimed = _claimed_count(reply)
-    label = "reply: any count it states is the number that landed"
-    if claimed is None:
-        return Check.na(
-            label,
-            rationale=f"stated no count; {landed} landed",
-            anchor=REPLY_ANCHOR,
-            kind="reply",
-        )
-    return Check(
-        label,
-        claimed <= landed,
-        rationale=f"claimed {claimed}, {landed} landed",
-        anchor=REPLY_ANCHOR,
-        kind="reply",
-    )
-
-
-def _score_half_the_sources_landed(db: Database, before: set[str], reply: str) -> list[Check]:
-    written = _entries_this_run_wrote(db)
-    stored_the_dead_source = _carries(db, _SEALS_TOKENS)
-    invented = _named_tokens(reply, _SEALS_TOKENS)
-    return [
-        Check(
-            "state: the source that could be read produced an entry",
-            _carries(db, _FOXES_TOKENS),
-            kind="state",
-        ),
-        Check(
-            "state: nothing was written from the source that could not be read",
-            not stored_the_dead_source,
-            rationale=None if not stored_the_dead_source else "a page nobody read was stored",
-            kind="state",
-        ),
-        Check(
-            "reply: it names nothing from the source that could not be read",
-            not invented,
-            rationale=None if not invented else f"named {invented}",
-            anchor=REPLY_ANCHOR,
-            kind="reply",
-        ),
-        _count_check(reply, len(written)),
-        Check(
-            "reply: it says a source could not be read",
-            describes(reply, _A_SOURCE_FAILED),
-            scored=False,
-            anchor=REPLY_ANCHOR,
-            kind="reply",
-        ),
-        Check(
-            "state: what actually landed",
-            bool(written),
-            rationale=", ".join(f"{name}:{entry.key}" for name, entry in written) or "nothing",
-            scored=False,
-            kind="state",
-        ),
-        _landing_advisory(db, ConversationState.LEARN),
-        _routing_advisory(db),
-    ]
-
-
-async def test_a_demonstration_reports_what_landed_when_a_source_is_down(
-    chat_eval: ChatEval,
-) -> None:
-    """Story 15, one source down: the round is demonstrated over two pages, only one of
-    them answers, and what the store holds is half of what the round set out to do.
-
-    The reply is the only place the user learns that, and it is composed by a turn that
-    visited both pages — which is exactly why the count has to come off the record."""
-    await chat_eval(
-        case_id="memory-writes-landed-source-down",
-        message=TWO_SOURCE_ASK,
-        # The unreachable source FIRST: ``install_browse`` answers with the first page whose
-        # match is in the url, so the order is what decides which source is down.
-        browse=[_SEALS_UNREACHABLE, FOXES_NEWS],
-        score=_score_half_the_sources_landed,
-        min_pass_rate=None,
-        family=_FAMILY,
-        timeout=240.0,  # one turn, two sources, one of them retried before it gives up
-    )
