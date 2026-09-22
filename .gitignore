@@ -55,3 +55,9 @@ node_modules/
 .claude/
 QUALITY-REVIEW.md
 penny/penny/eval-reports/
+
+# Nimbalyst (the editor harness) writes per-user state into the repo root:
+# plans, tracker snapshots, automations, and transcript images. Local-only,
+# and the repo is public, so none of it is committed.
+nimbalyst-local/
+.nimbalyst/
