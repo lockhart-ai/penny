@@ -9,7 +9,10 @@ dependencies = [
     "httpx[http2]>=0.27.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
-    "sqlmodel>=0.0.14",
+    # <0.0.45: from 0.0.45 a DateTime column rejects a naive datetime, and
+    # Penny stores datetime.utcnow() throughout. Lift once #2146 step 2
+    # (timezone-aware datetimes) lands.
+    "sqlmodel>=0.0.14,<0.0.45",
     "discord.py>=2.6.4",
     # openai 3.0.0 moved the SDK onto httpx 2.x, which ships as its own distribution
     # (`httpx2`) — so it installs alongside our `httpx[http2]` 0.28 instead of upgrading
