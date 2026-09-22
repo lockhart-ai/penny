@@ -747,6 +747,16 @@ lands in is reported beside it, because it decides whether the record frame was 
 the model at all: changing how a running job behaves is idle by the machine's own boundary
 (#1927), and the applied-configuration record that carries the before→after is stamped on an
 apply turn),
+`test_half_the_sources_landed.py` (#2149 — `memory-save-with-a-source-down`, the cohort-form
+port of #1946's writes-landed case and the only live-model coverage that frame has: the user
+names two pages and one list, ONE page answers and the other cannot be read, and what is
+claimed is that the named list holds an entry this turn wrote from the page that answered,
+that nothing stored or said traces outside what the round was given — the dead page's own
+names exist in nothing the model saw — and that every count of saved things the reply states
+is the number the ledger says landed. The count claim is CONDITIONAL: stating a number is
+phrasing the model may vary, so only a stated number's value is asserted. Whether the reply
+admits the read failed is variance, never a claim — that branch belongs to
+`test_chat_reply.py`),
 `test_collector_honesty.py`, `test_retrieval.py`,
 `test_browse_extract_fields.py` (#1942/#2059 — the browse EXTRACTION micro-context in
 isolation, driven directly by the `extractor_eval` runner with no browse in the loop:
