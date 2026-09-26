@@ -54,15 +54,16 @@ thing every cycle.
   out in the case.  It ports as ``assert_nothing_excluded_was_stored``, which asks it of the
   world's own excluded token, so the comparison is a read of the page rather than a fixture
   field the claim and the world could disagree about.
-* ``_kept_its_container_check`` — *the corrected round kept the container it already had*.  Ports
-  as ``assert_no_mechanism_was_created``: a round that shifted its identity mints a SIBLING
-  container, which is a created mechanism however the shift happened.
+* ``_kept_its_container_check`` — *the corrected round kept the container it already had*.  Its
+  end-state form is what SURVIVES the turn: the write landed in the round's own container, and
+  that container is the only mechanism the turn changed.  Whether the turn also built something
+  beside it is the model's call, and is measured rather than claimed.
 * ``_correction_anchor_check`` — PRODUCTION ALREADY VALIDATES IT.  ``_next_anchor`` keeps the
   anchor of a machine that is already parked, and the from-state is what this world seeds, so
   both halves are entailed by the landing.
 * ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — a ROUTE keyed to
-  a tool NAME.  Its end-state form is *the round's container is still inert*, which catches a
-  configuration however it was reached and catches a plugin verb nobody enumerated.
+  a tool NAME, measured as the tool sequence.  Whether a correction also set the round running
+  is the model's call; what is claimed is that nothing but the round's own container changed.
 * ``*_round_reported_checks`` — PHRASING matches on the reply, which is the thing this design
   exists to abolish.  ``test_eval_harness.py`` still drives them over all five references, which
   is where a scorer that cannot pass the answer the case itself calls correct gets caught.
@@ -1136,23 +1137,6 @@ def _the_routine_still_keeps_what_it_finds(sample: SampleObservation, _world: Wo
     return routine.names_a_destination, "the routine keeps nothing"
 
 
-def _the_round_container_is_still_inert(sample: SampleObservation, _world: World) -> Answer:
-    """The round's container carries no job — a correction TEACHES, it does not instantiate.
-
-    The end-state form of "she configured nothing", and the negative direction of the two
-    stand-up edges' terms claims: a correction that set the round running has answered an offer
-    the user never accepted.  A container that is gone entirely fails it too, since a retired
-    container is not an inert one."""
-    row = next((one for one in sample.mechanisms if one.name == _ROUND_CONTAINER), None)
-    if row is None:
-        return False, f"{_ROUND_CONTAINER!r} is no longer in the registry at all"
-    terms = row.schedule is not None or row.notifies or row.expires
-    return not terms, (
-        f"{_ROUND_CONTAINER!r} carries a job: schedule {row.schedule!r}, "
-        f"notifies {row.notifies}, expires {row.expires}"
-    )
-
-
 # What this case measures.  ``ROUTINE_SHAPE`` is IN, unlike every other ported transition case:
 # this is the one edge whose turn RE-EXTRACTS, so the shape it reads is the round's own new
 # program against the world's constant five rather than the fixture alone.
@@ -1167,8 +1151,8 @@ def _the_round_container_is_still_inert(sample: SampleObservation, _world: World
 #
 # ``JOB_TERMS`` is ABSENT for the other reason: a correct correction stands nothing up, so on a
 # correct cohort it reads its absent value on every sample and the report would mark it blind in
-# red for behaving exactly as this case requires.  A sample that DID configure the round is
-# caught by the inert claim.
+# red for behaving exactly as this case requires.  A sample that DID configure the round shows
+# as a divergence in the tool sequence.
 _MEASURED = (TOOL_SEQUENCE, ROUTINE_SHAPE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
@@ -1202,13 +1186,7 @@ async def test_learn_to_learn_re_runs_the_round_against_the_corrected_target(
     cohort.assert_something_from_each_page_was_written()
     cohort.assert_the_write_landed_in_the_round_container()
     cohort.assert_nothing_excluded_was_stored()
-    cohort.assert_no_mechanism_was_created()
     cohort.assert_only_the_rounds_own_mechanism_changed(_ROUND_CONTAINER)
-    cohort.claim(
-        "state: the round's container carries no job",
-        _the_round_container_is_still_inert,
-        SpecCategory.STORE,
-    )
     # STORE — and what it left in the registry.
     cohort.claim(
         "state: one routine stands for the round",

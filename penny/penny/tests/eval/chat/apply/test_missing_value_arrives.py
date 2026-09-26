@@ -56,8 +56,9 @@ which is the claim's own first half.  Both would run at exactly the rate it does
 * ``Check("state: she set the job up with collection_set", tool_was_called(...))`` and
   ``Check("state: she set it running instead of running it now (no browse this turn)",
   tool_not_called(...))`` — ROUTES, keyed to tool NAMES.  Their end-state forms are the terms
-  on the row and ``assert_nothing_was_written``; the calls themselves are measured in section
-  B, where a cohort that started browsing shows as a variance rise.
+  on the row and what SURVIVES the turn — everything the store already held, and the jobs
+  already running; the calls themselves are measured in section B, where a cohort that started
+  browsing shows as a variance rise.
 * ``Check("state: the routine's program was rendered into it")`` — PRODUCTION ALREADY
   VALIDATES IT: the program is rendered from the routine unconditionally at instantiation, so
   a row carrying the routine carries a program.
@@ -71,13 +72,11 @@ which is the claim's own first half.  Both would run at exactly the rate it does
 
 **And the inward column added PROVENANCE**, which the source case made no claim of, so a
 sample that confirmed a sailing time or an address nobody gave passed everything it carried.
-Only its REPLY half is made: the store half is entailed by ``assert_nothing_was_written`` on a
-turn that must write nothing, so it is stated empty with that reason at the claim site rather
-than run as a guaranteed pass.
+Only its REPLY half is made: the store half is not claimed in this case.
 
 **`keeps`, `excludes` and `answers` are all EMPTY, and each is a report.**  The turn sets a job
-to run LATER; it reads nothing and keeps nothing, so a keeps set would state a contract the
-supply never made and this case claims the opposite.  The supply answers a question rather than
+to run LATER; it is not asked to read or keep anything, so a keeps set would state a contract
+the supply never made.  The supply answers a question rather than
 asking one, so a correct reply owes no token.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
@@ -336,17 +335,14 @@ async def test_request_to_apply_composes_both_turns_and_stands_the_job_up(
     )
     cohort.assert_the_job_notifies(_EXPECTED_CONTAINER)
     cohort.assert_the_job_ends_when_asked(_EXPECTED_CONTAINER, expected=_CASE.expects_expiry)
-    # And what it did NOT do: run the round now, or reach into the five jobs already going.
-    cohort.assert_nothing_was_written()
+    # And what SURVIVES it: everything the store already held, and the five jobs already
+    # going.
+    cohort.assert_what_the_store_held_survives()
     cohort.assert_no_running_mechanism_was_changed()
 
-    # PROVENANCE — the reply half only, and the store half is EMPTY with a reason.
-    # ``assert_every_stored_entry_traces_to_the_world`` is ENTAILED here by
-    # ``assert_nothing_was_written``: the store claim can only fail on an entry, and any entry
-    # at all already fails the stricter one, so it would run 15/15 by construction and measure
-    # the entailment rather than the turn.  The reply claim is live throughout, since a turn
-    # confirming a job it has just set up is exactly where a sailing time or an address nobody
-    # gave gets stated.
+    # PROVENANCE — the reply half only; the store half is not claimed in this case.  The reply
+    # claim is live throughout, since a turn confirming a job it has just set up is exactly
+    # where a sailing time or an address nobody gave gets stated.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

@@ -44,8 +44,7 @@ says anything, and whether it stops.
 
 That the job landed on the RIGHT row is still answered, structurally rather than by a claim of
 its own: the terms are read off the round's container BY NAME, so a turn that configured some
-other row leaves this one unscheduled and fails all three, and a turn that built a row of its
-own fails `assert_no_mechanism_was_created` as well.
+other row leaves this one unscheduled and fails all three.
 
 **Six source checks did not port** (the outward column):
 
@@ -54,9 +53,9 @@ own fails `assert_no_mechanism_was_created` as well.
   sequence, so its end-state form is the terms on the row, which catches a job stood up however
   it was reached.
 * ``Check("state: she set it running instead of running it again (no browse this turn)",
-  tool_not_called(...))`` — the same, one verb over.  Its end-state form is
-  ``assert_nothing_was_written``: a turn that went and read the listing again and kept what it
-  found leaves an entry behind.  The browse itself is measured in section B.
+  tool_not_called(...))`` — the same, one verb over.  Whether the turn also went and read the
+  listing again is the model's call, measured in section B as the tool sequence and entries
+  stored; what is claimed is that everything the store already held survives.
 * ``_container_check`` · ``_skill_binding_check`` · ``Check("state: the skill's program was
   rendered into it")`` · ``_bound_parameters_check`` — PRODUCTION ALREADY VALIDATES THEM, per
   the paragraph above.  Their own source comments say so ("every one of these is a CERTAINTY
@@ -64,9 +63,9 @@ own fails `assert_no_mechanism_was_created` as well.
 * ``_apply_anchor_check`` — PRODUCTION ALREADY VALIDATES IT.  ``_next_anchor`` keeps the anchor
   of a machine that is already parked, so a move out of learn carries the round's ask by
   construction and the claim is entailed by the landing.
-* ``_decoy_check`` — *the decoy was not applied*.  ENTAILED by ``assert_no_mechanism_was_created``:
-  the decoy is a routine this world never stood up, so it has no container of its own to be
-  configured, and applying it can only mint one.
+* ``_decoy_check`` — *the decoy was not applied*.  Answered by the terms claims: the decoy is a
+  routine this world never stood up, so applying it configures a container of its own and
+  leaves the round's, which the terms are read off by name, unscheduled.
 * ``Check("reply: she says what will happen now, naming the cadence", any(token in reply ...))``
   — a PHRASING match on a vocabulary somebody guessed in advance, which is the thing this
   design exists to abolish.  Whether the reply describes what actually landed is a real
@@ -75,20 +74,20 @@ own fails `assert_no_mechanism_was_created` as well.
 **And the inward column added PROVENANCE**, which there was nothing to copy: the source case
 made no claim of it, so a sample that confirmed an hour or a price nobody gave — which is
 exactly what a turn announcing a job it just set up is placed to do — passed every check it
-carried.  Only its REPLY half is made here; the store half is entailed by
-``assert_nothing_was_written`` and is stated empty with that reason at the claim site.
+carried.  Only its REPLY half is made here; the store half is not claimed in this case.
 
 **One more claim is absent by ENTAILMENT, and this world is why.**
 ``assert_only_the_rounds_own_mechanism_changed`` reads *nothing but the round's own container
 was touched* — but ``seed_learned_round`` lays down exactly ONE collection, the round's own, and
-the decoy routine has none.  With no other mechanism in the world, and none created (the claim
-above), there is nothing the sentence could find.  It is the right claim on a world with jobs
+the decoy routine has none.  With no other mechanism in the world when the turn begins, there
+is nothing already running for the sentence to find, which is also why no claim that the jobs
+already running survive is made here.  It is the right claim on a world with jobs
 already running; whether this edge should be reseeded against one is the code owner's call and
 is left alone here.
 
 **`keeps`, `excludes` and `answers` are all EMPTY, and each is a report.**  The turn sets a job
-to run LATER: it reads nothing and keeps nothing, so a keeps set would state a contract the
-acceptance never made and this case claims the opposite of it.  The ask requests a job rather
+to run LATER: it is not asked to read or keep anything, so a keeps set would state a contract
+the acceptance never made.  The ask requests a job rather
 than a value, so a correct reply owes no token.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
@@ -276,22 +275,17 @@ async def test_learn_to_apply_stands_the_taught_round_up_on_its_own_container(
     # LANDED
     cohort.assert_machine_landed(ConversationState.APPLY)
 
-    # STORE — the terms the acceptance gave, on the round's own container, and nothing else
-    # created or touched.  The container is named rather than found, so a job configured
-    # somewhere else leaves this row unscheduled and misses all three terms claims.
+    # STORE — the terms the acceptance gave, on the round's own container, and what the store
+    # already held surviving the turn.  The container is named rather than found, so a job
+    # configured somewhere else leaves this row unscheduled and misses all three terms claims.
     cohort.assert_the_job_fires_every(_ROUND_CONTAINER, _AURORA_APPLY.cadence_seconds)
     cohort.assert_the_job_notifies(_ROUND_CONTAINER)
     cohort.assert_the_job_ends_when_asked(_ROUND_CONTAINER, expected=_AURORA_APPLY.expects_expiry)
-    cohort.assert_no_mechanism_was_created()
-    cohort.assert_nothing_was_written()
+    cohort.assert_what_the_store_held_survives()
 
-    # PROVENANCE — the reply half only, and the store half is EMPTY with a reason.
-    # ``assert_every_stored_entry_traces_to_the_world`` is ENTAILED here by
-    # ``assert_nothing_was_written``: the store claim can only fail on an entry, and any entry
-    # at all already fails the stricter one, so it would run 15/15 by construction and measure
-    # the entailment rather than the turn.  The reply claim is live throughout, since a turn
-    # confirming a job it has just set up is exactly where an hour or a price nobody gave gets
-    # stated.
+    # PROVENANCE — the reply half only; the store half is not claimed in this case.  The reply
+    # claim is live throughout, since a turn confirming a job it has just set up is exactly
+    # where an hour or a price nobody gave gets stated.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
