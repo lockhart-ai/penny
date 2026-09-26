@@ -78,12 +78,11 @@ def _penny(text: str) -> DemoTurn:
 
 class LabellingFixture(NamedTuple):
     """One agreed case: the ledger that produces its input document, the document the
-    shipped renderer must produce from it, and what the draw is scored on.
+    shipped renderer must produce from it, and the spots that document offers.
 
     ``leaves`` names each offered spot by its DEMONSTRATED VALUE, because the semantic
     name is the model's to choose and the arg-derived one is what the case is asking it
-    to improve on.  ``distinct_names`` and ``shared_spot`` are the two structural claims
-    only some cases make."""
+    to improve on."""
 
     case_id: str
     conversation: tuple[DemoTurn, ...]
@@ -92,8 +91,6 @@ class LabellingFixture(NamedTuple):
     target: str
     leaves: tuple[str, ...]
     rendered_input: str
-    distinct_names: tuple[tuple[str, str], ...] = ()
-    shared_spot: str = ""
 
 
 _ELICIT = (
@@ -215,7 +212,6 @@ _TWO_SOURCES = LabellingFixture(
         "morning headlines",
         "headlines",
     ),
-    distinct_names=(("citydesk.example/front", "harborpost.example/front"),),
     rendered_input=(
         f"{_CONVERSATION_HEADING}\n"
         "user: hey could you keep an eye on the morning headlines for me\n"

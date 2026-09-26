@@ -97,15 +97,13 @@ _FAMILY = "skill-framing"
 
 class FramingFixture(NamedTuple):
     """One agreed case: the user turns that are its whole input, the document the
-    shipped renderer must produce from them, the parameters the ask genuinely requires,
-    and the occasion's own words — which may appear in neither the name nor the
-    description."""
+    shipped renderer must produce from them, and the parameters the ask genuinely
+    requires."""
 
     case_id: str
     turns: tuple[str, ...]
     rendered_input: str
     parameters: tuple[ParameterFamily, ...]
-    instance_tokens: tuple[str, ...]
 
 
 # The breadth agreed for "the page the routine is pointed at" — a piece the user
@@ -314,7 +312,6 @@ _AVAILABILITY = FramingFixture(
         "go to bookbarn.example/atlas-of-clouds, check whether it's in stock, and remember that"
     ),
     parameters=(_page_family("url"),),
-    instance_tokens=("bookbarn", "atlas", "clouds"),
 )
 
 
@@ -442,7 +439,6 @@ _TWO_SOURCES = FramingFixture(
         ParameterFamily("first source", ("first", "one", "1", "primary")),
         ParameterFamily("second source", ("second", "two", "2", "secondary", "other")),
     ),
-    instance_tokens=("citydesk", "harborpost"),
 )
 
 
@@ -450,8 +446,7 @@ _TWO_SOURCES = FramingFixture(
 #
 # The world is URLS rather than symbols because that is where the failure was MEASURED: on
 # run 1 all five two-sources samples drew one `sites — list of URLs`, folding two pieces the
-# user named into a single list parameter.  The same-kind symbols ask is the facts-only
-# sibling of this one and stays inline.
+# user named into a single list parameter.
 #
 # THE FACTS ARE CONSTANT across the five wordings: every arm names both front pages and asks
 # for each site's top headline.  An arm naming one page would leave a family claim with
@@ -570,17 +565,15 @@ _TICKER = FramingFixture(
         "look up VLT, find the share price, and remember it under VLT"
     ),
     parameters=(ParameterFamily("ticker", ("ticker", "symbol", "stock", "share", "company")),),
-    instance_tokens=("vlt",),
 )
 
 
 # ── The ported case: the ticker ask, in five wordings ─────────────────────────
 #
-# The survivor is ``frame-ticker-only-parameter``, because its ask is the plainest
-# statement of the whole behaviour AND of its negative direction at once: what the user
-# came for (the share price) bakes into the framing, the one thing that varies (the
-# symbol) becomes the parameter, and "tell me when it moves" — which is settled where the
-# job is set running — becomes neither.
+# The ticker ask is the plainest statement of the whole behaviour AND of its negative
+# direction at once: what the user came for (the share price) bakes into the framing, the
+# one thing that varies (the symbol) becomes the parameter, and "tell me when it moves" —
+# which is settled where the job is set running — becomes neither.
 #
 # THE FACTS ARE CONSTANT across the five wordings, because the claims hinge on them: every
 # arm names the symbol VLT, asks for its share price, says to remember it under VLT, and
@@ -711,7 +704,6 @@ _SINGLE_TURN = FramingFixture(
     turns=("go to weather.example/lisbon, find today's high temperature, and remember it",),
     rendered_input="go to weather.example/lisbon, find today's high temperature, and remember it",
     parameters=(_page_family("url", "forecast", "weather"),),
-    instance_tokens=("lisbon",),
 )
 
 
@@ -815,7 +807,6 @@ _SEARCH = FramingFixture(
     parameters=(
         ParameterFamily("ticket search", ("search", "query", "event", "listing", "listings")),
     ),
-    instance_tokens=("aurora", "fest"),
 )
 
 
@@ -934,7 +925,6 @@ _PAGE_AND_TITLE = FramingFixture(
         _page_family("catalog page", "catalog"),
         ParameterFamily("title", ("title", "book", "item", "name")),
     ),
-    instance_tokens=("glass", "harbour"),
 )
 
 
@@ -1030,10 +1020,10 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
 
 # ── The ported case: three of a kind, in five wordings ────────────────────────
 #
-# This case has no legacy ancestor.  It is the same-kind ask at THREE, where the list is
-# more tempting than it is at two — three scalars is where a description that promises "the
-# news sites" starts to look like the tidier interface — and nothing has measured whether a
-# framer that keeps two apart keeps three apart.
+# The same-kind ask at THREE, where the list is more tempting than it is at two — three
+# scalars is where a description that promises "the news sites" starts to look like the
+# tidier interface — and nothing else measures whether a framer that keeps two apart keeps
+# three apart.
 
 # THE FACTS ARE CONSTANT across the five wordings: every arm names all three front pages and
 # asks for each site's top headline.

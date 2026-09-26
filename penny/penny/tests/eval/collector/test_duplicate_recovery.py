@@ -878,12 +878,12 @@ async def test_divergent_value_write_updates_and_notifies(guard_recovery_eval) -
     reading lands on that entry, the watch still tracks one subject, and the user is told
     once, naming what it moved to.
 
-    **What this case is FOR, and how it differs from the enactment change-pair.**
-    ``test_collector_enactment.py``'s cycle-3 change case drives the same shape — a watch
-    whose page moved, one notification owed — and this case differs from it by ONE thing:
-    the NAMING SLIP.  The write arrives under a key worded differently from the one the
-    reading is filed under, so it goes through the dedup disjunction rather than the exact
-    key.  Without that slip forced, this case IS that pair, re-run.
+    **What this case is FOR, and how it differs from the moved-reading watch case.**
+    ``test_watch_cycles.py``'s ``watch-writes-and-tells-when-the-reading-moves`` drives the
+    same shape — a watch whose page moved, one notification owed — and this case differs from
+    it by ONE thing: the NAMING SLIP.  The write arrives under a key worded differently from
+    the one the reading is filed under, so it goes through the dedup disjunction rather than
+    the exact key.  Without that slip forced, this case IS that one, re-run.
 
     That one difference is the whole point, because it makes this the COUNTERWEIGHT to
     ``DUPLICATE_UNCHANGED``'s STOP.  The same similarity machinery that lets a re-observation

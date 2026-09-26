@@ -7,9 +7,9 @@ the routine and its bound values stamped as provenance — and then the user com
 later and speaks about it the way people do:
 
   * **operate it** — turn its notifications off, turn them back on, retire it: the things
-    done to a job that is already running, and ones the canonical suites never touch
-    (``test_state_transitions.py`` measures the edges that BUILD a job,
-    ``test_collector_enactment.py`` measures the cycles it then runs);
+    done to a job that is already running, and ones the canonical suites never touch (the
+    learn, request and apply suites measure the turns that BUILD a job,
+    ``collector/test_watch_cycles.py`` measures the cycles it then runs);
   * **read it** — "what does that thing actually do?", answered from the routine rather
     than from what the ambient header happens to say about it (#1804 took the recipe off
     that header, so the recipe is a read now, not a recall).

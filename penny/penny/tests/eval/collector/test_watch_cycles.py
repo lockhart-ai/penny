@@ -32,9 +32,8 @@ byte-identical datum line.
 
 **The FACTS are constant, and the claims hinge on them.**  One listing, one url, one pair of
 prices: ``$499`` before the change and ``$449`` after.  So these cases can say what the store
-holds by name.  The two prices are mutually exclusive — neither is a substring of the other,
-the rule ``test_collector_enactment.py``'s ``_WatchedFact`` states — because the moved case
-asserts one is present and the other gone.
+holds by name.  The two prices are mutually exclusive — neither is a substring of the other —
+because the moved case asserts one is present and the other gone.
 
 **The LANDED category is empty on all three, and that is the correct report.**  ``LANDED`` is
 read off the conversation machine's walk, and a collector moves no conversation machine.  The
@@ -42,10 +41,10 @@ run record's outcome and its stop reason are tempting to file there, but they ar
 FIELDS, which ``STORE`` covers literally — so that is where they are claimed, and the state
 section renders empty rather than having something invented to fill it.
 
-``test_collector_enactment.py``'s fifteen cases are five jobs × three cycles plus their
-notify/quiet pairs — the same claim over five different PROGRAMS.  Those are different
-routines, therefore different behaviours, and they split rather than pool; collapsing them is
-#2007's, not this file's.
+These three cases are the whole of the collector's enactment coverage.  A watch over a
+different page, a different datum or a different routine is another program of the same
+behaviour, not another behaviour, so a case for it would split one behaviour's samples across
+two numbers rather than measure anything these three do not (#2007).
 
 Report-only (``min_pass_rate=None``).  All content is synthetic — the house listing fixture on
 an invented marketplace — because the repo is public.

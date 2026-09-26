@@ -10,9 +10,8 @@ what that routine will RUN, so a step it captured by accident is visible to the 
 can tell that it does not belong.  It instantiates NOTHING: the collection the demonstrated
 write created carries no skill, no program and no schedule.
 
-ONE source and PROSE, both deliberate.  `test_two_source_teach.py` holds the two-source case;
-this one demonstrates three actions against a single page, said as a sentence rather than as a
-numbered procedure.
+ONE source and PROSE, both deliberate: this case demonstrates three actions against a single
+page, said as a sentence rather than as a numbered procedure.
 
   * PHRASINGS — the same request in five wordings, POOLED into one variance score.  Wording is
     an INPUT axis: what varies is how a person says three things in a sentence, and what is

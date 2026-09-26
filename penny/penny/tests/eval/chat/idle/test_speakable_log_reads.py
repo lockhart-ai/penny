@@ -56,8 +56,7 @@ from penny.tests.conftest import TEST_SENDER, require_memory
 
 # The seeded-ledger wire helpers the transition suite writes its own history with — read
 # from there rather than restated, so a collector run seeded here has the same envelope
-# every other seeded run does (the precedent is test_collector_enactment.py, which builds
-# its world from that module's vocabulary for the same reason).
+# every other seeded run does.
 from penny.tests.eval.chat.idle.test_standing_collection import (
     WATCH_ROUTINE,
     StandingJob,

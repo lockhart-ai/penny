@@ -62,7 +62,6 @@ from penny.database.skills import (
     SkillStep,
     SkillSubKind,
     build_binding_content,
-    derive_collection_name,
     distill_steps,
     render_spoken_turns,
 )
@@ -105,7 +104,6 @@ from penny.text_validity import (
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
-    FramedParameter,
     MicroContext,
     MicroContextResult,
     MicroExtractOutcome,
@@ -114,7 +112,6 @@ from penny.tools.micro_context import (
     SkillLabels,
     SkillSignature,
     StateDrawOutcome,
-    slug_parameter_name,
     spoken_form,
 )
 from penny.tools.skill_tools import render_skill_shape
@@ -3213,7 +3210,7 @@ def _stated_pass_rate(case_id: str, min_pass_rate: PassRate, ported: bool) -> fl
 
 # What a case scored INLINE is refused for omitting.  A ported case leaves these unstated
 # because its cohort's claims replace the per-sample scorer entirely — which is why they carry
-# defaults at all — and an inline case that omits one produces NO checks: `_score_*` yields an
+# defaults at all — and an inline case that omits one produces NO checks: its scorer yields an
 # empty list, `SampleResult.graded([])` scores 1.0 over nothing, and the case reports a green
 # every sample it drove.  A vacuous pass is the quieter failure and the harder one to notice.
 _NO_SCORER_INPUT = (
@@ -3745,12 +3742,6 @@ def queued_sends(db: Database, collection: str) -> list[str]:
     pending-only read therefore reports a delivered notification as silence, which is the
     one thing a notify contract must never get wrong."""
     return [row.content for row in _send_queue_rows(db) if row.collection == collection]
-
-
-def send_queue_mechanisms(db: Database) -> list[str]:
-    """The mechanism behind every message on the send queue, oldest first — what a
-    "nothing else spoke" claim is read from."""
-    return [row.collection for row in _send_queue_rows(db)]
 
 
 def _send_queue_rows(db: Database) -> list[SendQueueItem]:
@@ -5469,8 +5460,8 @@ DemoCall = tuple[str, dict, str, bool]
 # renders both speakers as ``user:`` describes a conversation that never happened.
 DemoTurn = tuple[str, str]
 
-# A labeller-eval runner: a PORTED case passes ``also_demonstrated`` and gets a
-# :class:`Cohort` back to assert against; a case not yet ported keeps the inline path.
+# A labeller-eval runner: a case passes ``also_demonstrated`` and gets a :class:`Cohort` back
+# to assert against.
 LabellerEval = Callable[..., Awaitable["Cohort"]]
 
 # What a draw that returned no labels at all hands the completeness gate — the framer's
@@ -5611,160 +5602,8 @@ def _labelling_input(
     return content, by_value
 
 
-def _drifted(value: str, label: str) -> Check:
-    """A case value that is not among the distilled spots at all — a BROKEN FIXTURE,
-    failed LOUDLY naming the value rather than quietly as a naming miss.  The ledger
-    has drifted from what the case asserts, and a drifted fixture that scores green is
-    a case measuring nothing."""
-    return Check(
-        label,
-        False,
-        kind="state",
-        rationale=f"{value!r} is not among the distilled placeholders — the fixture has drifted",
-    )
-
-
-def _leaf_checks(value: str, labels: SkillLabels | None, by_value: dict[str, str]) -> list[Check]:
-    """One offered spot's checks (#1828), read off the labeller's OWN typed result.
-
-    Scoring the draw rather than a persisted skill is what keeps this case the
-    labeller's: everything downstream — applying a label, rendering it — is
-    deterministic Python pinned in ``tests/test_skill_extraction.py``.
-
-    Four things, in the order they depend on each other: a line came back for the spot
-    · its name hardens to a usable binding key through the SHIPPED hardener (imported,
-    never re-implemented here) · the name is not the arg name handed back verbatim (a
-    spot named ``queries`` again has been described, not named) · its description says
-    what belongs there.  With no line, the last three are NOT APPLICABLE rather than
-    three extra failures: the miss is one miss, and inflating it would make a silent
-    draw look four times worse than it is.
-
-    Since #1828 the first check is a WHOLE-DRAW property, not a per-spot one: an
-    accepted draw covers every offered spot, so either every spot has its line or the
-    draw failed and none do.  It stays per spot so the report reads the same either
-    way."""
-    current = by_value.get(value)
-    if current is None:
-        return [_drifted(value, f"a line came back: {value!r}")]
-    label = labels.labels.get(current) if labels is not None else None
-    if label is None:
-        return [
-            Check(f"a line came back: {value!r}", False, kind="state", rationale="no line drawn"),
-            Check.na(f"name is a usable binding key: {value!r}", kind="state"),
-            Check.na(f"name is not the arg name: {value!r}", kind="state"),
-            Check.na(f"description says what belongs there: {value!r}", kind="state"),
-        ]
-    hardened = slug_parameter_name(label.name)
-    return [
-        Check(f"a line came back: {value!r}", True, kind="state"),
-        Check(
-            f"name is a usable binding key: {value!r}",
-            bool(hardened),
-            kind="state",
-            rationale=None if hardened else f"{label.name!r} hardens to nothing",
-        ),
-        Check(
-            f"name is not the arg name: {value!r}",
-            hardened != slug_parameter_name(current),
-            kind="state",
-            rationale=None if hardened != slug_parameter_name(current) else "echoed the arg name",
-        ),
-        Check(
-            f"description says what belongs there: {value!r}",
-            bool(label.description.strip()),
-            kind="state",
-            rationale=None if label.description.strip() else "no description",
-        ),
-    ]
-
-
-def _distinct_names_check(
-    pair: tuple[str, str], labels: SkillLabels | None, by_value: dict[str, str]
-) -> Check:
-    """Two spots on the SAME argument drew DIFFERENT names (#1828) — the disambiguation
-    the two-source case exists to measure.  A labeller that calls both of them
-    ``news_page`` has collapsed a distinction the routine depends on: at run time each
-    spot takes its own value, and one name for two spots cannot say which is which."""
-    first, second = pair
-    label = f"distinct names: {first!r} vs {second!r}"
-    currents = [by_value.get(value) for value in pair]
-    missing = [value for value, current in zip(pair, currents, strict=True) if current is None]
-    if missing:
-        return _drifted(missing[0], label)
-    drawn = [
-        labels.labels.get(current) if labels is not None and current is not None else None
-        for current in currents
-    ]
-    if any(one is None for one in drawn):
-        return Check(label, False, kind="state", rationale="one of the two drew no line")
-    names = [slug_parameter_name(one.name) for one in drawn if one is not None]
-    ok = names[0] != names[1]
-    return Check(
-        label,
-        ok,
-        kind="state",
-        rationale=None if ok else f"both drew {names[0]!r}",
-    )
-
-
-def _shared_spot_check(value: str, labels: SkillLabels | None, by_value: dict[str, str]) -> Check:
-    """The spot filling TWO argument sites drew exactly ONE label (#1828).
-
-    Equal values at two sites are structurally one spot, so the contract is one line
-    covering both uses.  A draw that splits it either repeats the spot's current name or
-    keys its second line to a name nobody offered — both are coverage violations the
-    validator refuses (#1828), so a split never reaches an accepted draw and this reads
-    as the spot having no label.  Named as its own check because it is this case's whole
-    claim, and a diff-join key should say what it was watching."""
-    label = f"one label for the shared spot: {value!r}"
-    current = by_value.get(value)
-    if current is None:
-        return _drifted(value, label)
-    drawn = labels.labels if labels is not None else {}
-    return Check(
-        label,
-        current in drawn,
-        kind="state",
-        rationale=None if current in drawn else "the shared spot drew no single line",
-    )
-
-
-def _score_labelling(
-    labels: SkillLabels | None,
-    by_value: dict[str, str],
-    leaves: Sequence[str],
-    distinct_names: Sequence[tuple[str, str]],
-    shared_spot: str,
-) -> list[Check]:
-    """The labelling case's checks (#1828), read off the returned ``SkillLabels``: every
-    offered spot got a usable name and a description of what belongs there, plus each
-    case's own structural claim.
-
-    The drawn labels then ride along ADVISORY (``scored=False``, the same rule
-    ``_score_framing`` keeps), so every report shows verbatim what the model committed
-    to — whether a
-    name is WELL judged is a reading no scorer should fake, and it is what the reference
-    outputs on the ticket are read against at review."""
-    checks: list[Check] = []
-    for value in leaves:
-        checks.extend(_leaf_checks(value, labels, by_value))
-    checks.extend(_distinct_names_check(pair, labels, by_value) for pair in distinct_names)
-    if shared_spot:
-        checks.append(_shared_spot_check(shared_spot, labels, by_value))
-    for current, label in sorted((labels.labels if labels is not None else {}).items()):
-        checks.append(
-            Check(
-                f"drew {current}: {label.name!r} — {label.description!r}",
-                True,
-                kind="state",
-                scored=False,
-            )
-        )
-    return checks
-
-
-# A framer-eval runner: a PORTED case passes ``also_phrased`` and gets a :class:`Cohort`
-# back to assert against; a case not yet ported keeps the inline path and its threshold.
+# A framer-eval runner: a case passes ``also_phrased`` and gets a :class:`Cohort` back to
+# assert against.
 FramerEval = Callable[..., Awaitable["Cohort"]]
 
 # The fields of a framing draw's structured answer, named once.  The interface is a NAME, a
@@ -5907,20 +5746,6 @@ _DIGIT_SUFFIX_RE = re.compile(r"([a-z]+)(\d+)")
 # ``1`` / ``2`` — no family gains a token, so nothing else can start matching.
 _ORDINAL_LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
-# Write-time GARNISH: an example of THIS occasion's value hung off an otherwise generic
-# line — ``the page to check (e.g., bookbarn.example/atlas-of-clouds)``.  The fourth run's
-# thinking traces settled what it is: the drafted lines carried no example at all, and the
-# clause appeared only at transcription, so it is a habit of writing rather than a claim
-# about the routine.  Scoring it as an occasion-named parameter failed two lines whose
-# substance was exactly right, so it is stripped before the instance-token scan.
-#
-# Only the CLAUSE goes.  An instance token in the name itself, or a value standing as the
-# whole description, is the line's substance and still fails — which is the difference
-# between a line that says what to supply and one that says what was supplied.
-_EXAMPLE_LEAD = r"(?:e\.?\s?g\.?|for\s+example|for\s+instance|such\s+as)"
-_PARENTHESIZED_EXAMPLE_RE = re.compile(rf"\(\s*{_EXAMPLE_LEAD}\b[^)]*\)?", re.IGNORECASE)
-_TRAILING_EXAMPLE_RE = re.compile(rf"[\s,;:—-]*\b{_EXAMPLE_LEAD}\b.*$", re.IGNORECASE)
-
 
 class ParameterFamily(NamedTuple):
     """One parameter the ask genuinely requires, as the SET of things it could
@@ -5990,27 +5815,6 @@ def _name_tokens(name: str) -> set[str]:
     return found | {ordinal} if ordinal is not None else found
 
 
-def _without_examples(text: str) -> str:
-    """``text`` with any example clause removed — ``the plot to log (e.g., 17)`` → ``the
-    plot to log``, and the same for a trailing ``, e.g. 17`` with no parentheses.
-
-    Both forms are stripped before the instance-token scan reads the line, and NOTHING
-    else is: the clause is a way of writing, not a claim, so what remains is what the
-    line actually says."""
-    return _TRAILING_EXAMPLE_RE.sub("", _PARENTHESIZED_EXAMPLE_RE.sub("", text)).strip()
-
-
-def _substance_tokens(parameter: FramedParameter) -> set[str]:
-    """A parameter's tokens once its example garnish is gone — name and description
-    stripped SEPARATELY, so a trailing example on one can never eat the other.
-
-    An UNLABELLED parameter (#1870 — one read back off the registry, where a description is
-    optional) contributes no description tokens, because it says nothing to read; a framer
-    draw always carries one, so this arm is the registry's case rather than a draw's."""
-    described = parameter.description or ""
-    return _tokens(_without_examples(parameter.name)) | _tokens(_without_examples(described))
-
-
 def _matching_family(
     tokens: set[str], families: Sequence[ParameterFamily]
 ) -> ParameterFamily | None:
@@ -6054,178 +5858,6 @@ def classify_by_family(
     ]
 
 
-def _classified(
-    signature: SkillSignature, families: Sequence[ParameterFamily]
-) -> dict[str, list[FramedParameter]]:
-    """Every drawn parameter grouped under the family it answers — the framer suite's
-    view of :func:`classify_by_family`, which owns the discipline."""
-    answered = classify_by_family([(p.name, p.description) for p in signature.parameters], families)
-    grouped: dict[str, list[FramedParameter]] = {family.label: [] for family in families}
-    for parameter, family in zip(signature.parameters, answered, strict=True):
-        if family is not None:
-            grouped[family.label].append(parameter)
-    return grouped
-
-
-def _generic_framing_check(signature: SkillSignature, instance_tokens: Sequence[str]) -> Check:
-    """The name and description are the KIND of task, never the occasion (#1830).
-
-    Structural, not a judgment: none of the case's instance tokens — the book, the two
-    papers, the ticker, the city, the festival — may appear in either.  A framing that
-    carries one has named the occasion it was taught on, which is the routine that can
-    only ever run once."""
-    used = sorted(_tokens(f"{signature.name} {signature.description}") & set(instance_tokens))
-    return Check(
-        "the framing is generic",
-        not used,
-        kind="state",
-        rationale=None if not used else f"named the occasion: {', '.join(used)}",
-    )
-
-
-def _generic_parameters_check(signature: SkillSignature, instance_tokens: Sequence[str]) -> Check:
-    """Every PARAMETER line is generic too — the enforcement half of the parameter-line
-    contract (#1830, the code owner's ruling on the second run).
-
-    The same instance tokens, one level down: a parameter's name says what the value
-    MEANS to the routine and its description says what to supply next time, so neither
-    can carry this occasion's value or the name of where it came from.  A
-    ``citydesk_url — citydesk.example/front`` pair is a routine that can only be pointed
-    back at the page it was taught on; ``first_site — the first front page to read`` is
-    the same spot, re-suppliable.  The reference pairs carry no instance token at all,
-    which is what makes this structural rather than a judgment.
-
-    It reads each line's SUBSTANCE — an appended ``(e.g., …)`` is stripped first, because
-    the fourth run's traces showed that clause is written after the line is decided and
-    says nothing about the parameter (see :func:`_without_examples`)."""
-    offenders = [
-        f"{parameter.name} ({', '.join(used)})"
-        for parameter in signature.parameters
-        if (used := sorted(_substance_tokens(parameter) & set(instance_tokens)))
-    ]
-    return Check(
-        "the parameters are generic",
-        not offenders,
-        kind="state",
-        rationale=None if not offenders else f"named the occasion: {'; '.join(offenders)}",
-    )
-
-
-def _score_framing(
-    signature: SkillSignature | None,
-    families: Sequence[ParameterFamily],
-    instance_tokens: Sequence[str],
-) -> list[Check]:
-    """The framing case's graded checks (#1830), read off the draw's own typed result.
-
-    The parameter SET is the contract, and it is EXACT: each expected family is answered
-    by exactly one drawn parameter, and the total count matches — which is the same
-    check as "nothing else was asked for", since anything extra is a piece the user
-    would be made to re-supply that their own ask already settled.  Semantic breadth
-    lives in the families (a reference name is a target, never a string to match), so a
-    well-judged different word passes and a missing or invented parameter does not.
-
-    Plus the two structural generic checks: the occasion never appears in the name or
-    the description, and never in a parameter's name or description either — the
-    enforcement half of the parameter-line contract.
-
-    The drawn NAME, DESCRIPTION and every parameter then ride ADVISORY
-    (``scored=False``) — whether a name is WELL judged is read at joint review against
-    the reference outputs on the ticket, and no scorer should fake that."""
-    if signature is None:
-        return _refused_framing(families)
-    grouped = _classified(signature, families)
-    return [
-        *(_family_check(family, grouped[family.label]) for family in families),
-        _exact_count_check(signature, families),
-        _generic_framing_check(signature, instance_tokens),
-        _generic_parameters_check(signature, instance_tokens),
-        *_framing_advisories(signature),
-    ]
-
-
-def _refused_framing(families: Sequence[ParameterFamily]) -> list[Check]:
-    """A refused draw fails every scored check with its reason named, never silently.
-    The degraded state — a slug-named routine with nothing to bind — is honest
-    behaviour, but it is not the decision the case is asking for."""
-    refused = "the draw was refused — no signature came back"
-    return [
-        *(
-            Check(f"asks for the {family.label}", False, kind="state", rationale=refused)
-            for family in families
-        ),
-        Check("asks for nothing else", False, kind="state", rationale=refused),
-        Check("the framing is generic", False, kind="state", rationale=refused),
-        Check("the parameters are generic", False, kind="state", rationale=refused),
-    ]
-
-
-def _family_check(family: ParameterFamily, matched: Sequence[FramedParameter]) -> Check:
-    """One expected piece of the ask, answered by exactly one drawn parameter — nothing
-    answering it is a piece the routine can no longer be pointed at, and two answering it
-    is the same piece asked for twice."""
-    rationale = None
-    if not matched:
-        rationale = "no parameter answers it"
-    elif len(matched) > 1:
-        rationale = f"{len(matched)} answer it: {', '.join(p.name for p in matched)}"
-    return Check(
-        f"asks for the {family.label}", len(matched) == 1, kind="state", rationale=rationale
-    )
-
-
-def _exact_count_check(signature: SkillSignature, families: Sequence[ParameterFamily]) -> Check:
-    """Nothing else was asked for — the same check as the count, since anything extra is
-    a piece the user would be made to re-supply that their own ask already settled."""
-    drawn = len(signature.parameters)
-    return Check(
-        "asks for nothing else",
-        drawn == len(families),
-        kind="state",
-        rationale=None if drawn == len(families) else f"drew {drawn}, expected {len(families)}",
-    )
-
-
-def _framing_advisories(signature: SkillSignature) -> list[Check]:
-    """What the draw committed to, verbatim and UNSCORED — whether a name is WELL judged
-    is read at joint review against the reference outputs on the ticket, and no scorer
-    should fake that.
-
-    Each parameter's line carries the VALUE it was demonstrated with (#1868) and the run
-    closes with the container name those values derive — which is what the draw actually
-    decides now, since a round's identity is the skill plus its values.  THAT a value is
-    the user's own words is the production validator's (an accepted draw cannot carry a
-    value nobody said); WHICH span was the right one is the same kind of judgment as a
-    name, so it is rendered for review rather than scored by a fixture."""
-    return [
-        Check(f"named it {signature.name!r}", True, kind="state", scored=False),
-        Check(f"described it {signature.description!r}", True, kind="state", scored=False),
-        *(
-            Check(
-                f"asks {p.name!r} — {p.description!r} (drawn value {p.value!r})",
-                True,
-                kind="state",
-                scored=False,
-            )
-            for p in signature.parameters
-        ),
-        Check(
-            f"derives the container {_derived_container(signature)!r}",
-            True,
-            kind="state",
-            scored=False,
-        ),
-    ]
-
-
-def _derived_container(signature: SkillSignature) -> str:
-    """The container this framing would build, through the SHIPPED derivation — never a
-    copy of the scheme, so what the report shows is the name production would use."""
-    return derive_collection_name(
-        signature.name, [parameter.value for parameter in signature.parameters]
-    )
-
-
 @pytest.fixture
 def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[FramerEval]:
     """Drive the run-end skill FRAMER (#1830) N times, and NOTHING else.
@@ -6244,8 +5876,8 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
     A PORTED case (#2006) passes ``also_phrased`` — the other wordings of the SAME ask — and
     gets a :class:`Cohort` back to assert against.  The arm is the ask itself, which for this
     customer is the whole document: five ways a user might say one thing, over one set of
-    facts.  A case not yet ported passes ``parameters``/``instance_tokens`` and is scored
-    inline against its threshold.
+    facts.  Every case is ported: ``also_phrased`` is required, and a case is graded by the
+    claims its body makes against the cohort.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -6254,10 +5886,8 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         *,
         case_id: str,
         turns: Sequence[str],
-        parameters: Sequence[ParameterFamily] = (),
-        instance_tokens: Sequence[str] = (),
+        also_phrased: Sequence[Sequence[str]],
         behaviour: str = "",
-        also_phrased: Sequence[Sequence[str]] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
@@ -6265,14 +5895,13 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
-        """Drive one round's turns through the framing draw and return its COHORT (a ported
-        case), or score each sample through ``parameters`` (a case not yet ported).
+        """Drive one round's turns through the framing draw and return its COHORT.
 
         ``also_phrased`` is a sequence of TURN SEQUENCES, not of strings: an ask is however
         many turns the user took to make it, so a wording of it is that many turns said
         differently.  Flattened to one line per arm for the arm's own anchor text."""
         eval_artifacts.begin_case(case_id)
-        wordings = [tuple(turns), *(tuple(one) for one in also_phrased)] if also_phrased else []
+        wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
         # One ask, K wordings of it — the same shape chat has, and the world is a property of
         # the CASE rather than of the arm: every wording says the same thing.
         arms = _arms(
@@ -6282,38 +5911,31 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
-        _refuse_unscorable(
-            case_id, ported=bool(spoken), parameters=parameters, instance_tokens=instance_tokens
-        )
-        driven = arms.driven if spoken else samples
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, ported=True)
+        driven = arms.driven
         documents = [
             build_framing_content(
                 "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in one]
             )
-            for one in (wordings or [tuple(turns)])
+            for one in wordings
         ]
 
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=False,
-                ),
-            )
-            if spoken
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+                min_pass_rate=min_pass_rate,
+                gate_pathology_excluded=False,
+            ),
         )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            content = documents[arms.index_of(sample_index)] if spoken else documents[0]
+            content = documents[arms.index_of(sample_index)]
             micro = MicroContext(penny.model_client)
             signature: SkillSignature | None = None
             try:
@@ -6321,30 +5943,28 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                     micro.frame_skill(content, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                # A ported case is graded from its cohort's CLAIMS, made after every sample
-                # has run, so the sample itself scores nothing at drive time.
-                scored = [] if spoken else _score_framing(signature, parameters, instance_tokens)
-                result = _guarded_graded(list(scored), [])
+                # The case is graded from its cohort's CLAIMS, made after every sample has
+                # run, so the sample itself scores nothing at drive time.
+                result = _guarded_graded([], [])
                 result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no framing draw within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
-            if spoken:
-                label = arms.label(sample_index)
-                result.observation = _observe_framing(
-                    penny.db,
-                    signature,
-                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                    phrasing=label,
-                    arm=arms.index_of(sample_index),
-                )
+            label = arms.label(sample_index)
+            result.observation = _observe_framing(
+                penny.db,
+                signature,
+                name=f"{case_id}-{sample_number(sample_index)} ({label})",
+                phrasing=label,
+                arm=arms.index_of(sample_index),
+            )
             _write_classifier_report(
                 penny.db,
                 case_id,
                 sample_index,
                 result=result,
-                phrasing=spoken[sample_index] if spoken else (turns[-1] if turns else ""),
+                phrasing=spoken[sample_index],
                 agent_names=(PennyConstants.SKILL_FRAME_AGENT_NAME,),
             )
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
@@ -6353,21 +5973,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
-        if not spoken:
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                False,
-                driven,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
 
@@ -6397,7 +6003,9 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
     demonstration — and gets a :class:`Cohort` back to assert against.  The arm is the
     demonstrating UTTERANCE, because that is the natural language this draw is answered from:
     the CALLS are held byte-identical across the arms, so every arm offers the same spots
-    under the same current names and only the words describing them move.
+    under the same current names and only the words describing them move.  Every case is
+    ported: ``also_demonstrated`` is required, and a case is graded by the claims its body
+    makes against the cohort.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -6408,12 +6016,9 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         utterance: str,
         calls: Sequence[DemoCall],
         target: str,
-        leaves: Sequence[str] = (),
+        also_demonstrated: Sequence[str],
         conversation: Sequence[DemoTurn] = (),
-        distinct_names: Sequence[tuple[str, str]] = (),
-        shared_spot: str = "",
         behaviour: str = "",
-        also_demonstrated: Sequence[str] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
@@ -6421,10 +6026,9 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
-        """Drive one demonstration through the labelling draw and return its COHORT (a ported
-        case), or score each sample through ``leaves`` (a case not yet ported)."""
+        """Drive one demonstration through the labelling draw and return its COHORT."""
         eval_artifacts.begin_case(case_id)
-        wordings = [utterance, *also_demonstrated] if also_demonstrated else []
+        wordings = [utterance, *also_demonstrated]
         arms = _arms(
             wordings,
             [_turns_world(case_id)],
@@ -6432,16 +6036,13 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
-        _refuse_unscorable(case_id, ported=bool(spoken), leaves=leaves)
-        driven = arms.driven if spoken else samples
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, ported=True)
+        driven = arms.driven
         # One rendered document per arm, and ONE ``by_value`` map for all of them: the calls
         # are constant, so distillation is constant, so every arm offers the same spots under
         # the same current names.  A map that moved with the arm would mean the arms were
         # five different routines rather than five wordings of one.
-        rendered = [
-            _labelling_input(calls, target, one, conversation) for one in (wordings or [utterance])
-        ]
+        rendered = [_labelling_input(calls, target, one, conversation) for one in wordings]
         documents = [content for content, _map in rendered]
         by_value = rendered[0][1]
         # The spots the rendered document offered, in leaf order — the COVERAGE set the
@@ -6449,26 +6050,22 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         # authored, so the case can never offer the draw a set the content didn't list.
         offered = list(dict.fromkeys(by_value.values()))
 
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=False,
-                ),
-            )
-            if spoken
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+                min_pass_rate=min_pass_rate,
+                gate_pathology_excluded=False,
+            ),
         )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            content = documents[arms.index_of(sample_index)] if spoken else documents[0]
+            content = documents[arms.index_of(sample_index)]
             micro = MicroContext(penny.model_client)
             labels: SkillLabels | None = None
             try:
@@ -6476,35 +6073,29 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                     micro.label_skill(content, offered, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                # A ported case is graded from its cohort's CLAIMS, made after every sample
-                # has run, so the sample itself scores nothing at drive time.
-                scored = (
-                    []
-                    if spoken
-                    else _score_labelling(labels, by_value, leaves, distinct_names, shared_spot)
-                )
-                result = _guarded_graded(list(scored), [])
+                # The case is graded from its cohort's CLAIMS, made after every sample has
+                # run, so the sample itself scores nothing at drive time.
+                result = _guarded_graded([], [])
                 result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no label within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
-            if spoken:
-                label = arms.label(sample_index)
-                result.observation = _observe_labelling(
-                    penny.db,
-                    labels,
-                    offered,
-                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                    phrasing=label,
-                    arm=arms.index_of(sample_index),
-                )
+            label = arms.label(sample_index)
+            result.observation = _observe_labelling(
+                penny.db,
+                labels,
+                offered,
+                name=f"{case_id}-{sample_number(sample_index)} ({label})",
+                phrasing=label,
+                arm=arms.index_of(sample_index),
+            )
             _write_classifier_report(
                 penny.db,
                 case_id,
                 sample_index,
                 result=result,
-                phrasing=spoken[sample_index] if spoken else utterance,
+                phrasing=spoken[sample_index],
                 agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
             )
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
@@ -6513,21 +6104,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
-        if not spoken:
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                False,
-                driven,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
 
@@ -6541,8 +6118,8 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
 
 # ── Skill BINDING: filling an existing signature from the ask (#1867) ─────────
 
-# A binder-eval runner: a PORTED case passes ``also_phrased`` and gets a :class:`Cohort`
-# back to assert against; a case not yet ported keeps the inline path and its threshold.
+# A binder-eval runner: a case passes ``also_phrased`` and gets a :class:`Cohort` back to
+# assert against.
 BinderEval = Callable[..., Awaitable["Cohort"]]
 
 
@@ -6673,127 +6250,6 @@ def _binder_rerolled(db: Database) -> bool:
     return len(_micro_context_rows(db, PennyConstants.SKILL_BIND_AGENT_NAME)) > 1
 
 
-def _bound_check(expectation: BoundExpectation, value: str | None, reported: bool) -> Check:
-    """A parameter the ask DOES supply: a value came back, and it carries what the ask
-    supplies for it."""
-    if value is None:
-        return Check(
-            f"binds the {expectation.parameter}",
-            False,
-            kind="state",
-            rationale="reported it missing" if reported else "no value came back for it",
-        )
-    carried = spoken_form(expectation.anchor) in spoken_form(value)
-    return Check(
-        f"binds the {expectation.parameter}",
-        carried,
-        kind="state",
-        rationale=None if carried else f"bound {value!r}, not the value the ask supplies",
-    )
-
-
-def _shortfall_check(parameter: str, guessed: str | None, named: bool) -> Check:
-    """A parameter the ask does NOT supply: the only honest answer names it missing.
-
-    A value here is the failure the span check guards one level up — the words are short
-    of something and the draw filled it anyway — so the rationale quotes what it made
-    up."""
-    if named:
-        return Check(f"reports the {parameter} missing", True, kind="state")
-    rationale = f"bound it to {guessed!r}" if guessed is not None else "neither bound nor reported"
-    return Check(f"reports the {parameter} missing", False, kind="state", rationale=rationale)
-
-
-def _no_terms_check(values: dict[str, str], forbidden: Sequence[str]) -> Check:
-    """No job TERM landed in a value (#1867).
-
-    How often a routine runs and when it stops are settled where the job is set running,
-    never by the binder — so an ask's cadence and expiry words turning up INSIDE a bound
-    value mean the draw read the terms as part of the thing to point the routine at.
-    Structural: each case names the term words its own ask carries, and none of them may
-    appear in any value.  An ask stating no terms has nothing to check."""
-    if not forbidden:
-        return Check.na("no job term landed in a value", kind="state")
-    offenders = [
-        f"{name} ({term})"
-        for name, value in values.items()
-        for term in forbidden
-        if spoken_form(term) in spoken_form(value)
-    ]
-    return Check(
-        "no job term landed in a value",
-        not offenders,
-        kind="state",
-        rationale=None if not offenders else f"carried the terms: {'; '.join(offenders)}",
-    )
-
-
-def _binding_advisories(binding: SkillBinding) -> list[Check]:
-    """What the draw committed to, verbatim and UNSCORED — every value it bound and every
-    parameter it declined, so a report shows the answer whichever way it went."""
-    checks = [
-        Check(f"bound {name!r} = {value!r}", True, kind="state", scored=False)
-        for name, value in binding.values.items()
-    ]
-    if isinstance(binding, MissingParameters):
-        declined = ", ".join(binding.names)
-        checks.append(Check(f"reported missing: {declined}", True, kind="state", scored=False))
-    return checks
-
-
-def _refused_binding(expectations: Sequence[BoundExpectation]) -> list[Check]:
-    """A refused draw fails every scored check with its reason named, never silently.
-    Returning nothing is honest when the words cannot be read into the signature, but it
-    is not the decision the case is asking for."""
-    refused = "the draw was refused — no binding came back"
-    return [
-        *(
-            Check(
-                f"binds the {expectation.parameter}"
-                if expectation.anchor
-                else f"reports the {expectation.parameter} missing",
-                False,
-                kind="state",
-                rationale=refused,
-            )
-            for expectation in expectations
-        ),
-        Check("no job term landed in a value", False, kind="state", rationale=refused),
-    ]
-
-
-def _score_binding(
-    binding: SkillBinding | None,
-    expectations: Sequence[BoundExpectation],
-    forbidden: Sequence[str],
-) -> list[Check]:
-    """The binding case's graded checks (#1867), read off the draw's own typed answer.
-
-    One check per declared parameter — bound to a span of the ask carrying the value the
-    ask supplies, or named missing when it supplies none — plus the structural check that
-    no job term rode into a value.  Membership, coverage and "is this even in the user's
-    words" belong to the production validator, so an accepted draw never reaches here
-    carrying an invented value; what is left to measure is whether it picked the RIGHT
-    span, and whether it knew when to decline.
-
-    The drawn values then ride ADVISORY, as the framing case's do — what a well-chosen
-    span looks like is read at joint review against the reference values on the ticket."""
-    if binding is None:
-        return _refused_binding(expectations)
-    missing = binding.names if isinstance(binding, MissingParameters) else ()
-    verdicts = [
-        _shortfall_check(one.parameter, binding.values.get(one.parameter), one.parameter in missing)
-        if not one.anchor
-        else _bound_check(one, binding.values.get(one.parameter), one.parameter in missing)
-        for one in expectations
-    ]
-    return [
-        *verdicts,
-        _no_terms_check(binding.values, forbidden),
-        *_binding_advisories(binding),
-    ]
-
-
 @pytest.fixture
 def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[BinderEval]:
     """Drive the skill BINDER (#1867) N times, and NOTHING else.
@@ -6813,7 +6269,9 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
     A PORTED case (#2006) passes ``also_phrased`` — the other wordings of the SAME ask — and
     gets a :class:`Cohort` back to assert against.  The SIGNATURE is held constant across the
     arms and only the user's turns move: a case whose signature moved would be binding a
-    different routine, which is a different behaviour rather than a different wording.
+    different routine, which is a different behaviour rather than a different wording.  Every
+    case is ported: ``also_phrased`` is required, and a case is graded by the claims its body
+    makes against the cohort.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -6825,10 +6283,8 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         skill: str,
         intent: str,
         parameters: Sequence[SkillParameter],
-        expectations: Sequence[BoundExpectation] = (),
-        forbidden: Sequence[str] = (),
+        also_phrased: Sequence[Sequence[str]],
         behaviour: str = "",
-        also_phrased: Sequence[Sequence[str]] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
@@ -6836,13 +6292,12 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
-        """Drive one signature + turns through the binding draw and return its COHORT (a
-        ported case), or score each sample through ``expectations`` (a case not yet ported).
+        """Drive one signature + turns through the binding draw and return its COHORT.
 
         ``also_phrased`` is a sequence of TURN SEQUENCES, for ``framer_eval``'s reason: an ask
         is however many turns the user took to make it."""
         eval_artifacts.begin_case(case_id)
-        wordings = [tuple(turns), *(tuple(one) for one in also_phrased)] if also_phrased else []
+        wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
         arms = _arms(
             [" / ".join(one) for one in wordings],
             [_turns_world(case_id)],
@@ -6850,39 +6305,31 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
-        _refuse_unscorable(case_id, ported=bool(spoken), expectations=expectations)
-        driven = arms.driven if spoken else samples
+        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, ported=True)
+        driven = arms.driven
         declared = [parameter.name for parameter in parameters]
         # One rendered pair per arm: what the user said, and the document that renders it
         # BESIDE the signature.  ``spoken`` is carried separately because the span check reads
         # the user's turns alone — a phrase copied out of a parameter's own description, which
         # the same document renders, is exactly the confabulation it exists to catch.
-        rendered = [
-            _binding_document(one, skill, intent, parameters)
-            for one in (wordings or [tuple(turns)])
-        ]
+        rendered = [_binding_document(one, skill, intent, parameters) for one in wordings]
 
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=False,
-                ),
-            )
-            if spoken
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+                min_pass_rate=min_pass_rate,
+                gate_pathology_excluded=False,
+            ),
         )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            said, content = rendered[arms.index_of(sample_index) if spoken else 0]
+            said, content = rendered[arms.index_of(sample_index)]
             micro = MicroContext(penny.model_client)
             binding: SkillBinding | None = None
             try:
@@ -6890,30 +6337,28 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                     micro.bind_skill(content, declared, said, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                # A ported case is graded from its cohort's CLAIMS, made after every sample
-                # has run, so the sample itself scores nothing at drive time.
-                scored = [] if spoken else _score_binding(binding, expectations, forbidden)
-                result = _guarded_graded(list(scored), [])
+                # The case is graded from its cohort's CLAIMS, made after every sample has
+                # run, so the sample itself scores nothing at drive time.
+                result = _guarded_graded([], [])
                 result.observe_rerolled(rerolled=_binder_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no binding draw within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
-            if spoken:
-                label = arms.label(sample_index)
-                result.observation = _observe_binding(
-                    penny.db,
-                    binding,
-                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                    phrasing=label,
-                    arm=arms.index_of(sample_index),
-                )
+            label = arms.label(sample_index)
+            result.observation = _observe_binding(
+                penny.db,
+                binding,
+                name=f"{case_id}-{sample_number(sample_index)} ({label})",
+                phrasing=label,
+                arm=arms.index_of(sample_index),
+            )
             _write_classifier_report(
                 penny.db,
                 case_id,
                 sample_index,
                 result=result,
-                phrasing=spoken[sample_index] if spoken else (turns[-1] if turns else ""),
+                phrasing=spoken[sample_index],
                 agent_names=(PennyConstants.SKILL_BIND_AGENT_NAME,),
             )
             _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
@@ -6922,21 +6367,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         results, perf, voided = await _run_samples(
             make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
         )
-        if not spoken:
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                False,
-                driven,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        assert pending is not None
         pending.add(cohort, results, perf, intended=driven)
         return cohort
 
