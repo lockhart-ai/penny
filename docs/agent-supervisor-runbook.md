@@ -46,12 +46,14 @@ If it's a mixed bag, split it: sequence the small ones and anything needing the 
   5. **The expected PR title** — `type(scope): title` per [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow), with the type, the scope, and (for a test port) the group name spelled out, so the log stays greppable by prefix and test PRs sort by group. The body states the change and closes its ticket; it carries no generated-with footer and no session URLs.
   6. "Report the PR URL + summary + gate result."
 - Rules **not yet merged** into the SOP must be stated in the prompt (children read the SOP from `main`). And **verify the mechanism before relaying a rule** — test the command you're telling them to run (`make -n` is cheap); a silently-broken mechanism makes every child non-compliant while believing otherwise.
+- **Retargeting a PR onto a non-`main` base merges it at once** if its merge-when-ready flag is still set: a feature branch has no protection, so nothing holds it. Run `gh pr merge <n> --disable-auto` before any `gh pr edit --base`. A stacked PR carries no flag until GitHub retargets it to `main`.
+- **Scoping an eval with `-k` matches pytest node ids** — file, function and parametrised model names — not case ids. Name the case's test FUNCTION in the brief; a case id matches nothing, or something else.
 
 ## 4. Wave planning
 
 - Group waves by **disjoint code areas**. Hold shared-file tickets (`CLAUDE.md`, `prompts.py`, migrations, shared test fixtures) for a later wave or do them inline — parallel edits there just manufacture rebases.
 - **One migration-creating ticket per wave** (migration numbers collide; rebase-only renumber policy).
-- Default to **waiting for a wave to clear the merge queue before launching the next** (limits PR pileup; later waves branch from the truth). Children flag merge-when-ready (§8), so the user's approvals are the only manual step — a batch of approvals cascades through the queue unattended. The shepherd loop makes modest overlap survivable, not free.
+- Default to **waiting for a wave to clear the merge queue before launching the next** (limits PR pileup; later waves branch from the truth). Children flag merge-when-ready (§8), so approvals (§6) are the only manual step — a batch of approvals cascades through the queue unattended. The shepherd loop makes modest overlap survivable, not free.
 - Watch cross-fleet overlap: if another session's fleet is active, compare target files before dispatching.
 
 ## 5. While children run
@@ -64,7 +66,19 @@ Standing duties (details in `CLAUDE.md` → Agent Supervision): **heartbeat** ev
 - **A child can end its turn a step short.** A child can stop after a background command settles and it narrates the result, once mid-rebase with conflict markers still in the tree. If the artifacts say the task is unfinished, resume the same subagent (SendMessage) with "finish the whole task in this turn" and the exact remaining steps.
 - **Stall detection is artifact-based, and "work looks done" is a stall state too.** On each heartbeat verify (a) the child's watched process actually exists (a gate/eval container in `docker ps`, a live waiter) and (b) its artifacts are progressing (new commits, the PR existing, checks advancing). The two observed stall phases are mid-§4 (a backgrounded gate that died — no process, no output file) and the §7 last mile (a clean, committed tree with **no PR** — the child judged the work "done" and went silent). A committed-but-unpublished tree is a stall even though nothing is red; the recovery nudge is the standing "check your artifacts first, then proceed straight to push → PR → `--auto` without ending your turn."
 
-## 6. Fleet end
+## 6. Approving PRs (edges vs internals)
+
+The split is in [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow). In short: **eval cases are the code owner's** — any new judgment on a case's inputs, behaviour sentence or claims goes to his review, and you only approve deleting a legacy case already ruled covered. **Internals are yours** — runtime, harness, CI, docs — and his cases are the acceptance test. Children never approve.
+
+Before approving an internals PR (under the code owner's `gh` login, by his choice; everything else stays on the App token):
+- Read the whole diff against `docs/pr-review-guide.md` — not the child's summary.
+- CI is green.
+- The PR's head is the SHA you reviewed (`gh pr view <n> --json headRefOid`); a push after your read means reading again.
+- The merge-when-ready flag is set (`autoMergeRequest` non-null), so approval carries it through the queue.
+
+Still ask first: anything touching production (`make prod`/`up`/`kill`, the live DB), full-suite eval runs, and anything outward outside the repo.
+
+## 7. Fleet end
 
 1. Every child PR terminal → **fleet-end sweep**: inventory `git worktree list` against PR states; remove terminal trees, delete local+remote branches; locked trees belong to live agents — relay, never force. **Check the remote branch of every CLOSED-unmerged PR explicitly** (`git ls-remote origin <branch>`): GitHub auto-deletes only a *merged* PR's branch, so closed ones leave a live remote branch behind for the sweep to delete. The sweep also owns any `worktree-agent-*` placeholder a child reported the isolation guard blocked it from deleting — it carries no unique commits, so it's a one-command delete from the primary checkout.
 2. Update the meta checklist; close it (or report what remains and why).
