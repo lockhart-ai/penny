@@ -101,12 +101,27 @@ class MechanismRecord(BaseModel):
     silently exempts whichever field nobody enumerated — a description edit, a rebind, an
     archive.  The two are separate facts about one row and neither derives the other: a
     creation is also a change, and a change to a row that already existed is not a creation.
+
+    The rest is the row's CONFIGURATION — the TERMS a turn that stands a job up committed to:
+    the schedule it fires on, whether it tells the user, and whether it stops.  Read as named
+    fields rather than through the ledger because this is the opposite direction from
+    ``changed_this_run``: there the question is whether ANYTHING moved, which no field list
+    can answer, and here it is what the turn chose, which only the fields say.  Which ROUTINE
+    the row runs is deliberately absent: a turn configuring a framed round is handed it
+    framework-side off the round's own framing, so it is the container's name read twice.
+
+    ``schedule`` travels VERBATIM — the stored rule is what a claim about cadence reads a gap
+    off and what its rationale has to quote, and two spellings of one cadence are the same
+    answer, so the string is carried and the reading is the case's.
     """
 
     name: str
     archived: bool
     born_this_run: bool
     changed_this_run: bool
+    notifies: bool
+    schedule: str | None
+    expires: bool
 
 
 class Arm(BaseModel):
@@ -195,6 +210,17 @@ class SampleObservation(BaseModel):
     complete: bool = True
     exclusion: str | None = None
     landed: str | None = None
+    # The routine the move NAMED, off the landed transition's own ``skill_name`` — which
+    # routine the decision recognised as covering the ask, before anything was stood up.
+    # Beside ``landed`` because it is the same row and the same reading: where the machine
+    # went, and what it went there about.  ``None`` where the move named none, which is a
+    # real reading (an ordinary chat turn names no routine) and not a missing one.
+    decision_skill: str | None = None
+    # The parameters the round is still WAITING ON, off the landed transition's own
+    # ``round_shortfall`` — their declared names, in the routine's declared order.  Empty
+    # where the move recorded no shortfall, which is the ordinary reading (only a move landing
+    # in request carries one) and not a missing one.
+    awaiting: list[str] = Field(default_factory=list)
     # The ordered moves this sample's driver walked, in the VOCABULARY of the observer that
     # read it: a chat sample carries the conversation machine's own walk (``idle→learn,
     # learn→apply``, or ``no move`` when it recorded none), a collector sample the ordered
@@ -218,6 +244,11 @@ class SampleObservation(BaseModel):
     # WHICH rows are read is the fixture's, like every other observation: a chat sample
     # reads every collection, a collector cycle reads the one container its job is bound to.
     held: list[StoredEntry] = Field(default_factory=list)
+    # Every entry the store held when the sample's measured turn BEGAN — ``held`` read at the
+    # other end of the turn, which is what makes "what the store already held survives" a read
+    # rather than an inference.  The end state alone cannot answer it: an entry the turn
+    # deleted or rewrote leaves no trace in ``held``, only an absence.
+    held_before: list[StoredEntry] = Field(default_factory=list)
     # Every MECHANISM the registry holds when the sample ends, archived ones included — what
     # a round's own cleanup and a running job's survival are both read off.  Beside ``held``
     # rather than derived from it, because they answer different questions about the same
