@@ -727,7 +727,7 @@ _FORGET = _VerbCase(
         answers=_FORGET_ANSWERS,
         stores=(_INTO,),
     ),
-    ask="forget about jazz, then tell me what else is on my list of things i'm into",
+    ask="remove jazz from my list of things i'm into, then tell me what else is on it",
     also_phrased=(
         "drop jazz from my list of things i'm into, then tell me what's left on it",
         "take jazz off my list of things i'm into and tell me what else is on there",
