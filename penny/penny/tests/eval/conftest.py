@@ -2549,6 +2549,19 @@ NO_REPLY = "the measured turn produced no reply"
 # sample never exercised the classifier, so it can count neither for nor against any claim about
 # where the machine landed.
 NO_CLASSIFIER_DRAW = "the state classifier's call failed, so the turn ran on an undecided state"
+# The chat agent's own call fails the same way AFTER the classifier answered: the endpoint
+# refuses it on every attempt, it raises before the client's persist step and writes no row,
+# and the user is sent Penny's canned model-error reply.  That reply measures the endpoint, so
+# the sample is a harness loss.  A chat call that DREW but came back unusable is not this: every
+# reroll-exhausted draw was persisted before it was discarded, so its rows are there and the
+# failure is the model's, scored like any other reply.
+#
+# THE COST, STATED: this reads whether the turn's chat agent logged ANY row, so an endpoint
+# failure after the turn already logged a call (a tool step, then a refused call) leaves the
+# rows of the calls that came back and stays scored.  And a backend that refuses to PARSE every
+# draw as a tool call (Ollama's "error parsing tool call") raises before persisting too, so a
+# turn spent on nothing but those reads as an endpoint failure.
+NO_CHAT_DRAW = "the chat model's call failed at the endpoint, so the reply is Penny's canned error"
 NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
 # A RECOVERY case forces its fault; the injector reports whether it actually fired.  A sample
@@ -2866,17 +2879,35 @@ def _exclusion(db: Database, reply: str, injected: bool | None) -> str | None:
 
     Every chat turn opens with a state-classifier draw, so a sample whose turn ran but whose own
     rows carry none is one whose classifier call failed: read off the promptlog, since a call
-    that raised is exactly the call that wrote no row.
+    that raised is exactly the call that wrote no row.  The chat agent's own call is read the
+    same way, once the classifier has answered.
     """
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
     if not _classifier_rows(db):
         return NO_CLASSIFIER_DRAW
+    if not _chat_drew(db):
+        return NO_CHAT_DRAW
     if not reply.strip():
         return NO_REPLY
     if injected is False:
         return INJECTION_NEVER_FIRED
     return None
+
+
+def _chat_drew(db: Database) -> bool:
+    """Whether the measured turn's chat agent logged a draw of its own.
+
+    The turn opens with the state classifier's draw, so the chat rows ledgered AFTER the latest
+    classifier row are the measured turn's, and an earlier turn of a scripted conversation cannot
+    stand in for them.  Read by timestamp rather than run id: a micro-context draw mints its own
+    run id, so the classifier's row does not carry the turn's.  Asked only once the classifier
+    has answered, so there is a latest classifier row to read from."""
+    entered = _classifier_rows(db)[-1].timestamp
+    return any(
+        row.agent_name == PennyConstants.CHAT_AGENT_NAME and row.timestamp > entered
+        for row in _sample_prompt_rows(db)
+    )
 
 
 def _draw_exclusion(db: Database, answer: str) -> str | None:

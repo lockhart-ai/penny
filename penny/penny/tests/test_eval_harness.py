@@ -66,6 +66,7 @@ from penny.llm.models import (
     strip_harmony_control_tokens,
 )
 from penny.program import program_calls
+from penny.responses import PennyResponse
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER, require_memory
@@ -218,6 +219,7 @@ from penny.tests.eval.conftest import (
     INJECTION_NEVER_FIRED,
     MICRO_CONTEXT_PLACEMENTS,
     MUTATION_HISTORY_WINDOW,
+    NO_CHAT_DRAW,
     NO_CLASSIFIER_DRAW,
     NO_CYCLE,
     NO_DRAW,
@@ -1758,13 +1760,21 @@ def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_
     case installed none — so the condition is asked only of a case that forced a fault.
 
     The order matters and is pinned with it: a sample whose measured turn never ran, whose
-    state classifier never answered (#2154), or that produced no reply, is excluded for THAT
-    rather than for the injector, because those are the more fundamental facts and naming the
-    injector for them would send a reader after the wrong thing."""
+    state classifier never answered (#2154), whose chat model call failed at the endpoint
+    (#2170), or that produced no reply, is excluded for THAT rather than for the injector,
+    because those are the more fundamental facts and naming the injector for them would send a
+    reader after the wrong thing.
+
+    The chat draw that counts is one the MEASURED turn made, after its classifier answered: an
+    earlier turn's chat row, ledgered before it, cannot stand in for a call that raised."""
     db = _make_db(tmp_path)
     assert _exclusion(db, "an answer", None) == NO_MEASURED_TURN, "no live turn outranks all"
 
-    _log_prompt(db, response=_content_response("an answer"))
+    _log_prompt(
+        db,
+        response=_content_response("an earlier answer"),
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+    )
     assert _exclusion(db, "an answer", None) == NO_CLASSIFIER_DRAW, "the turn ran undecided"
     assert _exclusion(db, "   ", False) == NO_CLASSIFIER_DRAW, "it outranks the reply and injector"
 
@@ -1772,6 +1782,12 @@ def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_
         db,
         response=_content_response("STATE: idle"),
         agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+    )
+    assert _exclusion(db, "an answer", None) == NO_CHAT_DRAW, "the chat call raised, no row"
+    assert _exclusion(db, "   ", False) == NO_CHAT_DRAW, "it outranks the reply and injector"
+
+    _log_prompt(
+        db, response=_content_response("an answer"), agent_name=PennyConstants.CHAT_AGENT_NAME
     )
     assert _exclusion(db, "an answer", None) is None, "no injector, nothing to ask"
     assert _exclusion(db, "an answer", True) is None, "the fault fired — a real sample"
@@ -2457,49 +2473,83 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
     assert f"  [3] 0.00 — {NO_MEASURED_TURN}" in out
 
 
-def _observed_chat_sample(tmp_path, name: str, *, classifier_answered: bool) -> SampleObservation:
-    """One chat sample read through the real chat observer: its turn ran and replied, the
-    machine recorded no move, and its classifier's call came back or did not."""
+_ANSWERED = (_content_response("an answer"),)
+# A chat call that DREW and got nothing usable: every draw came back empty, so the loop
+# discarded each and re-rolled until its budget ran out — and each was persisted first.
+_REROLL_EXHAUSTED = tuple(_content_response("") for _ in range(3))
+
+
+def _observed_chat_sample(
+    tmp_path,
+    name: str,
+    *,
+    classifier_answered: bool = True,
+    chat_draws: Sequence[dict] = _ANSWERED,
+    reply: str = "an answer",
+) -> SampleObservation:
+    """One chat sample read through the real chat observer, its promptlog in production's order:
+    the classifier's draw (when its call came back), then the chat agent's draws (one row per
+    call that came back — none when the endpoint failed every call).  The machine recorded no
+    move."""
     db = migrated_db(str(tmp_path / f"{name}.db"))
-    _log_prompt(db, response=_content_response("an answer"))
     if classifier_answered:
         _log_prompt(
             db,
             response=_content_response("STATE: idle"),
             agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
         )
+    for draw in chat_draws:
+        _log_prompt(db, response=draw, agent_name=PennyConstants.CHAT_AGENT_NAME)
     return _observe_sample(
-        db, name=name, phrasing="the ask", arm=0, reply="an answer", before=set(), injected=None
+        db, name=name, phrasing="the ask", arm=0, reply=reply, before=set(), injected=None
     )
 
 
-def test_a_sample_whose_state_classifier_call_failed_is_excluded_rather_than_scored(
+def test_a_sample_whose_classifier_or_chat_call_failed_at_the_endpoint_is_excluded(
     tmp_path, capsys
 ) -> None:
-    """A classifier call the endpoint failed leaves no promptlog row and no move, so the sample
-    never exercised the classifier and can count neither for nor against where the machine
-    landed (#2154).  It leaves the pool as a harness loss, not as a behavioural miss.
+    """A model call the endpoint failed raises before the client persists it, so it leaves no
+    promptlog row.  A classifier call that failed leaves no move either, so the sample never
+    exercised the classifier (#2154); a chat call that failed after the classifier answered
+    leaves the user Penny's canned model-error reply, which measures the endpoint (#2170).
+    Both leave the pool as harness losses, not as behavioural misses.
 
-    Its neighbour walked no move too, but its classifier ANSWERED — so what the machine did next
-    is Penny's to answer for, and it is pooled and judged by the landed claim exactly as before."""
+    The chat call that DREW and got nothing usable sent the same canned reply, but its draws
+    were persisted before they were discarded — the failure is the model's, so it is pooled and
+    judged like its neighbour whose classifier answered and whose chat agent replied."""
     failed = _observed_chat_sample(tmp_path, "s-1", classifier_answered=False)
-    answered = _observed_chat_sample(tmp_path, "s-2", classifier_answered=True)
-    assert (failed.complete, failed.exclusion) == (False, NO_CLASSIFIER_DRAW)
-    assert (answered.complete, answered.landed, answered.walk) == (True, None, "no move")
+    answered = _observed_chat_sample(tmp_path, "s-2")
+    unreached = _observed_chat_sample(
+        tmp_path, "s-3", chat_draws=(), reply=PennyResponse.AGENT_MODEL_ERROR
+    )
+    exhausted = _observed_chat_sample(
+        tmp_path, "s-4", chat_draws=_REROLL_EXHAUSTED, reply=PennyResponse.AGENT_MODEL_ERROR
+    )
+    observations = [failed, answered, unreached, exhausted]
+    assert [(o.complete, o.exclusion) for o in observations] == [
+        (False, NO_CLASSIFIER_DRAW),
+        (True, None),
+        (False, NO_CHAT_DRAW),
+        (True, None),
+    ]
+    assert (answered.landed, answered.walk) == (None, "no move")
 
-    cohort = Cohort(_COHORT_RECORD_CASE, "a-model", [failed, answered])
+    cohort = Cohort(_COHORT_RECORD_CASE, "a-model", observations)
     cohort.assert_machine_landed(ConversationState.IDLE)
     db = _make_db(tmp_path, "cohort-classifier")
-    results = [_drive_time_result(db, observation) for observation in (failed, answered)]
+    results = [_drive_time_result(db, observation) for observation in observations]
     _close_cohort_case(cohort, results)
     capsys.readouterr()
 
     [claim] = cohort.claims
     assert [(o.sample, o.ok, o.rationale) for o in claim.outcomes] == [
-        ("s-2", False, "walked no move")
+        ("s-2", False, "walked no move"),
+        ("s-4", False, "walked no move"),
     ]
     assert [(r.excluded, r.cause) for r in results] == [
         (NO_CLASSIFIER_DRAW, FailureCause.HARNESS),
+        (None, FailureCause.BEHAVIORAL),
+        (NO_CHAT_DRAW, FailureCause.HARNESS),
         (None, FailureCause.BEHAVIORAL),
     ]
 
