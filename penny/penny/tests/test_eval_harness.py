@@ -218,6 +218,7 @@ from penny.tests.eval.conftest import (
     INJECTION_NEVER_FIRED,
     MICRO_CONTEXT_PLACEMENTS,
     MUTATION_HISTORY_WINDOW,
+    NO_CLASSIFIER_DRAW,
     NO_CYCLE,
     NO_DRAW,
     NO_MEASURED_TURN,
@@ -261,6 +262,7 @@ from penny.tests.eval.conftest import (
     _observe_extraction,
     _observe_framing,
     _observe_labelling,
+    _observe_sample,
     _PendingCase,
     _Perf,
     _refuse_binding_off_request,
@@ -1755,14 +1757,22 @@ def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_
     """``injected`` is the injector's own account of whether it fired, and ``None`` means the
     case installed none — so the condition is asked only of a case that forced a fault.
 
-    The order matters and is pinned with it: a sample whose measured turn never ran, or that
-    produced no reply, is excluded for THAT rather than for the injector, because those are
-    the more fundamental facts and naming the injector for them would send a reader after the
-    wrong thing."""
+    The order matters and is pinned with it: a sample whose measured turn never ran, whose
+    state classifier never answered (#2154), or that produced no reply, is excluded for THAT
+    rather than for the injector, because those are the more fundamental facts and naming the
+    injector for them would send a reader after the wrong thing."""
     db = _make_db(tmp_path)
     assert _exclusion(db, "an answer", None) == NO_MEASURED_TURN, "no live turn outranks all"
 
     _log_prompt(db, response=_content_response("an answer"))
+    assert _exclusion(db, "an answer", None) == NO_CLASSIFIER_DRAW, "the turn ran undecided"
+    assert _exclusion(db, "   ", False) == NO_CLASSIFIER_DRAW, "it outranks the reply and injector"
+
+    _log_prompt(
+        db,
+        response=_content_response("STATE: idle"),
+        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+    )
     assert _exclusion(db, "an answer", None) is None, "no injector, nothing to ask"
     assert _exclusion(db, "an answer", True) is None, "the fault fired — a real sample"
     assert _exclusion(db, "an answer", False) == INJECTION_NEVER_FIRED
@@ -2445,6 +2455,53 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
         "causes — behavioral 1 · pathology 0 · harness 1" in out
     )
     assert f"  [3] 0.00 — {NO_MEASURED_TURN}" in out
+
+
+def _observed_chat_sample(tmp_path, name: str, *, classifier_answered: bool) -> SampleObservation:
+    """One chat sample read through the real chat observer: its turn ran and replied, the
+    machine recorded no move, and its classifier's call came back or did not."""
+    db = migrated_db(str(tmp_path / f"{name}.db"))
+    _log_prompt(db, response=_content_response("an answer"))
+    if classifier_answered:
+        _log_prompt(
+            db,
+            response=_content_response("STATE: idle"),
+            agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        )
+    return _observe_sample(
+        db, name=name, phrasing="the ask", arm=0, reply="an answer", before=set(), injected=None
+    )
+
+
+def test_a_sample_whose_state_classifier_call_failed_is_excluded_rather_than_scored(
+    tmp_path, capsys
+) -> None:
+    """A classifier call the endpoint failed leaves no promptlog row and no move, so the sample
+    never exercised the classifier and can count neither for nor against where the machine
+    landed (#2154).  It leaves the pool as a harness loss, not as a behavioural miss.
+
+    Its neighbour walked no move too, but its classifier ANSWERED — so what the machine did next
+    is Penny's to answer for, and it is pooled and judged by the landed claim exactly as before."""
+    failed = _observed_chat_sample(tmp_path, "s-1", classifier_answered=False)
+    answered = _observed_chat_sample(tmp_path, "s-2", classifier_answered=True)
+    assert (failed.complete, failed.exclusion) == (False, NO_CLASSIFIER_DRAW)
+    assert (answered.complete, answered.landed, answered.walk) == (True, None, "no move")
+
+    cohort = Cohort(_COHORT_RECORD_CASE, "a-model", [failed, answered])
+    cohort.assert_machine_landed(ConversationState.IDLE)
+    db = _make_db(tmp_path, "cohort-classifier")
+    results = [_drive_time_result(db, observation) for observation in (failed, answered)]
+    _close_cohort_case(cohort, results)
+    capsys.readouterr()
+
+    [claim] = cohort.claims
+    assert [(o.sample, o.ok, o.rationale) for o in claim.outcomes] == [
+        ("s-2", False, "walked no move")
+    ]
+    assert [(r.excluded, r.cause) for r in results] == [
+        (NO_CLASSIFIER_DRAW, FailureCause.HARNESS),
+        (None, FailureCause.BEHAVIORAL),
+    ]
 
 
 # ── A cohort sample's fragile flag and its banner state the SETTLED verdict (#2127) ──

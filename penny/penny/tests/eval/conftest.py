@@ -2478,6 +2478,13 @@ EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 # a sample's database exists from sample START, so a file is not evidence that anything ran.
 NO_MEASURED_TURN = "the measured turn never ran — the sample carries only its seeded world"
 NO_REPLY = "the measured turn produced no reply"
+# A chat turn is entered with its state already decided: the conversation machine classifies the
+# message BEFORE the chat agent runs.  A classifier call that raised (the endpoint failing it on
+# every attempt) never reaches the client's persist step, so it leaves no promptlog row, and the
+# machine records no move for it — the turn runs on from wherever the machine stood.  Such a
+# sample never exercised the classifier, so it can count neither for nor against any claim about
+# where the machine landed.
+NO_CLASSIFIER_DRAW = "the state classifier's call failed, so the turn ran on an undecided state"
 NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
 # A RECOVERY case forces its fault; the injector reports whether it actually fired.  A sample
@@ -2785,9 +2792,15 @@ def _exclusion(db: Database, reply: str, injected: bool | None) -> str | None:
 
     ``injected`` is the injector's own account of whether it fired, and ``None`` for a case
     that installs none — so the third condition is asked only of a case that forced a fault.
+
+    Every chat turn opens with a state-classifier draw, so a sample whose turn ran but whose own
+    rows carry none is one whose classifier call failed: read off the promptlog, since a call
+    that raised is exactly the call that wrote no row.
     """
     if not measured_turn_ran(db):
         return NO_MEASURED_TURN
+    if not _classifier_rows(db):
+        return NO_CLASSIFIER_DRAW
     if not reply.strip():
         return NO_REPLY
     if injected is False:
