@@ -814,14 +814,17 @@ def _row_samples(artifact: CaseArtifact) -> str:
     reroll-exhausted sample costs a 15-sample case about five points, and without the excluded
     count beside it that loss reads as the model getting something wrong.
 
-    POOLED is read off the claims rather than carried as its own number: a cohort claim is
-    answered for every complete sample and has no third outcome, so a claim's ``total`` IS the
-    pooled count — a second copy could only drift from it.  A case that drove no cohort has no
-    claims to read and no pooling to report, so it states what it drove."""
-    pooled = max((check.total for check in artifact.checks if check.scored), default=0)
-    if not artifact.expand_samples or not pooled:
+    Both counts are read off the case's STANDINGS, the one record of the partition its own
+    header states: the standings are taken over every sample the cohort holds, so a dead one
+    is a sample the pool excluded and every other one is a sample it pooled.  That includes
+    a sample that never started: it has no result, so ``samples`` does not count it and no
+    arithmetic over ``samples`` can see it.  A case that drove no cohort has no standings
+    and no pooling to report, so it states what it drove."""
+    counts = artifact.standing_counts
+    if not counts:
         return _ROW_SAMPLES_UNPOOLED.format(samples=artifact.samples)
-    return _ROW_SAMPLES.format(pooled=pooled, excluded=max(artifact.samples - pooled, 0))
+    excluded = counts.get(cohort.Standing.DEAD.value, 0)
+    return _ROW_SAMPLES.format(pooled=sum(counts.values()) - excluded, excluded=excluded)
 
 
 if __name__ == "__main__":
