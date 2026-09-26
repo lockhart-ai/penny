@@ -716,7 +716,14 @@ majority of its intended samples, refused before any threshold is compared and r
 cases included, because dead samples are not missing at random — the faults that kill them
 correlate with the work, so the survivors are a biased draw rather than a smaller one. The
 run-level verdict moves the session's exit status, so a run computed from a fraction of its
-cohort can never exit 0. Cases drive the
+cohort can never exit 0. **A sample can be lost, but never hang the run (#2168)**: a sample
+whose boot fails (a preflight that refused) is voided the moment its Penny's run ends, named
+by the fault class; and every drive of a sample runs under `SAMPLE_WALL_CLOCK_SECONDS` (30
+minutes), past which it is stopped and voided by name (`the sample never finished — stopped at
+its …s wall-clock bound`), so the case still closes and records its cohort. Stopping re-sends
+the cancel until the task is actually down (`stop_task` in `tests/conftest.py`), because an
+in-flight HTTP call can absorb a single cancel when a blocked event loop has also run past its
+own deadline — which is how one sample once held a run silent for twenty minutes. Cases drive the
 real chat/collector loops and score persisted DB state + sends at a `pass_rate`
 threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`

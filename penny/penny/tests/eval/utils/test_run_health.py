@@ -8,8 +8,9 @@ reports a healthy run forever.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 
 import httpx
@@ -18,7 +19,8 @@ import pytest
 
 from penny.database.message_store import PromptPerf
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmFault, LlmResponseError
+from penny.llm.models import LlmConnectionError, LlmFault, LlmResponseError
+from penny.tests import conftest as root_conftest
 from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report, run_health
@@ -280,6 +282,15 @@ class TestMergingWhatSeveralProcessesSaw:
 # stub: no model, no GPU, no network.
 _VOIDED_SAMPLE = 7
 _STAND_UP_FAULT = "the sample never started — RuntimeError while standing its world up"
+_PREFLIGHT_FAULT = "the sample never started — PreflightError while standing its world up"
+_EMBEDDING_MODEL = "test-embedding-model"
+# Patched in for the wall-clock bound: long past a stubbed sample's whole drive, short enough
+# that the stuck one costs the test a second at most.
+_BOUND_SECONDS = 0.5
+_OVERRAN = "the sample never finished — stopped at its 0.5s wall-clock bound"
+# How long a test that must not hang may run before it fails instead.  It never fires on a
+# passing run; it turns a regression into a failure rather than a silent CI stall.
+_GUARD_SECONDS = 60.0
 
 
 def _stubbed_world(monkeypatch, *, stands_up: bool = True) -> None:
@@ -295,8 +306,25 @@ def _stubbed_world(monkeypatch, *, stands_up: bool = True) -> None:
     monkeypatch.setattr(
         eval_conftest, "live_prompt_perf", lambda _db: PromptPerf(1, 10, 2, 3, 0, 0, 0)
     )
+    _isolated_health(monkeypatch)
+
+
+def _isolated_health(monkeypatch) -> None:
+    """A run-health tally of this test's own, and no report directory to write into."""
     monkeypatch.setattr(run_health, "_cohorts", [])
     monkeypatch.delenv("EVAL_REPORT_DIR", raising=False)
+
+
+def _pooled(case_id: str, sample_index: int) -> eval_conftest.SampleResult:
+    """A sample that ran and was observed — what every healthy sample hands back."""
+    return eval_conftest.SampleResult(
+        1.0,
+        [],
+        1,
+        observation=eval_cohort.SampleObservation(
+            name=f"{case_id}-{eval_conftest.sample_number(sample_index)}", phrasing="the ask"
+        ),
+    )
 
 
 class TestASampleTheRigNeverStarted:
@@ -310,15 +338,7 @@ class TestASampleTheRigNeverStarted:
         async def _drive(penny, server, sample_index, retryable):
             if sample_index == _VOIDED_SAMPLE:
                 raise RuntimeError("LLM endpoint unreachable: Request timed out")
-            return eval_conftest.SampleResult(
-                1.0,
-                [],
-                1,
-                observation=eval_cohort.SampleObservation(
-                    name=f"boot-failure-{eval_conftest.sample_number(sample_index)}",
-                    phrasing="the ask",
-                ),
-            )
+            return _pooled("boot-failure", sample_index)
 
         results, perf, voided = await eval_conftest._run_samples(
             make_config, tmp_path, case_id="boot-failure", samples=15, drive=_drive
@@ -375,3 +395,80 @@ class TestASampleTheRigNeverStarted:
         assert health.cohorts == [CohortRecord(case_id="dead-cohort", intended=3, completed=0)]
         assert not health.viable
         assert "REFUSED: 1 case(s) scored a fraction of their intended cohort" in health.render()
+
+    @pytest.mark.asyncio
+    async def test_a_sample_whose_preflight_fails_closes_as_never_started(
+        self, mock_llm, make_config, tmp_path, monkeypatch
+    ):
+        """The incident's door through the REAL boot path (#2168): the first sample's
+        embedding endpoint times out at preflight, so its Penny's run ENDS before its channel
+        connects.  The readiness wait watches that run and raises what ended it, so the sample
+        is voided as the never-started exclusion the moment its boot fails, and the case
+        closes.  The readiness budget is one no test would outlive, so a wait that ignored the
+        dead run would be caught by the guard rather than passing slowly."""
+        _isolated_health(monkeypatch)
+        monkeypatch.setattr(eval_conftest, "SAMPLE_READY_TIMEOUT_SECONDS", 3600.0)
+        monkeypatch.setattr(eval_conftest, "EVAL_CONCURRENCY", 1)
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", _EMBEDDING_MODEL)
+        failures = iter([True])
+
+        async def _list_models(client: LlmClient) -> list[str]:
+            if client.model == _EMBEDDING_MODEL and next(failures, False):
+                raise LlmConnectionError("Request timed out.")
+            return [client.model]
+
+        monkeypatch.setattr(LlmClient, "list_models", _list_models)
+
+        async def _drive(penny, server, sample_index, retryable):
+            return _pooled("preflight", sample_index)
+
+        async with asyncio.timeout(_GUARD_SECONDS):
+            results, _perf, voided = await eval_conftest._run_samples(
+                make_config, tmp_path, case_id="preflight", samples=3, drive=_drive
+            )
+
+        assert len(results) == 2
+        assert [(s.name, s.phrasing, s.complete, s.exclusion) for s in voided] == [
+            ("preflight-1", eval_conftest.NEVER_SPOKEN, False, _PREFLIGHT_FAULT)
+        ]
+        assert run_health.process_health().cohorts == [
+            CohortRecord(case_id="preflight", intended=3, completed=2)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_sample_that_never_returns_is_stopped_at_its_bound(
+        self, make_config, tmp_path, monkeypatch
+    ):
+        """A drive that never returns — and that ABSORBS the first cancel sent to stop it, as
+        the incident's in-flight HTTP call did — is stopped at the wall-clock bound, for
+        certain, and voided by name; the other fourteen pool and the case closes (#2168)."""
+        _stubbed_world(monkeypatch)
+        monkeypatch.setattr(eval_conftest, "SAMPLE_WALL_CLOCK_SECONDS", _BOUND_SECONDS)
+        monkeypatch.setattr(root_conftest, "TASK_STOP_POLL_SECONDS", 0.1)
+        stopped: list[int] = []
+
+        async def _drive(penny, server, sample_index, retryable):
+            if sample_index == _VOIDED_SAMPLE:
+                try:
+                    with suppress(asyncio.CancelledError):
+                        await asyncio.Event().wait()
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.append(sample_index)
+            return _pooled("stuck", sample_index)
+
+        results, perf, voided = await eval_conftest._run_samples(
+            make_config, tmp_path, case_id="stuck", samples=15, drive=_drive
+        )
+
+        assert len(results) == 14
+        assert [(s.name, s.phrasing, s.complete, s.exclusion) for s in voided] == [
+            ("stuck-8", eval_conftest.NEVER_FINISHED, False, _OVERRAN)
+        ]
+        # Stopped, not abandoned: the cancel it absorbed was re-delivered until it landed.
+        assert stopped == [_VOIDED_SAMPLE]
+        assert run_health.process_health().cohorts == [
+            CohortRecord(case_id="stuck", intended=15, completed=14)
+        ]
+        assert perf.calls == 14
