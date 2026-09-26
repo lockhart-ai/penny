@@ -12,12 +12,13 @@ index, the local-artifacts footer, and the CLI contract.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from penny.tests.eval.utils import assemble, comment_split, report
+from penny.tests.eval.utils import assemble, cohort, comment_split, report
 from penny.tests.eval.utils.artifacts import (
     CaseArtifact,
     CaseTimings,
@@ -651,6 +652,9 @@ def _indexed_run(tmp_path: Path, name: str, model: str, cases: dict[str, tuple[i
             checks=[CheckOutcome(label="state: landed", passed=passed, total=total)],
             timings=_TIMINGS,
             expand_samples=[1],
+            # Fifteen driven, one of them started and then excluded — the partition a cohort
+            # case's record carries beside the claims it answered.
+            standing_counts={"modal": 1, "typical": 13, "dead": 1},
             variance=[
                 VarianceReading(name="tool sequence", entropy=0.5, saturated=False, distinct=3)
             ],
@@ -796,19 +800,101 @@ def test_the_index_is_per_model_and_stable_across_a_re_run(tmp_path: Path) -> No
     assert assemble.started_cases(rerun) == assemble.started_cases(gpt), "stable across a re-run"
 
 
+def _never_started_cohort(case_id: str) -> list[cohort.SampleObservation]:
+    """Fourteen samples that ran, then the one the rig never stood up — its preflight found the
+    endpoint dead — voided by name and appended last, as the driver appends it."""
+    ran = [
+        cohort.SampleObservation(name=f"{case_id}-{number}", phrasing="the ask")
+        for number in range(1, 15)
+    ]
+    void = cohort.SampleObservation(
+        name=f"{case_id}-15",
+        phrasing="never started",
+        complete=False,
+        exclusion="the sample never started — PreflightError while standing its world up",
+    )
+    return [*ran, void]
+
+
+def _record_never_started(report_dir: Path, observations: list[cohort.SampleObservation]) -> None:
+    """Rewrite the run's one record as a case that lost a sample before it started records it.
+
+    ``samples`` counts the samples that produced a RESULT, so the void is not in it — it is in
+    the standings, which are taken over every observation the cohort holds."""
+    artifact = assemble.load_case_artifacts(report_dir)[0]
+    standings = cohort.standings(observations, [])
+    voided = artifact.model_copy(
+        update={
+            "samples": sum(one.complete for one in observations),
+            "standing_counts": dict(Counter(one.standing.value for one in standings)),
+        }
+    )
+    (report_dir / "results.jsonl").write_text(voided.model_dump_json() + "\n")
+
+
 def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) -> None:
-    """The summary is GENERATED — one section per model, the arithmetic the case headers do."""
+    """The summary is GENERATED — one section per model, the arithmetic the case headers do.
+
+    Its samples column, and the run header's sample count, state the same partition the case's
+    own header does, including a sample that never started: that one has no result, so only the
+    standings can say it was lost."""
     gpt = _indexed_run(
         tmp_path, "run-gpt", "openai/gpt-oss-20b", {"a-case": (13, 14), "b-case": (12, 14)}
     )
     gemma = _indexed_run(tmp_path, "run-gemma", "google/gemma-4-26b-a4b-it", {"a-case": (14, 14)})
-    summary = assemble.render_run_summary([gpt, gemma])
+    observations = _never_started_cohort("a-case")
+    _record_never_started(gemma, observations)
 
-    assert "### `openai/gpt-oss-20b`" in summary and "### `google/gemma-4-26b-a4b-it`" in summary
-    assert "**🟡 25 / 28 checks · 89%** — 2 cases" in summary, "summed across THAT model's cases"
-    assert "**🟢 14 / 14 checks · 100%** — 1 case" in summary, "and the other model totalled apart"
-    assert "| 1 | `a-case` | 🟢 13/14 · 93% |" in summary
-    assert "14 pooled + 1 excluded" in summary, "what the rate is over, beside it"
+    header = report.CaseSections(
+        case_id="a-case",
+        model="google/gemma-4-26b-a4b-it",
+        variance=cohort.pool(observations, []),
+    ).measures()
+    summary = assemble.render_run_summary([gpt, gemma])
+    verdict = assemble.render_run_verdict(assemble.load_case_artifacts(gemma))
+
+    assert header == (
+        "| measure | reading |\n"
+        "|---|---|\n"
+        "| **checks** | 🟢 0 / 0 · 0% |\n"
+        "| **variance** | 🟢 nothing pooled |\n"
+        "| **samples** | 14 pooled + 1 excluded = 15 driven |"
+    )
+    assert summary == (
+        "## Run summary\n"
+        "\n"
+        "### `openai/gpt-oss-20b`\n"
+        "\n"
+        "**🟡 25 / 28 checks · 89%** — 2 cases\n"
+        "\n"
+        "**⚪ variance max H 0.500** `tool sequence` in `a-case` · 2 of 2 features vary\n"
+        "\n"
+        "**108,400 in · 11,800 out** — run total, every sample driven\n"
+        "\n"
+        "| # | case | deterministic | variance | samples | tokens / sample |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 1 | `a-case` | 🟢 13/14 · 93% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
+        " | 14 pooled + 1 excluded | 3,613 in · 393 out |\n"
+        "| 2 | `b-case` | 🟡 12/14 · 86% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
+        " | 14 pooled + 1 excluded | 3,613 in · 393 out |\n"
+        "\n"
+        "### `google/gemma-4-26b-a4b-it`\n"
+        "\n"
+        "**🟢 14 / 14 checks · 100%** — 1 case\n"
+        "\n"
+        "**⚪ variance max H 0.500** `tool sequence` in `a-case` · 1 of 1 features vary\n"
+        "\n"
+        "**54,200 in · 5,900 out** — run total, every sample driven\n"
+        "\n"
+        "| # | case | deterministic | variance | samples | tokens / sample |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 1 | `a-case` | 🟢 14/14 · 100% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
+        " | 14 pooled + 1 excluded | 3,871 in · 421 out |\n"
+    ), "the never-started sample is excluded in the row exactly as the header states it"
+    assert verdict == (
+        "**🟢 14 / 14 checks · 100%**  ·  **⚪ variance max H 0.500** `tool sequence` · 1/1 vary"
+        " — 1 case · 15 samples · 1 excluded"
+    ), "and the run header counts it among the samples driven, beside its exclusion"
 
 
 def test_a_blind_feature_is_never_counted_as_agreement(tmp_path: Path) -> None:
