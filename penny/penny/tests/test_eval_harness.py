@@ -23,7 +23,6 @@ import logging
 from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import NamedTuple
 
@@ -152,15 +151,6 @@ from penny.tests.eval.classifier.test_state_classifier import (
     UNPROMPTED_TEACH_ARMS,
     VALUE_ARRIVED_ARMS,
 )
-from penny.tests.eval.collector.test_collector_enactment import (
-    ENACTMENT_CASES,
-    GATE_CASES,
-    _assert_the_baseline_is_stored,
-    _EnactmentCase,
-    assert_applied_world,
-    seed_applied_job,
-    seed_gate_world,
-)
 from penny.tests.eval.collector.test_watch_cycles import (
     _BASELINE_AMOUNT as WATCH_BASELINE_AMOUNT,
 )
@@ -225,7 +215,6 @@ from penny.tests.eval.conftest import (
     NO_REPLY,
     PENNY_LOGGER,
     UNSTATED,
-    BoundExpectation,
     Check,
     CycleCall,
     CycleObservation,
@@ -270,19 +259,16 @@ from penny.tests.eval.conftest import (
     _registry_shortfall,
     _sample_db_path,
     _sample_turns,
-    _score_binding,
     _score_extraction,
-    _score_framing,
-    _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
     _stated_pass_rate,
     _stored_entries,
     _turn_kind,
-    _without_examples,
     _write_classifier_report,
     _write_sample_report,
     bound_value_field,
+    classify_by_family,
     collection_entries,
     continue_nudge_fired,
     count_tool_calls,
@@ -842,176 +828,6 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
             f"{case.case_id}: the ask fell short of {sorted(case.parked.missing)}, "
             f"the supply answers {sorted(case.supplies)}"
         )
-
-
-def test_every_applied_job_seeds_and_reads_back_as_the_apply_turn_left_it(tmp_path) -> None:
-    """Each collector-enactment case's world — the parked round its supply answered, then
-    the turn that stood the job up — seeds cleanly and reads back as the exit state it
-    claims: the container derived from the routine and the values, the routine's steps
-    rendered into it, the turn's schedule, notify on, nothing stored yet, and the machine
-    landed in apply carrying the completed framing.
-
-    Driven here against a real migrated database for the reason its sibling beats' pins
-    are: the seeder is CODE, and its loud probe otherwise runs only under ``make eval``,
-    where each sample costs TWO live cycles.  Its own database per case, because that is
-    what the sample gets, and because the held-binding world seeds fewer journeys than the
-    module's five — where a leftover ``_JOURNEYS`` reference would show.
-
-    The case's own premise rides along in the same loop, and both ways of getting it wrong
-    are silent on a run.  Values that did not cover the routine's declared parameters would
-    leave the job pointed at nothing while every cycle check read as the collector's miss;
-    values that disagreed with what the two turns settled would name a container for a job
-    nobody asked for.  The measured binding is a SPAN of what the case declares (the
-    held-binding turn bound the whole spoken phrase), so containment is the reading.
-
-    The RUNTIME JOIN (#1907) is asserted by the probe against each case's declared
-    ``joins`` — so a job whose program stopped carrying the page it fetches, or one whose
-    recorded reason for not carrying it went stale, fails here rather than after three live
-    cycles per sample.  The declared set must name only parameters the job actually binds:
-    a name outside that is a claim about a leaf nothing could fill."""
-    for index, case in enumerate(ENACTMENT_CASES):
-        db = migrated_db(str(tmp_path / f"applied-{index}.db"))
-        seed_applied_job(case)(db)
-        assert_applied_world(db, case)
-        declared = sorted(parameter.name for parameter in case.skill.parameters)
-        assert declared == sorted(case.values), (
-            f"{case.case_id}: the routine declares {declared}, the job binds {sorted(case.values)}"
-        )
-        for name, settled in case.parked.bound.items():
-            assert settled in case.values[name], (
-                f"{case.case_id}: the job's {name!r} is {case.values[name]!r}, the two turns "
-                f"settled {settled!r}"
-            )
-        assert set(case.joins) <= set(case.values), (
-            f"{case.case_id}: the join can only fill parameters the job binds, got "
-            f"{sorted(set(case.joins) - set(case.values))}"
-        )
-
-
-def test_every_gate_case_seeds_the_baseline_its_direction_rests_on(tmp_path) -> None:
-    """Each notification-gate case's world seeds cleanly and leaves the collection holding
-    exactly the observation a prior cycle would have: one entry, under the measured modal
-    key, carrying the quiet value.
-
-    The KEY is what the negative direction rests on, and getting it wrong is silent. A
-    cycle that writes under a different key makes a NEW_KEY entry — a change, which
-    notifies — so the case would report the gate broken when what broke was the fixture.
-    The probe's second claim is the one that keeps it honest: the key is rendered in the
-    HOLDINGS block the cycle reads (#1914), which is the surface that makes reusing it the
-    presented path rather than a guess. Driven here against a real migrated database
-    because the probe otherwise runs only under ``make eval``.
-
-    Its own database per case, because that is what the sample gets — and because the two
-    directions of a pair share a seeding, so a defect in one is a defect in both."""
-    for index, case in enumerate(GATE_CASES):
-        db = migrated_db(str(tmp_path / f"gate-{index}.db"))
-        seed_gate_world(case)(db)
-        assert_applied_world(db, case.applied, holding={case.key_now: case.stored})
-        _assert_the_baseline_is_stored(db, case)
-
-
-def test_every_gate_pair_keeps_its_two_values_distinguishable() -> None:
-    """The value a gate case stores and the value its positive twin's page carries are
-    different values — in the bare form and in the instruction-labelled pair (#1918).
-
-    The pair is the whole design: one direction needs the served datum to EQUAL what is
-    stored (so the write gate stops), the other needs it to DIFFER (so the write lands and
-    notifies). A stored value that contained the changed one, or the other way round,
-    would make one of the two unreachable however well the cycle behaved."""
-    for case in GATE_CASES:
-        stored, changed = case.stored.casefold(), case.applied.fact.changed.casefold()
-        assert stored != changed, f"{case.case_id}: the two directions need two values"
-        label = case.container.casefold()
-        for form in (changed, f"{label}: {changed}"):
-            assert stored not in form, (
-                f"{case.case_id}: the stored value {case.stored!r} must not live inside the "
-                f"changed one's stored form {form!r}"
-            )
-        assert changed not in stored, (
-            f"{case.case_id}: the changed value must not live inside the stored one"
-        )
-        expected = case.applied.fact.changed if case.notifies else case.stored
-        assert case.datum == expected, (
-            f"{case.case_id}: the served datum must be the one its direction measures"
-        )
-
-
-def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> None:
-    """Each enactment case's two pages differ, and differ on the ONE fact the case says
-    they do: the quiet page carries what the job was set up around and not what comes
-    next, the altered page the other way round.
-
-    Pinned without a GPU because both ways of getting it wrong are silent on a run and each
-    makes the change cycle measure nothing.  A variant that matched no replacement is
-    byte-identical to the page before it, so the "the collection holds what the page says"
-    check would read the SAME value twice and score the change cycle a miss on every
-    sample; a variant carrying both facts would score it green without the value ever
-    moving.
-
-    The ONE-SPAN claim is the code owner's ruling made checkable: "change the datum the
-    skill is looking for, not the structure".  A pair that also moved a date, a wording or
-    an ordering gives a cycle a second thing to notice, and then what the change cycle
-    measured is no longer the datum."""
-    for case in ENACTMENT_CASES:
-        assert case.quiet.text != case.altered.text, f"{case.case_id}: the pages must differ"
-        _assert_one_span_moved(case)
-        _assert_the_halves_exclude_each_other(case)
-        assert case.fact.quiet in case.quiet.text, f"{case.case_id}: the quiet fact must be there"
-        assert case.fact.changed not in case.quiet.text, (
-            f"{case.case_id}: the quiet page must not already carry {case.fact.changed!r}"
-        )
-        assert case.fact.changed in case.altered.text, (
-            f"{case.case_id}: the altered page must carry {case.fact.changed!r}"
-        )
-        assert case.fact.quiet not in case.altered.text, (
-            f"{case.case_id}: the altered page must no longer carry {case.fact.quiet!r}"
-        )
-
-
-def _assert_the_halves_exclude_each_other(case: _EnactmentCase) -> None:
-    """A case's two expected values are MUTUALLY EXCLUSIVE — neither contained in the
-    other, in the bare form or in the instruction-labelled pair a cycle may store (#1918).
-
-    The change cycle asserts one value is present and the other gone, so a quiet half that
-    lived inside the changed half's stored form would make that check unsatisfiable: the
-    cycle would do exactly the right thing and score a miss.  Cheap to state, silent to
-    get wrong — "not scheduled" inside "scheduled 05:20" was the shape that motivated it."""
-    quiet, changed = case.fact.quiet.casefold(), case.fact.changed.casefold()
-    # The labelled form a cycle may store: the extract INSTRUCTION, then the value.  The
-    # instruction is whatever leaf the routine points at, so the label is stood in for by
-    # the job's own terms — what matters is that a prefix cannot make one half contain the
-    # other, and any prefix would do.
-    label = case.container.casefold()
-    for form in (changed, f"{label}: {changed}"):
-        assert quiet not in form, (
-            f"{case.case_id}: the quiet value {case.fact.quiet!r} must not live inside the "
-            f"changed one's stored form {form!r}"
-        )
-    for form in (quiet, f"{label}: {quiet}"):
-        assert changed not in form, (
-            f"{case.case_id}: the changed value {case.fact.changed!r} must not live inside "
-            f"the quiet one's stored form {form!r}"
-        )
-
-
-def _assert_one_span_moved(case: _EnactmentCase) -> None:
-    """The two pages differ in EXACTLY one contiguous span — the datum and nothing else.
-
-    Read line by line through ``difflib`` rather than trusted to the derivation: the
-    helper that builds a variant enforces a single replacement, but the QUIET page is
-    itself derived, and two independently-derived texts can diverge anywhere.  This is
-    the claim that makes the change cycle a measurement of the datum."""
-    moves = [
-        block
-        for block in SequenceMatcher(
-            None, case.quiet.text.splitlines(), case.altered.text.splitlines()
-        ).get_opcodes()
-        if block[0] != "equal"
-    ]
-    assert len(moves) == 1, (
-        f"{case.case_id}: the change page must move the datum and nothing else — "
-        f"{len(moves)} spans differ"
-    )
 
 
 def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> None:
@@ -1802,10 +1618,10 @@ def test_a_ported_case_must_state_its_threshold_and_the_inline_path_keeps_its_de
     # defaults so a ported case can omit them, and an inline case that omits one produces no
     # checks at all — `SampleResult.graded([])` scores 1.0 over nothing, so the case reports a
     # green for every sample it drove.  Refused before a sample runs; a ported case passes.
-    _refuse_unscorable("a-case", ported=True, pool=(), expectations=())
+    _refuse_unscorable("a-case", ported=True, pool=())
     _refuse_unscorable("a-case", ported=False, pool=("something to sweep",))
-    with pytest.raises(ValueError, match="must state its expectations"):
-        _refuse_unscorable("a-case", ported=False, expectations=())
+    with pytest.raises(ValueError, match="must state its pool"):
+        _refuse_unscorable("a-case", ported=False, pool=())
 
 
 def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path) -> None:
@@ -3407,114 +3223,14 @@ def test_each_framing_case_renders_exactly_the_document_it_claims(fixture) -> No
 
 
 def _drawn(name: str, description: str, value: str = "") -> FramedParameter:
-    """One drawn parameter for a scorer fixture.
+    """One drawn parameter for a fixture.
 
     ``value`` is what the round demonstrated the parameter with (#1868) and defaults to
-    empty here, because these cases score the parameter SET and the two generic checks and
-    none of them reads a value.  A production draw can never carry an empty one — an
-    accepted value is a literal span of the user's own words — so the default is a fixture
-    convenience, never a shape the model can produce."""
+    empty here, because the classification tests read only a parameter's name and
+    description.  A production draw can never carry an empty one — an accepted value is a
+    literal span of the user's own words — so the default is a fixture convenience, never
+    a shape the model can produce."""
     return FramedParameter(name=name, description=description, value=value)
-
-
-def test_score_framing_grades_the_parameter_set_exactly() -> None:
-    """The framing case's scoring over a fixture draw (#1830): each expected family
-    answered by exactly one drawn parameter, nothing else asked for, and the framing
-    generic — with every drawn value riding ADVISORY so a report shows verbatim what the
-    model committed to.
-
-    Semantic breadth is the families' job: ``page_to_watch`` answers the family the
-    reference calls ``url``.  Name-first classification is what keeps the second
-    parameter's description — which mentions a page in passing — from answering it a
-    second time."""
-    families = (
-        ParameterFamily("url", ("url", "page", "link")),
-        ParameterFamily("ticket search", ("search", "query", "event")),
-    )
-    signature = SkillSignature(
-        name="ticket-price-watcher",
-        description="watch an event's cheapest ticket price",
-        parameters=(
-            _drawn(
-                name="page_to_watch",
-                description="the listing page to check",
-                value="tickets.example/spring-gala",
-            ),
-            _drawn(
-                name="event_search",
-                description="the search that finds the page",
-                value="cheapest seat",
-            ),
-        ),
-    )
-
-    scored = _score_framing(signature, families, ("aurora", "fest"))
-    assert [(check.label, check.ok, check.scored) for check in scored] == [
-        ("asks for the url", True, True),
-        ("asks for the ticket search", True, True),
-        ("asks for nothing else", True, True),
-        ("the framing is generic", True, True),
-        ("the parameters are generic", True, True),
-        ("named it 'ticket-price-watcher'", True, False),
-        ('described it "watch an event\'s cheapest ticket price"', True, False),
-        (
-            "asks 'page_to_watch' — 'the listing page to check' "
-            "(drawn value 'tickets.example/spring-gala')",
-            True,
-            False,
-        ),
-        (
-            "asks 'event_search' — 'the search that finds the page' (drawn value 'cheapest seat')",
-            True,
-            False,
-        ),
-        # The container the framing would build (#1868) — the shipped derivation over the
-        # drawn values, so the report shows the name production would use.
-        (
-            "derives the container "
-            "'ticket-price-watcher-tickets-example-spring-gala-cheapest-seat'",
-            True,
-            False,
-        ),
-    ]
-
-    # An EXTRA parameter is caught by the count, and a family nothing answers by its own
-    # check — the two halves of "the set is exact".
-    extra = signature.model_copy(
-        update={
-            "parameters": (
-                *signature.parameters,
-                _drawn(name="where_to_save", description="the collection to write to"),
-            )
-        }
-    )
-    graded = _by_label(_score_framing(extra, families, ()))
-    assert graded["asks for nothing else"] == (False, "drew 3, expected 2")
-
-    # A family nothing answers is its own miss, and one two parameters answer says so.
-    missing = signature.model_copy(update={"parameters": signature.parameters[:1]})
-    assert _by_label(_score_framing(missing, families, ()))["asks for the ticket search"] == (
-        False,
-        "no parameter answers it",
-    )
-
-    # The occasion in the framing is a structural miss, naming the words it used.
-    occasional = signature.model_copy(update={"description": "watch aurora fest ticket prices"})
-    framing = _by_label(_score_framing(occasional, families, ("aurora", "fest")))
-    assert framing["the framing is generic"] == (False, "named the occasion: aurora, fest")
-
-    # A refused draw fails every scored check with its reason named, never silently.
-    refused = _score_framing(None, families, ("aurora",))
-    assert [(check.label, check.ok) for check in refused] == [
-        ("asks for the url", False),
-        ("asks for the ticket search", False),
-        ("asks for nothing else", False),
-        ("the framing is generic", False),
-        ("the parameters are generic", False),
-    ]
-    assert {check.rationale for check in refused} == {
-        "the draw was refused — no signature came back"
-    }
 
 
 @pytest.mark.parametrize("fixture", BINDING_FIXTURES, ids=lambda f: f.case_id)
@@ -5077,81 +4793,13 @@ def test_an_extraction_answer_carrying_the_contract_tags_invents_nothing(tmp_pat
     assert unsourced_specifics(invented.output_text, invented.given) == ["Casimir", "Oyelaran"]
 
 
-def test_score_binding_grades_each_declared_parameter_and_the_terms() -> None:
-    """The binding case's scoring over a fixture answer (#1867): one check per declared
-    parameter — bound to a span carrying the value the ask supplies, or named missing when
-    it supplies none — plus the structural check that no job TERM rode into a value, with
-    every drawn value riding ADVISORY.
-
-    The anchor is compared through the production ``spoken_form``, so a value that kept
-    the scheme and a value that dropped it both answer the same expectation: which span of
-    the ask supplies a value has a little play in it, and a scorer demanding one exact
-    string would be answering for the draw."""
-    expectations = (
-        BoundExpectation("url", "northpier.example/departures"),
-        BoundExpectation("keyword", "dawn sailing"),
-    )
-    bound = BoundValues(
-        values={"url": "https://northpier.example/departures", "keyword": "the dawn sailing"}
-    )
-
-    scored = _score_binding(bound, expectations, ("every morning",))
-    assert [(check.label, check.ok, check.scored) for check in scored] == [
-        ("binds the url", True, True),
-        ("binds the keyword", True, True),
-        ("no job term landed in a value", True, True),
-        ("bound 'url' = 'https://northpier.example/departures'", True, False),
-        ("bound 'keyword' = 'the dawn sailing'", True, False),
-    ]
-
-    # A value carrying the wrong span is its own miss, quoting what came back.
-    wrong = BoundValues(values={"url": "the north pier timetable", "keyword": "dawn sailing"})
-    assert _by_label(_score_binding(wrong, expectations, ()))["binds the url"] == (
-        False,
-        "bound 'the north pier timetable', not the value the ask supplies",
-    )
-
-    # A term swept into a value is the structural miss, naming the value and the term.
-    swept = BoundValues(
-        values={
-            "url": "https://northpier.example/departures",
-            "keyword": "dawn sailing every morning",
-        }
-    )
-    graded = _by_label(_score_binding(swept, expectations, ("every morning",)))
-    assert graded["no job term landed in a value"] == (
-        False,
-        "carried the terms: keyword (every morning)",
-    )
-
-    # The SHORTFALL direction: an expectation with no anchor wants the missing outcome,
-    # and a value there is a guess the rationale quotes.
-    shortfall = (expectations[0], BoundExpectation("keyword"))
-    reported = MissingParameters(
-        names=("keyword",), values={"url": "https://northpier.example/departures"}
-    )
-    # An ask stating no terms has nothing to check, so that one is NOT-APPLICABLE rather
-    # than a free pass — rendered, out of the denominator.
-    assert [
-        (check.label, check.ok, check.ignored) for check in _score_binding(reported, shortfall, ())
-    ] == [
-        ("binds the url", True, False),
-        ("reports the keyword missing", True, False),
-        ("no job term landed in a value", True, True),
-        ("bound 'url' = 'https://northpier.example/departures'", True, False),
-        ("reported missing: keyword", True, False),
-    ]
-    guessed = _by_label(_score_binding(bound, shortfall, ()))
-    assert guessed["reports the keyword missing"] == (False, "bound it to 'the dawn sailing'")
-
-    # A refused draw fails every scored check with its reason named, never silently.
-    refused = _score_binding(None, expectations, ("every morning",))
-    assert [(check.label, check.ok) for check in refused] == [
-        ("binds the url", False),
-        ("binds the keyword", False),
-        ("no job term landed in a value", False),
-    ]
-    assert {check.rationale for check in refused} == {"the draw was refused — no binding came back"}
+def _answered(
+    parameters: Sequence[FramedParameter], families: Sequence[ParameterFamily]
+) -> list[str | None]:
+    """The family label each drawn parameter answers, positionally, through the one shared
+    classification discipline every suite reads (``classify_by_family``)."""
+    answered = classify_by_family([(p.name, p.description) for p in parameters], families)
+    return [None if family is None else family.label for family in answered]
 
 
 def test_the_page_family_classifies_by_name_only() -> None:
@@ -5159,60 +4807,54 @@ def test_the_page_family_classifies_by_name_only() -> None:
     owner's ruling on the first run).
 
     The motivating draw: a `city` parameter whose description said *name of the location
-    on the site to read*.  Two IDENTICAL draws scored opposite ways, because that
-    passing mention of the site could promote one of them to the page — the scorer
+    on the site to read*.  Two IDENTICAL draws classified opposite ways, because that
+    passing mention of the site could promote one of them to the page — the classifier
     answering for a draw that never named a page at all.  A page is NAMED as one.
 
     The fallback stays for every other family, which is what lets a well-judged name the
-    tokens don't anticipate still land via its description."""
+    tokens don't anticipate still land via its description.  And the NAME pass runs over
+    every parameter first: a family a name already claimed is closed to the description
+    pass, so a description mentioning a page in passing never answers the page a second
+    time."""
     page = ParameterFamily("url", ("url", "page", "site"), name_only=True)
     search = ParameterFamily("ticket search", ("search", "query"), name_only=False)
-    city = _drawn(name="city", description="name of the location on the site to read")
 
-    named_city = SkillSignature(
-        name="temperature-recorder", description="record a daily high", parameters=(city,)
-    )
-    graded = _by_label(_score_framing(named_city, (page,), ()))
-    assert graded["asks for the url"] == (False, "no parameter answers it")
-    assert graded["asks for nothing else"] == (True, None)
+    city = _drawn(name="city", description="name of the location on the site to read")
+    assert _answered([city], (page,)) == [None]
 
     # A non-page family still reads its description when no name matched anywhere.
-    by_description = SkillSignature(
-        name="ticket-price-watcher",
-        description="watch an event's cheapest ticket price",
-        parameters=(_drawn(name="whats_on", description="the search to run"),),
+    whats_on = _drawn(name="whats_on", description="the search to run")
+    assert _answered([whats_on], (search,)) == ["ticket search"]
+
+    # Name first: ``page_to_watch`` claims the page by name, so the second parameter's
+    # description — which mentions the page — can only answer what is still open.
+    families = (
+        ParameterFamily("url", ("url", "page", "link")),
+        ParameterFamily("ticket search", ("search", "query", "event")),
     )
-    assert _by_label(_score_framing(by_description, (search,), ()))[
-        "asks for the ticket search"
-    ] == (
-        True,
-        None,
-    )
+    pair = [
+        _drawn(name="page_to_watch", description="the listing page to check"),
+        _drawn(name="whats_on", description="the search that finds the page"),
+    ]
+    assert _answered(pair, families) == ["url", "ticket search"]
 
 
 def test_a_digit_suffixed_ordinal_pair_classifies_as_the_two_families() -> None:
     """A trailing digit is its own token (#1830, the code owner's ruling on the second
     run): ``site1``/``site2`` is one of the natural ways to write an ordinal pair, and
-    the run scored two CORRECT draws as family misses because the scorer read each name
-    as a single opaque word.  The families are unchanged; what changed is that the
-    tokenizer can see the ordinal that was always there."""
+    reading each name as a single opaque word classified two CORRECT draws as answering
+    neither family.  The families are unchanged; what changed is that the tokenizer can see
+    the ordinal that was always there."""
     families = (
         ParameterFamily("first source", ("first", "one", "1", "primary")),
         ParameterFamily("second source", ("second", "two", "2", "secondary")),
     )
-    signature = SkillSignature(
-        name="headline-collector",
-        description="collect the top headline from each front page it is pointed at",
-        parameters=(
-            _drawn(name="site1", description="the first front page to read"),
-            _drawn(name="site2", description="the second front page to read"),
-        ),
-    )
+    pair = [
+        _drawn(name="site1", description="the first front page to read"),
+        _drawn(name="site2", description="the second front page to read"),
+    ]
 
-    graded = _by_label(_score_framing(signature, families, ("citydesk", "harborpost")))
-    assert graded["asks for the first source"] == (True, None)
-    assert graded["asks for the second source"] == (True, None)
-    assert graded["asks for nothing else"] == (True, None)
+    assert _answered(pair, families) == ["first source", "second source"]
 
 
 def test_a_letter_suffixed_ordinal_pair_classifies_as_the_two_families() -> None:
@@ -5220,44 +4862,28 @@ def test_a_letter_suffixed_ordinal_pair_classifies_as_the_two_families() -> None
     correct draws exactly what digits once did.
 
     The motivating sample drew ``url_a`` / ``url_b`` — two distinct, generic, scalar
-    names satisfying the prompt's tell-them-apart rule — and BOTH ordinal family checks
-    read "no parameter answers it" while the count and generic checks passed.  Correct
-    behaviour, scored wrong.  A trailing single letter is now the position it holds in
-    the alphabet, so the pair lands on the families that already carry ``1``/``2``: no
-    family gained a token, so nothing that missed before can start matching now."""
+    names satisfying the prompt's tell-them-apart rule — and BOTH answered neither ordinal
+    family.  A trailing single letter is now the position it holds in the alphabet, so the
+    pair lands on the families that already carry ``1``/``2``: no family gained a token,
+    so nothing that missed before can start matching now."""
     families = (
         ParameterFamily("first source", ("first", "one", "1", "primary")),
         ParameterFamily("second source", ("second", "two", "2", "secondary")),
     )
-    signature = SkillSignature(
-        name="headline-collector",
-        description="collect the top headline from each front page it is pointed at",
-        parameters=(
-            _drawn(name="url_a", description="the first front page to read"),
-            _drawn(name="url_b", description="the second front page to read"),
-        ),
-    )
 
-    graded = _by_label(_score_framing(signature, families, ("citydesk", "harborpost")))
-    assert graded["asks for the first source"] == (True, None)
-    assert graded["asks for the second source"] == (True, None)
-    assert graded["asks for nothing else"] == (True, None)
-    assert graded["the parameters are generic"] == (True, None)
-
-    # Everything that classified before still does — the digit pair, the spelled ordinal,
-    # and the underscored digit, each landing on the same family as always.
-    for first, second in (("site1", "site2"), ("first_site", "second_site"), ("url_1", "url_2")):
-        unchanged = signature.model_copy(
-            update={
-                "parameters": (
-                    _drawn(name=first, description="the first front page to read"),
-                    _drawn(name=second, description="the second front page to read"),
-                )
-            }
-        )
-        still = _by_label(_score_framing(unchanged, families, ()))
-        assert still["asks for the first source"] == (True, None), first
-        assert still["asks for the second source"] == (True, None), second
+    # The lettered pair, and everything that classified before — the digit pair, the
+    # spelled ordinal, and the underscored digit — each landing on the same families.
+    for first, second in (
+        ("url_a", "url_b"),
+        ("site1", "site2"),
+        ("first_site", "second_site"),
+        ("url_1", "url_2"),
+    ):
+        pair = [
+            _drawn(name=first, description="the first front page to read"),
+            _drawn(name=second, description="the second front page to read"),
+        ]
+        assert _answered(pair, families) == ["first source", "second source"], first
 
 
 def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
@@ -5267,37 +4893,22 @@ def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
     DESCRIPTION is untouched (it is prose, where ``a`` is an article; reading it as an
     ordinal would file most descriptions ever written under the first family), and a
     name that is ONLY a letter is left alone (a suffix needs something to be suffixed
-    to).  And a case expecting ONE family counts a ``site_a`` once, not twice: the
-    ordinal rides alongside the name's own tokens, it does not replace them."""
+    to).  And a ``site_a`` still answers the family its own name names: the ordinal rides
+    alongside the name's tokens, it does not replace them."""
     ordinal = ParameterFamily("first source", ("first", "one", "1", "primary"))
     page = ParameterFamily("url", ("url", "page", "site"), name_only=True)
-    framing = {"name": "headline-collector", "description": "collect a page's top headline"}
 
     # A description full of articles answers the ordinal family through neither pass.
-    prose = SkillSignature(
-        **framing,
-        parameters=(_drawn(name="whats_on", description="a page to read a headline off"),),
-    )
-    assert _by_label(_score_framing(prose, (ordinal,), ()))["asks for the first source"] == (
-        False,
-        "no parameter answers it",
-    )
+    prose = _drawn(name="whats_on", description="a page to read a headline off")
+    assert _answered([prose], (ordinal,)) == [None]
 
     # A name that is only a letter is a name nobody enumerated, not the first of anything.
-    bare = SkillSignature(**framing, parameters=(_drawn(name="a", description="a page"),))
-    assert _by_label(_score_framing(bare, (ordinal,), ()))["asks for the first source"] == (
-        False,
-        "no parameter answers it",
-    )
+    bare = _drawn(name="a", description="a page")
+    assert _answered([bare], (ordinal,)) == [None]
 
-    # One expected family, one letter-suffixed name: answered once.
-    single = SkillSignature(
-        **framing,
-        parameters=(_drawn(name="site_a", description="the front page to read"),),
-    )
-    graded = _by_label(_score_framing(single, (page,), ()))
-    assert graded["asks for the url"] == (True, None)
-    assert graded["asks for nothing else"] == (True, None)
+    # A letter-suffixed name keeps the family its name names.
+    single = _drawn(name="site_a", description="the front page to read")
+    assert _answered([single], (page,)) == ["url"]
 
 
 def _required(*pairs: tuple[str, str | None]) -> list[SkillParameter]:
@@ -5356,254 +4967,6 @@ def test_the_learn_interface_accepts_the_page_plus_at_most_the_found_thing() -> 
     # An accepted parameter still has to say what to supply.
     undescribed = _interface_check(_required(("url", None)))
     assert (undescribed.ok, undescribed.rationale) == (False, "carries no description: url")
-
-
-def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:
-    """The generic check reaches the PARAMETER lines too (#1830) — the enforcement half
-    of the parameter-line contract.
-
-    The motivating draw: `citydesk_url — citydesk.example/front`, which names the spot
-    after the site it was taught on and then writes that occasion's value where the
-    what-to-supply belongs.  It is a routine that can only ever be pointed back at the
-    page it learned from.  The same spot written generically — `first_site — the first
-    front page to read` — passes, and so does the framing check either way, which is
-    why this is its own check rather than a widening of that one."""
-    families = (ParameterFamily("first source", ("first", "one", "1", "primary")),)
-    instance = ("citydesk", "harborpost")
-    framing = {
-        "name": "headline-collector",
-        "description": "collect the top headline from a news front page",
-    }
-
-    occasional = SkillSignature(
-        **framing,
-        parameters=(_drawn(name="citydesk_url", description="citydesk.example/front"),),
-    )
-    graded = _by_label(_score_framing(occasional, families, instance))
-    assert graded["the parameters are generic"] == (
-        False,
-        "named the occasion: citydesk_url (citydesk)",
-    )
-    assert graded["the framing is generic"] == (True, None), "the framing itself is clean"
-
-    generic = SkillSignature(
-        **framing,
-        parameters=(_drawn(name="first_site", description="the first front page to read"),),
-    )
-    assert _by_label(_score_framing(generic, families, instance))["the parameters are generic"] == (
-        True,
-        None,
-    )
-
-
-def test_an_example_clause_is_garnish_not_substance() -> None:
-    """An appended example of this occasion's value is STRIPPED before the generic scan
-    (#1830, the code owner's ruling on the fourth run).
-
-    The run failed two lines whose substance was exactly right — the thinking drafted
-    them exampleless and the `(e.g., …)` appeared only at transcription — so scoring the
-    clause marked correct work wrong.  What must still fail is the line's substance: an
-    instance token in the NAME, or the value standing as the whole description.
-
-    The third shape is the one that separates the two rulings: a `location` parameter
-    with its example stripped is generically WORDED, and still misses the page family,
-    because its defect is the type it asks for and not the garnish it wore."""
-    page = ParameterFamily("url", ("url", "page", "site", "weather"), name_only=True)
-
-    # Generic substance wearing an example of the occasion — the clause goes.
-    garnished = SkillSignature(
-        name="temperature-recorder",
-        description="record the daily high temperature from a weather page",
-        parameters=(
-            _drawn(
-                name="site_url",
-                description=(
-                    "the URL to query for the high temperature (e.g., weather.example/lisbon)"
-                ),
-            ),
-        ),
-    )
-    graded = _by_label(_score_framing(garnished, (page,), ("lisbon",)))
-    assert graded["the parameters are generic"] == (True, None)
-    assert graded["asks for the url"] == (True, None)
-
-    # The occasion IN the name, and the value standing AS the description: substance.
-    echoed = SkillSignature(
-        name="headline-collector",
-        description="collect the top headline from a news front page",
-        parameters=(_drawn(name="citydesk_url", description="citydesk.example/front"),),
-    )
-    assert _by_label(_score_framing(echoed, (page,), ("citydesk", "harborpost")))[
-        "the parameters are generic"
-    ] == (False, "named the occasion: citydesk_url (citydesk)")
-
-    # Stripped and generic, but the WRONG KIND of thing — a piece decomposed out of the
-    # value the user actually gave, which is the type drift, not the garnish.
-    decomposed = SkillSignature(
-        name="temperature-recorder",
-        description="record the daily high temperature from a weather page",
-        parameters=(
-            _drawn(
-                name="location",
-                description='the geographic location to look up (e.g., "lisbon")',
-            ),
-        ),
-    )
-    drifted = _by_label(_score_framing(decomposed, (page,), ("lisbon",)))
-    assert drifted["the parameters are generic"] == (True, None), "the garnish is not the miss"
-    assert drifted["asks for the url"] == (False, "no parameter answers it")
-
-
-def test_example_clauses_are_stripped_in_their_observed_forms() -> None:
-    """The clause shapes a draw actually writes, all reduced to the instruction alone —
-    parenthesized or trailing, with or without the comma and the dots."""
-    assert _without_examples("the plot to log (e.g., 17)") == "the plot to log"
-    assert _without_examples("the plot to log (eg 17)") == "the plot to log"
-    assert _without_examples("the plot to log (for example 17)") == "the plot to log"
-    assert _without_examples("the plot to log, e.g. 17") == "the plot to log"
-    assert _without_examples("the plot to log — such as 17") == "the plot to log"
-    # A line with no garnish is untouched, and a word merely containing the letters is
-    # not a lead-in ("eggs" is not "e.g.").
-    assert _without_examples("which plot in the allotment to log") == (
-        "which plot in the allotment to log"
-    )
-    assert _without_examples("the plot whose eggs are counted") == "the plot whose eggs are counted"
-
-
-def _by_label(checks) -> dict[str, tuple[bool, str | None]]:
-    """A scored list indexed by check label — the diff-join key each check is named
-    for."""
-    return {check.label: (check.ok, check.rationale) for check in checks}
-
-
-def test_score_labelling_grades_each_spot_and_carries_the_labels_advisory() -> None:
-    """The labelling case's scoring over a fixture draw (#1828): per offered spot, a
-    line came back · its name hardens to a usable binding key · it is not the arg name
-    handed back · its description says what belongs there.  Every drawn label then rides
-    ADVISORY, so a report shows verbatim what the model committed to."""
-    by_value = {"the current price": "extract", _LABELLER_INVENTED_KEY: "key"}
-    labels = SkillLabels(
-        labels={
-            "extract": LeafLabel(name="value_to_find", description="what to pull off the page"),
-            "key": LeafLabel(name="entry key", description="what to call the entry it saves"),
-        }
-    )
-
-    scored = _score_labelling(labels, by_value, list(by_value), (), "")
-    assert [(check.label, check.ok, check.scored) for check in scored] == [
-        ("a line came back: 'the current price'", True, True),
-        ("name is a usable binding key: 'the current price'", True, True),
-        ("name is not the arg name: 'the current price'", True, True),
-        ("description says what belongs there: 'the current price'", True, True),
-        ("a line came back: 'aurora deck 2 page source'", True, True),
-        ("name is a usable binding key: 'aurora deck 2 page source'", True, True),
-        ("name is not the arg name: 'aurora deck 2 page source'", True, True),
-        ("description says what belongs there: 'aurora deck 2 page source'", True, True),
-        ("drew extract: 'value_to_find' — 'what to pull off the page'", True, False),
-        ("drew key: 'entry key' — 'what to call the entry it saves'", True, False),
-    ]
-
-    # A FAILED draw is one miss per spot, not four: the three checks that depend on a
-    # line are NOT APPLICABLE without one, so a draw that never landed reads as one
-    # miss each rather than as four separate failures.  Since #1828 that is the only
-    # shape a missing line arrives in — an accepted draw covers every offered spot, so
-    # there is no partial map for the scorer to see.
-    failed = _score_labelling(None, by_value, list(by_value), (), "")
-    assert [(check.label, check.ok, check.ignored) for check in failed[:5]] == [
-        ("a line came back: 'the current price'", False, False),
-        ("name is a usable binding key: 'the current price'", True, True),
-        ("name is not the arg name: 'the current price'", True, True),
-        ("description says what belongs there: 'the current price'", True, True),
-        ("a line came back: 'aurora deck 2 page source'", False, False),
-    ]
-
-    # A line that stopped after its name covers its spot (the grammar's one optional
-    # field), so it is accepted — and the missing description is its own miss.
-    nameless = SkillLabels(
-        labels={
-            "extract": LeafLabel(name="value_to_find", description=""),
-            "key": LeafLabel(name="entry_key", description="what to call it"),
-        }
-    )
-    quiet = _score_labelling(nameless, by_value, list(by_value), (), "")
-    assert [(check.label, check.ok) for check in quiet if not check.ok] == [
-        ("description says what belongs there: 'the current price'", False)
-    ]
-
-    # The name handed back is the arg name it was shown — the spot was described, not
-    # named — and a name that hardens to nothing could never be a binding key.
-    echoed = SkillLabels(
-        labels={
-            "extract": LeafLabel(name="Extract", description="what to pull"),
-            "key": LeafLabel(name="!!", description="a label"),
-        }
-    )
-    lazy = _score_labelling(echoed, by_value, list(by_value), (), "")
-    assert [(check.label, check.ok) for check in lazy if not check.ok] == [
-        ("name is not the arg name: 'the current price'", False),
-        ("name is a usable binding key: 'aurora deck 2 page source'", False),
-    ]
-
-    # A value the case asserts but the ledger never distilled is a BROKEN FIXTURE, not
-    # a naming miss: it fails loudly naming the value, because a drifted fixture
-    # scoring green is a case measuring nothing.
-    drifted = _score_labelling(labels, by_value, ["a value nothing distilled"], (), "")
-    assert [(check.label, check.ok) for check in drifted][:1] == [
-        ("a line came back: 'a value nothing distilled'", False)
-    ]
-    assert "not among the distilled placeholders" in (drifted[0].rationale or "")
-
-
-def test_score_labelling_reads_the_two_structural_claims() -> None:
-    """The two claims only some cases make (#1828).
-
-    Two spots on one argument must draw DIFFERENT names — one name for both loses which
-    site is which.  And a spot filling TWO sites must resolve to exactly one label:
-    splitting it either repeats the spot's current name or keys a line to a spot nobody
-    offered, and both are coverage violations the validator refuses (#1828), so a split
-    reaches the scorer as the shared spot having no label at all."""
-    two_sources = {"citydesk.example/front": "queries", "harborpost.example/front": "queries-2"}
-    pair = ("citydesk.example/front", "harborpost.example/front")
-    collapsed = SkillLabels(
-        labels={
-            "queries": LeafLabel(name="news_page", description="a front page"),
-            "queries-2": LeafLabel(name="news page", description="the other front page"),
-        }
-    )
-
-    [check] = [c for c in _score_labelling(collapsed, two_sources, (), [pair], "") if c.scored]
-    assert (check.label, check.ok, check.rationale) == (
-        "distinct names: 'citydesk.example/front' vs 'harborpost.example/front'",
-        False,
-        "both drew 'news_page'",
-    )
-
-    told_apart = SkillLabels(
-        labels={
-            "queries": LeafLabel(name="first_news_site", description="the first front page"),
-            "queries-2": LeafLabel(name="second_news_site", description="the second front page"),
-        }
-    )
-    [ok_check] = [c for c in _score_labelling(told_apart, two_sources, (), [pair], "") if c.scored]
-    assert ok_check.ok
-
-    shared = {"VLT": "queries", "the share price": "extract"}
-    covered = SkillLabels(
-        labels={
-            "queries": LeafLabel(name="ticker_symbol", description="the symbol to look up"),
-            "extract": LeafLabel(name="value_to_find", description="what to pull"),
-        }
-    )
-    [held] = [c for c in _score_labelling(covered, shared, (), (), "VLT") if c.scored]
-    assert (held.label, held.ok) == ("one label for the shared spot: 'VLT'", True)
-
-    # A split never reaches an accepted draw, so it arrives as a failed one.
-    [claim] = [c for c in _score_labelling(None, shared, (), (), "VLT") if c.scored]
-    assert (claim.label, claim.ok, claim.rationale) == (
-        "one label for the shared spot: 'VLT'",
-        False,
-        "the shared spot drew no single line",
-    )
 
 
 # ── The chat-reply scorer's two reply reads (#1919) ──────────────────────────

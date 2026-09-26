@@ -92,9 +92,8 @@ _LOCUS = f"In the {PennyConstants.SKILL_BIND_AGENT_NAME} micro-context, "
 
 class BindingFixture(NamedTuple):
     """One agreed case: the routine as it already stands, the user's turns asking for it
-    again, the document the shipped renderers must produce from the pair, what each
-    declared parameter should come back as, and the job terms the ask carries — none of
-    which may appear inside a value."""
+    again, the document the shipped renderers must produce from the pair, and what each
+    declared parameter should come back as."""
 
     case_id: str
     skill: str
@@ -103,7 +102,6 @@ class BindingFixture(NamedTuple):
     turns: tuple[str, ...]
     rendered_input: str
     expectations: tuple[BoundExpectation, ...]
-    forbidden: tuple[str, ...]
 
 
 # The two signatures the cases are drawn against, each one the shape the framer really
@@ -144,7 +142,6 @@ _LISTING = BindingFixture(
         "https://faux-market.example/keel-lantern — every hour until sunday night is fine"
     ),
     expectations=(BoundExpectation("url", "faux-market.example/keel-lantern"),),
-    forbidden=("every hour", "sunday"),
 )
 
 
@@ -181,7 +178,6 @@ _TWO_PARAMETERS = BindingFixture(
         BoundExpectation("url", "northpier.example/departures"),
         BoundExpectation("keyword", "dawn sailing"),
     ),
-    forbidden=("every morning",),
 )
 
 
@@ -212,7 +208,6 @@ _COUNT = BindingFixture(
         "and let me know if it drops"
     ),
     expectations=(BoundExpectation("url", "riverotters.example/census"),),
-    forbidden=("every week",),
 )
 
 
@@ -243,7 +238,6 @@ _MISSING_PAGE = BindingFixture(
         "tell me when it changes? every hour is fine"
     ),
     expectations=(BoundExpectation("url"),),
-    forbidden=("every hour",),
 )
 
 
@@ -280,7 +274,6 @@ _MISSING_KEYWORD = BindingFixture(
         BoundExpectation("url", "northpier.example/departures"),
         BoundExpectation("keyword"),
     ),
-    forbidden=("every morning",),
 )
 
 
@@ -344,12 +337,10 @@ class PortedBinding(NamedTuple):
 
     ``forbids`` is what this case's *nothing invented* claim rules out of every bound value:
     the job's terms, and — where the ask names something that is not an answer — the
-    temptation itself.  It lives HERE rather than on the fixture because the fixture's own
-    ``forbidden`` feeds the inline per-parameter scorer, and a cohort claim reading it
-    inherits whatever that scorer happened to need.  ``binder-invents-nothing-for-a-condition
-    -the-signature-cannot-hold`` is why: its fixture forbids the cadence alone, so a claim
-    reading the fixture would score green on a value that swallowed the whole condition
-    clause — the exact draw the case is named for.
+    temptation itself.  It lives on the case because it is the claim's own terms:
+    ``binder-invents-nothing-for-a-condition-the-signature-cannot-hold`` forbids the
+    condition clause beside the cadence, since a value that swallowed it is the exact draw
+    the case is named for.
 
     ``also_states`` is for a fact the arms must carry that no claim reads directly — the role
     word that says which of two same-kinded pages answers which parameter.  Everything else
@@ -581,10 +572,10 @@ def _no_value_takes_another_parameters_span(ported: PortedBinding) -> WorldClaim
 
 # ── Ported: one parameter filled, one reported missing ────────────────────────
 #
-# The survivor is ``bind-missing-keyword``, because it is the one ask that states the whole
-# behaviour in a single draw: the page is in the message and what to look for on it is not,
-# so the answer has to carry both halves — the value it could read, and the parameter
-# nothing supplied — while the cadence sitting beside the address stays out of either.
+# The ask states the whole behaviour in a single draw: the page is in the message and what
+# to look for on it is not, so the answer has to carry both halves — the value it could
+# read, and the parameter nothing supplied — while the cadence sitting beside the address
+# stays out of either.
 #
 # An arm is a SEQUENCE of turns, matching the framer's shape: an ask is however many turns
 # the user took to make it, and ``render_spoken_turns`` renders them as the haystack the
@@ -687,11 +678,9 @@ async def test_the_page_binds_and_the_entry_is_reported_missing(
 
 # ── Ported: the page binds and neither term comes with it ─────────────────────
 #
-# The survivor is ``bind-listing-page``, because it is the one ask whose value sits between
-# BOTH terms: a cadence and an end date, either of which a draw taking the rest of the
-# clause would sweep in.  ``bind-daily-special`` and ``bind-new-arrivals`` collapse into it
-# — they differ in where the cadence sits relative to the url, which is layout, which is
-# wording, which is the arm axis.
+# The ask's value sits between BOTH terms: a cadence and an end date, either of which a draw
+# taking the rest of the clause would sweep in.  Where the cadence sits relative to the url
+# is layout, which is wording, which is the arm axis.
 
 _LISTING_PHRASINGS = (
     (
@@ -769,7 +758,7 @@ async def test_the_page_binds_and_neither_term_comes_with_it(
 
 # ── Ported: a condition the signature cannot hold ─────────────────────────────
 #
-# The survivor is ``bind-count-page``: the ask states a condition — tell me if it drops —
+# The ask states a condition — tell me if it drops —
 # and the routine declares one parameter, the page.  The condition has nowhere to go, and a
 # signature with nowhere to put something is exactly where an invented parameter or a padded
 # value would show up.  So the condition clause is FORBIDDEN alongside the cadence: a value
@@ -844,7 +833,7 @@ async def test_a_condition_with_nowhere_to_go_pads_no_value(
 
 # ── Ported: two parameters, two different kinds of span ───────────────────────
 #
-# The survivor is ``bind-two-parameters``: one message supplies BOTH the page and the thing
+# One message supplies BOTH the page and the thing
 # to look for on it, and they are different kinds of value in the same sentence.
 
 _TWO_PARAMETER_PHRASINGS = (
@@ -997,7 +986,6 @@ _CROSSING = BindingFixture(
         BoundExpectation("outbound_url", "northpier.example/departures"),
         BoundExpectation("return_url", "southquay.example/departures"),
     ),
-    forbidden=("every monday",),
 )
 
 _CROSSING_PHRASINGS = (
@@ -1098,7 +1086,7 @@ async def test_two_same_kinded_slots_take_the_pages_the_ask_gives_each(
 
 # ── Ported: the only parameter, and the ask names no page ─────────────────────
 #
-# The survivor is ``bind-missing-page``: the ask is a perfectly good description of the job
+# The ask is a perfectly good description of the job
 # and supplies nothing to point it at.  The temptation is a value that is right there in the
 # sentence and is not a page — "that brass lantern" reads like an answer, and a routine bound
 # to it would go and watch nothing — so the object itself is FORBIDDEN beside the cadence.
@@ -1217,7 +1205,6 @@ _ARRIVING_KEYWORD = BindingFixture(
         "the dawn sailing — that's the one i'm after"
     ),
     expectations=(BoundExpectation("keyword", "dawn sailing"),),
-    forbidden=("northpier.example/departures", "every morning"),
 )
 
 # The four other wordings vary the ARRIVING turn alone.  The turn that parked the round is

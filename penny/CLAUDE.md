@@ -859,38 +859,18 @@ deliberately not made because production already validates them.  Each case decl
 terms its claims FORBID and derives the facts its arms must state from them, so a fact
 nobody measures cannot be written down — the defect that shape closes is a claim label
 promising to catch a padded condition while the terms it read forbade only the cadence),
-`test_collector_enactment.py` (#1905 — the BACKGROUND half of the north star: chat's half is
-fully enacted, and nothing had ever verified the COLLECTOR can run what chat built. Ten cases,
-a PAIR per collection the `request → apply` beat leaves behind (#1919), each seeding that beat's
-FULL exit world — the composed history, the turn that parked the round, and the turn that stood
-the job up, with the configured row transcribed from that beat's measured draws — plus the
-baseline observation a prior cycle would have left, under the key the cycle reads in its holdings
-block, then driving ONE real collector cycle with no chat turns in the measured window. Served the
-page with its ONE controllable fact moved, the cycle records the new value, CLOSES its run with
-`done()` and queues exactly ONE message naming what moved, recorded `QUEUED`; served the page whose
-datum equals what is stored, the write-gate STOP that makes no-news structurally silent
-(`KEY_EXISTS_UNCHANGED`) ends the cycle at the chokepoint, and it queues nothing and enters no
-notification. The scorer is structural throughout — both directions also check that the cycle
-fetched the page the job is pointed at, the run record states what it did, and nothing outside the
-collection was touched. Since #1911/#1916 the cycle checks read the four structural terminal shapes (stopped ·
-closed · closed-and-notified · aborted-with-cause) — the STOP off the run's declared reason and the
-close off the ledger's own `done` record — and both notify claims read the SEND QUEUE beside the run
-record's notification outcome — the queue says what the user will receive, the outcome says what the
-framework decided, and a notification entered then declined is a different finding from one never
-entered. The loud probe additionally holds the stored program against the STRICT rendered dialect
-and the bound cycle's tool surface against that program's calls closed over `Tool.advises` plus the
-terminator, since an unreadable program leaves a cycle with nothing to run but its own close. The seed goes through the production instantiation
-seam's own three steps (retarget → **`bind_parameters`** → render), so the stored program carries
-the job's values since #1907, and each case DECLARES which values the join fills (`joins`), asserted
-both ways by the loud probe: four of the five join every value, while the otter census joins NONE —
-its framer recorded the page as the bare host and path the user spoke while the demonstration's own
-call carried the full address with its scheme, and the join compares on whitespace and case alone.
-Declared rather than repaired, because the fixtures are transcriptions of measured draws and the
-cost of the equality rule is what the case is there to show. The `collector_cycles_eval`
-runner (the one collector driver there is — each cycle's footprint kept apart as a
-`CycleObservation`, plus a ran-guard `Check` so a dispatcher refusal can never read as the model
-doing nothing), report-only, with the seeded world, the stored baseline and the page variants
-pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
+`test_watch_cycles.py` (#2017/#2007 — the BACKGROUND half of the north star: whether the
+COLLECTOR runs what chat built. Three cohort cases over one price watch, each ONE real collector
+cycle whose behaviour is selected by its ENTRY CONDITION — what the collection already holds —
+rather than by a script of cycles: the first reading (empty collection, the reading written and the
+user told once), the unchanged reading (the write-gate STOP `KEY_EXISTS_UNCHANGED` ends the cycle,
+nothing written, the send queue empty) and the moved reading (the standing key rewritten, the user
+told once). The arms are five wordings of the job's `extract` instruction, rendered through the
+shipped instantiation seam (retarget → `bind_parameters` → render) over one constant set of facts.
+A watch over a different page, datum or routine is another program of the same behaviour, so it is
+not a separate case. Driven by the `collector_cycles_eval` runner (the one collector driver there
+is — each cycle's footprint kept apart as a `CycleObservation`), report-only, with the program and
+the page variants pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the
@@ -1340,7 +1320,7 @@ absence) so the eval shows the lever is load-bearing, not just that the case pas
 A rendering change (a new line/flag in a run record, a collector prompt edit) is an input
 shift to every consumer of that surface, even though it may edit no prompt. It ships green
 only after the existing cases that read that surface (e.g. `test_collector_honesty.py`,
-`test_collector_enactment.py`) are re-run on the branch and shown to still hold. The shared
+`test_watch_cycles.py`) are re-run on the branch and shown to still hold. The shared
 `render_run_record` is read by the self-state header and the addon, so one rendering
 edit moves both; the existing suite is the proof it didn't regress them.
 
