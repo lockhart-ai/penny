@@ -118,6 +118,13 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
     assert_mailbox_world,
     install_mailbox,
 )
+from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
+    SOURCE_DOWN_CASES,
+    SourceDownCase,
+)
+from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
+    probe_seeded_world as probe_source_down_world,
+)
 from penny.tests.eval.chat.idle.test_round_ends_in_idle import (
     BAIL_CASES,
     assert_the_round_built_what_it_claims,
@@ -1343,6 +1350,53 @@ def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> 
     _seed_board_games(db)
     for case in BRACKET_KEY_CASES:
         assert_board_games_world(db, case)
+
+
+def _assert_one_ask_in_five_wordings(case: SourceDownCase) -> None:
+    """Five distinct wordings, every one of them stating the case's own constant facts.
+
+    The facts come off the CASE rather than being restated here, so the guard and the thing it
+    guards cannot disagree about which of them are the constant ones — and the list being
+    non-empty is asserted first, because an empty one would make every check below vacuous."""
+    assert case.facts, f"{case.case_id}: names no constant facts, so its wordings are unguarded"
+    wordings = (case.ask, *case.also_phrased)
+    assert len(wordings) == 5, (
+        f"{case.case_id}: a cohort is FIVE wordings of one ask, got {len(wordings)}"
+    )
+    assert len(set(wordings)) == 5, f"{case.case_id}: two of its wordings are the same string"
+    for wording in wordings:
+        missing = [fact for fact in case.facts if fact not in wording]
+        assert not missing, (
+            f"{case.case_id}: every wording must state {missing} — the claims hinge on those "
+            f"facts, and this one says {wording!r}"
+        )
+
+
+def test_the_source_down_case_holds_its_facts_constant_across_its_five_wordings(tmp_path) -> None:
+    """The half-the-sources-landed case's arms are five wordings of ONE ask, and the world its
+    claims stand on is laid down by its own seeder.
+
+    Three premises, each of which is silent on a run if it breaks and each of which would turn a
+    scored claim into a claim about the fixture.  The ARMS: five distinct wordings, every one
+    naming both addresses and the destination list, because the claims hinge on those facts and
+    an arm that dropped one would measure a different ask under the same number.  The ORDER of
+    the pages: ``install_browse`` answers with the first page whose match is in the url, so the
+    unreachable source being FIRST is the whole of what makes this world half-up, and a fixture
+    edit that reordered them would quietly measure two readable pages.  The SEED: the list the
+    ask names exists and holds nothing, and neither page's own tokens are anywhere in the store
+    before the turn — the store claim names the readable page's tokens and the provenance claims
+    catch the unreachable page's, so a token already sitting there would make one pass without
+    the turn acting and the other blind to an invention."""
+    for index, case in enumerate(SOURCE_DOWN_CASES):
+        _assert_one_ask_in_five_wordings(case)
+        unreachable = [page for page in case.world.pages if page.fails]
+        assert unreachable and case.world.pages[0] is unreachable[0], (
+            f"{case.case_id}: the unreachable page must come FIRST, or the source that is down "
+            f"is not the one the world names — the pages are {case.world.pages}"
+        )
+        db = migrated_db(str(tmp_path / f"source-down-{index}.db"))
+        seed_world_stores(db, case.world)
+        probe_source_down_world(db, case)
 
 
 def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> None:
