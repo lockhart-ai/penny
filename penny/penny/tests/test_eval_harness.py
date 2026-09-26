@@ -1615,7 +1615,7 @@ def test_a_misfired_injection_is_a_named_exclusion_and_never_also_a_failed_check
     was asked to correct had landed."""
     wrapper = _InjectTextBail(object(), "{}")
 
-    def observe(db, reply, before, injected):  # a ported case's observer
+    def observe(db, reply, before, held_before, injected):  # a ported case's observer
         raise AssertionError("not called here")
 
     assert _guarded_injector(wrapper, None) is wrapper, "a scorer case keeps its guard"
@@ -4308,6 +4308,32 @@ def test_a_cohorts_claim_is_answered_against_its_own_arms_world() -> None:
     )
     assert [outcome.ok for outcome in cohort.claims[0].outcomes] == [True, True]
     assert seen == [WATCH_READINGS[0].name, WATCH_READINGS[1].name]
+
+
+def test_what_the_store_held_survives_only_when_every_entry_is_still_there_unchanged() -> None:
+    """The survival claim reads the store at both ends of the turn.  A sample that kept
+    everything and wrote something new beside it holds; one that rewrote a held value in place
+    and one that deleted a held key each fail, and the rationale names the entry that did not
+    survive rather than restating the claim."""
+    price = eval_cohort.StoredEntry(collection="watch", key="price", content="449")
+    stock = eval_cohort.StoredEntry(collection="watch", key="stock", content="in stock")
+    added = eval_cohort.StoredEntry(collection="notes", key="aside", content="a new note")
+    rewritten = eval_cohort.StoredEntry(collection="watch", key="price", content="499")
+    ends = {"kept": [price, stock, added], "rewrote": [rewritten, stock], "deleted": [stock]}
+    samples = [
+        SampleObservation(name=name, phrasing="p", held_before=[price, stock], held=held)
+        for name, held in ends.items()
+    ]
+    cohort = Cohort("case", "m", samples)
+    cohort.assert_what_the_store_held_survives()
+    (claim,) = cohort.claims
+    assert claim.label == "state: everything the store already held is still there, unchanged"
+    assert claim.category == eval_cohort.SpecCategory.STORE
+    assert [(o.sample, o.ok, o.rationale) for o in claim.outcomes] == [
+        ("kept", True, None),
+        ("rewrote", False, "lost ['watch: price']"),
+        ("deleted", False, "lost ['watch: price']"),
+    ]
 
 
 # ── A world's ground, whichever substrate it stands on (#2108) ────────────────

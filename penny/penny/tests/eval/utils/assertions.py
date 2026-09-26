@@ -251,15 +251,18 @@ class Cohort:
             "state: nothing the ask excluded was stored", _nothing_excluded, SpecCategory.STORE
         )
 
-    def assert_nothing_was_written(self) -> None:
-        """This round wrote no entry anywhere.
+    def assert_what_the_store_held_survives(self) -> None:
+        """Every entry the store held when the turn began is still there, unchanged.
 
-        The end-state form of "she did not go and do it": a turn that asks to be taught, asks
-        for a missing value, or stands a job up to run LATER has read nothing worth keeping and
-        kept nothing.  It reads the entries the sample WROTE rather than what the store holds,
-        so a seeded world's own contents can never answer it."""
+        What SURVIVES the turn, which is the claim a turn the ask did not send to the store
+        makes about it — never that the turn wrote nothing, because whether to note something
+        is the model's call and is measured as entries stored.  The WHOLE entry, key and
+        content, compared exactly: a value rewritten in place and a key deleted are both an
+        entry that did not survive, and the rationale names each one."""
         self.claim(
-            "state: nothing was written to any collection", _nothing_written, SpecCategory.STORE
+            "state: everything the store already held is still there, unchanged",
+            _held_survives,
+            SpecCategory.STORE,
         )
 
     def assert_no_mechanism_was_created(self) -> None:
@@ -467,8 +470,10 @@ def _placeholders_only(sample: SampleObservation, _world: World) -> Answer:
     return bool(sample.routines) and not asking, f"still a leaf parameter: {asking}"
 
 
-def _nothing_written(sample: SampleObservation, _world: World) -> Answer:
-    return not sample.entries, f"wrote {sorted({e.collection for e in sample.entries})}"
+def _held_survives(sample: SampleObservation, _world: World) -> Answer:
+    held = {(e.collection, e.key, e.content) for e in sample.held}
+    lost = [e for e in sample.held_before if (e.collection, e.key, e.content) not in held]
+    return not lost, f"lost {[f'{e.collection}: {e.key}' for e in lost]}"
 
 
 def _nothing_was_born(sample: SampleObservation, _world: World) -> Answer:

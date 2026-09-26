@@ -244,6 +244,11 @@ class SampleObservation(BaseModel):
     # WHICH rows are read is the fixture's, like every other observation: a chat sample
     # reads every collection, a collector cycle reads the one container its job is bound to.
     held: list[StoredEntry] = Field(default_factory=list)
+    # Every entry the store held when the sample's measured turn BEGAN — ``held`` read at the
+    # other end of the turn, which is what makes "what the store already held survives" a read
+    # rather than an inference.  The end state alone cannot answer it: an entry the turn
+    # deleted or rewrote leaves no trace in ``held``, only an absence.
+    held_before: list[StoredEntry] = Field(default_factory=list)
     # Every MECHANISM the registry holds when the sample ends, archived ones included — what
     # a round's own cleanup and a running job's survival are both read off.  Beside ``held``
     # rather than derived from it, because they answer different questions about the same
