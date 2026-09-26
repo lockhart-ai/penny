@@ -502,17 +502,23 @@ def test_a_url_runs_only_as_far_as_the_address_does():
     form was then folded into an apostrophe on its way to the comparison, so the token weighed
     against the world was a string the model never wrote.
 
-    Only the first five forms below were ever observed — three wrappers and the two sentence
-    marks that were measured before them.  The rest are here because the repair is the URI
-    grammar, a closed set, rather than a list of the marks someone ran into: a test carrying
-    only what was seen would let the next wrapper regress in silence, and "the ones we saw" is
-    exactly what this probe has already been repaired into once."""
+    Only the first six forms below were ever observed — three wrappers, the two sentence marks
+    that were measured before them, and a markdown link whose text is its own URL (#2152), which
+    the grammar read as the one address `<url>](<url>)`.  The rest are here because the repair
+    is the URI grammar, a closed set, rather than a list of the marks someone ran into: a test
+    carrying only what was seen would let the next wrapper regress in silence, and "the ones we
+    saw" is exactly what this probe has already been repaired into once."""
     for wrapped in (
         f"`{_CITED}`",
         f"<{_CITED}>",
         f"({_CITED})",
         f"{_CITED}.",
         f"{_CITED},",
+        f"[{_CITED}]({_CITED})",
+        f"[{_CITED}]({_CITED}).",
+        f"[{_CITED}](/relative/page)",
+        f"{_CITED})",
+        f"{_CITED}]",
         f"[{_CITED}]",
         f'"{_CITED}"',
         f"'{_CITED}'",
@@ -580,6 +586,14 @@ def test_an_invented_url_is_still_caught():
     assert unsourced_specifics("see (https://other.example/nope)", _GIVEN) == [
         "https://other.example/nope"
     ]
+    # A markdown link yields its target, and its text when that is an address too, each weighed
+    # on its own — so reading the link apart cannot launder an invented address through a real
+    # one beside it, in either position.
+    invented = "https://other.example/nope"
+    assert specifics(f"see [{invented}]({_CITED})") == [invented, _CITED]
+    assert unsourced_specifics(f"see [the page]({invented})", _GIVEN) == [invented]
+    assert unsourced_specifics(f"see [{invented}]({_CITED})", _GIVEN) == [invented]
+    assert unsourced_specifics(f"see [{_CITED}]({invented})", _GIVEN) == [invented]
 
 
 # ── A word the draw was GIVEN is not a word it invented (#2078) ──────────────
