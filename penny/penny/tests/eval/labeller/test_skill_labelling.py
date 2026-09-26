@@ -6,26 +6,16 @@ provenance verdict, no routine name, no routine description.  The interface half
 description · parameters, decided from the user's ask alone) is the framer's, a separate
 draw that never sees this one's evidence.
 
-The file holds two sets, and they are read differently.
-
-**The INLINE cases** came first (#1828) and are scored per offered spot by the runner's own
-scorer.  They vary topic, leaf structure and conversation length so that what moves between
-them is the NAMING and nothing else: ``leaf-topic-availability`` (the canonical shape on
-availability rather than price) · ``leaf-two-sources-distinct-names`` (two spots on one
-argument) · ``leaf-shared-spot-one-name`` (one spot filling two sites) ·
-``leaf-single-turn-teach`` (no elicit round) · ``leaf-search-not-page`` (the look-up is a
-search).
-
-**The PORTED set** (#2004's canonical set, #2058) is the one the epic reads.  Five cases, each
-one demonstration in five wordings pooled into a cohort of fifteen, claimed against
-``docs/eval-case-design.md`` rather than the per-spot scorer: ``namer-tells-two-sources-apart``
-· ``namer-names-a-search-spot-as-a-search`` · ``namer-names-an-availability-spot-for-this-
-routine`` · ``namer-names-every-spot-from-a-single-turn-teach`` ·
+The file holds the canonical set (#2004's, #2058).  Five cases, each one demonstration in
+five wordings pooled into a cohort of fifteen, claimed against ``docs/eval-case-design.md``:
+``namer-tells-two-sources-apart`` · ``namer-names-a-search-spot-as-a-search`` ·
+``namer-names-an-availability-spot-for-this-routine`` ·
+``namer-names-every-spot-from-a-single-turn-teach`` ·
 ``namer-names-every-spot-in-a-longer-routine``.  Four of them make the SAME three claims on
 different demonstrations — they exercise, they do not newly assert — and each says so in its
-own docstring rather than dressing it up.  ``leaf-shared-spot-one-name`` has no ported
-counterpart: a split shared spot keys a line to a name nobody offered, which the production
-validator refuses and re-rolls, so the claim would run 15/15 by construction.
+own docstring rather than dressing it up.  No case claims that a value filling two argument
+sites draws ONE name: a split shared spot keys a line to a name nobody offered, which the
+production validator refuses and re-rolls, so the claim would run 15/15 by construction.
 
 Each case is a fixture LEDGER, and its input document is rendered from that ledger by
 the shipped ``distill_steps`` + ``build_naming_content`` — never hand-written — so the
@@ -34,11 +24,9 @@ pinned byte-for-byte by a deterministic drift probe in ``make check`` (see
 ``tests/test_eval_harness.py``): a fixture that drifts from the pair it claims is a case
 measuring nothing, and it must fail before any GPU time, not after.
 
-An INLINE case is scored per offered spot — a line came back · its name hardens to a
-usable binding key · it is not the arg name handed back · its description says what
-belongs there — plus that case's own structural claim, with every drawn label carried
-ADVISORY.  A PORTED case makes the same three statements as COHORT CLAIMS over its
-fifteen samples, and the coverage half is not among them: production's
+Every case claims, over its fifteen samples, that each offered spot's name hardens to a
+usable binding key, is not the arg name handed back, and comes with a description saying
+what belongs there.  That every spot got a line is not among them: production's
 ``_labels_every_spot`` validates it and re-rolls, so a claim over it would measure the
 validator.  Whether a name is WELL judged is read at review against the reference
 outputs on #1828; no scorer fakes that.
@@ -106,23 +94,6 @@ class LabellingFixture(NamedTuple):
     rendered_input: str
     distinct_names: tuple[tuple[str, str], ...] = ()
     shared_spot: str = ""
-
-
-async def _run_case(labeller_eval: LabellerEval, fixture: LabellingFixture) -> None:
-    """Drive one case's fixture through the labeller.  Every case is report-only: the
-    thresholds are the code owner's to set once the first numbers are read."""
-    await labeller_eval(
-        case_id=fixture.case_id,
-        utterance=fixture.utterance,
-        conversation=fixture.conversation,
-        calls=fixture.calls,
-        target=fixture.target,
-        leaves=fixture.leaves,
-        distinct_names=fixture.distinct_names,
-        shared_spot=fixture.shared_spot,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
 
 
 _ELICIT = (
@@ -201,15 +172,6 @@ _AVAILABILITY = LabellingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_every_spot_is_named_for_this_demonstration(labeller_eval: LabellerEval):
-    """The canonical shape with different semantics: the routine watches AVAILABILITY,
-    not price.  Every spot must be named for what it is in THIS routine — a labeller
-    working from a memorised price template would name the extract spot for a price
-    nobody mentioned."""
-    await _run_case(labeller_eval, _AVAILABILITY)
-
-
 # ── Case 2: two spots on one argument must draw two names ─────────────────────
 
 _TWO_SOURCES = LabellingFixture(
@@ -277,72 +239,7 @@ _TWO_SOURCES = LabellingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_two_sources_draw_distinct_names(labeller_eval: LabellerEval):
-    """Two spots on the same argument are two spots: each takes its own value every
-    run, so one name for both loses which site is which.  A labeller that calls them
-    both `news_page` has collapsed a distinction the routine depends on."""
-    await _run_case(labeller_eval, _TWO_SOURCES)
-
-
-# ── Case 3: one spot filling two sites draws exactly one name ─────────────────
-
-_SHARED_SPOT = LabellingFixture(
-    case_id="leaf-shared-spot-one-name",
-    conversation=(
-        _user("can you track a stock for me and tell me when it moves"),
-        _penny(
-            "i can learn that — show me once: what should i look up and what should i remember?"
-        ),
-    ),
-    utterance="look up VLT, find the share price, and remember it under VLT",
-    calls=(
-        (
-            "browse",
-            {"queries": ["VLT"], "extract": "the share price"},
-            "You looked up VLT (browse result)\n$18.40",
-            True,
-        ),
-        (
-            "collection_write",
-            {"memory": "stock-prices", "entries": [{"key": "VLT", "content": "$18.40"}]},
-            "You saved an entry to stock-prices: (collection_write result)\nWrote 1 entry.",
-            True,
-        ),
-    ),
-    target="stock-prices",
-    leaves=("VLT", "the share price", "stock-prices"),
-    shared_spot="VLT",
-    rendered_input=(
-        f"{_CONVERSATION_HEADING}\n"
-        "user: can you track a stock for me and tell me when it moves\n"
-        "penny: i can learn that — show me once: what should i look up and what should "
-        "i remember?\n"
-        "user: look up VLT, find the share price, and remember it under VLT\n"
-        "\n"
-        "Routine steps:\n"
-        "1. browse(queries=[{queries}], extract={extract})\n"
-        "2. collection_write(memory={memory}, entries=["
-        "{'key': {queries}, 'content': the value from step 1}])\n"
-        "\n"
-        f"{_PLACEHOLDER_HEADING}\n"
-        "- queries: fills browse.queries[0] and collection_write.entries[0].key; "
-        "demonstrated value: 'VLT'\n"
-        "- extract: fills browse.extract; demonstrated value: 'the share price'\n"
-        "- memory: fills collection_write.memory; demonstrated value: 'stock-prices'"
-    ),
-)
-
-
-@pytest.mark.asyncio
-async def test_a_shared_spot_draws_one_name_covering_both_uses(labeller_eval: LabellerEval):
-    """The same value at two sites is structurally ONE spot — the ticker is both what
-    the routine looks up and what it files the price under.  The contract is one line
-    whose name covers both uses; splitting it invents a spot nobody offered."""
-    await _run_case(labeller_eval, _SHARED_SPOT)
-
-
-# ── Case 4: the conversation block at its minimum — one direct instruction ────
+# ── Case 3: the conversation block at its minimum — one direct instruction ────
 
 _SINGLE_TURN = LabellingFixture(
     case_id="leaf-single-turn-teach",
@@ -391,15 +288,7 @@ _SINGLE_TURN = LabellingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_a_single_turn_teach_still_names_every_spot(labeller_eval: LabellerEval):
-    """No elicit round — one direct instruction is the whole conversation.  The
-    conversation block at its minimum still has to carry enough for every spot to be
-    named for what it is."""
-    await _run_case(labeller_eval, _SINGLE_TURN)
-
-
-# ── Case 5: the look-up is a search, not a page ───────────────────────────────
+# ── Case 4: the look-up is a search, not a page ───────────────────────────────
 
 _SEARCH = LabellingFixture(
     case_id="leaf-search-not-page",
@@ -456,14 +345,6 @@ _SEARCH = LabellingFixture(
         "demonstrated value: 'aurora fest ticket price'"
     ),
 )
-
-
-@pytest.mark.asyncio
-async def test_a_search_spot_is_named_as_a_search(labeller_eval: LabellerEval):
-    """The look-up is a text search, not a url.  A spot named `product_page` here
-    describes what the last case did, not what this one does — the demonstrated value
-    is the evidence for what kind of thing goes in the spot."""
-    await _run_case(labeller_eval, _SEARCH)
 
 
 # ── The LONGER routine: four steps, two reads, a plugin tool and a log ────────
@@ -1094,7 +975,6 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
 FIXTURES = (
     _AVAILABILITY,
     _TWO_SOURCES,
-    _SHARED_SPOT,
     _SINGLE_TURN,
     _SEARCH,
     _LONGER_ROUTINE,

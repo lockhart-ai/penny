@@ -1,18 +1,11 @@
-"""Bracket-key guards: the render never teaches a bad key, and a bad key recovers (#1404).
+"""Bracket-key guard: a bad key recovers (#1404).
 
 Every read surface renders an entry key in **invocation form** (``key='<key>'``) so the
-form the model READS is the form a key-taking tool accepts.  These two cases are the
-standing proof that the render form is load-bearing, and the tripwire if anyone
-reintroduces a copyable-wrong display — the old ``[key]`` bracket render, whose brackets
-the model pasted verbatim into ``key="[key]"`` arguments, 225 times in the observed corpus.
-
-  **copy-through** — the chat agent reads a collection's rendered keys and operates on ONE
-    entry BY KEY.  The intended entry is updated, no call anywhere in the run pasted a
-    bracket-wrapped key, and the rest of the collection is exactly as it was seeded.
-    Success alone cannot tell the two render forms apart, because the teaching rejection
-    (#1396) can turn a bracket call into a reject-and-retry that still eventually lands —
-    so the BRACKET-CALL COUNT is the signal, and it is read structurally off every
-    key-bearing call the run made.
+form the model READS is the form a key-taking tool accepts.  The old ``[key]`` bracket
+render is what that replaced: the model pasted its brackets verbatim into ``key="[key]"``
+arguments, 225 times in the observed corpus, and the memory-tool teaching rejection
+(#1396) is what refuses such a call.  This case is the standing proof that the rejection
+recovers:
 
   **forced recovery** — the model's first key-bearing call is sabotaged to carry a
     bracket-wrapped key, so the memory-tool teaching rejection fires and the live model has
@@ -24,14 +17,8 @@ the model pasted verbatim into ``key="[key]"`` arguments, 225 times in the obser
     sabotage watches three tool names, so a turn that reached the entry any other way
     leaves here rather than answering the claims below.
 
-The two are deliberately NOT one cohort: they are the same ask against the same world with
-and without a fault, which is two behaviours, and pooling them would average a recovery
-rate into a copy-through rate.  Copy-through stays on the scorer path, where its signal —
-what the model's CALLS carried — lives; a route is not something the cohort structure
-asserts.
-
-Both cases are MECHANISM guards — they pin a render form and its teaching rejection, not a
-user-facing story — so this module sits beside the other chat-recovery guards
+It is a MECHANISM guard — it pins a render form's teaching rejection, not a user-facing
+story — so this module sits beside the other chat-recovery guards
 (``test_chat_call_recovery`` · ``test_harmony_leak_recovery`` · …) rather than with the
 NL-dispatch stories.
 
@@ -61,15 +48,10 @@ from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
     ChatEval,
-    Check,
     Preparer,
     _InjectBracketKey,
-    bracket_wrapped_key_calls,
     collection_entries,
-    routing_clean,
     seed_collection,
-    tool_call_keys,
-    tool_call_sequence,
 )
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.cohort import (
@@ -89,7 +71,7 @@ pytestmark = pytest.mark.eval
 # Family tag (explicit, meaningful grouping) for every case in this module.
 _FAMILY = "prompt-render"
 
-# The entry both cases correct BY KEY — a realistic multi-word key, seeded verbatim by
+# The entry the case corrects BY KEY — a realistic multi-word key, seeded verbatim by
 # ``seed_collection`` (key = the text before ' — ').
 _TARGET_KEY = "Ark Nova"
 
@@ -98,23 +80,21 @@ _TARGET_KEY = "Ark Nova"
 # world and its expectation together.
 _SEEDED = {entry.split(" — ")[0]: entry for entry in BOARD_GAMES.entries}
 
-_COPYTHROUGH_CASE_ID = "key-render-copythrough"
 _FORCED_RECOVERY_CASE_ID = "key-render-forced-recovery"
 
 # The one sentence the PORTED case exists to check, in the fixed form: "In <the locus>, when
-# <X>, Penny <does Y>."  The locus is the SHIPPED agent name.  The copy-through case beside
-# it is still on the scorer path and states its contract in its own docstring; the case id is
-# a filename, and this is what renders above every number in the ported case's report.
+# <X>, Penny <does Y>."  The locus is the SHIPPED agent name.  The case id is a filename, and
+# this is what renders above every number in the ported case's report.
 _FORCED_RECOVERY_BEHAVIOUR = (
     "In the chat agent, when her first attempt to correct an entry is refused for wrapping "
     "the key in the brackets a display put round it, Penny comes back with the bare key and "
     "leaves the correction on the entry the user named and on nothing else."
 )
 
-# Both cases, for the ``make check`` probe that runs their shared world's assertions once
-# per case — so a fixture edit that broke either one's premise fails there rather than an
-# hour into a GPU run.
-BRACKET_KEY_CASES = (_COPYTHROUGH_CASE_ID, _FORCED_RECOVERY_CASE_ID)
+# Every case on this world, for the ``make check`` probe that runs its assertions once per
+# case — so a fixture edit that broke a case's premise fails there rather than an hour into
+# a GPU run.
+BRACKET_KEY_CASES = (_FORCED_RECOVERY_CASE_ID,)
 
 _UPDATE_MESSAGE = (
     "in my board games collection the Ark Nova entry is out of date — please fix it "
@@ -197,118 +177,6 @@ def _probe_board_games_world(case_id: str) -> Preparer:
         assert_board_games_world(penny.db, case_id)
 
     return prepare
-
-
-# ── The copy-through case's checks ────────────────────────────────────────────
-
-
-def _target_updated_check(db: Database) -> Check:
-    """The intended entry still exists under its BARE key and its content changed from the
-    seed — the end-state proof the update landed by key rather than beside it.
-
-    Both halves in one check because they are one fact: an entry that vanished and an entry
-    that never changed are the same miss read two ways, and the rationale says which."""
-    entries = collection_entries(db, BOARD_GAMES.name)
-    held = entries.get(_TARGET_KEY)
-    updated = held is not None and held != _SEEDED[_TARGET_KEY]
-    if held is None:
-        rationale = f"{_TARGET_KEY!r} is gone — the collection holds {sorted(entries)}"
-    elif not updated:
-        rationale = f"{_TARGET_KEY!r} still reads as it was seeded"
-    else:
-        rationale = None
-    return Check(
-        f"state: {_TARGET_KEY!r} was updated under its bare key",
-        updated,
-        rationale=rationale,
-        kind="state",
-    )
-
-
-def _no_bracket_call_check(db: Database) -> Check:
-    """No call anywhere in the run pasted a display-bracketed key into an argument.
-
-    The load-bearing signal of the copy-through case, and the reason success alone is not
-    enough: the teaching rejection can turn a bracket call into a retry that lands, so the
-    end state would look identical while the render was busy teaching the wrong thing.
-
-    It stays on THIS case and does not port to its sabotaged sibling: there, every sample's
-    first key-bearing call carries brackets because the harness put them there."""
-    offenders = bracket_wrapped_key_calls(db)
-    return Check(
-        "calls: no bracket-wrapped key was pasted into an argument",
-        not offenders,
-        rationale=f"passed {offenders}" if offenders else None,
-        kind="spine",
-    )
-
-
-def _rest_untouched_check(db: Database) -> Check:
-    """Every OTHER entry reads exactly as it was seeded — the nothing-else-touched claim,
-    and the guard against a turn that corrected the collection by rewriting it.
-
-    Read against the fixture the seed was built from, so a fixture edit moves the world and
-    its expectation in one place."""
-    entries = collection_entries(db, BOARD_GAMES.name)
-    moved = sorted(
-        key
-        for key, content in _SEEDED.items()
-        if key != _TARGET_KEY and entries.get(key) != content
-    )
-    return Check(
-        "state: the rest of the collection is untouched",
-        not moved,
-        rationale=f"also changed or lost {moved}" if moved else None,
-        kind="state",
-    )
-
-
-def _key_advisories(db: Database, reply: str) -> list[Check]:
-    """What the turn actually did, verbatim and UNSCORED — the calls it made, the keys it
-    tried, and the answer it gave — so a report shows the run whichever way it went and the
-    wording is read where wording is read: at joint review."""
-    return [
-        Check(f"fired: {tool_call_sequence(db)}", True, kind="proc", scored=False),
-        Check(
-            f"update keys tried: {tool_call_keys(db, 'update_entry')}",
-            True,
-            kind="proc",
-            scored=False,
-        ),
-        Check(f"answered: {reply!r}", True, kind="reply", scored=False),
-        Check(
-            "calls: clean routing (no re-rolled draw or continue nudge)",
-            routing_clean(db),
-            scored=False,
-            kind="proc",
-        ),
-    ]
-
-
-def _score_copythrough(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The intended entry was updated by key, no bracket-wrapped key was ever passed, and
-    the rest of the collection is as it was seeded."""
-    return [
-        _target_updated_check(db),
-        _no_bracket_call_check(db),
-        _rest_untouched_check(db),
-        *_key_advisories(db, reply),
-    ]
-
-
-async def test_copythrough_update_by_key(chat_eval: ChatEval) -> None:
-    """Read the rendered keys, update ONE entry by key, and paste no display brackets on
-    the way — the standing proof that the invocation-form render does not teach the mistake
-    the ``[key]`` render taught."""
-    await chat_eval(
-        case_id=_COPYTHROUGH_CASE_ID,
-        family=_FAMILY,
-        message=_UPDATE_MESSAGE,
-        seed=_seed_board_games,
-        prepare=_probe_board_games_world(_COPYTHROUGH_CASE_ID),
-        score=_score_copythrough,
-        min_pass_rate=None,
-    )
 
 
 # ── The ported recovery case's own claims (inline: one customer each) ──────────

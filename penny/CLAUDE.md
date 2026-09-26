@@ -782,33 +782,26 @@ was IN the sample's own persisted chat system prompt, since the header rendering
 replace are recorded in the measurement history on PR #1925), `test_command_tools.py` (NL-dispatch
 contracts for the command-retirement tools), `test_email_dispatch.py`
 (NL-dispatch of the email tools that retired `/email` + `/zoho`),
-`test_skill_labelling.py` (#1828 — the run-end LEAF
-labeller over six FIXTURE demonstrations: every offered spot draws a usable semantic
-name and one line of what belongs there, with the two-sources and shared-spot cases
-adding their own structural claim; the `labeller_eval` runner, report-only, with each
-case's input document pinned byte-for-byte by a drift probe in `make check`.  The sixth,
-`namer-tells-two-sources-apart`, is the slot's canonical case PORTED to the cohort
-structure (#2006): the two-sources demonstration in five wordings over ONE ledger, so the
-spots and their current names are identical on every arm.  Its LANDED category is empty
-and CLOSED UPSTREAM — coverage is `_labels_every_spot`'s and would run 15/15 by
-construction — so every claim it makes is about what the drawn lines SAY, and all four are
-the *nothing omitted* direction: the *nothing invented* one has no legal instrument for a
-draw whose open fields are an identifier and generic prose),
-`test_skill_framing.py` (#1830 — the run-end skill FRAMER over seven INLINE agreed asks
-spanning the three multiplicity shapes (one argument · two of the same type · two of
-different types): the parameter SET exactly, each expected family answered by exactly one
-drawn parameter and nothing else asked for, plus the structural check that the name and
-description say the KIND of task and never the occasion; the `framer_eval` runner,
-report-only, its input document — the round's user turns, one per line — pinned by the
-same kind of drift probe. The page/url family classifies by NAME only, every other
-family name-first-then-description, and name tokenization splits digit suffixes
-(`site1` → `site` + `1`) so an ordinal pair written that way matches; the generic
-check covers the PARAMETER lines as its own check too — the enforcement half of the
-parameter-line contract — reading each line's SUBSTANCE, with any `(e.g., …)` clause
-stripped first, since the traces showed that garnish is appended after the line is
-decided; an instance token in the NAME, or a value standing as the whole description,
-still fails.  Beside them are **seven PORTED cases** (#2006/#2056) — the framer's decisions
-covered in ISOLATION, each one ask in five wordings pooled into a cohort of fifteen, claiming
+`test_skill_labelling.py` (#1828/#2058 — the run-end LEAF
+labeller's canonical set: five cohort cases (`namer-tells-two-sources-apart` ·
+`namer-names-a-search-spot-as-a-search` · `namer-names-an-availability-spot-for-this-routine` ·
+`namer-names-every-spot-from-a-single-turn-teach` · `namer-names-every-spot-in-a-longer-routine`),
+each one FIXTURE demonstration in five wordings over ONE ledger, so the spots and their current
+names are identical on every arm; the `labeller_eval` runner, report-only, with each ledger's
+input document pinned byte-for-byte by a drift probe in `make check`.  Their LANDED category is
+empty and CLOSED UPSTREAM — coverage is `_labels_every_spot`'s and would run 15/15 by
+construction — so every claim is about what the drawn lines SAY (a name that hardens to a
+binding key, is not the argument's own name handed back, and comes with a line saying what
+belongs there, plus a distinct-names claim where the ledger supplies two things one name could
+collapse), all of them the *nothing omitted* direction: the *nothing invented* one has no legal
+instrument for a draw whose open fields are an identifier and generic prose),
+`test_skill_framing.py` (#1830/#2006/#2056 — the run-end skill FRAMER's decisions
+covered in ISOLATION by **seven cases**; the `framer_eval` runner, report-only, each fixture's
+input document — the round's user turns, one per line — pinned by a drift probe in
+`make check`. The page/url family classifies by NAME only, every other family
+name-first-then-description, and name tokenization splits digit suffixes (`site1` →
+`site` + `1`) so an ordinal pair written that way matches.  Each case is one ask in five
+wordings pooled into a cohort of fifteen, claiming
 the parameter SET by equality under LANDED (one drawn parameter per piece the ask requires,
 and a COUNT claim for nothing else) and nothing else:
 `framer-mints-only-the-piece-that-varies` (the ticker — the negative direction is the cadence
@@ -837,20 +830,13 @@ wordings and the facts every one of them must carry are declared together as `Po
 held by a `make check` probe that renders each arm through the shipped
 `build_framing_content` — `carries` for a fact spelled the same way on every arm, `any_of`
 for one that survives being REWORDED (being told when it moves / changes / shifts), which is
-otherwise the fact class that goes missing from one arm unnoticed), `test_skill_binding.py` (#1867 — the skill BINDER over seven per-parameter cases built
-from the idle→apply asks, both directions of the contract: five extraction cases (incl.
-the two-parameter bind, where the page and what to look for on it come out of one
-message) and two shortfall cases (an ask naming no page at all, and one supplying the
-page but not the keyword). One check per declared parameter — bound to a span of the ask
-carrying the value it supplies, or named missing when it supplies none — plus the
-structural check that no job TERM (a cadence, an end date) rode into a value; the
-`binder_eval` runner, report-only, its input document — the signature as it stands, then
-the user's turns — pinned by the same kind of drift probe. Membership, coverage and "is
-this even in the user's words" are the PRODUCTION validator's, so an accepted draw never
-reaches the scorer carrying an invented value; what the cases measure is whether it picked
-the RIGHT span and whether it knew when to decline.  Beside them the slot's CANONICAL SET
-(#2006/#2057) — SEVEN cohort cases, one ask in five wordings each, claimed against
-`docs/eval-case-design.md` — covers the binder's whole decision space, {complete bind,
+otherwise the fact class that goes missing from one arm unnoticed), `test_skill_binding.py` (#1867/#2006/#2057 — the skill BINDER; the `binder_eval` runner,
+report-only, each fixture's input document — the signature as it stands, then the user's
+turns — pinned by a drift probe in `make check`. Membership, coverage and "is this even in
+the user's words" are the PRODUCTION validator's, so an accepted draw never carries an
+invented value; what the cases measure is whether it picked the RIGHT span and whether it
+knew when to decline.  The slot's CANONICAL SET — SEVEN cohort cases, one ask in five
+wordings each, claimed against `docs/eval-case-design.md` — covers the binder's whole decision space, {complete bind,
 shortfall} × {single slot, multi slot} plus the completion draw: the page bound with
 neither the cadence nor the end date riding in; a threshold condition the signature has
 nowhere to put; two parameters of different kinds out of one message; TWO OF THE SAME KIND,
@@ -867,23 +853,19 @@ terms its claims FORBID and derives the facts its arms must state from them, so 
 nobody measures cannot be written down — the defect that shape closes is a claim label
 promising to catch a padded condition while the terms it read forbade only the cadence),
 `test_collector_enactment.py` (#1905 — the BACKGROUND half of the north star: chat's half is
-fully enacted, and nothing had ever verified the COLLECTOR can run what chat built. Five cases,
-one per collection the `request → apply` beat leaves behind, each seeding that beat's FULL exit
-world — the composed history, the turn that parked the round, and the turn that stood the job up,
-with the configured row transcribed from that beat's measured draws — then driving the REAL
-collector cycle THREE times with no chat turns in the measured window: cycle 1 the BASELINE (the
-page as it stood when the job was set up), cycle 2 the QUIET cycle (that same page again), cycle 3
-the CHANGE (the same page with its ONE controllable fact moved). Three because they are three
-different claims: a collection arrives from apply EMPTY, so its first observation is a new key and
-a first observation is news; the write-gate STOP that makes no-news structurally silent
-(`KEY_EXISTS_UNCHANGED`) fires only on a SECOND reading of the same value, so "stay quiet and never
-enter a notification" has no cycle it can fire on until cycle 2 exists; and cycle 3 is then the only
-place a notification is owed. The scorer is structural throughout — the cycle fetched the page the
-job is pointed at, the value it recorded is the page's controllable fact, the baseline write landed,
-each working cycle CLOSED its run with `done()`, the quiet cycle STOPPED at the write chokepoint
-and both queued nothing and entered no notification, the change cycle queued exactly ONE naming what moved
-and recorded `QUEUED`, the run records state what each cycle did, and nothing outside the collection
-was touched. Since #1911/#1916 the cycle checks read the four structural terminal shapes (stopped ·
+fully enacted, and nothing had ever verified the COLLECTOR can run what chat built. Ten cases,
+a PAIR per collection the `request → apply` beat leaves behind (#1919), each seeding that beat's
+FULL exit world — the composed history, the turn that parked the round, and the turn that stood
+the job up, with the configured row transcribed from that beat's measured draws — plus the
+baseline observation a prior cycle would have left, under the key the cycle reads in its holdings
+block, then driving ONE real collector cycle with no chat turns in the measured window. Served the
+page with its ONE controllable fact moved, the cycle records the new value, CLOSES its run with
+`done()` and queues exactly ONE message naming what moved, recorded `QUEUED`; served the page whose
+datum equals what is stored, the write-gate STOP that makes no-news structurally silent
+(`KEY_EXISTS_UNCHANGED`) ends the cycle at the chokepoint, and it queues nothing and enters no
+notification. The scorer is structural throughout — both directions also check that the cycle
+fetched the page the job is pointed at, the run record states what it did, and nothing outside the
+collection was touched. Since #1911/#1916 the cycle checks read the four structural terminal shapes (stopped ·
 closed · closed-and-notified · aborted-with-cause) — the STOP off the run's declared reason and the
 close off the ledger's own `done` record — and both notify claims read the SEND QUEUE beside the run
 record's notification outcome — the queue says what the user will receive, the outcome says what the
@@ -897,16 +879,10 @@ both ways by the loud probe: four of the five join every value, while the otter 
 its framer recorded the page as the bare host and path the user spoke while the demonstration's own
 call carried the full address with its scheme, and the join compares on whitespace and case alone.
 Declared rather than repaired, because the fixtures are transcriptions of measured draws and the
-cost of the equality rule is what the case is there to show. The otter case's
-direction-conditional goal ("warn me if it drops") is a WATCHED question: the check scores what the
-configured terms actually carry — every surface a cycle reads, which since #1907 is the composed
-prompt's three parts (instructions · routine · values by name) plus the collection's own name and
-description — and names WHERE, so a condition surviving only in a prose description reads as that
-rather than as the mechanism carrying it. The `collector_cycles_eval`
+cost of the equality rule is what the case is there to show. The `collector_cycles_eval`
 runner (the one collector driver there is — each cycle's footprint kept apart as a
 `CycleObservation`, plus a ran-guard `Check` so a dispatcher refusal can never read as the model
-doing nothing), report-only, with the seeded world, the page variants, the scorer's own
-three-good-cycles fixture, and every configured surface held against `Collector._compose_prompt`
+doing nothing), report-only, with the seeded world, the stored baseline and the page variants
 pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
