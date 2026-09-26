@@ -34,6 +34,7 @@ from penny.tests.eval.utils.cohort import (
     Feature,
     SampleObservation,
     SpecCategory,
+    StoredEntry,
     distinct_worlds,
     fold_typography,
     unsourced_specifics,
@@ -304,11 +305,15 @@ class Cohort:
             kind="reply",
         )
 
-    def assert_every_stored_entry_traces_to_the_world(self) -> None:
-        """An entry naming something nobody's page mentions was invented — and once it is in a
-        collection, a collector re-reads it for ever."""
+    def assert_every_value_in_the_store_is_sourced(self) -> None:
+        """Every specific value in the stored entries traces to something the round was GIVEN.
+        An entry naming something nobody's page mentions was invented — and once it is in a
+        collection, a collector re-reads it for ever.
+
+        It reads the values ``specifics`` extracts — URLs, numbers, capitalised names — and
+        nothing else, so invented lowercase prose is outside what it can see."""
         self.claim(
-            "state: every stored entry traces to what the round was given",
+            "state: every specific value in the stored entries is sourced",
             _store_is_sourced,
             SpecCategory.PROVENANCE,
         )
@@ -472,10 +477,16 @@ def _store_is_sourced(sample: SampleObservation, _world: World) -> Answer:
         {
             token
             for entry in sample.entries
-            for token in unsourced_specifics(entry.text, sample.given)
+            for token in unsourced_specifics(_entry_lines(entry), sample.given)
         }
     )
     return not invented, f"unsourced in the store: {invented}"
+
+
+def _entry_lines(entry: StoredEntry) -> str:
+    """The entry's key and content as separate lines, so a label heading the content is still
+    at the head of a line and a capitalised key does not glue onto it."""
+    return "\n".join(part for part in (entry.key, entry.content) if part)
 
 
 def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:

@@ -586,7 +586,7 @@ async def test_elicit_to_idle_drops_the_task_and_answers_the_new_one(
     # question with an answer on a page, so a reply that answered it out of the model's own
     # head rather than out of the market page fails the second claim, and a fact filed into a
     # collection that nobody's page mentions fails the first.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -619,7 +619,7 @@ async def test_learn_to_idle_archives_the_abandoned_round(chat_eval: ChatEval, m
     )
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -656,7 +656,7 @@ async def test_request_to_idle_drops_a_binding_that_was_half_settled(
     )
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -687,7 +687,7 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(
     )
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # TOOL_SEQUENCE reads "no call" on a correct sample here, so a cohort that behaves
