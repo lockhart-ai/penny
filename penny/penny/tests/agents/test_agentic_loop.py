@@ -1798,12 +1798,91 @@ class TestLargeToolResults:
         await agent.close()
 
 
-class TestRefusalRetry:
-    """Test that model refusals trigger a retry nudge."""
+# One draft per condition the response chain retries: markup, a refusal, and a URL that
+# appears nowhere in what the model was shown.
+_RETRIED_DRAFTS = {
+    ConditionKey.XML: "<answer>The deck is $499.</answer>",
+    ConditionKey.REFUSAL: "I'm sorry, but I can't help with that.",
+    ConditionKey.HALLUCINATED_URLS: "It's $499, see https://made-up.example/deck for details.",
+}
+_CLEAN_ANSWER = "The deck is $499."
+
+
+class TestValidatorRetry:
+    """A response validator's ``Retry`` discards the draft and re-draws on the UNCHANGED
+    conversation (#2160).  The second call reads exactly what the first did, so the model
+    is never shown its own finished reply with nothing after it to answer; the retry budget
+    stays one retry per condition."""
 
     @pytest.mark.asyncio
-    async def test_refusal_on_nonfinal_step_retries_with_nudge(self, test_db, mock_llm):
-        """When model refuses on a non-final step, agent injects nudge and continues."""
+    @pytest.mark.parametrize("condition", list(_RETRIED_DRAFTS))
+    async def test_retry_redraws_the_unchanged_conversation_and_ships_the_redraw(
+        self, test_db, mock_llm, condition
+    ):
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
+        draft = _RETRIED_DRAFTS[condition]
+
+        def handler(request, count):
+            return mock_llm._make_text_response(request, draft if count == 1 else _CLEAN_ANSWER)
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what does the deck cost?", max_steps=max_steps)
+        assert response.answer == _CLEAN_ANSWER
+        assert len(mock_llm.requests) == 2
+        # No appended draft: the re-draw carries byte-identical messages.
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        assert draft not in str(mock_llm.requests[1]["messages"])
+        # So the persisted ledger reads it the way it reads any re-roll: the same context, twice.
+        assert draw_rerolled(db)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("condition", list(_RETRIED_DRAFTS))
+    async def test_a_redraw_failing_the_same_condition_ships(self, test_db, mock_llm, condition):
+        """The condition is spent after one retry, so a second draft with the same defect
+        is the answer — two calls, the second on the unchanged conversation."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        draft = _RETRIED_DRAFTS[condition]
+
+        mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, draft))
+
+        response = await agent.run("what does the deck cost?", max_steps=max_steps)
+        assert response.answer == draft
+        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_each_condition_retries_once_all_on_the_same_conversation(
+        self, test_db, mock_llm
+    ):
+        """Three different conditions in a row each spend their own retry, and every one of
+        the four calls reads the same conversation."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
+        drafts = [*_RETRIED_DRAFTS.values(), _CLEAN_ANSWER]
+
+        def handler(request, count):
+            return mock_llm._make_text_response(request, drafts[count - 1])
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what does the deck cost?", max_steps=max_steps)
+        assert response.answer == _CLEAN_ANSWER
+        assert len(mock_llm.requests) == 4
+        first = mock_llm.requests[0]["messages"]
+        assert all(request["messages"] == first for request in mock_llm.requests)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_refusal_after_a_tool_step_redraws_that_steps_conversation(
+        self, test_db, mock_llm
+    ):
+        """A retry mid-run re-draws on the conversation its step was drawn from, tool
+        result included."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
@@ -1820,42 +1899,7 @@ class TestRefusalRetry:
         response = await agent.run("Give me a list of vegan smoothie recipes", max_steps=max_steps)
         assert response.answer == "Here are the vegan smoothie recipes!"
         assert len(mock_llm.requests) == 3
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_refusal_on_final_step_retries_inline(self, test_db, mock_llm):
-        """When model refuses on the final step, agent retries once inline."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_text_response(request, "I cannot help with that request.")
-            return mock_llm._make_text_response(request, "Here is a helpful answer!")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test question", max_steps=max_steps)
-        assert response.answer == "Here is a helpful answer!"
-        assert len(mock_llm.requests) == 2
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_refusal_only_retried_once(self, test_db, mock_llm):
-        """Refusal retry only fires once — second refusal is returned as-is."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-
-        def handler(request, count):
-            return mock_llm._make_text_response(request, "I'm sorry, I am unable to help.")
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("test question", max_steps=max_steps)
-        # Should contain the refusal text (returned as-is after one retry)
-        assert "sorry" in response.answer.lower() or "unable" in response.answer.lower()
-        # Only two model calls: initial refusal + one retry
-        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
 
         await agent.close()
 
@@ -1958,8 +2002,9 @@ class TestUrlValidationSourceContext:
         response = await agent.run("question", max_steps=max_steps)
 
         assert response.answer == good
-        # Tool call + bad text + retry text = 3 model calls
+        # Tool call + bad text + retry text = 3 model calls, the retry on the unchanged context
         assert len(mock_llm.requests) == 3
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
 
         await agent.close()
 
@@ -2854,13 +2899,10 @@ class TestResponseValidators:
         assert isinstance(XmlTagValidator().check(resp, _ctx(retried={ConditionKey.XML})), Proceed)
 
     def test_retry_says_nothing_back_to_the_model(self):
-        """A ``Retry`` carries the condition and nothing else (#1937).
+        """A ``Retry`` carries the condition and nothing else (#1937/#2160).
 
-        Its teaching user-turn retired with the last two families that used one — the
-        call-shaped-text draws (#1839) and the empty draw — both of which are discarded
-        and re-rolled before this chain runs.  The three conditions left correct by
-        SHOWING the model its own bad draw, so a nudge field with no producer would be
-        a dead parameter the loop still had to apply."""
+        The loop answers it by re-drawing on the unchanged conversation, writing nothing
+        into it, so a nudge field would be a parameter with nothing to apply it to."""
         assert "nudge" not in Retry.model_fields
 
     def test_refusal_validator(self):

@@ -1019,8 +1019,9 @@ def _same_context_drawn_twice(db: Database) -> bool:
     list, and ``LlmClient.chat`` persists every draw it completes before returning —
     so a re-rolled step is two rows with the same context, while an ordinary step's
     context has grown by the turns the previous step appended and can never repeat.
-    ``MicroContext._draw_clean`` re-draws the same way, so one read covers the main
-    loop and every micro-context.
+    A response validator's ``Retry`` and ``MicroContext._draw_clean`` re-draw the same
+    way, so one read covers the main loop's re-rolls, its validator retries, and every
+    micro-context.
 
     Reading the REPEAT is what keeps this honest for a condition nobody has
     enumerated: the harness never re-derives WHICH conditions the loop rejects (a set

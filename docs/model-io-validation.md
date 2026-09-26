@@ -51,10 +51,9 @@ concern and is untouched.
 should do*, not just "reject":
 
 - `Proceed` — response is fine (carries the post-repair value).
-- `Retry(condition)` — re-append the bad response and re-call, once per condition.
-  It says nothing back: the teaching user-turn it used to carry retired with its
-  last customers (#1839's call-shaped-text family, #1937's empty draw), which the
-  loop now discards and re-rolls before the chain sees them.
+- `Retry(condition)` — discard the bad response and re-draw on the unchanged
+  conversation, once per condition (#2160). Nothing is written into the
+  conversation, so a retry re-samples the state the draft was drawn from.
 - `Repair(response)` — silently transform and continue the chain.
 - `RejectToolCall(message)` — error tool-result for the call(s), continue loop.
 - `NudgeContinue(message)` — append response + a user-turn nudge, continue loop.
