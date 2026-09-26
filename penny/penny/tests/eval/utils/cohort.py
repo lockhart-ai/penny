@@ -1264,6 +1264,26 @@ def _url_only(token: str) -> str:
     return token
 
 
+# Markdown puts a link's text against its target with `](`, and every character of
+# `[https://x/y](https://x/y)` is a legal URI character, so the grammar reads the whole link as
+# ONE address: `https://x/y](https://x/y)`, a string no world contains, which reported a
+# correctly cited source as an invention (#2152).  So a match is split at that seam before
+# anything else is read off it, and a link yields each address it holds — its target, and its
+# text when the text is an address too — each weighed against the world on its own, so an
+# invented address in either position is still caught.
+_LINK_SEAM = "]("
+
+
+def _urls_in(token: str) -> list[str]:
+    """Every address a URL match holds, each without the prose it ran into, without repeats.
+
+    One for a bare address; one per side of a markdown link whose text is itself an address.
+    A side that is not an address — a relative target — is not a URL specific, so it is not
+    one here either."""
+    addresses = [_url_only(part) for part in token.split(_LINK_SEAM) if _is_url(part)]
+    return list(dict.fromkeys(addresses))
+
+
 def specifics(text: str) -> list[str]:
     """Every specific value stated in ``text`` — URLs, numbers, and the WORDS of each
     capitalised name phrase — in the order they are said, without repeats.
@@ -1275,8 +1295,10 @@ def specifics(text: str) -> list[str]:
     found: list[str] = []
     for match in _SPECIFIC.finditer(_fold_phrases(text)):
         token = match.group().strip()
-        token = _url_only(token) if _is_url(token) else token
-        parts = [token] if _is_atomic(token) else token.split()
+        if _is_url(token):
+            parts = _urls_in(token)
+        else:
+            parts = [token] if _is_atomic(token) else token.split()
         found += [part for part in parts if part and part not in found]
     return found
 
