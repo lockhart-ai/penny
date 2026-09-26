@@ -304,11 +304,15 @@ class Cohort:
             kind="reply",
         )
 
-    def assert_every_stored_entry_traces_to_the_world(self) -> None:
-        """An entry naming something nobody's page mentions was invented — and once it is in a
-        collection, a collector re-reads it for ever."""
+    def assert_every_value_in_the_store_is_sourced(self) -> None:
+        """Every specific value in the stored entries traces to something the round was GIVEN.
+        An entry naming something nobody's page mentions was invented — and once it is in a
+        collection, a collector re-reads it for ever.
+
+        It reads the values ``specifics`` extracts — URLs, numbers, capitalised names — and
+        nothing else, so invented lowercase prose is outside what it can see."""
         self.claim(
-            "state: every stored entry traces to what the round was given",
+            "state: every specific value in the stored entries is sourced",
             _store_is_sourced,
             SpecCategory.PROVENANCE,
         )

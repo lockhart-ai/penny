@@ -282,8 +282,8 @@ check and deciding its fate. Inward looks like nothing is missing, because the t
 was never on the page.
 
 Here is what it found on the reference port. The canonical case it was ported from carried **no
-`PROVENANCE` claim of either kind**. Both of the ported case's — that every stored entry traces to
-what the round was given, and that every specific value in the reply is sourced — exist *only*
+`PROVENANCE` claim of either kind**. Both of the ported case's — that every specific value in the
+stored entries is sourced, and that every specific value in the reply is sourced — exist *only*
 because somebody ran the inward column and wrote them; there was nothing to copy. A port that had
 run the outward column alone would have shipped a case that cannot tell a fact read off the page
 from one the model invented, and every check it did carry would have passed.
@@ -350,7 +350,7 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
     cohort.assert_the_store_holds_an_entry()
     cohort.assert_nothing_excluded_was_stored()
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # measured, never asserted — section B
@@ -387,7 +387,7 @@ async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> N
     cohort.claim("state: <what the store holds>", _holds(<AMOUNT>), SpecCategory.STORE)
     cohort.claim("state: <what the run record says>", _closed_having_worked, SpecCategory.STORE)
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, TRANSITIONS, ENTRIES_STORED, REPLY_SPREAD)
 ```

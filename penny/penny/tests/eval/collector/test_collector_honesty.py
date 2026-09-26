@@ -515,7 +515,7 @@ async def test_the_cycle_writes_nothing_when_every_read_fails(
     # catches an invented entry by its existence, and this one catches what is IN it — a
     # headline, a company, a url that no page ever supplied, on a cycle that read no page
     # at all.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     # REPLY_SPREAD is not measured: the job does not notify, so every sample's reply is
     # empty and a spread over no pair prints a number where there is no measurement.
@@ -552,7 +552,7 @@ async def test_the_cycle_writes_nothing_when_the_browser_is_disconnected(
     )
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     # TOOL_SEQUENCE is the reading this case exists for as much as its claims are: the
     # outage banner's whole job is to stop the url-variant retries, and how many reads a

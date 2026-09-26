@@ -1157,6 +1157,16 @@ _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
 # Words that carry a capital everywhere in English and are never part of a name, so a phrase is
 # not built across them — otherwise a clause boundary glues two sentences into one "name".
 _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
+# A FIELD LABEL — a word or capitalised phrase at the head of a line, immediately followed by a
+# colon (`Genre: Turn-based strategy`) — is the layout the model chose for its own output, not a
+# value it states.  The value after the colon is still read.  MEASURED: an entry laid out under
+# `Genre:` failed as `unsourced: ['Genre']` because the label glued across the line break onto
+# the name ending the line above, and nothing the round was given happened to say "genre".
+#
+# THE BLIND SPOT, STATED: a name used AS a line's label (`Casimir Oyelaran: signed`) is a label
+# by this definition, so an invented one there is not read.  A label in sentence case
+# (`Release date:`) is not a capitalised phrase, so it is still read as before.
+_FIELD_LABEL = re.compile(rf"^[ \t]*{_CAPITALISED}(?:[ \t]+{_CAPITALISED})*(?=:)", re.MULTILINE)
 
 # ONE folding, used by every probe on both sides of every comparison.  A semantic check defeated
 # by cosmetics is a scorer bug, and two spellings of "fold the typography" drift apart: measured,
@@ -1196,6 +1206,11 @@ def _bare(token: str) -> str:
     """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``."""
     folded = fold_typography(token)
     return folded[:-2] if folded.endswith("'s") else folded
+
+
+def _blank_field_labels(text: str) -> str:
+    """Blank out each line's field label, so it is neither a value nor part of one."""
+    return _FIELD_LABEL.sub(lambda m: " " * len(m.group()), text)
 
 
 def _fold_phrases(text: str) -> str:
@@ -1291,9 +1306,10 @@ def specifics(text: str) -> list[str]:
     A phrase decides WHAT gets checked; its words are what is checked.  Measured, the whole
     phrase is too brittle to compare directly: a capitalised label sitting against a name
     (``Key⁠Ridgeline Foxes Sign Aurelio Brandt``, glued by a narrow no-break space) is not a
-    string the world contains, though every name in it is."""
+    string the world contains, though every name in it is.  A line's field label is layout, not
+    a value, and is never read."""
     found: list[str] = []
-    for match in _SPECIFIC.finditer(_fold_phrases(text)):
+    for match in _SPECIFIC.finditer(_fold_phrases(_blank_field_labels(text))):
         token = match.group().strip()
         if _is_url(token):
             parts = _urls_in(token)

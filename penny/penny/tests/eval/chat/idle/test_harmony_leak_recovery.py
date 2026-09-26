@@ -106,7 +106,7 @@ async def test_a_leaked_envelope_is_caught_and_the_turn_is_answered_cleanly(
     cohort.assert_the_reply_answers_the_ask()
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

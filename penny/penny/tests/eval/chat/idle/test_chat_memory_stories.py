@@ -543,7 +543,7 @@ async def test_a_lookup_is_saved_where_it_was_asked_for(chat_eval: ChatEval, mod
     # PROVENANCE — the half the source case had none of.  The subject exists on no real site, so
     # a stored fact naming something neither page mentions was invented, and once it is in a
     # collection a collector re-reads it for ever.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -840,7 +840,7 @@ async def test_changing_a_note_rewrites_only_that_note(chat_eval: ChatEval, mode
 
     # PROVENANCE — the new wording is the user's own, so a note that came back carrying a trail
     # name, a distance or a season nobody said was invented into the store for good.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -905,7 +905,7 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
     )
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -981,7 +981,7 @@ async def test_narrating_something_already_done_fires_nothing(
     # sample that DID decide the recipe was worth keeping may only have written what the user
     # actually said, and an entry naming a dish, a source or a step nobody mentioned was
     # invented into the store for good.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -1034,7 +1034,7 @@ async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) ->
     # PROVENANCE — both halves.  A sample that did write something into the list may only have
     # written what the user said: a campaign, a title or a date the message never carried is an
     # invention, and it is in the collection for good.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

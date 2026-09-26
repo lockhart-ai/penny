@@ -703,7 +703,7 @@ async def test_the_watch_writes_the_first_reading(
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)
 
@@ -749,7 +749,7 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
 
     # PROVENANCE — a correct cycle wrote nothing, so this claim is TRUE of it rather than
     # unasked; what it catches is a quiet cycle that wrote something the page never said.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED)
 
@@ -789,6 +789,6 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, CYCLE_SCRIPT, ENTRIES_STORED, REPLY_SPREAD)

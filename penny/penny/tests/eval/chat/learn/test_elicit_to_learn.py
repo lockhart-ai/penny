@@ -107,7 +107,7 @@ async def test_elicit_to_learn_runs_the_round_and_reports_what_it_captured(
     cohort.assert_the_routine_names_a_destination()
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(
