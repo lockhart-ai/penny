@@ -341,15 +341,18 @@ def test_a_capitalised_label_against_a_name_is_not_a_fabrication():
 
 
 def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
-    """A word or capitalised phrase heading a line and followed by a colon is the layout the
-    model chose, not a value it states.  Read as one, `Genre` glued across the line break onto
-    the name ending the line above and failed a faithful entry whose round never said "genre".
+    """A capitalised word heading a line, with at most three more words in any case before a
+    colon, is the layout the model chose, not a value it states.  Read as one, `Genre` glued
+    across the line break onto the name ending the line above and failed a faithful entry whose
+    round never said "genre".
 
     The paired guard: only the label is skipped.  A name in the value is read exactly as
     before, so an invented one is still reported, and a colon later in a line labels nothing."""
     laid_out = "Publisher: Emberline Studios\nGenre: Turn-based strategy"
     assert specifics(laid_out) == ["Emberline", "Studios"]
     assert specifics("Release Date: March 14 2031") == ["14", "2031"]
+    assert specifics("Release date: March 14 2031") == ["14", "2031"]
+    assert specifics("Key features: co-op campaigns") == []
     given = "Released by Emberline Studios, it is a turn-based strategy game."
     assert unsourced_specifics(laid_out, given) == []
     assert unsourced_specifics("Publisher: Casimir Oyelaran\nGenre: Strategy", given) == [
@@ -363,9 +366,9 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
 
 
 def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
-    """Stated rather than discovered later: a capitalised phrase heading a line before a colon
-    is a field label by definition, so a name written in that position is not read, invented
-    or not.  The same name anywhere after the colon still is."""
+    """Stated rather than discovered later: a name or short clause heading a line before a
+    colon is a field label by definition, so a name written in that position is not read,
+    invented or not.  The same name anywhere after the colon still is."""
     given = "Aurelio Brandt signed today."
     assert unsourced_specifics("Casimir Oyelaran: signed today", given) == []
 
@@ -376,8 +379,8 @@ _GAME_PAGE = (
 )
 
 
-def _stored(name: str, content: str) -> SampleObservation:
-    entry = StoredEntry(collection="games", key=None, content=content)
+def _stored(name: str, content: str, key: str | None = None) -> SampleObservation:
+    entry = StoredEntry(collection="games", key=key, content=content)
     return SampleObservation(
         name=name, phrasing="the ask", arm=0, landed="idle", entries=[entry], given=_GAME_PAGE
     )
@@ -386,22 +389,29 @@ def _stored(name: str, content: str) -> SampleObservation:
 def test_the_store_provenance_claim_reads_the_values_in_an_entry_and_not_its_labels():
     """The claim reads the specific values in each stored entry, which is what its label says.
 
-    The first entry is laid out under field labels, `Genre` among them, and the round never
-    said "genre": every value in it is sourced, so it holds.  The second invents a publisher
-    in a labelled field, and the name is still reported."""
+    The first entry is laid out under field labels, `Key features` and `Genre` among them, and
+    the round never said "key" or "genre": every value in it is sourced, so it holds.  The
+    second is the same layout stored under a capitalised key, which is read as a line of its
+    own, so the label heading the content is still a label.  The third invents a publisher in
+    a labelled field, and the name is still reported."""
     faithful = (
         "Title: Mistforge Tactics\nRelease date: March 14 2031\nPublisher: Emberline Studios\n"
-        "Genre: Turn-based strategy (co-op campaigns)\n"
+        "Key features: co-op campaigns\nGenre: Turn-based strategy\n"
         "Source: https://gamedb.example.com/titles/mistforge"
     )
+    keyed = "Genre: Turn-based strategy\nPublisher: Emberline Studios"
     invented = faithful.replace("Emberline Studios", "Casimir Oyelaran")
-    samples = [_stored("s0", faithful), _stored("s1", invented)]
+    samples = [
+        _stored("s0", faithful),
+        _stored("s1", keyed, key="Mistforge Tactics by Emberline Studios"),
+        _stored("s2", invented),
+    ]
     world = World(name="base", pages=(), keeps=(), excludes=())
     cohort = Cohort("case", _MODEL, samples, _one_arm(world))
     cohort.assert_every_value_in_the_store_is_sourced()
     claim = cohort.claims[0]
     assert claim.label == "state: every specific value in the stored entries is sourced"
-    assert [outcome.ok for outcome in claim.outcomes] == [True, False]
+    assert [outcome.ok for outcome in claim.outcomes] == [True, True, False]
     assert claim.rationales == ["unsourced in the store: ['Casimir', 'Oyelaran']"]
 
 

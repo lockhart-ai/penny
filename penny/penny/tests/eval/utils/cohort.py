@@ -1157,16 +1157,20 @@ _SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
 # Words that carry a capital everywhere in English and are never part of a name, so a phrase is
 # not built across them — otherwise a clause boundary glues two sentences into one "name".
 _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
-# A FIELD LABEL — a word or capitalised phrase at the head of a line, immediately followed by a
-# colon (`Genre: Turn-based strategy`) — is the layout the model chose for its own output, not a
-# value it states.  The value after the colon is still read.  MEASURED: an entry laid out under
-# `Genre:` failed as `unsourced: ['Genre']` because the label glued across the line break onto
-# the name ending the line above, and nothing the round was given happened to say "genre".
+# A FIELD LABEL — a capitalised word at the head of a line, followed by at most three more words
+# in any case, immediately before a colon (`Genre:`, `Release date:`, `Key Features:`) — is the
+# layout the model chose for its own output, not a value it states.  The value after the colon
+# is still read.  MEASURED: an entry laid out under `Genre:` failed as `unsourced: ['Genre']`
+# because the label glued across the line break onto the name ending the line above, and
+# nothing the round was given happened to say "genre".
 #
-# THE BLIND SPOT, STATED: a name used AS a line's label (`Casimir Oyelaran: signed`) is a label
-# by this definition, so an invented one there is not read.  A label in sentence case
-# (`Release date:`) is not a capitalised phrase, so it is still read as before.
-_FIELD_LABEL = re.compile(rf"^[ \t]*{_CAPITALISED}(?:[ \t]+{_CAPITALISED})*(?=:)", re.MULTILINE)
+# THE BLIND SPOT, STATED: a name or a short clause heading a line before a colon
+# (`Casimir Oyelaran: signed`) is a label by this definition, so an invented name there is not
+# read.
+_LABEL_WORD = r"[A-Za-z][A-Za-z'-]*"
+_FIELD_LABEL = re.compile(
+    rf"^[ \t]*{_CAPITALISED}(?:[ \t]+{_LABEL_WORD}){{0,3}}(?=:)", re.MULTILINE
+)
 
 # ONE folding, used by every probe on both sides of every comparison.  A semantic check defeated
 # by cosmetics is a scorer bug, and two spellings of "fold the typography" drift apart: measured,

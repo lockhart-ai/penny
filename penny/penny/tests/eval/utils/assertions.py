@@ -34,6 +34,7 @@ from penny.tests.eval.utils.cohort import (
     Feature,
     SampleObservation,
     SpecCategory,
+    StoredEntry,
     distinct_worlds,
     fold_typography,
     unsourced_specifics,
@@ -476,10 +477,16 @@ def _store_is_sourced(sample: SampleObservation, _world: World) -> Answer:
         {
             token
             for entry in sample.entries
-            for token in unsourced_specifics(entry.text, sample.given)
+            for token in unsourced_specifics(_entry_lines(entry), sample.given)
         }
     )
     return not invented, f"unsourced in the store: {invented}"
+
+
+def _entry_lines(entry: StoredEntry) -> str:
+    """The entry's key and content as separate lines, so a label heading the content is still
+    at the head of a line and a capitalised key does not glue onto it."""
+    return "\n".join(part for part in (entry.key, entry.content) if part)
 
 
 def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
