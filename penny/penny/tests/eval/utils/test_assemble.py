@@ -835,8 +835,9 @@ def _record_never_started(report_dir: Path, observations: list[cohort.SampleObse
 def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) -> None:
     """The summary is GENERATED — one section per model, the arithmetic the case headers do.
 
-    Its samples column states the same partition the case's own header does, including a sample
-    that never started: that one has no result, so only the standings can say it was lost."""
+    Its samples column, and the run header's sample count, state the same partition the case's
+    own header does, including a sample that never started: that one has no result, so only the
+    standings can say it was lost."""
     gpt = _indexed_run(
         tmp_path, "run-gpt", "openai/gpt-oss-20b", {"a-case": (13, 14), "b-case": (12, 14)}
     )
@@ -850,6 +851,7 @@ def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) ->
         variance=cohort.pool(observations, []),
     ).measures()
     summary = assemble.render_run_summary([gpt, gemma])
+    verdict = assemble.render_run_verdict(assemble.load_case_artifacts(gemma))
 
     assert header == (
         "| measure | reading |\n"
@@ -889,6 +891,10 @@ def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) ->
         "| 1 | `a-case` | 🟢 14/14 · 100% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
         " | 14 pooled + 1 excluded | 3,871 in · 421 out |\n"
     ), "the never-started sample is excluded in the row exactly as the header states it"
+    assert verdict == (
+        "**🟢 14 / 14 checks · 100%**  ·  **⚪ variance max H 0.500** `tool sequence` · 1/1 vary"
+        " — 1 case · 15 samples · 1 excluded"
+    ), "and the run header counts it among the samples driven, beside its exclusion"
 
 
 def test_a_blind_feature_is_never_counted_as_agreement(tmp_path: Path) -> None:

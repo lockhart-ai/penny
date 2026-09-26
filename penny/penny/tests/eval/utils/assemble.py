@@ -208,9 +208,8 @@ def render_run_verdict(artifacts: list[CaseArtifact]) -> str:
     rows = [check for artifact in artifacts for check in artifact.checks if check.scored]
     passed = sum(check.passed for check in rows)
     total = sum(check.total for check in rows)
-    samples = sum(artifact.samples for artifact in artifacts)
-    dead = cohort.Standing.DEAD.value
-    excluded = sum(artifact.standing_counts.get(dead, 0) for artifact in artifacts)
+    samples = sum(_driven(artifact) for artifact in artifacts)
+    excluded = sum(_excluded(artifact) for artifact in artifacts)
     scope = (
         f"{len(artifacts)} case{'s' if len(artifacts) != 1 else ''} · "
         f"{samples} sample{'s' if samples != 1 else ''} · {excluded} excluded"
@@ -814,17 +813,30 @@ def _row_samples(artifact: CaseArtifact) -> str:
     reroll-exhausted sample costs a 15-sample case about five points, and without the excluded
     count beside it that loss reads as the model getting something wrong.
 
-    Both counts are read off the case's STANDINGS, the one record of the partition its own
-    header states: the standings are taken over every sample the cohort holds, so a dead one
-    is a sample the pool excluded and every other one is a sample it pooled.  That includes
-    a sample that never started: it has no result, so ``samples`` does not count it and no
-    arithmetic over ``samples`` can see it.  A case that drove no cohort has no standings
-    and no pooling to report, so it states what it drove."""
-    counts = artifact.standing_counts
-    if not counts:
+    Both counts are read off the case's standings (:func:`_driven`, :func:`_excluded`), so
+    the row states the partition its own header does.  A case that drove no cohort has no
+    standings and no pooling to report, so it states what it drove."""
+    if not artifact.standing_counts:
         return _ROW_SAMPLES_UNPOOLED.format(samples=artifact.samples)
-    excluded = counts.get(cohort.Standing.DEAD.value, 0)
-    return _ROW_SAMPLES.format(pooled=sum(counts.values()) - excluded, excluded=excluded)
+    excluded = _excluded(artifact)
+    return _ROW_SAMPLES.format(pooled=_driven(artifact) - excluded, excluded=excluded)
+
+
+def _driven(artifact: CaseArtifact) -> int:
+    """Every sample the case drove, read off its STANDINGS — the one record of the partition
+    the case's own header states.
+
+    The standings are taken over every sample the cohort holds, including one that never
+    started: it has no result, so ``samples`` does not count it and no arithmetic over
+    ``samples`` can see it.  A case that drove no cohort has no standings, and what it drove
+    is its results."""
+    return sum(artifact.standing_counts.values()) or artifact.samples
+
+
+def _excluded(artifact: CaseArtifact) -> int:
+    """The samples the case's pool excluded — its DEAD standings, a never-started one among
+    them.  Zero for a case that drove no cohort, which pooled nothing to exclude from."""
+    return artifact.standing_counts.get(cohort.Standing.DEAD.value, 0)
 
 
 if __name__ == "__main__":
