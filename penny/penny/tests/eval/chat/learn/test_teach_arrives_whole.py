@@ -286,7 +286,7 @@ async def test_idle_to_learn_runs_the_taught_round_in_one_turn(
     cohort.assert_no_running_mechanism_was_changed()
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
