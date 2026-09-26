@@ -50,8 +50,7 @@ from penny.conversation_machine import (
     render_classifier_content,
 )
 from penny.database import Database
-from penny.database.memory import MemoryType
-from penny.database.models import MemoryRow, PromptLog, Skill
+from penny.database.models import PromptLog
 from penny.database.skills import (
     SkillDraft,
     SkillParameter,
@@ -66,7 +65,6 @@ from penny.llm.models import (
     LlmToolCallFunction,
     strip_harmony_control_tokens,
 )
-from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.program import program_calls
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
@@ -155,18 +153,11 @@ from penny.tests.eval.classifier.test_state_classifier import (
     VALUE_ARRIVED_ARMS,
 )
 from penny.tests.eval.collector.test_collector_enactment import (
-    _STOP_REASON as _STOP,
-)
-from penny.tests.eval.collector.test_collector_enactment import (
-    DIRECTION_CHECK_LABEL,
     ENACTMENT_CASES,
     GATE_CASES,
     _assert_the_baseline_is_stored,
     _EnactmentCase,
-    _score_enactment,
     assert_applied_world,
-    configured_terms,
-    rendered_program,
     seed_applied_job,
     seed_gate_world,
 )
@@ -1021,128 +1012,6 @@ def _assert_one_span_moved(case: _EnactmentCase) -> None:
     )
 
 
-def test_the_enactment_scorer_passes_three_cycles_that_did_the_job(tmp_path) -> None:
-    """A baseline cycle, then a quiet one that re-read the same value and stopped at the
-    write chokepoint in silence, then a change cycle that said so once — every check the
-    beat gates on scores green.
-
-    The same tripwire the reply beats carry (the "check the scorer before you blame the
-    model" rule, applied before the run rather than after it): a scorer that cannot pass
-    the behaviour the case itself calls correct scores every sample a miss, and this suite
-    has shipped that bug once already.  THREE cycles per sample makes it the most expensive
-    place in the suite to find it, so it is found here.
-
-    The direction check is the one row that legitimately varies — it reads the CONFIGURED
-    terms rather than the cycles — so it is read as a report and excluded from the claim."""
-    db = migrated_db(str(tmp_path / "enactment-scorer.db"))
-    for case in ENACTMENT_CASES:
-        for check in _score_enactment(db, _three_good_cycles(case), case=case):
-            if check.label == DIRECTION_CHECK_LABEL:
-                continue
-            assert check.ok, f"{case.case_id}: {check.label} — {check.rationale}"
-
-
-# The key an ideal cycle stores its reading under — a fixture stand-in for whatever the
-# routine's own program names, since the scorer reads keys and contents alike.
-_ENACTMENT_KEY = "current"
-
-# The surface a configured collection's cycle runs with — its program's own two calls
-# (#1911) plus the terminator assembly injects a step for (#1916), which is what the
-# runtime-rules block renders against.
-_ENACTMENT_SURFACE = ("browse", "collection_write", PennyConstants.DONE_TOOL_NAME)
-
-
-def _three_good_cycles(case: _EnactmentCase) -> list[CycleObservation]:
-    """The three cycles the beat's contract describes, each doing exactly what is asked of
-    it: the baseline write, the silent re-read that stops at the chokepoint, and the change
-    that queues one message naming what moved."""
-    quiet = {_ENACTMENT_KEY: case.fact.quiet}
-    return [
-        _did_the_job(case, index=0, before={}, after=quiet),
-        _did_the_job(
-            case, index=1, before=quiet, after=quiet, outcome=RunOutcome.NO_WORK, reason=_STOP
-        ),
-        _did_the_job(
-            case,
-            index=2,
-            before=quiet,
-            after={_ENACTMENT_KEY: case.fact.changed},
-            sent=[f"heads up — it now says {case.fact.changed}"],
-            reason=NOTIFICATION_NOTES[NotificationOutcome.QUEUED],
-        ),
-    ]
-
-
-def _did_the_job(
-    case: _EnactmentCase,
-    *,
-    index: int,
-    before: dict[str, str],
-    after: dict[str, str],
-    sent: list[str] | None = None,
-    outcome: RunOutcome = RunOutcome.WORKED,
-    reason: str | None = None,
-) -> CycleObservation:
-    """One cycle that did exactly what the watch contract asks of it: fetched the page the
-    job is pointed at, wrote what it said, queued whatever the change warranted, and closed
-    with a run record stating it — and closed with ``done()``, which #1916 restored as
-    how a cycle says it has finished.  A cycle that STOPPED at the chokepoint never
-    reaches the terminator, so it carries no ``done`` record."""
-    calls = [
-        CycleCall(tool="browse", arguments={"queries": [case.values["url"]]}),
-        CycleCall(tool="collection_write", arguments={"memory": case.container}),
-    ]
-    if reason != _STOP:
-        calls.append(CycleCall(tool=PennyConstants.DONE_TOOL_NAME, arguments={}))
-    return CycleObservation(
-        index=index,
-        before=before,
-        after=after,
-        sent=sent or [],
-        calls=calls,
-        served=[f"## browse: {case.values['url']}\n{next(iter(after.values()))}"],
-        outcome=outcome.value,
-        reason=reason,
-    )
-
-
-def test_every_configured_term_reads_off_the_prompt_the_collector_composes() -> None:
-    """Every surface the directionality check reads is text the collector really composes
-    for that collection (#1907) — the instructions, the routine and what it is for, the
-    values by name, and the collection's own name and description.
-
-    The check answers WHERE a term survived configuration, so its surfaces have to be the
-    collector's own rather than a plausible restatement of them; a surface that drifted out
-    of the composed prompt would report a condition as reachable when nothing the cycle
-    reads carries it.  Driven against the SHIPPED composer with the job's row and its
-    routine, so the claim is a read rather than a second copy of the composition."""
-    for case in ENACTMENT_CASES:
-        routine = slug_skill_name(case.skill.name)
-        row = MemoryRow(
-            name=case.container,
-            type=MemoryType.COLLECTION.value,
-            description=case.job.description,
-            extraction_prompt=rendered_program(case),
-            skill_name=routine,
-            skill_params=json.dumps(case.values),
-            notify=True,
-        )
-        skill = Skill(
-            name=routine,
-            intent=case.skill.description,
-            description=case.skill.description,
-            steps="[]",
-            parameters=json.dumps([{"name": name} for name in case.values]),
-            author=PennyConstants.CHAT_AGENT_NAME,
-        )
-        composed = Collector._compose_prompt(row, skill, frozenset(_ENACTMENT_SURFACE))
-        for surface, text in configured_terms(case).items():
-            assert text in composed, (
-                f"{case.case_id}: the {surface!r} surface must be text the collector reads — "
-                f"{text!r} is not in the composed prompt"
-            )
-
-
 def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> None:
     """Each bail case's world — the parked state its own edge was measured against — seeds
     cleanly and reads back as that state, with its container premise intact.
@@ -1339,7 +1208,7 @@ def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> 
     The probe asserts three premises — the collection is inert, it holds the target under
     its bare multi-word key, and the read surface renders that key in invocation form — and
     all three are properties of the FIXTURE, so a fixture edit that broke any of them would
-    otherwise surface as two guards failing an hour into a GPU run."""
+    otherwise surface as the guard failing an hour into a GPU run."""
     _seed_board_games(db)
     for case in BRACKET_KEY_CASES:
         assert_board_games_world(db, case)

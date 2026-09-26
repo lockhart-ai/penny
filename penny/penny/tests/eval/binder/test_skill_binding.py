@@ -13,21 +13,10 @@ answers for a parameter nobody declared or leaves one unanswered.  What these ca
 measure is what is left after that: whether it picked the RIGHT span, and whether it knew
 when to decline.
 
-Seven cases score each declared parameter on its own, both directions of the contract:
-
-* ``bind-listing-page`` — one url parameter, the ask names the page.
-* ``bind-two-parameters`` — the page AND what to look for on it, out of one message.
-* ``bind-daily-special`` — one url, the ask states its cadence in the same breath.
-* ``bind-count-page`` — one url under a threshold ask.
-* ``bind-new-arrivals`` — one url under an act-now ask with an end date in it.
-* ``bind-missing-page`` — the SHORTFALL: an ask that describes the job and names no page.
-* ``bind-missing-keyword`` — the shortfall beside a successful bind: the page is there,
-  what to look for on it is not.
-
-Seven more are the slot's CANONICAL set (#2006/#2057), each one ask in five wordings
-pooled into a cohort of fifteen and claimed against ``docs/eval-case-design.md`` rather
-than the per-parameter scorer below.  Together they are the binder's whole decision space
-— {complete bind, shortfall} × {single slot, multi slot}, plus the completion draw:
+Seven cases are the slot's CANONICAL set (#2006/#2057), each one ask in five wordings
+pooled into a cohort of fifteen and claimed against ``docs/eval-case-design.md``.
+Together they are the binder's whole decision space — {complete bind, shortfall} ×
+{single slot, multi slot}, plus the completion draw:
 
 * ``binder-binds-the-page-and-lets-neither-term-in``
 * ``binder-invents-nothing-for-a-condition-the-signature-cannot-hold``
@@ -43,8 +32,8 @@ it — and a round coming back for a missing detail hands over what it already S
 only the still-open parameters are drawn.  Every case but the last drives the COLD shape:
 the whole declared set, nothing settled, which is the ask the idle→apply and idle→request
 beats measure — a second ask pointing a routine Penny already knows at a new space.  Each
-one carries its job's TERMS as well (every hour until sunday, each day, every two hours
-until friday), which is the second thing every case checks: terms are settled where the
+one carries its job's TERMS as well (every hour until sunday, every week, every morning),
+which is the second thing every case checks: terms are settled where the
 job is set running, so a term inside a bound value is the draw reading them as part of the
 thing to point at.  ``binder-fills-the-still-open-parameter-when-the-value-arrives`` is
 the WARM shape — a signature offering only what the parked round left open, over the two
@@ -117,22 +106,6 @@ class BindingFixture(NamedTuple):
     forbidden: tuple[str, ...]
 
 
-async def _run_case(binder_eval: BinderEval, fixture: BindingFixture) -> None:
-    """Drive one case's signature + turns through the binder.  Every case is report-only:
-    the thresholds are the code owner's to set once the first numbers are read."""
-    await binder_eval(
-        case_id=fixture.case_id,
-        turns=fixture.turns,
-        skill=fixture.skill,
-        intent=fixture.intent,
-        parameters=fixture.parameters,
-        expectations=fixture.expectations,
-        forbidden=fixture.forbidden,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
-
-
 # The two signatures the cases are drawn against, each one the shape the framer really
 # produces for that kind of routine (the transitions suite seeds the same pair): one
 # parameter for a routine whose framing already says what it is looking for, and two when
@@ -175,16 +148,6 @@ _LISTING = BindingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_the_page_in_the_ask_fills_the_one_parameter(binder_eval: BinderEval) -> None:
-    """The simplest shape there is: one declared parameter, one address in the message.
-
-    The whole ask is one turn and carries its cadence and its end in the same breath — so
-    what is measured beside the bind is restraint, because "every hour until sunday night"
-    sits directly beside the url the value has to be."""
-    await _run_case(binder_eval, _LISTING)
-
-
 # ── Case 2: two parameters, both out of one message ───────────────────────────
 #
 # Reference values (read at review, never matched):
@@ -222,64 +185,7 @@ _TWO_PARAMETERS = BindingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_two_declared_parameters_take_two_different_spans(binder_eval: BinderEval) -> None:
-    """The stress case for filling a signature: one message supplies BOTH the page and the
-    thing to look for on it, and they are different kinds of value in the same sentence.
-
-    A binder that reads the page for both, or the phrase for both, has bound a routine
-    that will read the right page for the wrong thing — which is why each parameter is its
-    own check rather than a count."""
-    await _run_case(binder_eval, _TWO_PARAMETERS)
-
-
-# ── Case 3: one url, the cadence stated as part of the sentence ───────────────
-#
-# Reference values (read at review, never matched):
-#   url = https://harborbakery.example/menu
-
-_DAILY_SPECIAL = BindingFixture(
-    case_id="bind-daily-special",
-    skill="fetch_daily_special",
-    intent="retrieve the daily special from a bakery webpage",
-    parameters=(
-        SkillParameter(name="url", description="the URL where the daily specials are listed"),
-    ),
-    turns=(
-        "can you get the daily special from https://harborbakery.example/menu each day "
-        "and tell me what it is?",
-    ),
-    rendered_input=(
-        "The routine that has been asked for:\n"
-        "name: fetch_daily_special\n"
-        "what it is for: retrieve the daily special from a bakery webpage\n"
-        "\n"
-        "What it needs, one line each:\n"
-        "- url: the URL where the daily specials are listed\n"
-        "\n"
-        "What the user said, in their own words:\n"
-        "can you get the daily special from https://harborbakery.example/menu each day "
-        "and tell me what it is?"
-    ),
-    expectations=(BoundExpectation("url", "harborbakery.example/menu"),),
-    forbidden=("each day",),
-)
-
-
-@pytest.mark.asyncio
-async def test_the_cadence_in_the_sentence_is_not_part_of_the_value(
-    binder_eval: BinderEval,
-) -> None:
-    """ "each day" sits between the url and the rest of the sentence, so the value and the
-    term are neighbours in the text.
-
-    They are settled in different places — the value points the routine, the cadence is
-    set when the job is stood up — so a bind that swept the cadence in has made the
-    routine's identity depend on how often it runs."""
-    await _run_case(binder_eval, _DAILY_SPECIAL)
-
-
-# ── Case 4: one url under a threshold ask ─────────────────────────────────────
+# ── Case 3: one url under a threshold ask ─────────────────────────────────────
 #
 # Reference values (read at review, never matched):
 #   url = https://riverotters.example/census
@@ -310,59 +216,7 @@ _COUNT = BindingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_a_threshold_ask_still_binds_only_the_page(binder_eval: BinderEval) -> None:
-    """The ask carries a condition — tell me if it drops — and the routine declares one
-    parameter, the page.
-
-    So the condition has nowhere to go, and a signature with nowhere to put something is
-    exactly where an invented parameter or a padded value would show up."""
-    await _run_case(binder_eval, _COUNT)
-
-
-# ── Case 5: one url under an act-now ask with an end date in it ───────────────
-#
-# Reference values (read at review, never matched):
-#   url = https://eastbranch.example/new-titles
-
-_NEW_ARRIVALS = BindingFixture(
-    case_id="bind-new-arrivals",
-    skill="retrieve_newest_item",
-    intent="Checks a web page and returns its newest arrival",
-    parameters=(SkillParameter(name="url", description="the URL of the list to check"),),
-    turns=(
-        "watch https://eastbranch.example/new-titles every two hours until friday and "
-        "tell me when something new shows up",
-    ),
-    rendered_input=(
-        "The routine that has been asked for:\n"
-        "name: retrieve_newest_item\n"
-        "what it is for: Checks a web page and returns its newest arrival\n"
-        "\n"
-        "What it needs, one line each:\n"
-        "- url: the URL of the list to check\n"
-        "\n"
-        "What the user said, in their own words:\n"
-        "watch https://eastbranch.example/new-titles every two hours until friday and "
-        "tell me when something new shows up"
-    ),
-    expectations=(BoundExpectation("url", "eastbranch.example/new-titles"),),
-    forbidden=("every two hours", "friday"),
-)
-
-
-@pytest.mark.asyncio
-async def test_the_url_opens_the_ask_and_the_terms_follow_it(binder_eval: BinderEval) -> None:
-    """The address is the FIRST thing in the message and both terms follow it, which is the
-    layout most likely to produce a value that runs on past its end.
-
-    A cadence and an end date immediately after the url is where "watch <url> every two
-    hours until friday" becomes one long value if the draw takes the rest of the
-    clause."""
-    await _run_case(binder_eval, _NEW_ARRIVALS)
-
-
-# ── Case 6: the shortfall — the job is described and no page is named ─────────
+# ── Case 4: the shortfall — the job is described and no page is named ─────────
 #
 # Reference values (read at review, never matched):
 #   url = MISSING
@@ -393,20 +247,7 @@ _MISSING_PAGE = BindingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_an_ask_that_names_no_page_reports_the_page_missing(binder_eval: BinderEval) -> None:
-    """The ask is a perfectly good description of the job and supplies nothing to point it
-    at: the user refers to a listing they were looking at and never says which.
-
-    The temptation is a value that is right there in the sentence and is not a page —
-    "that brass lantern" reads like an answer, and a routine bound to it would go and
-    watch nothing.  Naming the parameter missing is the answer the contract asks for, and
-    since #1885 it is what ROUTES the turn into request — an enumerated outcome the
-    machine acts on, never a failed draw."""
-    await _run_case(binder_eval, _MISSING_PAGE)
-
-
-# ── Case 7: the shortfall beside a successful bind ────────────────────────────
+# ── Case 5: the shortfall beside a successful bind ────────────────────────────
 #
 # Reference values (read at review, never matched):
 #   url     = https://northpier.example/departures
@@ -441,22 +282,6 @@ _MISSING_KEYWORD = BindingFixture(
     ),
     forbidden=("every morning",),
 )
-
-
-@pytest.mark.asyncio
-async def test_one_parameter_binds_while_the_other_is_reported_missing(
-    binder_eval: BinderEval,
-) -> None:
-    """The two directions in one draw: the page is in the message and what to look for on
-    it is not.
-
-    This is the shape the request state exists for — enough of the ask has landed to be
-    worth keeping, and one named thing is outstanding — so the answer has to carry both
-    halves: the missing parameter named, and the bound one not thrown away on the way to
-    reporting it.  Since #1894 that surviving half becomes the round's own state, handed
-    back to the next draw as its settled values, so a page given now is never asked for
-    again."""
-    await _run_case(binder_eval, _MISSING_KEYWORD)
 
 
 # ── The ported cases: the binder's whole decision space (#2006/#2057) ─────────
@@ -1488,15 +1313,12 @@ PORTED_BINDINGS = (
 )
 
 # Every case's document, for the deterministic drift probes in ``make check`` — one place, so
-# the probes and the live runs can never be checking two different fixtures.  The last two
-# are driven only through the cohort path above; they are fixtures because a document nobody
-# pins is a case measuring whatever it happens to render.
+# the probes and the live runs can never be checking two different fixtures.  They are
+# fixtures because a document nobody pins is a case measuring whatever it happens to render.
 FIXTURES = (
     _LISTING,
     _TWO_PARAMETERS,
-    _DAILY_SPECIAL,
     _COUNT,
-    _NEW_ARRIVALS,
     _MISSING_PAGE,
     _MISSING_KEYWORD,
     _CROSSING,

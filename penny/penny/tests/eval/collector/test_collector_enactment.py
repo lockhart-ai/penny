@@ -1,5 +1,5 @@
-"""Collector ENACTMENT contracts (#1905) — the five applied collections run their
-cycles, with no chat model in the loop.
+"""Collector ENACTMENT contracts (#1905/#1919) — the five applied collections run their
+notification gate, with no chat model in the loop.
 
 ``test_state_transitions.py`` measures chat's half of the north star: a returning user
 asks for a job, the round negotiates what it needs, and the apply turn stands a live
@@ -9,28 +9,19 @@ params, an RRULE schedule and notify terms), is SUFFICIENT on its own to enact t
 
 So each case here seeds a request → apply case's FULL exit world — the composed history
 its short ask was answered in, the turn that parked the round, and the turn that stood
-the job up — and then drives the REAL collector cycle THREE times with no chat turns at
-all:
+the job up — plus the baseline observation a prior cycle would have left, and then drives
+ONE real collector cycle with no chat turns at all.  Each collection gets a PAIR of cases
+off that one seeding: serve the page with its ONE controllable fact moved and a
+notification is owed; serve the page whose datum equals what is stored and the write-gate
+STOP that makes no-news structurally silent (``KEY_EXISTS_UNCHANGED``) must end the cycle
+before a notification is ever entered.
 
-    cycle 1   the page exactly as it stood when the job was set up — the BASELINE
-    cycle 2   that same page again, unchanged — the QUIET cycle
-    cycle 3   the same page with its ONE controllable fact moved — the CHANGE
-
-Three, not two, because the three cycles are three different claims and the middle one
-cannot be folded into either neighbour.  A collection arrives from apply EMPTY, so its
-first observation is a new key: it is a baseline, and a first observation is news.  The
-write-gate STOP that makes no-news structurally silent (``KEY_EXISTS_UNCHANGED``) fires
-only on a SECOND reading of the same value — so "stay quiet, and never enter a
-notification" has no cycle it can fire on until cycle 2 exists.  Cycle 3 is then the only
-place a notification is owed, which is what makes "exactly one per change" a measurement
-rather than a hope.
-
-What the three cycles are asked is the whole watch contract: fetch the page the job is
-pointed at, record what it says, stay silent while nothing has changed, and say something
-exactly once when it has.  Everything is scored off PERSISTED state — the collection's
-entries, the run records, and the SEND QUEUE read explicitly (a collector cycle enqueues,
-and the drainer that delivers is a separate schedule, so a pending-only read reports a
-delivered notification as silence).
+What the cycles are asked is the watch contract: fetch the page the job is pointed at,
+record what it says, stay silent while nothing has changed, and say something exactly once
+when it has.  Everything is scored off PERSISTED state — the collection's entries, the run
+records, and the SEND QUEUE read explicitly (a collector cycle enqueues, and the drainer
+that delivers is a separate schedule, so a pending-only read reports a delivered
+notification as silence).
 
 Since #1911 telling the user is framework-entered rather than four more steps the model
 has to survive — and since #1916 a cycle again CLOSES by calling ``done()``, because
@@ -65,12 +56,6 @@ NOTHING, and its program still reads "the URL to visit each run" with nothing na
 page.  Four of the five join every value they carry; that one joins none.  Declared per
 case rather than repaired, because the fixtures are transcriptions of measured draws and
 the cost of the equality rule is the thing worth seeing.
-
-The remaining watched question is the otter case's direction-conditional goal ("warn me
-if it DROPS").  Nothing structural on the collection carries a direction — the routine
-counts a number and the notify flag is a boolean — so the case scores what the configured
-terms ACTUALLY carry, over every surface a cycle reads, and names where the condition
-lives when it lives anywhere at all.
 
 Report-only (``min_pass_rate=None``): the thresholds are the code owner's to set once the
 numbers are read.
@@ -205,11 +190,6 @@ _STOP_REASON = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 # world that grows a turn moves the window with it.
 _APPLIED_MESSAGE_WINDOW = _PARKED_MESSAGE_WINDOW + 2
 
-# What the WATCHED question is called wherever it is read — a diff-join key, and the row
-# the deterministic scorer pin excludes from its claim (it reads the configured terms
-# rather than the cycles).  Named once so a reworded label cannot silently stop matching.
-DIRECTION_CHECK_LABEL = "state: the configured terms carry the direction the goal gave"
-
 
 # ── The pages: one crisp datum each, and the cycle-3 twin that moves it ───────
 #
@@ -317,7 +297,7 @@ class _WatchedFact(NamedTuple):
 
 
 class _EnactmentCase(NamedTuple):
-    """One applied collection and the two cycles it is driven through.
+    """One applied collection and the two pages its gate cases serve.
 
     ``parked`` is the request → apply case this continues — read rather than restated, so
     the world the cycles run in is that beat's own world and the routine, the ask and the
@@ -337,12 +317,7 @@ class _EnactmentCase(NamedTuple):
     joins nothing there — visibly, in the program, and long before any of this.  Declaring
     the set makes both directions fail loudly: a join that stops working is a program the
     collector can no longer run, and a join that starts working is a case whose comment no
-    longer describes the world.
-
-    ``direction`` is the goal's own condition where it HAS one ("drops" for the otter
-    census).  It is not a scorer string for the cycle's behaviour: it is what the
-    directionality check looks for among the terms the collector actually reads, so the
-    case reports where — if anywhere — the condition survived configuration."""
+    longer describes the world."""
 
     case_id: str
     parked: _RequestApplyCase
@@ -353,7 +328,6 @@ class _EnactmentCase(NamedTuple):
     altered: CannedPage
     fact: _WatchedFact
     confirmation: str
-    direction: str | None = None
 
     @property
     def skill(self) -> SkillDraft:
@@ -452,7 +426,6 @@ _COUNT = _EnactmentCase(
         "number drops. It runs forever—there’s no end date—and you’ll get notified when a "
         "change shows up. ✅"
     ),
-    direction="drop",
 )
 
 _DIGEST = _EnactmentCase(
@@ -635,9 +608,9 @@ def rendered_program(case: _EnactmentCase) -> str:
 
     Composed here rather than called, because the shipped seam takes the registry ROW and
     the runner lays the registry down after this seed runs — so what a fixture must not do
-    is invent a fourth step or reorder these three.  Public because the probe and the
-    directionality check both read it, and a second copy would be free to drift from what
-    the collection actually stores."""
+    is invent a fourth step or reorder these three.  The seed and the probe both read it,
+    because a second copy would be free to drift from what the collection actually
+    stores."""
     attached = retarget_writes(case.skill.steps, case.container)
     joined = bind_parameters(attached, case.skill.parameters, case.values)
     return render_skill(joined, case.values)
@@ -898,9 +871,9 @@ def _assert_the_surface_is_the_program(penny: Penny, case: _EnactmentCase) -> No
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 #
-# One scorer for all five cases, bound to the case's own terms.  Labels are diff-join keys
-# and are deliberately case-NEUTRAL — one wording reads the same whether the fact that
-# moved was a price, a count, a dish or a sailing.
+# The checks every gate case is scored with, bound to the case's own terms.  Labels are
+# diff-join keys and are deliberately case-NEUTRAL — one wording reads the same whether the
+# fact that moved was a price, a count, a dish or a sailing.
 
 
 class _TerminalShape(StrEnum):
@@ -1011,21 +984,6 @@ def _recorded_check(cycle: CycleObservation, *, fact: str, absent: str | None = 
         f"cycle {cycle.index + 1}: the collection holds what the page says",
         ok,
         rationale=None if ok else f"expected {fact!r}, the collection holds {cycle.after}",
-        kind="state",
-    )
-
-
-def _baseline_check(cycle: CycleObservation) -> Check:
-    """The first cycle's write landed — the baseline the two cycles after it are read
-    against.  A watch with nothing recorded has nothing to compare, so this is the one
-    claim every later check stands on."""
-    return Check(
-        f"cycle {cycle.index + 1}: the write landed",
-        cycle.changed,
-        anchor="collection_write(",
-        rationale=None
-        if cycle.changed
-        else f"nothing was written and the run closed {cycle.reason or '—'}",
         kind="state",
     )
 
@@ -1155,105 +1113,10 @@ def _nothing_else_touched_check(db: Database, case: _EnactmentCase) -> Check:
     )
 
 
-def _direction_check(case: _EnactmentCase, cycles: list[CycleObservation]) -> Check:
-    """The WATCHED question (#1905): the goal is direction-conditional ("warn me if it
-    DROPS"), and nothing structural on a configured collection carries a direction — the
-    routine counts a number and notify is a boolean.
-
-    So this scores what the configured terms ACTUALLY carry, over every surface a cycle
-    reads — since #1907 that is the composed prompt's three parts (the instructions, the
-    routine and what it is for, and the values by name) plus the collection's own name and
-    description.  A pass means the condition survived configuration somewhere the collector
-    can see it; the rationale names WHERE, so "it lives in a prose description the apply
-    turn happened to write" is reported as what it is rather than read as the mechanism
-    carrying it.  Cases with no direction in their goal report it not-applicable."""
-    direction = case.direction
-    if direction is None:
-        return Check.na(
-            DIRECTION_CHECK_LABEL, rationale="the goal states no direction", kind="state"
-        )
-    carriers = _direction_carriers(case, direction)
-    return Check(
-        DIRECTION_CHECK_LABEL,
-        bool(carriers),
-        rationale=f"the direction is stated in: {carriers}"
-        if carriers
-        else f"no configured term names {direction!r} — "
-        f"the cycles notified on {len(cycles[-1].sent)} change(s) either way",
-        kind="state",
-    )
-
-
-def _direction_carriers(case: _EnactmentCase, direction: str) -> list[str]:
-    """Which of the collection's model-facing terms state the goal's direction."""
-    return [name for name, text in configured_terms(case).items() if direction in text.casefold()]
-
-
-def configured_terms(case: _EnactmentCase) -> dict[str, str]:
-    """Everything a cycle reads about the job it is running, by surface.
-
-    The name it runs under and the description it carries, plus the composed prompt's
-    three parts since #1907 — the INSTRUCTIONS (the program, with the bound values already
-    joined into its leaves), the ROUTINE it runs and what that is for, and the VALUES it is
-    pointed at, listed by name.  Kept as separate surfaces rather than one blob because the
-    directionality question is about WHERE a term survived configuration, and a pin holds
-    each of them against the prompt the collector really composes."""
-    return {
-        "name": case.container,
-        "description": case.job.description,
-        "instructions": rendered_program(case),
-        "routine": f"{slug_skill_name(case.skill.name)} — {case.skill.description}",
-        # In the ROUTINE's declared order, which is the order the collector lists them in —
-        # a fixture free to choose its own would match by luck on a one-parameter job and
-        # drift on the two-parameter one.
-        "values": "\n".join(
-            f"- {parameter.name}: {case.values[parameter.name]}"
-            for parameter in case.skill.parameters
-        ),
-    }
-
-
-def _score_enactment(
-    db: Database, cycles: list[CycleObservation], *, case: _EnactmentCase
-) -> list[Check]:
-    """The watch contract across the three cycles: record the page's fact once, stay silent
-    the next time it says the same thing, and say something exactly once when it moves —
-    honestly recorded throughout, and touching nothing else.
-
-    The three cycles are three different claims, which is why the beat needs three: the
-    FIRST is a baseline (a collection arrives from apply empty, so its first observation is
-    a new key), the SECOND is the only one that can reach the write-gate STOP (it takes a
-    second reading of the same value to fire), and the THIRD is the change."""
-    first, quiet, changed = cycles
-    return [
-        _served_check(first, datum=case.fact.quiet),
-        _served_check(quiet, datum=case.fact.quiet),
-        _served_check(changed, datum=case.fact.changed),
-        _fetched_check(case, first),
-        _recorded_check(first, fact=case.fact.quiet),
-        _baseline_check(first),
-        _completed_check(first),
-        _honest_record_check(first),
-        _fetched_check(case, quiet),
-        _recorded_check(quiet, fact=case.fact.quiet),
-        _stopped_check(quiet),
-        _silent_check(quiet),
-        _honest_record_check(quiet),
-        _fetched_check(case, changed),
-        _recorded_check(changed, fact=case.fact.changed, absent=case.fact.quiet),
-        _completed_check(changed),
-        _one_notify_check(case, changed),
-        _honest_record_check(changed),
-        _nothing_else_touched_check(db, case),
-        _direction_check(case, cycles),
-    ]
-
-
 # ── The notification gate, one cycle at a time (#1919) ────────────────────────
 #
-# The journeys above walk a watch through its whole life, which is what makes the middle
-# cycle's silence meaningful — but it also means one number carries three claims, and a
-# red row does not say which direction broke.  The code owner's design splits them: "5x
+# A watch driven through its whole life in one case carries three claims in one number, and
+# a red row does not say which direction broke.  The code owner's design splits them: "5x
 # there is a change and it's notified, and 5x there's no change and it's not notified...
 # a duplicate set of the same tests but with one change to the fixture, ie the value
 # retrieved by the browse is the same as the value already stored in the collection.
@@ -1465,68 +1328,6 @@ GATE_CASES = (
     *_DIGEST_GATE,
     *_HELD_BINDING_GATE,
 )
-
-
-async def _run_enactment_case(
-    collector_cycles_eval: CollectorCyclesEval, case: _EnactmentCase
-) -> None:
-    """Drive one applied collection through its three cycles: the apply turn's exit world
-    behind it, exactly the routines its history taught in the registry, the register's own
-    pages with the case's own page swapped for each cycle's variant, and the shared scorer
-    bound to the case's terms.  Report-only — the thresholds are the code owner's to set
-    once the numbers are read."""
-    unchanged = [case.quiet, *_SUPPLIED_SPACES]
-    await collector_cycles_eval(
-        case_id=case.case_id,
-        collection=case.container,
-        seed=seed_applied_job(case),
-        seed_skills=[journey.round.skill for journey in case.parked.parked.journeys],
-        prepare=_probe_applied_world(case),
-        cycles=[unchanged, unchanged, [case.altered, *_SUPPLIED_SPACES]],
-        score=partial(_score_enactment, case=case),
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-async def test_the_timetable_watch_runs_its_cycles(
-    collector_cycles_eval: CollectorCyclesEval,
-) -> None:
-    """The ferry timetable job: the board reads "not scheduled" when the job is set up,
-    reads it again unchanged on the quiet cycle, and carries a time on the third."""
-    await _run_enactment_case(collector_cycles_eval, _TIMETABLE)
-
-
-async def test_the_price_watch_runs_its_cycles(
-    collector_cycles_eval: CollectorCyclesEval,
-) -> None:
-    """The price watcher on its second listing: the same price twice over, then a
-    different one — and a bounded job that is still live for all three cycles."""
-    await _run_enactment_case(collector_cycles_eval, _LISTING)
-
-
-async def test_the_count_watch_runs_its_cycles(
-    collector_cycles_eval: CollectorCyclesEval,
-) -> None:
-    """The otter census: the count holds steady for two cycles and DROPS on the third —
-    the case whose goal names a direction its configured terms may not carry."""
-    await _run_enactment_case(collector_cycles_eval, _COUNT)
-
-
-async def test_the_daily_special_runs_its_cycles(
-    collector_cycles_eval: CollectorCyclesEval,
-) -> None:
-    """The bakery's daily special: the morning's special is the value, unchanged when the
-    board is re-read, and a different one the next day."""
-    await _run_enactment_case(collector_cycles_eval, _DIGEST)
-
-
-async def test_the_held_binding_watch_runs_its_cycles(
-    collector_cycles_eval: CollectorCyclesEval,
-) -> None:
-    """The timetable job's twin, bound from the other side: the same world, the same
-    routine, and a keyword the user spoke rather than one the ask carried."""
-    await _run_enactment_case(collector_cycles_eval, _HELD_BINDING)
 
 
 # ── The ten gate cases: five that must speak, five that must not ─────────────

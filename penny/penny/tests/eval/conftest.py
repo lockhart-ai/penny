@@ -969,28 +969,6 @@ def last_tool_args(db: Database, tool_name: str) -> dict | None:
     return None
 
 
-def tool_call_keys(db: Database, tool_name: str) -> list[str]:
-    """Every ``key`` argument the model passed to ``tool_name`` across this run.
-
-    Unlike ``last_tool_args`` (newest call only), this collects every call's key so a
-    scorer can assert EVERY ``update_entry`` targeted an existing (matched) key — the
-    key-not-found ping-pong shows up as a call whose key isn't in the collection.
-    Sourced from the persisted promptlog (the real record of what the model did)."""
-    keys: list[str] = []
-    for row in live_prompts(db):
-        for call in _response_tool_calls(row):
-            if tool_call_name(call) != tool_name:
-                continue
-            try:
-                args = json.loads(call.get("function", {}).get("arguments") or "{}")
-            except json.JSONDecodeError, TypeError:
-                continue
-            key = args.get("key")
-            if isinstance(key, str):
-                keys.append(key)
-    return keys
-
-
 def tool_call_sequence(db: Database) -> list[str]:
     """Every tool the model invoked this run, in chronological call order.
 
@@ -1208,8 +1186,7 @@ def is_ordered_subsequence(expected: list[str], actual: list[str]) -> bool:
 
 def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
     """Every string value the model passed for ``field`` across all ``tool_name``
-    calls this run — the general form of ``tool_call_keys`` (which is this with
-    ``field="key"``).  Lets a scorer assert WHICH collections a multi-read swept
+    calls this run.  Lets a scorer assert WHICH collections a multi-read swept
     (the ``memory`` field of each ``collection_read_latest``) without re-parsing
     the promptlog.  Sourced from the persisted promptlog (the real record)."""
     values: list[str] = []
@@ -1227,45 +1204,10 @@ def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
     return values
 
 
-# Tools whose arguments carry an entry key the model copies from a render.
-_KEY_BEARING_TOOLS = (
-    "update_entry",
-    "collection_delete_entry",
-    "collection_get",
-    "collection_write",
-)
-
-
 def _is_bracket_wrapped(key: str) -> bool:
     """True when ``key`` is wrapped in display brackets (``[foo]``) — the copied
     ``[key]`` render form, never a real key."""
     return len(key) > 2 and key.startswith("[") and key.endswith("]")
-
-
-def bracket_wrapped_key_calls(db: Database) -> list[str]:
-    """Every key argument the model passed this run that is wrapped in display
-    brackets (``key="[foo]"``) — the copy-through mistake the old ``[key]`` render
-    taught (225 observed leaks).  Scans the persisted promptlog across the whole
-    run for key-bearing tool calls: single ``key=`` args and ``entries=[{key}]``
-    write batches whose value is bracket-wrapped.  Empty means the render never
-    tempted the model into pasting display brackets into an argument — the whole
-    point of rendering keys in invocation form."""
-    offenders: list[str] = []
-    for row in live_prompts(db):
-        for call in _response_tool_calls(row):
-            function = call.get("function", {})
-            if tool_call_name(call) not in _KEY_BEARING_TOOLS:
-                continue
-            try:
-                args = json.loads(function.get("arguments") or "{}")
-            except json.JSONDecodeError, TypeError:
-                continue
-            candidates = [args["key"]] if isinstance(args.get("key"), str) else []
-            for entry in args.get("entries") or []:
-                if isinstance(entry, dict) and isinstance(entry.get("key"), str):
-                    candidates.append(entry["key"])
-            offenders += [key for key in candidates if _is_bracket_wrapped(key)]
-    return offenders
 
 
 _NUMBERED_LINE = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)

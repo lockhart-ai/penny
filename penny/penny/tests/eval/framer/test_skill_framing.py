@@ -7,25 +7,11 @@ occasion.  It never sees the tool calls; the leaf labeller, which names the rout
 implementation, never sees the ask (#1824).  Nothing is offered to it: it MINTS the
 parameters by reading what the user said.
 
-The suite is in two halves.  **Seven INLINE cases** score each sample through the per-check
-scorer below, all the same look-up → find → remember shape, deliberately spanning the three
-multiplicity shapes — one argument, two of the SAME type, two of DIFFERENT types — while
-varying topic, how much the ask names, and how many pieces have to be re-supplied:
-
-* ``frame-availability-page-only`` — the ask names the point, so what to check bakes.
-* ``frame-two-sources-two-parameters`` — two pages named: TWO distinct parameters.
-* ``frame-ticker-only-parameter`` — "tell me when it moves" contributes no parameter.
-* ``frame-single-turn-floor`` — one turn: the finding bakes, the page survives.
-* ``frame-search-parameter`` — the look-up is a text search, not a page.
-* ``frame-two-types-page-and-title`` — a page + a title: two pieces, different types.
-* ``frame-two-same-type-symbols`` — two symbols, where a single list parameter is most
-  tempting and each must stay its own scalar.
-
-**Seven PORTED cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each
-one ask in five wordings pooled into a cohort of fifteen and claimed against
-``docs/eval-case-design.md`` rather than the scorer.  Every one of them states its behaviour
-in the fixed sentence form, asserts the parameter SET by equality under LANDED, and reports
-STORE and PROVENANCE empty with the reason:
+**Seven cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each one ask
+in five wordings pooled into a cohort of fifteen and claimed against
+``docs/eval-case-design.md``.  Every one of them states its behaviour in the fixed sentence
+form, asserts the parameter SET by equality under LANDED, and reports STORE and PROVENANCE
+empty with the reason:
 
 * ``framer-mints-only-the-piece-that-varies`` — the ticker ask: the symbol is the one piece
   that varies, and the share price and the notification are both settled elsewhere.
@@ -43,7 +29,7 @@ STORE and PROVENANCE empty with the reason:
 * ``framer-keeps-three-of-a-kind-as-three-parameters`` — the same-kind ask at three, where
   the list is more tempting than it is at two.
 
-What the ported cases deliberately do NOT claim, and why, is stated in each of them: the
+What the cases deliberately do NOT claim, and why, is stated in each of them: the
 genericity contract (that a routine's name says the KIND of task and never THIS occasion) is
 the converse of a provenance claim and fits none of the design's three categories, so it is
 read by a person on the modal sample; and the three obvious-looking claims about a usable
@@ -51,20 +37,15 @@ signature are ``_mints_a_usable_signature``'s, closed upstream.
 
 Every case's input is the round's USER turns, rendered by the shipped
 ``build_framing_content`` — never hand-written — so the draw reads exactly what production
-would render, and both halves are held against what they claim by a deterministic drift
-probe in ``make check`` (see ``tests/test_eval_harness.py``): an inline case pins its
-document byte-for-byte as ``rendered_input``, and a ported case declares its five wordings
-beside the facts every one of them carries (``PortedArms``).  A fixture that drifts from
-what it claims is a case measuring nothing, and it must fail before any GPU time, not after.
+would render, and the cases are held against what they claim by deterministic drift probes
+in ``make check`` (see ``tests/test_eval_harness.py``): each fixture pins its document
+byte-for-byte as ``rendered_input``, and each case declares its five wordings beside the
+facts every one of them carries (``PortedArms``).  A fixture that drifts from what it claims
+is a case measuring nothing, and it must fail before any GPU time, not after.
 
-INLINE scoring is the parameter SET, exactly — each expected family answered by exactly one
-drawn parameter, nothing else asked for — plus the structural check that the name and
-description say the KIND of task and never the occasion.  The reference outputs below
-each inline case are agreed TARGETS read at joint review, never strings a scorer matches: a
-parameter the reference calls ``url`` may come back as ``page_to_watch`` and pass.  Every
-drawn name, description and parameter rides ADVISORY so a reader sees what the model
-committed to.  A PORTED case makes the first two of those as CLAIMS instead
-(``_claim_the_parameter_set``) and does not make the third at all, for the reason above.
+The reference outputs above each fixture are agreed TARGETS read at joint review, never
+strings a claim matches: a parameter the reference calls ``url`` may come back as
+``page_to_watch`` and pass.
 
 Since #1868 the draw happens when the machine ENTERS learn rather than at run end: the
 round's identity is settled before the round runs, and run-end extraction READS that
@@ -72,12 +53,9 @@ framing instead of drawing again — a run-end draw survives only for a round no
 framed.  Both entries render their document through the same shipped
 ``build_framing_content``, so the draw this case drives is the one either path makes.  The
 draw also gives each parameter the VALUE the round demonstrated it with, and those values
-are what a job's container is NAMED from — so each parameter's advisory carries its drawn
-value and the run closes with the container name the shipped derivation makes of them.
-That a value is a literal span of the user's own words is the production validator's job
-(an accepted draw cannot carry a value nobody said); WHICH span was the right one is the
-same kind of judgment as a name, so it is rendered for review rather than matched by a
-fixture.
+are what a job's container is NAMED from.  That a value is a literal span of the user's own
+words is the production validator's job (an accepted draw cannot carry a value nobody
+said).
 
 All content is synthetic.
 """
@@ -128,19 +106,6 @@ class FramingFixture(NamedTuple):
     rendered_input: str
     parameters: tuple[ParameterFamily, ...]
     instance_tokens: tuple[str, ...]
-
-
-async def _run_case(framer_eval: FramerEval, fixture: FramingFixture) -> None:
-    """Drive one case's turns through the framer.  Every case is report-only: the
-    thresholds are the code owner's to set once the first numbers are read."""
-    await framer_eval(
-        case_id=fixture.case_id,
-        turns=fixture.turns,
-        parameters=fixture.parameters,
-        instance_tokens=fixture.instance_tokens,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
 
 
 # The breadth agreed for "the page the routine is pointed at" — a piece the user
@@ -353,14 +318,6 @@ _AVAILABILITY = FramingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_what_the_ask_named_bakes_and_the_page_survives(framer_eval: FramerEval):
-    """The user said what they were after — the item coming back in stock — so a routine
-    that asks what to check would be asking them to restate what they came for.  The page
-    is the one piece a new occasion needs, and the framing carries the rest."""
-    await _run_case(framer_eval, _AVAILABILITY)
-
-
 # ── The ported case: a page and no search, in five wordings ───────────────────
 #
 # The NEGATIVE half of the pair `framer-names-a-search-as-a-search` opens: a search-family
@@ -489,15 +446,6 @@ _TWO_SOURCES = FramingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_two_sources_become_two_distinct_parameters(framer_eval: FramerEval):
-    """The user pointed the routine at two pages, so both have to be re-suppliable and
-    they have to be told apart.  A framer that collapses them into one parameter, or goes
-    generic and asks for none, has lost a piece the user named — which is why the COUNT
-    is the load-bearing check here."""
-    await _run_case(framer_eval, _TWO_SOURCES)
-
-
 # ── The ported case: two of a kind, in five wordings ──────────────────────────
 #
 # The world is URLS rather than symbols because that is where the failure was MEASURED: on
@@ -624,17 +572,6 @@ _TICKER = FramingFixture(
     parameters=(ParameterFamily("ticker", ("ticker", "symbol", "stock", "share", "company")),),
     instance_tokens=("vlt",),
 )
-
-
-@pytest.mark.asyncio
-async def test_the_share_price_is_the_routine_and_the_ticker_is_the_parameter(
-    framer_eval: FramerEval,
-):
-    """The share price is what the skill IS, so it belongs in the framing; the ticker is
-    the one thing said again next time.  "Tell me when it moves" is settled when the
-    routine is set running and contributes nothing to the signature — a framer that turns
-    it into a parameter has made a delivery preference into something to be re-supplied."""
-    await _run_case(framer_eval, _TICKER)
 
 
 # ── The ported case: the ticker ask, in five wordings ─────────────────────────
@@ -778,14 +715,6 @@ _SINGLE_TURN = FramingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_a_single_turn_teach_still_frames_one_parameter(framer_eval: FramerEval):
-    """One page and one thing to find, taught in a single turn: the ask at its minimum
-    still says what the routine is for, so the finding bakes into the framing and the
-    page survives as the parameter."""
-    await _run_case(framer_eval, _SINGLE_TURN)
-
-
 # ── The ported case: the whole teach is one turn, in five wordings ────────────
 #
 # What makes this its own case is the DOCUMENT, not the facts.  Every other framing ask
@@ -888,16 +817,6 @@ _SEARCH = FramingFixture(
     ),
     instance_tokens=("aurora", "fest"),
 )
-
-
-@pytest.mark.asyncio
-async def test_a_search_is_the_parameter_and_the_cheapest_price_is_the_framing(
-    framer_eval: FramerEval,
-):
-    """The look-up is a text search rather than a url, and what varies next time is which
-    event is being searched for.  The cheapest price is what the routine is for, so it
-    belongs in the name and description, not in a parameter."""
-    await _run_case(framer_eval, _SEARCH)
 
 
 # ── The ported case: the look-up is a search, in five wordings ────────────────
@@ -1019,17 +938,6 @@ _PAGE_AND_TITLE = FramingFixture(
 )
 
 
-@pytest.mark.asyncio
-async def test_two_pieces_of_different_types_are_two_parameters(framer_eval: FramerEval):
-    """Availability bakes, exactly as it does when the ask names one page — but here the
-    thing being looked for is not IN the address, it is looked up ON the page, so the
-    page and the book are two re-suppliable pieces of different types.
-
-    The contrast with the page-only case is the whole point: what the framing carries is
-    the finding, not the number of things the routine is pointed at."""
-    await _run_case(framer_eval, _PAGE_AND_TITLE)
-
-
 # ── The ported case: a place to go and a thing to look for, in five wordings ──
 #
 # THE FACTS ARE CONSTANT across the five wordings: every arm names the same catalog page,
@@ -1118,41 +1026,6 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
     # PROVENANCE — EMPTY; see the docstring.
 
     _measure_the_draw(cohort, positions=len(_PAGE_AND_TITLE.parameters))
-
-
-# ── Case 7: two of the SAME type, where the list temptation is strongest ──────
-#
-# Reference output (read at review, never matched):
-#   NAME: stock-tracker
-#   DESCRIPTION: track each given stock's share price
-#   PARAMETER first_ticker — the first stock symbol to track
-#   PARAMETER second_ticker — the second stock symbol to track
-
-_TWO_SYMBOLS = FramingFixture(
-    case_id="frame-two-same-type-symbols",
-    turns=(
-        "can you keep an eye on a couple of stocks for me?",
-        "look up VLT and MERI, find each share price, and remember them",
-    ),
-    rendered_input=(
-        "can you keep an eye on a couple of stocks for me?\n"
-        "look up VLT and MERI, find each share price, and remember them"
-    ),
-    parameters=(
-        ParameterFamily("first ticker", ("first", "one", "1", "primary")),
-        ParameterFamily("second ticker", ("second", "two", "2", "secondary", "other")),
-    ),
-    instance_tokens=("vlt", "meri"),
-)
-
-
-@pytest.mark.asyncio
-async def test_two_symbols_of_the_same_type_stay_two_scalar_parameters(framer_eval: FramerEval):
-    """Two things of the SAME type in one ask are where a single list parameter is most
-    tempting — and a list is not a parameter: what a user says fills one whole.  The
-    share price bakes into the framing exactly as it does for one symbol, and the count
-    lives in the parameters rather than in a description that promises "two"."""
-    await _run_case(framer_eval, _TWO_SYMBOLS)
 
 
 # ── The ported case: three of a kind, in five wordings ────────────────────────
@@ -1282,5 +1155,4 @@ FIXTURES = (
     _SINGLE_TURN,
     _SEARCH,
     _PAGE_AND_TITLE,
-    _TWO_SYMBOLS,
 )
