@@ -1211,7 +1211,7 @@ async def test_learn_to_learn_re_runs_the_round_against_the_corrected_target(
 
     # PROVENANCE — the half the source case had none of.  A corrected round writes, so the store
     # claim is live on every sample rather than answering over an empty set.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
