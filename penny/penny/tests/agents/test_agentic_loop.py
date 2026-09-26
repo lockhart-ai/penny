@@ -68,6 +68,7 @@ from penny.validation.response_validators import (
     SkillNarrationValidator,
     WritesLandedValidator,
     XmlTagValidator,
+    find_hallucinated_urls,
 )
 
 
@@ -1971,12 +1972,18 @@ class TestMalformedUrlCleaning:
         """Bare URL ending with a hyphen (truncated path) is removed from the response."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
-        raw = "Check this out: https://travelguide.com/destination- for details."
+        # The cleaner reads a URL as the address alone, the same way the hallucinated-URL
+        # validator does (#2159): a wrapper can neither hide a truncated address nor go
+        # with it — only the address is removed.
+        raw = (
+            "Check this out: https://travelguide.com/destination- for details. "
+            "Also 【browse: https://travelguide.com/beach-】, **https://travelguide.com/city-** "
+            "and (https://travelguide.com/island-)."
+        )
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
         response = await agent.run("tell me about travel", max_steps=max_steps)
-        assert "https://travelguide.com/destination-" not in response.answer
-        assert "Check this out:" in response.answer
+        assert response.answer == "Check this out:  for details. Also 【browse: 】, **** and ()."
 
         await agent.close()
 
@@ -1999,11 +2006,17 @@ class TestMalformedUrlCleaning:
         """A well-formed URL is not touched."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
-        raw = "See https://example.com/article for more."
+        # Nor is a wrapped one: the wrapper is not read into the address (#2159).
+        raw = (
+            "See https://example.com/article for more, "
+            "【browse: https://example.com/article】, **https://example.com/article**, "
+            "[https://example.com/article](https://example.com/article) and "
+            "(https://en.wikipedia.org/wiki/Lantern_(lighting))."
+        )
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
         response = await agent.run("article link", max_steps=max_steps)
-        assert "https://example.com/article" in response.answer
+        assert response.answer == raw
 
         await agent.close()
 
@@ -2867,6 +2880,68 @@ class TestResponseValidators:
             resp, _ctx(source_text="ref https://made-up.example/never here")
         )
         assert isinstance(ok, Proceed)
+
+        # A URL the turn fetched is sourced however the reply wraps it (#2159): the URL is
+        # read as the address alone.  The first three forms were observed — gpt-oss's
+        # full-width citation bracket, markdown bold, and a link whose text is its own URL —
+        # each read as part of the URL, each firing a Retry that threw a correct answer away.
+        # The rest are here because the repair is the set of characters a URL may contain, a
+        # closed set, rather than a list of the marks someone ran into: a test carrying only
+        # what was seen would let the next wrapper regress in silence.
+        cited = "https://lanternmuseum.org/admission"
+        wiki = "https://en.wikipedia.org/wiki/Lantern_(lighting)"
+        iri = "https://de.wikipedia.org/wiki/Laterne_Straße"
+        source = f"browse {cited}: adult $18.50\nsee also {wiki} and {iri}"
+        observed = [f"【browse: {cited}】", f"**{cited}**", f"[{cited}]({cited})"]
+        swept = [
+            f"{cited}.",
+            f"{cited},",
+            f"({cited})",
+            f"[{cited}]",
+            f"<{cited}>",
+            f"`{cited}`",
+            f'"{cited}"',
+            f"'{cited}'",
+            f"“{cited}”",
+            f"«{cited}»",
+            f"「{cited}」",
+            f"（{cited}）",
+            f"{cited}。",
+            f"*{cited}*",
+            f"__{cited}__",
+            f"_{cited}_.",
+            f"**{cited}**,",
+            f"{cited}’s page",
+            f"[{cited}]({cited}).",
+            f"**[{cited}]({cited})**",
+            f"[the museum]({cited})",
+            f"[{cited}](/admission)",
+            f"(see {wiki})",
+            f"{iri}。",
+        ]
+        for form in observed + swept:
+            reply = _text_response(f"The adult ticket is $18.50 {form}")
+            outcome = HallucinatedUrlValidator().check(reply, _ctx(source_text=source))
+            assert isinstance(outcome, Proceed), form
+
+        # An invented URL is still caught in every position, read as its address alone.
+        invented = "https://made-up.example/never"
+        for form in (
+            f"see {invented}",
+            f"【browse: {invented}】",
+            f"**{invented}**",
+            f"({invented})",
+            f"[{invented}]({invented})",
+            f"[the museum]({invented})",
+            f"[{invented}]({cited})",
+            f"[{cited}]({invented})",
+            f"[{cited}】]({invented})",
+        ):
+            assert find_hallucinated_urls(form, source) == [invented], form
+            outcome = HallucinatedUrlValidator().check(
+                _text_response(form), _ctx(source_text=source)
+            )
+            assert isinstance(outcome, Retry), form
 
     def test_hallucinated_tool_call_repair_strips_when_no_tools(self):
         resp = _tool_response("search", {"query": "x"})

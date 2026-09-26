@@ -36,8 +36,11 @@ from __future__ import annotations
 
 import logging
 import re
+import string
+import unicodedata
 import urllib.parse
 from abc import ABC, abstractmethod
+from typing import NamedTuple
 
 from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
@@ -61,9 +64,118 @@ logger = logging.getLogger(__name__)
 # or <tools><search>...</search></tools>
 _XML_TAG_PATTERN = re.compile(r"<[a-zA-Z]\w*[\s=>].*</[a-zA-Z]\w*>", re.DOTALL)
 
-# Matches markdown links [text](url) and bare URLs for validation
+# Matches a markdown link [text](url), so a malformed target can be dropped with its text kept
 _MARKDOWN_LINK_URL_PATTERN = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
-_BARE_URL_PATTERN = re.compile(r"(?<!\()(https?://\S+)")
+
+# ── Reading a URL as the ADDRESS alone ──
+#
+# A URL in a reply is read as the address and nothing beside it, then compared against the
+# source text.  A reply wraps the URLs it cites — gpt-oss's citation bracket
+# (`【browse: https://x】`), markdown bold (`**https://x**`), a link whose text is its own URL
+# (`[https://x](https://x)`) — and a wrapper read as part of the URL makes a URL the turn really
+# fetched look invented (#2159).
+#
+# So an address is bounded by the characters a URL may CONTAIN, not by a list of wrappers:
+# RFC 3986's closed ASCII set, plus the letters, digits and combining marks of a non-ASCII path
+# (`/wiki/Straße`).  Every other character ends the address — `】` `」` `）` `。`, a quote, an
+# angle bracket, a space, and every mark nobody has drawn yet.
+_URL_SCHEME_PATTERN = re.compile(r"https?://")
+_URI_CHARS = frozenset(f"{string.ascii_letters}{string.digits}-._~%!$&'()*+,;=:/?#@[]")
+_IRI_CATEGORIES = frozenset("LNM")
+# Markdown puts a link's text against its target with `](`, and every character of that seam is
+# a legal URI character, so a run is split there and each side is read as its own URL.
+_LINK_SEAM = "]("
+# Marks that are legal in a URI but, at its END, belong to the prose: nobody's address ends in a
+# comma, and a trailing `**` / `__` closes the emphasis the reply wrapped it in.
+_PROSE_TAIL_MARKS = ".,;:!?*_"
+# Closers that are legal in a path, so a trailing one is decided by PAIRING: `…/Foo_(bar)` closes
+# what the address opened, `(…/page)` closes what the sentence opened.  A mark that is its own
+# partner pairs by parity.
+_PAIRS = {")": "(", "]": "[", "'": "'"}
+
+
+class _Address(NamedTuple):
+    """Where one URL's address sits in a text: ``text[start:end]``."""
+
+    start: int
+    end: int
+
+
+def _is_url_char(char: str) -> bool:
+    """Whether ``char`` can be part of a URL's address."""
+    if char.isascii():
+        return char in _URI_CHARS
+    return unicodedata.category(char)[0] in _IRI_CATEGORIES
+
+
+def _run_end(text: str, start: int) -> int:
+    """Where the run of URL characters beginning at ``start`` stops."""
+    end = start
+    while end < len(text) and _is_url_char(text[end]):
+        end += 1
+    return end
+
+
+def _closes_the_address(url: str, opener: str) -> bool:
+    """Whether the URL's last character closes something the URL itself opened."""
+    if opener == url[-1]:
+        return url.count(opener) % 2 == 0
+    return url.count(opener) >= url.count(url[-1])
+
+
+def _runs_past_the_address(url: str) -> bool:
+    """Whether the URL's last character belongs to the prose rather than to the address."""
+    last = url[-1]
+    if last in _PROSE_TAIL_MARKS:
+        return True
+    opener = _PAIRS.get(last)
+    return opener is not None and not _closes_the_address(url, opener)
+
+
+def _url_only(token: str) -> str:
+    """The address without the prose marks it ran into at its end."""
+    while token and _runs_past_the_address(token):
+        token = token[:-1]
+    return token
+
+
+def _is_address(url: str) -> bool:
+    """Whether a link side is a URL with something after its scheme — a relative target
+    (`/page`) or a bare `https://` said in prose is not an address to check."""
+    scheme = _URL_SCHEME_PATTERN.match(url)
+    return scheme is not None and scheme.end() < len(url)
+
+
+def _run_addresses(text: str, start: int, end: int) -> list[_Address]:
+    """The addresses in one run of URL characters: one for a bare URL, one per side of a
+    markdown link whose sides are URLs."""
+    addresses: list[_Address] = []
+    side_start = start
+    for side in text[start:end].split(_LINK_SEAM):
+        url = _url_only(side)
+        if _is_address(url):
+            addresses.append(_Address(side_start, side_start + len(url)))
+        side_start += len(side) + len(_LINK_SEAM)
+    return addresses
+
+
+def _addresses(text: str) -> list[_Address]:
+    """Every URL in ``text``, each as the span of its address alone, in order.  A scheme inside
+    an address already read (a redirect's `?u=https://…`, a link's second side) is part of it."""
+    addresses: list[_Address] = []
+    for scheme in _URL_SCHEME_PATTERN.finditer(text):
+        if addresses and scheme.start() < addresses[-1].end:
+            continue
+        addresses += _run_addresses(text, scheme.start(), _run_end(text, scheme.start()))
+    return addresses
+
+
+def _address(url: str) -> str:
+    """The first address in ``url`` — the URL alone, however it was wrapped."""
+    addresses = _addresses(url)
+    if not addresses:
+        return url
+    return url[addresses[0].start : addresses[0].end]
 
 
 def has_xml_tags(content: str) -> bool:
@@ -74,11 +186,11 @@ def has_xml_tags(content: str) -> bool:
 def is_url_truncated(url: str) -> bool:
     """Return True if url appears truncated or malformed.
 
-    Checks for missing host and trailing hyphen (the most common sign of a cut-off path).
-    Strips trailing prose punctuation before validation so sentence-ending periods
-    don't cause false positives.
+    Checks for missing host and trailing hyphen (the most common sign of a cut-off path),
+    on the address alone — so a sentence's full stop or a wrapper around it doesn't hide
+    a truncated URL or fake one.
     """
-    cleaned = url.rstrip(".,;:!?\"')>}]")
+    cleaned = _address(url)
     try:
         parsed = urllib.parse.urlparse(cleaned)
     except ValueError:
@@ -92,7 +204,7 @@ def clean_malformed_urls(content: str) -> str:
     """Remove truncated or malformed URLs from model-generated content.
 
     For markdown links [text](bad_url), the link text is preserved.
-    For bare malformed URLs, the URL token is removed entirely.
+    For bare malformed URLs, the address is removed and whatever wrapped it stays.
     Valid URLs are left unchanged.
     """
 
@@ -103,30 +215,24 @@ def clean_malformed_urls(content: str) -> str:
             return text
         return match.group(0)
 
-    def fix_bare_url(match: re.Match) -> str:
-        url = match.group(1)
+    content = _MARKDOWN_LINK_URL_PATTERN.sub(fix_md_link, content)
+    return _strip_truncated_addresses(content)
+
+
+def _strip_truncated_addresses(content: str) -> str:
+    """Remove every bare address that reads as truncated, last first so spans stay valid."""
+    for address in reversed(_addresses(content)):
+        url = content[address.start : address.end]
         if is_url_truncated(url):
             logger.warning("Stripped malformed bare URL: %.120s", url)
-            return ""
-        return match.group(0)
-
-    content = _MARKDOWN_LINK_URL_PATTERN.sub(fix_md_link, content)
-    content = _BARE_URL_PATTERN.sub(fix_bare_url, content)
+            content = f"{content[: address.start]}{content[address.end :]}"
     return content
 
 
 def _extract_urls(text: str) -> list[str]:
-    """Extract all URLs from text (both markdown links and bare URLs)."""
-    md_urls = [m.group(2) for m in _MARKDOWN_LINK_URL_PATTERN.finditer(text)]
-    bare_urls = [m.group(1) for m in _BARE_URL_PATTERN.finditer(text)]
-    seen: set[str] = set()
-    urls: list[str] = []
-    for url in md_urls + bare_urls:
-        cleaned = url.rstrip(".,;:!?\"')>}]")
-        if cleaned not in seen:
-            seen.add(cleaned)
-            urls.append(cleaned)
-    return urls
+    """Every URL in text, each read as its address alone, without repeats."""
+    urls = [text[address.start : address.end] for address in _addresses(text)]
+    return list(dict.fromkeys(urls))
 
 
 def find_hallucinated_urls(text: str, source_text: str) -> list[str]:
