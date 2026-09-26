@@ -21,6 +21,7 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Coroutine,
     Iterator,
     Mapping,
     Sequence,
@@ -30,7 +31,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -79,7 +80,12 @@ from penny.responses import PennyResponse
 from penny.round_framing import round_shortfall
 from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.startup import get_restart_message
-from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
+from penny.tests.conftest import (
+    TEST_SENDER,
+    require_memory,
+    run_penny_with_server,
+    stop_task,
+)
 from penny.tests.eval.utils import artifacts as eval_artifacts
 from penny.tests.eval.utils import assertions as eval_assertions
 from penny.tests.eval.utils import cohort as eval_cohort
@@ -130,6 +136,16 @@ EVAL_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "1"))
 # than tuned: waiting longer costs nothing when the channel connects promptly, and a
 # genuinely stuck sample still ends rather than hanging the run.
 SAMPLE_READY_TIMEOUT_SECONDS = 60.0
+
+# How long ONE drive of a sample may take — standing its world up, its turns or cycles, its
+# teardown — before the harness stops it and excludes it by name (#2168).  The waits inside a
+# drive carry budgets of their own (the readiness wait above, each turn's reply timeout of up to
+# 300s, the model client's per-call deadline), so this is the backstop for a wait that has
+# none: a run once sat twenty minutes on one sample whose teardown was waiting on a task that
+# had absorbed its cancel, and wrote nothing until it was killed by hand.  Generous rather than
+# tuned: a healthy drive, a slow local model's several turns or collector cycles included,
+# finishes well inside it, and a cut here costs a sample that could have been measured.
+SAMPLE_WALL_CLOCK_SECONDS = 1800.0
 
 # Embedding backfill batch size for seeded memory.
 _EMBED_BATCH = 100
@@ -2359,12 +2375,56 @@ def _never_started(
     dominant-class line to name it, and a message carrying a URL or a timeout figure
     differs per sample.  The message is printed beside the sample id where it happens.
     """
+    print(
+        f"  ✗ {case_id} sample {sample_number(sample_index)}: voided before it could be "
+        f"measured — {type(error).__name__}: {error}"
+    )
     return eval_cohort.SampleObservation(
         name=f"{case_id}-{sample_number(sample_index)}",
         phrasing=NEVER_SPOKEN,
         complete=False,
         exclusion=SAMPLE_NEVER_STARTED.format(fault=type(error).__name__),
     )
+
+
+class SampleOverranError(Exception):
+    """One drive of a sample ran past :data:`SAMPLE_WALL_CLOCK_SECONDS` and was stopped."""
+
+
+def _overran(case_id: str, sample_index: int) -> eval_cohort.SampleObservation:
+    """The named void that stands in for a sample stopped at its wall-clock bound (#2168).
+
+    The same kind of void a sample that never started is, because it is the same kind of
+    loss: the rig, not the model, is why nothing was measured.  Its reason names the bound
+    rather than a fault class — what ended the sample is the harness's own clock, and what it
+    was stuck on is in its log beside its database."""
+    exclusion = SAMPLE_NEVER_FINISHED.format(bound=SAMPLE_WALL_CLOCK_SECONDS)
+    print(f"  ✗ {case_id} sample {sample_number(sample_index)}: voided — {exclusion}")
+    return eval_cohort.SampleObservation(
+        name=f"{case_id}-{sample_number(sample_index)}",
+        phrasing=NEVER_FINISHED,
+        complete=False,
+        exclusion=exclusion,
+    )
+
+
+async def _within_wall_clock(drive: Coroutine[Any, Any, SampleResult]) -> SampleResult:
+    """Run one drive of a sample under its wall-clock bound, and stop it for certain past it.
+
+    The drive runs as a task of its own so the bound is a WAIT on it rather than a cancel
+    scope around it: a scope expires by cancelling, and a cancel is exactly what a stuck
+    sample has been seen to absorb.  :func:`stop_task` re-delivers it until the drive is
+    down, which runs the drive's own teardown — its Penny, its channel — before the sample
+    is voided.  A caller cancelled mid-wait stops the drive the same way on its way out."""
+    task = asyncio.create_task(drive)
+    try:
+        await asyncio.wait({task}, timeout=SAMPLE_WALL_CLOCK_SECONDS)
+    finally:
+        overran = not task.done()
+        await stop_task(task)
+    if overran:
+        raise SampleOverranError
+    return task.result()
 
 
 async def _run_samples(
@@ -2398,6 +2458,11 @@ async def _run_samples(
     the case died in a way the viability gate could not see.  It is classified into a
     named exclusion and recorded BEFORE the sample is voided: this is not a broad except
     that swallows, it is one that files.
+
+    **Every drive is bounded (#2168).**  A sample that never RETURNS used to hold the whole
+    ``gather`` with it — no cohort recorded, no result written, the run silent until killed by
+    hand.  Each attempt runs under :data:`SAMPLE_WALL_CLOCK_SECONDS`; one that runs past it is
+    stopped and voided by name like a sample that never started, so the case still closes.
     """
     limit = asyncio.Semaphore(EVAL_CONCURRENCY)
     perf = _Perf()
@@ -2426,23 +2491,21 @@ async def _run_samples(
         async with limit:
             for attempt in range(attempts):
                 try:
-                    return await _attempt(sample_index, attempt)
+                    return await _within_wall_clock(_attempt(sample_index, attempt))
                 except _ModelCallError:
                     print(
                         f"  ↻ {case_id} sample {sample_number(sample_index)}: "
                         f"the model call failed — "
                         f"retrying ({attempt + 1} of {attempts})"
                     )
+                except SampleOverranError:
+                    return _overran(case_id, sample_index)
                 # BROAD ON PURPOSE, and it files rather than hides: an enumerated list here
                 # would cover the preflight timeout that motivated it and miss the next
                 # stand-up fault nobody has seen, which is the failure this whole path is
                 # about.  The class is recorded on the sample's exclusion, the message is
-                # printed here, and the cohort comes back one short — so a run can SEE it.
+                # printed beside it, and the cohort comes back one short — so a run can SEE it.
                 except Exception as error:
-                    print(
-                        f"  ✗ {case_id} sample {sample_index}: voided before it could be "
-                        f"measured — {type(error).__name__}: {error}"
-                    )
                     return _never_started(case_id, sample_index, error)
         return None
 
@@ -2515,6 +2578,13 @@ SAMPLE_NEVER_STARTED = "the sample never started — {fault} while standing its 
 # The arm a sample that never started ran: none.  A real label rather than an empty string,
 # because it renders beside the sample's id wherever a wording would.
 NEVER_SPOKEN = "never started"
+
+# The sample the harness STOPPED at its wall-clock bound (#2168) — the never-started sample's
+# sibling, voided the same way: it may have spoken, but nothing of it came back to be scored,
+# and the reason says so by naming the bound rather than a fault nobody raised.  Its label
+# stands where a wording would, because the arm it ran is the driver's to know, not this one's.
+SAMPLE_NEVER_FINISHED = "the sample never finished — stopped at its {bound:g}s wall-clock bound"
+NEVER_FINISHED = "never finished"
 
 # The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
 # design — a value Penny invents early in a turn rides into the message history and would

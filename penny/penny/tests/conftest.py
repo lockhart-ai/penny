@@ -1,7 +1,6 @@
 """Pytest fixtures for Penny tests."""
 
 import asyncio
-import contextlib
 import shutil
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -97,6 +96,38 @@ async def wait_until(
             return
         await asyncio.sleep(interval)
     raise TimeoutError(f"Condition not met within {timeout}s")
+
+
+# How long a stop gives a cancelled task to finish before it cancels it AGAIN.  One cancel is
+# not enough to stop a task: an HTTP call in flight can ABSORB it.  When the event loop was
+# blocked past both the request's own deadline and the cancel's arrival — a sibling sample's
+# synchronous migrations do exactly that — httpx reports its own timeout, the CancelledError is
+# gone, and the task carries on as if nothing had asked it to stop (#2168).  The task's own
+# ``cancelling()`` count still reads 1 afterwards, so an absorbed cancel cannot be told from one
+# still unwinding; the only signal is that the task has not stopped.  Long enough that a
+# teardown still unwinding (closing clients, stopping a server: milliseconds) is never
+# interrupted by the next cancel; re-delivered, the cancel lands on the task's next await.
+TASK_STOP_POLL_SECONDS = 5.0
+
+
+async def stop_task(task: asyncio.Task[Any]) -> None:
+    """Cancel ``task`` until it has actually STOPPED, not merely until a cancel was sent.
+
+    The task's own outcome is retrieved and left for its owner to act on.  A cancel of the
+    CALLER that arrives mid-stop is held until the task is down and then re-raised, so a
+    stop that is itself interrupted never leaves the task running behind it.
+    """
+    interrupted = False
+    while not task.done():
+        task.cancel()
+        try:
+            await asyncio.wait({task}, timeout=TASK_STOP_POLL_SECONDS)
+        except asyncio.CancelledError:
+            interrupted = True
+    if not task.cancelled():
+        task.exception()
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 @pytest.fixture
@@ -255,30 +286,59 @@ async def run_penny_with_server(
     and preflight — so the same budget stops being about whether the channel connects and
     starts being about how many samples are booting beside it, which is not a property of
     the thing under test.  A caller that runs them in parallel says so.
+
+    A run that ENDS before its channel connects is a boot that failed — a preflight that
+    refused, a channel that never validated — and its own exception is raised at once rather
+    than after the readiness budget runs out.  Teardown stops the run for certain
+    (:func:`stop_task`) and always shuts Penny down; a run that crashed while the caller was
+    using it still surfaces its exception once the caller is done.
     """
     penny = Penny(config)
     penny_task = asyncio.create_task(penny.run())
     try:
-        # Wait for WebSocket connection to establish
-        await wait_until(lambda: len(signal_server._websockets) > 0, timeout=ready_timeout)
-
-        # Mock browse provider on all agents so tool calls don't hit
-        # real retry/sleep loops when no browser extension is connected
-        def mock_browse():
-            return (
-                AsyncMock(return_value=("Mock search results", "data:image/png;base64,mock")),
-                MagicMock(check_domain=AsyncMock()),
-            )
-
-        penny.chat_agent._browse_provider = mock_browse
-        penny.collector._browse_provider = mock_browse
-
+        await _wait_for_channel(penny_task, signal_server, ready_timeout)
+        _mock_browse(penny)
         yield penny
     finally:
-        penny_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await penny_task
+        await stop_task(penny_task)
         await penny.shutdown()
+    _raise_if_crashed(penny_task)
+
+
+# What a Penny run that returned on its own before its channel connected is reported as.
+PENNY_EXITED_BEFORE_READY = "Penny's run returned before its channel connected"
+
+
+async def _wait_for_channel(
+    penny_task: asyncio.Task[None], signal_server: MockSignalServer, ready_timeout: float
+) -> None:
+    """Wait for the channel to connect — or for the run to end first, raising what ended it."""
+    await wait_until(
+        lambda: len(signal_server._websockets) > 0 or penny_task.done(), timeout=ready_timeout
+    )
+    if penny_task.done():
+        penny_task.result()
+        raise RuntimeError(PENNY_EXITED_BEFORE_READY)
+
+
+def _mock_browse(penny: Penny) -> None:
+    """Stub the browse provider on every agent, so a tool call never enters the real
+    retry/sleep loop a missing browser extension would put it in."""
+
+    def mock_browse():
+        return (
+            AsyncMock(return_value=("Mock search results", "data:image/png;base64,mock")),
+            MagicMock(check_domain=AsyncMock()),
+        )
+
+    penny.chat_agent._browse_provider = mock_browse
+    penny.collector._browse_provider = mock_browse
+
+
+def _raise_if_crashed(penny_task: asyncio.Task[None]) -> None:
+    """Re-raise the exception a stopped run died of, if it died of anything but its stop."""
+    if not penny_task.cancelled() and (error := penny_task.exception()) is not None:
+        raise error
 
 
 @pytest.fixture
