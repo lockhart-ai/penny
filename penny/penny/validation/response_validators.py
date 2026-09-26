@@ -248,8 +248,8 @@ def find_hallucinated_urls(text: str, source_text: str) -> list[str]:
 
 class XmlTagValidator:
     """The model wrapped its reply in XML/markup instead of plain prose — retry
-    once, re-appending the bad response (the model usually drops the markup on the
-    second pass)."""
+    once, re-drawing from the unchanged conversation (a fresh draw usually comes
+    back without the markup)."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.XML in ctx.retried:
@@ -261,7 +261,7 @@ class XmlTagValidator:
 
 class RefusalValidator:
     """The response is a model refusal ("I'm sorry, I can't…") rather than a real
-    answer — retry once, re-appending the response."""
+    answer — retry once, re-drawing from the unchanged conversation."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.REFUSAL in ctx.retried:

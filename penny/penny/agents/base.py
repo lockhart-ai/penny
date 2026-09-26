@@ -794,10 +794,10 @@ class Agent:
 
         Builds a ``LoopContext`` and runs ``self.response_validators`` via
         ``run_validators`` (XML / refusal / hallucinated-URL, with the no-tools
-        tool-call strip as a ``Repair``).  A ``Retry`` appends the bad response and
-        re-calls — once per condition (``retried``).  A ``Proceed`` returns the
-        (possibly-repaired) response.  Tool-call responses with tools available
-        short-circuit unvalidated.
+        tool-call strip as a ``Repair``).  A ``Retry`` discards the bad response and
+        re-draws on the unchanged ``messages`` — once per condition (``retried``).  A
+        ``Proceed`` returns the (possibly-repaired) response.  Tool-call responses with
+        tools available short-circuit unvalidated.
 
         Every draw reaching this chain has already survived ``_invoke_nondegenerate``,
         which discards and re-rolls an UNUSABLE one (a transport artifact, or a draw
@@ -829,16 +829,12 @@ class Agent:
                 case Proceed(response=validated):
                     return validated if validated is not None else response
                 case Retry(condition=condition):
-                    # Append the post-repair response (tool calls stripped when
-                    # tools were unavailable) — the chain may have stripped a
-                    # hallucinated call before a content validator asked to retry.
-                    appended = self._repaired_for_append(response, effective_tools)
-                    self._apply_retry(messages, appended, condition, retried, attempt, max_retries)
+                    self._apply_retry(condition, retried, attempt, max_retries)
                     if attempt + 1 == max_retries:
-                        # Retries exhausted — the last response in its appended
-                        # (tool-stripped, if no tools) form, so the loop's text/tool
-                        # branching matches the validated form.
-                        return appended
+                        # Retries exhausted — the last draw, tool calls stripped when
+                        # none were offered, so the loop's text/tool branching matches
+                        # the form the chain validated.
+                        return self._without_unoffered_calls(response, effective_tools)
                     response = await self._invoke_nondegenerate(
                         messages, effective_tools, run_id, prompt_type
                     )
@@ -851,11 +847,11 @@ class Agent:
         return response
 
     @staticmethod
-    def _repaired_for_append(
+    def _without_unoffered_calls(
         response: LlmResponse, effective_tools: list[dict] | None
     ) -> LlmResponse:
-        """The response form to re-append on a retry — tool calls stripped when no
-        tools were available, mirroring ``HallucinatedToolCallRepair``."""
+        """The draw with its tool calls stripped when no tools were offered, mirroring
+        ``HallucinatedToolCallRepair`` — the form a retry-exhausted call returns."""
         if effective_tools is not None or not response.has_tool_calls:
             return response
         repaired = response.model_copy(deep=True)
@@ -864,26 +860,22 @@ class Agent:
 
     @staticmethod
     def _apply_retry(
-        messages: list[dict],
-        response: LlmResponse,
         condition: ConditionKey,
         retried: set[ConditionKey],
         attempt: int,
         max_retries: int,
     ) -> None:
-        """Apply a ``Retry`` disposition: record the condition and append the bad
-        response, which is the whole correction.
+        """Apply a ``Retry`` disposition: record the condition, so the same condition
+        cannot retry twice in one call.
 
-        Nothing is said back to the model.  The teaching user-turn this used to append
-        retired with its last two customers — the call-shaped-text family (#1839) and
-        the empty draw (#1937) — both of which are discarded and re-rolled before the
-        chain runs, so a recovery no longer writes anything into the conversation that
-        a later reader could mistake for what the model did."""
+        The bad draw is discarded and nothing is written into the conversation, so the
+        next draw re-samples the exact state the discarded one was drawn from.  A draw
+        carries no mark of what was wrong with it, so appending it would only show the
+        model a finished reply with nothing after it to answer."""
         retried.add(condition)
         logger.warning(
             "Invalid response (%s) on attempt %d/%d", condition, attempt + 1, max_retries
         )
-        messages.append(response.message.to_input_message())
 
     async def _invoke_model(
         self,
