@@ -29,9 +29,11 @@ temptation), `-urgency` (act-now pressure as a reason to guess).  Their asks and
 produces the state that case starts from, and the two are one journey read at two moments.
 One spelling of the ask, read from where the world declares it.
 
-**This is a NO-FIRE edge, and its two negative claims are written so a violating sample is
-nameable:** one that opens the listing and saves the price fails *nothing was written*, and one
-that stands the watch up fails *no mechanism was created*.
+**This is a NO-FIRE edge, and it asserts where the machine landed, not what the turn
+refrained from.** Opening the listing, saving the price or standing the watch up is the model's
+call on what it was shown, so none of them is a claim: each is measured instead, as the tool
+sequence and entries stored below.  *What the store already held survives* has nothing to be
+about on this world, which is a cold machine with an empty store.
 
 **Three obvious-looking claims are deliberately absent**, so a thin set reads as closed rather
 than as a checklist nobody ran:
@@ -47,8 +49,8 @@ than as a checklist nobody ran:
 
 **Four source checks did not port** (the outward column):
 
-* ``Check("state: no page was fetched (browse-results stayed empty)")`` — a ROUTE.  Its
-  end-state form is *nothing was written*, which is claimed; the browse itself is measured.
+* ``Check("state: no page was fetched (browse-results stayed empty)")`` — a ROUTE, and
+  measured as the tool sequence.
 * ``Check("calls: no enacting calls")`` — the same route, read off a tool-name set.
 * ``_anchor_check`` — *the ask is stamped as the round's anchor.*  PRODUCTION ALREADY
   VALIDATES IT: ``_next_anchor`` sets the anchor to the instigating message on every move into
@@ -59,13 +61,11 @@ than as a checklist nobody ran:
 
 **And two the inward column added.**  PROVENANCE, of the REPLY kind: the source case made no
 claim of it, so a sample that answered out of its own head passed every check it carried.  Its
-store half is absent by ENTAILMENT — this turn writes nothing, which *nothing was written*
-already claims, so no stored entry exists to trace and the claim could only pass vacuously on
-every sample.  And `assert_every_delivered_message_is_whole`, which the round-
-ends family had to refuse because every one of its worlds SEEDS Penny's own turns and the
-claim would then be answered against the fixture's agreed prose.  This world seeds NOTHING —
-the machine is cold — so the only message it can read is the question this turn asked, and
-"the teach question is a message Penny would send" is a claim about the turn.
+store half is not claimed in this case.  And `assert_every_delivered_message_is_whole`,
+which the round-ends family had to refuse because every one of its worlds SEEDS Penny's own
+turns and the claim would then be answered against the fixture's agreed prose.  This world
+seeds NOTHING — the machine is cold — so the only message it can read is the question this turn
+asked, and "the teach question is a message Penny would send" is a claim about the turn.
 
 **`answers` is EMPTY, and that is a report.**  The ask asks for a job to be set up, not for a
 value to be stated, so a correct reply owes no token; requiring one would fail a correct run
@@ -124,8 +124,8 @@ _SETUP_ASK_PHRASINGS = (
 # makes "she asked instead" a real reading rather than a browse that could not have worked.
 #
 # ``keeps`` is EMPTY and that is a report, not an omission: an elicitation turn is not asked to
-# write anything down, so a keeps set here would state a contract the ask never made — and the
-# case claims the opposite, that nothing was written at all.  ``excludes`` is empty because the
+# write anything down, so a keeps set here would state a contract the ask never made.
+# ``excludes`` is empty because the
 # ask rules nothing out, and ``answers`` because it requests no value (see the module docstring).
 _COLD_LISTING = World(
     name=_CASE_ID,
@@ -166,19 +166,15 @@ async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str)
     # LANDED
     cohort.assert_machine_landed(ConversationState.ELICIT)
 
-    # STORE — two negatives, one per way of doing the job instead of asking about it, and one
-    # positive about the question itself, which this world is the only one in the tranche that
-    # can make honestly.
-    cohort.assert_nothing_was_written()
-    cohort.assert_no_mechanism_was_created()
+    # STORE — the question itself, which this world is the only one in the tranche that can
+    # claim honestly.  Nothing about what the turn refrained from: on a cold machine there is
+    # nothing already held for a survival claim to be about, and doing the job instead of
+    # asking is measured below.
     cohort.assert_every_delivered_message_is_whole()
 
-    # PROVENANCE — the half the source case had none of.  The STORE half is absent by
-    # entailment: this turn writes nothing, which ``assert_nothing_was_written`` above already
-    # claims, so no stored entry exists to trace and the claim could only pass vacuously —
-    # fifteen guaranteed-green checks inflating the headline rate.  The reply claim carries the
-    # category, and is live throughout: a teach question that quotes the listing's price read a
-    # page it was not asked to read.
+    # PROVENANCE — the half the source case had none of.  The STORE half is not claimed in this
+    # case.  The reply claim is live throughout: a teach question that quotes the listing's
+    # price read a page it was not asked to read.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

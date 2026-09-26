@@ -39,10 +39,10 @@ failure, and so is one that named the wrong parameter.
 **Five source checks did not port** (the outward column):
 
 * ``Check("state: she asked instead of going to look (no browse this turn)")`` — a ROUTE, keyed
-  to a tool NAME.  Its end-state form is *nothing was written*, which is claimed; the browse is
-  measured in section B.
-* ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — the same, and its
-  end-state form is *no mechanism was created* / *no running mechanism was changed*.
+  to a tool NAME, and measured in section B as the tool sequence.
+* ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — the same, and
+  its end-state form is what SURVIVES the turn: *no running mechanism was changed* and
+  *everything the store already held is still there, unchanged*.
 * ``_request_anchor_check`` — PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the
   instigating message on every move into a parked state FROM idle, so on a sample that landed
   in request the claim is entailed by the landing.
@@ -52,21 +52,19 @@ failure, and so is one that named the wrong parameter.
 * ``_does_not_re_ask_check`` — the same, and n/a on this survivor anyway (its ask settles
   nothing, so there is nothing that could be asked for twice).
 
-**Two more are absent by ENTAILMENT**, and are worth naming so the set reads as closed.
+**One more is absent by ENTAILMENT**, and is worth naming so the set reads as closed.
 *Nothing was registered*: run-end extraction fires in ``learn`` and nowhere else, and the only
 other thing that touches the registry (``abandon_round_skill``) runs on an IDLE landing — so no
-sample can fail it without also failing ``assert_machine_landed``.  And *every stored entry
-traces to what the round was given*: this turn writes nothing, which *nothing was written*
-already claims, so no stored entry exists to trace and the claim could only pass vacuously on
-every sample.
+sample can fail it without also failing ``assert_machine_landed``.  *Every stored entry traces
+to what the round was given* is not claimed in this case.
 
 **And one the inward column added**: PROVENANCE, of the REPLY kind.  The source case made no
 claim of it, so a reply that invented an address to ask about passed every check it carried.
 
 **`keeps` and `answers` are both EMPTY, and each is a report.**  The turn is not asked to write
-anything down, so a keeps set would state a contract the ask never made — and the case claims
-the opposite.  The ask requests no VALUE, it requests that a job be set up, so a correct reply
-owes no token; requiring one would fail a correct run for something nobody asked for.
+anything down, so a keeps set would state a contract the ask never made.  The ask requests no
+VALUE, it requests that a job be set up, so a correct reply owes no token; requiring one would
+fail a correct run for something nobody asked for.
 
 REPORT-ONLY (``min_pass_rate=None``).  Every page, url and job is synthetic, on an ``example``
 domain, because the repo is public.
@@ -248,17 +246,15 @@ async def test_idle_to_request_asks_for_the_listing(chat_eval: ChatEval, model: 
         SpecCategory.LANDED,
     )
 
-    # STORE — three negatives, one per way of acting on an interface that is not settled yet.
-    cohort.assert_nothing_was_written()
-    cohort.assert_no_mechanism_was_created()
+    # STORE — what SURVIVES a turn parked on an interface that is not settled yet: the jobs
+    # already running, and everything the store already held.  Whether the turn acted anyway
+    # is the model's call and is measured below, never claimed.
+    cohort.assert_what_the_store_held_survives()
     cohort.assert_no_running_mechanism_was_changed()
 
-    # PROVENANCE — the half the source case had none of.  The STORE half is absent by
-    # entailment: this turn writes nothing, which ``assert_nothing_was_written`` above already
-    # claims, so no stored entry exists to trace and the claim could only pass vacuously —
-    # fifteen guaranteed-green checks inflating the headline rate.  The reply claim carries the
-    # category, and is live throughout: an ask for a page the user never gave is exactly where
-    # an address gets invented.
+    # PROVENANCE — the half the source case had none of.  The STORE half is not claimed in this
+    # case.  The reply claim is live throughout: an ask for a page the user never gave is
+    # exactly where an address gets invented.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

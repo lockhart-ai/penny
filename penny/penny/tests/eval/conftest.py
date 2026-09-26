@@ -2560,9 +2560,13 @@ _GIVEN_ROLES = frozenset({"user", "tool", "system"})
 
 
 # How a ported case reads one sample: its live database, the reply it produced, the
-# collections that existed before it, and — for a case that forced a fault — whether the
-# injector actually fired.  ``None`` for the injector arm means the case installed none.
-Observer = Callable[[Database, str, set[str], bool | None], eval_cohort.SampleObservation]
+# collections that existed before it, the entries the store held before it, and — for a case
+# that forced a fault — whether the injector actually fired.  ``None`` for the injector arm
+# means the case installed none.
+Observer = Callable[
+    [Database, str, set[str], list[eval_cohort.StoredEntry], bool | None],
+    eval_cohort.SampleObservation,
+]
 
 
 def measured_turn_ran(db: Database) -> bool:
@@ -2866,6 +2870,7 @@ def _observe_sample(
     arm: int,
     reply: str,
     before: set[str],
+    held_before: list[eval_cohort.StoredEntry],
     injected: bool | None,
 ) -> eval_cohort.SampleObservation:
     """Read everything one CHAT sample left behind, while its database is still live.
@@ -2895,6 +2900,7 @@ def _observe_sample(
         routines=_routine_records(db),
         entries=_stored_entries(db),
         held=_held_entries(db),
+        held_before=held_before,
         mechanisms=_mechanism_records(db, before),
         muted=db.users.is_muted(TEST_SENDER),
         delivered=outgoing_replies(db),
@@ -3561,6 +3567,7 @@ async def _drive_sample(
         wrapper = wrap_client(penny.chat_agent._model_client)
         penny.chat_agent._model_client = wrapper
     before = collection_names(penny.db)
+    held_before = _held_entries(penny.db)
     reply = ""
     try:
         reply = await _drive_turns(penny, server, turns, timeout=timeout, retryable=retryable)
@@ -3578,7 +3585,7 @@ async def _drive_sample(
     # line too, so it is EXCLUDED by name rather than silently absent from the pool.
     if observe is not None:
         injected = wrapper.bail_injected if wrapper is not None else None
-        result.observation = observe(penny.db, reply, before, injected)
+        result.observation = observe(penny.db, reply, before, held_before, injected)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
@@ -3675,13 +3682,14 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_number(sample_index)} ({phrasing})"
-            return lambda db, reply, before, injected: _observe_sample(
+            return lambda db, reply, before, held_before, injected: _observe_sample(
                 db,
                 name=name,
                 phrasing=phrasing,
                 arm=arm,
                 reply=reply,
                 before=before,
+                held_before=held_before,
                 injected=injected,
             )
 

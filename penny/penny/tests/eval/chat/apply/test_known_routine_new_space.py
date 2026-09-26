@@ -59,8 +59,9 @@ happened to choose.
   keyed to a tool NAME.  Its end-state form is the born-mechanism claim, which catches a job
   stood up however it was reached.
 * ``Check("state: she set it running instead of running it now (no browse this turn)")`` — the
-  same, and its end-state form is *nothing was written*: a turn that went and read the listing
-  and kept what it found leaves an entry behind.  The browse itself is measured in section B.
+  same.  Whether the turn also went and read the listing is the model's call, measured in
+  section B as the tool sequence and entries stored; what is claimed is that everything the
+  store already held survives.
 * ``_cold_anchor_check`` — PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the
   instigating message on every move into a parked state FROM idle, so the claim is entailed by
   the landing.
@@ -82,13 +83,11 @@ was registered*, the claim that a cold apply teaches nothing.  Run-end extractio
 failing ``assert_machine_landed``.
 
 **And one the inward column added**: PROVENANCE, of the REPLY kind.  The source case made no
-claim of it.  Its store half is absent by ENTAILMENT — this turn writes nothing, which
-*nothing was written* already claims, so no stored entry exists to trace and the claim could
-only pass vacuously on every sample.
+claim of it.  Its store half is not claimed in this case.
 
 **`keeps` and `answers` are both EMPTY, and each is a report.**  The turn sets a job to run
-LATER; it reads nothing and keeps nothing, so a keeps set would state a contract the ask never
-made and the case claims the opposite.  The ask requests a job, not a value, so a correct reply
+LATER; it is not asked to read or keep anything, so a keeps set would state a contract the
+ask never made.  The ask requests a job, not a value, so a correct reply
 owes no token.
 
 REPORT-ONLY (``min_pass_rate=None``).  Every page, url and job is synthetic, on an ``example``
@@ -445,17 +444,14 @@ async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(
         _stops_when_the_ask_said_to,
         SpecCategory.STORE,
     )
-    # And what it did NOT do: run the round now, teach anything, or reach into the five jobs
-    # already going.
-    cohort.assert_nothing_was_written()
+    # And what SURVIVES it: everything the store already held, and the five jobs already
+    # going.
+    cohort.assert_what_the_store_held_survives()
     cohort.assert_no_running_mechanism_was_changed()
 
-    # PROVENANCE — the half the source case had none of.  The STORE half is absent by
-    # entailment: this turn writes nothing, which ``assert_nothing_was_written`` above already
-    # claims, so no stored entry exists to trace and the claim could only pass vacuously —
-    # fifteen guaranteed-green checks inflating the headline rate.  The reply claim carries the
-    # category, and is live throughout: a turn confirming a job it just set up is exactly where
-    # an hour or a price nobody gave gets stated.
+    # PROVENANCE — the half the source case had none of.  The STORE half is not claimed in this
+    # case.  The reply claim is live throughout: a turn confirming a job it just set up is
+    # exactly where an hour or a price nobody gave gets stated.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

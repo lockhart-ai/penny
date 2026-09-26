@@ -27,9 +27,9 @@ instantiate fold), `-new-routine` (the word "routine" said by the USER while fiv
 already running).  All five `_TeachCase` fixtures stay in `transition_world.py`, so any of them
 can come back deliberately.
 
-**Two claims are this world's own**, and neither exists on the reference port, whose world has
-no jobs in it: the only mechanism this turn creates is the round's own container, and nothing
-that was already running was changed.
+**One claim is this world's own**, and it does not exist on the reference port, whose world
+has no jobs in it: nothing that was already running was changed.  That is what SURVIVES the
+turn; whether it also set something up is the model's call and is measured, never claimed.
 
 **One reference claim is REPLACED rather than reused.**
 ``assert_a_routine_reached_the_registry`` reads ``bool(sample.routines)``, which is VACUOUSLY
@@ -43,8 +43,8 @@ claim closes the one hole that leaves (a cohort that minted nothing at all).
 **Six source checks did not port** (the outward column):
 
 * ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — a ROUTE, keyed
-  to a tool NAME.  Its end-state form is ``assert_nothing_was_scheduled``, which catches a job
-  stood up however it was reached, including by a plugin verb nobody enumerated.
+  to a tool NAME, and measured as the tool sequence.  Its end-state form is what survives:
+  ``assert_no_running_mechanism_was_changed``.
 * ``_teach_anchor_check`` — *the move came from idle with the teach as its anchor.*
   PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the instigating message on every
   move into a parked state FROM idle, so on a sample that landed in learn the claim is
@@ -225,17 +225,6 @@ def _the_registry_gained_one_routine(sample: SampleObservation, _world: World) -
     return ok, f"the registry holds {taught}, which is {len(gained)} beyond the seeded {kept}"
 
 
-def _built_only_the_round_container(sample: SampleObservation, _world: World) -> Answer:
-    """The only mechanism this turn created is the container the round was framed on.
-
-    A demonstrated round builds exactly one thing on its way in, and a second collection minted
-    beside it is a job nobody asked for — the shape a turn takes when it reads the teach as an
-    instruction to set something up rather than to be shown something once."""
-    born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
-    allowed = [] if sample.container is None else [sample.container]
-    return born == allowed, f"created {born}, the round was framed on {sample.container!r}"
-
-
 # What this case measures.  ``ROUTINE_NAME`` is the framer's naming spread, read off the whole
 # registry: the seeded five are a constant prefix in the sorted set, so what moves is the name
 # this turn minted — which is exactly what the feature is for, and it is COSMETIC, so its spread
@@ -294,12 +283,6 @@ async def test_idle_to_learn_runs_the_taught_round_in_one_turn(
     )
     cohort.assert_every_spot_is_a_placeholder()
     cohort.assert_the_routine_names_a_destination()
-    cohort.assert_nothing_was_scheduled()
-    cohort.claim(
-        "state: the only mechanism this turn created is the round's own container",
-        _built_only_the_round_container,
-        SpecCategory.STORE,
-    )
     cohort.assert_no_running_mechanism_was_changed()
 
     # PROVENANCE
