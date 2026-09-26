@@ -2388,7 +2388,14 @@ def _observed_chat_sample(
     for draw in chat_draws:
         _log_prompt(db, response=draw, agent_name=PennyConstants.CHAT_AGENT_NAME)
     return _observe_sample(
-        db, name=name, phrasing="the ask", arm=0, reply=reply, before=set(), injected=None
+        db,
+        name=name,
+        phrasing="the ask",
+        arm=0,
+        reply=reply,
+        before=set(),
+        held_before=[],
+        injected=None,
     )
 
 

@@ -55,8 +55,8 @@ failure, and so is one that named the wrong parameter.
 **One more is absent by ENTAILMENT**, and is worth naming so the set reads as closed.
 *Nothing was registered*: run-end extraction fires in ``learn`` and nowhere else, and the only
 other thing that touches the registry (``abandon_round_skill``) runs on an IDLE landing — so no
-sample can fail it without also failing ``assert_machine_landed``.  *Every stored entry traces
-to what the round was given* is not claimed in this case.
+sample can fail it without also failing ``assert_machine_landed``.  *Every specific value in
+the stored entries is sourced* is not claimed in this case.
 
 **And one the inward column added**: PROVENANCE, of the REPLY kind.  The source case made no
 claim of it, so a reply that invented an address to ask about passed every check it carried.
