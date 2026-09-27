@@ -223,8 +223,10 @@ The eval cases are where the code owner states what Penny should do. The contrac
    - A disagreement is raised as a question.
    - A one-clause disclosure is not consent.
 
-3. **Runs on his cases are joint checkpoints.** Scope each run to the case at hand, post the
-   report, and stop for his read. A plan described in chat is not an approved chain of runs.
+3. **Agents run their own evals; the code owner's gate is the eval PR review.** A session
+   or dispatched agent runs the eval cases its work needs, inside its own workflow, scoped to
+   the cases that work touches, and posts every run's report to its PR. The code owner reviews
+   the eval PR. A full-suite run is still asked first.
 
 4. **Say what things are (often forgotten).**
    - Plain names; titles that name the work.
