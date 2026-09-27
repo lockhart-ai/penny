@@ -596,7 +596,7 @@ tests/eval/
   classifier/       — the state classifier's own draw
   framer/ binder/ labeller/ extractor/
                     — one folder per skill microcontext
-  collector/        — the background agent: enactment, honesty, the write guards
+  collector/        — the background agent: enactment, honesty
   chat/             — the chat agent, split by the state the turn LANDS in
     idle/ elicit/ learn/ request/ apply/
 ```

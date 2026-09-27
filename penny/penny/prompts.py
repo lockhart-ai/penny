@@ -457,8 +457,8 @@ class Prompt:
     # syntactic, so an "unchanged" claim would be false in exactly the post-write
     # verify case; steer that case to a non-identical call instead.  Agent-neutral (no
     # ``done()`` / "cycle" wording — chat shares this guard and has no ``done``).
-    # Shipped with the live-model recovery contract in
-    # ``tests/eval/test_dedup_call_recovery.py``.
+    # Both forms, and the loop carrying on past the refusal, are pinned in
+    # ``tests/agents/test_agentic_loop.py``.
     DUPLICATE_CALL_REJECTION_SUCCEEDED = (
         "You already made this exact tool call earlier in this run (same tool, same "
         "arguments), so it was not run again — its result is already in the messages "

@@ -397,45 +397,6 @@ RESEARCH_PAGES = (
     ),
 )
 
-# ── Digest collector (empty-user-turn bailout reproduction) ──────────────────
-# A read-a-log-first / summarize-into-one-entry collector, shaped exactly like the
-# real "rolling summary" collectors that bail most often in production: the whole
-# task lives in the system prompt, step 1 is a mandatory log_read, and the user
-# turn is empty.  gpt-oss (harmony-trained) reads the blank user turn as "the user
-# said nothing" and frequently jumps straight to done() WITHOUT calling log_read —
-# never checking for the work that's plainly seeded.  This is the baseline the
-# prompt-split experiment must beat.  Topic is generic/privacy-safe.
-WEEKLY_DIGEST = SynthCollection(
-    "weekly-digest",
-    "A single rolling summary of the user's recent messages: what they've been "
-    "up to, key events, and how things are going.",
-    entries=(),
-)
-WEEKLY_DIGEST_INTENT = "Keep one running summary of what I've been up to lately, updated as I chat."
-WEEKLY_DIGEST_EXTRACTION_PROMPT = (
-    "Summarise the user's recent messages into a single rolling summary entry.\n"
-    '1. log_read("user-messages") — fetch all new user-message entries since the '
-    "last run.\n"
-    '2. collection_read_latest("weekly-digest", k=1) — get the current summary '
-    "entry, if any.\n"
-    "3. Combine both and write a concise paragraph capturing key events, "
-    "activities, and how things are going.\n"
-    '4. collection_write("weekly-digest", entries=[{key: "summary", '
-    "content: <generated summary>}]).\n"
-    "5. done()."
-)
-# Clearly-summarizable synthetic messages — a working cycle MUST produce a summary
-# entry, so a no-write outcome is an unambiguous bailout, not a defensible no-op.
-WEEKLY_DIGEST_MESSAGES = (
-    "just wrapped up a big push at work — shipped the new release on friday and "
-    "the team's pretty happy with how it landed",
-    "been getting back into running too, did my first 10k in ages on saturday "
-    "morning and felt great after",
-    "weekend was nice and low-key otherwise, cooked a bunch and caught up on some "
-    "films i'd been meaning to watch",
-)
-
-
 # ── Send-shaped collector (half-formed-send guard reproduction) ───────────────
 # A read-then-send collector: read the log, then send the user a one-line digest.
 # The send step is what the malformed-send injector hijacks (forcing the
@@ -512,72 +473,6 @@ COLLECTOR_PROSE_BAIL = "**Done. Summary: I've handled the recent messages.**"
 # envelope; the done-JSON teaching nudge names the slip and the exact ``done()``
 # call to make, and the model must re-emit it as a real tool call.  Privacy-safe.
 COLLECTOR_DONE_JSON_BAIL = '{"name": "done", "arguments": {}}'
-
-# ── Duplicate-write recovery (matched-key handoff) ───────────────────────────
-# A collector whose write duplicates a recipe the box ALREADY holds.  The rejection
-# now names the matched existing key + the next move, so the live model must recover
-# (update_entry with that key, or an honest done()) instead of guessing keys /
-# re-reading / retrying variations until it burns the step budget.  The only source
-# of recipes is the collection itself (no browse step), so a recovered cycle has
-# genuinely nothing new to add.  Generic/privacy-safe topic.
-RECIPE_BOX = SynthCollection(
-    "recipe-box",
-    "Saved quick weeknight dinner recipes: short ingredient lists and fast cook times.",
-    entries=(
-        "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F.",
-        "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min.",
-    ),
-)
-RECIPE_BOX_INTENT = "Keep a box of quick weeknight dinner recipes I can pull from."
-RECIPE_BOX_EXTRACTION_PROMPT = (
-    "Save quick weeknight dinner recipes worth keeping.\n"
-    '1. collection_read_latest("recipe-box", k=20) — see what is already saved so you '
-    "do not repeat one.\n"
-    "2. For each genuinely new recipe not already saved, "
-    'collection_write("recipe-box", entries=[{key: recipe name, content: name + key '
-    "ingredients + time}]).\n"
-    "3. done()."
-)
-# The forced duplicate write: byte-identical to the first seeded entry, so dedup
-# catches it on content and hands back its key ("Sheet-pan chicken fajitas").  The
-# candidate key differs from the matched key (the 47%-recovery embedding-match arm).
-RECIPE_BOX_DUP_KEY = "sheet pan chicken fajitas"
-RECIPE_BOX_DUP_CONTENT = "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F."
-# A second duplicate (of the OTHER seeded entry) for the multi-entry rejection case:
-# a batch of two duplicates, each matching a DIFFERENT existing key, proving every
-# rejected key gets its own match bound — not just the first.
-RECIPE_BOX_DUP_KEY_2 = "one pot lemon orzo"
-RECIPE_BOX_DUP_CONTENT_2 = "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min."
-# The keys the box holds after seeding (SynthCollection keys = text before ' — ').
-RECIPE_BOX_SEED_KEYS = ("Sheet-pan chicken fajitas", "One-pot lemon orzo")
-
-# key-not-found write-vs-update residue (July 2026 tool-failure audit, item #11):
-# after a key-not-found rejection the model runs collection_keys / read_similar,
-# finds the entry under a slightly different key, then mis-picks collection_write
-# (→ duplicate-rejected) instead of update_entry.  The rejection now names the
-# write-vs-update decision.  This enrichment task hands the collector the SAME
-# recipe already saved, plus a richer detail (a marinade step) — so keeping the box
-# current means UPDATING the existing entry, not writing a fresh one.  Step 2 stays
-# tool-neutral ("record it so the box reflects it") so the write-vs-update choice
-# falls to the model + the rejection guidance, not to the prompt.
-RECIPE_BOX_ENRICH_PROMPT = (
-    "Keep the recipe box current with this weeknight recipe: sheet-pan chicken "
-    "fajitas — peppers, onion, chicken, 25 min at 425F, after a 10-minute lime "
-    "marinade.\n"
-    '1. collection_read_latest("recipe-box", k=20) — see what is already saved so '
-    "you do not duplicate one.\n"
-    "2. Record the recipe so the box reflects it, including the marinade step.\n"
-    "3. done()."
-)
-# The near-miss probe the injector forces first: the fajitas recipe is stored under
-# "Sheet-pan chicken fajitas", not this bare guess — so collection_get misses and
-# returns the key-not-found rejection the model must recover from.
-RECIPE_BOX_NEAR_MISS_KEY = "chicken fajitas"
-RECIPE_BOX_FAJITAS_KEY = "Sheet-pan chicken fajitas"
-# The seeded fajitas content (the enrichment must change this on the existing key).
-RECIPE_BOX_FAJITAS_SEED_CONTENT = (
-    "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F."
-)
 
 # thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
 THINKING_PAGES = (
