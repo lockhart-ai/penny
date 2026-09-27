@@ -169,8 +169,12 @@ The eval cases are where the code owner states what Penny should do. The contrac
    - A claim is a fact about the world: what the store holds, what survived, where the
      machine landed, or a fact the reply cites (the interest it named, the price the page
      posts).
-   - Which tools were called, whether the model retried, and how the reply is worded are
-     variance features, never claims. Flailing shows up as spread.
+   - Which tools were called, how many times, whether the model retried, and how the reply
+     is worded are variance features, never claims. Flailing shows up as spread.
+   - Nothing that counts tool calls is a fact, including a count of saves the reply states. Ask
+     Penny to read site 1 for fact A and site 2 for fact B, and let site 1 read while site 2
+     fails. The claims are then: fact A is in the store and in the reply, traced to site 1,
+     and nothing from site 2 appears anywhere.
 
 2. **Every claim is strictly true or false, and fits one of three categories:** where the
    machine *landed*, what the *store* holds, and whether a stated value has *provenance* in
