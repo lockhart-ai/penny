@@ -1353,8 +1353,8 @@ The workflow:
 
 1. **While iterating**, drive the fix with `replay.py` / focused low-N runs (below) — fast, throwaway, may read the local prod DB.
 2. **Before opening the PR**, lift the validated behaviour into a committable, privacy-safe `tests/eval/` case: genericize any real data into synthetic topics (per the log→test→fix loop), and assert on persisted DB state / sends / run outcome, never on wording.
-3. **If the failure is stochastic** and can't be reproduced by seeding alone, *force the trigger deterministically and let the real model drive the rest* — e.g. `nudge_eval`'s `_InjectTextBail` forces one plain-text bail, then the live model must recover through the production nudge — so the contract is exercised on every run, not ~25% of them.
-4. **Pair it with a deterministic mock test in `tests/`** when there's a mechanism to pin (loop control, branching, bounds): `make check` owns the fast mechanism proof, `make eval` owns the live model-behaviour contract.
+3. **An eval case never forces or injects a tool call.** A natural input — the world, the seeded state, the user's wording — leads the model to act, and the real gate answers whatever it draws. A failure that shows on only some samples is a measured rate, read off the cohort's pass count; it is never manufactured by wrapping the model client to plant a bad draw.
+4. **A mechanism is pinned by a deterministic mock test in `tests/`** — loop control, branching, bounds, a gate's refusal of a malformed call. The mock hands the mechanism the exact bad input and asserts what it does, on every run: `make check` owns the mechanism proof, `make eval` owns the live model-behaviour contract.
 
 #### The log → test → fix loop (durable process for correcting model behaviour)
 

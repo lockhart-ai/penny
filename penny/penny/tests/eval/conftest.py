@@ -69,8 +69,6 @@ from penny.llm.client import LlmClient
 from penny.llm.models import (
     LlmMessage,
     LlmResponse,
-    LlmToolCall,
-    LlmToolCallFunction,
     strip_harmony_control_tokens,
 )
 from penny.llm.similarity import embed_text
@@ -206,10 +204,6 @@ Seeder = Callable[[Database], None]
 # A preparer mutates the constructed Penny before the message is pushed — e.g.
 # to mock an external boundary (the image client) the case exercises.
 Preparer = Callable[[Penny], None]
-# A collector scorer also sees the pre-cycle snapshot and the messages the cycle
-# sent the user.  ``snapshot`` is whatever the case's ``snapshot`` callback returned.
-Snapshotter = Callable[[Database], object]
-CollectorScorer = Callable[[Database, object, list[str]], "list[str] | list[Check]"]
 # A text scorer sees only a returned string (e.g. a generated announcement) and
 # returns either failure strings (binary: empty = pass) or a list of graded ``Check``s
 # (partial credit) — the same dual return as the other scorer types, dispatched by the runner.
@@ -932,7 +926,7 @@ def _scorer_is_graded(scored: list[Check | str]) -> bool:
 
 def _guarded_graded(scored: list[Check | str], guards: list[Check]) -> SampleResult:
     """A graded sample result with the runner's framework guard Checks PREPENDED (guard-as-Check):
-    a recovery runner's 'the injected bail fired' / 'the cycle recovered' contract rides as a
+    a recovery runner's 'the injected bail fired' contract rides as a
     scored ``Check`` a scorer author can't omit, so a vacuous run — the injected trigger never
     fired — can't score green off the scorer's own checks alone."""
     checks = [check for check in scored if isinstance(check, Check)]
@@ -949,19 +943,6 @@ def _bail_fired_check(bail_injected: bool) -> Check:
         rationale=None
         if bail_injected
         else "the injected bail never fired — the recovery contract was not exercised",
-    )
-
-
-def _cycle_recovered_check(success: bool) -> Check:
-    """The 'the cycle recovered to a successful close' guard as a scored ``Check`` — the graded-path
-    twin of ``nudge_eval``'s binary ``cycle did not recover to a successful close`` failure."""
-    return Check(
-        "cycle recovered to a successful close",
-        success,
-        kind="guard",
-        rationale=None
-        if success
-        else "the cycle did not recover to a successful close after the nudge",
     )
 
 
@@ -4210,7 +4191,7 @@ class _InjectingClient(LlmClient):
     """Base for the eval injectors that wrap a real ``LlmClient`` to force ONE bad
     response deterministically, then delegate every other call to the real model.
 
-    Subclasses ``LlmClient`` (so it's assignable to ``collector._model_client``)
+    Subclasses ``LlmClient`` (so it's assignable to an agent's ``_model_client``)
     but deliberately skips its ``__init__`` — it owns no real connection, only the
     wrapped client.  Holds ``bail_injected`` (a declared attribute, so callers read
     ``wrapper.bail_injected`` directly — no ``getattr`` probing); ``chat`` is
@@ -4226,8 +4207,7 @@ class _InjectingClient(LlmClient):
     and 15 of 15 gemma ones: the microcontext discarded it, re-rolled, and the turn under
     test was never broken — while ``bail_injected`` said the contract had been exercised.
     Both call sites already pass ``agent_name``, so the caller is a value the client is
-    GIVEN rather than one an injector has to infer.  ``None`` fires on any caller, which is
-    what a collector runner wants, where the cycle itself is the thing being broken.
+    GIVEN rather than one an injector has to infer.  ``None`` fires on any caller.
     """
 
     def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
@@ -4247,11 +4227,9 @@ class _InjectingClient(LlmClient):
 
 
 class _InjectAfterToolCall(_InjectingClient):
-    """The shared mid-cycle trigger: delegate to the real model until its first
-    tool call lands, then inject ONE forced bad response (``_bail_response``) and
-    delegate everything after.  Subclasses own only the bail's shape.
-    ``_InjectDoneBail`` doesn't share this trigger — its bail is the cycle's very
-    FIRST response, before any real tool call."""
+    """The mid-turn trigger: delegate to the real model until its first tool call
+    lands, then inject ONE forced bad response (``_bail_response``) and delegate
+    everything after.  Subclasses own only the bail's shape."""
 
     def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
         super().__init__(real, target_agent=target_agent)
@@ -4279,12 +4257,10 @@ class _InjectAfterToolCall(_InjectingClient):
 class _InjectTextBail(_InjectAfterToolCall):
     """Injects ONE plain-text response right after the model's first tool call.
 
-    This reproduces — deterministically, against the live model — a collector
-    that narrates "Done." (or any prose) instead of continuing with / closing
-    via a tool call.  The stochastic ~25% slip can't be reliably reproduced by
-    seeding alone, so we force it once and let the production text-step nudge
-    drive the recovery on the real model.  ``bail_injected`` records that the
-    scenario actually fired (else the contract test would be vacuous).
+    It stands in for a draw that should have been a tool call and came back as text
+    (a call written out as text, a leaked envelope, prose), then lets the live model
+    drive the rest of the turn.  ``bail_injected`` records that the forced draw
+    actually fired.
     """
 
     def __init__(self, real, bail_text: str, *, target_agent: str | None = None) -> None:
@@ -4293,275 +4269,6 @@ class _InjectTextBail(_InjectAfterToolCall):
 
     def _bail_response(self) -> LlmResponse:
         return LlmResponse(message=LlmMessage(role="assistant", content=self._bail_text))
-
-
-class _InjectEmptyResponse(_InjectAfterToolCall):
-    """Injects ONE empty-content response right after the model's first tool call.
-
-    Reproduces — deterministically, against the live model — a collector that
-    returns empty content mid-cycle (no text AND no tool call).  The empty-response
-    validator retries it with the collector nudge (``COLLECTOR_CONTINUE_NUDGE`` —
-    demand a tool call, not the chat "provide your response" that invites prose),
-    and the live model must recover to a clean ``done()`` close.  ``bail_injected``
-    records the scenario actually fired (else the contract would be vacuous).
-    """
-
-    def _bail_response(self) -> LlmResponse:
-        return LlmResponse(message=LlmMessage(role="assistant", content=""))
-
-
-def _nudge_injector(
-    wrap: Callable[[LlmClient], _InjectingClient] | None, bail_text: str | None
-) -> Callable[[LlmClient], _InjectingClient]:
-    """Resolve a nudge case's forced-bail injector from EXACTLY one selector.
-
-    ``wrap`` is an injector factory; ``bail_text`` is shorthand for the text-bail
-    injector.  Neither (or both) is a mis-specified case — fail loudly rather than
-    defaulting to some bail the author didn't choose."""
-    if wrap is not None and bail_text is not None:
-        raise ValueError("nudge_eval needs exactly one of wrap= or bail_text=, not both")
-    if wrap is not None:
-        return wrap
-    if bail_text is None:
-        raise ValueError("nudge_eval needs exactly one of wrap= or bail_text=")
-    chosen_text = bail_text
-    return lambda real: _InjectTextBail(real, chosen_text)
-
-
-# A nudge-eval runner: (collection, seed, wrap/bail_text) -> asserts recovery.
-NudgeEval = Callable[..., Awaitable[None]]
-
-
-@pytest.fixture
-def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEval:
-    """Contract test for a collector user-turn nudge that recovers a bad response.
-
-    Drives a real collector cycle but forces one bad response right after the
-    model's first tool call, via an injector (``wrap(real) -> injector`` with a
-    ``bail_injected`` flag; defaults to ``_InjectTextBail(bail_text)``).  Both
-    covered bails are user-turn nudges (the response carried no usable tool call):
-
-      text bail   — the model narrates prose instead of a tool call; without the
-                    nudge the loop treats it as the final answer and ends the cycle
-                    with no ``done()``.  Nudged (``COLLECTOR_TOOL_CALL_NUDGE``), it
-                    re-emits a tool call.
-      empty bail  — the model returns empty content (no text, no tool call);
-                    the empty-response validator retries with the collector nudge
-                    (``COLLECTOR_CONTINUE_NUDGE``, demanding a tool call).
-
-    Either way the cycle must recover to a successful close.  Each sample asserts
-    the bail actually fired AND the cycle recovered (``run_for`` returned success);
-    an optional ``score`` adds case-specific checks.
-    """
-
-    async def _run(
-        *,
-        case_id: str,
-        collection: str,
-        seed: Seeder,
-        bail_text: str | None = None,
-        wrap: Callable[[LlmClient], _InjectingClient] | None = None,
-        score: CollectorScorer | None = None,
-        snapshot: Snapshotter | None = None,
-        samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
-        family: str | None = None,
-    ) -> None:
-        eval_artifacts.begin_case(case_id)
-        make_wrapper = _nudge_injector(wrap, bail_text)
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            seed_user(penny.db)
-            seed(penny.db)
-            await _embed_seeds(penny)
-            before = snapshot(penny.db) if snapshot is not None else None
-            sent_before = len(server.outgoing_messages)
-            wrapper = make_wrapper(penny.collector._model_client)
-            penny.collector._model_client = wrapper
-            success, _ = await penny.collector.run_for(collection)
-            sent = [item.content for item in penny.db.send_queue.pending_items()] + [
-                str(message.get("message", ""))
-                for message in server.outgoing_messages[sent_before:]
-            ]
-            scored = list(score(penny.db, before, sent)) if score is not None else []
-            if _scorer_is_graded(scored):
-                guards = [
-                    _bail_fired_check(wrapper.bail_injected),
-                    _cycle_recovered_check(success),
-                ]
-                result = _guarded_graded(scored, guards)
-            else:
-                fails = [s for s in scored if isinstance(s, str)]
-                if not wrapper.bail_injected:
-                    fails.append("forced bail never fired — contract not exercised")
-                elif not success:
-                    fails.append("cycle did not recover to a successful close after the nudge")
-                result = SampleResult.binary(fails)
-            _stamp_cause(penny.db, result)
-            _write_sample_report(penny.db, case_id, sample_index, result=result)
-            _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-            return result
-
-        # No exclusions section on this inline-scored runner — the void reaches run health.
-        results, perf, _voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
-        )
-        # This runner records its case without going through `_finish_case`, so it flushes at
-        # its own settle point: an inline sample is scored by the time its drive returns.
-        _flush_sample_blocks(case_id)
-        eval_artifacts.record_case(
-            case_id=case_id,
-            family=family,
-            module=request.module.__name__,
-            results=results,
-            perf=perf,
-            min_pass_rate=min_pass_rate,
-        )
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
-
-    return _run
-
-
-class _InjectDoneBail(_InjectingClient):
-    """Forces a ``done()`` tool call as the model's FIRST response — the first-move
-    bail the premature-done guard must refuse.
-
-    Reproduces, deterministically against the live model, a collector that opens
-    with the argless ``done()`` before reading anything.  Pre-fix that bail closes
-    the cycle; post-fix the guard returns an error tool response and the real model
-    must recover (read its inputs, then do the work).  ``bail_injected`` records
-    the scenario actually fired."""
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        if not self.bail_injected:
-            self.bail_injected = True
-            return LlmResponse(
-                message=LlmMessage(
-                    role="assistant",
-                    tool_calls=[
-                        LlmToolCall(
-                            id="bail-done",
-                            function=LlmToolCallFunction(name="done", arguments={}),
-                        )
-                    ],
-                )
-            )
-        return await self._real.chat(messages, *args, tools=tools, **kwargs)
-
-
-class _InjectFictitiousToolPrompt(_InjectingClient):
-    """Forces ONE ``collection_set`` whose ``extraction_prompt`` names a tool no
-    collector has, as the model's FIRST response.
-
-    Reproduces — deterministically against the live model — the chat agent writing a
-    hallucinated tool into a collection's recipe (observed: a made-up ``extract_text``
-    for a "read the page" step).  The write-time gate refuses it with the
-    correction-teaching message, and the live model must recover: re-issue a
-    ``collection_set`` whose prompt uses only real tools (``browse`` for the read),
-    which then persists.  ``bail_injected`` records the scenario actually fired."""
-
-    def __init__(self, real: LlmClient, collection: str, prompt: str) -> None:
-        super().__init__(real)
-        self._collection = collection
-        self._prompt = prompt
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        if not self.bail_injected:
-            self.bail_injected = True
-            return LlmResponse(
-                message=LlmMessage(
-                    role="assistant",
-                    tool_calls=[
-                        LlmToolCall(
-                            id="bail-fictitious-tool",
-                            function=LlmToolCallFunction(
-                                name="collection_set",
-                                arguments={
-                                    "name": self._collection,
-                                    "extraction_prompt": self._prompt,
-                                },
-                            ),
-                        )
-                    ],
-                )
-            )
-        return await self._real.chat(messages, *args, tools=tools, **kwargs)
-
-
-class _InjectSendBail(_InjectAfterToolCall):
-    """Injects ONE malformed ``send_message`` tool call right after the model's
-    first real tool call.
-
-    Reproduces a collector that emits a half-formed send (``"Hi there! ......???"``)
-    mid-cycle.  Pre-fix the send gate let that shape through (the truncation regex
-    missed it) and the user received junk; post-fix the gate refuses it with an
-    error tool response and the model must resend a complete message.
-    ``bail_injected`` records the scenario actually fired."""
-
-    def __init__(self, real, junk: str) -> None:
-        super().__init__(real)
-        self._junk = junk
-
-    def _bail_response(self) -> LlmResponse:
-        return LlmResponse(
-            message=LlmMessage(
-                role="assistant",
-                tool_calls=[
-                    LlmToolCall(
-                        id="bail-send",
-                        function=LlmToolCallFunction(
-                            name="send_message", arguments={"content": self._junk}
-                        ),
-                    )
-                ],
-            )
-        )
-
-
-class _InjectDuplicateWrite(_InjectingClient):
-    """Forces ONE ``collection_write`` of one-or-more entries that each duplicate an
-    entry the target collection already holds, as the model's FIRST response.
-
-    Reproduces — deterministically against the live model — a collector that writes
-    something already saved.  The real dedup rejects it, and the rejection now BINDS
-    each matched existing key into an ``update_entry`` call; the live model must
-    recover (``update_entry`` on the bound key, or an honest ``done()``) instead of
-    re-using its own rejected key / re-reading / retrying variations until it burns
-    the step budget.  A multi-entry batch proves EVERY rejected key gets its match
-    bound, not just the first.  ``bail_injected`` records the scenario actually fired."""
-
-    def __init__(self, real, memory: str, entries: list[tuple[str, str]]) -> None:
-        super().__init__(real)
-        self._memory = memory
-        self._entries = entries
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        if not self.bail_injected:
-            self.bail_injected = True
-            return LlmResponse(
-                message=LlmMessage(
-                    role="assistant",
-                    tool_calls=[
-                        LlmToolCall(
-                            id="bail-dup-write",
-                            function=LlmToolCallFunction(
-                                name="collection_write",
-                                arguments={
-                                    "memory": self._memory,
-                                    "entries": [
-                                        {"key": key, "content": content}
-                                        for key, content in self._entries
-                                    ],
-                                },
-                            ),
-                        )
-                    ],
-                )
-            )
-        return await self._real.chat(messages, *args, tools=tools, **kwargs)
 
 
 class _InjectBracketKey(_InjectingClient):

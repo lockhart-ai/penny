@@ -231,7 +231,6 @@ from penny.tests.eval.conftest import (
     _chat_tool_sequence,
     _classification_output,
     _classifier_snapshot,
-    _cycle_recovered_check,
     _cycle_shape,
     _cycles_exclusion,
     _draw_exclusion,
@@ -1479,18 +1478,14 @@ def test_scorer_is_graded_dispatches_on_return_type() -> None:
     assert not _scorer_is_graded([])
 
 
-def test_bail_fired_and_cycle_recovered_guard_checks() -> None:
-    # Each guard is a scored Check: it passes silently (no rationale) when the contract fired, and
+def test_bail_fired_guard_check() -> None:
+    # The guard is a scored Check: it passes silently (no rationale) when the contract fired, and
     # fails with a rationale naming the vacuous contract when it did not — so a run the injected
     # trigger never reached can't score green off the scorer's own checks alone.
     fired = _bail_fired_check(True)
     assert fired.ok and fired.scored and fired.rationale is None
     missed = _bail_fired_check(False)
     assert not missed.ok and missed.rationale is not None
-    recovered = _cycle_recovered_check(True)
-    assert recovered.ok and recovered.rationale is None
-    stalled = _cycle_recovered_check(False)
-    assert not stalled.ok and stalled.rationale is not None
 
 
 class _RecordingClient:
@@ -1516,8 +1511,7 @@ async def test_the_forced_fault_is_confined_to_the_turn_the_case_is_about() -> N
     under test runs clean — while ``bail_injected`` reports the contract exercised.  That
     is not hypothetical: on the first ported run the bail landed in ``browse-extract`` on
     12 of 15 gpt-oss samples and 15 of 15 gemma ones, and both cohorts were read as
-    recoveries.  A collector runner passes no target and keeps the old any-caller
-    behaviour, because there the cycle itself is what is being broken."""
+    recoveries."""
     real = _RecordingClient()
     injector = _InjectTextBail(real, "{}", target_agent=PennyConstants.CHAT_AGENT_NAME)
 
@@ -1539,9 +1533,8 @@ async def test_the_forced_fault_is_confined_to_the_turn_the_case_is_about() -> N
 
 
 async def test_an_untargeted_injector_still_fires_on_any_caller() -> None:
-    """The collector runners install their injector on the CYCLE's client and name no
-    target, so the trigger keeps its any-caller behaviour — this pins that the confinement
-    is opt-in and changes nothing for a case that did not ask for it."""
+    """An injector that names no target keeps the any-caller behaviour — this pins that
+    the confinement is opt-in and changes nothing for a case that did not ask for it."""
     real = _RecordingClient()
     injector = _InjectTextBail(real, "Done.")
     await injector.chat([], agent_name="collector")
