@@ -50,6 +50,7 @@ from penny.conversation_machine import (
     render_classifier_content,
 )
 from penny.database import Database
+from penny.database.memory import MemoryType
 from penny.database.models import PromptLog
 from penny.database.skills import (
     SkillDraft,
@@ -94,6 +95,7 @@ from penny.tests.eval.chat.idle.test_chat_memory_stories import (
 )
 from penny.tests.eval.chat.idle.test_chat_reply import (
     ANSWERING_CASES,
+    _seeded_entries_unchanged,
 )
 from penny.tests.eval.chat.idle.test_choose_dispatch import (
     _OPTIONS as _CHOOSE_OPTIONS,
@@ -347,7 +349,7 @@ from penny.tests.eval.utils.artifacts import (
 )
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
-from penny.tests.eval.utils.cohort import SampleObservation, unsourced_specifics
+from penny.tests.eval.utils.cohort import SampleObservation, StoredEntry, unsourced_specifics
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
@@ -5469,7 +5471,10 @@ def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> No
     exercise.
 
     The answer tokens ride along for a store-backed world: the value has to be in the store
-    the world declares, since the whole behaviour is that she went and read it."""
+    the world declares, since the whole behaviour is that she went and read it.  So does the
+    survival claim, in both directions: the store as seeded must read as everything still
+    there, or the claim fails a correct run by construction, and one entry reworded must read
+    as changed, or it passes a sample that rewrote what the user kept."""
     for index, case in enumerate(ANSWERING_CASES):
         if not case.world.stores and case.probe is None:
             continue
@@ -5489,6 +5494,21 @@ def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> No
             assert token in stored, (
                 f"{case.case_id}: the seeded store does not carry the answer token {token!r}"
             )
+        held = [
+            StoredEntry(collection=row.name, key=key, content=content)
+            for row in db.memories.list_all()
+            if row.type == MemoryType.COLLECTION
+            for key, content in collection_entries(db, row.name).items()
+        ]
+        survived = _seeded_entries_unchanged()
+        untouched = SampleObservation(name="untouched", phrasing=case.ask, held=held)
+        assert survived(untouched, case.world) == (True, "missing or changed: []")
+        reworded = [held[0].model_copy(update={"content": f"{held[0].content}!"}), *held[1:]]
+        rewrote = SampleObservation(name="rewrote", phrasing=case.ask, held=reworded)
+        assert survived(rewrote, case.world) == (
+            False,
+            f"missing or changed: ['{held[0].collection}:{held[0].key}']",
+        )
 
 
 def test_every_tool_name_read_is_sanitised_the_way_production_sanitises_it() -> None:

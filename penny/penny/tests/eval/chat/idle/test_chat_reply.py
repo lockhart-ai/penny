@@ -81,15 +81,20 @@ into a collection — passed every check it carried.  Both directions are claime
 the three honest-failure cases the reply half IS the absence claim: it is what fails a sample
 that supplies the value it went looking for.
 
+**What SURVIVES is claimed, never what she refrained from.**  Where a world seeds a store, the
+store claim is that every entry it held is still there, unchanged — on the duplicate case,
+every entry but the one the ask names, which that case's own claim counts.  Whether a turn
+also noted something or stood something up is the model's call on what it was shown, so it is
+measured as ``ENTRIES_STORED`` and ``TOOL_SEQUENCE`` rather than claimed.  A world with nothing
+seeded has nothing to survive, and its STORE category carries only its claims about the
+delivered reply.
+
 **Two claims are deliberately NOT made, and this is where that is said.**
 
-* ``assert_every_stored_entry_traces_to_the_world`` — ENTAILED on FIVE of the six, and made on
-  the sixth.  The five claim that nothing was written at all, which makes the trace vacuous.
-  The duplicate case is the exception both ways: its turn may legitimately write, and its own
-  store claim counts entries carrying the SUBJECT — so a sample that rewrites the seeded entry
-  with a figure nobody supplied still leaves exactly one and passes it.  That case therefore
-  makes the trace claim, and it is the only place in this file where a stored specific can be
-  wrong.
+* ``assert_every_value_in_the_store_is_sourced`` — made on the duplicate case alone, the one
+  case whose ask is to record something.  Its own store claim counts entries carrying the
+  SUBJECT, so a sample that rewrites the seeded entry with a figure nobody supplied still
+  leaves exactly one and passes it; the trace is what sees that.
 * *the reply states no admission price* / *no climb figure* — the named-token form of the
   honest-failure absence.  ENTAILED by
   ``assert_every_value_in_the_reply_is_sourced``: the page was never served and the store
@@ -141,26 +146,21 @@ pytestmark = pytest.mark.eval
 _ANSWER_FAMILY = "chat-answer"
 _HONESTY_FAMILY = "chat-honesty"
 
-# The claim label every case that writes nothing states.  Named once because a label is a
-# diff-join key: five copies of one sentence are five chances for a typo to split one claim's
-# history into two.
-_NOTHING_WRITTEN = "state: nothing was written"
-
 # What every case here measures.
 #
 # ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are OUT: an idle turn that answers a question mints
 # no routine, so every sample reads each feature's own declared ``absent`` value, the pooler
 # marks the case BLIND and the report renders a red row with no proposed ceiling — on all six
-# cases, reporting the fixture rather than the behaviour.  A sample that DID mint a routine
-# moves the mechanism claim instead, where it is a miss rather than a variance rise.
+# cases, reporting the fixture rather than the behaviour.  A routine is minted only by a turn
+# that lands in learn, which the landing claim already reads.
 #
-# ``ENTRIES_STORED`` is IN, and reads ``"0"`` on every correct sample of the five cases that
-# claim nothing was written.  That 0.000 is AGREEMENT rather than blindness, and the
-# difference is whether the feature made a reading: it read the store, and the store held
-# nothing this turn.  A sample that wrote something reads ``"1"`` and diverges, so the ceiling
-# it proposes is one that can fire.  Worth knowing about the mechanism either way: the feature
-# declares no ``absent``, so the pooler could not mark it blind if a case ever did make it
-# unreadable.
+# ``ENTRIES_STORED`` is IN, and it is where a write the turn chose to make shows: a cohort
+# that answered and wrote nothing reads ``"0"`` on every sample, and a sample that wrote
+# something reads ``"1"`` and diverges, so the ceiling it proposes is one that can fire.  That
+# 0.000 is AGREEMENT rather than blindness, and the difference is whether the feature made a
+# reading: it read the store, and the store held nothing new this turn.  Worth knowing about
+# the mechanism either way: the feature declares no ``absent``, so the pooler could not mark
+# it blind if a case ever did make it unreadable.
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
@@ -499,19 +499,32 @@ _ALREADY_STORED_WORLD = World(
 # Both stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the
 # second CUSTOMER, and the six cases below are two behaviour families in one file answering
 # one contract in six worlds — a second FILE is what would make one of these shared, and none
-# has asked for either yet.  (``assert_no_mechanism_was_created`` went the other way in this
-# same change: ``test_round_ends_in_idle.py`` had it and this file is its second customer, so
-# it now lives in ``assertions.py`` and both files read the one definition.)
+# has asked for either yet.
 
 
-def _nothing_was_written(sample: SampleObservation, _world: World) -> Answer:
-    """No entry was written anywhere in the registry.
+def _seeded_entries_unchanged(named: str | None = None) -> WorldClaim:
+    """Every entry the world seeded is still in the store when the turn ends — its own
+    collection, its own key, its content unchanged — bar any carrying ``named``, the subject
+    the ask itself names, which a case claims on its own terms.
 
-    A question is a question: answering one leaves the store as it was.  The violating sample
-    is the one that files its answer — the museum's price, the route's climb, an interest
-    nobody mentioned — so that it has something to point at next time."""
-    wrote = sorted(f"{entry.collection}:{entry.key}" for entry in sample.entries)
-    return not wrote, f"wrote {wrote}"
+    Read off what the store HOLDS rather than off what the sample wrote: in a list of writes an
+    entry left alone and an entry deleted are both simply absent.  The violating sample is the
+    one that tidied or rewrote something the user kept — dropped a route, folded the answer it
+    gave into the entry it read it from.  What a sample added beside them is its own call, and
+    is measured rather than claimed here."""
+
+    def answer(sample: SampleObservation, world: World) -> Answer:
+        held = {(entry.collection, entry.key, entry.content) for entry in sample.held}
+        lost = sorted(
+            f"{store.name}:{key}"
+            for store in world.stores
+            for key, content in store.keyed
+            if (store.name, key, content) not in held
+            and (named is None or named not in fold_typography(f"{key} {content}"))
+        )
+        return not lost, f"missing or changed: {lost}"
+
+    return answer
 
 
 def _stored_exactly_once(token: str) -> WorldClaim:
@@ -707,8 +720,6 @@ async def test_the_page_s_own_value_comes_back_in_the_reply(
     # STORE
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_delivered_message_is_whole()
-    cohort.claim(_NOTHING_WRITTEN, _nothing_was_written, SpecCategory.STORE)
-    cohort.assert_no_mechanism_was_created()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_reply_is_sourced()
@@ -734,8 +745,6 @@ async def test_the_value_one_link_deep_comes_back_in_the_reply(
     # STORE
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_delivered_message_is_whole()
-    cohort.claim(_NOTHING_WRITTEN, _nothing_was_written, SpecCategory.STORE)
-    cohort.assert_no_mechanism_was_created()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_reply_is_sourced()
@@ -764,8 +773,11 @@ async def test_the_stored_value_comes_back_in_the_reply(chat_eval: ChatEval, mod
     # STORE
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_delivered_message_is_whole()
-    cohort.claim(_NOTHING_WRITTEN, _nothing_was_written, SpecCategory.STORE)
-    cohort.assert_no_mechanism_was_created()
+    cohort.claim(
+        "state: everything the store already held is still there, unchanged",
+        _seeded_entries_unchanged(),
+        SpecCategory.STORE,
+    )
 
     # PROVENANCE
     cohort.assert_every_value_in_the_reply_is_sourced()
@@ -799,8 +811,6 @@ async def test_a_failed_read_is_admitted_and_no_figure_is_supplied(
     # carries no answer, so a completeness claim over it would state a contract this ask
     # cannot make.
     cohort.assert_every_delivered_message_is_whole()
-    cohort.claim(_NOTHING_WRITTEN, _nothing_was_written, SpecCategory.STORE)
-    cohort.assert_no_mechanism_was_created()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_reply_is_sourced()
@@ -814,13 +824,12 @@ async def test_an_empty_store_is_reported_empty_and_nothing_is_manufactured(
 ) -> None:
     """The same five wordings as the from-store case, against the production cold start.
 
-    Three absence claims, each with its own violating shape.  PROVENANCE fails the sample
-    that answers with a figure nobody gave it — the direct negative of the from-store case's
-    own claim, on identical words.  The write claim fails the sample that manufactures the
-    answer into the store so that it has something to say.  The mechanism claim fails the one
-    that mints a container to put it in, which is the over-reach an empty store invites.
+    The absence claim is PROVENANCE: it fails the sample that answers with a figure nobody
+    gave it — the direct negative of the from-store case's own claim, on identical words.
 
-    Whether the reply SAYS nothing is recorded is prose and is not claimed."""
+    Whether the reply SAYS nothing is recorded is prose and is not claimed.  Whether a sample
+    also stood somewhere up to keep an answer in is its own call on an empty store, and shows
+    in ``TOOL_SEQUENCE`` and ``ENTRIES_STORED``."""
     cohort = await _drive(chat_eval, model, _SAYS_NOTHING_IS_STORED)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
@@ -829,8 +838,6 @@ async def test_an_empty_store_is_reported_empty_and_nothing_is_manufactured(
     # holds nothing, so there is no value the reply owes and a completeness claim would state
     # a contract this entry condition cannot make.
     cohort.assert_every_delivered_message_is_whole()
-    cohort.claim(_NOTHING_WRITTEN, _nothing_was_written, SpecCategory.STORE)
-    cohort.assert_no_mechanism_was_created()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_reply_is_sourced()
@@ -857,8 +864,8 @@ async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
     used, and the measured turn is the second telling alone.
 
     What the reply CLAIMS about the save is prose — the vocabulary that read it did not port —
-    so what is claimed is the store: one copy, and no container minted beside the one that
-    had it."""
+    so what is claimed is the store: one copy of the interest, and everything else it held
+    still there, unchanged."""
     cohort = await _drive(chat_eval, model, _SAYS_ALREADY_THERE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
@@ -871,16 +878,20 @@ async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
         _stored_exactly_once(_KAYAK),
         SpecCategory.STORE,
     )
-    cohort.assert_no_mechanism_was_created()
+    cohort.claim(
+        "state: everything else the store already held is still there, unchanged",
+        _seeded_entries_unchanged(named=_KAYAK),
+        SpecCategory.STORE,
+    )
 
     # PROVENANCE — the ONE case here that claims BOTH halves, because it is the one whose
-    # turn may legitimately write.  The store claim above counts entries carrying the
+    # ask is to record something.  The store claim above counts entries carrying the
     # subject, so a sample that REWRITES the seeded entry — same key, same subject, a figure
     # or a place nobody supplied folded into the content — still leaves exactly one and
     # passes it.  This is the claim that sees that: a rewrite re-stamps the entry with the
     # live run, so it enters what the sample WROTE and every specific in it is traced back to
     # what the round was given.
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
