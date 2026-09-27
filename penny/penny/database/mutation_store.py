@@ -118,19 +118,26 @@ def render_mutation(event: MutationEvent) -> str:
     parts = [f"{format_log_timestamp(event.created_at)} {event.action} by {event.actor}"]
     if event.run_id is not None:
         parts.append(f"(run {event.run_id})")
-    detail = _parse_detail(event.detail)
+    detail = mutation_detail(event)
     tail = _detail_tail(detail)
     line = " ".join(parts)
     return f"{line} — {tail}" if tail else line
 
 
-def _parse_detail(raw: str | None) -> MutationDetail | None:
-    if not raw:
+def mutation_detail(event: MutationEvent) -> MutationDetail | None:
+    """One event's decoded detail — what it says changed, and what those fields held before.
+
+    PUBLIC because a second reader outside the renders wants the field NAMES rather than the
+    prose ``mutation_change_summary`` composes from them, and a second decode of the same JSON
+    column would be a second answer to what an event says.  ``None`` for an event carrying no
+    detail at all, and for one whose detail will not decode — which is logged rather than
+    raised, since a render must not die on one unreadable audit row."""
+    if not event.detail:
         return None
     try:
-        return MutationDetail.model_validate_json(raw)
+        return MutationDetail.model_validate_json(event.detail)
     except ValueError:
-        logger.warning("Unparseable mutation_event detail: %.200s", raw)
+        logger.warning("Unparseable mutation_event detail: %.200s", event.detail)
         return None
 
 
@@ -153,7 +160,7 @@ def mutation_change_summary(event: MutationEvent) -> str:
     typed event word — and only need the *what changed* tail, not the whole
     ``<when> <action> by <actor>`` line ``render_mutation`` builds for a
     per-entity change history."""
-    return _detail_tail(_parse_detail(event.detail))
+    return _detail_tail(mutation_detail(event))
 
 
 class MutationStore:
@@ -251,7 +258,7 @@ class MutationStore:
             )
         priors: dict[str, str | None] = {}
         for event in events:
-            detail = _parse_detail(event.detail)
+            detail = mutation_detail(event)
             for prior in detail.priors if detail is not None else []:
                 priors.setdefault(prior.field, prior.value)
         return priors

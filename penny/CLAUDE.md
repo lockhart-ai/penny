@@ -761,22 +761,29 @@ condition is now SEEDED rather than driven as a first turn, because a case is on
 condition and ONE model run. It replaced `test_chat_response.py` + `test_narration_survival.py`,
 whose `likes`-collection seed migration 0097 had left crashing at seed time and whose chitchat
 case the canonical `transition-idle-to-idle` already covers on a stronger world),
-`test_standing_collection.py` (operating a job that is already running — turn its
-notifications off, turn them back on, retire it — plus reading back what its routine does;
-the two notify cases are the ensemble the per-collection switch needs to be reachable at
-all: the state renders it, the tool description names it, the ask says it in as many words,
-and a prepare-time probe asserts the row carried it before the turn ran. Broadening a job's
-scope is NOT here — that is a re-teach of the routine, not an edit (code-owner ruling). Its
-seeded world is a taught routine stood up through the production instantiation seam, which
-`test_speakable_log_reads.py` reuses for the jobs its collector-runs case reads about.
-`standing-schedule-fix-prior` (#1946) is the WAS-STATE case on that same world: the job
-runs at a seeded hour, the user says it checks too early and names only the NEW hour, and
-what is scored is that every clock time the reply names is one the job has had — any third
-hour is invented, since the ask supplies one and the seed the other. Which state the turn
-lands in is reported beside it, because it decides whether the record frame was in front of
-the model at all: changing how a running job behaves is idle by the machine's own boundary
-(#1927), and the applied-configuration record that carries the before→after is stamped on an
-apply turn),
+`test_standing_collection.py` (operating a job that is already running, PORTED to the
+cohort structure (#2008, tranche 3): THREE cases, because #2008's one sentence names three
+ACTIONS and a correct sample for one is wrong for another — `standing-notify-off` (the
+switch flips and the job keeps running), `standing-archive` (retired as a tombstone that
+still holds what it gathered) and `standing-schedule-fix-prior` (re-timed, and the reply
+names no hour the job never ran at). Each is one ask in five wordings against one seeded
+world, claiming the job's own ROW: the field the ask named moved and every other field is
+the value it was seeded with, read off `MechanismRecord`'s configuration fields, since
+`changed_this_run` is true of that row by construction and cannot say WHICH field moved.
+Every case also claims that notifications were not silenced everywhere instead — the
+neighbouring lever, and the measured wrong one — and that the machine landed in `idle`,
+which is the contract rather than a hope (#1927: changing how a running job behaves is idle
+by the machine's own boundary). The re-timing case reads the hour the stored RULE fires at
+through production's own `next_occurrence`, not the clause a draw happened to write, and
+its provenance claim is that every clock time the reply names is one the job has had — any
+third hour is invented, since the ask supplies one and the seed the other (#1946).
+`standing-notify-on` is quarantined: the same sentence in the other entry condition, and
+the OFF direction dominates because it is the only one whose world can produce the failure
+the behaviour is about. Broadening a job's scope is NOT here — that is a re-teach of the
+routine, not an edit (code-owner ruling). Its seeded world is a taught routine stood up
+through the production instantiation seam, which `test_speakable_log_reads.py` reuses for
+the jobs its collector-runs case reads about; `standing-describe-routine` (reading a
+routine back) is on no slot of #2004's map and is left untouched with its own scorer),
 `test_half_the_sources_landed.py` (#2149 — `memory-save-with-a-source-down`, the cohort-form
 port of #1946's writes-landed case and the only live-model coverage that frame has: the user
 names two pages and one list, ONE page answers and the other cannot be read, and what is
