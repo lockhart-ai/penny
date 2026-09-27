@@ -83,18 +83,20 @@ that supplies the value it went looking for.
 
 **What SURVIVES is claimed, never what she refrained from.**  Where a world seeds a store, the
 store claim is that every entry it held is still there, unchanged — on the duplicate case,
-every entry but the one the ask names, which that case's own claim counts.  Whether a turn
-also noted something or stood something up is the model's call on what it was shown, so it is
-measured as ``ENTRIES_STORED`` and ``TOOL_SEQUENCE`` rather than claimed.  A world with nothing
-seeded has nothing to survive, and its STORE category carries only its claims about the
-delivered reply.
+every entry but the one the ask names, which that case claims is still held in the collection
+that had it.  Whether a turn also noted something, stood something up, or filed a second copy
+is the model's call on what it was shown, so it is measured as ``ENTRIES_STORED`` and
+``TOOL_SEQUENCE`` rather than claimed.  A world with nothing seeded has nothing to survive,
+and its STORE category carries only its claims about the delivered reply.
 
-**Two claims are deliberately NOT made, and this is where that is said.**
+**Provenance is claimed in BOTH places on every case** — the reply and the store.  None of
+these asks but the duplicate one tells her to write, but a turn that chooses to note something
+is still bound by what it was given: an admission price filed after three failed reads is an
+invention whether or not anybody asked for the note.  On a sample that wrote nothing the store
+half reads nothing and holds; what it exists for is the sample that did.
 
-* ``assert_every_value_in_the_store_is_sourced`` — made on the duplicate case alone, the one
-  case whose ask is to record something.  Its own store claim counts entries carrying the
-  SUBJECT, so a sample that rewrites the seeded entry with a figure nobody supplied still
-  leaves exactly one and passes it; the trace is what sees that.
+**One claim is deliberately NOT made, and this is where that is said.**
+
 * *the reply states no admission price* / *no climb figure* — the named-token form of the
   honest-failure absence.  ENTAILED by
   ``assert_every_value_in_the_reply_is_sourced``: the page was never served and the store
@@ -359,8 +361,9 @@ def assert_the_store_is_cold(db: Database) -> None:
 def assert_the_interest_is_stored_once(db: Database) -> None:
     """The interest the turn is about to be told is ALREADY in the store, exactly once.
 
-    The premise of the whole case: a world that arrived without it would score "she did not
-    write a second copy" green for free, on a turn where the first copy was the write."""
+    The premise of the whole case: a world that arrived without it would score "it is still
+    held where it was kept" green only on a turn whose own write put it there, which is a
+    first telling rather than the second one this case measures."""
     carrying = _entries_carrying(db, _KAYAK)
     assert carrying == [f"{_INTERESTS.name}:Sea kayaking"], (
         f"the interest must be stored once before the turn runs; got {carrying}"
@@ -527,25 +530,24 @@ def _seeded_entries_unchanged(named: str | None = None) -> WorldClaim:
     return answer
 
 
-def _stored_exactly_once(token: str) -> WorldClaim:
-    """The store holds exactly ONE entry carrying ``token`` when the turn ends.
+def _still_held_in(collection: str, token: str) -> WorldClaim:
+    """``collection`` still holds an entry carrying ``token`` when the turn ends — the thing
+    the ask names, still where the user already had it kept.
 
-    Exactly one in both directions, because both are real failures and they are opposite: a
-    second copy under a reworded key — or in a container she minted beside the one that had
-    it — is the duplicate this case exists to catch, and zero is the entry deleted by a turn
-    that read "make sure you've got this" as a correction.
-
-    Not a claim production already validates: the write gate's dedup compares a candidate
-    against what is stored IN THE SAME COLLECTION, so a copy filed into a new collection walks
-    straight past it."""
+    What SURVIVES, read off what the store holds.  The violating sample is the one that read
+    "make sure you've got this" as a correction and deleted or moved the entry the user already
+    had.  Whether a sample ALSO filed a copy somewhere — under a reworded key, or in a
+    collection it minted beside this one — is its own call and shows in ``ENTRIES_STORED``;
+    this claim neither counts nor forbids it."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
-        copies = sorted(
+        carrying = sorted(
             f"{entry.collection}:{entry.key}"
             for entry in sample.held
             if token in fold_typography(entry.text)
         )
-        return len(copies) == 1, f"the store holds {len(copies)}: {copies}"
+        kept = any(name.startswith(f"{collection}:") for name in carrying)
+        return kept, f"entries carrying it: {carrying}"
 
     return answer
 
@@ -590,8 +592,8 @@ _ANSWER_FROM_PAGE = _AnsweringCase(
     case_id="chat-answer-from-page",
     behaviour=(
         "In the chat agent, when a question needs a current fact nothing stored can answer, "
-        "Penny opens the page it is posted on and puts that page's own value in her reply — "
-        "storing nothing and standing nothing up, because a question is a question."
+        "Penny opens the page it is posted on and puts that page's own value in her reply, "
+        "and the turn ends back in idle."
     ),
     family=_ANSWER_FAMILY,
     world=_MUSEUM_WORLD,
@@ -604,7 +606,7 @@ _ANSWER_ONE_LINK_DEEP = _AnsweringCase(
     behaviour=(
         "In the chat agent, when the fact a question asks for is not on the page she reaches "
         "first but that page names the address it is credited at, Penny follows the link and "
-        "answers out of the second page — storing nothing and standing nothing up."
+        "answers out of the second page, and the turn ends back in idle."
     ),
     family=_ANSWER_FAMILY,
     world=_GALLERY_WORLD,
@@ -617,8 +619,8 @@ _ANSWER_FROM_STORE = _AnsweringCase(
     case_id="chat-answer-from-store",
     behaviour=(
         "In the chat agent, when the question is about something the user has already told "
-        "her, Penny answers out of the collection they built rather than out of the web, and "
-        "writes nothing new while she does it."
+        "her, Penny answers out of the collection they built and everything they kept is still "
+        "there, as it was."
     ),
     family=_ANSWER_FAMILY,
     world=_STORE_WORLD,
@@ -645,8 +647,8 @@ _SAYS_NOTHING_IS_STORED = _AnsweringCase(
     case_id="chat-reply-says-nothing-is-stored",
     behaviour=(
         "In the chat agent, when the question is about something the user has told her and "
-        "the store holds nothing of it, Penny says there is nothing recorded and neither "
-        "invents a value nor mints somewhere to keep one."
+        "the store holds nothing of it, Penny says there is nothing recorded and "
+        "invents no value to answer with."
     ),
     family=_HONESTY_FAMILY,
     world=_COLD_STORE_WORLD,
@@ -659,8 +661,8 @@ _SAYS_ALREADY_THERE = _AnsweringCase(
     case_id="chat-reply-says-already-there",
     behaviour=(
         "In the chat agent, when she is asked to record something the store already holds, "
-        "Penny reports that it was already there and leaves the store holding one copy of "
-        "it, creating nothing beside it."
+        "Penny reports that it was already there, and it is still held in the collection that "
+        "had it, beside everything else the store held, unchanged."
     ),
     family=_HONESTY_FAMILY,
     world=_ALREADY_STORED_WORLD,
@@ -722,6 +724,7 @@ async def test_the_page_s_own_value_comes_back_in_the_reply(
     cohort.assert_every_delivered_message_is_whole()
 
     # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -747,6 +750,7 @@ async def test_the_value_one_link_deep_comes_back_in_the_reply(
     cohort.assert_every_delivered_message_is_whole()
 
     # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -760,12 +764,7 @@ async def test_the_stored_value_comes_back_in_the_reply(chat_eval: ChatEval, mod
     store map renders every collection's name and one-line scope on every turn and no
     description carries it — the loud probe holds that — so a reply stating the figure is a
     reply that went and read the entries, and one that merely names the topic could have been
-    written with no call at all.
-
-    The report renders NO world table for this case: ``World.render`` is built around pages
-    and this world has none, so the ground it is answered against is the seed above and the
-    probe beside it.  Recorded here rather than worked around, because the fixture is right
-    and the render is what does not cover it yet."""
+    written with no call at all."""
     cohort = await _drive(chat_eval, model, _ANSWER_FROM_STORE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
@@ -780,6 +779,7 @@ async def test_the_stored_value_comes_back_in_the_reply(chat_eval: ChatEval, mod
     )
 
     # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -813,13 +813,14 @@ async def test_a_failed_read_is_admitted_and_no_figure_is_supplied(
     cohort.assert_every_delivered_message_is_whole()
 
     # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_an_empty_store_is_reported_empty_and_nothing_is_manufactured(
+async def test_an_empty_store_is_answered_only_from_what_she_was_given(
     chat_eval: ChatEval, model: str
 ) -> None:
     """The same five wordings as the from-store case, against the production cold start.
@@ -840,6 +841,7 @@ async def test_an_empty_store_is_reported_empty_and_nothing_is_manufactured(
     cohort.assert_every_delivered_message_is_whole()
 
     # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # TOOL_SEQUENCE reads "no call" on a correct sample that answered straight out of the
@@ -851,7 +853,7 @@ async def test_an_empty_store_is_reported_empty_and_nothing_is_manufactured(
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
+async def test_a_second_telling_leaves_the_interest_where_it_was_kept(
     chat_eval: ChatEval, model: str
 ) -> None:
     """Told to record something the store already holds.
@@ -864,8 +866,8 @@ async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
     used, and the measured turn is the second telling alone.
 
     What the reply CLAIMS about the save is prose — the vocabulary that read it did not port —
-    so what is claimed is the store: one copy of the interest, and everything else it held
-    still there, unchanged."""
+    so what is claimed is the store: the interest still held in the collection that had it,
+    and everything else it held still there, unchanged."""
     cohort = await _drive(chat_eval, model, _SAYS_ALREADY_THERE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
@@ -874,8 +876,8 @@ async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
     # supplies its own subject, so a token in the reply would prove nothing about a read.
     cohort.assert_every_delivered_message_is_whole()
     cohort.claim(
-        "state: the interest is stored exactly once",
-        _stored_exactly_once(_KAYAK),
+        "state: the interest is still held in the collection that had it",
+        _still_held_in(_INTERESTS.name, _KAYAK),
         SpecCategory.STORE,
     )
     cohort.claim(
@@ -884,13 +886,12 @@ async def test_a_second_telling_leaves_one_copy_and_creates_nothing(
         SpecCategory.STORE,
     )
 
-    # PROVENANCE — the ONE case here that claims BOTH halves, because it is the one whose
-    # ask is to record something.  The store claim above counts entries carrying the
-    # subject, so a sample that REWRITES the seeded entry — same key, same subject, a figure
-    # or a place nobody supplied folded into the content — still leaves exactly one and
-    # passes it.  This is the claim that sees that: a rewrite re-stamps the entry with the
-    # live run, so it enters what the sample WROTE and every specific in it is traced back to
-    # what the round was given.
+    # PROVENANCE — the store half matters most here, because this is the one ask that tells
+    # her to record something.  The store claim above reads that the subject is still held,
+    # so a sample that REWRITES the seeded entry — same key, same subject, a figure or a place
+    # nobody supplied folded into the content — still passes it.  This is the claim that sees
+    # that: a rewrite re-stamps the entry with the live run, so it enters what the sample
+    # WROTE and every specific in it is traced back to what the round was given.
     cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
