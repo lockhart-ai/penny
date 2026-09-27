@@ -390,25 +390,29 @@ class Prompt:
         "anything not there was not set."
     )
 
-    # Injected as a user turn after a chat run that WROTE entries (#1946) — the third
-    # narrate-from-the-RECORD frame, and the one that answers what a turn actually left
-    # behind.  A run's own memory of its writes counts the attempts: a draw the reroll
-    # guard discarded, a write the gate refused, a value the model composed and never
-    # sent all feel like writes from inside the turn, and the observed regression was a
-    # demonstration reporting every item pushed while the store held fewer.
-    # ``{writes}`` is the ledger's own answer — read off the entry stamps rather than
-    # off which tools were called, so a routine written with a plugin's verb lands here
-    # like any other.  The instruction gives PERMISSION to report a shortfall as well as
-    # asking for the count, because the reply this replaces was not lying, it was
-    # counting from the wrong place and had nowhere else to count from.
-    WRITES_LANDED_NARRATION = (
-        "Here is what this turn actually wrote, read back from the store:\n\n"
-        "{writes}\n\n"
-        "Reply to the user now. Say everything you were going to say, and take what was "
-        "saved — how many entries, which collection, and under which keys — from the "
-        "list above rather than from what you remember doing. That list is the store's "
-        "own answer: an entry you meant to write and cannot find there did not land, "
-        "and telling them that is the right thing to do."
+    # What a chat run that tried to keep something is shown before its reply is written
+    # (#1946/#2185) — the answer to what a turn actually left behind.  A run's own memory
+    # of its writes counts the attempts: a draw the reroll guard discarded, a write the gate
+    # refused, a value the model composed and never sent all feel like writes from inside
+    # the turn.  ``{record}`` is the ledger's own answer: the entries this run's stamp is
+    # on, or — when it tried and none landed — each try with the tool's own answer to it.
+    #
+    # It is a section of Penny's OWN STATE, appended to the end of the system prompt, and
+    # the reply is drawn after it; it is never a message in the conversation (#2030).  As a
+    # user turn arriving after a reply was already written, it read as the user correcting
+    # that reply, and the reply that followed answered the correction ("You're totally
+    # right…") instead of the user.  So the draft it would have corrected is discarded and
+    # the record is part of what the one reply is written from, in the place Penny reads
+    # her own situation.  The closing lines give PERMISSION to report a shortfall, because
+    # the reply this replaces was not lying — it was counting from the wrong place.
+    WRITES_LANDED_RECORD = (
+        "### What this turn saved\n"
+        "Read back from the store after this turn's last call:\n\n"
+        "{record}\n\n"
+        "That is the store's own answer about this turn. When your reply says what was "
+        "saved, take it from there: how many entries, which collection, and which keys. "
+        "Anything you meant to keep that is not listed there did not land, and it's fine "
+        "to say so plainly."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls

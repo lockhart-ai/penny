@@ -324,9 +324,18 @@ async def test_collection_set_stamps_chat_provenance(
 # ── 1b. Automatic skill extraction + narration at run end (#1658) ─────────
 
 _FRAME_MARKER = "You just learned a reusable skill"
-# The writes-landed frame's own opening (#1946) — the third narrate-from-the-RECORD
-# frame, told apart from the two above by the first words of its own template.
-_WRITES_FRAME_MARKER = Prompt.WRITES_LANDED_NARRATION.split("{writes}")[0].strip()
+# The writes record's own heading (#1946/#2185) — the third narrate-from-the-RECORD
+# frame, told apart from the two above by the first line of its own template.
+_WRITES_RECORD_HEADING = Prompt.WRITES_LANDED_RECORD.split("\n")[0]
+
+
+def _writes_record(messages: list[dict]) -> str | None:
+    """The writes record as the draw reads it — the tail of its SYSTEM PROMPT from the
+    record's heading — or None when this draw has not been handed one.  It is never a
+    message in the conversation (#2030), so the system prompt is the only place looked."""
+    system = str(messages[0].get("content", "")) if messages else ""
+    start = system.find(_WRITES_RECORD_HEADING)
+    return None if start < 0 else system[start:]
 
 
 def _injected(messages: list[dict], marker: str) -> str | None:
@@ -401,7 +410,7 @@ async def test_run_end_extracts_and_narrates_a_skill(
     (#1850) — so the state extraction gates on is the one the turn actually ran under,
     not something re-read afterwards."""
     ask = "watch the aurora deck 2 price and remember it for me"
-    captured: dict[str, str | None] = {"frame": None, "writes": None}
+    captured: dict[str, str | None] = {"frame": None, "writes": None, "tail": None}
 
     def handler(request, _count):
         messages = request.get("messages") or []
@@ -414,12 +423,15 @@ async def test_run_end_extracts_and_narrates_a_skill(
         if ask not in blob:
             return _text("nothing to do")
         frame = _injected(messages, _FRAME_MARKER)
-        writes = _injected(messages, _WRITES_FRAME_MARKER)
+        writes = _writes_record(messages)
         # The round has TWO records to narrate and they arrive one draw at a time, in the
         # order the prep hands them out — the skill first, then what landed.  Checked
         # newest-first here, so each capture happens on the draw that first sees it.
         if writes is not None:
             captured["writes"] = writes
+            # The draft the skill frame was answered with is DROPPED, not kept for the
+            # record to correct: the conversation still ends on the skill frame.
+            captured["tail"] = str(messages[-1].get("content", ""))
             return _text("learned it, and saved the price! 🌟")
         if frame is not None:  # the narration nudge is present → the post-nudge re-reply
             captured["frame"] = frame
@@ -483,9 +495,13 @@ async def test_run_end_extracts_and_narrates_a_skill(
         # the round's own reply used to report the writes from memory, which is what
         # counted a discarded draw as an entry the user now has.  The seeded entry is not
         # in it — it was written by nobody's run — so what the frame carries is this run's.
-        assert captured["writes"] == Prompt.WRITES_LANDED_NARRATION.format(
-            writes="1 entry landed in 'aurora-prices': 'aurora deck 2 price'"
+        assert captured["writes"] == Prompt.WRITES_LANDED_RECORD.format(
+            record="1 entry landed in 'aurora-prices': 'aurora deck 2 price'"
         )
+        # The writes record follows the skill frame without the draft between them: the
+        # reply to the skill frame was dropped, so the draw after the record answers the
+        # skill frame with the record in view rather than correcting its own reply.
+        assert captured["tail"] == captured["frame"]
 
         # Extraction ran EXACTLY once, on the state the machine landed in — the
         # re-reply found the run already handled.
@@ -702,17 +718,21 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
     The frame is read off the ledger's own entry stamps, so it carries the one that
     landed and the reply is composed against that."""
     ask = "save the keel lantern and the aurora lantern prices for me"
-    captured: dict[str, str | None] = {"writes": None}
+    draft = "saved both lantern prices for you"
+    captured: dict[str, str | None] = {"writes": None, "tail_role": None}
     drew_the_second = {"hit": False}
+    saw_the_draft = {"hit": False}
 
     def handler(request, _count):
         messages = request.get("messages") or []
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
-        writes = _injected(messages, _WRITES_FRAME_MARKER)
-        if writes is not None:  # the narration nudge is present → the post-nudge re-reply
+        writes = _writes_record(messages)
+        if writes is not None:  # the record is in view → the one reply written after it
             captured["writes"] = writes
+            captured["tail_role"] = str(messages[-1].get("role"))
+            saw_the_draft["hit"] = draft in blob
             return _text("saved the keel lantern — the aurora one didn't land 🌊")
         tool_turns = [m for m in messages if m.get("role") == "tool"]
         if not tool_turns:  # the write that LANDS
@@ -737,7 +757,7 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
                     "entries": [{"key": "aurora lantern", "content": _COLLAPSE}],
                 },
             )
-        return _text("saved both lantern prices for you")
+        return _text(draft)
 
     mock_llm.set_response_handler(handler)
 
@@ -756,11 +776,72 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
         assert drew_the_second["hit"] is True
         stored = require_memory(penny.db, "lantern-prices").read_latest(10)
         assert [entry.key for entry in stored] == ["keel lantern"]
-        assert captured["writes"] == Prompt.WRITES_LANDED_NARRATION.format(
-            writes="1 entry landed in 'lantern-prices': 'keel lantern'"
+        assert captured["writes"] == Prompt.WRITES_LANDED_RECORD.format(
+            record="1 entry landed in 'lantern-prices': 'keel lantern'"
         )
+        # The record is Penny's own state, not a message after her reply (#2030): the
+        # draft it would have corrected is dropped, so the conversation the reply is drawn
+        # from still ends on the last tool result and holds no reply to correct.
+        assert captured["tail_role"] == "tool"
+        assert saw_the_draft["hit"] is False
         # And the reply the user receives is the one composed AFTER the record.
         assert "didn't land" in reply["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """The shape #2185 names: the turn asked the store to keep something and none of it
+    landed, so there is no entry stamp to render — and before the record had an
+    attempts half, nothing the reply was written from said "nothing was saved".
+
+    The save here is refused as unchanged (the key already holds that value), which is
+    the store answering, not failing.  The record lists the try with that answer,
+    verbatim, read off the run's own call records by the tool's declared mark."""
+    ask = "note the keel lantern price for me, it's $18"
+    captured: dict[str, str | None] = {"writes": None}
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        writes = _writes_record(messages)
+        if writes is not None:
+            captured["writes"] = writes
+            return _text("that one was already in there at $18 🏮")
+        if not [m for m in messages if m.get("role") == "tool"]:
+            return _tool_call(
+                "c0",
+                "collection_write",
+                {
+                    "memory": "lantern-prices",
+                    "entries": [{"key": "keel lantern", "content": "$18"}],
+                },
+            )
+        return _text("saved the keel lantern price for you")
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("lantern-prices", "lantern prices")
+        require_memory(penny.db, "lantern-prices").write(
+            [EntryInput(key="keel lantern", content="$18")], author="user"
+        )
+
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        reply = await signal_server.wait_for_message(timeout=10.0)
+
+        assert captured["writes"] == Prompt.WRITES_LANDED_RECORD.format(
+            record=(
+                "Nothing this turn tried to keep is in the store. What each try came back "
+                "with:\n"
+                "- `collection_write`: Unchanged: 'keel lantern' already holds the same "
+                "value — no change since the last write (entry)."
+            )
+        )
+        assert "already" in reply["message"]
 
 
 @pytest.mark.asyncio
@@ -771,7 +852,11 @@ async def test_a_turn_that_wrote_nothing_narrates_nothing(
 
     It is what keeps the frame from firing on every chat turn: an ordinary conversation
     has no record to narrate, and a turn that browsed has only its own scratch, which is
-    keyless and therefore not a write at all."""
+    keyless and therefore not a write at all.
+
+    A turn that used tools but never asked the store to keep anything gets no record
+    either (#2185): none of its calls carries a tool's keep mark, so there is no attempt
+    to report, and deciding it SHOULD have tried would mean reading the ask's words."""
     ask = "what do you make of the weather today?"
     saw_writes = {"hit": False}
 
@@ -780,14 +865,17 @@ async def test_a_turn_that_wrote_nothing_narrates_nothing(
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
-        if _injected(messages, _WRITES_FRAME_MARKER) is not None:
+        if _writes_record(messages) is not None:
             saw_writes["hit"] = True
             return _text("(this should never be reached)")
+        if not [m for m in messages if m.get("role") == "tool"]:
+            return _tool_call("c0", "collection_read_latest", {"memory": "weather-notes"})
         return _text("grey and stubborn about it, same as yesterday 🌫️")
 
     mock_llm.set_response_handler(handler)
 
-    async with running_penny(test_config):
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("weather-notes", "notes about the weather")
         await signal_server.push_message(sender=TEST_SENDER, content=ask)
         reply = await signal_server.wait_for_message(timeout=10.0)
 

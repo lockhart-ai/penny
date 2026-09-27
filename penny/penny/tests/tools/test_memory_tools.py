@@ -17,6 +17,7 @@ import pytest
 from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
+from penny.agents.models import ToolCallRecord
 from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
@@ -95,6 +96,7 @@ from penny.tools.memory_tools import (
     _format_duplicate,
     build_memory_tools,
     collector_tool_surface,
+    render_nothing_landed,
     render_writes_landed,
 )
 from penny.tools.micro_context import FramedParameter, SkillSignature
@@ -3309,6 +3311,44 @@ class TestWritesLandedRender:
             )
             == "1 entry landed in 'lantern-prices': 'keel lantern'"
         )
+
+    def test_a_run_that_tried_and_kept_nothing_is_told_each_try(self):
+        """The other half of the record (#2185): a run that asked the store to keep
+        something and kept none of it.  It leaves no entry stamp, so without this it read
+        exactly like a run that never tried, and the reply narrated the save it meant.
+
+        Each try renders with the answer its tool gave, verbatim — a refusal that spans
+        lines keeps every line, indented under its own bullet — so "already there" and "the
+        arguments were wrong" stay the different outcomes they are."""
+        attempts = [
+            ToolCallRecord(
+                tool="collection_write",
+                arguments={},
+                failed=False,
+                result=(
+                    "Already recorded: 'sea kayaking' is already stored as 'sea kayaking' "
+                    "— no change since the last write (entry)."
+                ),
+            ),
+            ToolCallRecord(
+                tool="update_entry",
+                arguments={},
+                failed=True,
+                result="Key 'kayak' not found in 'hobbies'.\nWrite it as a new entry.",
+            ),
+        ]
+        assert render_nothing_landed(attempts) == (
+            "Nothing this turn tried to keep is in the store. What each try came back with:\n"
+            "- `collection_write`: Already recorded: 'sea kayaking' is already stored as "
+            "'sea kayaking' — no change since the last write (entry).\n"
+            "- `update_entry`: Key 'kayak' not found in 'hobbies'.\n"
+            "  Write it as a new entry."
+        )
+
+    def test_a_run_that_never_tried_has_no_record(self):
+        """No try, no record: a run that only read or talked asked nothing of the store,
+        and "nothing was saved" would be a record about a question nobody asked."""
+        assert render_nothing_landed([]) is None
 
 
 class TestEmbedFailureRefusesWrite:

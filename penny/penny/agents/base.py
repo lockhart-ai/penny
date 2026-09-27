@@ -47,6 +47,7 @@ from penny.validation import (
     LoopContext,
     NudgeContinue,
     Proceed,
+    RedrawWithRecord,
     RejectToolCall,
     Repair,
     ResponseValidator,
@@ -656,7 +657,7 @@ class Agent:
                 return True
             case Proceed():
                 return False
-            case Retry() | Repair() | NudgeContinue() | Stop():
+            case Retry() | Repair() | NudgeContinue() | RedrawWithRecord() | Stop():
                 raise AssertionError(
                     "run-shape validators produced an unexpected disposition on a "
                     "tool-call response"
@@ -679,19 +680,24 @@ class Agent:
         self, response: LlmResponse, messages: list[dict], ctx: LoopContext, run_id: str
     ) -> bool:
         """Run the run-shape chain over a text-only response; apply a
-        ``NudgeContinue`` (a chat run that just learned a skill and must narrate it).
+        ``NudgeContinue`` (a chat run that just learned a skill and must narrate it) or a
+        ``RedrawWithRecord`` (a chat run whose reply is written after what it saved).
 
         Every text draw reaching here is a VALID one for this agent's shape — an
         invalid one was discarded and re-rolled before the loop ever saw it (#1839) —
         so a nudge appended here only ever continues a legitimate turn.
 
-        Returns True when the loop should ``continue`` (response + nudge appended),
-        False to treat the text as the final answer."""
+        Returns True when the loop should ``continue`` (response + nudge appended, or the
+        draft dropped and the record added to the system prompt), False to treat the text
+        as the final answer."""
         ctx = await self._prepare_text_shape(response, ctx, run_id)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
                 messages.append(response.message.to_input_message())
                 messages.append({"role": MessageRole.USER, "content": message})
+                return True
+            case RedrawWithRecord(record=record):
+                self._add_to_system_prompt(messages, record)
                 return True
             case Proceed():
                 return False
@@ -701,6 +707,17 @@ class Agent:
                 )
             case unreachable:
                 assert_never(unreachable)
+
+    @staticmethod
+    def _add_to_system_prompt(messages: list[dict], section: str) -> None:
+        """Append ``section`` to the end of the system prompt — the model's view of its
+        own situation, whose tail is the self-state — so the next draw reads it as state
+        rather than as something said to it.  ``_build_messages`` always opens the
+        conversation with the system message; one that does not is a programming error."""
+        system = messages[0]
+        if system.get("role") != MessageRole.SYSTEM:
+            raise AssertionError("the conversation does not open with its system prompt")
+        messages[0] = {**system, "content": f"{system['content']}\n\n{section}"}
 
     @staticmethod
     def _frame_injected_result(tool_name: str, narration: str, body: str) -> str:
@@ -838,7 +855,7 @@ class Agent:
                     response = await self._invoke_nondegenerate(
                         messages, effective_tools, run_id, prompt_type
                     )
-                case Repair() | RejectToolCall() | NudgeContinue() | Stop():
+                case Repair() | RejectToolCall() | NudgeContinue() | RedrawWithRecord() | Stop():
                     raise AssertionError("response validators produced an unexpected disposition")
                 case unreachable:
                     assert_never(unreachable)

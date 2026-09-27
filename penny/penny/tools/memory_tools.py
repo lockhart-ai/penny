@@ -117,6 +117,7 @@ from penny.tools.models import NoArgs, ToolResult
 from penny.tools.skill_tools import SkillReadTool
 
 if TYPE_CHECKING:
+    from penny.agents.models import ToolCallRecord
     from penny.llm.client import LlmClient
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,46 @@ def _writes_landed_line(collection: str, keys: list[str]) -> str:
         collection=collection,
         keys=", ".join(f"'{key}'" for key in keys),
     )
+
+
+# What a run that TRIED to keep something and kept nothing is told instead (#2185): the
+# plain fact first, then each try with the answer the tool itself gave, so "refused as
+# already there" and "the arguments were wrong" read as the different outcomes they are.
+_NOTHING_LANDED_HEAD = (
+    "Nothing this turn tried to keep is in the store. What each try came back with:"
+)
+_NOTHING_LANDED_TRY = "- `{tool}`: {outcome}"
+# A result that spans lines keeps every line, indented under its own bullet.
+_NOTHING_LANDED_CONTINUATION = "\n  "
+# A record carries its tool's answer once the call has run, which every record this is
+# handed has; a record without one says so rather than rendering a blank.
+_NOTHING_LANDED_NO_ANSWER = "(no answer was recorded)"
+
+
+def render_nothing_landed(attempts: list[ToolCallRecord]) -> str | None:
+    """What a run that asked the store to keep something, and kept none of it, is told
+    — each try and the tool's own answer to it, verbatim (#2185).
+
+    ``None`` when the run tried nothing, which is what keeps this off every turn that only
+    read or talked: a run that never asked to keep anything has no attempt to report, and
+    telling it "nothing was saved" would be a record about a question nobody asked.
+
+    The caller hands over only the calls whose tool DECLARES it keeps entries
+    (``Tool.stores_entries``); nothing here names a tool.  Each answer is the result the
+    tool returned, never a paraphrase of it, because the reply is composed from this and a
+    reworded refusal is one the reply can misread."""
+    if not attempts:
+        return None
+    tries = [
+        _NOTHING_LANDED_TRY.format(
+            tool=attempt.tool,
+            outcome=(attempt.result or _NOTHING_LANDED_NO_ANSWER).replace(
+                "\n", _NOTHING_LANDED_CONTINUATION
+            ),
+        )
+        for attempt in attempts
+    ]
+    return "\n".join([_NOTHING_LANDED_HEAD, *tries])
 
 
 def _resolve(db: Database, name: str) -> Memory:
@@ -1468,6 +1509,7 @@ class CollectionWriteTool(MemoryTool):
     # removed rather than rewritten, and offering one half of that without the other
     # would teach a correction the surface cannot carry out.
     advises = ("update_entry", "collection_delete_entry")
+    stores_entries = True
     description = (
         "Write one or more entries to a collection. Each entry has a short "
         "`key` (topic/identifier) and a longer `content` body. Dedup runs "
@@ -1723,6 +1765,7 @@ class UpdateEntryTool(MemoryTool):
     # A key that does not exist is either a new entry or a mistyped one, and the
     # not-found message names both moves.
     advises = ("collection_write", "collection_keys")
+    stores_entries = True
     description = (
         "Replace the content of an existing entry in a collection, identified "
         "by key. Returns an error if the key doesn't exist."

@@ -78,6 +78,15 @@ class Tool(ABC):
     # Enforced, not trusted: a test walks each tool class's own string literals for
     # references to any registered tool name and fails when one is not declared here.
     advises: tuple[str, ...] = ()
+    # Whether a call to this tool asks Penny's store to KEEP a keyed entry (#2185).  It is
+    # the attempt half of the question the run-end writes record answers: the landed half
+    # is read off the entries' own run stamps, which no tool can get wrong, but a write the
+    # store REFUSED leaves no stamp, and a run whose every attempt was refused would
+    # otherwise look exactly like a run that never tried.  Declared here, beside the tool,
+    # for the reason ``advises`` is: a tool nobody has written yet says so on itself, and
+    # nothing that reads the mark ever names a tool.  Keyed entries only, because that is
+    # what the landed half counts — a keyless stream append is not a save.
+    stores_entries: bool = False
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -234,6 +243,14 @@ class Tool(ABC):
         Override per tool to give a more specific indicator.
         """
         return ProgressEmoji.WORKING
+
+    @classmethod
+    def asks_to_store(cls, tool_name: str) -> bool:
+        """Whether a call named ``tool_name`` asked the store to keep an entry — the
+        registered tool's own ``stores_entries`` mark, and ``False`` for a name no tool
+        answers to (a call to nothing kept nothing, and tried to keep nothing either)."""
+        tool_cls = cls._registry.get(tool_name)
+        return tool_cls.stores_entries if tool_cls else False
 
     @classmethod
     def format_status(cls, tool_name: str, arguments: dict) -> str:

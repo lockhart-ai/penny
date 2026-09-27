@@ -50,6 +50,7 @@ from penny.validation.outcomes import (
     LoopContext,
     NudgeContinue,
     Proceed,
+    RedrawWithRecord,
     Repair,
     Retry,
     ValidationOutcome,
@@ -322,8 +323,9 @@ class _RecordNarrationValidator(ABC):
 
     The framework does the work deterministically at the text-branch prep
     (``ChatAgent._prepare_text_shape``) and stamps a rendered frame on the ctx; a
-    subclass names which frame it reads.  Turning that into a ``NudgeContinue`` — a
-    validator in the chat chain, not a branch in the loop — makes the model re-reply
+    subclass names which frame it reads, and how it is handed over (``_narrate``: a
+    ``NudgeContinue`` by default, a ``RedrawWithRecord`` for the writes record).  Either
+    way — a validator in the chat chain, not a branch in the loop — the model re-replies
     against the render.  The prep stamps ONE frame per text draw and never the same one
     twice (a run's records are computed once and handed out in a declared order), so a
     turn that has several records to narrate narrates each of them exactly once and the
@@ -339,8 +341,14 @@ class _RecordNarrationValidator(ABC):
         frame = self._frame(ctx)
         if frame:
             logger.info("Narrating %s this turn", self._narrating())
-            return NudgeContinue(message=frame)
+            return self._narrate(frame)
         return Proceed(response=response)
+
+    def _narrate(self, frame: str) -> ValidationOutcome:
+        """How the record reaches the model: by default a message after the draft, which
+        the model then answers.  A subclass whose record the reply must be WRITTEN FROM,
+        rather than answered, hands it over as state instead."""
+        return NudgeContinue(message=frame)
 
     @abstractmethod
     def _frame(self, ctx: LoopContext) -> str | None:
@@ -381,14 +389,23 @@ class AppliedConfigurationValidator(_RecordNarrationValidator):
 
 
 class WritesLandedValidator(_RecordNarrationValidator):
-    """A chat run that WROTE entries narrates what actually landed (#1946) — the third
-    sibling of the two frames above, and the plainest of them.
+    """A chat run that wrote entries, or tried to, has its reply written after what
+    actually landed (#1946/#2185) — the third sibling of the two frames above, and the
+    plainest of them.
 
     A turn's own account of its writes is a count of what it ATTEMPTED: a draw the reroll
     guard discarded never happened, a write the change-gate refused never landed, and
     both look like writes from inside the run.  The ledger's entry stamps say which ones
-    survived, so the frame carries that and the reply states it rather than adding up its
-    own intentions."""
+    survived — and when none did, each try's own answer says why — so the record carries
+    that and the reply states it rather than adding up its own intentions.
+
+    The record is handed over as the model's own STATE, never as a message after the
+    draft (#2030): a message arriving after a reply reads as the user correcting that
+    reply, and the next draw answered the correction instead of the user.  So the draft is
+    dropped and the one reply is drawn with the record in view."""
+
+    def _narrate(self, frame: str) -> ValidationOutcome:
+        return RedrawWithRecord(record=frame)
 
     def _frame(self, ctx: LoopContext) -> str | None:
         return ctx.writes_landed_frame

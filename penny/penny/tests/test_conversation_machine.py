@@ -1561,24 +1561,27 @@ def test_the_applied_configuration_narration_whole_render():
     )
 
 
-def test_the_writes_landed_narration_whole_render():
-    """The frame a turn that WROTE entries is handed, verbatim (#1946) — the third
-    narrate-from-the-RECORD sibling, pinned like the other two.
+def test_the_writes_landed_record_whole_render():
+    """The record a turn that saved, or tried to, is written after, verbatim (#1946/#2185)
+    — the third narrate-from-the-RECORD sibling, pinned like the other two.
 
     It exists because a run's own account of its writes counts what it ATTEMPTED: a draw
     the reroll guard discarded and a write the gate refused both feel like writes from
     inside the turn, and the store holds neither.  So it hands over the ledger's answer and
     asks for the count, the collection and the keys to come from THERE — with explicit
-    PERMISSION to report a shortfall, because the reply this replaces was not lying, it was
-    counting from the only place it had."""
-    assert Prompt.WRITES_LANDED_NARRATION == (
-        "Here is what this turn actually wrote, read back from the store:\n\n"
-        "{writes}\n\n"
-        "Reply to the user now. Say everything you were going to say, and take what was "
-        "saved — how many entries, which collection, and under which keys — from the "
-        "list above rather than from what you remember doing. That list is the store's "
-        "own answer: an entry you meant to write and cannot find there did not land, "
-        "and telling them that is the right thing to do."
+    PERMISSION to report a shortfall.
+
+    It is a SECTION of Penny's own state, headed like the self-state sections it follows,
+    and it says nothing addressed to a draft: there is no draft in the conversation for it
+    to correct (#2030), so no line of it may read as a correction of one."""
+    assert Prompt.WRITES_LANDED_RECORD == (
+        "### What this turn saved\n"
+        "Read back from the store after this turn's last call:\n\n"
+        "{record}\n\n"
+        "That is the store's own answer about this turn. When your reply says what was "
+        "saved, take it from there: how many entries, which collection, and which keys. "
+        "Anything you meant to keep that is not listed there did not land, and it's fine "
+        "to say so plainly."
     )
 
 

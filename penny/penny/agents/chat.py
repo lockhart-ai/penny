@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from penny.agents.base import Agent, InvalidDraw, ProgressCallback
-from penny.agents.models import ControllerResponse
+from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, MutationEntityType, PennyConstants
@@ -41,6 +41,7 @@ from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import (
     CollectionSetTool,
     collector_tool_surface,
+    render_nothing_landed,
     render_writes_landed,
 )
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
@@ -89,10 +90,11 @@ class ChatAgent(Agent):
     #  - AppliedConfigurationValidator: on a run that just configured the round's routine
     #    (#1869), the same move for what is now RUNNING — the turn supplied only the terms,
     #    so the routine and what it watches are read off the record rather than recalled.
-    #  - WritesLandedValidator: on a run that WROTE entries (#1946), what actually landed —
-    #    the ledger's answer, against which a turn's own count of its writes is a count of
-    #    what it attempted.  Last, because it is the corrective one: the frames above ask
-    #    for an account of the round, this one says which of it the store holds.
+    #  - WritesLandedValidator: on a run that wrote entries or tried to (#1946/#2185), what
+    #    actually landed — the ledger's answer, against which a turn's own count of its
+    #    writes is a count of what it attempted.  Last, because it is the corrective one:
+    #    the frames above ask for an account of the round, this one says which of it the
+    #    store holds.  Handed over as state the reply is drawn after, not as a message.
     run_shape_validators = [
         SkillNarrationValidator(),
         AppliedConfigurationValidator(),
@@ -291,23 +293,36 @@ class ChatAgent(Agent):
                 await self._extract_and_frame_skill(run_id, self._turn_state, self._turn_framing),
             ),
             ("applied_configuration_frame", self._applied_configuration_frame(ctx, run_id)),
-            ("writes_landed_frame", self._writes_landed_frame(run_id)),
+            ("writes_landed_frame", self._writes_landed_frame(ctx, run_id)),
         ]
         return [(field, frame) for field, frame in candidates if frame is not None]
 
-    def _writes_landed_frame(self, run_id: str) -> str | None:
-        """The record of what this run WROTE, rendered for the narration frame (#1946) —
-        ``None`` when nothing landed.
+    def _writes_landed_frame(self, ctx: LoopContext, run_id: str) -> str | None:
+        """The record of what this run SAVED, rendered for the reply to be written after
+        (#1946/#2185) — ``None`` when the run neither saved anything nor tried to.
 
-        Read off the ledger's own entry stamps (``last_written_by_run_id``), so it is a
-        read of the store rather than a tally of the run's tool calls: a write drawn and
-        then discarded by the reroll guard, and one the change-gate refused, are both
-        absent here and present in the run's memory of itself.  Nothing in the path names
-        a tool, so a routine that writes through a plugin's verb is covered for free."""
-        writes = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
-        if writes is None:
+        What landed is read off the ledger's own entry stamps (``last_written_by_run_id``),
+        so it is a read of the store rather than a tally of the run's tool calls: a write
+        drawn and then discarded by the reroll guard, and one the change-gate refused, are
+        both absent there and present in the run's memory of itself.
+
+        When nothing landed, the record is each call this run made to a tool that DECLARES
+        it keeps entries (``Tool.stores_entries``), with that tool's own answer — so a run
+        whose every try was refused is told so instead of being left to narrate the save it
+        meant.  A run that never tried gets no record: there is no ledger fact to report,
+        and deciding it SHOULD have tried would mean reading the ask's words.  Nothing in
+        the path names a tool, so a plugin's verb is covered by declaring the mark."""
+        landed = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
+        record = landed or render_nothing_landed(self._store_attempts(ctx))
+        if record is None:
             return None
-        return Prompt.WRITES_LANDED_NARRATION.format(writes=writes)
+        return Prompt.WRITES_LANDED_RECORD.format(record=record)
+
+    @staticmethod
+    def _store_attempts(ctx: LoopContext) -> list[ToolCallRecord]:
+        """This run's calls that asked the store to keep an entry, in the order made —
+        read off each call's own tool's declared mark, never off its name."""
+        return [record for record in ctx.records if Tool.asks_to_store(record.tool)]
 
     def _applied_configuration_frame(self, ctx: LoopContext, run_id: str) -> str | None:
         """The record of what this turn CONFIGURED, rendered for the narration frame
