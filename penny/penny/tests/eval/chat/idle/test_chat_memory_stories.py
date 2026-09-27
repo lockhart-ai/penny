@@ -131,8 +131,6 @@ from penny.tests.eval.utils.cohort import (
 # measured against are two contracts free to drift.
 from penny.tests.eval.utils.fixtures import (
     MULTIHOP_PAGES,
-    RECIPE_BOX,
-    RECIPE_BOX_FAJITAS_KEY,
     SynthCollection,
 )
 from penny.tests.eval.utils.memory_world import _FAMILY
@@ -172,6 +170,19 @@ _AVOID = SynthCollection(
     "Things the user would rather avoid: places, sounds, and food they dislike.",
     entries=("loud offices — can't focus in them",),
 )
+
+# The recipe box the by-another-name update edits.  Its first entry is keyed
+# ``Sheet-pan chicken fajitas`` — the text before the em dash — and no wording of that case says
+# the key verbatim.
+_RECIPE_BOX = SynthCollection(
+    "recipe-box",
+    "Saved quick weeknight dinner recipes: short ingredient lists and fast cook times.",
+    entries=(
+        "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F.",
+        "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min.",
+    ),
+)
+_FAJITAS_KEY = _RECIPE_BOX.keyed[0][0]
 
 _GEAR_PRICE_KEY = "aurora deck 2 price"
 _GEAR_PRICE = "$499"
@@ -226,7 +237,7 @@ _FORGET_ANSWERS = (_INTO_ANCHOR, "hik")
 # derived from the box rather than listed again, so the case can never claim a recipe is
 # untouched while naming that same recipe as the one to change.
 _RECIPES_NOT_NAMED = tuple(
-    (key, content) for key, content in RECIPE_BOX.keyed if key != RECIPE_BOX_FAJITAS_KEY
+    (key, content) for key, content in _RECIPE_BOX.keyed if key != _FAJITAS_KEY
 )
 
 
@@ -957,11 +968,11 @@ _UPDATE_BY_ANOTHER_NAME = _VerbCase(
     behaviour=(
         "In the chat agent, when the user asks her to change a note she keeps under a key "
         "worded differently from how the user names it, Penny finds the entry that exists and "
-        "records the change on it, leaving no second entry beside it."
+        "records the change on it, and the list holds the same entries it started with."
     ),
     # ``answers`` is EMPTY for the reason the update case's is: the ask is an instruction, and
     # a bare "done" answers it.  No pages: the change comes out of the user's own message.
-    world=World(name="recipe box", pages=(), keeps=(), excludes=(), stores=(RECIPE_BOX,)),
+    world=World(name="recipe box", pages=(), keeps=(), excludes=(), stores=(_RECIPE_BOX,)),
     ask="add a 10-minute lime marinade to my fajitas recipe",
     also_phrased=(
         "can you update my fajitas recipe so the chicken gets a 10-minute lime marinade first?",
@@ -969,9 +980,9 @@ _UPDATE_BY_ANOTHER_NAME = _VerbCase(
         "put a 10-minute lime marinade step into the fajitas recipe i saved",
         "for the fajitas recipe, add that it marinates in lime for 10 minutes before cooking",
     ),
-    holds=((RECIPE_BOX.name, ("fajitas", "orzo", _RECIPE_KEPT)),),
+    holds=((_RECIPE_BOX.name, ("fajitas", "orzo", _RECIPE_KEPT)),),
     withholds=(_MARINADE,),
-    unspoken=((RECIPE_BOX.name, RECIPE_BOX_FAJITAS_KEY),),
+    unspoken=((_RECIPE_BOX.name, _FAJITAS_KEY),),
 )
 
 
@@ -983,32 +994,33 @@ async def test_a_change_lands_on_the_entry_that_exists(chat_eval: ChatEval, mode
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the change is on the entry that was already there, that entry still says what it
-    # said, nothing was filed beside it, and the recipe nobody named is exactly as it was.
+    # STORE — the change is on the entry that was already there, that entry still carries the
+    # temperature it held, the box holds the recipes it started with, and the recipe nobody
+    # named is exactly as it was.
     cohort.claim(
         "state: the recipe the box already had now carries the marinade",
-        _the_entry_carries(RECIPE_BOX.name, RECIPE_BOX_FAJITAS_KEY, _MARINADE),
+        _the_entry_carries(_RECIPE_BOX.name, _FAJITAS_KEY, _MARINADE),
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: that recipe still carries what it held",
-        _the_entry_carries(RECIPE_BOX.name, RECIPE_BOX_FAJITAS_KEY, _RECIPE_KEPT),
+        "state: that recipe still carries the 425F it held",
+        _the_entry_carries(_RECIPE_BOX.name, _FAJITAS_KEY, _RECIPE_KEPT),
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: the box holds exactly the recipes it started with (no second fajitas entry)",
-        _holds_the_keys(RECIPE_BOX.name, tuple(key for key, _ in RECIPE_BOX.keyed)),
+        "state: the box holds exactly the recipes it started with (changed on, not beside)",
+        _holds_the_keys(_RECIPE_BOX.name, tuple(key for key, _ in _RECIPE_BOX.keyed)),
         SpecCategory.STORE,
     )
     for key, content in _RECIPES_NOT_NAMED:
         cohort.claim(
             f"state: the {key!r} recipe is unchanged",
-            _the_entry_is_unchanged(RECIPE_BOX.name, key, content),
+            _the_entry_is_unchanged(_RECIPE_BOX.name, key, content),
             SpecCategory.STORE,
         )
     cohort.claim(
         "state: the box itself is still the one she was given",
-        _the_list_itself_survived(RECIPE_BOX.name),
+        _the_list_itself_survived(_RECIPE_BOX.name),
         SpecCategory.STORE,
     )
 
