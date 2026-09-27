@@ -107,11 +107,19 @@ class MechanismRecord(BaseModel):
     wider than any list a case would think to write — a description, an expiry, a run quota, a
     rebind's bound values.  A field the store learns to change tomorrow joins this for free.
 
-    Two consequences worth stating.  A turn that RESTATES a value it was not asked to touch is
-    reported as having changed it, because the store reports what an update stated rather than
-    what differed — which is the right reading for a claim about a turn reaching past the field
-    it was asked for.  And ``changed_this_run`` is a PROPERTY over this rather than a field
-    beside it: two facts that always agree are one fact stored twice.
+    A turn that RESTATES a value it was not asked to touch is reported here as having changed
+    it, because the store records what an update STATED rather than what differed.  That makes
+    this a reading of the CALLS — which fields a call named — and a claim about what the row
+    holds reads ``moved_this_run`` instead.  ``changed_this_run`` is a PROPERTY over this rather
+    than a field beside it: two facts that always agree are one fact stored twice.
+
+    ``moved_this_run`` is the END STATE of the same row: every field whose value now differs
+    from what it held before this sample's first edit to it, read by comparing the ledger's own
+    before-value (the prior each event records, #1946) against the row now, through the one
+    reader both sides share.  A restated value, and an edit the turn made and then undid, leave
+    it empty; an archive names ``archived``, since the flag records its prior the same way.  It
+    is what "only the field the ask named moved" is answered from, because what survives a turn
+    is the row, and which fields its calls happened to repeat is a route.
 
     ``notifies`` / ``schedule`` / ``program`` are the row's own configuration as the sample left
     it, read because claims name those VALUES — which way the switch is set, which hour the rule
@@ -123,6 +131,7 @@ class MechanismRecord(BaseModel):
     archived: bool
     born_this_run: bool
     touched_this_run: list[str]
+    moved_this_run: list[str]
     notifies: bool
     schedule: str | None
     program: str | None

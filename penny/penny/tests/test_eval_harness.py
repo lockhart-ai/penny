@@ -1321,9 +1321,9 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
     """Every dispatch story's loud probe passes against a REAL migrated database and a REAL
     chat surface — both halves of every one of them, inside ``make check``.
 
-    The two NO-FIRE probes are here for a reason of their own: a case claiming a tool was not
-    reached is answered trivially by a world that never offered it, so a surface probe that
-    could not pass is exactly the shape a green no-fire number would hide.
+    The two NO-FIRE probes are here for a reason of their own: a no-fire cohort whose tool
+    sequence never shows the tool means nothing on a world that never offered it, so a surface
+    probe that could not pass is exactly the shape a quiet no-fire spread would hide.
 
     The probes run at eval time only, so the ``eval`` marker is exactly what let a probe
     that could never pass reach a live run through green CI.  Driving them here against the
@@ -1942,10 +1942,14 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     ``changed_this_run`` false for a different reason, and the run that catches that is paid
     for.
 
-    What ``touched_this_run`` NAMES is pinned too, because the standing-collection cases claim
-    "only the field the ask named moved" against it: an update names the FIELDS it reported
+    What ``touched_this_run`` NAMES is pinned too: an update names the FIELDS it reported
     changing, and an archive names its own ACTION, since the store records that as an action
-    rather than as a field edit and it carries no changed field to read."""
+    rather than as a field edit and it carries no changed field to read.
+
+    And ``moved_this_run`` beside it, because the standing-collection cases claim "only the
+    field the ask named moved" against THAT: it is the row's end state, so a call that restates
+    a value the row already holds is on the ledger and moves nothing, while the archive moves
+    the flag it recorded a prior for."""
     db = _make_db(tmp_path)
     seeded_by = seeded_run_id(_SEEDED_ROUTES.name)
     seed_world_stores(db, _STORE_BACKED_WORLD)
@@ -1978,11 +1982,21 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     assert retired.touched_this_run == [MutationAction.ARCHIVED.value], (
         "an archive names its own ACTION — it reports no changed field for a claim to read"
     )
+    assert retired.moved_this_run == ["archived"], "and the flag it recorded a prior for moved"
 
     db.memories.update_collection_metadata("a-minted-job", notify=True, run_id="live-2")
+    restated = require_memory(db, _SEEDED_ROUTES.name).description
+    db.memories.update_collection_metadata(
+        _SEEDED_ROUTES.name, description=restated, run_id="live-2"
+    )
     reconfigured = {record.name: record for record in _mechanism_records(db, before)}
     assert reconfigured["a-minted-job"].touched_this_run == ["created", "notify"], (
         "an update names the FIELDS it changed, beside the creation's own action"
+    )
+    assert reconfigured["a-minted-job"].moved_this_run == ["created", "notify"]
+    assert reconfigured[_SEEDED_ROUTES.name].touched_this_run == ["archived", "description"]
+    assert reconfigured[_SEEDED_ROUTES.name].moved_this_run == ["archived"], (
+        "a restated description is on the ledger, and the row holds exactly what it held"
     )
 
 

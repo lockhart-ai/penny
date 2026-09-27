@@ -10,9 +10,9 @@ test — *would a correct sample for one be wrong for the other?* — to the fou
   answer out of the conversation window and a topic sitting right there to browse instead.
 * ``speak-logread-collector-runs`` — **survivor, and a different sentence.**  Asked WHY a
   job is in trouble, where the wrong answer is not a browse but the ambient header.
-* ``speak-logread-browse-results`` — quarantined: the same sentence as the first, on a
+* ``speak-logread-browse-results`` — not a case here: the same sentence as the first, on a
   weaker world.
-* ``speak-logread-user-messages-act`` — quarantined: a different behaviour.  Read-then-ACT
+* ``speak-logread-user-messages-act`` — not a case here: a different behaviour.  Read-then-ACT
   is *save* with a log as the source, ported in tranche 1 as ``memory-look-up-and-save``.
 
 The two survivors split because the ALTERNATIVE differs, and the alternative is what each case
@@ -26,10 +26,9 @@ and irrelevant to the second; a sample that answered from ambient state is wrong
 and impossible in the first.  Two sentences, two cases — and splitting a behaviour in two is a
 smaller mistake than collapsing two into one.
 
-``speak-logread-browse-results`` is quarantined rather than kept because its world cannot
-produce the failure its own sentence is about: "what have you been looking up lately?" names no
-topic, so there is nothing for a browsing sample to browse, and the negative direction is
-unreachable.  It comes back the day the browse log's own retrieval is what is being measured.
+``speak-logread-browse-results`` is not kept because its world cannot produce the failure its
+own sentence is about: "what have you been looking up lately?" names no topic, so there is
+nothing for a browsing sample to browse, and the negative direction is unreachable.
 
 **#2001's fixture re-aiming is folded into the run-record survivor**, and it is the technique
 the whole case rests on: **make the right answer unreachable by any route except the one under
@@ -51,12 +50,14 @@ turn FIRST, then ``_FILLER_PAIRS`` neutral turns after it, pushing it out of BOT
 window and the per-direction top-N fetch.  Nothing else can leak it in: the chat prompt injects
 no speculative recalled-content block (#1555/#1583).
 
-**What is NOT claimed, in either case: that she did not browse.**  Whether a browse happened is
-a ROUTE — the design's own worked example of a check that fits none of the three categories —
-so it is measured in the tool sequence, where a sample that went looking stands apart from every
-other one.  Its END-STATE form is the world's own foreclosure: the answer exists in exactly one
-place, so a sample that browsed instead cannot state it, and the reply claim reads that
-directly.
+**What is NOT claimed, in either case: which route she took, or what she did not do.**  Whether
+a browse happened, and whether a read did, are ROUTES — the design's own worked example of a
+check that fits none of the three categories — so they are measured in the tool sequence, where
+a sample that went looking stands apart from every other one.  Their END-STATE form is the
+world's own foreclosure: the answer exists in exactly one place, so a sample that browsed
+instead cannot state it, and the reply claim reads that directly.  Nor is it claimed that the
+turn wrote or created nothing (``docs/principles.md`` §4.3): what is claimed instead is that
+what the world already held is still there, where it held anything.
 
 **The world is one the user built (#1911/migration 0108: nothing is pre-seeded).**  The two jobs
 the run-record case reads about are STANDING JOBS — a taught routine applied to two pages through
@@ -567,50 +568,36 @@ def assert_the_run_record_is_the_only_route(db: Database) -> None:
 
 # ── The claims, as pure functions over one sample ────────────────────────────
 #
-# Neither case reads a tool NAME, and neither claims that a browse did not happen: whether a
-# call was made is a ROUTE — the design's own worked example of a check that fits none of the
+# Neither case reads a tool NAME, and neither claims that a call did or did not happen: whether
+# a call was made is a ROUTE — the design's own worked example of a check that fits none of the
 # three categories — so it is measured in the tool sequence, and its end-state form is the
-# world's own foreclosure, which the answer claim reads directly.
+# world's own foreclosure, which the answer claim reads directly: the answer token exists in
+# one place only, so a reply carrying it cites that place.
 #
-# Both stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the
-# second CUSTOMER, and the two cases below are one behaviour family in one FILE.
+# The one local claim stays LOCAL rather than graduating into ``assertions.py``: a claim
+# graduates at the second CUSTOMER, and only the run-record world holds anything to preserve.
 
 
-def _looking_something_up_wrote_nothing(sample: SampleObservation, _world: World) -> Answer:
-    """The turn answered a question and wrote no entry anywhere.
+def _both_jobs_are_as_they_were(sample: SampleObservation, _world: World) -> Answer:
+    """Both running jobs are still configured as they were seeded, and each still holds what
+    its cycles wrote — PRESERVATION of everything the world held before the turn.
 
-    A violating sample is nameable: one that answers by first filing the answer into a list, and
-    one that "helpfully" copies what it read into a collection of its own."""
-    wrote = sorted(f"{entry.collection}:{entry.key}" for entry in sample.entries)
-    return not wrote, f"wrote {wrote}"
-
-
-def _no_mechanism_was_created_or_changed(sample: SampleObservation, _world: World) -> Answer:
-    """No mechanism was stood up, retired or edited.
-
-    Read off the mutation LEDGER rather than off a field-by-field diff, so a change nobody
-    enumerated is caught too.  A violating sample is nameable: one that reads a question about
-    what she said as a request to start watching the topic, and one that reaches into a running
-    job while reporting on it."""
-    touched = sorted(
-        one.name for one in sample.mechanisms if one.born_this_run or one.changed_this_run
-    )
-    return not touched, f"created or changed {touched}"
-
-
-def _the_answer_came_from_what_she_was_given(sample: SampleObservation, world: World) -> Answer:
-    """The token the answer turns on is in what the model was GIVEN this turn.
-
-    The whole behaviour, in end-state form.  ``given`` is the user's turns, the tool results and
-    the system prompt — never Penny's own turns, because a value she states out of her own
-    account of it launders itself — and each case's world is built so the token appears in no
-    collection and in no ambient render.  So it reaches ``given`` if and only if a read put it
-    there, and every other route fails: a sample that browsed the topic gets an empty page, one
-    that recalled the salient turn from conversation reads it off an assistant turn this
-    excludes, and one that invented a plausible answer never had it at all."""
-    given = fold_typography(sample.given)
-    missing = [token for token in world.answers if fold_typography(token) not in given]
-    return not missing, f"nothing the round was given carries {missing}"
+    Read as the row's END STATE (``moved_this_run``), never as which fields a call named, so a
+    turn that restated a value is not counted as having changed it.  A violating sample is
+    nameable: one that "fixes" the failing job while reporting on it — re-timing it, retiring
+    it, re-pointing it — when the ask was only why it is in trouble."""
+    drifted: list[str] = []
+    for job in _SEEDED_JOBS:
+        row = next((one for one in sample.mechanisms if one.name == job.container), None)
+        if row is None or row.moved_this_run:
+            drifted.append(f"{job.container}: {row.moved_this_run if row else 'gone'}")
+    held = {(entry.collection, entry.key) for entry in sample.held}
+    lost = [
+        f"{cycle.job.container}:{cycle.wrote[0]}"
+        for cycle in _SEEDED_CYCLES
+        if cycle.wrote is not None and (cycle.job.container, cycle.wrote[0]) not in held
+    ]
+    return not drifted and not lost, f"moved {drifted}, no longer holds {lost}"
 
 
 async def _drive(chat_eval: ChatEval, model: str, case: _LogReadCase) -> Cohort:
@@ -649,8 +636,7 @@ _PENNY_MESSAGES = _LogReadCase(
     case_id="speak-logread-penny-messages-recall",
     behaviour=(
         "In the chat agent, when the user asks what she told them and the answer is out of the "
-        "conversation window, Penny goes back through her own messages and states what she "
-        "actually said — rather than looking the topic up afresh — and changes nothing."
+        "conversation window, Penny states what her own earlier message actually said."
     ),
     seed=_seed_the_suggestion,
     premise=assert_the_conversation_is_the_only_route,
@@ -682,27 +668,14 @@ async def test_what_she_said_comes_back_out_of_her_own_messages(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the reply carries what the log holds, and the turn left everything as it was.
+    # STORE — the reply carries the word her own message holds, and only that message holds.
+    # No preservation claim: the world holds no collection, only the conversation, and the
+    # conversation is the log the answer is read out of.
     cohort.assert_the_reply_answers_the_ask()
-    cohort.claim(
-        "state: answering wrote nothing", _looking_something_up_wrote_nothing, SpecCategory.STORE
-    )
-    cohort.claim(
-        "state: no mechanism was created or changed",
-        _no_mechanism_was_created_or_changed,
-        SpecCategory.STORE,
-    )
 
-    # PROVENANCE — the half the source case had none of, and the half this behaviour IS.
-    cohort.claim(
-        "state: the answer came from what the round was given, not from her own account of it",
-        _the_answer_came_from_what_she_was_given,
-        SpecCategory.PROVENANCE,
-    )
-    # The STORE half of PROVENANCE is deliberately absent, and this is a report rather than an
-    # omission: the case already claims answering wrote nothing, so no stored entry exists for
-    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
-    # every sample by construction.  The two claims above carry the category.
+    # PROVENANCE — the reply half.  The STORE half is absent, and this is a report rather than an
+    # omission: the ask keeps nothing, and whether a sample wrote something anyway is measured in
+    # ENTRIES_STORED.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -714,9 +687,8 @@ _COLLECTOR_RUNS_CASE = _LogReadCase(
     case_id="speak-logread-collector-runs",
     behaviour=(
         "In the chat agent, when the user asks how her background jobs are doing and why any of "
-        "them is in trouble, Penny answers out of the run record — the only place a failed "
-        "cycle's reason exists — rather than from what the ambient header already carries, and "
-        "changes nothing."
+        "them is in trouble, Penny states the reason the failing cycle's run record gives, with "
+        "both jobs still running as they were."
     ),
     seed=_seed_collector_activity,
     premise=assert_the_run_record_is_the_only_route,
@@ -754,27 +726,17 @@ async def test_why_a_job_is_in_trouble_comes_out_of_the_run_record(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE
+    # STORE — the reply carries the word only the run record holds, and the two jobs the world
+    # started with are still there as they were.
     cohort.assert_the_reply_answers_the_ask()
     cohort.claim(
-        "state: answering wrote nothing", _looking_something_up_wrote_nothing, SpecCategory.STORE
-    )
-    cohort.claim(
-        "state: no mechanism was created or changed",
-        _no_mechanism_was_created_or_changed,
+        "state: both jobs are still configured as they were, holding what they gathered",
+        _both_jobs_are_as_they_were,
         SpecCategory.STORE,
     )
 
-    # PROVENANCE
-    cohort.claim(
-        "state: the answer came from what the round was given, not from what was already ambient",
-        _the_answer_came_from_what_she_was_given,
-        SpecCategory.PROVENANCE,
-    )
-    # The STORE half of PROVENANCE is deliberately absent, and this is a report rather than an
-    # omission: the case already claims answering wrote nothing, so no stored entry exists for
-    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
-    # every sample by construction.  The two claims above carry the category.
+    # PROVENANCE — the reply half.  The STORE half is absent for the message case's reason: the
+    # ask keeps nothing.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

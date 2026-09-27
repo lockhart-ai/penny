@@ -10,7 +10,7 @@ There is no run that exhibits both, so the two asks get two setups.
 | direction | case | what the run must leave |
 |---|---|---|
 | asked in the tool's own terms | ``explicit-mute-request-mutes`` | notifications muted |
-| the topic alone | ``notifications-no-fire`` | the switch exactly where it was |
+| the topic alone | ``notifications-no-fire`` | notifications still on, as the turn found them |
 
 **Muting and unmuting are the same sentence in two entry conditions** — an unmuted world and a
 muted one — so one of them survives, and the MUTE direction strictly dominates: its end state
@@ -18,16 +18,19 @@ cannot be answered by the seed.  *The user is muted afterwards* is false of a fr
 construction, so a sample that did nothing fails it; *the user is no longer muted* is TRUE of an
 unseeded world, so the unmute case's headline rests entirely on its own seed holding — the
 failure its source file guards against in as many words.  A claim that cannot pass without the
-turn acting beats one that can, so ``explicit-unmute-request-unmutes`` is QUARANTINED here
-rather than deleted, and comes back the day the lift direction is the thing being measured.
+turn acting beats one that can, so the unmute direction is not a case here.
 
 **Dispatch stands on the tool descriptions ALONE.**  Migration 0076 seeded a "Mute or unmute
 notifications" skill whose numbered steps taught this routing; 0092 deleted every seeded rule
 entry and 0097 the collection itself, and 0108 leaves nothing pre-seeded at all — so this case
 seeds no skill, the registry the turn runs against is empty, and what it measures is whether
 ``NotificationsMuteTool`` is reachable from an explicit ask with no recipe pointing at it.  The
-seeded world is already the production cold start, which is what makes *nothing was created* a
-TOTAL reading of what the turn touched rather than a sample of it.
+seeded world is the production cold start.
+
+**Neither case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds
+no collection, so the one prior state a preservation claim can read is the switch itself —
+which is the no-fire case's whole claim.  Whether a turn also wrote or stood something up is
+its own call, measured in the entries stored and the tool sequence.
 
 **The state has to be IN FRONT OF THE MODEL, and that is a PREMISE rather than a claim.**
 Whether notifications are muted is rendered ambiently by ``SelfStateHeader`` (#1919), and that
@@ -96,8 +99,7 @@ _ALSO_PHRASED = (
 
 _BEHAVIOUR = (
     "In the chat agent, when the user asks in the notification tool's own terms for "
-    "notifications to be muted, Penny mutes them and moves nothing else — no collection "
-    "created, changed or written to."
+    "notifications to be muted, Penny mutes them."
 )
 
 
@@ -106,10 +108,10 @@ def assert_mute_world(penny: Penny) -> None:
 
     Three things, each the precondition of a claim below: the chat surface really carries the
     two notification tools (a scored dispatch miss against a model that was never offered the
-    tool is the failure this forecloses); the registry holds no COLLECTION, which is what makes
-    *nothing was created* a total reading; and notifications are ON — both in the store, so the
-    claim that they are muted afterwards cannot be answered by the seed, and in the header the
-    model reads, so the turn is answered by something that says which way the switch is set."""
+    tool is the failure this forecloses); the registry holds no COLLECTION, the production cold
+    start; and notifications are ON — both in the store, so the claim that they are muted
+    afterwards cannot be answered by the seed, and in the header the model reads, so the turn is
+    answered by something that says which way the switch is set."""
     assert_dispatch_world(penny, _MUTES, [_MUTE, _UNMUTE])
     assert not penny.db.users.is_muted(TEST_SENDER), (
         f"{_MUTES}: the user must start unmuted, or the claim that this turn muted them is "
@@ -140,22 +142,8 @@ def _notifications_are_muted(sample: SampleObservation, _world: World) -> Answer
     return sample.muted, "nothing was muted, whatever the reply said"
 
 
-def _nothing_else_moved(sample: SampleObservation, _world: World) -> Answer:
-    """No mechanism was created, retired or edited, and nothing was written anywhere.
-
-    A muting turn is asked for one switch and nothing else, so everything the registry holds is
-    out of scope for it.  A violating sample is nameable: one that stands a container up to keep
-    a note about being muted, one that files "muted at 14:02" into a list, and one that reaches
-    into a mechanism on the way through."""
-    touched = sorted(
-        one.name for one in sample.mechanisms if one.born_this_run or one.changed_this_run
-    )
-    wrote = sorted(f"{entry.collection}:{entry.key}" for entry in sample.entries)
-    return not touched and not wrote, f"created or changed {touched}, wrote {wrote}"
-
-
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_an_explicit_mute_request_mutes_and_moves_nothing_else(
+async def test_an_explicit_mute_request_mutes_notifications(
     chat_eval: ChatEval, model: str
 ) -> None:
     """An unmuted world, a header that says so, and a request in the tool's own terms."""
@@ -175,19 +163,15 @@ async def test_an_explicit_mute_request_mutes_and_moves_nothing_else(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the switch the ask named, then everything it must leave alone.
+    # STORE — the switch the ask named.  The world holds no collection, so there is nothing
+    # else for a preservation claim to read.
     cohort.claim(
         "state: notifications are muted for the user", _notifications_are_muted, SpecCategory.STORE
     )
-    cohort.claim(
-        "state: nothing but the notification switch moved", _nothing_else_moved, SpecCategory.STORE
-    )
 
-    # PROVENANCE — the STORE half is deliberately absent, and this is a report rather than an
-    # omission: the case already claims the turn writes nothing, so no stored entry exists for
-    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
-    # every sample by construction — a guaranteed row in the denominator, measuring the claim
-    # beside it rather than the turn.  The REPLY half carries the category.
+    # PROVENANCE — the REPLY half.  The STORE half is absent, and this is a report rather than an
+    # omission: the ask keeps nothing, and whether a sample wrote something anyway is measured
+    # in ENTRIES_STORED.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     # TOOL_SEQUENCE is measured and never asserted — the call is a route, and which verb reached
@@ -218,8 +202,7 @@ _REMARK_ALSO_PHRASED = (
 
 _NO_FIRE_BEHAVIOUR = (
     "In the chat agent, when a message names notifications as its subject without asking for "
-    "them to be changed, Penny leaves the switch exactly where she found it and moves nothing "
-    "else — no collection created, changed or written to."
+    "them to be changed, Penny stays in idle with notifications still on."
 )
 
 
@@ -243,7 +226,7 @@ def assert_no_fire_world(penny: Penny) -> None:
     )
 
 
-def _the_switch_did_not_move(sample: SampleObservation, _world: World) -> Answer:
+def _notifications_are_still_on(sample: SampleObservation, _world: World) -> Answer:
     """Proactive notifications are still ON for the user.
 
     The discriminating claim, and the one the fire direction cannot make: there, the switch
@@ -254,9 +237,7 @@ def _the_switch_did_not_move(sample: SampleObservation, _world: World) -> Answer
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_remark_about_notifications_moves_the_switch_nowhere(
-    chat_eval: ChatEval, model: str
-) -> None:
+async def test_a_remark_about_notifications_leaves_them_on(chat_eval: ChatEval, model: str) -> None:
     """Notifications named, and nothing asked of them.
 
     Its own setup and its own run, because the harm is the switch moving when nobody asked and
@@ -278,20 +259,15 @@ async def test_a_remark_about_notifications_moves_the_switch_nowhere(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the switch, then everything else the remark must leave alone.
+    # STORE — the switch the world started with, still where it was: PRESERVATION of the one
+    # prior state this world holds.
     cohort.claim(
-        "state: the notification switch is where the turn found it",
-        _the_switch_did_not_move,
+        "state: notifications are still on, as the turn found them",
+        _notifications_are_still_on,
         SpecCategory.STORE,
     )
-    cohort.claim(
-        "state: nothing but the notification switch moved", _nothing_else_moved, SpecCategory.STORE
-    )
 
-    # PROVENANCE — the reply half only.  The STORE half is absent and this is a report rather
-    # than an omission: the case claims the turn writes nothing, so no stored entry exists for
-    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
-    # every sample by construction.
+    # PROVENANCE — the reply half only; the STORE half is absent for the fire direction's reason.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

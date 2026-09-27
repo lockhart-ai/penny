@@ -186,11 +186,18 @@ _FIELD_PRIORS: dict[str, Callable[[MemoryRow], str | None]] = {
 _ARCHIVED_FIELD = "archived"
 
 
-def _snapshot_fields(memory: MemoryRow) -> dict[str, str | None]:
-    """Every prior-readable field as it stands RIGHT NOW — taken before the update is
-    applied, inside the transaction that applies it, so the recorded before-values are a
-    copy of the row rather than a reconstruction of it (#1946)."""
-    return {name: read(memory) for name, read in _FIELD_PRIORS.items()}
+def snapshot_fields(memory: MemoryRow) -> dict[str, str | None]:
+    """Every prior-readable field as it stands RIGHT NOW, the archive flag included, in the
+    exact form a recorded prior carries it.
+
+    Taken before an update is applied, inside the transaction that applies it, so the
+    recorded before-values are a copy of the row rather than a reconstruction of it (#1946).
+    PUBLIC because a second reader compares a prior against the value the row holds NOW —
+    what a run's edits came to, as distinct from what its calls stated — and that comparison
+    is only sound when both sides went through one reader."""
+    fields = {name: read(memory) for name, read in _FIELD_PRIORS.items()}
+    fields[_ARCHIVED_FIELD] = str(memory.archived)
+    return fields
 
 
 def _priors_from(before: dict[str, str | None], changed: list[str]) -> list[FieldPrior]:
@@ -640,7 +647,7 @@ class MemoryStore:
             memory = session.get(MemoryRow, name)
             if memory is None:
                 raise MemoryNotFoundError(name)
-            was_archived = memory.archived
+            was_archived = snapshot_fields(memory)[_ARCHIVED_FIELD]
             memory.archived = archived
             memory.updated_at = datetime.now(UTC)
             session.add(memory)
@@ -665,7 +672,7 @@ class MemoryStore:
             # byte-identical to what it was.
             detail=MutationDetail(
                 note=note,
-                priors=[FieldPrior(field=_ARCHIVED_FIELD, value=str(was_archived))],
+                priors=[FieldPrior(field=_ARCHIVED_FIELD, value=was_archived)],
             ),
         )
         self._notify_changed(name)
@@ -735,7 +742,7 @@ class MemoryStore:
                 raise MemoryNotFoundError(name)
             # Read the row BEFORE the edit lands, in the same transaction (#1946): once
             # ``apply_to`` runs, what these fields used to hold exists nowhere.
-            before = _snapshot_fields(memory)
+            before = snapshot_fields(memory)
             changed = fields.apply_to(memory)
             memory.updated_at = datetime.now(UTC)
             session.add(memory)

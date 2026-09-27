@@ -9,9 +9,10 @@ produces both, so folding them would have made the negative direction unmeasurab
 economical — and it is the direction the tool exists for, since a model asked to choose at
 random is a biased chooser (#1679/#1680) and one asked for an opinion is being asked for hers.
 
-* the REQUEST — ``choose-dispatch-fires`` — leaves a pick on the record, and a reply
-  reporting that option.
-* the TOPIC alone — ``choose-dispatch-no-fire`` — leaves no pick on the record at all.
+* the REQUEST — ``choose-dispatch-fires`` — a reply reporting the option the fair pick
+  returned.
+* the TOPIC alone — ``choose-dispatch-no-fire`` — the turn stays in idle and its reply names
+  nothing the round was not given.
 
 What the fire case asserts about the pick is the one thing an end state can carry: **the option
 the reply reports is the one the run's own record chose.**  A reply naming a different option
@@ -21,14 +22,15 @@ a route one, because what it reads is where a specific value in the reply came F
 sample where the run produced no pick at all the sentence is false rather than unasked: the
 reply reports an option the run never chose.
 
-**Both cases leave the store in the same condition**, and both say so: ``choose`` is read-shaped
-(``mutated=False``), so neither direction creates, writes or changes anything.  That shared
-claim is not what separates them — the record of the pick is.
+**Neither case claims what the turn did NOT do.**  Whether a pick was made on the judgment
+ask, and whether either turn wrote or created something, are the model's own calls on what it
+was shown, so they are measured — in the tool sequence and the entries stored — and never
+asserted (``docs/principles.md`` §4.1, §4.3).  The world holds nothing before the turn, so
+there is no prior state for a preservation claim to read either.
 
 **Dispatch stands on the tool description ALONE.**  ``ChooseTool`` is registered on every agent
 surface and no skill teaches this routing — nothing has been pre-seeded since migration 0108 —
-so this case seeds none: the world it measures is a fresh deployment's, and that is what makes
-*nothing was created* a total reading of what the turn touched rather than a sample of it.
+so this case seeds none: the world it measures is a fresh deployment's.
 
 **The model is a biased chooser** — asked to "pick one at random" it gravitates to the first or
 most salient option — which is why a fair pick lives in Python (#1679/#1680) and why the reply
@@ -109,8 +111,7 @@ _ALSO_PHRASED = (
 
 _BEHAVIOUR = (
     "In the chat agent, when the user asks for one of several named options to be picked at "
-    "random, Penny reports the option the fair pick actually returned and changes nothing "
-    "durable."
+    "random, Penny reports the option the fair pick actually returned."
 )
 
 # How the fire direction would be answered WELL — a review target, and the input the
@@ -126,10 +127,10 @@ def assert_choose_world(penny: Penny) -> None:
     is registered on the chat surface, and the registry holds no COLLECTION.
 
     Both claims are the shared dispatch-world probe.  The surface half forecloses a scored
-    dispatch miss against a model that was never offered the tool; the registry half is what
-    makes *nothing was created* a total reading — the registry read counts COLLECTION-shaped
-    memories only, since the four migration-0026 system log markers are in every database and a
-    probe that counted them could never pass."""
+    dispatch miss against a model that was never offered the tool; the registry half states the
+    world is a fresh deployment's — the registry read counts COLLECTION-shaped memories only,
+    since the four migration-0026 system log markers are in every database and a probe that
+    counted them could never pass."""
     assert_dispatch_world(penny, _FIRES, [_CHOOSE_TOOL])
 
 
@@ -155,20 +156,6 @@ def reply_reports(pick: str, reply: str) -> bool:
 
 
 # ── The claims, as pure functions over one sample ─────────────────────────────
-
-
-def _nothing_durable_changed(sample: SampleObservation, _world: World) -> Answer:
-    """The turn created nothing, changed no mechanism and wrote no entry.
-
-    The end state BOTH directions of this behaviour share — choosing changes no durable state,
-    and neither does giving an opinion — which is exactly why the two are one case.  A violating
-    sample is nameable: one that stands a container up to keep a record of what it picked, and
-    one that files the pick into a list nobody asked for."""
-    touched = sorted(
-        one.name for one in sample.mechanisms if one.born_this_run or one.changed_this_run
-    )
-    wrote = sorted(f"{entry.collection}:{entry.key}" for entry in sample.entries)
-    return not touched and not wrote, f"created or changed {touched}, wrote {wrote}"
 
 
 def _the_reply_reports_the_pick_the_run_made(sample: SampleObservation, _world: World) -> Answer:
@@ -212,10 +199,13 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the end state both directions share.
-    cohort.claim("state: nothing durable changed", _nothing_durable_changed, SpecCategory.STORE)
+    # STORE — EMPTY, and that is a report rather than an omission: the world holds nothing
+    # before the turn, so there is no prior state for a preservation claim to read, and the ask
+    # asks for nothing to be kept.  Whether a sample wrote something anyway is its own call and
+    # is measured in ENTRIES_STORED.
 
     # PROVENANCE — said equals did, plus the general guard against a value tracing to nothing.
+    # The STORE half is absent for the reason STORE is: the ask keeps nothing.
     cohort.claim(
         "reply: it reports the option the run's own record chose",
         _the_reply_reports_the_pick_the_run_made,
@@ -223,10 +213,6 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
         kind="reply",
     )
     cohort.assert_every_value_in_the_reply_is_sourced()
-    # The STORE half of PROVENANCE is deliberately absent, and this is a report rather than an
-    # omission: the case already claims nothing durable changed, so no stored entry exists to
-    # trace and ``assert_every_stored_entry_traces_to_the_world`` would answer green on every
-    # sample by construction.  The two reply claims carry the category.
 
     # TOOL_SEQUENCE is measured and never asserted — the call is a route.  It shows how a sample
     # got to the pick, not whether the pick is right: what the reply DID with it is the claim
@@ -237,9 +223,9 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
 
 # ═══ the topic alone ═════════════════════════════════════════════════════════
 #
-# The same three woods, put as a question about which she prefers.  An opinion is HERS to give,
-# and a coin flip in its place answers a different question — so what this case claims is that
-# no pick was made at all.
+# The same three woods, put as a question about which she prefers.  An opinion is HERS to give.
+# Whether she reached for the fair pick anyway is a route, measured in the tool sequence; what
+# this case claims is the state the turn ends in and that its reply invents nothing.
 
 _NO_FIRE_WORLD = World(name=_NO_FIRE, pages=(), keeps=(), excludes=())
 
@@ -255,9 +241,8 @@ _JUDGMENT_ALSO_PHRASED = (
 
 _NO_FIRE_BEHAVIOUR = (
     "In the chat agent, when a message names several options as the subject of a question "
-    "about which she prefers rather than as a request to pick one, Penny answers it in her own "
-    "words and the fair pick is never made — nothing on the record chose an option, and nothing "
-    "durable changed."
+    "about which she prefers rather than as a request to pick one, Penny stays in idle and "
+    "answers it with nothing the round was not given."
 )
 
 
@@ -265,33 +250,22 @@ def assert_no_fire_world(penny: Penny) -> None:
     """The same world the fire case is answered in — the chooser on the surface, no collection
     in the registry — asserted under this case's own id so a failure names the case it stopped.
 
-    The surface half matters MORE here than in the fire direction, not less: a case claiming
-    the tool was not reached is answered trivially by a world that never offered it, and that
-    is the shape a green no-fire number could hide."""
+    The surface half matters MORE here than in the fire direction, not less: a tool-sequence
+    reading in which the fair pick never appears means nothing on a world that never offered
+    it, and that is the shape a quiet no-fire spread could hide."""
     assert_dispatch_world(penny, _NO_FIRE, [_CHOOSE_TOOL])
 
 
-def _nothing_on_the_record_chose(sample: SampleObservation, _world: World) -> Answer:
-    """No fair pick was made this turn.
-
-    Read as the ABSENCE of the tool's own result frame from what the turn was given — the same
-    record the fire case reads a pick out of, asked the other way — so the two directions are
-    one reading with two expectations rather than two probes that could drift.
-
-    A violating sample is nameable, and the rationale names the option: one that answers "which
-    do you prefer" by flipping a coin, which is the substitution the tool's own description
-    exists to prevent and which reads as a perfectly confident opinion afterwards."""
-    picks = picks_on_the_record(sample.given)
-    return not picks, f"the fair pick chose {picks}"
-
-
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_judgment_ask_never_reaches_the_fair_pick(chat_eval: ChatEval, model: str) -> None:
+async def test_a_judgment_ask_is_answered_in_idle_from_what_she_was_given(
+    chat_eval: ChatEval, model: str
+) -> None:
     """The same three options, asked about rather than asked for.
 
     Its own setup and its own run, because the ask is the whole difference and no single turn
-    can be both: a case is one setup, one run and one set of assertions (#2100).  What it claims
-    is the record — a pick made here is made for a question nobody asked to have decided."""
+    can be both: a case is one setup, one run and one set of assertions (#2100).  A sample that
+    flipped a coin for an opinion stands apart in the tool sequence, which is where a route is
+    read."""
     cohort: Cohort = await chat_eval(
         case_id=_NO_FIRE,
         behaviour=_NO_FIRE_BEHAVIOUR,
@@ -308,18 +282,10 @@ async def test_a_judgment_ask_never_reaches_the_fair_pick(chat_eval: ChatEval, m
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the discriminating claim, then the end state it shares with the fire direction.
-    cohort.claim(
-        "state: nothing on the record chose an option",
-        _nothing_on_the_record_chose,
-        SpecCategory.STORE,
-    )
-    cohort.claim("state: nothing durable changed", _nothing_durable_changed, SpecCategory.STORE)
+    # STORE — EMPTY, for the fire direction's reason: the world holds nothing before the turn,
+    # so there is no prior state to preserve, and the ask keeps nothing.
 
-    # PROVENANCE — the reply half only.  The STORE half is absent and this is a report rather
-    # than an omission: the case claims nothing durable changed, so no stored entry exists for
-    # ``assert_every_stored_entry_traces_to_the_world`` to trace and it would answer green on
-    # every sample by construction.
+    # PROVENANCE — the reply half only; the STORE half is absent for the reason STORE is.
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)

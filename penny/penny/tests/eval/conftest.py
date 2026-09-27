@@ -52,8 +52,9 @@ from penny.conversation_machine import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
+from penny.database.memory.store import snapshot_fields
 from penny.database.message_store import MessageStore, PromptPerf
-from penny.database.models import MemoryRow, PromptLog, SendQueueItem
+from penny.database.models import MemoryRow, MutationEvent, PromptLog, SendQueueItem
 from penny.database.mutation_store import mutation_detail
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
@@ -1091,42 +1092,6 @@ def asked_for_page_structure(reply: str) -> str | None:
     it alone — so it is worth a check rather than a rule nobody measures."""
     lowered = reply.lower()
     return next((term for term in _PAGE_STRUCTURE_TERMS if term in lowered), None)
-
-
-# The two families a reply describes a ROUTINE's moves in — it reads pages, it saves what
-# it finds.  Shared, because two cases now ask the same question of a reply (what a
-# standing job does when read back, and what a just-learned routine will run each time,
-# #1943) and one policy in two copies is two contracts.
-#
-# Both are broad by construction and were widened against captured samples: an earlier
-# verb-only fetch pattern false-negatived "look on the web" and "pulls in … databases",
-# scoring faithful descriptions as misses, and a scorer that reads one phrasing measures
-# wording rather than fidelity.  The ambiguous persist verbs (add/store/keep/log/maintain)
-# must be ANCHORED to an entry/list object, so "keep an eye on it" never reads as a write.
-DESCRIBES_FETCH = (
-    r"\b(search\w*|browse\w*|scours?|scans?|hunts?|crawls?|monitors?|gathers?|pulls?\s+in|"
-    r"look\w*\s+(for|up|on|at|across|through)|finds?\s+new|fetch\w*|opens?|reads?|checks?)\b"
-    r"|\b(the\s+web|online|the\s+internet|the\s+page)\b"
-)
-# The literal ``collection_write`` was an alternative here until #1943: the learn-close
-# frame now hands the model the record's own tool names, so a pattern crediting one read
-# back aloud would score the leak as a description.  A reply naming a tool is measured by
-# the case that cares, as its own negative check.
-DESCRIBES_SAVE = (
-    r"\b(saves?|saving|writes?|writing|records?|recording)\b"
-    r"|\b(adds?|adding|stores?|storing|keeps?|keeping|logs?|logging|maintains?|"
-    r"curates?|compiles?|compiling)\b"
-    r"[\w\s,'-]{0,20}\b(entry|entries|list|record|records|collection|them|it)\b"
-    r"|\bentr(y|ies)\b[^.]{0,30}\b(added|stored|written|saved|created)\b"
-)
-
-
-def describes(reply: str, pattern: str) -> bool:
-    """Whether the reply describes a family, read through the typography the model
-    sprinkles (curly quotes, markdown emphasis) — a false negative from a bold marker
-    would be the scorer measuring formatting."""
-    normalized = reply.casefold().replace("’", "'").replace("“", '"')
-    return re.search(pattern, re.sub(r"[*_`]", "", normalized)) is not None
 
 
 def outgoing_replies(db: Database) -> list[str]:
@@ -2728,6 +2693,10 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
     diff against a remembered before-state, and it names what the STORE says it changed rather
     than any field this file enumerates.
 
+    ``moved_this_run`` is the same ledger read against the row NOW: the fields whose value
+    differs from what the sample's first edit found there, so a value a call merely restated
+    is not reported as a change the row carries.
+
     The three configuration values beside it are the row's own, copied verbatim: the ledger says
     what moved and never where it landed, so a claim naming a value has to read the row."""
     return [
@@ -2738,35 +2707,68 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
             schedule=row.schedule,
             program=row.extraction_prompt,
             born_this_run=row.name not in before,
-            touched_this_run=_touched_this_run(db, row.name),
+            touched_this_run=_touched_this_run(_live_events(db, row.name)),
+            moved_this_run=_moved_this_run(_live_events(db, row.name), row),
         )
         for row in db.memories.list_all()
         if row.type == MemoryType.COLLECTION
     ]
 
 
-def _touched_this_run(db: Database, name: str) -> list[str]:
+def _live_events(db: Database, name: str) -> list[MutationEvent]:
+    """This sample's own mutation events on one registry row, newest first.
+
+    Seeded events are excluded the way every other "what did THIS sample do" reader excludes
+    them — by the run id — so a world's own history never reads as the turn's work."""
+    return [
+        event
+        for event in db.mutations.history(
+            name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
+        )
+        if not is_seeded_run(event.run_id)
+    ]
+
+
+def _touched_this_run(events: list[MutationEvent]) -> list[str]:
     """What this sample's own runs did to one registry row, in the store's own vocabulary.
 
     An UPDATE names the fields it reported changing; every other action names ITSELF, because
     the store deliberately names those by action rather than as a field edit — archiving carries
     no changed field of its own, and a creation is not an edit to anything.  So a row this turn
-    archived reads ``['archived']`` and a row whose notify it flipped reads ``['notify']``,
-    which is what lets a claim say "only the field the ask named moved" without enumerating the
-    ones it did not.
-
-    Seeded events are excluded the way every other "what did THIS sample do" reader excludes
-    them — by the run id — so a world's own history never reads as the turn's work."""
+    archived reads ``['archived']`` and a row whose notify it flipped reads ``['notify']``."""
     touched: list[str] = []
-    for event in db.mutations.history(
-        name, MUTATION_HISTORY_WINDOW, entity_type=MutationEntityType.COLLECTION
-    ):
-        if is_seeded_run(event.run_id):
-            continue
+    for event in events:
         detail = mutation_detail(event)
         moved = detail.changed_fields if detail is not None else []
         touched += moved or [event.action]
     return sorted(set(touched))
+
+
+def _moved_this_run(events: list[MutationEvent], row: MemoryRow) -> list[str]:
+    """Every field whose value the row holds NOW differs from what it held before this sample's
+    first edit to it — the end state, never the calls.
+
+    Each event records the before-value of every field it moved (#1946), so the OLDEST prior per
+    field is what the sample found there, and ``snapshot_fields`` renders the row now in the
+    same form a prior was recorded in.  Keyed to whichever fields the ledger names, so a field
+    the store learns to change tomorrow is compared for free.  An event carrying no prior at all
+    — a creation — names its own action, since there was no row for it to have changed, and a
+    field an update names without recording its prior counts as moved, since nothing says it
+    came back to where it was."""
+    found: dict[str, str | None] = {}
+    moved: set[str] = set()
+    for event in reversed(events):
+        detail = mutation_detail(event)
+        priors = detail.priors if detail is not None else []
+        if not priors:
+            moved.add(event.action)
+        for prior in priors:
+            found.setdefault(prior.field, prior.value)
+        named = detail.changed_fields if detail is not None else []
+        moved |= set(named) - {prior.field for prior in priors}
+    now = snapshot_fields(row)
+    moved |= {field for field, value in found.items() if now.get(field) != value}
+    return sorted(moved)
 
 
 def _written_by_a_live_run(entry) -> bool:

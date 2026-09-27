@@ -1,4 +1,4 @@
-"""Operating a job that is already running: three cases (#2008, tranche 3).
+"""Operating a job that is already running, and reading one back: four cases (#2008, tranche 3).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
@@ -16,6 +16,7 @@ recorded here.
 | flip the switch | ``standing-notify-off`` | ``notify`` off, everything else on the row as it was |
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
+| read it back | ``standing-describe-routine`` | the row as it was; the reply names its page |
 
 **Which survivor the flip kept, and why.**  ``standing-notify-off`` and ``standing-notify-on``
 are the same sentence in two entry conditions, so one of them survives — and the OFF direction
@@ -23,10 +24,9 @@ strictly dominates, because it is the only one whose world can produce the failu
 behaviour is about.  Asked to stop one watch's pings, a measured sample enumerated what it
 could see — archive the collection, or mute notifications globally — read that as no
 granularity, and retired the whole job.  Neither wrong move is available in the other
-direction: a job cannot be woken by archiving it or by lifting a global mute.  So
-``standing-notify-on`` is QUARANTINED here, not deleted, and comes back the day the ON
-direction's own residual is the thing being measured (#1927 records it at 3 of 5 against the
-OFF direction's 5 of 5, and the leak is the classifier's rather than this turn's).
+direction: a job cannot be woken by archiving it or by lifting a global mute.  So the ON
+direction is not a case here (#1927 records it at 3 of 5 against the OFF direction's 5 of 5,
+and the leak is the classifier's rather than this turn's).
 
 **Every case claims the landing, and that is deliberate.**  Changing how a running job behaves
 is idle by the machine's own boundary (#1927) — the state definitions say so in as many words —
@@ -38,12 +38,19 @@ reach one end state, and a rule keyed to that name would simply not fire for a v
 enumerated — so it is measured in the tool sequence and never asserted, where a divergence reads
 as a sample worth opening rather than as a claim about which verb was right.
 
-**What each case claims about the rest of the row is the STORE'S own account of what it
-changed**, never a list of fields written here: the row's settable surface is wider than any
-such list — its description, its expiry, its run quota, the values a rebind binds — and an
-enumeration exempts whatever it forgot.  That applies to the retire case too, since archiving
-is reversible: the same job asked for again revives this row, so a retire that also rebound the
-routine or re-timed the cadence hands back a different job under the same name.
+**What each case claims about the rest of the row is its END STATE, read through the store's
+own ledger**, never a list of fields written here: every field whose value the row holds now
+differs from what the turn found there (``MechanismRecord.moved_this_run``).  The row's settable
+surface is wider than any list a case would write — its description, its expiry, its run quota,
+the values a rebind binds — and an enumeration exempts whatever it forgot; and it is the value
+rather than the call, so a turn that restated a field it was not asked to touch has moved
+nothing.  That applies to the retire case too, since archiving is reversible: the same job asked
+for again revives this row, so a retire that also rebound the routine or re-timed the cadence
+hands back a different job under the same name.
+
+**No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds one
+job, what it gathered and the global switch, so those are what the cases claim still holds;
+whether a turn also stood something new up is its own call, measured in the tool sequence.
 
 **The world is built the way production builds one (#1911/migration 0108: nothing is
 pre-seeded).**  Every collection here is one the user built: the container is created
@@ -55,9 +62,10 @@ put it in, then the render.  The routine itself goes into the registry through
 a config defect the collector cannot read (#1916's strict dialect), so a world seeded that way
 would be claiming a job that could never run.
 
-``standing-describe-routine`` at the bottom is LEFT EXACTLY AS IT WAS.  Reading a job's routine
-back is none of #2008's twelve behaviours and sits on no slot of #2004's map, so it is neither
-ported nor quarantined here — it keeps its own scorer until it has a slot of its own.
+``standing-describe-routine`` reads the same job back rather than operating it (ported on the
+code owner's ruling).  What it asserts is what the reply CITES from the job's record — the page
+its routine fetches — plus the job still as it was; which read she reaches for, and how she words
+the walk-through, are measured.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every page, shop and job is synthetic, on an
@@ -74,7 +82,6 @@ from typing import Any, NamedTuple
 import pytest
 
 from penny.agents.self_state import SelfStateHeader
-from penny.constants import MutationAction
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
@@ -94,17 +101,11 @@ from penny.program import program_calls
 from penny.skill_extraction import _apply_leaf_labels, _interface_parameters
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
-    DESCRIBES_FETCH,
-    DESCRIBES_SAVE,
     EVAL_MODELS,
-    REPLY_ANCHOR,
     ChatEval,
-    Check,
     Preparer,
     Seeder,
-    describes,
     seeded_run_id,
-    tool_was_called,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
 from penny.tests.eval.utils.cohort import (
@@ -135,13 +136,6 @@ _STOOD_UP_RUN = seeded_run_id("stood-up-the-job")
 _BROWSE = "browse"
 _WRITE = "collection_write"
 _PROGRAM_TOOLS = (_BROWSE, _WRITE)
-
-# The reads that answer "what does this thing do".  ``memory_metadata`` renders the
-# collection's own rendered program; ``skill_read`` returns the routine's steps.  Both are
-# a READ of the recipe — which is the contract — so the spine check accepts either rather
-# than keying on the verb that happened to be used when the case was written.
-_METADATA = "memory_metadata"
-_SKILL_READ = "skill_read"
 
 
 # ── The taught routine ────────────────────────────────────────────────────────
@@ -368,9 +362,7 @@ def _stand_up(db: Database, job: StandingJob) -> None:
     # the store records a collection's birth as a mutation event citing whatever run created it,
     # and an unstamped one cites nothing — which every reader of "did THIS turn touch this row"
     # then counts as this turn's work, because a seeded run is recognised by its id and a
-    # missing id is not one.  Measured: the two jobs this world lends the log-read cases made
-    # their "no mechanism was created or changed" claim read 0 of 15 for a reason that had
-    # nothing to do with the turn.
+    # missing id is not one.
     db.memories.create_collection(job.container, job.description, created_by_run_id=_STOOD_UP_RUN)
     db.memories.update_collection_metadata(
         job.container,
@@ -440,11 +432,8 @@ _HELD_KEYS = tuple(key for key, _ in _FINDS.holdings)
 # How the user refers to it: their own words for the job, never its derived name.  The
 # derived name renders on the ambient mechanisms line, so resolving those words to that
 # collection is a read the turn is expected to make — asking with the container's own
-# name would hand the model the answer to half the case.
-#
-# It also lends NO word to the legibility scorer below, which credits a reply for
-# describing the routine's two moves: an ask carrying one of those words would let a reply
-# that merely echoes the question score as a faithful description.
+# name would hand the model the answer to half the case.  It lends the read-back case's
+# answer token nothing either, which that case enforces on every wording.
 _THEIR_WORDS = "the typewriter watch"
 
 
@@ -542,8 +531,11 @@ class _OperationCase(NamedTuple):
     seam.  ``renders`` is the clause its self-state row must carry before the turn runs,
     asserted rather than hoped for, since the model can only reach for a lever the state
     presents: the switch for the two cases about stopping something — where its presence is
-    also what makes the global mute a WRONG lever rather than the only one — and the stored
-    rule for the case about moving it.
+    also what makes the global mute a WRONG lever rather than the only one — the stored rule
+    for the case about moving it, and the switch again for the read-back, which moves nothing.
+
+    ``answers`` is what the reply owes, and only the read-back case owes anything: each
+    operation's ask is an INSTRUCTION, and "done, that one's quiet now" is a complete answer.
     """
 
     case_id: str
@@ -552,6 +544,7 @@ class _OperationCase(NamedTuple):
     renders: str
     ask: str
     also_phrased: tuple[str, ...]
+    answers: tuple[str, ...] = ()
 
     @property
     def ground(self) -> World:
@@ -568,10 +561,9 @@ class _OperationCase(NamedTuple):
         instead of letting the wrong turn read as one.  ``keeps`` states what a round must
         have written down and none of these turns is asked to write anything;
         ``excludes`` states what it was told to leave out and none of them excludes
-        anything in as many words.  ``answers`` states what the reply owes, and each of
-        these asks is an INSTRUCTION — "done, that one's quiet now" is a complete answer —
-        so requiring a token would fail a correct run for something nobody requested."""
-        return World(name=self.case_id, pages=(), keeps=(), excludes=())
+        anything in as many words.  ``answers`` is the case's own: empty for an instruction,
+        whose complete answer names nothing."""
+        return World(name=self.case_id, pages=(), keeps=(), excludes=(), answers=self.answers)
 
 
 def _job_row(sample: SampleObservation, container: str) -> MechanismRecord | None:
@@ -587,7 +579,7 @@ def assert_the_operation_world(db: Database, case: _OperationCase) -> None:
     ask is about RENDERS on the job's own self-state row (with nothing there, a measured
     sample asked to stop one watch's pings read the state as offering no granularity and
     retired the whole job); the job already holds what the retire case says it keeps; and
-    proactive notifications are ON, so "she did not silence everything instead" is a claim
+    proactive notifications are ON, so "they are still on for everything else" is a claim
     about this turn rather than about the world it started in.
 
     Takes the DATABASE rather than the running Penny so the same assertions run without a
@@ -599,8 +591,8 @@ def assert_the_operation_world(db: Database, case: _OperationCase) -> None:
         f"{case.case_id}: the job must already hold {sorted(_HELD_KEYS)}, it holds {keys}"
     )
     assert not db.users.is_muted(TEST_SENDER), (
-        f"{case.case_id}: notifications must start ON, or the claim that this turn did not "
-        "silence everything is answered by the seed"
+        f"{case.case_id}: notifications must start ON, or the claim that they are still on "
+        "is answered by the seed"
     )
 
 
@@ -631,8 +623,10 @@ def _assert_the_row_renders(db: Database, case: _OperationCase) -> None:
     )
 
 
-async def _drive(chat_eval: ChatEval, model: str, case: _OperationCase) -> Cohort:
-    """Drive one operation case: the standing job its own apply turn left behind, the
+async def _drive(
+    chat_eval: ChatEval, model: str, case: _OperationCase, family: str = _OPERATIONS_FAMILY
+) -> Cohort:
+    """Drive one case on the standing job: the job its own apply turn left behind, the
     routine it runs in the registry, and the premise re-asserted before the turn."""
     return await chat_eval(
         case_id=case.case_id,
@@ -646,7 +640,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _OperationCase) -> Cohor
         also_phrased=case.also_phrased,
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_OPERATIONS_FAMILY,
+        family=family,
         timeout=240.0,
     )
 
@@ -728,19 +722,20 @@ def _the_job_is_still_live(container: str) -> _ClaimFn:
     return answer
 
 
-def _only_this_moved(container: str, *, moved: str) -> _ClaimFn:
-    """The one thing the ask named is the ONLY thing this turn did to the job's row.
+def _nothing_else_moved(container: str, *, asked: frozenset[str]) -> _ClaimFn:
+    """Every field on the job's row holds what it held before the turn, except the ones the ask
+    named — PRESERVATION of the rest of the job.
 
-    Read off the STORE'S OWN account of what it changed (``touched_this_run``) rather than a
-    diff over fields this file lists: the row's settable surface is wider than any list a case
-    would think to write — its description, its expiry, its run quota, the values a rebind
-    binds — so an enumeration silently exempts whatever it forgot, which is the shape that
-    fails for a verb nobody enumerated.  A field the store learns to change tomorrow is
-    compared for free.
+    Read as the row's END STATE through the store's own ledger (``moved_this_run``: each field
+    whose value now differs from the prior the ledger recorded for it) rather than as a diff
+    over fields this file lists: the row's settable surface is wider than any list a case would
+    think to write — its description, its expiry, its run quota, the values a rebind binds — so
+    an enumeration silently exempts whatever it forgot.  A field the store learns to change
+    tomorrow is compared for free, and a field a call merely restated has not moved.
 
-    ``moved`` is the store's own label for the axis the ask moved.  A wrong label can only make
-    this claim STRICTER — the named field would count as drift — so a typo fails loudly instead
-    of quietly passing, which is the safe direction for a guard.
+    ``asked`` is the store's own labels for the fields the ask moves, empty for an ask that
+    moves none.  A wrong label can only make this claim STRICTER — the named field would count
+    as drift — so a typo fails loudly instead of quietly passing.
 
     A violating sample is nameable, and the rationale names the field: one that flips the switch
     and re-times the job on the way through, one that rebinds it to another routine, one that
@@ -751,18 +746,18 @@ def _only_this_moved(container: str, *, moved: str) -> _ClaimFn:
         row = _job_row(sample, container)
         if row is None:
             return False, f"{container!r} is no longer in the registry"
-        others = sorted(set(row.touched_this_run) - {moved})
+        others = sorted(set(row.moved_this_run) - asked)
         return not others, f"also moved {others}"
 
     return answer
 
 
-# The store's own labels for the axes these asks move — its update reports a field edit by the
-# field's name and an archive by its ACTION, and the claim above compares against whichever the
-# ask named.  Read from the shipped enum where one exists rather than retyped.
-_NOTIFIES = "notify"
-_SCHEDULE = "schedule"
-_ARCHIVED = MutationAction.ARCHIVED.value
+# The store's own labels for the fields these asks move: an update's field name, and the archive
+# flag's (which records its prior under this name, #1946).
+_NOTIFIES = frozenset({"notify"})
+_SCHEDULE = frozenset({"schedule"})
+_ARCHIVED = frozenset({"archived"})
+_NONE: frozenset[str] = frozenset()
 
 
 def _the_rule_fires_at(container: str, hour: int) -> _ClaimFn:
@@ -799,27 +794,8 @@ def _it_kept_what_it_gathered(container: str) -> _ClaimFn:
     return answer
 
 
-def _nothing_else_was_touched(container: str) -> _ClaimFn:
-    """No mechanism but the job itself was created, retired or edited.
-
-    Read off the mutation LEDGER rather than off a field-by-field diff, so a change nobody
-    enumerated is caught too.  A violating sample is nameable: one that stands a second
-    container up beside the job instead of editing it, and one that reaches into a neighbour
-    while it is in there."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        touched = sorted(
-            one.name
-            for one in sample.mechanisms
-            if one.name != container and (one.born_this_run or one.changed_this_run)
-        )
-        return not touched, f"also created or changed {touched}"
-
-    return answer
-
-
-def _nothing_was_silenced_everywhere(sample: SampleObservation, _world: World) -> Answer:
-    """Proactive notifications are still ON for the user.
+def _notifications_are_still_on_everywhere(sample: SampleObservation, _world: World) -> Answer:
+    """Proactive notifications are still ON for the user — PRESERVATION of the global switch.
 
     The neighbouring lever, and the measured wrong one: asked to quiet ONE job, a sample that
     reads the per-collection switch as unavailable reaches for the global mute, which silences
@@ -829,12 +805,12 @@ def _nothing_was_silenced_everywhere(sample: SampleObservation, _world: World) -
     return not sample.muted, "the turn muted notifications for everything"
 
 
-# The labels the three cases share.  Named once because a label is a diff-join key: three
-# copies of one sentence are three chances for a typo to split one claim's history in two.
+# The labels the cases share.  Named once because a label is a diff-join key: several copies of
+# one sentence are that many chances for a typo to split one claim's history in two.
 _STILL_LIVE = "state: the job is still live (active, scheduled, with a program to run)"
 _KEPT_ITS_ENTRIES = "state: what it gathered is still there"
-_NOTHING_ELSE_TOUCHED = "state: no other mechanism was created or changed"
-_NOT_MUTED_EVERYWHERE = "state: notifications were not silenced everywhere instead"
+_NOTHING_ELSE_MOVED = "state: nothing else on the job's row moved"
+_STILL_ON_EVERYWHERE = "state: notifications are still on for everything else"
 
 
 # ═══ flip the switch ═════════════════════════════════════════════════════════
@@ -848,9 +824,8 @@ _NOTIFY_OFF = _OperationCase(
     case_id="standing-notify-off",
     behaviour=(
         "In the chat agent, when the user asks for one running job's notifications to be "
-        "turned off, Penny flips that job's own switch and leaves the job running — its "
-        "cadence, its routine and its program untouched, every other mechanism untouched, "
-        "and proactive notifications still on everywhere else."
+        "turned off, Penny turns that job's own switch off, with the job still running as it "
+        "was and proactive notifications still on everywhere else."
     ),
     job=_FINDS,
     renders=SelfStateHeader.MECHANISM_NOTIFIES,
@@ -885,18 +860,15 @@ async def test_turning_notifications_off_silences_only_that_job(
     )
     cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
     cohort.claim(
-        "state: nothing else on the job's row moved",
-        _only_this_moved(_FINDS.container, moved=_NOTIFIES),
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FINDS.container, asked=_NOTIFIES),
         SpecCategory.STORE,
     )
     cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
-    cohort.claim(
-        _NOTHING_ELSE_TOUCHED, _nothing_else_was_touched(_FINDS.container), SpecCategory.STORE
-    )
-    cohort.claim(_NOT_MUTED_EVERYWHERE, _nothing_was_silenced_everywhere, SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -912,8 +884,8 @@ _ARCHIVE = _OperationCase(
     case_id="standing-archive",
     behaviour=(
         "In the chat agent, when the user says they are done with a running job, Penny "
-        "retires it as a tombstone that still holds everything it gathered — no other "
-        "mechanism touched, and nothing silenced anywhere else."
+        "retires it as a tombstone that still holds everything it gathered, with proactive "
+        "notifications still on everywhere else."
     ),
     job=_FINDS,
     renders=SelfStateHeader.MECHANISM_NOTIFIES,
@@ -950,18 +922,15 @@ async def test_retiring_a_job_archives_it_and_keeps_what_it_gathered(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: retiring it is the only thing this turn did to the job's row",
-        _only_this_moved(_FINDS.container, moved=_ARCHIVED),
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FINDS.container, asked=_ARCHIVED),
         SpecCategory.STORE,
     )
     cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
-    cohort.claim(
-        _NOTHING_ELSE_TOUCHED, _nothing_else_was_touched(_FINDS.container), SpecCategory.STORE
-    )
-    cohort.claim(_NOT_MUTED_EVERYWHERE, _nothing_was_silenced_everywhere, SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
@@ -980,8 +949,8 @@ _RE_TIME = _OperationCase(
     case_id="standing-schedule-fix-prior",
     behaviour=(
         "In the chat agent, when the user says a running job checks at the wrong time and "
-        "names a new one, Penny re-times that job and leaves everything else about it alone — "
-        "and every clock time she names is one the job has actually had."
+        "names a new one, Penny re-times that job with the rest of it as it was, and every "
+        "clock time she names is one the job has actually had."
     ),
     job=_FINDS,
     renders=_FINDS.schedule,
@@ -1047,18 +1016,15 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
     )
     cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
     cohort.claim(
-        "state: nothing else on the job's row moved",
-        _only_this_moved(_FINDS.container, moved=_SCHEDULE),
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FINDS.container, asked=_SCHEDULE),
         SpecCategory.STORE,
     )
     cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
-    cohort.claim(
-        _NOTHING_ELSE_TOUCHED, _nothing_else_was_touched(_FINDS.container), SpecCategory.STORE
-    )
-    cohort.claim(_NOT_MUTED_EVERYWHERE, _nothing_was_silenced_everywhere, SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
 
     # PROVENANCE
-    cohort.assert_every_stored_entry_traces_to_the_world()
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.claim(
         "reply: every clock time it names is one the job has had",
         _every_hour_it_names_is_one_the_job_has_had,
@@ -1069,100 +1035,80 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
     cohort.measure(*_MEASURED)
 
 
+# ═══ read it back ═══════════════════════════════════════════════════════════
+#
+# "What does that thing actually do?" — the same job, asked about rather than operated on.  The
+# ambient header carries each routine as one row (its name, what it is for, what it needs) and
+# not its steps (#1804), so a walk-through is answered from the job's RECORD — its rendered
+# program, or the routine's own steps.  Which read she reaches for is a route, measured in the
+# tool sequence; how she words the walk-through is the reply's spread.
+
+# The page the routine fetches, as the SMALLEST datum a faithful walk-through carries.  Every
+# render of this job's record spells the shop this way — the address its program fetches, the
+# container name derived from that address, the description it was stood up with — and no
+# wording of the ask does, so a reply naming it cites the record.  Case-folded on both sides,
+# so "Quill Market" and ``quillmarket.example.com`` are the same fact.
+_ROUTINE_PAGE_TOKEN = "quill"
+
+_DESCRIBE = _OperationCase(
+    case_id="standing-describe-routine",
+    behaviour=(
+        "In the chat agent, when the user asks what a standing job does, Penny describes the "
+        "routine from its record (fetches the page, saves what it finds) and invents no step it "
+        "does not have."
+    ),
+    job=_FINDS,
+    renders=SelfStateHeader.MECHANISM_NOTIFIES,
+    ask=f"what does {_THEIR_WORDS} actually do? walk me through it.",
+    also_phrased=(
+        f"walk me through what {_THEIR_WORDS} does, step by step",
+        f"how does {_THEIR_WORDS} work? what does it actually do each time it runs?",
+        f"can you explain what {_THEIR_WORDS} does when it runs?",
+        f"what exactly happens when {_THEIR_WORDS} runs? talk me through it",
+    ),
+    answers=(_ROUTINE_PAGE_TOKEN,),
+)
+
+# The answer token is on the job's record and in none of the wordings — ENFORCED rather than
+# trusted, because the leak is invisible once it exists: a question carrying the token would
+# credit a reply for repeating the question back.
+assert _ROUTINE_PAGE_TOKEN in _FINDS.program, "the answer token must be on the job's own program"
+for _wording in (_DESCRIBE.ask, *_DESCRIBE.also_phrased):
+    assert _ROUTINE_PAGE_TOKEN not in _wording.casefold(), (
+        f"a read-back wording must not carry the answer token: {_wording!r}"
+    )
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_she_describes_the_routine_the_job_runs(chat_eval: ChatEval, model: str) -> None:
+    """The job asked about rather than operated on: the reply names the page its routine
+    fetches, every specific it states is one the round was given, and the job is exactly as
+    the turn found it.
+
+    What is NOT claimed is how the walk-through is worded — a reply describing the two moves in
+    any words is as faithful as another, so the phrasing is the reply's spread and never a
+    pattern the reply must match (``docs/principles.md`` §4.7).  An invented step that names a
+    specific — another site, an hour the job does not run at — is what the sourcing claim reads."""
+    cohort = await _drive(chat_eval, model, _DESCRIBE, family=_LEGIBILITY_FAMILY)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the page the record carries, stated; and the job, as the turn found it.
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FINDS.container, asked=_NONE),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
 # Every ported case, in one place — so the deterministic probe in ``test_eval_harness.py`` can
 # drive each one's seeder and premise without a GPU.
-OPERATION_CASES = (_NOTIFY_OFF, _ARCHIVE, _RE_TIME)
-
-
-# ═══ NOT tranche 3's — left exactly as it was ════════════════════════════════
-#
-# "What does that thing actually do?" — reading a job's routine back, answered from the
-# routine rather than from what the ambient header happens to say about it (#1804 took the
-# recipe off that header, so the recipe is a read now, not a recall).  Reading a job is none
-# of #2008's twelve behaviours and sits on no slot of #2004's map, so it is neither ported nor
-# quarantined: it keeps its own scorer until it has a slot of its own.
-#
-# The reply has to describe the routine's two moves — it reads the page, it saves what it
-# finds — and the families are described many ways, so each is matched against a broad verb
-# set with a noun fallback.  Both patterns were widened against captured samples (the earlier
-# verb-only search pattern false-negatived "look on the web" and "pulls in … databases",
-# scoring faithful descriptions as misses): a scorer that reads only one phrasing measures
-# wording rather than fidelity.  The patterns themselves are SHARED
-# (``penny.tests.eval.conftest``): the learn-close narration story asks the same question of a
-# reply about a routine it just learned (#1943), and two copies of one policy are two
-# contracts.
-
-# The ask, and the rule that it lends the scorer nothing — ENFORCED rather than trusted,
-# because the leak is invisible once it exists: a question carrying one of the words the
-# patterns match would credit a reply for repeating the question back.
-_LEGIBILITY_ASK = f"what does {_THEIR_WORDS} actually do? walk me through it."
-assert not describes(_LEGIBILITY_ASK, DESCRIBES_FETCH) and not describes(
-    _LEGIBILITY_ASK, DESCRIBES_SAVE
-), f"the ask must lend no word to the patterns that score the reply: {_LEGIBILITY_ASK!r}"
-
-
-def landed_state_check(db: Database) -> Check:
-    """Advisory: where the conversation machine landed the turn.
-
-    The legibility case runs the production path, so the machine classifies the message
-    before the chat agent sees it, and which state it landed in decides what the turn was
-    even instructed to do — a reader of a surprising sample wants that first.  Rendered
-    rather than demanded: this story is about what the turn SAYS, and pinning the edge would
-    be measuring the machine's own beat here."""
-    latest = db.machine.latest_transition()
-    landed = latest.to_state if latest is not None else ConversationState.IDLE.value
-    return Check(f"the machine landed the turn in {landed}", True, scored=False, kind="state")
-
-
-def _describes_checks(reply: str) -> list[Check]:
-    """The routine's two moves, as the reply describes them — one check each, so a reply
-    that got half of it right reads as half right rather than as a failure."""
-    return [
-        Check(
-            f"reply: it describes {claim}",
-            describes(reply, pattern),
-            kind="reply",
-            anchor=REPLY_ANCHOR,
-            rationale=None if describes(reply, pattern) else f"no {family} family in the reply",
-        )
-        for claim, family, pattern in (
-            ("the page being read", "fetch/read", DESCRIBES_FETCH),
-            ("what it finds being saved", "save/write", DESCRIBES_SAVE),
-        )
-    ]
-
-
-def _score_legibility(db: Database, _before: set[str], reply: str) -> list[Check]:
-    """She READ the routine and described what it does.
-
-    The read is the spine: the ambient header carries each routine as one row — its name,
-    what it is for, what it needs — and NOT its steps (#1804), so a reply describing the
-    steps without a read is describing something it never saw.  Either read answers the
-    question (the collection's rendered program, or the routine's own steps), so the check
-    is about having read rather than about which verb did it."""
-    read = tool_was_called(db, _METADATA) or tool_was_called(db, _SKILL_READ)
-    return [
-        Check(
-            "spine: she read the routine rather than recalling it",
-            read,
-            kind="spine",
-            anchor=f"{_METADATA}(",
-            rationale=None if read else f"neither {_METADATA} nor {_SKILL_READ} was called",
-        ),
-        *_describes_checks(reply),
-        landed_state_check(db),
-    ]
-
-
-async def test_she_describes_the_routine_the_job_runs(chat_eval: ChatEval) -> None:
-    """Report-only.  "What does that actually do?" — answered from the routine, in plain
-    words, without inventing a step it does not have."""
-    await chat_eval(
-        case_id="standing-describe-routine",
-        message=_LEGIBILITY_ASK,
-        seed=seed_standing_jobs(_FINDS),
-        seed_skills=[WATCH_ROUTINE],
-        score=_score_legibility,
-        min_pass_rate=None,
-        family=_LEGIBILITY_FAMILY,
-    )
+OPERATION_CASES = (_NOTIFY_OFF, _ARCHIVE, _RE_TIME, _DESCRIBE)
