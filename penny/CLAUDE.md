@@ -767,11 +767,10 @@ port of #1946's writes-landed case and the only live-model coverage that frame h
 names two pages and one list, ONE page answers and the other cannot be read, and what is
 claimed is that the named list holds an entry this turn wrote from the page that answered,
 that nothing stored or said traces outside what the round was given — the dead page's own
-names exist in nothing the model saw — and that every count of saved things the reply states
-is the number the ledger says landed. The count claim is CONDITIONAL: stating a number is
-phrasing the model may vary, so only a stated number's value is asserted. Whether the reply
-admits the read failed is variance, never a claim — that branch belongs to
-`test_chat_reply.py`),
+names exist in nothing the model saw — and that the reply carries a token only the readable
+page owns, the fact the save came from. No count of saved things is asserted: a count of saves
+is a count of tool calls. Whether the reply admits the read failed is variance, never a claim —
+that branch belongs to `test_chat_reply.py`),
 `test_collector_honesty.py`, `test_retrieval.py`,
 `test_browse_extract_fields.py` (#1942/#2059 — the browse EXTRACTION micro-context in
 isolation, driven directly by the `extractor_eval` runner with no browse in the loop:
