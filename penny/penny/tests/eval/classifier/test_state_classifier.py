@@ -1360,7 +1360,7 @@ COLD_HOLD_ARMS = (_COLD_HOLD_ASK, *_COLD_HOLD_PHRASINGS)
 _COLD_HOLD_BEHAVIOUR = (
     f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the registry "
     "holds no routines at all and the user is simply talking about their morning, Penny "
-    "holds idle — she does not read ordinary conversation as a job to be set up or taught."
+    "holds the conversation in idle."
 )
 
 
@@ -1579,7 +1579,7 @@ COLD_ELICIT_ARMS = (_COLD_ELICIT_ASK, *_COLD_ELICIT_PHRASINGS)
 _COLD_ELICIT_BEHAVIOUR = (
     f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user asks "
     "for something that keeps running on its own and the registry holds no routine at all, "
-    "Penny elicits — she asks to be taught rather than reading the ask as the steps."
+    "Penny opens a teach round in elicit."
 )
 
 
