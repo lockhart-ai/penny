@@ -186,8 +186,9 @@ _SOURCE_DOWN = SourceDownCase(
     case_id="memory-save-with-a-source-down",
     behaviour=(
         "In the chat agent, when the user asks her to read two pages and keep what she finds "
-        "and one of the pages cannot be read, Penny stores what the readable page gave and "
-        "reports only what actually landed, naming nothing from the page she never read."
+        "and one of the pages cannot be read, Penny keeps the readable page's fact in the named "
+        "list and cites it in her reply, and everything she stores and says traces to what "
+        "she was given."
     ),
     world=_SOURCE_DOWN_WORLD,
     ask=TWO_SOURCE_ASK,
