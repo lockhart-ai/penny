@@ -5,8 +5,8 @@ Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 The world holds five finished journeys, so the routine already exists and the ask teaches
 nothing — it names the new place to run it and the job's terms, in ONE cold message, with
 everything the interface needs.  The turn recognises the routine, binds it to the page the ask
-names, and stands the job up on those terms, without opening the page and without disturbing
-any of the five jobs already running.
+names, and stands the job up on those terms, while the five jobs already running survive it
+unchanged.
 
 **The survivor, and on what basis: MEASURED RATE.**  The edge's five variants have real
 per-variant numbers and they separate sharply.  Across the eight suite runs that carried them
@@ -33,8 +33,10 @@ back deliberately.
 **What is claimed is what got CREATED and CONFIGURED, read off the registry and the ledger.**
 The job's identity is its container's NAME, which is `derive_collection_name(routine, values in
 declared order)` — a pure shipped function with no discretion — so a single claim covering
-*exactly one mechanism was born, and it is the one this routine and this listing derive* says
-both that a job exists and that it is the right job, in a key that is strictly identifiable.
+*a mechanism was born under the name this routine and this listing derive* says both that a
+job exists and that it is the right job, in a key that is strictly identifiable.  Whether the
+turn built anything BESIDE it is the model's call and is measured, never claimed: a count of
+what was created is a count of what the model chose to do.
 The terms are then record fields on that row: how often it fires, whether it tells the user,
 whether it stops.  None is read off the reply, and none is read off a tool name.
 
@@ -73,7 +75,7 @@ happened to choose.
   right reading in this direction: the ask GIVES an end condition, so a row carrying none
   failed, including when a far-future sentinel normalised it away.
 * ``_seeded_jobs_untouched_check`` — the right question, read off the ledger against five
-  enumerated names.  It ports as ``assert_no_running_mechanism_was_changed``, which asks it of
+  enumerated names.  It ports as ``assert_the_running_mechanisms_survive``, which asks it of
   every mechanism rather than of a list somebody wrote down.
 
 **One more is absent by ENTAILMENT**, and is worth naming so the set reads as closed: *nothing
@@ -82,8 +84,9 @@ was registered*, the claim that a cold apply teaches nothing.  Run-end extractio
 (``abandon_round_skill``) runs on an IDLE landing — so no sample can fail it without also
 failing ``assert_machine_landed``.
 
-**And one the inward column added**: PROVENANCE, of the REPLY kind.  The source case made no
-claim of it.  Its store half is not claimed in this case.
+**And two the inward column added**: PROVENANCE, of both kinds.  The source case made no claim
+of either.  The store half reads only what this turn wrote: whether it wrote is the model's call
+and is measured, and whether what it wrote was invented is claimed.
 
 **`keeps` and `answers` are both EMPTY, and each is a report.**  The turn sets a job to run
 LATER; it is not asked to read or keep anything, so a keeps set would state a contract the
@@ -138,8 +141,8 @@ _CASE_ID = "transition-idle-to-apply"
 _BEHAVIOUR = (
     "In the chat agent, when a cold ask names a new place to run a routine she already has "
     "and supplies everything that routine needs, Penny binds it to what the ask names and "
-    "stands the job up on the terms it gave — without reading the page, teaching anything, or "
-    "touching the jobs already running."
+    "stands the job up on the terms it gave, and every job already running survives "
+    "unchanged."
 )
 
 
@@ -333,26 +336,26 @@ def assert_every_wording_names_the_space(case: _IdleApplyCase) -> None:
 
 
 def _job_stood_up(sample: SampleObservation) -> MechanismRecord | None:
-    """The one mechanism this turn created, or ``None`` where it created none or several.
+    """The mechanism this turn created under the derived name, or ``None`` where it created
+    none there.
 
-    Read as "born this run" rather than "carries a routine", so a turn that stood a job up on
-    the WRONG routine is a bound-the-wrong-routine finding rather than a set-nothing-up one —
-    and a turn that minted two containers has not stood ONE job up, which is what each claim
-    below is about."""
-    born = [one for one in sample.mechanisms if one.born_this_run]
-    return born[0] if len(born) == 1 else None
+    Read by NAME among the rows born this run, so a turn that stood a job up on the WRONG
+    routine is a bound-the-wrong-routine finding rather than a set-nothing-up one, and the terms
+    below are read off the right job whatever else the turn built beside it."""
+    born = (one for one in sample.mechanisms if one.born_this_run)
+    return next((one for one in born if one.name == _EXPECTED_CONTAINER), None)
 
 
 def _minted_the_derived_container(sample: SampleObservation, _world: World) -> Answer:
-    """Exactly one mechanism was created, and it is the container this routine and this listing
-    DERIVE — which is where the whole claim about identity lives.
+    """A mechanism was created under the container this routine and this listing DERIVE —
+    which is where the whole claim about identity lives.
 
     The name is a pure function of the routine and the values it was pointed at, so a container
     under it is a job anybody can find again by asking for the same thing, and the five already
-    running are exactly the names it must not be.  A turn that minted a second container beside
-    it fails this too: two containers is not one job."""
+    running are exactly the names it must not be.  What else the turn created is the model's
+    call and is measured, so the rationale lists it without the claim counting it."""
     born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
-    return born == [_EXPECTED_CONTAINER], f"created {born}, expected [{_EXPECTED_CONTAINER!r}]"
+    return _EXPECTED_CONTAINER in born, f"created {born}, expected {_EXPECTED_CONTAINER!r}"
 
 
 def _fires_on_the_cadence_the_ask_gave(sample: SampleObservation, _world: World) -> Answer:
@@ -402,8 +405,8 @@ async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(
 ) -> None:
     """idle → apply, cold: a second listing, long after the price watcher was taught on the
     first.  Nothing in the ask refers back, so she has to recognise the job from what it asks
-    for, bind the page it names, and set it running on the hours and the end it gives —
-    without opening the listing to check."""
+    for, bind the page it names, and set it running on the hours and the end it gives, while
+    the five jobs already running survive unchanged."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -447,11 +450,12 @@ async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(
     # And what SURVIVES it: everything the store already held, and the five jobs already
     # going.
     cohort.assert_what_the_store_held_survives()
-    cohort.assert_no_running_mechanism_was_changed()
+    cohort.assert_the_running_mechanisms_survive()
 
-    # PROVENANCE — the half the source case had none of.  The STORE half is not claimed in this
-    # case.  The reply claim is live throughout: a turn confirming a job it just set up is
-    # exactly where an hour or a price nobody gave gets stated.
+    # PROVENANCE — both halves, which the source case had none of.  The reply claim is live
+    # throughout: a turn confirming a job it just set up is exactly where an hour or a price
+    # nobody gave gets stated.
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

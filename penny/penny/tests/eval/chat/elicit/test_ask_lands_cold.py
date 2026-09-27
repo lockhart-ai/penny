@@ -1,4 +1,4 @@
-"""idle → elicit: the ask lands cold, and nothing is enacted (#2005, tranche 2).
+"""idle → elicit: the ask lands cold, and the round parks on the teach question (#2005, t2).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
@@ -43,9 +43,9 @@ than as a checklist nobody ran:
 * *nothing was registered* — ENTAILED by the landing.  Run-end extraction fires in `learn` and
   nowhere else, and the only other thing that touches the registry (`abandon_round_skill`) runs
   on an IDLE landing, so no sample can fail it without also failing `assert_machine_landed`.
-* *no running mechanism was changed* — VACUOUS on this world, which is a cold machine with no
-  mechanism in it at all.  Its three siblings in this tranche make it; this one would print a
-  green row for a question its own world cannot ask.
+* *every mechanism already running survives* — VACUOUS on this world, which is a cold machine
+  with no mechanism in it at all.  Its three siblings in this tranche make it; this one would
+  print a green row for a question its own world cannot ask.
 
 **Four source checks did not port** (the outward column):
 
@@ -59,9 +59,11 @@ than as a checklist nobody ran:
 * ``Check("reply: asked for no page structure")`` — a PHRASING match on a vocabulary somebody
   guessed in advance.  What it reached for has no end-state form and is read at review.
 
-**And two the inward column added.**  PROVENANCE, of the REPLY kind: the source case made no
-claim of it, so a sample that answered out of its own head passed every check it carried.  Its
-store half is not claimed in this case.  And `assert_every_delivered_message_is_whole`,
+**And two the inward column added.**  PROVENANCE, of both kinds: the source case made no
+claim of either, so a sample that answered out of its own head passed every check it carried.
+The store half reads only what this turn wrote, so it asks nothing of whether the turn wrote —
+that is measured as entries stored — and everything of whether what it wrote was invented.  And
+`assert_every_delivered_message_is_whole`,
 which the round-ends family had to refuse because every one of its worlds SEEDS Penny's own
 turns and the claim would then be answered against the fixture's agreed prose.  This world
 seeds NOTHING — the machine is cold — so the only message it can read is the question this turn
@@ -103,8 +105,8 @@ _CASE_ID = "transition-idle-to-elicit"
 
 _BEHAVIOUR = (
     "In the chat agent, when the user asks for something that has to keep running and no "
-    "routine she has covers it, Penny asks to be taught the steps once — without opening the "
-    "page, writing anything down, or standing a job up on steps nobody has given her."
+    "routine she has covers it, Penny parks the round in elicit on a question asking to be "
+    "taught the steps once."
 )
 
 # Four more wordings of that same ask.  What varies is only how a person says it — which verb
@@ -149,8 +151,8 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str) -> None:
     """idle → elicit: the canonical watch ask, its page named and reachable, arriving on a
-    cold machine.  No routine covers it, so the turn IS the question — the listing is never
-    opened, nothing is stored, nothing is registered, and the machine parks on the ask."""
+    cold machine.  No routine covers it, so the turn IS the question: the machine parks in
+    elicit on the ask, and the question it delivered is a whole message."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -172,9 +174,11 @@ async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str)
     # asking is measured below.
     cohort.assert_every_delivered_message_is_whole()
 
-    # PROVENANCE — the half the source case had none of.  The STORE half is not claimed in this
-    # case.  The reply claim is live throughout: a teach question that quotes the listing's
-    # price read a page it was not asked to read.
+    # PROVENANCE — both halves, which the source case had none of.  Whether the turn writes
+    # anything is the model's call and is measured; what is claimed is that nothing it did
+    # write, and nothing it said, was invented.  The reply claim is live throughout: a teach
+    # question that quotes a price nobody's page carries made it up.
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

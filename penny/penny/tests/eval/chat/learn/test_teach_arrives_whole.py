@@ -44,7 +44,7 @@ claim closes the one hole that leaves (a cohort that minted nothing at all).
 
 * ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — a ROUTE, keyed
   to a tool NAME, and measured as the tool sequence.  Its end-state form is what survives:
-  ``assert_no_running_mechanism_was_changed``.
+  ``assert_the_running_mechanisms_survive``.
 * ``_teach_anchor_check`` — *the move came from idle with the teach as its anchor.*
   PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the instigating message on every
   move into a parked state FROM idle, so on a sample that landed in learn the claim is
@@ -57,7 +57,7 @@ claim closes the one hole that leaves (a cohort that minted nothing at all).
 * ``_round_reported_checks`` — a PHRASING match: the reply saying the value back.  What it
   reached for is #2010's wrong-but-stable row, which the design measures with nothing.
 * ``_seeded_jobs_untouched_check`` — the right question, read off the ledger with the case's
-  own journey list.  It ports as ``assert_no_running_mechanism_was_changed``, which asks it of
+  own journey list.  It ports as ``assert_the_running_mechanisms_survive``, which asks it of
   every mechanism rather than of five enumerated names.
 
 **`answers` is EMPTY, and that is a REPORT with a caveat worth stating.**  The teach says to
@@ -111,8 +111,8 @@ _CASE_ID = _TEACH_HARBOUR_FLAG.case_id
 _BEHAVIOUR = (
     "In the chat agent, when a message arrives already carrying the instructions for a job, "
     "Penny runs that round once against the page it names, keeps what it says in the round's "
-    "own container, and mints a routine from what she just did — without setting it running "
-    "or touching any of the jobs already going."
+    "own container, and mints a routine from what she just did, and every job already going "
+    "survives unchanged."
 )
 
 # The survivor's own teach, in five wordings.  What varies is only how a person introduces a
@@ -203,12 +203,12 @@ def assert_every_wording_names_the_page(case: _TeachCase) -> None:
         assert case.url in wording, f"{case.case_id}: this wording names no page — {wording!r}"
 
 
-# ── The claims this world's own situation adds ────────────────────────────────
+# ── The claim this world's own situation adds ─────────────────────────────────
 #
-# Both are LOCAL: each is parametrised by what this world already holds, and no other case has
-# asked for either.  Between them they say that the turn built exactly the one thing a
-# demonstrated round builds and left the five jobs behind it alone — which is the half of the
-# contract the reference port's world (an empty machine) cannot state at all.
+# It is LOCAL: it is parametrised by what this world already holds, and no other case has asked
+# for it.  With the shared survival claim beside it, it says that the turn left the one thing a
+# demonstrated round leaves, and that the five jobs behind it survive unchanged — which is the
+# half of the contract the reference port's world (an empty machine) cannot state at all.
 
 
 def _the_registry_gained_one_routine(sample: SampleObservation, _world: World) -> Answer:
@@ -254,7 +254,8 @@ async def test_idle_to_learn_runs_the_taught_round_in_one_turn(
     """idle → learn, the canonical single-turn teach: the message says it is teaching and then
     gives the three steps, so there is nothing left to elicit.  The round is framed on the way
     in, run once — the signals page read, the flag saved into the round's own container — a
-    routine is minted from what just happened, and nothing is set running."""
+    routine is minted from what just happened, and the five jobs already running survive it
+    unchanged."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -283,7 +284,7 @@ async def test_idle_to_learn_runs_the_taught_round_in_one_turn(
     )
     cohort.assert_every_spot_is_a_placeholder()
     cohort.assert_the_routine_names_a_destination()
-    cohort.assert_no_running_mechanism_was_changed()
+    cohort.assert_the_running_mechanisms_survive()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()

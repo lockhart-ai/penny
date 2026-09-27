@@ -4,9 +4,9 @@ Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
 The world holds five finished journeys, so a routine that covers the ask already exists — and
 the ask leaves out exactly one value that routine's interface requires.  The turn's whole job
-is to recognise the routine and ask for the missing piece, standing nothing up: a container's
-name is derived from the routine plus EVERY value it is pointed at, so a job short of one has
-no name yet and anything built here would be built under a name nothing could derive again.
+is to recognise the routine and park the round on the missing piece: a container's name is
+derived from the routine plus EVERY value it is pointed at, so a job short of one has no name
+yet, and the round's recorded shortfall is where that state lives.
 
 **The survivor, and on what basis: MEASURED RATE, with dominance agreeing.**  The edge's five
 variants have real per-variant numbers.  Over the six suite runs that carried them, `-listing`
@@ -41,8 +41,8 @@ failure, and so is one that named the wrong parameter.
 * ``Check("state: she asked instead of going to look (no browse this turn)")`` — a ROUTE, keyed
   to a tool NAME, and measured in section B as the tool sequence.
 * ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — the same, and
-  its end-state form is what SURVIVES the turn: *no running mechanism was changed* and
-  *everything the store already held is still there, unchanged*.
+  its end-state form is what SURVIVES the turn: *every mechanism already running is still
+  there, unchanged* and *everything the store already held is still there, unchanged*.
 * ``_request_anchor_check`` — PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the
   instigating message on every move into a parked state FROM idle, so on a sample that landed
   in request the claim is entailed by the landing.
@@ -55,11 +55,12 @@ failure, and so is one that named the wrong parameter.
 **One more is absent by ENTAILMENT**, and is worth naming so the set reads as closed.
 *Nothing was registered*: run-end extraction fires in ``learn`` and nowhere else, and the only
 other thing that touches the registry (``abandon_round_skill``) runs on an IDLE landing — so no
-sample can fail it without also failing ``assert_machine_landed``.  *Every specific value in
-the stored entries is sourced* is not claimed in this case.
+sample can fail it without also failing ``assert_machine_landed``.
 
-**And one the inward column added**: PROVENANCE, of the REPLY kind.  The source case made no
-claim of it, so a reply that invented an address to ask about passed every check it carried.
+**And two the inward column added**: PROVENANCE, of both kinds.  The source case made no claim
+of either, so a reply that invented an address to ask about passed every check it carried.  The
+store half reads only what this turn wrote: whether it wrote is the model's call and is
+measured, and whether what it wrote was invented is claimed.
 
 **`keeps` and `answers` are both EMPTY, and each is a report.**  The turn is not asked to write
 anything down, so a keeps set would state a contract the ask never made.  The ask requests no
@@ -107,9 +108,9 @@ _CASE_ID = _SHORT_LISTING.case_id
 
 _BEHAVIOUR = (
     "In the chat agent, when a routine she already has nearly covers what the user asks for "
-    "and the ask leaves out one value that routine needs, Penny parks the round on that "
-    "routine and records the missing value as what she is waiting on — building nothing, "
-    "writing nothing, and leaving the jobs already running alone."
+    "and the ask leaves out one value that routine needs, Penny parks the round in request on "
+    "that routine, waiting on the missing value, and every job already running survives "
+    "unchanged."
 )
 
 # The survivor's own ask, in five wordings.  What varies is only how a person says it —
@@ -198,7 +199,7 @@ def assert_no_wording_names_a_page(case: _IdleRequestCase) -> None:
 # ── The claim this edge's own contract adds ───────────────────────────────────
 #
 # It reads the LANDED MOVE — the machine's own row — rather than the store, because what a
-# request turn produces is round state and not a mechanism: it deliberately builds nothing.
+# request turn produces is round state and not a mechanism.
 # It stays LOCAL because it is parametrised by this case's own shortfall and no other case has
 # asked for it; its sibling — the move naming the routine — GRADUATED in the same change, the
 # idle → apply case being its second customer.
@@ -219,8 +220,8 @@ def _waiting_on_exactly_what_is_missing(sample: SampleObservation, _world: World
 async def test_idle_to_request_asks_for_the_listing(chat_eval: ChatEval, model: str) -> None:
     """idle → request on the price watcher: the cadence and the end date are both given and the
     listing itself is not, which is the ask that most looks complete enough to act on.  The
-    turn parks on the routine it recognises, records the page as what it is waiting for, and
-    builds nothing on a half-settled interface."""
+    turn parks on the routine it recognises with the page as what it is waiting for, and the
+    five jobs already running and everything the store held survive it unchanged."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -250,11 +251,12 @@ async def test_idle_to_request_asks_for_the_listing(chat_eval: ChatEval, model: 
     # already running, and everything the store already held.  Whether the turn acted anyway
     # is the model's call and is measured below, never claimed.
     cohort.assert_what_the_store_held_survives()
-    cohort.assert_no_running_mechanism_was_changed()
+    cohort.assert_the_running_mechanisms_survive()
 
-    # PROVENANCE — the half the source case had none of.  The STORE half is not claimed in this
-    # case.  The reply claim is live throughout: an ask for a page the user never gave is
-    # exactly where an address gets invented.
+    # PROVENANCE — both halves, which the source case had none of.  The reply claim is live
+    # throughout: an ask for a page the user never gave is exactly where an address gets
+    # invented, and a turn that went and looked anyway is where one gets stored.
+    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)

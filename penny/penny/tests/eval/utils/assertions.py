@@ -46,12 +46,6 @@ from penny.text_validity import (
 )
 from penny.validation.conditions import ConditionKey
 
-# The STORE label several cases claim under, named once because a label is a DIFF-JOIN KEY: a
-# copy per case is a chance for a typo to split one claim's history into two.  Deliberately
-# case-NEUTRAL, so one wording reads the same whether the round was abandoned, never started,
-# or is waiting on a value.
-_NOTHING_CREATED = "state: no mechanism was created"
-
 # The ground a claim is answered against by a cohort that declared no arms at all — the
 # unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
 # against it is vacuous rather than answered on pages the sample never saw.
@@ -264,12 +258,6 @@ class Cohort:
             SpecCategory.STORE,
         )
 
-    def assert_no_mechanism_was_created(self) -> None:
-        """No mechanism was created — not an inert container, not a configured job, none.
-
-        The registry read is a list of rows, so "nothing" is a COUNT and not an inference."""
-        self.claim(_NOTHING_CREATED, _nothing_was_born, SpecCategory.STORE)
-
     def assert_the_move_named_the_routine(self, routine: str) -> None:
         """The move the turn recorded NAMED this routine — the decision half of picking one
         out of a registry of real routines of the same kind.
@@ -285,18 +273,19 @@ class Cohort:
             SpecCategory.LANDED,
         )
 
-    def assert_no_running_mechanism_was_changed(self) -> None:
-        """Nothing that was ALREADY running was touched — the only mechanism a turn may change
-        is one it created itself.
+    def assert_the_running_mechanisms_survive(self) -> None:
+        """Every mechanism that was ALREADY running is still there, unchanged — what SURVIVES
+        the turn, stated about the jobs the way ``assert_what_the_store_held_survives`` states
+        it about the entries.
 
         Read off the mutation LEDGER rather than a field-by-field diff, so a rebind, a schedule
         change, a description edit and an archive all answer it the same way and the field
-        nobody enumerated is caught too.  The born-this-run exemption is what lets one sentence
-        serve a turn that builds nothing and a turn that stands a job up: what it forbids is
-        reaching into the jobs the world was already running, which is none of any turn's
-        business."""
+        nobody enumerated is caught too.  A mechanism BORN this run is outside it, and that is
+        what keeps it a survival claim: whether a turn builds something is the model's call and
+        is measured, never claimed, so one sentence serves a turn that builds nothing and a turn
+        that stands a job up."""
         self.claim(
-            "state: no mechanism that was already running was changed",
+            "state: every mechanism already running is still there, unchanged",
             _running_mechanisms_untouched,
             SpecCategory.STORE,
         )
@@ -456,11 +445,6 @@ def _held_survives(sample: SampleObservation, _world: World) -> Answer:
     held = {(e.collection, e.key, e.content) for e in sample.held}
     lost = [e for e in sample.held_before if (e.collection, e.key, e.content) not in held]
     return not lost, f"lost {[f'{e.collection}: {e.key}' for e in lost]}"
-
-
-def _nothing_was_born(sample: SampleObservation, _world: World) -> Answer:
-    born = sorted(one.name for one in sample.mechanisms if one.born_this_run)
-    return not born, f"created {born}"
 
 
 def _named_the_routine(routine: str) -> WorldClaim:
