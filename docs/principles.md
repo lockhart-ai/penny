@@ -9,9 +9,6 @@ the SOPs (`docs/agent-task-workflow.md`, `docs/agent-supervisor-runbook.md`), no
 other text is stale: fix it. A principle changes only by the code owner's ruling, and the
 change is made here first.
 
-Rules marked **(often forgotten)** are the ones most often broken in practice. Read those
-twice.
-
 Quotes are the code owner's own words.
 
 ---
@@ -75,7 +72,7 @@ Quotes are the code owner's own words.
    - A design that changes what the model reads carries this reachability sketch on its
      ticket before it is built.
 
-6. **A skill is an arbitrary tool sequence (often forgotten).**
+6. **A skill is an arbitrary tool sequence.**
    - Nothing may be keyed to a tool name, an argument position, or the wording of the example
      in front of you.
    - Ask: *what happens when a tool I have never heard of does this?*
@@ -100,7 +97,7 @@ Quotes are the code owner's own words.
 
 9. **A few composable primitives, not bespoke mechanisms.** Every recurring intent is a
    configuration of a small vocabulary the model can reason about. **Machinery needs a second
-   customer (often forgotten):** fix the one instance, and build no guard, registry or tool
+   customer:** fix the one instance, and build no guard, registry or tool
    for a class with one member.
 
 10. **Change behaviour through data before code.** Prefer the highest rung that works:
@@ -121,7 +118,7 @@ Quotes are the code owner's own words.
 
 ## 3. How the model is presented with state
 
-1. **The model reacts rationally to what it is shown (often forgotten).** *"the model is
+1. **The model reacts rationally to what it is shown.** *"the model is
    acting rationally from the information that it is given; if it is not acting in the
    desired way, the data must self-evidently present the model with the correct choice;
    negative corrections are only sufficient for guarding against edge cases, not for
@@ -135,7 +132,7 @@ Quotes are the code owner's own words.
    be "it was never shown it legibly". Fix what the model reads before touching its
    instructions, and fix the rendering before the prompt.
 
-3. **Write prompts in plain words (often forgotten).**
+3. **Write prompts in plain words.**
    - Use short, direct sentences in common words, not a private dialect of precise-sounding
      phrases.
    - Give permission as well as prohibition ("it's fine to…").
@@ -164,7 +161,7 @@ Quotes are the code owner's own words.
 The eval cases are where the code owner states what Penny should do. The contract is
 `docs/eval-case-design.md`.
 
-1. **Facts are asserted; behaviour is measured (often forgotten).** *"we deterministically
+1. **Facts are asserted; behaviour is measured.** *"we deterministically
    validate facts; variance measures model behaviour."*
    - A claim is a fact about the world: what the store holds, what survived, where the
      machine landed, or a fact the reply cites (the interest it named, the price the page
@@ -192,7 +189,7 @@ The eval cases are where the code owner states what Penny should do. The contrac
    - Five wordings × three samples, run on both roster models, with no pass floors.
    - A behaviour another case already captures is a duplicate, and duplicates are deleted.
 
-6. **A check must be able to fail (often forgotten).** A pass from an instrument that could
+6. **A check must be able to fail.** A pass from an instrument that could
    not have failed tells you nothing. Every claim and every measured feature has to read the
    thing it names, and a feature that read nothing is blind, not "in agreement".
 
