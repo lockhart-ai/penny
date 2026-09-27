@@ -6,6 +6,15 @@ Penny is a local-first AI agent that communicates via Signal, Discord, or a Fire
 
 Penny is single-user — a personal assistant deployed locally for one person. Multiple devices (Signal phone, browser instances) connect as different devices of the same user, sharing a single conversation history.
 
+## Principles — read first
+
+**[`docs/principles.md`](docs/principles.md) is the north star**: the rules Penny is built, presented, tested and worked on by, collected in one place. Read it before designing a feature, a prompt, a tool or an eval case. When anything in this file or in `docs/` disagrees with it, `docs/principles.md` wins and the other text is stale. The shortest form:
+
+- Do as much deterministically as possible. Give the model as few choices at a time as possible. The model never writes historical records.
+- The model reacts rationally to what it is shown; when it does the wrong thing, fix what it is shown.
+- In eval cases, facts are asserted and behaviour is measured by variance. Assert what survives, never that the model refrained. No forced tool calls.
+- Eval cases are the code owner's; the internals are the supervising session's.
+
 ## Environment Notes
 
 - **Logs**: Runtime logs are written to `data/penny/logs/penny.log` (not docker compose logs)
@@ -141,6 +150,8 @@ scripts/
     client-check.yml            — CI: runs make client-check on PRs touching penny-client/
   CODEOWNERS                    — Trusted maintainers / reviewers
 docs/                           — Design documents and review guides
+  principles.md                 — THE NORTH STAR: Penny's core principles (system, presentation,
+                                  eval, working); wins over every other doc
   pr-review-guide.md            — Canonical PR review checklist (used by /quality skill)
   agent-task-workflow.md        — Task-agent SOP: one ticket → worktree → gate → PR → shepherd → cleanup
   agent-supervisor-runbook.md   — Supervisor runbook: meta ticket, dispatch, waves, heartbeat, fleet-end
