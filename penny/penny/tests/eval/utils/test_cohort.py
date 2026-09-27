@@ -327,9 +327,14 @@ def test_a_name_the_round_was_never_given_is_reported_by_name():
 
 def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_traces():
     """Apostrophes and possessives are the model's grammar, not an invention — and not folding
-    them reported `Brandt’s` as a fabrication."""
+    them reported `Brandt’s` as a fabrication, and a plural's bare apostrophe `Seals'`."""
     assert unsourced_specifics("the Ridgeline Foxes’ goalie", "Ridgeline Foxes news") == []
     assert unsourced_specifics("Aurelio Brandt’s deal", "signed Aurelio Brandt today") == []
+    assert unsourced_specifics("the Harbor Seals' site", "Harbor Seals news") == []
+    assert unsourced_specifics("the Casimir Oyelarans' site", "Harbor Seals news") == [
+        "Casimir",
+        "Oyelarans'",
+    ]
 
 
 def test_a_capitalised_label_against_a_name_is_not_a_fabrication():
@@ -346,8 +351,15 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     across the line break onto the name ending the line above and failed a faithful entry whose
     round never said "genre".
 
+    Markdown decoration does not change what a line is: a label wrapped in emphasis, on either
+    side of its colon, is still a label, and a heading line of label size is the same layout
+    without the colon.  Read through the emphasis, `**Team News Update:**` failed a faithful
+    reply as `unsourced: ['Update']`, because the round said "team news" and never "update".
+
     The paired guard: only the label is skipped.  A name in the value is read exactly as
-    before, so an invented one is still reported, and a colon later in a line labels nothing."""
+    before, so an invented one is still reported, and a colon later in a line labels nothing.
+    A heading long enough to be a headline is read whole, and a list bullet is not
+    decoration."""
     laid_out = "Publisher: Emberline Studios\nGenre: Turn-based strategy"
     assert specifics(laid_out) == ["Emberline", "Studios"]
     assert specifics("Release Date: March 14 2031") == ["14", "2031"]
@@ -363,14 +375,39 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
         "Casimir",
         "Oyelaran",
     ]
+    news = "Foxes sign veteran goalie Aurelio Brandt to a two-year deal.\nkeep a team news list"
+    headed = (
+        "**Team News Update:**\n"
+        "   **Aurelio Brandt Signing**: Foxes sign veteran goalie Aurelio Brandt\n"
+        "### Team News Update\n"
+        "## **Team News Update**\n"
+        "### Update: Foxes sign Aurelio Brandt"
+    )
+    assert unsourced_specifics(headed, news) == []
+    assert unsourced_specifics("**Team News Update:** Casimir Oyelaran signs", news) == [
+        "Casimir",
+        "Oyelaran",
+    ]
+    assert unsourced_specifics("### Update: Casimir Oyelaran signs", news) == [
+        "Casimir",
+        "Oyelaran",
+    ]
+    assert unsourced_specifics("## Foxes Sign Casimir Oyelaran To A Deal", news) == [
+        "Casimir",
+        "Oyelaran",
+    ]
+    assert specifics("* Team News Update: two items") == ["Team", "News", "Update"]
 
 
 def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
     """Stated rather than discovered later: a name or short clause heading a line before a
     colon is a field label by definition, so a name written in that position is not read,
-    invented or not.  The same name anywhere after the colon still is."""
+    invented or not — decorated or not, and as a heading of label size.  The same name anywhere
+    after the colon still is."""
     given = "Aurelio Brandt signed today."
     assert unsourced_specifics("Casimir Oyelaran: signed today", given) == []
+    assert unsourced_specifics("**Casimir Oyelaran:** signed today", given) == []
+    assert unsourced_specifics("### Casimir Oyelaran\nsigned today", given) == []
 
 
 _GAME_PAGE = (

@@ -1164,12 +1164,26 @@ _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 # because the label glued across the line break onto the name ending the line above, and
 # nothing the round was given happened to say "genre".
 #
+# Markdown decoration does not change what a line IS, so the label is read through it: emphasis
+# around the label, on either side of the colon (`**Team News Update:**`, `**Genre**:`), and a
+# heading's marks (`### Genre:`).  A HEADING LINE — heading marks, then a label-sized title and
+# nothing else (`### Team News Update`) — is the same layout without the colon.  MEASURED: a
+# reply laid out under `**Team News Update:**` failed as `unsourced: ['Update']`, because the
+# emphasis in front of the label kept the line from reading as one.  A list bullet is not
+# decoration: `* Label:` is still read, as it was.
+#
 # THE BLIND SPOT, STATED: a name or a short clause heading a line before a colon
-# (`Casimir Oyelaran: signed`) is a label by this definition, so an invented name there is not
-# read.
+# (`Casimir Oyelaran: signed`), or making up a whole heading of four words or fewer
+# (`### Casimir Oyelaran`), is a label by this definition, so an invented name there is not
+# read.  A longer heading is a headline, and every name in it is read.
 _LABEL_WORD = r"[A-Za-z][A-Za-z'-]*"
+_LABEL = rf"{_CAPITALISED}(?:[ \t]+{_LABEL_WORD}){{0,3}}"
+_EMPHASIS = r"[*_]*"
+_HEADING_MARKS = r"#{1,6}[ \t]+"
 _FIELD_LABEL = re.compile(
-    rf"^[ \t]*{_CAPITALISED}(?:[ \t]+{_LABEL_WORD}){{0,3}}(?=:)", re.MULTILINE
+    rf"^[ \t]*(?:{_HEADING_MARKS})?{_EMPHASIS}{_LABEL}{_EMPHASIS}(?=:)"
+    rf"|^[ \t]*{_HEADING_MARKS}{_EMPHASIS}{_LABEL}{_EMPHASIS}[ \t]*$",
+    re.MULTILINE,
 )
 
 # ONE folding, used by every probe on both sides of every comparison.  A semantic check defeated
@@ -1206,14 +1220,25 @@ def fold_typography(text: str) -> str:
     return text.casefold()
 
 
+_POSSESSIVE = "'s"
+# A plural's possessive is its bare apostrophe: `Seals'`.  MEASURED: `the Harbor Seals' site`
+# failed as `unsourced: ["Seals'"]` against a page that said "Seals".
+_PLURAL_POSSESSIVE = "'"
+
+
 def _bare(token: str) -> str:
-    """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``."""
+    """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``, and
+    ``Seals'`` the same name as ``Seals``."""
     folded = fold_typography(token)
-    return folded[:-2] if folded.endswith("'s") else folded
+    for tail in (_POSSESSIVE, _PLURAL_POSSESSIVE):
+        if folded.endswith(tail):
+            return folded[: -len(tail)]
+    return folded
 
 
 def _blank_field_labels(text: str) -> str:
-    """Blank out each line's field label, so it is neither a value nor part of one."""
+    """Blank out each line's field label and each heading line's title, so neither is a value
+    nor part of one."""
     return _FIELD_LABEL.sub(lambda m: " " * len(m.group()), text)
 
 
@@ -1310,8 +1335,8 @@ def specifics(text: str) -> list[str]:
     A phrase decides WHAT gets checked; its words are what is checked.  Measured, the whole
     phrase is too brittle to compare directly: a capitalised label sitting against a name
     (``Key⁠Ridgeline Foxes Sign Aurelio Brandt``, glued by a narrow no-break space) is not a
-    string the world contains, though every name in it is.  A line's field label is layout, not
-    a value, and is never read."""
+    string the world contains, though every name in it is.  A line's field label and a heading
+    line's title are layout, not values, and are never read."""
     found: list[str] = []
     for match in _SPECIFIC.finditer(_fold_phrases(_blank_field_labels(text))):
         token = match.group().strip()
