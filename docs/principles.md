@@ -115,8 +115,9 @@ Quotes are the code owner's own words.
     from their next message; Penny's internal state can't be. So the self-state is rendered
     every turn, and the user's store appears as a map, not as its contents.
 
-12. **Invent no limits.** No truncation, threshold or cap that nobody asked for. Prefer a
-    structural rule (identity, set relation) over a tuned cutoff that drifts.
+12. **Structural rules over tuned thresholds.** Where a decision can rest on identity or a
+    set relation, it does. A similarity cutoff drifts and has to be re-tuned, and a structural
+    rule has nothing to tune.
 
 ## 3. How the model is presented with state
 
