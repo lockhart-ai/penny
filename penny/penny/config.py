@@ -251,10 +251,9 @@ class Config:
     llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
-    # Which upstream to PREFER when the chat endpoint is a routing gateway serving one
-    # model from several providers. A preference, never a wall: fallbacks stay on, so a
-    # busy upstream costs a fallback rather than the run's whole throughput, and which
-    # provider actually answered is recorded per call rather than assumed.
+    # Which upstream to PIN when the chat endpoint is a routing gateway serving one model
+    # from several providers. A hard pin, fallbacks off: every call goes to exactly this
+    # provider, and which provider answered is still recorded per call.
     llm_provider: str | None = None
     image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for image generation
 

@@ -26,8 +26,8 @@ EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.check
 #                      One model, no provider, no roster: it serves what it has.
 #   remote           — an OpenAI-compatible provider. Samples AND cases in parallel,
 #                      because the provider serves them concurrently and the only
-#                      local work left is the embedding model. Its models + their
-#                      preferred upstreams come from EVAL_MODELS in .env (below).
+#                      local work left is the embedding model. Its models + the
+#                      upstream each is pinned to come from EVAL_MODELS in .env (below).
 #
 # `make eval` is local; `make eval-remote` is remote. Every value a profile picks is
 # still individually overridable, so a remote SERIAL run (debugging a single case) or a
@@ -110,10 +110,10 @@ HEAD_COMMIT_CMD = git rev-parse HEAD 2>/dev/null || echo unknown
 # it as EVAL_PROVIDER, so the manifest records WHERE the model was served from (#1996).
 SMOKE_PROVIDER_LINE := eval: chat provider =
 # The two lines `penny.tests.eval.utils.roster` prints its resolution on. Must match
-# `roster.MODEL_LINE_PREFIX` / `roster.PREFERRED_PROVIDER_LINE_PREFIX` — the recipe reads
-# the run's model and its PREFERRED upstream off them.
+# `roster.MODEL_LINE_PREFIX` / `roster.PINNED_PROVIDER_LINE_PREFIX` — the recipe reads
+# the run's model and its PINNED upstream off them.
 ROSTER_MODEL_LINE := eval: model =
-ROSTER_PROVIDER_LINE := eval: preferred provider =
+ROSTER_PROVIDER_LINE := eval: pinned provider =
 # Where a LEVER-LESS run drops its per-process health records. A report run uses its own
 # run dir; an ephemeral iteration run has none, and this is inside the --rm container, so
 # the records die with the run exactly as the rest of its artifacts do. The run still gets
@@ -286,9 +286,10 @@ pytest: $(if $(LOCAL),,build)
 # at least two of them, and a remote run refuses to start without it (see
 # penny.tests.eval.utils.roster for why two, and why the requirement is remote-only). The recipe
 # resolves this invocation's entry — the first by default, or the one LLM_MODEL names — and
-# forwards its provider as a PREFERENCE with fallbacks ON, never a hard pin: pinning hard
-# put 325 rate limits on one endpoint at a concurrency the same run handled with zero
-# unpinned. Which upstream actually ANSWERED is recorded instead, per call.
+# forwards its provider as a hard PIN with fallbacks OFF: every call goes to exactly that
+# upstream, so a run is served by the provider it names or by nobody. A pin gets only what
+# that one provider sustains, so size EVAL_WORKERS to it. Which upstream ANSWERED is still
+# recorded, per call.
 #
 # The embedding model is NOT part of the profile: it stays on the local Ollama in both,
 # so moving the chat model never silently moves the vector space every memory case is
@@ -359,14 +360,14 @@ eval: $(if $(LOCAL),,build)
 	workers="$${EVAL_WORKERS:-$$workers_default}"; \
 	concurrency="$${EVAL_CONCURRENCY:-$$concurrency_default}"; \
 	model="$${LLM_MODEL:-$$model_default}"; \
-	preferred=""; \
+	pinned=""; \
 	if [ "$(EVAL_PROFILE)" = remote ]; then \
 		roster_log="$$(mktemp)"; \
 		if ( $(EVAL_RUN) env EVAL_MODELS="$${EVAL_MODELS:-$$(from_env EVAL_MODELS)}" \
 			python -m penny.tests.eval.utils.roster $$model ) > "$$roster_log" 2>&1; then rostered=1; else rostered=0; fi; \
 		cat "$$roster_log"; \
 		model="$$(sed -n 's/^$(ROSTER_MODEL_LINE) //p' "$$roster_log" | tail -1)"; \
-		preferred="$$(sed -n 's/^$(ROSTER_PROVIDER_LINE) //p' "$$roster_log" | tail -1)"; \
+		pinned="$$(sed -n 's/^$(ROSTER_PROVIDER_LINE) //p' "$$roster_log" | tail -1)"; \
 		rm -f "$$roster_log"; \
 		if [ "$$rostered" = 0 ]; then exit 1; fi; \
 	fi; \
@@ -383,10 +384,10 @@ eval: $(if $(LOCAL),,build)
 			exit 1; \
 		fi; \
 	fi; \
-	echo "eval: profile $(EVAL_PROFILE) — $$model at $$llm_url$${preferred:+ preferring $$preferred} · $$workers worker(s) x $$concurrency sample(s) in flight"; \
+	echo "eval: profile $(EVAL_PROFILE) — $$model at $$llm_url$${pinned:+ pinned to $$pinned} · $$workers worker(s) x $$concurrency sample(s) in flight"; \
 	smoke_log="$$(mktemp)"; \
 	if ( $(EVAL_RUN) env LLM_API_URL="$$llm_url" LLM_API_KEY="$$llm_key" \
-		LLM_MODEL="$$model" LLM_PROVIDER="$$preferred" \
+		LLM_MODEL="$$model" LLM_PROVIDER="$$pinned" \
 		LLM_EMBEDDING_API_URL="$$embed_url" LLM_EMBEDDING_API_KEY="$$embed_key" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		python -m penny.tests.eval.utils.endpoint_smoke ) > "$$smoke_log" 2>&1; then smoked=1; else smoked=0; fi; \
@@ -443,8 +444,8 @@ eval: $(if $(LOCAL),,build)
 		EVAL_LEVER="$${EVAL_LEVER}" \
 		EVAL_RUN_ID="$$run_id" \
 		EVAL_HEALTH_DIR="$$health_dir" \
-		LLM_PROVIDER="$$preferred" \
-		EVAL_PREFERRED_PROVIDER="$$preferred" \
+		LLM_PROVIDER="$$pinned" \
+		EVAL_PREFERRED_PROVIDER="$$pinned" \
 		EVAL_PROVIDER="$$provider" \
 		EVAL_COMMIT="$$commit" \
 		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \

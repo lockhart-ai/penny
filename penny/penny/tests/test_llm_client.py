@@ -30,7 +30,7 @@ from penny.llm.models import (
     LlmResponse,
     LlmResponseError,
     LlmTimeoutError,
-    ProviderPreference,
+    ProviderPin,
     fault_for_status,
 )
 
@@ -443,32 +443,30 @@ class TestFaultClassIsAValueNotASentence:
         await client.close()
 
 
-class TestRoutingIsAPreferenceNotAWall:
-    """Which upstream serves a model is asked for, observed, and never enforced (#1996)."""
+class TestAConfiguredProviderIsPinned:
+    """A configured provider is a hard pin: one upstream, no fallback routing (#2143)."""
 
-    def test_a_preference_travels_with_fallbacks_on(self) -> None:
-        """Hard pinning concentrates a whole run's load on one upstream.
+    def test_a_pin_travels_with_fallbacks_off(self) -> None:
+        """Upstreams serving one model are not interchangeable, so nothing routes at random.
 
-        Measured: `allow_fallbacks: false` put 325 rate limits on ONE endpoint at a
-        concurrency the same run handled with zero unpinned. So the default is a
-        preference — the pool's throughput stays available and a fallback is recorded
-        rather than forbidden.
+        Measured: one gateway adapter replaced every plain-text tool result with `{}`, so a
+        call routed there measured a model that never saw its own tool results.
         """
-        preference = ProviderPreference.prefer("Cloudflare")
-        assert preference is not None
-        assert preference.as_request_field() == {
+        pin = ProviderPin.pin("Cloudflare")
+        assert pin is not None
+        assert pin.as_request_field() == {
             "order": ["Cloudflare"],
-            "allow_fallbacks": True,
+            "allow_fallbacks": False,
         }
 
-    def test_no_configured_provider_is_no_preference_at_all(self) -> None:
+    def test_no_configured_provider_is_no_pin_at_all(self) -> None:
         """A direct endpoint has no upstreams, so nothing is sent — not an empty pin."""
-        assert ProviderPreference.prefer(None) is None
-        assert ProviderPreference.prefer("") is None
+        assert ProviderPin.pin(None) is None
+        assert ProviderPin.pin("") is None
 
     @pytest.mark.asyncio
-    async def test_the_preference_reaches_the_request_body(self, monkeypatch) -> None:
-        """A preference nothing sends is a preference that does nothing."""
+    async def test_the_pin_reaches_the_request_body(self, monkeypatch) -> None:
+        """A pin nothing sends is a pin that does nothing."""
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -480,26 +478,23 @@ class TestRoutingIsAPreferenceNotAWall:
             model="m",
             max_retries=1,
             retry_delay=0.0,
-            provider_preference=ProviderPreference.prefer("Cloudflare"),
+            provider_pin=ProviderPin.pin("Cloudflare"),
         )
         monkeypatch.setattr(client.client.chat.completions, "create", capture)
 
         with pytest.raises(LlmError):
             await client.chat([{"role": "user", "content": "hi"}])
 
-        assert sent["extra_body"]["provider"] == {
-            "order": ["Cloudflare"],
-            "allow_fallbacks": True,
-        }
         # The reasoning switch still rides the same passthrough — one is not added at the
         # cost of the other, and a run that lost it would be comparing a model to itself.
-        assert sent["extra_body"]["reasoning"] == {"enabled": True}
+        assert sent["extra_body"] == {
+            "reasoning": {"enabled": True},
+            "provider": {"order": ["Cloudflare"], "allow_fallbacks": False},
+        }
         await client.close()
 
     @pytest.mark.asyncio
-    async def test_a_client_with_no_preference_sends_the_body_it_always_sent(
-        self, monkeypatch
-    ) -> None:
+    async def test_a_client_with_no_pin_sends_the_body_it_always_sent(self, monkeypatch) -> None:
         sent: dict = {}
 
         async def capture(**kwargs):
@@ -519,7 +514,7 @@ class TestRoutingIsAPreferenceNotAWall:
 
     @pytest.mark.asyncio
     async def test_the_upstream_that_answered_comes_back_on_the_response(self, monkeypatch) -> None:
-        """Reproducibility is OBSERVED: the answer says who served it, preference or not."""
+        """The answer says who served it, so a pin the gateway did not honour is visible."""
 
         class _Answered:
             model = "m"
@@ -551,14 +546,14 @@ class TestRoutingIsAPreferenceNotAWall:
             model="m",
             max_retries=1,
             retry_delay=0.0,
-            provider_preference=ProviderPreference.prefer("Cloudflare"),
+            provider_pin=ProviderPin.pin("Cloudflare"),
         )
         monkeypatch.setattr(client.client.chat.completions, "create", answer)
 
         response = await client.chat([{"role": "user", "content": "hi"}])
 
-        # It preferred Cloudflare and DeepInfra answered — a fallback, stated rather than
-        # hidden behind an assumption that the pin held.
+        # It pinned Cloudflare and DeepInfra answered — stated rather than hidden behind an
+        # assumption that the pin held.
         assert response.provider == "DeepInfra"
         assert isinstance(response, LlmResponse)
         assert isinstance(response.message, LlmMessage)

@@ -88,7 +88,7 @@ class TestWhichEntryThisInvocationRuns:
         assert entry.provider == "OtherCloud"
 
     def test_a_model_outside_the_roster_is_refused_and_the_roster_is_listed(self) -> None:
-        """An unconfigured model has no upstream to prefer and none to record.
+        """An unconfigured model has no upstream to pin and none to record.
 
         That is the ad-hoc pass this variable replaces, so it is refused — and the refusal
         renders the roster verbatim, so adding the model is a copy rather than a lookup.
@@ -105,7 +105,7 @@ class TestWhatTheRecipeReads:
     def test_the_resolution_renders_the_two_lines_the_makefile_parses(self) -> None:
         assert render_resolution(EvalModel(model="vendor/model-a", provider="SomeCloud")) == [
             "eval: model = vendor/model-a",
-            "eval: preferred provider = SomeCloud",
+            "eval: pinned provider = SomeCloud",
         ]
 
     def test_a_providerless_entry_renders_no_provider_line(self) -> None:
@@ -120,7 +120,7 @@ class TestWhatTheRecipeReads:
         assert main(["vendor/model-b"]) == 0
         out = capsys.readouterr().out
         assert "eval: model = vendor/model-b" in out
-        assert "eval: preferred provider = OtherCloud" in out
+        assert "eval: pinned provider = OtherCloud" in out
 
         # A stray argument is a usage error, distinct from an unconfigured roster.
         assert main(["a", "b"]) == 2

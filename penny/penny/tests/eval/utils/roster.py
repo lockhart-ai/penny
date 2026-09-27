@@ -1,4 +1,4 @@
-"""Which models the suite measures, and which upstream each prefers.
+"""Which models the suite measures, and which upstream each is pinned to.
 
 The model a run measured used to be an ad-hoc make variable and the provider could not be
 expressed at all — so "what did this run actually run against?" was answered by shell
@@ -49,7 +49,7 @@ USAGE = "usage: python -m penny.tests.eval.utils.roster [<model>]"
 # The lines the Makefile reads the resolution off.  Human-readable AND parseable, so the
 # operator sees the same two facts the run records.
 MODEL_LINE_PREFIX = "eval: model ="
-PREFERRED_PROVIDER_LINE_PREFIX = "eval: preferred provider ="
+PINNED_PROVIDER_LINE_PREFIX = "eval: pinned provider ="
 
 _SHAPE_EXAMPLE = (
     '    EVAL_MODELS=[{"model":"vendor/model-a","provider":"SomeCloud"},'
@@ -62,11 +62,13 @@ class RosterError(RuntimeError):
 
 
 class EvalModel(BaseModel):
-    """One model the suite measures, and the upstream it prefers to be served by.
+    """One model the suite measures, and the upstream it is pinned to.
 
     ``provider`` is optional because a direct endpoint has none to name; where it IS set,
-    it is a PREFERENCE the run sends with every call and never a wall (see
-    ``ProviderPreference``).
+    every call the run makes is PINNED to it with fallbacks off (see
+    ``ProviderPin``), so the run is served by that provider or by nobody.  Name it
+    as the gateway reports it back (OpenRouter answers ``Groq``, not ``groq``), so the
+    manifest's pinned-versus-answered comparison reads a match as a match.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -121,8 +123,8 @@ def resolve(roster: list[EvalModel], requested: str | None) -> EvalModel:
     """Which entry THIS invocation runs — the first by default, or the one named.
 
     A requested model outside the roster is refused rather than run: an unconfigured model
-    has no provider to prefer and no provider to record, which is the ad-hoc pass this
-    whole variable replaces.  Adding it to ``.env`` is the fix, and the refusal says so.
+    has no provider to pin and no provider to record, which is the ad-hoc pass this whole
+    variable replaces.  Adding it to ``.env`` is the fix, and the refusal says so.
     """
     if requested is None:
         return roster[0]
@@ -131,7 +133,7 @@ def resolve(roster: list[EvalModel], requested: str | None) -> EvalModel:
             return entry
     listed = "\n".join(f"  - {entry.render()}" for entry in roster)
     raise RosterError(
-        f"'{requested}' is not in {EVAL_MODELS_ENV}, so this run could neither prefer an "
+        f"'{requested}' is not in {EVAL_MODELS_ENV}, so this run could neither pin an "
         f"upstream for it nor record which one answered. Configured:\n{listed}\n"
         f"Add it to {EVAL_MODELS_ENV} in the primary checkout's .env to run it."
     )
@@ -141,12 +143,12 @@ def render_resolution(entry: EvalModel) -> list[str]:
     """The lines the Makefile reads: always the model, the provider when one is named."""
     lines = [f"{MODEL_LINE_PREFIX} {entry.model}"]
     if entry.provider:
-        lines.append(f"{PREFERRED_PROVIDER_LINE_PREFIX} {entry.provider}")
+        lines.append(f"{PINNED_PROVIDER_LINE_PREFIX} {entry.provider}")
     return lines
 
 
 def main(argv: list[str]) -> int:
-    """Print this invocation's model + preferred provider; 1 when the roster refuses.
+    """Print this invocation's model + pinned provider; 1 when the roster refuses.
 
     Run by the ``eval`` recipe BEFORE anything is spent, so an under-configured suite stops
     at the same point an unserveable endpoint does rather than minutes into a run.

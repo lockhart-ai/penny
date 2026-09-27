@@ -51,9 +51,10 @@ LLM_API_URL_ENV = "LLM_API_URL"
 # Which upstream answered the endpoint's own smoke call, forwarded by the Makefile from
 # ``endpoint_smoke``.  Empty when the endpoint names no provider (a local Ollama does not).
 EVAL_PROVIDER_ENV = "EVAL_PROVIDER"
-# Which upstream the run PREFERRED, from the configured roster.  Recorded beside the one
-# that answered, so a fallback is a fact the artifacts state rather than one nobody can
-# recover: pinning is a preference and not a wall, so the two legitimately differ.
+# Which upstream the run was PINNED to, from the configured roster.  Recorded beside the
+# one that answered, so a mismatch is a fact the artifacts state rather than one nobody
+# can recover: under a pin the two differ only when the gateway did not honour it, or when
+# the roster spells the provider differently from how the gateway reports it.
 EVAL_PREFERRED_PROVIDER_ENV = "EVAL_PREFERRED_PROVIDER"
 
 # ── Artifact filenames (all live under EVAL_REPORT_DIR) ──────────────────────
@@ -581,14 +582,16 @@ def render_routing(manifest: RunManifest) -> str:
     """How the run was routed, on the endpoint line: who answered, and whether that is who
     it asked for.
 
-    The preference is not a wall (see ``ProviderPreference``), so a run CAN be served by an
-    upstream it did not prefer — and that fact is the whole diagnosis when a run degrades,
-    so it is stated rather than left to be inferred from two fields nobody compares.
+    The run is pinned (see ``ProviderPin``), so a different answering provider means
+    the pin did not hold as written — the gateway ignored it, or the roster names the
+    provider differently from how the gateway reports it — and that is stated rather than
+    left to be inferred from two fields nobody compares.
     """
     if not manifest.provider:
         return ""
     if manifest.preferred_provider and manifest.preferred_provider != manifest.provider:
-        return f" via `{manifest.provider}` (preferred `{manifest.preferred_provider}` — fell back)"
+        pinned = manifest.preferred_provider
+        return f" via `{manifest.provider}` (pinned `{pinned}` — not who answered)"
     return f" via `{manifest.provider}`"
 
 

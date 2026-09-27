@@ -34,7 +34,7 @@ from penny.llm.models import (
     LlmToolCall,
     LlmToolCallFunction,
     LlmToolParseError,
-    ProviderPreference,
+    ProviderPin,
     fault_for_status,
 )
 
@@ -190,7 +190,7 @@ class LlmClient:
         retry_delay: float,
         api_key: str = _DEFAULT_API_KEY,
         timeout: float | None = None,
-        provider_preference: ProviderPreference | None = None,
+        provider_pin: ProviderPin | None = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.model = model
@@ -198,7 +198,7 @@ class LlmClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.api_key = api_key
-        self.provider_preference = provider_preference
+        self.provider_pin = provider_pin
 
         client_kwargs: dict[str, Any] = {
             "base_url": f"{self.api_url}/v1",
@@ -511,12 +511,12 @@ class LlmClient:
         format: dict | str | None,
     ) -> dict:
         """Build kwargs for the OpenAI chat completions call."""
-        # Both vendor fields ride the same passthrough.  The routing preference is added
-        # only when one was CONFIGURED, so a client without one sends the body it always
-        # sent — and a direct endpoint that has never heard of the field ignores it.
+        # Both vendor fields ride the same passthrough.  The provider pin is added only
+        # when one was CONFIGURED, so a client without one sends the body it always sent —
+        # and a direct endpoint that has never heard of the field ignores it.
         extra_body = dict(REASONING_ENABLED_BODY)
-        if self.provider_preference is not None:
-            extra_body[PROVIDER_REQUEST_FIELD] = self.provider_preference.as_request_field()
+        if self.provider_pin is not None:
+            extra_body[PROVIDER_REQUEST_FIELD] = self.provider_pin.as_request_field()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,

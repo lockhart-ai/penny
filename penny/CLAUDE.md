@@ -657,20 +657,28 @@ minimum is a COUNT, never two named models: naming them here would rot the day t
 changes. A JSON list because that is how `PLUGINS` is configured, and because an env var
 name cannot contain `/`. The recipe resolves this invocation's entry before anything is
 spent — the first by default, or the one `LLM_MODEL` names, and a model **outside** the
-roster is refused (it has no upstream to prefer and none to record, which is the ad-hoc
+roster is refused (it has no upstream to pin and none to record, which is the ad-hoc
 pass the variable replaces). **The requirement binds the REMOTE profile only**: the field
 that makes an entry load-bearing is `provider`, and a local Ollama has none — it serves one
 model at a time on one GPU, so `make eval` keeps its own single configured model.
 
-**Pinning is a PREFERENCE, never a wall.** The resolved entry's provider becomes the run's
-`LLM_PROVIDER`, which reaches the chat client as a `ProviderPreference` (`penny/llm/models.py`)
-and rides the request body's vendor passthrough with **fallbacks ON**. Hard pinning and
-concurrency are coupled: `allow_fallbacks: false` put **325 HTTP 429s** on one endpoint at a
-concurrency the same run handled with **zero** unpinned, because forbidding every other
-upstream concentrates the whole run's load onto one. So reproducibility is **observed**
-rather than enforced — the answering provider comes back on every response, the manifest
-records it beside the preferred one (a differing pair renders as `fell back`), and the run
-health block tallies every provider that served the run.
+**A configured provider is a hard PIN.** The resolved entry's provider becomes the run's
+`LLM_PROVIDER`, which reaches the chat client as a `ProviderPin` (`penny/llm/models.py`,
+the ONE place the routing field is built) and rides the request body's vendor passthrough as
+`{"order": [<provider>], "allow_fallbacks": false}` — every call goes to exactly that
+upstream, and nothing is ever routed somewhere nobody chose. There is no unpinned mode, and
+an unset provider sends no routing field at all. Upstreams serving the same model are not
+interchangeable: one gateway adapter was measured replacing every plain-text `role: tool`
+content with `{}`, so a run routed there measured a model that never saw its own tool
+results. **Size concurrency to what the pinned provider sustains** — a pin gets that one
+provider's capacity and no other, so `EVAL_WORKERS` is chosen against it rather than against
+the gateway's whole pool. A pinned provider the gateway filters out for a request (one whose
+endpoint does not support tools, for instance) is refused by the up-front smoke call, never
+silently re-routed. Name the provider as the gateway reports it back (OpenRouter answers
+`Groq`, not `groq`): the answering provider still comes back on every response, the manifest
+records it beside the pinned one (a differing pair renders as `not who answered` — the pin
+did not hold as written), and the run health block tallies every provider that served the
+run.
 
 **The embedding model is NOT part of the profile**: it stays on the local Ollama in both,
 so moving the chat model never silently moves the vector space every memory case is scored
@@ -697,8 +705,8 @@ first (#1996)**: one un-retried `HTTP 502` blocked two whole runs while the same
 answered a direct call seconds later, so the check draws up to `SMOKE_ATTEMPTS` times on a
 fault whose `LlmFault` is `transient` — and still refuses on the FIRST draw for one that is
 not (a 404 is a verdict, not a moment), which keeps the fast, decisive refusal it exists
-for. The probe carries the run's own provider preference, so what it proves is the routing
-the samples will use, and the upstream that answered it is forwarded into the manifest.
+for. The probe carries the run's own provider pin, so what it proves is the routing the
+samples will use, and the upstream that answered it is forwarded into the manifest.
 
 **A run reports its own health (#1996)** (`penny.tests.eval.utils.run_health`, printed in the
 terminal summary and written to the run dir as `health*.jsonl`, riding the same per-worker

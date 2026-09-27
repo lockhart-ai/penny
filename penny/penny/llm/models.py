@@ -124,36 +124,35 @@ def fault_for_status(status: int | None) -> LlmFault:
     return LlmFault.OTHER
 
 
-# The request-body field an OpenAI-compatible GATEWAY reads its routing preference from.
+# The request-body field an OpenAI-compatible GATEWAY reads its routing preferences from.
 # It travels as ``extra_body`` because it is not part of the OpenAI schema — a direct
 # endpoint that has never heard of it ignores it.
 PROVIDER_REQUEST_FIELD = "provider"
 
 
-class ProviderPreference(BaseModel):
-    """Which upstream a routing gateway should PREFER — and whether it may use another.
+class ProviderPin(BaseModel):
+    """The gateway's routing object for a configured provider: a PIN to that one upstream.
 
-    Pinning is a PREFERENCE by default, never a wall.  Pinning hard (``allow_fallbacks``
-    off) put 325 rate limits on ONE endpoint at a concurrency the same run handled with
-    zero unpinned: forbidding every other upstream concentrates the whole run's load onto
-    one of them, so hard pinning and concurrency are coupled and a run that pins hard has
-    to lower its in-flight budget to match.  Preferring instead keeps the throughput the
-    pool provides, and reproducibility becomes something the run OBSERVES rather than
-    enforces — the answering provider is recorded per call, so a fallback shows up in the
-    artifacts as the fact it is.
+    Every request goes to exactly the named provider, with ``allow_fallbacks`` off, so
+    nothing is ever routed somewhere nobody chose.  Upstreams serving the same model are
+    not interchangeable: one gateway adapter was measured replacing every plain-text tool
+    result with ``{}``, so a run routed there measured a model that never saw its own tool
+    results.  A pin makes the upstream a fact of the configuration rather than of the
+    moment.  The cost is that a pinned run gets only what that one provider sustains, so
+    concurrency is sized to it.  There is no unpinned mode: fallbacks are not a field
+    here, because nothing is supposed to turn them on.
     """
 
-    order: list[str]
-    allow_fallbacks: bool = True
+    provider: str
 
     @classmethod
-    def prefer(cls, provider: str | None) -> ProviderPreference | None:
-        """A preference for one named upstream, or ``None`` when none was configured."""
-        return cls(order=[provider]) if provider else None
+    def pin(cls, provider: str | None) -> ProviderPin | None:
+        """A pin to one named upstream, or ``None`` when none was configured."""
+        return cls(provider=provider) if provider else None
 
     def as_request_field(self) -> dict[str, Any]:
         """The gateway's own routing object, for the request body."""
-        return {"order": list(self.order), "allow_fallbacks": self.allow_fallbacks}
+        return {"order": [self.provider], "allow_fallbacks": False}
 
 
 # ── Error types ──────────────────────────────────────────────────────────

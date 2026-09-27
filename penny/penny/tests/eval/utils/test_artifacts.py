@@ -163,13 +163,13 @@ def test_the_run_reads_its_endpoint_and_provider_from_the_environment(tmp_path: 
     assert run.manifest.provider == "google-vertex"
 
 
-def test_a_fallback_is_stated_rather_than_left_to_be_inferred() -> None:
-    """Routing is a preference, not a wall — so a run CAN be served by another upstream.
+def test_a_pin_that_did_not_hold_is_stated_rather_than_left_to_be_inferred() -> None:
+    """A run is pinned, so another upstream answering means the pin did not hold as written.
 
     That is the whole diagnosis when a run degrades, so the header says it happened
     instead of leaving two fields for a reader to notice differ.
     """
-    fell_back = _manifest(
+    missed = _manifest(
         dirty_diff="",
         endpoint="https://openrouter.ai/api",
         provider="DeepInfra",
@@ -177,11 +177,11 @@ def test_a_fallback_is_stated_rather_than_left_to_be_inferred() -> None:
     )
     assert (
         "- endpoint: `https://openrouter.ai/api` via `DeepInfra` "
-        "(preferred `Cloudflare` — fell back)" in render_manifest_header(fell_back)
+        "(pinned `Cloudflare` — not who answered)" in render_manifest_header(missed)
     )
 
 
-def test_a_preference_that_held_renders_plainly() -> None:
+def test_a_pin_that_held_renders_plainly() -> None:
     """The ordinary case says who answered and nothing else — no noise on every run."""
     held = _manifest(
         dirty_diff="",

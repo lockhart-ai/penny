@@ -32,7 +32,7 @@ from collections.abc import Awaitable, Callable
 from pydantic import BaseModel
 
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmError, LlmFault, ProviderPreference
+from penny.llm.models import LlmError, LlmFault, ProviderPin
 
 USAGE = "usage: python -m penny.tests.eval.utils.endpoint_smoke"
 
@@ -42,7 +42,7 @@ USAGE = "usage: python -m penny.tests.eval.utils.endpoint_smoke"
 # operator sees, and the operator wants to see it too.
 PROVIDER_LINE_PREFIX = "eval: chat provider ="
 
-# The run's configured routing preference, forwarded by the Makefile from the roster.
+# The run's configured provider pin, forwarded by the Makefile from the roster.
 LLM_PROVIDER_ENV = "LLM_PROVIDER"
 
 # The probe's own message and tool.  Deliberately trivial: this measures whether the
@@ -149,14 +149,14 @@ def _smoke_client(
 ) -> LlmClient:
     """The probe's client — the REAL one, with its own retries off (see SMOKE_ATTEMPTS).
 
-    It carries the run's own routing PREFERENCE, so what the probe proves is the routing
-    the samples will use — which makes the provider it reports back the answer to "did the
-    preference hold?" rather than to "who serves this model in general?".
+    It carries the run's own provider PIN, so what the probe proves is the routing the
+    samples will use — a pinned provider that will not serve the model refuses the run here,
+    before anything is spent, rather than 755 times inside it.
     """
     return LlmClient(
         api_url=api_url,
         model=model,
-        provider_preference=ProviderPreference.prefer(provider),
+        provider_pin=ProviderPin.pin(provider),
         max_retries=SMOKE_MAX_RETRIES,
         retry_delay=SMOKE_RETRY_DELAY,
         api_key=api_key,
