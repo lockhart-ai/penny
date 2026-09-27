@@ -1,14 +1,16 @@
 # Penny's principles
 
-These are the rules Penny is built, presented, tested and worked on by. Read them before
-designing a feature, a prompt, a tool or an eval case.
+These are Penny's core design principles: the rules her mechanics, the model's view of her
+state, and her tests are designed by. Fall back on them whenever a question comes up about
+how to architect a mechanism or a test. How work gets done — dispatch, review, PRs — lives in
+the SOPs (`docs/agent-task-workflow.md`, `docs/agent-supervisor-runbook.md`), not here.
 
 **This file wins.** When a design doc, a prompt, a case or a comment disagrees with it, the
 other text is stale: fix it. A principle changes only by the code owner's ruling, and the
 change is made here first.
 
-Rules marked **(often forgotten)** are the ones Claude sessions have most often had to be
-reminded of. Read those twice.
+Rules marked **(often forgotten)** are the ones most often broken in practice. Read those
+twice.
 
 Quotes are the code owner's own words.
 
@@ -142,8 +144,8 @@ Quotes are the code owner's own words.
 
    `docs/prompt-writing-guide.md` has the craft.
 
-4. **Let real data guide the design.** Prototype against the real model and real logs; don't
-   guess. Change one lever at a time and compare against a baseline.
+4. **Let real data guide the design.** Prototype a shape against the real model and real
+   logs, and let what it does decide the design. Don't design from guesses.
 
 5. **Tool results carry the next move.** A failure says what went wrong and how to fix it,
    naming the field or the anchor to copy. A diagnosis without a remedy is half a failure.
@@ -152,9 +154,9 @@ Quotes are the code owner's own words.
    comes from the substrate: facts, never imperatives, and structure, never narration. Order
    a document so the thing to write from comes first.
 
-7. **State definitions are product semantics.** What a state means changes only by the code
-   owner's ruling, and it is never tuned as an eval lever. A fixture's wording never appears
-   in a prompt.
+7. **A state means one thing, everywhere.** A state's definition is product semantics: it
+   renders identically wherever it appears and is never re-worded to make a case pass. A
+   fixture's wording never appears in a prompt.
 
 ## 4. How behaviour is verified
 
@@ -185,18 +187,11 @@ The eval cases are where the code owner states what Penny should do. The contrac
    - Five wordings × three samples, run on both roster models, with no pass floors.
    - A behaviour another case already captures is a duplicate, and duplicates are deleted.
 
-6. **A well-formed case that exposes a Penny gap lands, and the gap is filed.** Harness defects
-   are fixed immediately. Porting a case never fixes Penny mid-port.
+6. **A check must be able to fail (often forgotten).** A pass from an instrument that could
+   not have failed tells you nothing. Every claim and every measured feature has to read the
+   thing it names, and a feature that read nothing is blind, not "in agreement".
 
-7. **Prove the measurement could have seen the failure (often forgotten).** A pass from an
-   instrument that could not have failed tells you nothing. Before trusting a number, show the
-   check reads what it claims to read.
-
-8. **The turns are the ground truth, not the score (often forgotten).** Read the sample: its
-   turns, the model's thinking, the artifact itself. Never relay an agent's summary of it.
-   Check the scorer before blaming the model.
-
-9. **Consistency is not correctness.** Three instruments, none a substitute for another:
+7. **Consistency is not correctness.** Three instruments, none a substitute for another:
    - variance catches instability;
    - assertions catch wrongness;
    - a person reading one representative sample catches the wrong-but-stable.
@@ -204,48 +199,5 @@ The eval cases are where the code owner states what Penny should do. The contrac
    Rejected methods, not to be re-proposed without new evidence: embedding similarity, golden
    sets, model-as-judge, phrase lexicons.
 
-10. **A number describes the tree that produced it.** Push before you measure, and check that
-    the PR head is the commit the run recorded.
-
-## 5. How work gets done
-
-1. **The edges are the code owner's; the internals are the supervisor's.**
-   - Eval cases belong to the code owner: their inputs, behaviour sentences and claims, and
-     any new judgment on them.
-   - Penny's runtime, the harness, CI and docs belong to the supervising session, which
-     designs, reviews, approves and merges them, using his cases as the acceptance test.
-   - Task agents never approve.
-   - Still asked first: anything touching production, full-suite eval runs, and anything
-     outside the repo.
-
-2. **Apply his sentence, not a sharper rule derived from it (often forgotten).**
-   - Implement exactly what was asked: no substitutions, no added scope, no carve-outs.
-   - A disagreement is raised as a question.
-   - A one-clause disclosure is not consent.
-
-3. **Agents run their own evals; the code owner's gate is the eval PR review.** A session
-   or dispatched agent runs the eval cases its work needs, inside its own workflow, scoped to
-   the cases that work touches, and posts every run's report to its PR. The code owner reviews
-   the eval PR. A full-suite run is still asked first.
-
-4. **Say what things are (often forgotten).**
-   - Plain names; titles that name the work.
-   - Numbers are passing counts.
-   - Quote the evidence verbatim, because the code owner can't see tool output.
-
-5. **State what is true.** No archaeology in code, docs or issues; history lives in the PR
-   body. Dead code is removed, and a design issue holds one canonical design, rewritten in
-   place.
-
-6. **Every change comes with tests.** Integration over unit, folded into existing tests, with
-   whole-render literals for anything the model reads. `make fix check` is the only gate.
-   `docs/pr-review-guide.md` is the full rulebook for code.
-
-7. **Isolation and the hard lines.**
-   - Every editing session works in its own worktree.
-   - The repo is public, so no private data ever appears in it.
-   - The GitHub token is minted and checked before every call.
-   - A dispatched agent reads only its own tree and never `.env`.
-
-8. **GitHub is the durable state, not anyone's memory.** Reconcile against live queries. Before
-   relaying a rule, check that its mechanism actually works.
+8. **A test exposing a Penny gap is a good test.** A well-formed case that fails because
+   Penny falls short stands as written; the gap is fixed in Penny, never by bending the case.
