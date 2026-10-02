@@ -18,7 +18,7 @@ which "what landed" and "what was attempted" differ at all.
 **The landing is idle.**  The ask is a one-off — keeping the result does not make the job
 ongoing — so by the idle definition's task-lifetime boundary (#1919) the machine stays where it
 was.  The writes-landed frame is not state-gated (``ChatAgent._writes_landed_frame`` fires on
-any run that wrote entries), so the mechanism is exercised on an idle landing.
+any run that wrote entries or tried to), so the mechanism is exercised on an idle landing.
 
 **What is deliberately NOT asserted**: whether the reply SAYS a source could not be read.  That
 is prose, and a claim over it would assert that the model refrained from silence rather than
