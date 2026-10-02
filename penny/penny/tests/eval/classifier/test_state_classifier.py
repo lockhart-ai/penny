@@ -18,54 +18,14 @@ it removes doors from the union the passing-mention hold already declines and ad
 none — and switching a running job's notifications is one decision whichever way
 the switch goes.
 
-A case NOT YET PORTED sweeps a ten-phrasing pool deterministically (sample i →
-``pool[i % 10]``), so at N=10 one run covers every phrasing exactly once and the
-per-check cells map 1:1 to phrasings — the input-variation doctrine's first
-native customer.  Snapshots are built PER SAMPLE by the production
-``build_snapshot`` (embed + resolve_by_meaning pre-pass), so what varies between
-the empty-registry and populated-registry cases is exactly what varies in
-production: whether the registry holds skills.
+Each case takes ONE decision and says it five ways — five wordings of one ask, one
+world, one set of facts, pooled into a cohort of fifteen and claimed against
+``docs/eval-case-design.md``.  Snapshots are built PER SAMPLE by the production
+``build_snapshot``, so what varies between an empty-registry case and a
+populated-registry one is exactly what varies in production: whether the registry
+holds skills.
 
-What the pooled cases below hold, until a ported case replaces each:
-
-**Two whole out-edges no chat transition case covers.**  elicit → elicit — a question
-back leaves the machine parked, because the teach question has not been answered
-yet (``test_parked_elicit_still_clarifying``); and request → elicit — the named
-skill was the wrong one but the task is still wanted, so the routine has to be
-taught (``test_parked_details_wrong_skill_elicits``).  Both are live in the
-runtime's ``OUT_EDGES`` table and reachable only from the parked state.
-
-**Boundary directions of edges the canonical suite covers plainly.**  The
-PASSING-MENTION hold, cold and again with candidates dangling: ordinary
-conversation that mentions a watchable thing — recurrence words describing the
-USER's own habit, topic twins of real asks — must not be chased into a teach
-loop, and must not be chased into a false apply once the registry has something
-to offer.  The UNCOVERED and CROSS-DOMAIN asks under a POPULATED registry: the
-false-apply guard, which every canonical idle → elicit world misses by
-construction because each asserts an EMPTY registry.  The ADJUSTMENT boundary,
-both directions: the skill-gated doors are about STARTING a task (#1927), so an
-ask that changes how something already set up behaves — turning one running job's
-notifications on, or off — holds idle while a watch-shaped routine sits in Known
-skills looking like it covers the subject.  Those two cases are the only ones here
-whose world stands a JOB up, and both directions of the guard are read off the same
-`## Jobs already running` section: the notify pair's subjects ARE listed there, while
-the two elicit cases seed none — so their section says `(none)`, and elicit is still
-drawn for a genuine setup ask.  A section that over-claimed would show up there, as an
-uncovered ask reading like a reference to something already running.  The MIXED message that
-carries chat and a covered ask together, where the routine half wins.  Mid-
-teaching STEPS arriving with watch-adjacent candidates rendered, so existing
-skills cannot demote teaching something new.  And the post-failure LEARN park,
-where a correction that carries instructions stays in learn while an engaged
-question that carries none falls to idle — learn never returns to elicit
-(code-owner ruling: elicit exists to GET instructions, and they have been given).
-
-A PORTED case does not sweep a pool: it takes ONE decision and says it five ways —
-five wordings of one ask, one world, one set of facts, pooled into a cohort of fifteen
-and claimed against ``docs/eval-case-design.md``.  A pool and five wordings are not the
-same mechanism: a pool is ten scenarios standing in for one edge's coverage, and
-averaging their rates reports ten behaviours as one number.
-
-Every ported case reports an EMPTY ``STORE`` and an EMPTY ``PROVENANCE``, and each says
+Every case reports an EMPTY ``STORE`` and an EMPTY ``PROVENANCE``, and each says
 why in its own docstring — a single call moves no machine and writes to no store, and the
 two fields the draw returns are closed sets with nothing in them that could have been
 invented.  What a gated draw adds is a SECOND ``LANDED`` claim: the routine it bound.
@@ -152,41 +112,6 @@ def _bound(expected: str) -> WorldClaim:
     return answer
 
 
-# ── The cold-start shape (no skills seeded) ───────────────────────────────────
-
-# Hold direction — ordinary conversation, incl. the passing-mention boundary
-# (phrasings 3/4/6/9 mention watchable things or the user's OWN checking habit;
-# 9 is a topic twin of a real routine ask — tracking vintage-synth auction
-# listings).
-_HOLD_POOL = [
-    "morning! how's it going?",
-    "what's the tallest mountain in the andes?",
-    "the ferry was packed again this morning, could barely get a seat",
-    "i've been checking the auction listings every day lately",
-    "thanks, that was really helpful",
-    "lol the bakery ran out of croissants before 8 again",
-    "what time is it in lisbon right now?",
-    "my sister might visit next weekend, thinking we'll hit the tidepools",
-    "prices on vintage synths are getting ridiculous these days",
-    "remind me what we talked about yesterday?",
-]
-
-
-async def test_idle_holds_on_chat_and_passing_mentions(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """Hold: chat, questions, and passing mentions of watchable things classify
-    idle — don't chase a mention into a teach loop."""
-    await classifier_eval(
-        case_id="idle-elicit-hold",
-        state=ConversationState.IDLE,
-        pool=_HOLD_POOL,
-        expected=ConversationState.IDLE,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
 # ── A populated registry (price-watch + a distractor skill) ──────────────────
 
 _PRICE_SKILL = "watch a listing price for changes"
@@ -220,31 +145,9 @@ _SEED_STEPS = [
     )
 ]
 
-# Uncovered direction — routine setups CLEARLY outside both seeded skills
-# (no page-watching, no menu-reading: reminders, chat-extraction lists,
-# summaries, tallies).  The contract case proves transition reasoning on
-# unambiguous inputs; the genuinely fuzzy watch-shaped near-misses live in
-# the report-only idle-coverage-boundary case below.
-_UNCOVERED_POOL = [
-    "every friday can you remind me to water the plants?",
-    "keep a running list of every restaurant i mention to you",
-    "every morning teach me one new portuguese word",
-    "at the end of each week, summarize what we talked about",
-    "keep track of how many times i go to the gym each week",
-    "each evening save a one-line note about how my day went",
-    "whenever i mention a book, add it to my reading list",
-    "keep a tally by species of the birds i tell you i saw",
-    "every sunday plan out three dinner ideas and save them for me",
-    "log every movie i tell you i've watched",
-]
-
-# Cross-domain non-coverage — the STARK version of the non-match test (the
-# code-owner ruling on runs 4-10: a watch-shaped request against a watch-shaped
-# skill is legitimately COVERED — the model's "it fits" reading was correct, so
-# the old watch-adjacent near-miss pool measured a non-distinction and is
-# retired).  Here the seeded discovery skill and the requests share the same
-# VERB shape (find/collect/watch for new X) in starkly different domains — a
-# job-listings skill does not cover restaurants, houses, or concerts.
+# The cross-domain registry: a discovery routine whose VERB shape — find new X and keep
+# them — an ask can share while being about a different domain entirely, beside the price
+# watcher.
 _CROSS_DOMAIN_SKILLS = [
     eval_skill(
         "find new job listings",
@@ -254,96 +157,11 @@ _CROSS_DOMAIN_SKILLS = [
     SEEDED_SKILLS[0],
 ]
 
-_CROSS_DOMAIN_POOL = [
-    "keep a list of new restaurants opening downtown",
-    "find me new podcasts about gardening each week",
-    "watch for new houses coming on the market in our neighborhood",
-    "collect new science fiction releases at the library each month",
-    "keep track of new hiking trails the parks department opens",
-    "keep a list of new murals going up around the city",
-    "watch for new classes at the community center",
-    "collect newly announced concerts happening near us",
-    "every week, check which new vendors joined the farmers market",
-    "keep a running list of new coffee roasters opening in town",
-]
 
-# Mixed-message boundary — chat preamble + a covered ask in ONE message: the
-# routine half wins (apply, with the skill bound); the chat half never
-# suppresses it.  Every ask names the price EXPLICITLY and carries the page the
-# skill needs, so the ONE variable under test is the chat preamble — boundness
-# is the apply-vs-request split's business (enacted in test_state_transitions.py),
-# not this case's.
-_MIXED_POOL = [
-    "morning! oh and can you watch the price on ridgelinefoxes.example/den-camera-kit?",
-    "croissants again, ugh — anyway, watch beanhouse.example/grinders/ek43's price?",
-    "that hike was gorgeous. also, track tidepool-optics.example/spotting-scope's price?",
-    "thanks! one more thing — watch harborkayak.example/rentals/sea-touring's price?",
-    "sister visits next weekend. btw keep tabs on driftline.example/boards/7-2's price?",
-    "what a day. anyway — monitor the price at brasscat.example/listings/modular-iii, ok?",
-    "the ferry was packed today. oh — watch harborferries.example/passes' price too?",
-    "haha fair enough. hey, track the price at brasscat.example/listings/pinball-1979?",
-    "good morning! quick one: watch the price at ridgelinefoxes.example/den-camera-kit?",
-    "nice, that worked. also can you watch the price on pinehollow.example/rates?",
-]
-
-
-async def test_idle_still_elicits_when_no_candidate_covers(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """The false-apply guard: request-shaped asks neither skill covers must
-    still elicit — plausible candidates dangling in context are not coverage."""
-    await classifier_eval(
-        case_id="idle-elicit-uncovered",
-        state=ConversationState.IDLE,
-        pool=_UNCOVERED_POOL,
-        expected=ConversationState.ELICIT,
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
-async def test_same_verb_different_domain_still_elicits(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """The stark non-coverage contract: a discovery skill in one domain does
-    not cover discovery requests in another — same verb shape, different
-    world."""
-    await classifier_eval(
-        case_id="idle-elicit-cross-domain",
-        state=ConversationState.IDLE,
-        pool=_CROSS_DOMAIN_POOL,
-        expected=ConversationState.ELICIT,
-        seed_skills=_CROSS_DOMAIN_SKILLS,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
-async def test_idle_holds_on_chat_with_candidates_dangling(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """Beat 1's hold pool verbatim, now with candidates rendered: chat stays
-    chat even when apply is on offer (incl. the price-adjacent topic twin)."""
-    await classifier_eval(
-        case_id="idle-hold-with-skills",
-        state=ConversationState.IDLE,
-        pool=_HOLD_POOL,
-        expected=ConversationState.IDLE,
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
-# ── The ported case: the passing mention, with the routine doors on offer ─────
+# ── idle → idle: the passing mention, with the routine doors on offer ─────
 #
-# The pool above is TEN SCENARIOS standing in for one edge's coverage — a greeting, a
-# general-knowledge question, a thank-you, and, at four of its ten slots, the boundary the
-# ticket names: a passing mention of something a known routine could be pointed at.  The
-# ported case takes that boundary alone and says it five ways, which is the only shape a
-# pooled variance number means anything over: five wordings of ONE ask, one world, one set
-# of facts.
+# A passing mention of something a known routine could be pointed at, said five ways:
+# five wordings of ONE ask, one world, one set of facts.
 #
 # THE FACTS ARE CONSTANT across the arms because the claim hinges on them.  Every wording
 # is the user describing THEIR OWN recurring habit of looking at the auction listings —
@@ -433,91 +251,7 @@ async def test_a_passing_mention_holds_idle_with_the_routine_doors_open(
     cohort.measure(output_field(CLASSIFY_STATE))
 
 
-async def test_mixed_chat_plus_covered_ask_applies(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """The mixed-message boundary: a chat preamble plus a covered ask in one
-    message classifies apply with the skill bound — the routine half wins."""
-    await classifier_eval(
-        case_id="idle-apply-mixed",
-        state=ConversationState.IDLE,
-        pool=_MIXED_POOL,
-        expected=ConversationState.APPLY,
-        expected_skill=_PRICE_SKILL,
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
-# ── The adjustment boundary: a job that is ALREADY running ───────────────────
-#
-# The skill-gated doors are about STARTING a task (#1927), so an ask that changes
-# how something already set up behaves has to stay idle — even, and especially,
-# while a watch-shaped routine sits in Known skills looking like it covers the
-# subject.  That resemblance is where the measured failure pivoted: asked to turn
-# one running job's notifications on, the draw reasoned "this is presumably
-# setting up some monitoring… skill covers, page missing → request" in 5 of 5
-# samples across two rounds, while the same pair's off-direction held idle 5 of 5.
-#
-# Both pools run against the SEEDED registry rather than an empty one, because an
-# empty registry proves nothing here: apply and request are withheld structurally
-# when there are no candidates (``presented_edges``), so a hold measured there is
-# a hold with no door to decline.  What these cases claim is that the request door
-# was OFFERED and correctly declined.
-#
-# Every phrasing names its job with a definite reference ("the camera kit price
-# watch", "that spotting scope price job") — the message is the only evidence the
-# classifier has that anything is already running, since the snapshot renders the
-# skill registry and never the standing collections.
-#
-# And every SUBJECT is one a seeded skill plainly covers — a listing page's price,
-# or a cafe or bakery menu.  That is load-bearing rather than decorative: a subject
-# no seeded skill covers can hold idle by the pre-existing no-coverage route (and
-# would be ruled out of elicit by that edge's own "no known skill covers it"
-# clause), so the sample would score green while proving nothing about the boundary.
-# With coverage granted, the ONLY thing left that can hold these samples idle is
-# that the ask changes a job rather than starting one.
-#
-# THE VOCABULARY IS DELIBERATELY EXPLICIT (code-owner ruling): every phrasing says
-# NOTIFICATIONS, and none is built on a bare start/begin/ping-me verb.  The loose
-# register these replaced — "you can start pinging me about the cafe specials
-# again", "notify me when the modular listing watch finds something, from now on" —
-# is exactly what the leaking draws seized on, reading the start-verb as the ask
-# ("they are asking to start this skill … they haven't provided a URL").  The
-# ruling: "make the fixtures just talk about 'notifications' — if we have to be
-# strict in the terminology to make it work we can do that, we don't need to fight
-# ourselves here."  So the register is settled product vocabulary, not a hedge, and
-# the variation that remains is in the VERB around it (turn on/off · switch ·
-# enable/disable · put back on) rather than in what the ask is called.
-
-# THE SUBJECTS EXIST AS JOBS.  Each phrasing names a job that is really in the seeded
-# world, standing as a CONFIGURED collection so the snapshot's `## Jobs already running`
-# section renders it (#1927) — because a subject the section does NOT list is a subject
-# holding idle would be WRONG about: with nothing running by that name, "turn its
-# notifications on" has no existing thing to adjust.  Before the section existed the
-# reader had to guess, and the leaks are it guessing rationally: "they say 'the modular
-# listing watch' probably already set up?  But there's no known skill currently running."
-#
-# The container names are DERIVED, not written — `derive_collection_name` is the same
-# production function the instantiation seam names a job with, so the rows carry the names
-# a real teach-then-apply round would have produced (and stay correct if its reading budget
-# ever moves).  Resolving "the camera kit price watch" to
-# `watch-a-listing-price-for-changes-foxden-example-camera-kit` is a READ the turn is
-# expected to make, exactly as it is in the end-to-end pair; asking with the container's
-# own name would hand the model half the case.
-_JOB_PAGES = [
-    (_PRICE_SKILL, "foxden.example/camera-kit"),
-    (_CAFE_SKILL, "driftline.example/specials"),
-    (_PRICE_SKILL, "harborkayak.example/rentals"),
-    (_PRICE_SKILL, "brasscat.example/modular"),
-    (_PRICE_SKILL, "optics.example/spotting-scope"),
-    (_CAFE_SKILL, "pinehollow.example/bakery"),
-    (_PRICE_SKILL, "beanhouse.example/grinders"),
-    (_PRICE_SKILL, "brasscat.example/pinball"),
-    (_CAFE_SKILL, "harborlight.example/menu"),
-    (_PRICE_SKILL, "brasscat.example/synths"),
-]
+# ── Standing jobs: what a case about a job that is already running seeds ─────
 
 _JOB_SCHEDULE = "FREQ=DAILY;BYHOUR=8"
 
@@ -526,14 +260,9 @@ def _standing_jobs(jobs: list[tuple[str, str]], notify: bool) -> Seeder:
     """The jobs a case speaks about, standing in the world as configured collections —
     all notifying the same way.
 
-    The pooled pair passes ``_JOB_PAGES``, one job per phrasing in phrasing order; the
-    ported case passes its own two, because a cohort says ONE ask five ways and the job
-    it names has to be the same job on every arm.
-
-    ``notify`` is the direction's own world: the ON pool asks to wake jobs that are
-    SILENT, the OFF pool to silence jobs that are TALKING, so each case's rendered row
-    carries the state its ask is about changing (the end-to-end pair's `_SILENT_FINDS`
-    shape).  A job whose notifications already matched the ask would be a different case.
+    ``notify`` is the state the case's ask is about changing: an ask to silence a job seeds
+    it TALKING, so the rendered row carries what the ask would change.  A job whose
+    notifications already matched the ask would be a different case.
 
     A DIRECT seed rather than the production instantiation seam: the classifier reads a
     job's name, routine, notify flag and schedule and never its program, so standing the
@@ -558,113 +287,13 @@ def _standing_jobs(jobs: list[tuple[str, str]], notify: bool) -> Seeder:
     return seed
 
 
-# On-direction — the measured miss.
-_NOTIFY_ON_POOL = [
-    "turn notifications on for the camera kit price watch",
-    "turn on notifications for the cafe specials",
-    "switch notifications back on for the kayak rental price watch",
-    "turn the modular listing watch's notifications on",
-    "turn the notifications back on for that spotting scope price job",
-    "can you enable notifications on the bakery specials watch",
-    "notifications on for the grinder price watch, please",
-    "put notifications back on for the pinball listing watch",
-    "enable notifications for the cafe menu job",
-    "switch the vintage synth price watch's notifications on",
-]
+# ── The parked machine — a round waiting in request ──────────────────────────
 
-# Off-direction — the same switch, the other way.
-_NOTIFY_OFF_POOL = [
-    "turn notifications off for the camera kit price watch",
-    "turn off notifications for the cafe specials",
-    "switch notifications off for the kayak rental price watch",
-    "turn the modular listing watch's notifications off",
-    "turn the notifications off for that spotting scope price job",
-    "can you disable notifications on the bakery specials watch",
-    "notifications off for the grinder price watch, please",
-    "shut the notifications off for the pinball listing watch",
-    "disable notifications for the cafe menu job",
-    "switch the vintage synth price watch's notifications off",
-]
-
-
-async def test_switching_a_running_jobs_notifications_on_holds_idle(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """Report-only.  Turning a running job's notifications ON is an adjustment to
-    something already set up, not an ask to start a skill — so the machine holds
-    idle with the request door on offer."""
-    await classifier_eval(
-        case_id="idle-hold-notify-on",
-        state=ConversationState.IDLE,
-        pool=_NOTIFY_ON_POOL,
-        expected=ConversationState.IDLE,
-        seed=_standing_jobs(_JOB_PAGES, notify=False),
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-async def test_switching_a_running_jobs_notifications_off_holds_idle(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """Report-only.  The same switch, the other way: silencing a running job is
-    still an adjustment, so it holds idle with the request door on offer.
-
-    Both directions are measured because they are not one claim: the pair's
-    off-direction already held 5 of 5 while the on-direction fell, so scoring only
-    the miss would leave the direction a boundary rewrite is most likely to break
-    unmeasured."""
-    await classifier_eval(
-        case_id="idle-hold-notify-off",
-        state=ConversationState.IDLE,
-        pool=_NOTIFY_OFF_POOL,
-        expected=ConversationState.IDLE,
-        seed=_standing_jobs(_JOB_PAGES, notify=True),
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# ── The parked machine — request → elicit ────────────────────────────────────
-
-# The parked context: the assistant named the skill and asked for what it needs.
-_REQUEST_QUESTION = "Sounds like my watch-a-listing-price skill — which page should I watch?"
+# The instigating ask of the round parked in request: a subject, and no address.
 _KAYAK_ASK = "keep an eye on the price of the harbor kayak rental page for me"
 
-# Wrong skill, task still wanted → elicit (teach me the right routine).
-_WRONG_SKILL_POOL = [
-    "no, that's not what i meant — i want something different",
-    "that skill isn't right for this, it's a different kind of thing",
-    "not that one. what i want is something else entirely",
-    "nope, wrong skill — this isn't about prices",
-    "that's not it. i need something you don't know how to do yet",
-    "no, i don't want the price watcher for this",
-    "that skill doesn't fit what i'm after",
-    "not quite — this is a different job than that one",
-    "no, that's the wrong routine for what i need",
-    "that isn't what i had in mind, i want another thing done",
-]
 
-
-async def test_parked_details_wrong_skill_elicits(classifier_eval: ClassifierEval) -> None:
-    """Wrong skill, task still wanted: the machine returns to elicit — the
-    proposal was rejected, so the routine has to be taught."""
-    await classifier_eval(
-        case_id="request-elicit",
-        state=ConversationState.REQUEST,
-        pool=_WRONG_SKILL_POOL,
-        expected=ConversationState.ELICIT,
-        penny_last_turn=_REQUEST_QUESTION,
-        task_anchor=_KAYAK_ASK,
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
-# ── The parked machine — elicit's boundary and self-edge ─────────────────────
+# ── The parked machine — a round waiting in elicit ───────────────────────────
 
 # The parked-elicit context: the instigating ask (the cold-start ask that opened
 # the teach loop) and the teach question the reply answers.  Replies are only
@@ -674,73 +303,6 @@ _TEACH_QUESTION = (
     "I don't know how to do that yet — can you teach me? "
     "What should I read, look for, and remember?"
 )
-
-# Steps direction — the reply tells the assistant HOW: what to read, what to
-# look for, what to remember (2/9 carry schedule words — realistic difficulty,
-# not a separate case).
-_STEPS_POOL = [
-    "sure — read harborferries.example/timetable and remember the first morning departure",
-    "here's what to do: open harborferries.example/timetable and save the harbor loop times",
-    "check harborferries.example/timetable every morning and note any changes to the schedule",
-    "it's easy: read harborferries.example/timetable and remember the last sailing of the day",
-    "go to the ferry timetable, find the weekend sailings, and remember those",
-    "read the timetable at harborferries.example and save the departure times",
-    "ok: fetch the timetable page, pull out the morning departures, and store them",
-    "look at harborferries.example/timetable and remember whatever sailings are listed",
-    "each day, read the timetable and write down the first and last departure",
-    "grab the times off the timetable page and keep them somewhere you can check later",
-]
-
-# Clarifying direction — still on-task, but the teach question is NOT answered:
-# questions back, hedges, partials without the how.
-_CLARIFYING_POOL = [
-    "what do you mean teach you? like explain the steps?",
-    "hmm, what kinds of things can you actually read?",
-    "what would you need from me to do that?",
-    "i'm not sure — what do you usually watch for people?",
-    "does it matter which page i give you?",
-    "is this something you're able to do from your side?",
-    "can you even open websites on your own?",
-    "what format do you want the steps in?",
-    "wait, would this be every day or just once?",
-    "do you need the exact address or just the site name?",
-]
-
-
-async def test_parked_elicit_steps_arrive_with_skills_populated(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """The populated-registry stress: the SAME steps replies, but with the
-    beat-2 skills seeded — the Known skills section renders watch-adjacent
-    candidates while the user is mid-teaching something NEW.  Existing skills
-    must not demote teaching to still-clarifying or a bail; the paired delta
-    against elicit-learn-steps isolates the candidates' effect."""
-    await classifier_eval(
-        case_id="elicit-learn-steps-with-skills",
-        state=ConversationState.ELICIT,
-        pool=_STEPS_POOL,
-        expected=ConversationState.LEARN,
-        penny_last_turn=_TEACH_QUESTION,
-        task_anchor=_FERRY_ASK,
-        seed_skills=SEEDED_SKILLS,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
-async def test_parked_elicit_still_clarifying(classifier_eval: ClassifierEval) -> None:
-    """Still clarifying: a question back or a partial without the how leaves the
-    machine parked in elicit — the teach question is not answered yet."""
-    await classifier_eval(
-        case_id="elicit-still-clarifying",
-        state=ConversationState.ELICIT,
-        pool=_CLARIFYING_POOL,
-        expected=ConversationState.ELICIT,
-        penny_last_turn=_TEACH_QUESTION,
-        task_anchor=_FERRY_ASK,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
 
 
 # ── Parked learn — re-entry after a failed demo round ────────────────────────
@@ -754,74 +316,10 @@ _FAILED_ROUND_REPORT = (
     "Should I try again, or is there a different page I should read?"
 )
 
-# Retry direction — corrections and try-agains actionable NOW (the correction
-# IS new instruction: a fixed url, a different column, a narrower value).
-_RETRY_POOL = [
-    "try again — the page should load now",
-    "no, read the SECOND table on the page, not the first one",
-    "you saved the arrival time — i wanted the departure time, fix that",
-    "use harborferries.example/timetable-v2 instead, the old link is dead",
-    "almost — but remember the last sailing too, not just the first",
-    "run it once more, i think the site was just down",
-    "the times you grabbed are for weekdays — get the weekend ones",
-    "same steps, but save them under 'ferry times' instead",
-    "close! the departure column is the one on the left",
-    "redo it and this time keep only the morning sailings",
-]
-
-
-async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEval) -> None:
-    """Retry: a correction or try-again actionable now stays in learn — the
-    correction-loop invariant (a failed round holds its state)."""
-    await classifier_eval(
-        case_id="learn-retry-corrections",
-        state=ConversationState.LEARN,
-        pool=_RETRY_POOL,
-        expected=ConversationState.LEARN,
-        penny_last_turn=_FAILED_ROUND_REPORT,
-        task_anchor=_FERRY_ASK,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
-
-# Questions direction — post-failure questions and doubts about how: engaged,
-# but carrying no instructions, so the machine falls to idle (learn is two-way;
-# there is no path back to elicit once instructions have been given).
-_POST_FAILURE_QUESTION_POOL = [
-    "what went wrong exactly? which page did you open?",
-    "hm, what can you actually read then?",
-    "did the link work at all, or did nothing come up?",
-    "wait, which url did you try?",
-    "is there something about that page you can't handle?",
-    "what do you mean it wouldn't load — did you get an error?",
-    "so what part failed, the reading or the saving?",
-    "would a different page work better for you?",
-    "what kind of pages usually work?",
-    "huh, it loads fine for me — what did you see?",
-]
-
-
-async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEval) -> None:
-    """Engaged questions still carry no instructions, so they fall to idle —
-    the two-way learn state has no path back to elicit."""
-    await classifier_eval(
-        case_id="learn-questions-idle",
-        state=ConversationState.LEARN,
-        pool=_POST_FAILURE_QUESTION_POOL,
-        expected=ConversationState.IDLE,
-        penny_last_turn=_FAILED_ROUND_REPORT,
-        task_anchor=_FERRY_ASK,
-        min_pass_rate=0.8,
-        family=_FAMILY,
-    )
-
 
 # ── The six edges with no isolated coverage (#2055 tranche A) ─────────────────
 #
 # Six ported cases, one per edge, each five wordings of ONE decision over one world.
-# Nothing here shares a pool with the cases above: a pool is ten scenarios standing in
-# for an edge's coverage, and averaging their rates reports ten behaviours as one number.
 #
 # THREE CLAIM CATEGORIES, and two of them are EMPTY on every case in this file — stated
 # once here and referenced from each case rather than restated six times:
@@ -1352,7 +850,7 @@ async def test_a_called_off_parked_request_falls_to_idle(
 # THE FACTS ARE CONSTANT across the arms: every wording names the SAME job — the camera kit
 # price watch — and asks for the SAME switch, off.  What moves between arms is the verb
 # around the word (turn off · switch off · disable · shut off), which is the code-owner
-# ruling the pooled pair records: the register is settled product vocabulary, so every
+# ruling on this boundary: the register is settled product vocabulary, so every
 # phrasing says NOTIFICATIONS.
 #
 # THE SUBJECT EXISTS AS A JOB, standing as a configured collection so the snapshot's
@@ -1813,6 +1311,375 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     cohort.claim(
         "state: the draw returned the round to elicit",
         _drew(ConversationState.ELICIT),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── The five decisions that complete the map (#2055 tranche C) ────────────────
+#
+# Tranche A took the six edges nothing had ever drawn in isolation and tranche B the six
+# decisions inside covered edges.  These five are the rest of the map, and each names the
+# TEMPTATION its world puts in front of the draw — the door that is open and wrong.
+#
+# THE THREE CLAIM CATEGORIES ARE THE TRANCHE-A SECTION'S, unchanged and not restated: STORE
+# is empty because a micro-context is one call that writes to no store, and PROVENANCE is
+# empty because both fields the draw returns are closed sets the harness supplied.  What is
+# claimed is WHICH member the draw picked (``_drew``).  None of these five draws a
+# skill-gated state, so none of them makes a ``_bound`` claim.
+
+
+# ── idle → elicit: an ongoing job no seeded routine covers ────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording asks for the SAME ongoing job — a weekly count of
+# gym visits — and not one of them says HOW.  Both halves are the edge's own condition, so
+# an arm carrying steps would be the idle → learn behaviour wearing this case's id, and an
+# arm asking for something done once would be idle's.
+#
+# THE TEMPTATION IS THE FALSE APPLY, which is what the registry is for: two routines stand
+# in Known skills, so apply and request are really on offer, and the ask is plainly outside
+# both — a gym tally is neither a listing's price nor a cafe's menu.  Measured against an
+# empty registry this case would prove nothing, since ``presented_edges`` withholds both
+# gated doors there and an elicit drawn with nothing to decline is elicit by default.  That
+# is the cold-registry case (``classifier-elicits-on-a-cold-registry``), and this one is its
+# populated sibling: plausible candidates dangling in context are not coverage.
+
+UNCOVERED_ASK_CASE_ID = "classifier-elicits-when-no-routine-covers-the-ask"
+
+_UNCOVERED_ASK = "keep track of how many times i go to the gym each week"
+_UNCOVERED_ASK_PHRASINGS = (
+    "keep a weekly count of my gym visits going",
+    "i'd like a weekly count of my gym visits kept",
+    "keep a running count of my gym trips week by week",
+    "keep a running tally of my gym trips each week",
+)
+UNCOVERED_ASK_ARMS = (_UNCOVERED_ASK, *_UNCOVERED_ASK_PHRASINGS)
+
+_UNCOVERED_ASK_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when routines are "
+    "on offer and none of them covers what was asked for, Penny opens a teach round in "
+    "elicit."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_uncovered_ask_still_elicits(classifier_eval: ClassifierEval, model: str) -> None:
+    """The false-apply guard: one ongoing job neither seeded routine covers, said five ways,
+    against a registry that really does put apply and request on offer.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    elicit binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=UNCOVERED_ASK_CASE_ID,
+        behaviour=_UNCOVERED_ASK_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_UNCOVERED_ASK,
+        also_asked=_UNCOVERED_ASK_PHRASINGS,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw opened a teach round in elicit",
+        _drew(ConversationState.ELICIT),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── idle → elicit: the same verb shape, a different world ─────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording asks for the SAME ongoing job — new restaurants
+# opening downtown, kept as a list — and none says how.
+#
+# THE TEMPTATION IS SHARPER THAN THE CASE ABOVE'S, and the registry is what makes it so: the
+# seeded discovery routine and the ask share their whole VERB SHAPE — find new X and keep
+# them — in starkly different domains.  A job-listings routine does not cover restaurants,
+# and the code-owner ruling this world records is why the domains are stark rather than
+# adjacent: a watch-shaped ask against a watch-shaped routine is legitimately COVERED, so a
+# near-miss world measures a non-distinction.
+
+UNCOVERED_DOMAIN_CASE_ID = "classifier-elicits-when-a-routine-shares-the-verb-but-not-the-domain"
+
+_UNCOVERED_DOMAIN_ASK = "keep a list of new restaurants opening downtown"
+_UNCOVERED_DOMAIN_PHRASINGS = (
+    "keep a list going of new restaurants opening downtown",
+    "can you keep track of new restaurants opening downtown?",
+    "keep collecting the new restaurants that open downtown for me",
+    "keep a running list of new downtown restaurant openings",
+)
+UNCOVERED_DOMAIN_ARMS = (_UNCOVERED_DOMAIN_ASK, *_UNCOVERED_DOMAIN_PHRASINGS)
+
+_UNCOVERED_DOMAIN_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when a routine she "
+    "knows matches the ask's verb shape in a different world, Penny opens a teach round in "
+    "elicit."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_same_verb_different_domain_ask_still_elicits(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The stark non-coverage contract: one discovery ask said five ways, against a
+    discovery routine in another domain.
+
+    A different decision from the uncovered ask above rather than a second wording of it:
+    that case's routines share nothing with the ask at all, while this one's shares
+    everything except the world it is about — which is the reading a draw can plausibly get
+    wrong.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    elicit binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=UNCOVERED_DOMAIN_CASE_ID,
+        behaviour=_UNCOVERED_DOMAIN_BEHAVIOUR,
+        model=model,
+        state=ConversationState.IDLE,
+        ask=_UNCOVERED_DOMAIN_ASK,
+        also_asked=_UNCOVERED_DOMAIN_PHRASINGS,
+        seed_skills=_CROSS_DOMAIN_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw opened a teach round in elicit",
+        _drew(ConversationState.ELICIT),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── elicit → learn: the teach question is answered ────────────────────────────
+#
+# THE FACTS ARE CONSTANT: every wording gives the SAME instructions — the same page, the
+# same thing to remember off it — in answer to the same teach question.  An arm asking
+# something back would be the parked self-edge, and an arm dropping the round would be the
+# break-out to idle.
+#
+# THE TEMPTATION IS THAT EXISTING ROUTINES DEMOTE THE TEACHING, which is why the registry is
+# seeded: the Known skills section renders two watch-adjacent candidates while the user is
+# mid-teaching something NEW, and neither covers a ferry timetable.  Teaching must not read
+# as still-clarifying, nor as a bail, because something that looks close is on the page.
+
+STEPS_ANSWERED_CASE_ID = "classifier-draws-learn-when-the-teach-question-is-answered"
+
+_STEPS_ANSWERED_ASK = f"sure — read {_TEACH_PAGE} and remember the first sailing"
+_STEPS_ANSWERED_PHRASINGS = (
+    f"here's what to do: open {_TEACH_PAGE} and save the first sailing",
+    f"it's easy — read {_TEACH_PAGE} and keep the first sailing",
+    f"go to {_TEACH_PAGE} and write down the first sailing",
+    f"you'd read {_TEACH_PAGE} and note the first sailing off it",
+)
+STEPS_ANSWERED_ARMS = (_STEPS_ANSWERED_ASK, *_STEPS_ANSWERED_PHRASINGS)
+
+_STEPS_ANSWERED_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the reply to "
+    "the teach question carries the instructions it asked for, Penny takes the round into "
+    "learn."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_answered_teach_question_draws_learn(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The elicit → learn draw under the populated-registry stress: one set of instructions
+    said five ways, with watch-adjacent candidates rendered beside them.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    learn binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=STEPS_ANSWERED_CASE_ID,
+        behaviour=_STEPS_ANSWERED_BEHAVIOUR,
+        model=model,
+        state=ConversationState.ELICIT,
+        ask=_STEPS_ANSWERED_ASK,
+        also_asked=_STEPS_ANSWERED_PHRASINGS,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw took the round into learn",
+        _drew(ConversationState.LEARN),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── Parked learn after a failed round: the two directions, one world ──────────
+#
+# The demo round failed — the honest failure report is the assistant's last turn, and it says
+# the page would not load and nothing was saved — and the machine holds in learn.  What the
+# reply carries decides whether it stays there: a correction that is actionable NOW, or a
+# question that carries no instructions at all.
+#
+# WHAT EVERY ARM ON BOTH SIDES MAY SAY IS BOUNDED BY THAT REPORT.  A round that saved nothing
+# cannot be told it saved the wrong value, so the correction is one the failure leaves open —
+# the page has moved, here is the live one — and the questions are about the failure itself.
+# A world that could not have happened measures a reading of a contradiction rather than the
+# boundary the case names.
+#
+# THE TWO CASES SHARE ONE WORLD, deliberately.  They are the two directions of one boundary,
+# so the only thing allowed to differ between them is the reply; a world that moved as well
+# would make the delta between their rates uninterpretable.
+#
+# THAT WORLD SEEDS ROUTINES.  ``learn``'s out-edges carry a skill-gated state — apply, the
+# acceptance door — and ``presented_edges`` withholds it outright on an empty registry, so a
+# correction measured cold declines only idle and never faces the door it most resembles: a
+# "close! …" reading as acceptance.  Neither seeded routine covers a ferry timetable, so
+# apply is a door to decline rather than a defensible answer, and a round parked in learn
+# inside a real deployment is parked beside whatever else the registry holds.
+
+CORRECTION_CASE_ID = "classifier-stays-in-learn-on-a-correction"
+
+_LIVE_TIMETABLE_PAGE = "harborferries.example/timetable-v2"
+
+_CORRECTION_ASK = f"that link's dead — use {_LIVE_TIMETABLE_PAGE} instead"
+_CORRECTION_PHRASINGS = (
+    f"the old link is gone; read {_LIVE_TIMETABLE_PAGE}",
+    f"use {_LIVE_TIMETABLE_PAGE}, the page you tried has moved",
+    f"the page moved — {_LIVE_TIMETABLE_PAGE} is where it lives now",
+    f"{_LIVE_TIMETABLE_PAGE} is the live one, go there instead",
+)
+CORRECTION_ARMS = (_CORRECTION_ASK, *_CORRECTION_PHRASINGS)
+
+_CORRECTION_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the reply to a "
+    "failed demonstration corrects it and the correction is actionable now, Penny holds the "
+    "round in learn."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_correction_holds_the_round_in_learn(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The learn → learn self-edge: one correction said five ways, against the failure report
+    it answers — the correction-loop invariant, that a failed round holds its state.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    learn binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=CORRECTION_CASE_ID,
+        behaviour=_CORRECTION_BEHAVIOUR,
+        model=model,
+        state=ConversationState.LEARN,
+        ask=_CORRECTION_ASK,
+        also_asked=_CORRECTION_PHRASINGS,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw held the round in learn",
+        _drew(ConversationState.LEARN),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section comment.
+    # PROVENANCE — empty because it is closed upstream; see the section comment.
+
+    cohort.measure(output_field(CLASSIFY_STATE))
+
+
+# ── learn → idle: the same failure, answered with a question ──────────────────
+#
+# THE FACTS ARE CONSTANT: every wording asks the SAME two things about the same failure —
+# what went wrong, and which page was opened — and not one carries an instruction.  An arm
+# saying to try again, or naming a different page, would be the correction above.
+#
+# THE TEMPTATION IS ELICIT, and it is unreachable: the reply is engaged and on-task, so it
+# reads like a round still being negotiated — but ``learn`` has no edge back to elicit
+# (code-owner ruling: elicit exists to GET instructions, and they have been given), so the
+# only home for a reply carrying none is idle.  What the draw can wrongly do is hold in
+# learn, reading engagement as instruction.
+
+POST_FAILURE_QUESTION_CASE_ID = (
+    "classifier-falls-to-idle-when-a-post-failure-reply-carries-no-instructions"
+)
+
+_POST_FAILURE_QUESTION_ASK = "what went wrong exactly? which page did you open?"
+_POST_FAILURE_QUESTION_PHRASINGS = (
+    "what went wrong there — which page did you try?",
+    "which page did you open, and what went wrong?",
+    "so what went wrong? which page was it you opened?",
+    "tell me what went wrong — which page did you actually open?",
+)
+POST_FAILURE_QUESTION_ARMS = (
+    _POST_FAILURE_QUESTION_ASK,
+    *_POST_FAILURE_QUESTION_PHRASINGS,
+)
+
+_POST_FAILURE_QUESTION_BEHAVIOUR = (
+    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the reply to a "
+    "failed demonstration is an engaged question carrying no instructions, Penny falls to "
+    "idle."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_post_failure_question_falls_to_idle(
+    classifier_eval: ClassifierEval, model: str
+) -> None:
+    """The learn → idle draw: one post-failure question said five ways, over the same world
+    the correction case runs on.
+
+    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    idle binds no routine.
+    """
+    cohort = await classifier_eval(
+        case_id=POST_FAILURE_QUESTION_CASE_ID,
+        behaviour=_POST_FAILURE_QUESTION_BEHAVIOUR,
+        model=model,
+        state=ConversationState.LEARN,
+        ask=_POST_FAILURE_QUESTION_ASK,
+        also_asked=_POST_FAILURE_QUESTION_PHRASINGS,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=SEEDED_SKILLS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — the closed field of the typed result, asserted by equality
+    cohort.claim(
+        "state: the draw broke the round out to idle",
+        _drew(ConversationState.IDLE),
         SpecCategory.LANDED,
     )
 

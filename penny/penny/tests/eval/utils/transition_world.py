@@ -173,8 +173,9 @@ from penny.tools.models import ToolResult
 # five are the ENRICHED derivatives of a named ``test_state_classifier.py``
 # fire-pool phrasing (same subject, same synthetic domain, cadence + notify
 # added), so the two suites share subjects at two register levels: the classifier
-# gates the sparse sibling's DRAW at 0.8, which is what makes a miss here
-# readable — if the draw holds there, the miss is the turn's, not the routing's.
+# measures the sparse sibling's DRAW in a case of its own, which is what makes a
+# miss here readable — if the draw holds there, the miss is the turn's, not the
+# routing's.
 #
 # Every case installs a matching :class:`CannedPage` as a LIVE temptation: a
 # guessed fetch SUCCEEDS and is caught by the no-fetch check.  A temptation that
@@ -1163,9 +1164,9 @@ def _round_reported_checks(fact: str, reply: str, replies: list[str]) -> list[Ch
 # accept-pool work, when seeding the ask made the acceptance's terms read as steps still
 # being specified.  Production does the opposite — the anchor is stamped entering the
 # round and carried while parked — and ``test_state_classifier.py``'s own
-# ``learn-apply-accept`` case anchors on the ask, its all-three-terms phrasings there
-# precisely because that is the hard shape.  If terms-read-as-steps resurfaces under the
-# full history, that is a real finding about the live edge, not noise.
+# ``classifier-draws-apply-when-the-offer-is-accepted`` case anchors on the ask too.  If
+# terms-read-as-steps resurfaces under the full history, that is a real finding about the
+# live edge, not noise.
 #
 # The acceptance never restates the routine's parameters, so the seeded conversation IS
 # where they come from: the cadence and any end condition are in the acceptance itself,

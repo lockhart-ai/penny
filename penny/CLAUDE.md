@@ -618,7 +618,7 @@ sample's own number — the one its report banner and its cohort name carry (`sa
 so a name the report renders opens that sample's own evidence and never a neighbour's.
 
 **An isolated draw is handed what production hands it — a REQUEST case declares its
-`parked_round` (#2084).** `classifier_eval` builds each sample's snapshot through the
+`parked_round` (#2084/#2099).** `classifier_eval` builds each sample's snapshot through the
 production `build_snapshot`, but it passed no `round_binding`, so a case drawn from
 request saw a document with no `## The details this task is waiting on` section — the
 routine, what the user already gave, what is still missing — which production always
@@ -630,11 +630,11 @@ routine already says. Refused loudly rather than absorbed: a `parked_round` on a
 state, a routine the case's `seed_skills` do not register, a value under a name the routine
 does not declare, and a round with nothing left missing (which the binder would have FRAMED)
 each name what they broke — the first before any sample runs, the rest at the draw, since
-the registry row does not exist until the sample has seeded it. **The landed `request-elicit`
-case has NOT been migrated** and still draws the lean document, so the guard is deliberately
-one-directional for now: a `parked_round` on the wrong state is refused, a REQUEST case
-without one is not. Migrating that case and closing the guard's other direction is its own
-ticket, because a case is re-measured when it changes.
+the registry row does not exist until the sample has seeded it. **The rule is a
+biconditional and the guard holds both halves of it**: a `parked_round` on any state but
+request is refused, and so is a REQUEST case that declares none, because a binding is
+present exactly while a round is parked in request — so the next REQUEST case cannot be
+written lean.
 
 **Two profiles, because they are two different machines** (`EVAL_PROFILE`, resolved in the
 Makefile's `eval` recipe): **`make eval`** runs `local` — the GPU on this box, one sample

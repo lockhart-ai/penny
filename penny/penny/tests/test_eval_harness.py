@@ -149,27 +149,37 @@ from penny.tests.eval.chat.request.test_ask_is_one_value_short import (
 from penny.tests.eval.classifier.test_state_classifier import (
     _ACCEPTED_ROUND_SKILLS,
     _BOARD_PAGE,
+    _CROSS_DOMAIN_SKILLS,
     _FERRY_SKILL,
     _GRINDER_PAGE,
+    _KAYAK_ASK,
     _KAYAK_PAGE,
+    _LIVE_TIMETABLE_PAGE,
     _NEAR_NEIGHBOUR_SKILLS,
     _PARKED_ON_THE_PRICE_WATCH,
     _PORTED_JOBS,
     _PRICE_SKILL,
+    _REQUEST_TURN,
     _TEACH_PAGE,
     COLD_ELICIT_ARMS,
+    CORRECTION_ARMS,
     COVERED_ASK_ARMS,
     ELICIT_CALLED_OFF_ARMS,
     MIXED_MESSAGE_ARMS,
     NOTIFY_OFF_ARMS,
     OFFER_ACCEPTED_ARMS,
     PASSING_MENTION_ARMS,
+    POST_FAILURE_QUESTION_ARMS,
     REQUEST_CALLED_OFF_ARMS,
     REQUEST_SHORT_ARMS,
     SEEDED_SKILLS,
+    STEPS_ANSWERED_ARMS,
     STILL_CLARIFYING_ARMS,
+    UNCOVERED_ASK_ARMS,
+    UNCOVERED_DOMAIN_ARMS,
     UNPROMPTED_TEACH_ARMS,
     VALUE_ARRIVED_ARMS,
+    VALUE_ARRIVED_CASE_ID,
     WRONG_ROUTINE_ARMS,
     _standing_jobs,
 )
@@ -277,7 +287,7 @@ from penny.tests.eval.conftest import (
     _observe_sample,
     _PendingCase,
     _Perf,
-    _refuse_binding_off_request,
+    _refuse_binding_state_mismatch,
     _refuse_unscorable,
     _registry_shortfall,
     _sample_db_path,
@@ -3791,10 +3801,10 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
     db.skills.upsert(case.parked.skill, author=EVAL_SEED_AUTHOR)
     declared = ParkedRound(skill=case.parked.skill.name, settled=case.parked.settled)
 
-    _refuse_binding_off_request("a-case", ConversationState.REQUEST, declared)
-    _refuse_binding_off_request("a-case", ConversationState.IDLE, None)
+    _refuse_binding_state_mismatch("a-case", ConversationState.REQUEST, declared)
+    _refuse_binding_state_mismatch("a-case", ConversationState.IDLE, None)
     with pytest.raises(ValueError, match="only a round parked in request"):
-        _refuse_binding_off_request("a-case", ConversationState.IDLE, declared)
+        _refuse_binding_state_mismatch("a-case", ConversationState.IDLE, declared)
 
     assert _registry_shortfall(db, "a-case", declared).skill == slug_skill_name(
         case.parked.skill.name
@@ -3808,6 +3818,67 @@ def test_a_parked_round_the_routine_cannot_be_waiting_on_is_refused(tmp_path) ->
     every_value = {one.name: "something the user said" for one in case.parked.skill.parameters}
     with pytest.raises(ValueError, match="waiting on nothing"):
         _registry_shortfall(db, "a-case", declared.model_copy(update={"settled": every_value}))
+
+
+def test_the_request_classifier_cases_declare_the_round_their_arms_answer(tmp_path) -> None:
+    """The section the REQUEST classifier cases put in front of the draw (#2099), pinned
+    WHOLE.
+
+    All three park on one round: the ask named a page to watch, the binder resolved that to
+    the seeded price watcher, and the page is the single parameter that routine declares —
+    described in the ask and never given — so the round is short of ``url`` and the section
+    says so.  That is the story every arm answers: one supplies the page, one calls the
+    round off, and one says the named routine was the wrong one.
+
+    Asserted as the whole section rather than by its parts, because the ways this can be
+    wrong are not the ways the fixture refuses.  A round settling a name the routine does
+    not declare, or settling all of them, is refused; a round declaring a DIFFERENT but
+    coherent routine renders cleanly, moves every number the cases report, and shows
+    nothing for it."""
+    db = migrated_db(str(tmp_path / "request-case-parked-round.db"))
+    for draft in SEEDED_SKILLS:
+        db.skills.upsert(draft, author=EVAL_SEED_AUTHOR)
+
+    content = render_classifier_content(
+        _classifier_snapshot(
+            db,
+            case_id=VALUE_ARRIVED_CASE_ID,
+            state=ConversationState.REQUEST,
+            message=_KAYAK_PAGE,
+            penny_last_turn=_REQUEST_TURN,
+            task_anchor=_KAYAK_ASK,
+            parked_round=_PARKED_ON_THE_PRICE_WATCH,
+        ),
+        _KAYAK_PAGE,
+    )
+    assert _waiting_on_block(content) == (
+        "## The details this task is waiting on\n"
+        'skill: "watch a listing price for changes"\n'
+        "already given:\n"
+        "- nothing yet\n"
+        "still needed:\n"
+        "- url — the product or listing page whose price to watch"
+    )
+
+
+def test_a_request_case_that_declares_no_parked_round_is_refused() -> None:
+    """A case parking in REQUEST declares the round it is parked on, or it does not run
+    (#2099).
+
+    A round carries a binding exactly while it is parked in request, so the rule is a
+    biconditional and both halves of it are refused.  This is the half that keeps a REQUEST
+    case from being written lean: without it such a case reports its number as if the draw
+    had been shown the one section production always renders there, and nothing on the run
+    says otherwise — the refusal is the only thing that can.
+
+    The message is asserted WHOLE: the case author is its only reader, and a substring
+    match passes on one naming the wrong case or omitting the parameter to add."""
+    with pytest.raises(ValueError) as refusal:
+        _refuse_binding_state_mismatch("a-case", ConversationState.REQUEST, None)
+    assert str(refusal.value) == (
+        "a-case: every round parked in request waits on a binding — this case declares no "
+        "parked_round, so its draw would be shown none"
+    )
 
 
 # ── The six tranche-A classifier cases (#2055) ────────────────────────────────
@@ -3992,12 +4063,9 @@ def test_every_parked_tranche_a_case_is_shown_what_its_round_waits_on(tmp_path) 
     (#2055 over #2084).
 
     Production reaches request only through the binder, so a round parked there always
-    carries what it is waiting on and the draw always reads that section.  The parameter
-    that carries it is OPTIONAL on the runner — deliberately, so migrating the landed
-    ``request-elicit`` case stays its own ticket — which means a case omitting it is silently
-    measured against a leaner document than production builds.  Asserted through the
-    DRIVER's own snapshot step rather than a rebuild beside it, so dropping the argument
-    from a case fails here.
+    carries what it is waiting on and the draw always reads that section.  Asserted through
+    the DRIVER's own snapshot step rather than a rebuild beside it, so a case declaring the
+    wrong round fails here; a case declaring none is refused by the runner before it runs.
 
     Both directions: every request-parked case declares one, and no case on any other state
     does — a binding rendered where production renders none is the same defect mirrored.
@@ -4196,7 +4264,7 @@ def test_every_gated_tranche_b_case_offers_the_routine_it_claims(tmp_path) -> No
     while it is not one, so a claim naming a routine the registry does not hold could never
     be satisfied and the case would report 0/15 as a model failure.  The other half — that
     more than one routine is on offer — is what makes naming the right one a choice, and the
-    two gated cases here differ in exactly that: one seeds the pooled pair's two candidates,
+    two gated cases here differ in exactly that: one seeds two candidates,
     the other four near neighbours.
     """
     gated = [row for row in _TRANCHE_B if row[5] is not None]
@@ -4239,6 +4307,136 @@ def test_the_notify_cases_world_really_stands_its_job_up(tmp_path) -> None:
     assert running[named].skill_name == _PRICE_SKILL, "and it must run the covering routine"
     assert running[named].notify is True, "in the state its ask is about changing"
     assert len(jobs) > 1, f"and beside at least one other, or resolving it is no read: {jobs}"
+
+
+# ── The five tranche-C classifier cases (#2055) ───────────────────────────────
+#
+# The tranche-B row shape and the same questions, over the five decisions that complete the
+# map.  Every one of these worlds SEEDS routines, so the second probe asserts the positive
+# direction tranche B's cold cases assert the negative of: the skill-gated doors the parked
+# state can open really are on offer, since each case's temptation is a door that is open
+# and wrong.
+#
+# The two cases whose door STARTS a job hold one more fact as an alternation: a standing
+# marker.  Idle owns every message with no standing or scheduling component whatever it
+# resembles, so a subject token says what an ask is ABOUT and never whether it asks for
+# something that keeps running — an arm without the marker is idle's, wearing this case's id.
+_TRANCHE_C: list[_TrancheB] = [
+    (
+        "uncovered-ask",
+        UNCOVERED_ASK_ARMS,
+        ConversationState.IDLE,
+        SEEDED_SKILLS,
+        ConversationState.ELICIT,
+        None,
+        ("gym", "week"),
+        ("price", "menu", "read", "remember", ".example"),
+        (("keep track of", "keep a weekly count", "keep a running", "visits kept"),),
+    ),
+    (
+        "uncovered-domain",
+        UNCOVERED_DOMAIN_ARMS,
+        ConversationState.IDLE,
+        _CROSS_DOMAIN_SKILLS,
+        ConversationState.ELICIT,
+        None,
+        ("restaurant", "downtown"),
+        ("job", "price", "read", "remember", ".example"),
+        (("keep a list", "keep track of", "keep collecting", "keep a running list"),),
+    ),
+    (
+        "steps-answered",
+        STEPS_ANSWERED_ARMS,
+        ConversationState.ELICIT,
+        SEEDED_SKILLS,
+        ConversationState.LEARN,
+        None,
+        (_TEACH_PAGE, "first sailing"),
+        ("?", "never mind", "forget"),
+        (),
+    ),
+    (
+        "correction",
+        CORRECTION_ARMS,
+        ConversationState.LEARN,
+        SEEDED_SKILLS,
+        ConversationState.LEARN,
+        None,
+        (_LIVE_TIMETABLE_PAGE,),
+        ("?", "never mind", "forget"),
+        (),
+    ),
+    (
+        "post-failure-question",
+        POST_FAILURE_QUESTION_ARMS,
+        ConversationState.LEARN,
+        SEEDED_SKILLS,
+        ConversationState.IDLE,
+        None,
+        ("went wrong", "page", "?"),
+        ("try again", "instead", "remember", "never mind", ".example"),
+        (),
+    ),
+]
+
+# The skill-gated doors each parked state can open when the registry holds routines — what a
+# seeded tranche-C world must really be offering for its case's temptation to exist.  Elicit
+# opens none: its out-edges carry no skill-gated state.
+_GATED_DOORS: dict[ConversationState, tuple[ConversationState, ...]] = {
+    ConversationState.IDLE: (ConversationState.APPLY, ConversationState.REQUEST),
+    ConversationState.ELICIT: (),
+    ConversationState.LEARN: (ConversationState.APPLY,),
+}
+
+
+def test_every_tranche_c_arm_set_says_one_decision_five_ways() -> None:
+    """The tranche-C arms (#2055): five wordings of ONE decision, over constant facts.
+
+    The carried tokens are each case's constant facts — the job being asked for, the page and
+    the thing to remember off it, the replacement page, the two things asked about the
+    failure.  The withheld tokens are the neighbouring edge each case would slide onto: steps
+    in an elicit ask would be idle → learn, a question back or a call-off in the answered
+    teach would be the parked self-edge or the break-out, and an instruction in the
+    post-failure question would be the correction.
+
+    The two idle → elicit cases hold a standing marker as an alternation, because that fact
+    has no single word and it is the one that separates them from idle.
+    """
+    for name, arms, _s, _k, _e, _r, carries, withholds, groups in _TRANCHE_C:
+        assert len(arms) == 5, f"{name}: five arms"
+        assert len(set(arms)) == 5, f"{name}: five wordings, or the arms are not arms"
+        assert carries, f"{name}: an arm set states the facts it holds constant"
+        assert withholds, f"{name}: and what would move it to a neighbouring edge"
+        for arm in arms:
+            for token in carries:
+                assert token in arm, f"{name}: every arm carries {token!r}: {arm!r}"
+            for token in withholds:
+                assert token not in arm, f"{name}: no arm may carry {token!r}: {arm!r}"
+            for group in groups:
+                assert any(token in arm for token in group), (
+                    f"{name}: every arm states the fact {group} holds constant: {arm!r}"
+                )
+
+
+def test_every_tranche_c_world_offers_the_door_its_case_claims(tmp_path) -> None:
+    """Each tranche-C case's world opens the door its claim names AND the door its case is
+    about declining (#2055).
+
+    Asserted from the PRODUCTION snapshot builder, so what this calls offered is what the
+    draw will be offered.  ``presented_edges`` withholds every skill-gated state when the
+    registry holds no candidates, so an elicit drawn from idle against an empty registry
+    declines nothing these cases are about, and a correction measured cold never faces the
+    apply door it most resembles.
+    """
+    for index, (name, arms, state, skills, expected, _r, _c, _w, _g) in enumerate(_TRANCHE_C):
+        assert skills, f"{name}: every tranche-C world seeds routines"
+        db = migrated_db(str(tmp_path / f"tranche-c-{index}.db"))
+        for draft in skills:
+            db.skills.upsert(draft, author="probe")
+        offered = presented_edges(build_snapshot(db, state=state, message=arms[0]))
+        assert expected in offered, f"{name}: {expected.value} must be a door {state.value} opens"
+        for door in _GATED_DOORS[state]:
+            assert door in offered, f"{name}: {door.value} must be on offer to be declined"
 
 
 @pytest.mark.parametrize("ported", FRAMING_PORTED_ARMS, ids=lambda p: p.case_id)
