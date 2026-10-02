@@ -82,6 +82,7 @@ from penny.tests.conftest import (
     require_memory,
     run_penny_with_server,
     stop_task,
+    wait_until,
 )
 from penny.tests.eval.utils import artifacts as eval_artifacts
 from penny.tests.eval.utils import assertions as eval_assertions
@@ -3393,10 +3394,30 @@ async def _seed_sample(
         prepare(penny)
 
 
+def _turn_settled(penny: Penny) -> bool:
+    """Whether the turn Penny was handed has finished — its reply delivered and recorded.
+
+    Read off the scheduler's foreground flag, which the channel clears as the last act of
+    handling a message: after the reply's send has come back and its record is complete."""
+    return not penny.scheduler.foreground_active
+
+
 async def _drive_turns(
-    server: MockSignalServer, turns: Sequence[str], *, timeout: float, retryable: bool
+    penny: Penny,
+    server: MockSignalServer,
+    turns: Sequence[str],
+    *,
+    timeout: float,
+    retryable: bool,
 ) -> str:
-    """Push each user turn and wait for its reply, returning the LAST one.
+    """Push each user turn, wait for its reply and for the turn to SETTLE, returning the
+    LAST reply.
+
+    The mock server holds a reply the moment its send ARRIVES, which is before Penny has
+    heard back about it.  A sample that moved on from there tore its channel down under a
+    send still in flight: the send failed, and Penny logged her delivery-failure apology
+    into the sample's record as a message the user received (#2195).  So a turn is over
+    when Penny has finished handling it, not when its reply was seen.
 
     A model-error reply raises :class:`_ModelCallError` while an attempt remains — that
     reply is the transport failing, not Penny deciding anything, so the sample is
@@ -3405,6 +3426,7 @@ async def _drive_turns(
     for turn in turns:
         await server.push_message(sender=TEST_SENDER, content=turn)
         response = await server.wait_for_message(timeout=timeout)
+        await wait_until(lambda: _turn_settled(penny), timeout=timeout)
         reply = str(response.get("message", ""))
         if reply == PennyResponse.AGENT_MODEL_ERROR and retryable:
             raise _ModelCallError
@@ -3476,7 +3498,7 @@ async def _drive_sample(
     before = collection_names(penny.db)
     reply = ""
     try:
-        reply = await _drive_turns(server, turns, timeout=timeout, retryable=retryable)
+        reply = await _drive_turns(penny, server, turns, timeout=timeout, retryable=retryable)
         result = _scored_sample(penny.db, before, reply, score, _guarded_injector(wrapper, observe))
         _stamp_cause(penny.db, result)
         _write_sample_report(

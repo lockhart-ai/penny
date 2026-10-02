@@ -952,6 +952,18 @@ SHA + dirty diff are computed **host-side** in the Makefile (`EVAL_COMMIT`/`EVAL
 because `.git` is not mounted in the eval container. The `family` tag defaults from the test
 module name (`test_<x>` → `<x>`) or is set explicitly via a `family=` arg on a runner call.
 
+**A driven turn is over when Penny has finished handling it, not when its reply was seen (#2195).**
+The mock Signal server holds a reply the moment its send ARRIVES, which is before Penny has heard
+back about it, and a message is handled on its own task that teardown does not wait for. A sample
+that moved on from the first sight of its reply could close its channel under that send: the send
+failed, and Penny logged `PennyResponse.DELIVERY_FAILURE` into the sample's database as a second
+message the user received. So `_drive_turns` waits, after each reply, for
+`BackgroundScheduler.foreground_active` to clear — the flag the channel drops as the last act of
+handling a message, after the reply's send has come back and its row carries its external id.
+What a sample's claims read was never the apology (the observation is taken before teardown, and
+`reply` is the message the server captured); what it corrupted was the sample's `.db` artifact.
+Pinned in `make check` by a server that holds the send unanswered.
+
 **Per-sample penny logs (#1909).** Beside each sample's DB (`<case_id>-<n>.db`) the harness
 writes that sample's own logger output as `<case_id>-<n>.log` — the fourth durable per-sample
 artifact, alongside the DB and the `<case_id>.md` transcript. `<n>` is `sample_number` — the

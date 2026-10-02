@@ -108,6 +108,12 @@ class BackgroundScheduler:
                 self._current_task,
             )
 
+    @property
+    def foreground_active(self) -> bool:
+        """Whether a foreground turn is still in flight — from the moment its message is
+        dispatched until its reply, and every send that follows the reply, has finished."""
+        return self._foreground_active
+
     def notify_foreground_end(self) -> None:
         """Called when foreground work (message/command processing) ends."""
         self._foreground_active = False

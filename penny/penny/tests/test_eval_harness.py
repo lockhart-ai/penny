@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+from aiohttp import web
 
 # Importing the memory-tools module registers those tools (``Tool.__init_subclass__``) so
 # ``Tool.format_result`` dispatches their real ``to_result_narration`` — the rejection-probe
@@ -68,7 +69,7 @@ from penny.program import program_calls
 from penny.responses import PennyResponse
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
-from penny.tests.conftest import TEST_SENDER, require_memory
+from penny.tests.conftest import TEST_SENDER, require_memory, wait_until
 from penny.tests.eval.binder.test_skill_binding import (
     _MISSING_KEYWORD,
     PHRASINGS_PER_COHORT,
@@ -234,6 +235,7 @@ from penny.tests.eval.conftest import (
     _cycle_shape,
     _cycles_exclusion,
     _draw_exclusion,
+    _drive_turns,
     _exclusion,
     _extraction_output,
     _flush_sample_blocks,
@@ -276,6 +278,7 @@ from penny.tests.eval.conftest import (
     cycle_script,
     draw_rerolled,
     env_seconds,
+    eval_penny,
     frame_parameter_name,
     frame_parameter_says,
     is_seeded_run,
@@ -283,6 +286,7 @@ from penny.tests.eval.conftest import (
     label_says_field,
     live_prompt_perf,
     measured_turn_ran,
+    outgoing_replies,
     routing_clean,
     run_exhibited_pathology,
     sample_is_fragile,
@@ -364,6 +368,7 @@ from penny.tests.eval.utils.transition_world import (
     seed_parked_in_request,
 )
 from penny.tests.eval.utils.worlds import World
+from penny.tests.mocks.signal_server import MockSignalServer
 from penny.tests.schema_template import migrated_db, schema_only_db
 
 # Production's own rule for a message worth delivering, read from where the send path and the
@@ -443,6 +448,74 @@ async def test_concurrent_samples_keep_their_logs_apart(tmp_path) -> None:
     assert "beta" not in first.read_text()
     assert second.read_text().count("beta") == 2
     assert "alpha" not in second.read_text()
+
+
+# The platform id the held server answers a send with, so the test can read it back off
+# the reply's own row as proof the send came back before the sample let go of its Penny.
+_HELD_SEND_EXTERNAL_ID = 1790000000000
+_HELD_REPLY = "The Foxes signed a goalie on Thursday."
+
+
+class _HeldReplyServer(MockSignalServer):
+    """A Signal server that has RECEIVED a reply and has not yet answered for it.
+
+    This is the state a sample is in at the moment it first sees its reply: the message is
+    on the server, and Penny is still waiting to hear that her send landed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reply_seen = False
+        self._answered = asyncio.Event()
+
+    def answer_the_send(self) -> None:
+        self._answered.set()
+
+    async def wait_for_message(self, timeout: float = 10.0) -> dict:
+        message = await super().wait_for_message(timeout)
+        self.reply_seen = True
+        return message
+
+    async def _handle_send(self, request: web.Request) -> web.Response:
+        self.outgoing_messages.append(await request.json())
+        await self._answered.wait()
+        return web.json_response({"timestamp": _HELD_SEND_EXTERNAL_ID})
+
+
+async def test_a_turn_is_not_over_until_its_reply_has_been_delivered(
+    mock_llm, make_config, test_user_info
+) -> None:
+    """A driven turn ends when Penny has finished handling it, not when its reply was seen.
+
+    The mock server holds a reply as soon as the send arrives, which is before Penny has
+    heard back about it.  A sample that returned there tore its channel down under the send
+    still in flight: the send failed, and Penny logged her delivery-failure apology into the
+    sample's record as a second message the user received (#2195).  Here the send is held
+    unanswered, so the drive must still be waiting once the reply has been seen — and after
+    teardown the record holds the reply alone, stamped with the id the send came back with."""
+    server = _HeldReplyServer()
+    await server.start()
+    try:
+        config = make_config(signal_api_url=f"http://localhost:{server.port}")
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, _HELD_REPLY)
+        )
+        async with eval_penny(config, server) as penny:
+            drive = asyncio.create_task(
+                _drive_turns(penny, server, ["any news?"], timeout=10.0, retryable=False)
+            )
+            await wait_until(lambda: server.reply_seen)
+            assert not drive.done(), "the turn ended while its reply's send was unanswered"
+            server.answer_the_send()
+            reply = await drive
+    finally:
+        server.answer_the_send()
+        await server.stop()
+
+    db = Database(config.db_path)
+    assert outgoing_replies(db) == [reply]
+    delivered = db.messages.find_outgoing_by_content(reply)
+    assert delivered is not None
+    assert delivered.external_id == str(_HELD_SEND_EXTERNAL_ID)
 
 
 def _sample_report_text(directory, case_id: str) -> str:
