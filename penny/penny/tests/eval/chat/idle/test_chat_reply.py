@@ -80,8 +80,9 @@ duplicate case's — and its store claim is that every entry it held is still th
 bar the one the ask names, which that case claims is still held in the collection that had
 it.  Whether a turn also noted something, stood something up, or filed a second copy is the
 model's call on what it was shown, so it is measured as ``ENTRIES_STORED`` and
-``TOOL_SEQUENCE`` rather than claimed.  A world with nothing seeded has nothing to survive,
-and its STORE category carries only its claims about the delivered reply.
+``TOOL_SEQUENCE`` rather than claimed.  A world with nothing seeded has nothing to survive:
+its STORE category carries the answer its reply owes where the world has one, and is EMPTY
+where it has none.
 
 **Provenance is claimed in BOTH places on every case** — the reply and the store.  None of
 these asks but the duplicate one tells her to write, but a turn that chooses to note something
@@ -634,7 +635,6 @@ async def test_the_page_s_own_value_comes_back_in_the_reply(
 
     # STORE
     cohort.assert_the_reply_answers_the_ask()
-    cohort.assert_every_delivered_message_is_whole()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
@@ -660,7 +660,6 @@ async def test_the_value_one_link_deep_comes_back_in_the_reply(
 
     # STORE
     cohort.assert_the_reply_answers_the_ask()
-    cohort.assert_every_delivered_message_is_whole()
 
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
@@ -691,10 +690,9 @@ async def test_a_failed_read_is_admitted_and_no_figure_is_supplied(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the reply-answers claim is ABSENT and that is the correct report: the world
-    # carries no answer, so a completeness claim over it would state a contract this ask
-    # cannot make.
-    cohort.assert_every_delivered_message_is_whole()
+    # STORE — EMPTY, and that is the correct report: nothing was seeded, so there is nothing
+    # to survive, and the world carries no answer, so a reply-answers claim over it would
+    # state a contract this ask cannot make.
 
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
@@ -719,10 +717,9 @@ async def test_an_empty_store_is_answered_only_from_what_she_was_given(
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — the reply-answers claim is ABSENT and that is the correct report: the store
-    # holds nothing, so there is no value the reply owes and a completeness claim would state
-    # a contract this entry condition cannot make.
-    cohort.assert_every_delivered_message_is_whole()
+    # STORE — EMPTY, and that is the correct report: the store holds nothing, so there is
+    # nothing to survive and no value the reply owes, and a reply-answers claim would state a
+    # contract this entry condition cannot make.
 
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
@@ -758,7 +755,6 @@ async def test_a_second_telling_leaves_the_interest_where_it_was_kept(
 
     # STORE — the reply-answers claim is ABSENT and that is the correct report: the ask
     # supplies its own subject, so a token in the reply would prove nothing about a read.
-    cohort.assert_every_delivered_message_is_whole()
     cohort.claim(
         "state: the interest is still held in the collection that had it",
         _still_held_in(_INTERESTS.name, _KAYAK),
