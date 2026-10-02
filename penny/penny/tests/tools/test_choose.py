@@ -4,8 +4,8 @@ The model is a biased chooser, so "pick one at random" belongs in Python: ``exec
 runs ``random.choice`` over the validated options and reports the pick.  These pin the
 deterministic mechanism for ``make check`` — the exact result body, the two arg-gate
 refusals (fewer than two options; a blank option), and the result narration.  The
-live-model NL-dispatch contract (a "choose one of X, Y, Z" phrasing reaches the tool
-with options intact; a judgment ask does NOT) lives in ``tests/eval/test_choose_dispatch.py``.
+live-model contract (a "choose one of X, Y, Z" ask is answered with the option the fair
+pick returned) lives in ``tests/eval/chat/idle/test_choose_dispatch.py``.
 
 RNG is never left live — the exact-pick case monkeypatches ``random.choice`` and the
 fairness case seeds the module RNG, so no assertion depends on chance.

@@ -767,7 +767,7 @@ own switch off), `standing-archive` (retired as a tombstone that still holds wha
 `standing-schedule-fix-prior` (re-timed, and every clock time the reply names is one the job
 has had — any third hour is invented, since the ask supplies one and the seed the other, #1946)
 and `standing-describe-routine` (read back: the reply names the page the routine fetches, a
-token only the job's record carries). Each claims the job's own ROW as the turn left it — the
+token only the job's record carries, and every value it states traces to that record). Each claims the job's own ROW as the turn left it — the
 field the ask named moved, and PRESERVATION of everything else, read as the row's END STATE
 through the ledger (`MechanismRecord.moved_this_run`: each field whose value now differs from
 the prior the mutation ledger recorded for it, so a field a call merely restated has not moved)
@@ -818,16 +818,16 @@ The page each case is given is what the content script returns for it, so the tw
 of #1942 meet in the fixtures; a coherence probe in `make check` holds every anchor against
 its own page, exactly once),
 `test_notifications.py` (the muting contract that retired `/mute` + `/unmute`, PORTED to the
-cohort structure (#2008, tranche 3): `explicit-mute-request-mutes` (an explicit ask in the tool's
-own terms, against the production cold start — the user is muted afterwards) and
+cohort structure (#2008, tranche 3): `explicit-mute-request-mutes` (the user asks
+for notifications to be muted, against the production cold start — the user is muted afterwards) and
 `notifications-no-fire` (a remark that names notifications and asks nothing — the turn stays in
 idle with notifications still on, PRESERVATION of the one prior state that world holds). That
 the header carries the switch (#1919) is a prepare-time PREMISE rather than a claim.
 `explicit-unmute-request-unmutes` is not a case: its end state is true of an unseeded world),
-`test_choose_dispatch.py` (the fair pick, PORTED (#2008, tranche 3): `choose-dispatch-fires` —
-the option the reply reports is the one the run's own record chose, read off the tool's shipped
-result template — and `choose-dispatch-no-fire`, a question of preference answered in idle with
-nothing unsourced; whether a pick was made there is a route, measured in the tool sequence),
+`test_choose_dispatch.py` (the fair pick, PORTED (#2008, tranche 3): ONE case,
+`choose-dispatch-fires` — the option the reply reports is the one the run's own record chose,
+read off the tool's shipped result template. A question about which option she prefers is not
+a case: it has no fact to assert),
 `test_speakable_log_reads.py` (looking back at her own logs, PORTED (#2008, tranche 3, folding
 #2001): `speak-logread-penny-messages-recall` and `speak-logread-collector-runs`, each over a
 world where the answer token exists in exactly ONE place — an out-of-window turn of hers, and a

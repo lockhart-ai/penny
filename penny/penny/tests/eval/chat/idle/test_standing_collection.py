@@ -62,10 +62,10 @@ put it in, then the render.  The routine itself goes into the registry through
 a config defect the collector cannot read (#1916's strict dialect), so a world seeded that way
 would be claiming a job that could never run.
 
-``standing-describe-routine`` reads the same job back rather than operating it (ported on the
-code owner's ruling).  What it asserts is what the reply CITES from the job's record — the page
-its routine fetches — plus the job still as it was; which read she reaches for, and how she words
-the walk-through, are measured.
+``standing-describe-routine`` reads the same job back rather than operating it.  What it
+asserts is what the reply CITES from the job's record — the page its routine fetches — that
+every value the reply states traces to what the round was given, and the job still as it was;
+which read she reaches for, and how she words the walk-through, are measured.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every page, shop and job is synthetic, on an
@@ -1054,8 +1054,7 @@ _DESCRIBE = _OperationCase(
     case_id="standing-describe-routine",
     behaviour=(
         "In the chat agent, when the user asks what a standing job does, Penny describes the "
-        "routine from its record (fetches the page, saves what it finds) and invents no step it "
-        "does not have."
+        "routine from its record, and every value in her reply traces to that record."
     ),
     job=_FINDS,
     renders=SelfStateHeader.MECHANISM_NOTIFIES,

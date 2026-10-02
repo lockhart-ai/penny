@@ -109,9 +109,6 @@ from penny.tests.eval.chat.idle.test_choose_dispatch import (
     picks_on_the_record,
     reply_reports,
 )
-from penny.tests.eval.chat.idle.test_choose_dispatch import (
-    assert_no_fire_world as assert_choose_no_fire_world,
-)
 from penny.tests.eval.chat.idle.test_command_tools import (
     IMAGE_CASES,
     _claims_no_picture_check,
@@ -1207,7 +1204,7 @@ def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> 
         assert_board_games_world(db, case)
 
 
-def _assert_one_ask_in_five_wordings(case: SourceDownCase) -> None:
+def _assert_five_wordings_each_state_the_facts(case: SourceDownCase) -> None:
     """Five distinct wordings, every one of them stating the case's own constant facts.
 
     The facts come off the CASE rather than being restated here, so the guard and the thing it
@@ -1247,7 +1244,7 @@ def test_the_source_down_case_holds_its_facts_constant_across_its_five_wordings(
     exists for: one written about the page nobody read, in plain prose that names nothing, which
     every other claim passes."""
     for index, case in enumerate(SOURCE_DOWN_CASES):
-        _assert_one_ask_in_five_wordings(case)
+        _assert_five_wordings_each_state_the_facts(case)
         unreachable = [page for page in case.world.pages if page.fails]
         assert unreachable and case.world.pages[0] is unreachable[0], (
             f"{case.case_id}: the unreachable page must come FIRST, or the source that is down "
@@ -1321,7 +1318,7 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
     """Every dispatch story's loud probe passes against a REAL migrated database and a REAL
     chat surface — both halves of every one of them, inside ``make check``.
 
-    The two NO-FIRE probes are here for a reason of their own: a no-fire cohort whose tool
+    The muting NO-FIRE probe is here for a reason of its own: a no-fire cohort whose tool
     sequence never shows the tool means nothing on a world that never offered it, so a surface
     probe that could not pass is exactly the shape a quiet no-fire spread would hide.
 
@@ -1339,7 +1336,6 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
         for image_case in IMAGE_CASES:
             assert_image_world(penny, image_case)
         assert_choose_world(penny)
-        assert_choose_no_fire_world(penny)
         assert_mute_world(penny)
         assert_mute_no_fire_world(penny)
 

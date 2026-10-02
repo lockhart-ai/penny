@@ -9,7 +9,7 @@ There is no run that exhibits both, so the two asks get two setups.
 
 | direction | case | what the run must leave |
 |---|---|---|
-| asked in the tool's own terms | ``explicit-mute-request-mutes`` | notifications muted |
+| asked for | ``explicit-mute-request-mutes`` | notifications muted |
 | the topic alone | ``notifications-no-fire`` | notifications still on, as the turn found them |
 
 **Muting and unmuting are the same sentence in two entry conditions** — an unmuted world and a
@@ -98,8 +98,7 @@ _ALSO_PHRASED = (
 )
 
 _BEHAVIOUR = (
-    "In the chat agent, when the user asks in the notification tool's own terms for "
-    "notifications to be muted, Penny mutes them."
+    "In the chat agent, when the user asks for notifications to be muted, Penny mutes them."
 )
 
 
@@ -146,7 +145,7 @@ def _notifications_are_muted(sample: SampleObservation, _world: World) -> Answer
 async def test_an_explicit_mute_request_mutes_notifications(
     chat_eval: ChatEval, model: str
 ) -> None:
-    """An unmuted world, a header that says so, and a request in the tool's own terms."""
+    """An unmuted world, a header that says so, and a request for notifications to be muted."""
     cohort: Cohort = await chat_eval(
         case_id=_MUTES,
         behaviour=_BEHAVIOUR,

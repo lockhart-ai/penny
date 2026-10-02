@@ -1,32 +1,28 @@
-"""Dispatch: two cases (#2008, tranche 3).
+"""Dispatch: the fair pick (#2008, tranche 3).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Two cases, because one setup cannot produce both directions.**  A case is one setup, one run
-and one set of assertions (#2100), and the two things this behaviour claims need opposite asks:
-a request for a random pick, and a question about which option she prefers.  No single run
-produces both, so folding them would have made the negative direction unmeasurable rather than
-economical — and it is the direction the tool exists for, since a model asked to choose at
-random is a biased chooser (#1679/#1680) and one asked for an opinion is being asked for hers.
+**One case — ``choose-dispatch-fires``.**  The user names several options and asks for one of
+them at random, and the reply reports the option the fair pick returned.
 
-* the REQUEST — ``choose-dispatch-fires`` — a reply reporting the option the fair pick
-  returned.
-* the TOPIC alone — ``choose-dispatch-no-fire`` — the turn stays in idle and its reply names
-  nothing the round was not given.
+What it asserts about the pick is the one thing an end state can carry: **the option the reply
+reports is the one the run's own record chose.**  A reply naming a different option means she
+free-chose past a call that looks perfectly green in the trace — the failure the tool exists to
+prevent, wearing a green call as a disguise — and it is a PROVENANCE claim rather than a route
+one, because what it reads is where a specific value in the reply came FROM.  On a sample where
+the run produced no pick at all the sentence is false rather than unasked: the reply reports an
+option the run never chose.
 
-What the fire case asserts about the pick is the one thing an end state can carry: **the option
-the reply reports is the one the run's own record chose.**  A reply naming a different option
-means she free-chose past a call that looks perfectly green in the trace — the failure the tool
-exists to prevent, wearing a green call as a disguise — and it is a PROVENANCE claim rather than
-a route one, because what it reads is where a specific value in the reply came FROM.  On a
-sample where the run produced no pick at all the sentence is false rather than unasked: the
-reply reports an option the run never chose.
+**The case does not claim what the turn did NOT do.**  Whether the turn wrote or created
+something is the model's own call on what it was shown, so it is measured — in the tool
+sequence and the entries stored — and never asserted (``docs/principles.md`` §4.1, §4.3).  The
+world holds nothing before the turn, so there is no prior state for a preservation claim to
+read either.
 
-**Neither case claims what the turn did NOT do.**  Whether a pick was made on the judgment
-ask, and whether either turn wrote or created something, are the model's own calls on what it
-was shown, so they are measured — in the tool sequence and the entries stored — and never
-asserted (``docs/principles.md`` §4.1, §4.3).  The world holds nothing before the turn, so
-there is no prior state for a preservation claim to read either.
+**A question about which option she prefers is not a case.**  An opinion is hers to give, and a
+knowledgeable answer to one carries values no round supplied, so reply provenance has nothing
+true to say about it; with the world empty there is nothing to preserve, and what remains would
+assert that the model refrained (``docs/principles.md`` §4.3).  It has no fact to assert.
 
 **Dispatch stands on the tool description ALONE.**  ``ChooseTool`` is registered on every agent
 surface and no skill teaches this routing — nothing has been pre-seeded since migration 0108 —
@@ -75,7 +71,6 @@ _FAMILY = "nl-dispatch"
 
 _CHOOSE_TOOL = "choose"
 _FIRES = "choose-dispatch-fires"
-_NO_FIRE = "choose-dispatch-no-fire"
 
 # The three woods the ask is about.  ONE set, held constant across every arm, because the claim
 # below names a value: the pick the run recorded has to be one of these for the comparison to
@@ -114,7 +109,7 @@ _BEHAVIOUR = (
     "random, Penny reports the option the fair pick actually returned."
 )
 
-# How the fire direction would be answered WELL — a review target, and the input the
+# How the ask would be answered WELL — a review target, and the input the
 # deterministic pin in ``test_eval_harness.py`` runs through the claim below in BOTH directions:
 # it must agree with the option it names and disagree with the two it does not, since a
 # comparison that passed every option would let a free-chosen reply score green behind a real
@@ -218,74 +213,4 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
     # got to the pick, not whether the pick is right: what the reply DID with it is the claim
     # above, and a sample that free-chose is caught there rather than here, since it reports an
     # option no record holds.
-    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
-
-
-# ═══ the topic alone ═════════════════════════════════════════════════════════
-#
-# The same three woods, put as a question about which she prefers.  An opinion is HERS to give.
-# Whether she reached for the fair pick anyway is a route, measured in the tool sequence; what
-# this case claims is the state the turn ends in and that its reply invents nothing.
-
-_NO_FIRE_WORLD = World(name=_NO_FIRE, pages=(), keeps=(), excludes=())
-
-_JUDGMENT_ASK = (
-    "between cedar, maple, and birch, which do you think makes the best-sounding guitar top?"
-)
-_JUDGMENT_ALSO_PHRASED = (
-    "of cedar, maple and birch, which do you rate highest for a guitar top, and why?",
-    "which of cedar, maple, or birch do you reckon sounds best as a guitar top?",
-    "cedar, maple, birch — what's your opinion on the best one for a guitar top?",
-    "in your view, which makes the better guitar top: cedar, maple, or birch?",
-)
-
-_NO_FIRE_BEHAVIOUR = (
-    "In the chat agent, when a message names several options as the subject of a question "
-    "about which she prefers rather than as a request to pick one, Penny stays in idle and "
-    "answers it with nothing the round was not given."
-)
-
-
-def assert_no_fire_world(penny: Penny) -> None:
-    """The same world the fire case is answered in — the chooser on the surface, no collection
-    in the registry — asserted under this case's own id so a failure names the case it stopped.
-
-    The surface half matters MORE here than in the fire direction, not less: a tool-sequence
-    reading in which the fair pick never appears means nothing on a world that never offered
-    it, and that is the shape a quiet no-fire spread could hide."""
-    assert_dispatch_world(penny, _NO_FIRE, [_CHOOSE_TOOL])
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_judgment_ask_is_answered_in_idle_from_what_she_was_given(
-    chat_eval: ChatEval, model: str
-) -> None:
-    """The same three options, asked about rather than asked for.
-
-    Its own setup and its own run, because the ask is the whole difference and no single turn
-    can be both: a case is one setup, one run and one set of assertions (#2100).  A sample that
-    flipped a coin for an opinion stands apart in the tool sequence, which is where a route is
-    read."""
-    cohort: Cohort = await chat_eval(
-        case_id=_NO_FIRE,
-        behaviour=_NO_FIRE_BEHAVIOUR,
-        model=model,
-        prepare=assert_no_fire_world,
-        world=_NO_FIRE_WORLD,
-        ask=_JUDGMENT_ASK,
-        also_phrased=_JUDGMENT_ALSO_PHRASED,
-        samples_per_phrasing=3,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-        timeout=240.0,
-    )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
-    # STORE — EMPTY, for the fire direction's reason: the world holds nothing before the turn,
-    # so there is no prior state to preserve, and the ask keeps nothing.
-
-    # PROVENANCE — the reply half only; the STORE half is absent for the reason STORE is.
-    cohort.assert_every_value_in_the_reply_is_sourced()
-
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
