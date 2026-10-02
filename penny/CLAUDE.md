@@ -735,17 +735,19 @@ own deadline — which is how one sample once held a run silent for twenty minut
 real chat/collector loops and score persisted DB state + sends at a `pass_rate`
 threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`
-(#1919, ported to the cohort structure by #2008 — the chat REPLY on an idle turn, as SIX
-cohorts of fifteen: three behaviours, one case per ENTRY CONDITION. Browse-and-answer is two
+(#1919, ported to the cohort structure by #2008 — the chat REPLY on an idle turn, as FIVE
+cohorts of fifteen: two behaviours, one case per ENTRY CONDITION. Browse-and-answer is two
 (the fact posted on the page she reaches, and the fact one link deep, which needs its own
-sentence because the index's answer-bearing line is what carries the next address); answering
-out of the user's own collections is one; honest failure is three (every source unreachable,
-a store with nothing in it, a store that already holds what she is asked to record). Three of
-the six are A/B PAIRS on one ask — the same five wordings against a readable page and against
-a world where every source errors, and against a seeded store and the production cold start —
-so the negative direction is expressed as the WORLD rather than as a clause. Every watched
-value is INVENTED and is ONE whitespace-free token (a posted admission, a maker's surname, a
-climb figure the user typed into their own collection), because `fold_typography` folds a
+sentence because the index's answer-bearing line is what carries the next address); nothing
+to answer from is three (every source unreachable, a store with nothing in it, a store that
+already holds what she is asked to record) — on the first two the claims are that the turn
+ends back in idle and that every specific value stored or said traces to what she was given,
+and whether the reply says the lookup failed is measured as reply spread. Answering out of
+what the store already holds is `memory-cold-recall`'s, in `test_chat_memory_stories.py`. One
+A/B PAIR shares an ask — the same five wordings against a readable page and against a world
+where every source errors — so the negative direction is expressed as the WORLD rather than
+as a clause. Every watched value is INVENTED and is ONE whitespace-free token (a posted
+admission, a maker's surname), because `fold_typography` folds a
 declared set of space characters rather than the whole category and a multi-word token can be
 failed by a space nobody has met. Report-only throughout. What did NOT port: every
 `tool_was_called` / `tool_not_called` / pages-served check (a ROUTE, and three of them keyed

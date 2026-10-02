@@ -181,7 +181,7 @@ correct next call from what came back). The suite spans that matrix:
 
 | axis | answer from memory/context | reach for the web (browse → reason) |
 |---|---|---|
-| **chat** (`test_chat_reply.py`) | answered out of the user's own collections; the honesty branches (already-there, empty store) | browse→answer; the fact one link deep; a failed read admitted |
+| **chat** (`test_chat_reply.py`) | a store with nothing to answer from; a store that already holds what she is asked to record | browse→answer; the fact one link deep; every source unreachable |
 | **chat authoring** (`test_standing_collection.py`) | operating a job that already runs: broaden / silence / wake / retire, and reading back what its routine does | — |
 | **collector** (`test_watch_cycles.py`, `test_collector_honesty.py`) | first / unchanged / moved reading over a configured watch | read-failure + browser-outage honesty |
 | **meta-collector** | *retired* — the `skills` reconcile collector (#1624) and the `quality` reviewer (#1569) both retired: skills are now structural (taught/instantiated/re-rendered) | — |

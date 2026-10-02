@@ -5470,11 +5470,10 @@ def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> No
     declaration is what the sample gets and what the report renders, so it is what this must
     exercise.
 
-    The answer tokens ride along for a store-backed world: the value has to be in the store
-    the world declares, since the whole behaviour is that she went and read it.  So does the
-    survival claim, in both directions: the store as seeded must read as everything still
-    there, or the claim fails a correct run by construction, and one entry reworded must read
-    as changed, or it passes a sample that rewrote what the user kept."""
+    The survival claim rides along for a store-backed world, in both directions: the store as
+    seeded must read as everything still there, or the claim fails a correct run by
+    construction, and one entry reworded must read as changed, or it passes a sample that
+    rewrote what the user kept."""
     for index, case in enumerate(ANSWERING_CASES):
         if not case.world.stores and case.probe is None:
             continue
@@ -5484,16 +5483,6 @@ def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> No
             case.probe(db)
         if not case.world.stores:
             continue
-        stored = " ".join(
-            f"{key} {content}"
-            for row in db.memories.list_all()
-            if row.type == MemoryType.COLLECTION
-            for key, content in collection_entries(db, row.name).items()
-        )
-        for token in case.world.answers:
-            assert token in stored, (
-                f"{case.case_id}: the seeded store does not carry the answer token {token!r}"
-            )
         held = [
             StoredEntry(collection=row.name, key=key, content=content)
             for row in db.memories.list_all()
