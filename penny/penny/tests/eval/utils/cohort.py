@@ -38,6 +38,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import lru_cache
 
 from pydantic import BaseModel, ConfigDict, Field
 from similarity.embeddings import cosine_similarity, token_containment_ratio
@@ -1229,7 +1230,11 @@ _PLURAL_POSSESSIVE = "'"
 def _bare(token: str) -> str:
     """A token without its possessive tail — ``Brandt's`` is the same name as ``Brandt``, and
     ``Seals'`` the same name as ``Seals``."""
-    folded = fold_typography(token)
+    return _without_possessive(fold_typography(token))
+
+
+def _without_possessive(folded: str) -> str:
+    """An already-folded token without its possessive tail."""
     for tail in (_POSSESSIVE, _PLURAL_POSSESSIVE):
         if folded.endswith(tail):
             return folded[: -len(tail)]
@@ -1338,25 +1343,172 @@ def specifics(text: str) -> list[str]:
     string the world contains, though every name in it is.  A line's field label and a heading
     line's title are layout, not values, and are never read."""
     found: list[str] = []
+    for value in _stated_values(text):
+        found += [part for part in value if part not in found]
+    return found
+
+
+def _stated_values(text: str) -> list[list[str]]:
+    """Each match of the specific-value grammar as the parts it is checked by: a URL match's
+    addresses, a number alone, a name phrase's words — kept together, because whether a word is
+    sourced can turn on the words it was said beside."""
+    values: list[list[str]] = []
     for match in _SPECIFIC.finditer(_fold_phrases(_blank_field_labels(text))):
         token = match.group().strip()
         if _is_url(token):
             parts = _urls_in(token)
         else:
             parts = [token] if _is_atomic(token) else token.split()
-        found += [part for part in parts if part and part not in found]
-    return found
+        values.append([part for part in parts if part])
+    return values
+
+
+# ── Sourcing: the same value, as a WHOLE token ──
+#
+# A value is sourced when the world states THAT value, and a value has edges.  Finding its
+# characters somewhere is not that: MEASURED, a bare `2` and a bare `1` were found inside
+# `425F`, and a `5` inside `25 min`, so quantities nobody gave read as sourced.  The same
+# containment sources `art` by `party`, and an address by any longer address it is a prefix of.
+#
+# So each kind `specifics` names is compared the way that kind has edges:
+#
+#   a NUMBER   by the numbers the world states.  A number there is a maximal run of digits and
+#              the marks that join digits into one figure (`1,299` · `4.25` · `14:30`), so `2`
+#              is no part of `425` or of `4.25`.  What stands beside the figure is not the
+#              figure: a currency sign, a percent sign, a degree sign, a unit (`425F`, `5pm`).
+#              And one figure written two ways is one figure: thousands separators, a trailing
+#              `.00`, a leading zero.
+#   a NAME     by the world's words, as a whole word — a hyphenated one as that run of whole
+#              words side by side.  A world often writes a name with no space in it (a domain,
+#              a handle), so the words of one phrase run together are that name too: MEASURED,
+#              a page given only as `harborseals.com` is "the Harbor Seals page" in 14 of 15
+#              replies, and none of them invented a team.
+#   a URL      by the addresses the world states, read off it with the grammar a reply's are
+#              read with, as the WHOLE address.  How an address is reached is not what it
+#              names, so its scheme, a leading `www.` and a closing slash are not compared.
+#
+# THE BLIND SPOTS, STATED.  A digit run inside an identifier (`a3f2b1`, `utf8`) is a number by
+# this definition, so a world carrying a hash sources the small numbers in it: telling an
+# identifier from a figure with its unit (`425F`, `14T10:00`) needs a list of shapes, and a list
+# of shapes is what this comparison is being repaired out of.  And the world is EVERYTHING the
+# round was given, scaffolding included — a numbered list, an entry count, a timestamp each
+# state a number whole, so a small quantity is sourced by them wherever they appear.
+_FIGURE = re.compile(r"\d+(?:[.,:]\d+)*")
+_THOUSANDS_SEPARATOR = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_LIST_SEPARATOR = ","
+_DECIMAL_POINT = "."
+_PLAIN_DECIMAL = re.compile(r"\d+(?:\.\d+)?")
+_ZERO = "0"
+# What a word is made of once folded.  The name grammar is ASCII, so the world's words are cut
+# on the same alphabet: a reply's `Café` is read as `Caf`, and so is the world's.  A digit run
+# is a token of its own so two words either side of a figure are not side by side.
+_WORLD_TOKEN = re.compile(r"[a-z']+|\d+")
+_QUOTE_MARK = "'"
+_TOKEN_GAP = " "
+_URL_PATTERN = re.compile(_URL)
+_HOW_AN_ADDRESS_IS_REACHED = re.compile(r"^https?://(?:www\.)?")
+_CLOSING_SLASH = "/"
+
+
+def _figure_value(figure: str) -> str:
+    """One figure in the form every rendering of it shares: `499.00`, `0499` and `499` are one
+    amount.  A fraction that says something is kept as written — `2.10` may be a version, which
+    `2.1` is not — and a figure that is not a plain decimal (a time, a dotted version) is its
+    own text."""
+    if not _PLAIN_DECIMAL.fullmatch(figure):
+        return figure
+    whole, _, fraction = figure.partition(_DECIMAL_POINT)
+    whole = whole.lstrip(_ZERO) or _ZERO
+    return f"{whole}{_DECIMAL_POINT}{fraction}" if fraction.strip(_ZERO) else whole
+
+
+def _figures(folded: str) -> frozenset[str]:
+    """Every number ``folded`` states, each as its value.  A comma between digits is a
+    thousands separator when exactly three digits follow it, and otherwise parts two numbers."""
+    return frozenset(
+        _figure_value(figure)
+        for run in _FIGURE.findall(folded)
+        for figure in _THOUSANDS_SEPARATOR.sub("", run).split(_LIST_SEPARATOR)
+    )
+
+
+def _whole_tokens(folded: str) -> list[str]:
+    """``folded`` as whole tokens — each word without its possessive or the quotes around it."""
+    bare = (_without_possessive(token).strip(_QUOTE_MARK) for token in _WORLD_TOKEN.findall(folded))
+    return [token for token in bare if token]
+
+
+def _side_by_side(tokens: Sequence[str]) -> str:
+    """Tokens laid out so that containment of one layout in another is a whole-token match."""
+    return f"{_TOKEN_GAP}{_TOKEN_GAP.join(tokens)}{_TOKEN_GAP}"
+
+
+def _address(url: str) -> str:
+    """What an address names, without how it is reached."""
+    return _HOW_AN_ADDRESS_IS_REACHED.sub("", fold_typography(url)).rstrip(_CLOSING_SLASH)
+
+
+@dataclass(frozen=True)
+class _WorldValues:
+    """Everything a round was given, read as the values it states."""
+
+    addresses: frozenset[str]
+    figures: frozenset[str]
+    tokens: str
+
+    def unsourced(self, value: Sequence[str]) -> list[str]:
+        """The parts of one stated value the world does not state."""
+        if not value or _is_atomic(value[0]):
+            return [part for part in value if not self._states(part)]
+        return self._unsourced_words(value)
+
+    def _states(self, atom: str) -> bool:
+        if _is_url(atom):
+            return _address(atom) in self.addresses
+        return _figures(fold_typography(atom)) <= self.figures
+
+    def _unsourced_words(self, words: Sequence[str]) -> list[str]:
+        """A name phrase's words that are neither a whole word of the world nor part of a run
+        of the phrase the world writes as one word."""
+        keys = [_whole_tokens(fold_typography(word)) for word in words]
+        sourced = {index for index, key in enumerate(keys) if self._holds(key)}
+        for first in range(len(keys)):
+            for last in range(first + 1, len(keys)):
+                run_together = "".join(token for key in keys[first : last + 1] for token in key)
+                if self._holds([run_together]):
+                    sourced.update(range(first, last + 1))
+        return [word for index, word in enumerate(words) if index not in sourced]
+
+    def _holds(self, tokens: Sequence[str]) -> bool:
+        return _side_by_side(tokens) in self.tokens
+
+
+@lru_cache(maxsize=8)
+def _world_values(given: str) -> _WorldValues:
+    """``given`` read once.  A cohort weighs every entry and reply of a sample against one
+    world, so the reading is kept rather than repeated per value."""
+    folded = fold_typography(given)
+    return _WorldValues(
+        addresses=frozenset(
+            _address(url)
+            for match in _URL_PATTERN.finditer(given)
+            for url in _urls_in(match.group())
+        ),
+        figures=_figures(folded),
+        tokens=_side_by_side(_whole_tokens(folded)),
+    )
 
 
 def unsourced_specifics(text: str, given: str) -> list[str]:
-    """The specific values in ``text`` that appear NOWHERE in ``given``.
+    """The specific values in ``text`` that ``given`` does not state.
 
-    An empty list is the claim holding.  Matching folds apostrophes and drops possessives on
-    both sides, because a value is usually said in a different shape from the one it arrived
-    in — comparing raw forms reported the model's own grammar as an invention."""
-    haystack = " ".join(_bare(word) for word in fold_typography(given).split())
-    return [token for token in specifics(text) if _phrase_key(token) not in haystack]
-
-
-def _phrase_key(token: str) -> str:
-    return " ".join(_bare(word) for word in token.split())
+    An empty list is the claim holding.  A value is sourced by the SAME value standing whole in
+    the world, never by its characters turning up inside a larger one.  Matching folds
+    typography and drops possessives on both sides, because a value is usually said in a
+    different shape from the one it arrived in — comparing raw forms reported the model's own
+    grammar as an invention."""
+    world = _world_values(given)
+    missing: list[str] = []
+    for value in _stated_values(text):
+        missing += [part for part in world.unsourced(value) if part not in missing]
+    return missing

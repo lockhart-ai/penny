@@ -323,11 +323,34 @@ def test_a_name_the_round_was_never_given_is_reported_by_name():
         "Casimir",
         "Oyelaran",
     ]
+    # A value is sourced by the SAME value standing whole in the world, never by its characters
+    # inside a larger one (#2200).  MEASURED: `2` and `1` were found inside `425F`, so invented
+    # quantities read as given.
+    oven = "Sheet-pan fajitas — peppers, onion, chicken, 25 min at 425F."
+    assert unsourced_specifics("juice of 2 limes, 1 tsp cumin, 5 min", oven) == ["2", "1", "5"]
+    assert unsourced_specifics("ready in 4 or 4.2 or 14 minutes", "takes 4.25 hours, at 14:30") == [
+        "4",
+        "4.2",
+        "14",
+    ]
+    assert unsourced_specifics("the Art Fair opens", "a party at the fairground") == [
+        "Art",
+        "Fair",
+    ]
+    assert unsourced_specifics("the Harbor Lights page", "read https://harborseals.example") == [
+        "Harbor",
+        "Lights",
+    ]
 
 
 def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_traces():
     """Apostrophes and possessives are the model's grammar, not an invention — and not folding
-    them reported `Brandt’s` as a fabrication, and a plural's bare apostrophe `Seals'`."""
+    them reported `Brandt’s` as a fabrication, and a plural's bare apostrophe `Seals'`.
+
+    The same holds of every kind of value once it is matched whole (#2200): what stands beside
+    a figure is not the figure, one amount written two ways is one amount, a name the world
+    writes with no space in it is still that name, and how an address is reached is not what
+    it names."""
     assert unsourced_specifics("the Ridgeline Foxes’ goalie", "Ridgeline Foxes news") == []
     assert unsourced_specifics("Aurelio Brandt’s deal", "signed Aurelio Brandt today") == []
     assert unsourced_specifics("the Harbor Seals' site", "Harbor Seals news") == []
@@ -335,6 +358,25 @@ def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_trac
         "Casimir",
         "Oyelarans'",
     ]
+    oven = "Sheet-pan fajitas — peppers, onion, chicken, 25 min at 425F."
+    assert unsourced_specifics("bake for 25 minutes at 425 °F", oven) == []
+    assert unsourced_specifics("bake at 425°F, or 425 degrees", oven) == []
+    priced = "Price: $1,299.00 — 15% off until 5pm, version 2.10, 3 left"
+    assert unsourced_specifics("it is 1299 now, 15 percent off, until 5, with 3 left", priced) == []
+    assert unsourced_specifics("it is $1,299 and the version is 2.10", priced) == []
+    assert unsourced_specifics("it is 1,299.00 dollars", "listed at 1299") == []
+    assert unsourced_specifics("it is 299 dollars, version 2.1", priced) == ["299", "2.1"]
+    seals = "go to https://www.harborseals.example/news and read it"
+    assert unsourced_specifics("the Harbor Seals page would not load", seals) == []
+    assert unsourced_specifics("the Harbor Seals' News page", seals) == []
+    assert unsourced_specifics("a Turn-Based Strategy game", "a turn-based strategy game") == []
+    assert unsourced_specifics("a Turn-Based Strategy game", "a turn based strategy game") == []
+    for reached in (
+        "https://harborseals.example/news",
+        "http://www.harborseals.example/news",
+        "https://www.harborseals.example/news/",
+    ):
+        assert unsourced_specifics(f"i read {reached} today", seals) == [], reached
 
 
 def test_a_capitalised_label_against_a_name_is_not_a_fabrication():
@@ -698,6 +740,15 @@ def test_an_invented_url_is_still_caught():
     assert unsourced_specifics("see (https://other.example/nope)", _GIVEN) == [
         "https://other.example/nope"
     ]
+    # An address is sourced WHOLE (#2200): the start of a given address is a different address,
+    # and so is a given address with more on the end.
+    for other_page in (
+        "https://faux-market.example",
+        "https://faux-market.example/aurora-deck",
+        f"{_CITED}/reviews",
+        f"{_CITED}?ref=home",
+    ):
+        assert unsourced_specifics(f"see {other_page} today", _GIVEN) == [other_page], other_page
     # A markdown link yields its target, and its text when that is an address too, each weighed
     # on its own — so reading the link apart cannot launder an invented address through a real
     # one beside it, in either position.
