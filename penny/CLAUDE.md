@@ -766,6 +766,8 @@ apply turn),
 port of #1946's writes-landed case and the only live-model coverage that frame has: the user
 names two pages and one list, ONE page answers and the other cannot be read, and what is
 claimed is that the named list holds an entry this turn wrote from the page that answered,
+that every entry this turn wrote to that list is from that page — the claim that reads an
+entry invented in plain prose, which names nothing for store provenance to trace —
 that nothing stored or said traces outside what the round was given — the dead page's own
 names exist in nothing the model saw — and that the reply carries a token only the readable
 page owns, the fact the save came from. No count of saved things is asserted: a count of saves

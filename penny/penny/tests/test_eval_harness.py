@@ -120,6 +120,7 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
 from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
     SOURCE_DOWN_CASES,
     SourceDownCase,
+    wrote_only_what_the_readable_page_gave,
 )
 from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
     probe_seeded_world as probe_source_down_world,
@@ -1147,7 +1148,11 @@ def test_the_source_down_case_holds_its_facts_constant_across_its_five_wordings(
     ask names exists and holds nothing, and neither page's own tokens are anywhere in the store
     before the turn — the store claim names the readable page's tokens and the provenance claims
     catch the unreachable page's, so a token already sitting there would make one pass without
-    the turn acting and the other blind to an invention."""
+    the turn acting and the other blind to an invention.
+
+    And the claim that the list gained nothing but the readable page's fact can SEE the entry it
+    exists for: one written about the page nobody read, in plain prose that names nothing, which
+    every other claim passes."""
     for index, case in enumerate(SOURCE_DOWN_CASES):
         _assert_one_ask_in_five_wordings(case)
         unreachable = [page for page in case.world.pages if page.fails]
@@ -1158,6 +1163,37 @@ def test_the_source_down_case_holds_its_facts_constant_across_its_five_wordings(
         db = migrated_db(str(tmp_path / f"source-down-{index}.db"))
         seed_world_stores(db, case.world)
         probe_source_down_world(db, case)
+        _assert_the_unread_page_entry_is_seen(case)
+
+
+def _assert_the_unread_page_entry_is_seen(case: SourceDownCase) -> None:
+    """A list holding the readable page's signing HOLDS the claim; the same list plus an entry
+    about the unread page MISSES it, and the miss names that entry's key."""
+    (destination,) = case.empty
+    signing = eval_cohort.StoredEntry(
+        collection=destination,
+        key="Foxes sign Aurelio Brandt",
+        content="The club confirmed the signing of the veteran goalie on a two-year deal.",
+    )
+    blurb = eval_cohort.StoredEntry(
+        collection=destination, key="Camp", content="Brandt joins the Foxes before camp opens."
+    )
+    unread = eval_cohort.StoredEntry(
+        collection=destination,
+        key="Harbor Seals no news",
+        content="No trades or signings reported in the latest news.",
+    )
+    elsewhere = eval_cohort.StoredEntry(collection="scratch", key="note", content="a reminder")
+
+    def answer(*entries: eval_cohort.StoredEntry) -> tuple[bool, str | None]:
+        sample = SampleObservation(name="s-1", phrasing=case.ask, entries=list(entries))
+        return wrote_only_what_the_readable_page_gave(sample, case.world)
+
+    assert answer(signing, blurb, elsewhere)[0], "only the readable page's entries: it holds"
+    assert answer(signing, unread) == (
+        False,
+        "not from the page that answered: ['Harbor Seals no news']",
+    ), "an entry carrying none of the readable page's tokens is the miss, named by its key"
 
 
 def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> None:

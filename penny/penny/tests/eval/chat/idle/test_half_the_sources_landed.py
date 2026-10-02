@@ -31,6 +31,12 @@ tool calls are never counted.  What is asserted about the reply is a FACT: it ca
 only the readable page owns — the fact the save came from — and, through the reply-provenance
 claim, nothing from the page she never read.
 
+**What the list gained is asserted in both directions.**  It holds an entry this turn wrote
+from the page that answered, and every entry this turn wrote to it is from that page.  The
+second is the one that reads an entry invented in plain prose — a line saying the unread page
+had nothing to report carries no name, number or URL, so store provenance, which reads only
+those, passes it.  How the reply describes what she did stays variance.
+
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
 accept once the numbers have been read.  Every team, player, page and list is invented, because
 the repo is public.
@@ -320,6 +326,41 @@ def _kept_what_the_readable_page_gave(collection: str, tokens: tuple[str, ...]) 
     return answer
 
 
+def _wrote_only_what_the_readable_page_gave(collection: str, tokens: tuple[str, ...]) -> _ClaimFn:
+    """Every entry THIS TURN wrote to the list the ask named carries a token only the readable
+    page owns.
+
+    The other direction of the claim above.  That one says the page's fact arrived; this one
+    says nothing arrived beside it.  One page answered, so one page is all the list can have
+    gained from: an entry carrying none of that page's tokens is about something the round was
+    never given, however plainly it is worded.  The provenance claim cannot see such an entry —
+    it reads names, numbers and URLs, and an entry saying a page nobody read had nothing to
+    report states none.
+
+    The same token set, read the same way: over the WHOLE entry, any one token.  A universal
+    statement, so a turn that wrote nothing to the list answers it true — that turn is the claim
+    above's miss, and counting it here as well would say one thing twice."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        stray = sorted(
+            entry.key or entry.content
+            for entry in sample.entries
+            if entry.collection == collection
+            and not any(token in fold_typography(entry.text) for token in tokens)
+        )
+        return not stray, f"not from the page that answered: {stray}"
+
+    return answer
+
+
+# The claim BOUND to this case's list and the readable page's tokens, public so the
+# deterministic probe in ``test_eval_harness.py`` answers the very function the case declares
+# rather than a copy bound to arguments of its own.
+wrote_only_what_the_readable_page_gave = _wrote_only_what_the_readable_page_gave(
+    _TEAM_NEWS.name, _FOXES_TOKENS
+)
+
+
 def _the_reply_carries_the_readable_page_fact(tokens: tuple[str, ...]) -> _ClaimFn:
     """The reply carries a token only the readable page owns — the fact the save came from.
 
@@ -346,12 +387,19 @@ async def test_half_the_sources_landed(chat_eval: ChatEval, model: str) -> None:
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
-    # STORE — what SURVIVES the turn: the value the ask said to keep, in the place it was asked
-    # to keep it.  Whether the turn ALSO wrote somewhere else, or wrote twice, is hers, and
-    # ``ENTRIES_STORED`` measures it.
+    # STORE — what SURVIVES the turn, in both directions: the value the ask said to keep is in
+    # the place it was asked to keep it, and what that list gained is from the one page that
+    # answered.  How MANY entries she split that page into, and whether she also wrote somewhere
+    # else, is hers, and ``ENTRIES_STORED`` measures it.
     cohort.claim(
         "state: the list the ask named holds an entry this turn wrote from the page that answered",
         _kept_what_the_readable_page_gave(_TEAM_NEWS.name, _FOXES_TOKENS),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: every entry this turn wrote to the list the ask named is from the page that "
+        "answered",
+        wrote_only_what_the_readable_page_gave,
         SpecCategory.STORE,
     )
 
@@ -359,8 +407,9 @@ async def test_half_the_sources_landed(chat_eval: ChatEval, model: str) -> None:
     # entered the model's context, so its own names are in NOTHING the round was given: an entry
     # carrying one was invented, and once it is in a collection a collector re-reads it for ever;
     # a reply carrying one names something from a page she never read.  The standard claims cover
-    # that, which is why no separate check names the dead page.  The fact claim is the other
-    # direction: what the readable page gave reaches the reply.
+    # that for every NAMED value, which is why no separate check names the dead page; an entry
+    # invented in plain prose names none, and the second STORE claim above is what reads it.
+    # The fact claim is the other direction: what the readable page gave reaches the reply.
     cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
     cohort.claim(
