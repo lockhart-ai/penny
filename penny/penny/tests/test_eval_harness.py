@@ -81,7 +81,9 @@ from penny.tests.eval.binder.test_skill_binding import (
 )
 from penny.tests.eval.binder.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.chat.apply.test_known_routine_new_space import (
+    _EXPECTED_CONTAINER,
     IDLE_APPLY_CASES,
+    _stops_when_the_ask_said_to,
     assert_every_wording_names_the_space,
     assert_new_space_is_unknown,
 )
@@ -375,7 +377,12 @@ from penny.tests.eval.utils.artifacts import (
 )
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
-from penny.tests.eval.utils.cohort import SampleObservation, StoredEntry, unsourced_specifics
+from penny.tests.eval.utils.cohort import (
+    MechanismRecord,
+    SampleObservation,
+    StoredEntry,
+    unsourced_specifics,
+)
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
 from penny.tests.eval.utils.fixtures import (
     BOARD_GAMES,
@@ -388,6 +395,13 @@ from penny.tests.eval.utils.fixtures import (
     LISTING_URL,
     CannedPage,
     SynthCollection,
+)
+from penny.tests.eval.utils.job_end import (
+    NO_END,
+    UNTIL_SUNDAY_NIGHT,
+    AskedEnd,
+    job_ends_as_asked,
+    until_tonight_at,
 )
 from penny.tests.eval.utils.transition_world import (
     _JOURNEYS,
@@ -829,6 +843,134 @@ def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
     two_line = f"DTSTART:20260101T080000Z{_LINE_ESCAPE}RRULE:FREQ=DAILY;BYHOUR=8"
     assert rule_parts(two_line) == {"FREQ", "BYHOUR"}, "the rule line is read past its DTSTART"
     assert cadence_seconds(two_line) == 86400, "a one-line render round-trips into the reader"
+
+
+# A Friday lunchtime turn on the eval user's own clock (12:30 in Los Angeles), as the store
+# holds it: naive UTC.  The job is created forty seconds into that turn.
+_END_ZONE = "America/Los_Angeles"
+_END_TURN = datetime(2026, 10, 2, 19, 30, 0)
+_END_JOB_CREATED = datetime(2026, 10, 2, 19, 30, 40)
+
+
+def _job_ending(
+    *,
+    expires_at: datetime | None = None,
+    schedule: str = "FREQ=HOURLY",
+    max_runs: int | None = None,
+) -> MechanismRecord:
+    """A job stood up in the turn above, storing the given end."""
+    return MechanismRecord(
+        name="a-job",
+        archived=False,
+        born_this_run=True,
+        changed_this_run=True,
+        notifies=True,
+        schedule=schedule,
+        expires=expires_at is not None,
+        expires_at=expires_at,
+        max_runs=max_runs,
+        created_at=_END_JOB_CREATED,
+    )
+
+
+def _ends_as_asked(job: MechanismRecord, asked: AskedEnd) -> tuple[bool, str]:
+    return job_ends_as_asked(job, asked, turn_at=_END_TURN, timezone=_END_ZONE)
+
+
+def test_a_job_s_end_is_read_against_the_end_the_ask_gave() -> None:
+    """``state: the job stops when the ask said to`` compares the end the job STORES with the
+    end the ask GAVE, on the user's clock (#2193) — for each of the three ends an ask states,
+    a stored job that holds and the ones that must miss.
+
+    The misses are the measured ones: an expiry the following Thursday for "until sunday
+    night", a count that runs a week, an hour written as though the user's clock were UTC and
+    so already past when the turn ran, and an end on a job nobody asked to stop."""
+    sunday = UNTIL_SUNDAY_NIGHT
+    assert _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 5, 6, 59)), sunday)[0], (
+        "23:59 on Sunday, where the user is"
+    )
+    assert _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 5, 1, 0)), sunday)[0], (
+        "18:00 on Sunday opens the window"
+    )
+    assert _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 5, 13, 0)), sunday)[0], (
+        "06:00 on Monday closes it"
+    )
+    counted = _job_ending(schedule="FREQ=HOURLY;COUNT=59", max_runs=59)
+    assert _ends_as_asked(counted, sunday)[0], "a count whose last firing is 22:30 on Sunday"
+
+    thursday = _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 8, 23, 59)), sunday)
+    assert thursday == (
+        False,
+        "the job ends Thu 2026-10-08 16:59 PDT (by its expiry); the ask says until sunday "
+        "night, which is Sun 2026-10-04 18:00 PDT to Mon 2026-10-05 06:00 PDT",
+    )
+    a_week = _job_ending(schedule="FREQ=HOURLY;COUNT=168", max_runs=168)
+    assert _ends_as_asked(a_week, sunday) == (
+        False,
+        "the job ends Fri 2026-10-09 11:30 PDT (after 168 runs of 'FREQ=HOURLY;COUNT=168'); "
+        "the ask says until sunday night, which is Sun 2026-10-04 18:00 PDT to "
+        "Mon 2026-10-05 06:00 PDT",
+    )
+    assert not _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 5, 0, 59)), sunday)[0], (
+        "17:59 on Sunday is before the night begins"
+    )
+    assert not _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 5, 13, 1)), sunday)[0], (
+        "06:01 on Monday is after it ends"
+    )
+    assert _ends_as_asked(_job_ending(), sunday) == (
+        False,
+        "the job stores no end; the ask says until sunday night, which is "
+        "Sun 2026-10-04 18:00 PDT to Mon 2026-10-05 06:00 PDT",
+    )
+
+    tonight = until_tonight_at(22)
+    assert _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 3, 5, 0)), tonight)[0], (
+        "22:00 tonight, where the user is"
+    )
+    ten_runs = _job_ending(schedule="FREQ=HOURLY;COUNT=10", max_runs=10)
+    assert _ends_as_asked(ten_runs, tonight)[0], (
+        "ten hourly runs from 12:30 end at 21:30, the last firing an end at 22:00 allows"
+    )
+    eleven_runs = _job_ending(schedule="FREQ=HOURLY;COUNT=11", max_runs=11)
+    assert not _ends_as_asked(eleven_runs, tonight)[0], "an eleventh run fires at 22:30"
+    assert not _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 3, 3, 0)), tonight)[0], (
+        "20:00 tonight is not the hour the ask gave"
+    )
+    assert not _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 4, 5, 0)), tonight)[0], (
+        "22:00 tomorrow is the wrong day"
+    )
+    past = _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 2, 5, 0)), tonight)
+    assert past == (
+        False,
+        "the job ends Thu 2026-10-01 22:00 PDT (by its expiry); the ask says until 22:00 "
+        "tonight, which is Fri 2026-10-02 22:00 PDT; that end is before the turn ran at "
+        "Fri 2026-10-02 12:30 PDT",
+    )
+
+    assert _ends_as_asked(_job_ending(schedule="FREQ=DAILY;BYHOUR=6"), NO_END)[0], (
+        "no end asked, none stored"
+    )
+    month_end = _job_ending(schedule="FREQ=DAILY;BYHOUR=6", expires_at=datetime(2026, 10, 31))
+    assert _ends_as_asked(month_end, NO_END) == (
+        False,
+        "the job ends Fri 2026-10-30 17:00 PDT (by its expiry); the ask gave no end",
+    )
+    counted_daily = _job_ending(schedule="FREQ=DAILY;COUNT=30", max_runs=30)
+    assert not _ends_as_asked(counted_daily, NO_END)[0], "a count is an end nobody asked for"
+
+    # And the idle → apply case's own claim reads it: the job it names, ending Thursday.
+    ends_thursday = _job_ending(expires_at=datetime(2026, 10, 8, 23, 59)).model_copy(
+        update={"name": _EXPECTED_CONTAINER}
+    )
+    sample = SampleObservation(
+        name="s1",
+        phrasing="the ask",
+        mechanisms=[ends_thursday],
+        turn_at=_END_TURN,
+        timezone=_END_ZONE,
+    )
+    held, rationale = _stops_when_the_ask_said_to(sample, _STORE_BACKED_WORLD)
+    assert not held and "the job ends Thu 2026-10-08 16:59 PDT" in (rationale or "")
 
 
 def test_every_apply_case_seeds_a_round_that_cites_its_own_run(tmp_path) -> None:
@@ -2042,6 +2184,8 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     minted = records["a-minted-job"]
     assert minted.born_this_run and minted.changed_this_run
     assert minted.notifies and minted.expires
+    assert minted.expires_at == datetime(2030, 1, 1), "the stored end travels as stored"
+    assert minted.max_runs is None and minted.created_at is not None
     assert minted.schedule == "FREQ=HOURLY", "the rule travels verbatim — the case reads its gap"
     retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"

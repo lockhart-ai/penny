@@ -67,6 +67,7 @@ from penny.database.skills import (
     distill_steps,
     render_spoken_turns,
 )
+from penny.datetime_utils import user_timezone_name
 from penny.llm.client import LlmClient
 from penny.llm.models import (
     LlmMessage,
@@ -2732,6 +2733,9 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
             touched_this_run=_touched_this_run(_live_events(db, row.name)),
             moved_this_run=_moved_this_run(_live_events(db, row.name), row),
             expires=row.expires_at is not None,
+            expires_at=row.expires_at,
+            max_runs=row.max_runs,
+            created_at=row.created_at,
         )
         for row in db.memories.list_all()
         if row.type == MemoryType.COLLECTION
@@ -2895,6 +2899,8 @@ def _observe_sample(
         arm=arm,
         landed=landed.to_state if landed else None,
         decision_skill=landed.skill_name if landed else None,
+        turn_at=landed.created_at if landed else None,
+        timezone=user_timezone_name(db),
         awaiting=_awaited_parameters(db),
         walk=_machine_walk(db),
         routines=_routine_records(db),

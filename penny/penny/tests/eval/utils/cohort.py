@@ -38,6 +38,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from functools import lru_cache
 
@@ -128,6 +129,11 @@ class MechanismRecord(BaseModel):
 
     ``expires`` is whether the row carries an end condition at all — the third TERM a turn that
     stands a job up commits to, beside the schedule it fires on and whether it tells the user.
+
+    ``expires_at``, ``max_runs`` and ``created_at`` are what a claim about WHEN the job stops
+    reads: the two columns an end is stored in, and the creation moment a rule with no start
+    of its own is anchored at.  They travel as stored, so the reading — on the user's clock —
+    is ``job_end``'s.
     """
 
     name: str
@@ -139,6 +145,9 @@ class MechanismRecord(BaseModel):
     schedule: str | None
     program: str | None
     expires: bool
+    expires_at: datetime | None = None
+    max_runs: int | None = None
+    created_at: datetime | None = None
 
     @property
     def changed_this_run(self) -> bool:
@@ -238,6 +247,11 @@ class SampleObservation(BaseModel):
     # went, and what it went there about.  ``None`` where the move named none, which is a
     # real reading (an ordinary chat turn names no routine) and not a missing one.
     decision_skill: str | None = None
+    # WHEN the landed move was recorded, and the timezone the user's profile carries — the
+    # two facts a claim about a job's end is read against, since an ask states its end on the
+    # user's own clock ("tonight", "sunday night") relative to the turn that carried it.
+    turn_at: datetime | None = None
+    timezone: str | None = None
     # The parameters the round is still WAITING ON, off the landed transition's own
     # ``round_shortfall`` — their declared names, in the routine's declared order.  Empty
     # where the move recorded no shortfall, which is the ordinary reading (only a move landing

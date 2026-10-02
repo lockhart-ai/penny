@@ -38,7 +38,7 @@ job exists and that it is the right job, in a key that is strictly identifiable.
 turn built anything BESIDE it is the model's call and is measured, never claimed: a count of
 what was created is a count of what the model chose to do.
 The terms are then record fields on that row: how often it fires, whether it tells the user,
-whether it stops.  None is read off the reply, and none is read off a tool name.
+and when it stops.  None is read off the reply, and none is read off a tool name.
 
 **Which routine the JOB runs, and whether it carries a program, are NOT claimed** — the two
 obvious neighbours of the name claim, and both PRODUCTION-VALIDATED.  On a turn that configures
@@ -71,9 +71,10 @@ happened to choose.
   ``assert_machine_landed(APPLY)``: a turn cannot land in apply and in elicit, so the check
   would run at exactly the rate the landing claim does.
 * ``_expiry_check``'s drawn-argument leg — it reads ``last_tool_args(db, _SET_TOOL)``, which is
-  a route keyed to a tool name.  What survives is the ROW's own ``expires_at``, which is the
-  right reading in this direction: the ask GIVES an end condition, so a row carrying none
-  failed, including when a far-future sentinel normalised it away.
+  a route keyed to a tool name.  What survives is the end the ROW stores, which is the right
+  reading in this direction: the ask GIVES an end, so a row carrying none failed, including
+  when a far-future sentinel normalised it away — and so did a row whose end is not the one
+  the ask gave.
 * ``_seeded_jobs_untouched_check`` — the right question, read off the ledger against five
   enumerated names.  It ports as ``assert_the_running_mechanisms_survive``, which asks it of
   every mechanism rather than of a list somebody wrote down.
@@ -119,6 +120,7 @@ from penny.tests.eval.utils.cohort import (
     SpecCategory,
 )
 from penny.tests.eval.utils.fixtures import CannedPage
+from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT, AskedEnd, job_ends_as_asked
 from penny.tests.eval.utils.transition_ledger import _FAMILY
 from penny.tests.eval.utils.transition_world import (
     _AURORA_SKILL,
@@ -152,9 +154,8 @@ class _IdleApplyCase(NamedTuple):
     ``skill`` is the routine the ask is covered by — the one of five the decision has to pick.
     ``page`` is the new space, installed as a live temptation.  The rest is what the ask's own
     terms give: ``cadence_seconds`` is how far apart the job should fire whatever rule spelling
-    says so, ``expects_expiry`` whether they gave an end condition at all (inventing one is a
-    failure), and ``bound`` every value the MESSAGE supplies that the routine has to be pointed
-    at.
+    says so, ``ends`` the end the ask states, on the user's own clock, and ``bound`` every value
+    the MESSAGE supplies that the routine has to be pointed at.
 
     ``bound`` is KEYED BY PARAMETER NAME since #1870, because the container's name is derived
     from those values in the routine's DECLARED order — so the fixture states which value
@@ -166,7 +167,7 @@ class _IdleApplyCase(NamedTuple):
     page: CannedPage
     skill: SkillDraft
     cadence_seconds: int
-    expects_expiry: bool
+    ends: AskedEnd
     bound: dict[str, str]
 
 
@@ -212,7 +213,7 @@ _COLD_PRICE = _IdleApplyCase(
     page=_KEEL_LANTERN_LISTING,
     skill=_AURORA_SKILL,
     cadence_seconds=3600,
-    expects_expiry=True,
+    ends=UNTIL_SUNDAY_NIGHT,
     bound={"url": _KEEL_LANTERN_URL},
 )
 
@@ -385,18 +386,21 @@ def _tells_them_when_it_changes(sample: SampleObservation, _world: World) -> Ans
 
 
 def _stops_when_the_ask_said_to(sample: SampleObservation, _world: World) -> Answer:
-    """The job carries an end condition, because this ask gave one.
+    """The job ends when the ask said to: on the coming Sunday night, on the user's clock.
 
     Its own claim rather than folded in with the notification: they are two independent fields,
-    and a report that failed them together could not say which one moved.  Read as PRESENCE
-    rather than value — which Sunday, and what hour of it, is a judgement the model makes and
-    the case does not assert — and off the ROW rather than the drawn argument, which is where
-    an invented far-future date correctly reads as no end condition at all (#1944)."""
+    and a report that failed them together could not say which one moved.  Read as the END the
+    job stores — its expiry, or its counted rule's last firing — and held when that falls from
+    18:00 on the coming Sunday to 06:00 the next morning, where the user is.  An end on another
+    day, one before the turn ran, and no end at all each miss.  Read off the ROW rather than the
+    drawn argument, which is where an invented far-future date correctly reads as no end at all
+    (#1944)."""
     job = _job_stood_up(sample)
     if job is None:
         return False, "no job was stood up"
-    expected = _COLD_PRICE.expects_expiry
-    return job.expires == expected, f"an end condition is {'set' if job.expires else 'absent'}"
+    return job_ends_as_asked(
+        job, _COLD_PRICE.ends, turn_at=sample.turn_at, timezone=sample.timezone
+    )
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
