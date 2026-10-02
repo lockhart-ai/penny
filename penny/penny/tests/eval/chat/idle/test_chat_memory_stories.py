@@ -2,7 +2,7 @@
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Nine cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
+**Eight cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
 different claims rather than scenarios standing in for one — saving, recalling, forgetting and
 updating are four contracts, and a sample that is correct for one is wrong for another.  Only
 *within* a verb is there paraphrase-collapsing to do, and each case here is one ask in five
@@ -14,8 +14,7 @@ wordings against one world, with its facts held constant across the arms.
 | recall, from the store | ``memory-cold-recall`` | the fact exists ONLY in the store |
 | recall, across the store | ``memory-recall-across-the-store`` | a different sentence — see below |
 | forget | ``memory-forget-then-list`` | the only ask that owes the report half |
-| update | ``memory-change-a-note`` | a pure edit, no lookup folded into it |
-| update, renamed | ``memory-change-lands-on-the-entry-that-exists`` | a key the user never says |
+| update | ``memory-change-lands-on-the-entry-that-exists`` | the edit lands on the entry |
 | fan-out | ``memory-a-like-and-a-dislike`` | the slot's only candidate |
 | no-fire | ``memory-no-fire-narration`` | the mention with nothing in the store to match it |
 | no-fire | ``memory-no-fire-wistful`` | the mention with a matching collection sitting there |
@@ -39,14 +38,11 @@ answers differently for each pair:
 So recall is two cases, not one with three worlds.  Splitting a behaviour in two is a smaller
 mistake than collapsing two into one; the pair is named together here.
 
-**UPDATE IS TWO CASES FOR THE SAME REASON** (#2179).  ``memory-change-a-note`` names the note
-by the very word it is stored under, so the edit meets no gate on its way to the entry.  The
-second case stores the recipe under a key the user never says (``Sheet-pan chicken fajitas``,
-asked about as *my fajitas recipe*), so the model's own first lookup or write, under its own
-wording of the key, is what meets the store's real not-found or duplicate answer — nothing is
-injected.  The failure it exists to catch is the change landing BESIDE the entry, as a second
-fajitas recipe, and that needs its own sentence (*"under a key worded differently from how the
-user names it"*).
+**UPDATE IS ONE CASE.**  ``memory-change-lands-on-the-entry-that-exists`` is an edit to an
+entry the user names differently from the key it is stored under: the recipe is kept as
+``Sheet-pan chicken fajitas`` and asked about as *my fajitas recipe*.  The change is made ON
+that entry rather than beside it as a second fajitas recipe, and the edit adds to the recipe,
+so what the entry already held is still there afterwards.
 
 **THE NO-FIRE DIRECTION IS TWO CASES OF ITS OWN** (#2100).  The ruling: one case is one
 setup, one run, one set of assertions, and where a behaviour's positive and negative
@@ -171,7 +167,7 @@ _AVOID = SynthCollection(
     entries=("loud offices — can't focus in them",),
 )
 
-# The recipe box the by-another-name update edits.  Its first entry is keyed
+# The recipe box the update edits.  Its first entry is keyed
 # ``Sheet-pan chicken fajitas`` — the text before the em dash — and no wording of that case says
 # the key verbatim.
 _RECIPE_BOX = SynthCollection(
@@ -210,19 +206,17 @@ _SUBJECT = "mistforge"  # the game the lookup story is about
 _PRICE = "499"  # the figure the cold recall has to state
 _AVOIDED = "office"  # the one thing the avoid list already holds
 _INTO_ANCHOR = "chess"  # the note the into-list holds in every world that seeds it
-_EDITED = "hiking"  # the note the update story names
+_KEPT_NOTE = "hiking"  # a note the forget story leaves in place
 _DROPPED = "jazz"  # the note the forget story names
-_NEW_WORDING = "alpine"  # what the edited note must say afterwards
 _LIKE = "bouldering"  # the enthusiasm the fan-out story files
 _DISLIKE = "coffee"  # the complaint it files somewhere else
-_MARINADE = "lime"  # what the by-another-name update adds to the recipe
+_MARINADE = "lime"  # what the update adds to the recipe
 _RECIPE_KEPT = "425"  # what that recipe already said, which adding to it must not lose
 
-# What each edit must leave exactly as it was — the seeded notes it did not name.  Derived from
-# the three above rather than listed again, so a case can never claim a note is untouched while
-# naming that same note as the one to change.
-_FORGET_KEPT = (_INTO_ANCHOR, _EDITED)
-_UPDATE_KEPT = (_INTO_ANCHOR, _DROPPED)
+# What the forget must leave exactly as it was — the seeded notes it did not name.  Derived from
+# the tokens above rather than listed again, so the case can never claim a note is untouched
+# while naming that same note as the one to drop.
+_FORGET_KEPT = (_INTO_ANCHOR, _KEPT_NOTE)
 
 # What a correct REPLY must name, which is not the same token set the store claims read.  The
 # store holds the seeded text verbatim, so a claim about it can name the whole word; the reply
@@ -233,7 +227,7 @@ _UPDATE_KEPT = (_INTO_ANCHOR, _DROPPED)
 # these worlds contains ``hik``.
 _FORGET_ANSWERS = (_INTO_ANCHOR, "hik")
 
-# The recipes the by-another-name update does NOT name, with what each was seeded with —
+# The recipes the update does NOT name, with what each was seeded with —
 # derived from the box rather than listed again, so the case can never claim a recipe is
 # untouched while naming that same recipe as the one to change.
 _RECIPES_NOT_NAMED = tuple(
@@ -384,7 +378,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 # keyed to ``collection_delete_entry`` would simply not fire for a plugin verb nobody enumerated.
 #
 # They stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the second
-# CUSTOMER, and the six cases below are one behaviour family in one file: a second FILE asking
+# CUSTOMER, and the cases below are one behaviour family in one file: a second FILE asking
 # one of these questions is what would make it shared, and no other slot has asked yet.
 
 _ClaimFn = Callable[[SampleObservation, World], Answer]
@@ -453,20 +447,6 @@ def _no_longer_holds(collection: str, token: str) -> _ClaimFn:
     def answer(sample: SampleObservation, _world: World) -> Answer:
         held = _held_text(sample, collection)
         return token not in held, f"{collection} still holds {held!r}"
-
-    return answer
-
-
-def _holds_exactly(collection: str, count: int) -> _ClaimFn:
-    """The collection holds the number of entries it started with — an edit landed IN the note
-    it was told to change rather than beside it.
-
-    A violating sample is nameable: one that writes the new wording as a fourth note and leaves
-    the third standing, which is the exact defect this behaviour is named for."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        keys = _held_keys(sample, collection)
-        return len(keys) == count, f"{collection} holds {len(keys)}: {keys}"
 
     return answer
 
@@ -888,90 +868,22 @@ async def test_forgetting_then_reporting_names_what_is_left(
 
 # ═══ update ══════════════════════════════════════════════════════════════════
 #
-# The note already exists, so the new wording belongs IN it.  No page is installed: the new
-# wording comes out of the user's own message, which is what makes "she edited the note" a claim
-# about the store rather than about a lookup.
+# The recipe is stored under ``Sheet-pan chicken fajitas`` and the user calls it their fajitas
+# recipe, so the key the change belongs under is one the user never says.  Nothing is forced:
+# how the model finds the entry and which verb lands the change are the route, measured by
+# ``TOOL_SEQUENCE``.  What is claimed is where the change ended up, and that what the recipe
+# already held is still on it.
 
 _UPDATE = _VerbCase(
-    case_id="memory-change-a-note",
-    behaviour=(
-        "In the chat agent, when the user says a note they already have should now say something "
-        "else, Penny rewrites that note in place — the list neither grows nor loses anything."
-    ),
-    # ``answers`` is EMPTY: the ask is an instruction, so "done — your hiking note says alpine
-    # trails now" and a bare "done" are both correct, and requiring a token would fail the second
-    # for something nobody requested.
-    world=World(name="one list", pages=(), keeps=(), excludes=(), stores=(_INTO,)),
-    ask="change my hiking note to say I prefer alpine trails",
-    also_phrased=(
-        "update my hiking note — i prefer alpine trails",
-        "edit the hiking note to say i prefer alpine trails",
-        "my hiking note should say i prefer alpine trails now",
-        "rewrite my hiking note so it says i prefer alpine trails",
-    ),
-    holds=((_INTO.name, (*_UPDATE_KEPT, _EDITED)),),
-    withholds=(_NEW_WORDING,),
-)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_changing_a_note_rewrites_only_that_note(chat_eval: ChatEval, model: str) -> None:
-    """One note is rewritten with what the user now says, and the list neither grows nor loses
-    anything else."""
-    cohort = await _drive(chat_eval, model, _UPDATE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
-    # STORE
-    cohort.claim(
-        "state: the list now says the new thing",
-        _holds(_INTO.name, _NEW_WORDING),
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        # The count comes off the SEED rather than being typed out, so a fixture that grows a
-        # fourth note cannot leave this claim quietly asserting the old shape.
-        "state: the list holds the notes it started with (rewritten in place, not added beside)",
-        _holds_exactly(_INTO.name, len(_INTO.entries)),
-        SpecCategory.STORE,
-    )
-    for token in _UPDATE_KEPT:
-        cohort.claim(
-            f"state: the {token!r} note is still there",
-            _holds(_INTO.name, token),
-            SpecCategory.STORE,
-        )
-    cohort.claim(
-        "state: the list itself is still the one she was given",
-        _the_list_itself_survived(_INTO.name),
-        SpecCategory.STORE,
-    )
-
-    # PROVENANCE — the new wording is the user's own, so a note that came back carrying a trail
-    # name, a distance or a season nobody said was invented into the store for good.
-    cohort.assert_every_value_in_the_store_is_sourced()
-    cohort.assert_every_value_in_the_reply_is_sourced()
-
-    cohort.measure(*_MEASURED)
-
-
-# ═══ update, by another name ═════════════════════════════════════════════════
-#
-# The recipe is stored under ``Sheet-pan chicken fajitas`` and the user calls it their fajitas
-# recipe, so whatever key the model first reaches for under its own wording meets the store's
-# real answer — a key that does not exist, or a write colliding with the entry that does.
-# Nothing is forced: which of those it meets, if any, and which verb lands the change are the
-# route, measured by ``TOOL_SEQUENCE``.  What is claimed is where the change ended up.
-
-_UPDATE_BY_ANOTHER_NAME = _VerbCase(
     case_id="memory-change-lands-on-the-entry-that-exists",
     behaviour=(
         "In the chat agent, when the user asks her to change a note she keeps under a key "
         "worded differently from how the user names it, Penny finds the entry that exists and "
         "records the change on it, and the list holds the same entries it started with."
     ),
-    # ``answers`` is EMPTY for the reason the update case's is: the ask is an instruction, and
-    # a bare "done" answers it.  No pages: the change comes out of the user's own message.
+    # ``answers`` is EMPTY: the ask is an instruction, so a bare "done" answers it, and
+    # requiring a token would fail a correct run for something nobody requested.  No pages: the
+    # change comes out of the user's own message.
     world=World(name="recipe box", pages=(), keeps=(), excludes=(), stores=(_RECIPE_BOX,)),
     ask="add a 10-minute lime marinade to my fajitas recipe",
     also_phrased=(
@@ -990,7 +902,7 @@ _UPDATE_BY_ANOTHER_NAME = _VerbCase(
 async def test_a_change_lands_on_the_entry_that_exists(chat_eval: ChatEval, model: str) -> None:
     """The user names a recipe by a shorter name than the key it is stored under, and the
     change lands on that recipe rather than beside it."""
-    cohort = await _drive(chat_eval, model, _UPDATE_BY_ANOTHER_NAME)
+    cohort = await _drive(chat_eval, model, _UPDATE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
@@ -1234,7 +1146,6 @@ VERB_CASES = (
     _SWEEP,
     _FORGET,
     _UPDATE,
-    _UPDATE_BY_ANOTHER_NAME,
     _FAN_OUT,
     _NO_FIRE_NARRATION,
     _NO_FIRE_WISTFUL,

@@ -944,7 +944,7 @@ def test_every_memory_verb_case_is_answered_against_the_world_its_claims_assume(
     lays down NOTHING the token they name would already satisfy.
 
     The second half is the one worth a test.  Every claim in that file names a token —
-    ``mistforge``, ``alpine``, ``bouldering`` — and a seed that already carried it would make
+    ``mistforge``, ``lime``, ``bouldering`` — and a seed that already carried it would make
     the claim pass whatever the turn did, so a green fifteen would report the fixture rather
     than the behaviour.  ``probe_seeded_world`` states that premise; this drives it on a real
     post-migration database, where a raise costs a second rather than an hour of GPU.
