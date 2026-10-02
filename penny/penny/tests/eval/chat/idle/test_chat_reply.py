@@ -672,7 +672,7 @@ async def test_the_value_one_link_deep_comes_back_in_the_reply(
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_failed_read_is_admitted_and_no_figure_is_supplied(
+async def test_a_failed_read_is_answered_only_from_what_she_was_given(
     chat_eval: ChatEval, model: str
 ) -> None:
     """Every source errors, so she tried and read nothing.
