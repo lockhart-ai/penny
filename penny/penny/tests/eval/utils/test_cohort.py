@@ -304,10 +304,26 @@ def test_an_ordinary_capitalised_word_is_not_a_specific_value():
     assert specifics("- Saved it.\n* Then again.") == []
 
 
+def test_a_figure_for_how_sure_the_speaker_is_states_no_value():
+    """MEASURED (#2190): a reply that named no figure at all — "…is a little bit generic, so
+    I'm not 100% sure which one you're thinking of!" — was reported as `unsourced: ['100']`.
+    A percentage in front of a word for the speaker's own certainty measures nothing in the
+    world.  The paired guard: a percentage OF something is a value, and is still read."""
+    unsure = "Lantern Museum is a little bit generic, so I'm not 100% sure which one you mean!"
+    assert specifics(unsure) == ["Lantern", "Museum"]
+    assert specifics("I'm 99.9 % certain it moved, and 100% Confident it is back.") == []
+    assert specifics("the shirt is 100% cotton and 15% off") == ["100", "15"]
+    assert specifics("the battery is at 100%. Sure, I can check again.") == ["100"]
+
+
 def test_a_name_phrase_and_a_number_are_specific_values():
     assert specifics("saved the Ridgeline Foxes headline") == ["Ridgeline", "Foxes"]
     assert specifics("kept 2 entries") == ["2"]
     assert specifics("read https://example.com/news") == ["https://example.com/news"]
+    # A meridiem belongs to the time it follows, not to the capital after it: read apart,
+    # `7 AM PDT` reported `AM` as a name (#2190).
+    assert specifics("it runs at 7 AM PDT, not 6:30 p.m. Pacific") == ["7 AM", "6:30 p.m"]
+    assert specifics("it runs at 7\u202fAM every day") == ["7\u202fAM"]
 
 
 def test_a_capital_at_a_clause_boundary_does_not_glue_into_a_name():
@@ -371,6 +387,28 @@ def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_trac
     assert unsourced_specifics("the Harbor Seals' News page", seals) == []
     assert unsourced_specifics("a Turn-Based Strategy game", "a turn-based strategy game") == []
     assert unsourced_specifics("a Turn-Based Strategy game", "a turn based strategy game") == []
+    # A time of day is one value however it is told (#2190).  MEASURED: a job stored as
+    # `BYHOUR=7` is "7:00 AM" in 8 of 15 replies describing it, and each read as an invention.
+    morning = "typewriter watch - runs FREQ=DAILY;BYHOUR=7 - notify: on"
+    for told in ("7:00 AM", "7 AM", "07:00", "7:00", "7 a.m.", "7\u202fAM PDT", "07 UTC"):
+        assert unsourced_specifics(f"it runs every morning at {told}, daily", morning) == [], told
+    evening = "typewriter watch - runs FREQ=DAILY;BYHOUR=18 - notify: on"
+    for told in ("6 PM", "6:00 PM", "6 p.m.", "18:00", "18"):
+        assert unsourced_specifics(f"it runs at {told}, daily", evening) == [], told
+    for told in ("18:00", "6:00 PM", "6"):
+        assert unsourced_specifics(f"it runs at {told}, daily", "run it at 6pm please") == [], told
+    assert unsourced_specifics("moved to 11:00 AM", "make it 11 in the morning instead") == []
+    assert unsourced_specifics("it ran at 04:01 and again at 4:01 PM", "ran 16:01, 04:01") == []
+    assert unsourced_specifics("it runs at 8:00 AM, or 7:30, or 9 PM", morning) == [
+        "8:00 AM",
+        "7:30",
+        "9 PM",
+    ]
+    assert unsourced_specifics("it runs at 6 AM, or at 12 AM", evening) == ["6 AM", "12 AM"]
+    # A date written in numbers names its month.
+    ran = "1. [2026-10-02 04:01 UTC] worked"
+    assert unsourced_specifics("Runs: 04:01 UTC Oct 2, in October", ran) == []
+    assert unsourced_specifics("Runs: 04:01 UTC Nov 2", ran) == ["Nov"]
     for reached in (
         "https://harborseals.example/news",
         "http://www.harborseals.example/news",
@@ -400,8 +438,18 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
 
     The paired guard: only the label is skipped.  A name in the value is read exactly as
     before, so an invented one is still reported, and a colon later in a line labels nothing.
-    A heading long enough to be a headline is read whole, and a list bullet is not
-    decoration."""
+    A heading long enough to be a headline is read whole.
+
+    What decides layout is POSITION, never the word (#2190).  The head of a line is read
+    through a list bullet and a list number as well, a label may carry an aside in brackets,
+    and a short phrase alone on its line is a title when emphasis marks it as one or when it
+    heads the bullets under it.  A list item's own number counts the items and states nothing.
+    MEASURED on two models describing one routine: `Scout`, `Mission`, `Logbook`, `Contender`,
+    `Typical`, `5`, each a title the reply gave its own list.
+
+    The paired guard, in every one of those shapes: the same words in the middle of a
+    sentence, after the colon, or as a list item that is not a label, are read exactly as
+    before — so a brand or a person the world never gave is still reported."""
     laid_out = "Publisher: Emberline Studios\nGenre: Turn-based strategy"
     assert specifics(laid_out) == ["Emberline", "Studios"]
     assert specifics("Release Date: March 14 2031") == ["14", "2031"]
@@ -438,7 +486,53 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
         "Casimir",
         "Oyelaran",
     ]
-    assert specifics("* Team News Update: two items") == ["Team", "News", "Update"]
+    assert specifics("* Team News Update: two items") == []
+    steps = (
+        "Here is what happens every morning:\n"
+        "\n"
+        "1.  The Scout Mission: I head over to the shop page.\n"
+        "2.  The Logbook: I save what I find.\n"
+        "5) **The Heads-up:** I ping you.\n"
+        "   Cedar (The Top Contender): a classic choice.\n"
+        "*   **Maple (The Body/Neck Specialist):** a dense hardwood.\n"
+        "  • Typical Tone: warm and dark\n"
+        "- Pros & Cons: it depends\n"
+        "**The Alert**\n"
+        "- **Final Verdict**\n"
+        "**1. Patch Notes Tracker**\n"
+        "2. Trail Conditions Tracker  \n"
+        "\n"
+        "- What it watches: the trail page\n"
+    )
+    assert specifics(steps) == []
+    assert unsourced_specifics(steps, "a typewriter watch") == []
+    # …and the guard.  A number that opens a line without being a list number is a value; a
+    # title's words in a sentence are values; so is a bare list of names, a name after a
+    # label, a name with a dash after it, and a list item too long to be a title.
+    assert specifics("5 listings matched.\n25. The Last One: it sold") == ["5"]
+    assert specifics("I call it The Scout Mission, and The Top Contender is cedar.") == [
+        "The",
+        "Scout",
+        "Mission",
+        "Top",
+        "Contender",
+    ]
+    read = "like a maple cap on a Les Paul, or a Fender Strat"
+    assert unsourced_specifics(read, "cedar, maple or birch for a guitar top") == [
+        "Les",
+        "Paul",
+        "Fender",
+        "Strat",
+    ]
+    for listed in (
+        "- Casimir Oyelaran\n- Aurelio Brandt",
+        "1. Casimir Oyelaran\n2. Aurelio Brandt",
+        "- Signed: Casimir Oyelaran\n- Signed: Aurelio Brandt",
+        "- Casimir Oyelaran – signed today\n- Aurelio Brandt – signed today",
+        "1. Foxes Sign Casimir Oyelaran To A Deal\n- and Aurelio Brandt",
+        "the pick was **Casimir Oyelaran** and then Aurelio Brandt",
+    ):
+        assert unsourced_specifics(listed, news) == ["Casimir", "Oyelaran"], listed
 
 
 def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
@@ -450,6 +544,9 @@ def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
     assert unsourced_specifics("Casimir Oyelaran: signed today", given) == []
     assert unsourced_specifics("**Casimir Oyelaran:** signed today", given) == []
     assert unsourced_specifics("### Casimir Oyelaran\nsigned today", given) == []
+    assert unsourced_specifics("- Casimir Oyelaran: signed today", given) == []
+    assert unsourced_specifics("**Casimir Oyelaran**\nsigned today", given) == []
+    assert unsourced_specifics("Casimir Oyelaran\n- signed today", given) == []
 
 
 _GAME_PAGE = (

@@ -32,6 +32,7 @@ them was driven against the same world, so the spread is measured within the poo
 
 from __future__ import annotations
 
+import calendar
 import math
 import re
 from collections import Counter
@@ -1153,7 +1154,21 @@ _URI_CHARS = rf"A-Za-z0-9._~%!$&'()*+,;=:/?#@\[\]{_DASHES}-"
 _URL = rf"https?://[{_URI_CHARS}]+"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"
 _NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
-_SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b")
+# A meridiem after a figure is part of the TIME, not a word beside it: `7 AM` is one value.
+# Read apart, the figure lost the half of the day it names and the marker glued onto whatever
+# capital followed it — MEASURED, `7 AM PDT` reported `AM` as an invented name.
+# The gap before it is whatever space the model drew, a narrow no-break one included.
+_GAP = r"[^\S\n]"
+_MERIDIEM = rf"(?:{_GAP}?[AaPp]\.?[Mm]\b)"
+_SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b{_MERIDIEM}?")
+# A percentage in front of a word for the speaker's OWN certainty measures nothing in the
+# world: "not 100% sure" states no value, and MEASURED, was reported as `unsourced: ['100']`
+# on a reply that named no figure at all.  The class is closed by what it means — how sure
+# the speaker is — and a percentage of anything else (`100% cotton`, `15% off`) is still read.
+_OWN_CERTAINTY = ("sure", "certain", "positive", "confident", "convinced")
+_CERTAINTY_FIGURE = re.compile(
+    rf"\b\d[\d.]*{_GAP}?%(?={_GAP}+(?:{'|'.join(_OWN_CERTAINTY)})\b)", re.IGNORECASE
+)
 
 # Words that carry a capital everywhere in English and are never part of a name, so a phrase is
 # not built across them — otherwise a clause boundary glues two sentences into one "name".
@@ -1170,20 +1185,52 @@ _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 # heading's marks (`### Genre:`).  A HEADING LINE — heading marks, then a label-sized title and
 # nothing else (`### Team News Update`) — is the same layout without the colon.  MEASURED: a
 # reply laid out under `**Team News Update:**` failed as `unsourced: ['Update']`, because the
-# emphasis in front of the label kept the line from reading as one.  A list bullet is not
-# decoration: `* Label:` is still read, as it was.
+# emphasis in front of the label kept the line from reading as one.
 #
-# THE BLIND SPOT, STATED: a name or a short clause heading a line before a colon
-# (`Casimir Oyelaran: signed`), or making up a whole heading of four words or fewer
-# (`### Casimir Oyelaran`), is a label by this definition, so an invented name there is not
-# read.  A longer heading is a headline, and every name in it is read.
+# What decides layout is POSITION, never the word (#2190): the same capitalised phrase is a
+# label at the head of a line and a value in the middle of a sentence.  So the head of a line is
+# read through everything that can stand in front of a label there — a list bullet, a list
+# number, heading marks, emphasis — and a label is any of:
+#
+#   a short phrase before a colon      `1.  The Scout Mission: I head over…`
+#   …with an aside in brackets         `Cedar (The Top Contender): a classic choice…`
+#   a line that is ONLY a short phrase and is marked as a title, by heading marks or by
+#   emphasis                           `**Scout**`  ·  `### Team News Update`
+#   a line that is only a short phrase and HEADS A LIST, the next line being a bullet under it
+#                                      `1. Mistforge Patch Notes Tracker` / `- What it watches: …`
+#
+# and a list item's own NUMBER is layout too: `5.` at the head of a line counts the items, and
+# MEASURED, was reported as `unsourced: ['5']` on a five-step answer over a four-step world.
+# MEASURED on two models' replies describing one routine: `Scout`, `Mission`, `Logbook`,
+# `Contender`, `Typical` and a dozen more, every one a title the reply gave its own list.
+#
+# THE BLIND SPOT, STATED: a name or a short clause in any of those positions
+# (`Casimir Oyelaran: signed`, `- Casimir Oyelaran: signed`, `### Casimir Oyelaran`,
+# `**Casimir Oyelaran**` alone on its line) is a label by this definition, so an invented name
+# there is not read.  The same name after the colon, in a sentence, in a list item that is not
+# a label, or in a heading longer than a title, still is.
 _LABEL_WORD = r"[A-Za-z][A-Za-z'-]*"
-_LABEL = rf"{_CAPITALISED}(?:[ \t]+{_LABEL_WORD}){{0,3}}"
+# Label words stand side by side, or either side of the marks that pair them: `Pros/Cons`.
+_LABEL_GAP = r"(?:[ \t]*[/&][ \t]*|[ \t]+)"
+_LABEL_WORDS_MORE = rf"(?:{_LABEL_GAP}{_LABEL_WORD}){{0,3}}"
+_LABEL_ASIDE = rf"(?:[ \t]*\({_LABEL_WORD}{_LABEL_WORDS_MORE}\))?"
+_LABEL = rf"{_CAPITALISED}{_LABEL_WORDS_MORE}{_LABEL_ASIDE}"
 _EMPHASIS = r"[*_]*"
+_EMPHASISED = r"[*_]+"
 _HEADING_MARKS = r"#{1,6}[ \t]+"
+_LIST_NUMBER = r"\d+[.)]"
+_LIST_BULLET = r"[-*+•]"
+_LIST_MARKER = rf"(?:{_LIST_BULLET}|{_LIST_NUMBER})[ \t]+"
+_NUMBERED = rf"(?:{_LIST_NUMBER}[ \t]+)?"
+_LINE_HEAD = rf"^[ \t]*(?:{_LIST_MARKER})?(?:{_HEADING_MARKS})?"
+_LINE_END = r"[ \t]*$"
+_A_BULLET_UNDER_IT = rf"(?=\n(?:[ \t]*\n)*[ \t]*{_LIST_BULLET}[ \t])"
 _FIELD_LABEL = re.compile(
-    rf"^[ \t]*(?:{_HEADING_MARKS})?{_EMPHASIS}{_LABEL}{_EMPHASIS}(?=:)"
-    rf"|^[ \t]*{_HEADING_MARKS}{_EMPHASIS}{_LABEL}{_EMPHASIS}[ \t]*$",
+    rf"{_LINE_HEAD}{_EMPHASIS}{_NUMBERED}{_LABEL}{_EMPHASIS}(?=:)"
+    rf"|^[ \t]*{_HEADING_MARKS}{_EMPHASIS}{_NUMBERED}{_LABEL}{_EMPHASIS}{_LINE_END}"
+    rf"|{_LINE_HEAD}{_EMPHASISED}{_NUMBERED}{_LABEL}{_EMPHASISED}{_LINE_END}"
+    rf"|^[ \t]*{_NUMBERED}{_LABEL}{_LINE_END}{_A_BULLET_UNDER_IT}"
+    rf"|^[ \t]*{_EMPHASIS}{_LIST_NUMBER}(?=[ \t])",
     re.MULTILINE,
 )
 
@@ -1242,9 +1289,24 @@ def _without_possessive(folded: str) -> str:
 
 
 def _blank_field_labels(text: str) -> str:
-    """Blank out each line's field label and each heading line's title, so neither is a value
-    nor part of one."""
-    return _FIELD_LABEL.sub(lambda m: " " * len(m.group()), text)
+    """Blank out each line's field label, each title line and each list number, so none is a
+    value nor part of one."""
+    return _FIELD_LABEL.sub(_blank, text)
+
+
+def _blank(match: re.Match[str]) -> str:
+    return " " * len(match.group())
+
+
+def _blank_own_certainty(text: str) -> str:
+    """Blank out a percentage that says how sure the speaker is."""
+    return _CERTAINTY_FIGURE.sub(_blank, text)
+
+
+def _values_only(text: str) -> str:
+    """``text`` with everything that is layout or manner blanked in place, so what is left to
+    read is what it states."""
+    return _fold_phrases(_blank_own_certainty(_blank_field_labels(text)))
 
 
 def _fold_phrases(text: str) -> str:
@@ -1353,7 +1415,7 @@ def _stated_values(text: str) -> list[list[str]]:
     addresses, a number alone, a name phrase's words — kept together, because whether a word is
     sourced can turn on the words it was said beside."""
     values: list[list[str]] = []
-    for match in _SPECIFIC.finditer(_fold_phrases(_blank_field_labels(text))):
+    for match in _SPECIFIC.finditer(_values_only(text)):
         token = match.group().strip()
         if _is_url(token):
             parts = _urls_in(token)
@@ -1377,12 +1439,16 @@ def _stated_values(text: str) -> list[list[str]]:
 #              is no part of `425` or of `4.25`.  What stands beside the figure is not the
 #              figure: a currency sign, a percent sign, a degree sign, a unit (`425F`, `5pm`).
 #              And one figure written two ways is one figure: thousands separators, a trailing
-#              `.00`, a leading zero.
+#              `.00`, a leading zero.  A CLOCK TIME is one figure however it is told: an hour
+#              with nothing after it is that hour (`7:00`, `07:00`, `7`), and the afternoon
+#              hours have two numbers each (`6 PM`, `18:00`).  MEASURED: a job stored as
+#              `BYHOUR=7` is "7:00 AM" in 8 of 15 replies describing it.
 #   a NAME     by the world's words, as a whole word — a hyphenated one as that run of whole
 #              words side by side.  A world often writes a name with no space in it (a domain,
 #              a handle), so the words of one phrase run together are that name too: MEASURED,
 #              a page given only as `harborseals.com` is "the Harbor Seals page" in 14 of 15
-#              replies, and none of them invented a team.
+#              replies, and none of them invented a team.  A date written in numbers names
+#              its month as well, so `2026-10-02` is given as "Oct 2".
 #   a URL      by the addresses the world states, read off it with the grammar a reply's are
 #              read with, as the WHOLE address.  How an address is reached is not what it
 #              names, so its scheme, a leading `www.` and a closing slash are not compared.
@@ -1392,8 +1458,17 @@ def _stated_values(text: str) -> list[list[str]]:
 # identifier from a figure with its unit (`425F`, `14T10:00`) needs a list of shapes, and a list
 # of shapes is what this comparison is being repaired out of.  And the world is EVERYTHING the
 # round was given, scaffolding included — a numbered list, an entry count, a timestamp each
-# state a number whole, so a small quantity is sourced by them wherever they appear.
-_FIGURE = re.compile(r"\d+(?:[.,:]\d+)*")
+# state a number whole, so a small quantity is sourced by them wherever they appear.  And
+# which half of the day an hour falls in is not weighed: `7 PM` is sourced by a world that
+# says `7`, because a world says "7 in the evening" in more ways than a grammar can list.
+_FIGURE = re.compile(r"(\d+(?:[.,:]\d+)*)(?:[ \t]?([ap])\.?m\b)?")
+_CLOCK_TIME = re.compile(r"(\d{1,2}):(\d{2})")
+_ON_THE_HOUR = "00"
+_CLOCK_SEPARATOR = ":"
+_AFTERNOON = "p"
+_HALF_DAY = 12
+_MONTHS_IN_A_YEAR = 12
+_ISO_DATE_MONTH = re.compile(r"\b\d{4}-(\d{2})-\d{2}\b")
 _THOUSANDS_SEPARATOR = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 _LIST_SEPARATOR = ","
 _DECIMAL_POINT = "."
@@ -1422,14 +1497,56 @@ def _figure_value(figure: str) -> str:
     return f"{whole}{_DECIMAL_POINT}{fraction}" if fraction.strip(_ZERO) else whole
 
 
-def _figures(folded: str) -> frozenset[str]:
-    """Every number ``folded`` states, each as its value.  A comma between digits is a
-    thousands separator when exactly three digits follow it, and otherwise parts two numbers."""
-    return frozenset(
-        _figure_value(figure)
-        for run in _FIGURE.findall(folded)
+def _figure_readings(folded: str) -> list[frozenset[str]]:
+    """Every number ``folded`` states, each as the set of forms its value takes.  A comma
+    between digits is a thousands separator when exactly three digits follow it, and otherwise
+    parts two numbers."""
+    return [
+        _readings(figure, meridiem)
+        for run, meridiem in _FIGURE.findall(folded)
         for figure in _THOUSANDS_SEPARATOR.sub("", run).split(_LIST_SEPARATOR)
+    ]
+
+
+def _readings(figure: str, meridiem: str) -> frozenset[str]:
+    """The forms one figure's value takes: itself, and for a time of day, every way of telling
+    that time."""
+    clock = _CLOCK_TIME.fullmatch(figure)
+    hour, minutes = clock.groups() if clock else (figure, _ON_THE_HOUR)
+    if not hour.isdigit() or not (clock or meridiem):
+        return frozenset({_figure_value(figure)})
+    return frozenset(
+        told for hour_told in _hours_told(int(hour), meridiem) for told in _told(hour_told, minutes)
     )
+
+
+def _hours_told(hour: int, meridiem: str) -> set[int]:
+    """An hour as written, and the same hour on the other clock: `6 pm` is 18, `12 am` is 0."""
+    if not meridiem or hour > _HALF_DAY:
+        return {hour}
+    return {hour, hour % _HALF_DAY + (_HALF_DAY if meridiem == _AFTERNOON else 0)}
+
+
+def _told(hour: int, minutes: str) -> list[str]:
+    """One time of day in its written forms — on the hour, the hour alone is one of them."""
+    exact = f"{hour}{_CLOCK_SEPARATOR}{minutes}"
+    return [exact, str(hour)] if minutes == _ON_THE_HOUR else [exact]
+
+
+def _figures(folded: str) -> frozenset[str]:
+    """Every form of every number ``folded`` states."""
+    return frozenset(form for readings in _figure_readings(folded) for form in readings)
+
+
+def _months_named(folded: str) -> list[str]:
+    """The month each numeric date in ``folded`` names, in full and as it is abbreviated."""
+    months = [int(month) for month in _ISO_DATE_MONTH.findall(folded)]
+    return [
+        name.casefold()
+        for month in months
+        if 1 <= month <= _MONTHS_IN_A_YEAR
+        for name in (calendar.month_name[month], calendar.month_abbr[month])
+    ]
 
 
 def _whole_tokens(folded: str) -> list[str]:
@@ -1465,7 +1582,8 @@ class _WorldValues:
     def _states(self, atom: str) -> bool:
         if _is_url(atom):
             return _address(atom) in self.addresses
-        return _figures(fold_typography(atom)) <= self.figures
+        readings = _figure_readings(fold_typography(atom))
+        return all(forms & self.figures for forms in readings)
 
     def _unsourced_words(self, words: Sequence[str]) -> list[str]:
         """A name phrase's words that are neither a whole word of the world nor part of a run
@@ -1495,7 +1613,7 @@ def _world_values(given: str) -> _WorldValues:
             for url in _urls_in(match.group())
         ),
         figures=_figures(folded),
-        tokens=_side_by_side(_whole_tokens(folded)),
+        tokens=_side_by_side([*_whole_tokens(folded), *_months_named(folded)]),
     )
 
 
