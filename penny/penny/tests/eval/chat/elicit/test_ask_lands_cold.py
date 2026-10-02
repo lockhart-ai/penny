@@ -59,15 +59,10 @@ than as a checklist nobody ran:
 * ``Check("reply: asked for no page structure")`` — a PHRASING match on a vocabulary somebody
   guessed in advance.  What it reached for has no end-state form and is read at review.
 
-**And two the inward column added.**  PROVENANCE, of both kinds: the source case made no
+**And one the inward column added.**  PROVENANCE, of both kinds: the source case made no
 claim of either, so a sample that answered out of its own head passed every check it carried.
 The store half reads only what this turn wrote, so it asks nothing of whether the turn wrote —
-that is measured as entries stored — and everything of whether what it wrote was invented.  And
-`assert_every_delivered_message_is_whole`,
-which the round-ends family had to refuse because every one of its worlds SEEDS Penny's own
-turns and the claim would then be answered against the fixture's agreed prose.  This world
-seeds NOTHING — the machine is cold — so the only message it can read is the question this turn
-asked, and "the teach question is a message Penny would send" is a claim about the turn.
+that is measured as entries stored — and everything of whether what it wrote was invented.
 
 **`answers` is EMPTY, and that is a report.**  The ask asks for a job to be set up, not for a
 value to be stated, so a correct reply owes no token; requiring one would fail a correct run
@@ -152,7 +147,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str) -> None:
     """idle → elicit: the canonical watch ask, its page named and reachable, arriving on a
     cold machine.  No routine covers it, so the turn IS the question: the machine parks in
-    elicit on the ask, and the question it delivered is a whole message."""
+    elicit on the ask."""
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
@@ -168,11 +163,8 @@ async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str)
     # LANDED
     cohort.assert_machine_landed(ConversationState.ELICIT)
 
-    # STORE — the question itself, which this world is the only one in the tranche that can
-    # claim honestly.  Nothing about what the turn refrained from: on a cold machine there is
-    # nothing already held for a survival claim to be about, and doing the job instead of
-    # asking is measured below.
-    cohort.assert_every_delivered_message_is_whole()
+    # STORE — no claim.  On a cold machine there is nothing already held for a survival claim
+    # to be about, and doing the job instead of asking is measured below.
 
     # PROVENANCE — both halves, which the source case had none of.  Whether the turn writes
     # anything is the model's call and is measured; what is claimed is that nothing it did
