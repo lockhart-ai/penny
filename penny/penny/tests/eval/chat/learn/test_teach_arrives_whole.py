@@ -110,8 +110,8 @@ _CASE_ID = _TEACH_HARBOUR_FLAG.case_id
 
 _BEHAVIOUR = (
     "In the chat agent, when a message arrives already carrying the instructions for a job, "
-    "Penny runs that round once against the page it names, keeps what it says in the round's "
-    "own container, and mints a routine from what she just did, and every job already going "
+    "Penny runs that round against the page it names, keeps what it says in the round's own "
+    "container, and mints a routine from what she just did, and every job already going "
     "survives unchanged."
 )
 

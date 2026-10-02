@@ -100,8 +100,7 @@ _CASE_ID = "transition-idle-to-elicit"
 
 _BEHAVIOUR = (
     "In the chat agent, when the user asks for something that has to keep running and no "
-    "routine she has covers it, Penny parks the round in elicit on a question asking to be "
-    "taught the steps once."
+    "routine she has covers it, Penny parks the round in elicit."
 )
 
 # Four more wordings of that same ask.  What varies is only how a person says it — which verb
