@@ -931,6 +931,14 @@ def test_a_job_s_end_is_read_against_the_end_the_ask_gave() -> None:
     assert _ends_as_asked(ten_runs, tonight)[0], (
         "ten hourly runs from 12:30 end at 21:30, the last firing an end at 22:00 allows"
     )
+    anchored = _job_ending(schedule="DTSTART:20261002T200000Z\nFREQ=HOURLY;COUNT=9", max_runs=9)
+    assert _ends_as_asked(anchored, tonight)[0], "nine runs from an anchor at 13:00 end at 21:00"
+    assert _ends_as_asked(anchored, UNTIL_SUNDAY_NIGHT) == (
+        False,
+        "the job ends Fri 2026-10-02 21:00 PDT (after 9 runs of "
+        "'DTSTART:20261002T200000Z\\nFREQ=HOURLY;COUNT=9'); the ask says until sunday night, "
+        "which is Sun 2026-10-04 18:00 PDT to Mon 2026-10-05 06:00 PDT",
+    ), "a rule anchored in UTC still reads on the user's clock"
     eleven_runs = _job_ending(schedule="FREQ=HOURLY;COUNT=11", max_runs=11)
     assert not _ends_as_asked(eleven_runs, tonight)[0], "an eleventh run fires at 22:30"
     assert not _ends_as_asked(_job_ending(expires_at=datetime(2026, 10, 3, 3, 0)), tonight)[0], (

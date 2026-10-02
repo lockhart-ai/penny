@@ -15,9 +15,10 @@ window and the job must store none.
 
 **A stored end is read as what the job will DO.**  An expiry is an instant, and it holds when
 that instant is inside the window.  A counted rule has no instant: it ends at its LAST FIRING,
-and any end from that firing up to (not including) the firing an uncounted rule would make
-next stops the job at the same place.  So a counted end holds when that span and the window
-share an instant — the count resolves to the same last firing an end inside the window would.
+and any end from that firing up to the firing an uncounted rule would make next stops the
+job at the same place.  So a counted end holds when that span and the window share an instant
+— the count resolves to the same last firing an end inside the window would.  A firing that
+falls exactly on the end is one the job may or may not make, so the span includes both ends.
 Where a job stores both, the one that stops it first is its end.
 
 **The user's clock is read the way production reads it.**  Occurrences are walked from the
@@ -33,7 +34,7 @@ imported cold by the report assembler and has to stay a dependency-light leaf.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, tzinfo
 from itertools import islice
 from typing import NamedTuple
 
@@ -122,7 +123,14 @@ def _rule(job: MechanismRecord, timezone: str | None) -> rrule | rruleset | None
 def _walk(job: MechanismRecord, timezone: str | None) -> Iterator[datetime | None]:
     rule = _rule(job, timezone)
     zone = zone_or_utc(timezone)
-    return (_zoned(moment, zone) for moment in rule) if rule is not None else iter(())
+    return (_on_the_users_clock(moment, zone) for moment in rule) if rule is not None else iter(())
+
+
+def _on_the_users_clock(moment: datetime | None, zone: tzinfo) -> datetime | None:
+    """A firing as the user's own wall clock reads it.  A rule anchored with ``DTSTART:…Z``
+    yields its firings in UTC, and the hour a claim reads is the hour where the user is."""
+    zoned = _zoned(moment, zone)
+    return zoned.astimezone(zone) if zoned is not None else None
 
 
 def _counted_end(job: MechanismRecord, timezone: str | None) -> StoredEnd | None:
@@ -146,7 +154,7 @@ def _firing_after(job: MechanismRecord, timezone: str | None, last: datetime) ->
     if first is None:
         return None
     clock = last if first.tzinfo is not None else last.replace(tzinfo=None)
-    return _zoned(uncounted.after(clock), zone_or_utc(timezone))
+    return _on_the_users_clock(uncounted.after(clock), zone_or_utc(timezone))
 
 
 def _count_text(job: MechanismRecord) -> str:
@@ -190,7 +198,7 @@ def _inside(end: StoredEnd, window: tuple[datetime, datetime]) -> bool:
     begins, ends = window
     if end.next_firing is None:
         return begins <= end.ends.replace(second=0, microsecond=0) <= ends
-    return end.ends <= ends and end.next_firing > begins
+    return end.ends <= ends and end.next_firing >= begins
 
 
 def job_ends_as_asked(
