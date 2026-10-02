@@ -177,8 +177,8 @@ half.
 **A chat reply has the same two halves, and they are two named claims.** *Nothing invented* is
 `assert_every_value_in_the_reply_is_sourced`. *Nothing omitted* is `assert_the_reply_answers_the_ask`,
 read off the world's own `answers` tokens. A reply that answers nothing at all passes every other
-claim in the set vacuously — it lands in the right state, it is a complete message, and it carries no
-unsourced value because it carries no value — so a case whose ask has an answer to state makes the
+claim in the set vacuously — it lands in the right state, and it carries no unsourced value because
+it carries no value — so a case whose ask has an answer to state makes the
 second claim too. `answers` names only what the **ask asked for**: a token the reply does not owe
 fails a correct run, so an answer worth asserting is one the ask requests, which is the fixture's job
 and not the claim's.

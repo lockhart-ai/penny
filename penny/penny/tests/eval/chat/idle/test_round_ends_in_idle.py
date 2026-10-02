@@ -60,16 +60,6 @@ scorer strings.
 case made no claim of either kind, so a sample that answered the harbour-market question out
 of its own head — or filed an invented fact into a collection — passed every check it carried.
 
-**One the inward column offered and these four cases refuse**:
-``assert_every_delivered_message_is_whole``.  It reads ``SampleObservation.delivered``, which
-is every outgoing message in the last hour — and every world here SEEDS Penny's own turns
-(the teach question, the closing report, five job confirmations, three exchanges of small
-talk), all of them written within the same second the sample starts.  So the claim would be
-answered mostly against the fixture's agreed prose rather than against what this turn sent,
-which is a check that measures the seed.  What it was reaching for on the live reply is
-pinned deterministically instead, in ``test_eval_harness.py``, against each case's own
-reference reply.
-
 REPORT-ONLY (``min_pass_rate=None``): the ceilings this run proposes are the code owner's to
 accept once the numbers have been read.  Every page, url and job is synthetic, on an
 ``example`` domain, because the repo is public.

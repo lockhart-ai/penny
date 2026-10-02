@@ -41,7 +41,6 @@ from penny.tests.eval.utils.cohort import (
 )
 from penny.tests.eval.utils.worlds import World
 from penny.text_validity import (
-    half_formed_send_reason,
     has_leaked_harmony_envelope,
     is_degenerate_run,
 )
@@ -264,31 +263,14 @@ class Cohort:
             SpecCategory.STORE,
         )
 
-    def assert_every_delivered_message_is_whole(self) -> None:
-        """Every message the user received is a complete message.
-
-        Judged by ``half_formed_send_reason`` — the SHARED rule the send path refuses a
-        message by and the run-health classifier flags one by — so what Penny will not
-        send and what this calls incomplete are one definition.  A chat reply is delivered
-        inline by a text turn and never passes that gate, which is what leaves room for a
-        turn to finalise a fragment.
-
-        It replaces a letter-count floor: a threshold somebody picked stands for the
-        question rather than answering it, and production already answers it."""
-        self.claim(
-            "state: every message delivered to the user is a complete message",
-            _delivered_messages_are_whole,
-            SpecCategory.STORE,
-        )
-
     def assert_the_reply_answers_the_ask(self) -> None:
         """The reply states what the ask asked for, in the world's own terms.
 
         The only COMPLETENESS claim in the set.  Everything else here is soundness — where
         the machine landed, what the store holds, that nothing was invented — and a reply
-        that answers nothing at all satisfies all of it: it lands in the right state, it
-        delivers a complete message, and it carries no unsourced value because it carries
-        no value.  Measured: a sample whose extractor had returned the answer replied
+        that answers nothing at all satisfies all of it: it lands in the right state, and
+        it carries no unsourced value because it carries no value.  Measured: a sample
+        whose extractor had returned the answer replied
         "Sounds like you're surprised! Bath! What else do you want to hear about Lake
         Baikal?" and passed 5 of 5 claims as the cohort's REPRESENTATIVE sample.
 
@@ -448,17 +430,6 @@ def _nothing_unusable_delivered(sample: SampleObservation, _world: World) -> Ans
         if (condition := _unusable_draw_condition(message)) is not None
     ]
     return not unusable, f"{len(unusable)} of {len(sample.delivered)} delivered — {unusable}"
-
-
-def _delivered_messages_are_whole(sample: SampleObservation, _world: World) -> Answer:
-    """Production's own refusal reason is the rationale — it already names the defect and
-    the next move, so there is nothing for this to add and no message to quote."""
-    half_formed = [
-        reason
-        for message in sample.delivered
-        if (reason := half_formed_send_reason(message)) is not None
-    ]
-    return not half_formed, f"{len(half_formed)} of {len(sample.delivered)} — {half_formed}"
 
 
 def _reply_answers_the_ask(sample: SampleObservation, world: World) -> Answer:

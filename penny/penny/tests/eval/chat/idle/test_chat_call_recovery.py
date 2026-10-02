@@ -106,7 +106,6 @@ async def test_call_as_text_is_caught_and_the_turn_still_completes(
 
     # STORE
     cohort.assert_no_delivered_message_is_an_unusable_draw()
-    cohort.assert_every_delivered_message_is_whole()
     cohort.assert_the_reply_answers_the_ask()
 
     # PROVENANCE

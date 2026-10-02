@@ -812,32 +812,11 @@ def test_every_delivered_message_is_read_and_not_only_the_last():
     assert _answered(cohort) == (0, 1)
 
 
-def test_a_delivered_message_is_whole_by_the_rule_the_send_path_refuses_by():
-    """Completeness is production's ``half_formed_send_reason``, not a letter count.
-
-    The floor it replaces was fifteen letters — a number somebody picked, which stands for
-    the question rather than answering it.  Both directions matter, and the SHORT-BUT-COMPLETE
-    case is the one that floor got wrong: a brief finished answer is a message a person should
-    receive, and a long one trailing off into an ellipsis is not."""
-    whole = _delivered("Baikal.")
-    whole.assert_every_delivered_message_is_whole()
-    assert _answered(whole) == (1, 1), "a short complete answer is a complete message"
-
-    trailed_off = "the deepest one is …"
-    bailed_out = "I don't know"
-    bare_url = "https://geo.example.test/lakes"
-    for half_formed in (trailed_off, bailed_out, bare_url):
-        cohort = _delivered(half_formed)
-        cohort.assert_every_delivered_message_is_whole()
-        assert _answered(cohort) == (0, 1), f"{half_formed!r} is not a message to deliver"
-        assert cohort.claims[0].rationales, "and production's own reason is the rationale"
-
-
 def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
     """The claim the rest of the set cannot make.
 
     A reply carrying no values passes every other claim vacuously — it lands in the right
-    state, it is a complete message, and it has nothing in it to be unsourced.  The first
+    state, and it has nothing in it to be unsourced.  The first
     text here is the real one that did: it was its cohort's REPRESENTATIVE sample, marked
     pass at 5 of 5, on a turn whose extractor had already returned the answer.
 
