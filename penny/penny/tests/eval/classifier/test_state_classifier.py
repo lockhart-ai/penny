@@ -9,7 +9,7 @@ machine landed after a whole turn.  They catch different things, and the canonic
 set holds both.
 
 The classifier's axis is the DECISION rather than the edge, which is why fourteen
-out-edges carry eighteen cases.  An edge carries a second case where the door the
+out-edges carry seventeen cases.  An edge carries a second case where the door the
 draw has to decline is a different door: ``presented_edges`` structurally withholds
 every skill-gated state when the registry holds nothing, so idle → elicit drawn
 from a cold registry declines LEARN where the same edge drawn from a populated one
@@ -189,8 +189,7 @@ PASSING_MENTION_ARMS = (_PASSING_MENTION, *_PASSING_MENTION_PHRASINGS)
 _HOLD_BEHAVIOUR = (
     f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the user "
     "mentions in passing something a routine she already knows could be pointed at, Penny "
-    "picks idle from the doors idle opens — she does not walk through the apply or request "
-    "door standing open beside it."
+    "holds the conversation in idle."
 )
 
 
@@ -1320,96 +1319,35 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     cohort.measure(output_field(CLASSIFY_STATE))
 
 
-# ── The five decisions that complete the map (#2055 tranche C) ────────────────
+# ── The four decisions that complete the map (#2055 tranche C) ────────────────
 #
 # Tranche A took the six edges nothing had ever drawn in isolation and tranche B the six
-# decisions inside covered edges.  These five are the rest of the map, and each names the
+# decisions inside covered edges.  These four are the rest of the map, and each names the
 # TEMPTATION its world puts in front of the draw — the door that is open and wrong.
 #
 # THE THREE CLAIM CATEGORIES ARE THE TRANCHE-A SECTION'S, unchanged and not restated: STORE
 # is empty because a micro-context is one call that writes to no store, and PROVENANCE is
 # empty because both fields the draw returns are closed sets the harness supplied.  What is
-# claimed is WHICH member the draw picked (``_drew``).  None of these five draws a
+# claimed is WHICH member the draw picked (``_drew``).  None of these four draws a
 # skill-gated state, so none of them makes a ``_bound`` claim.
-
-
-# ── idle → elicit: an ongoing job no seeded routine covers ────────────────────
-#
-# THE FACTS ARE CONSTANT: every wording asks for the SAME ongoing job — a weekly count of
-# gym visits — and not one of them says HOW.  Both halves are the edge's own condition, so
-# an arm carrying steps would be the idle → learn behaviour wearing this case's id, and an
-# arm asking for something done once would be idle's.
-#
-# THE TEMPTATION IS THE FALSE APPLY, which is what the registry is for: two routines stand
-# in Known skills, so apply and request are really on offer, and the ask is plainly outside
-# both — a gym tally is neither a listing's price nor a cafe's menu.  Measured against an
-# empty registry this case would prove nothing, since ``presented_edges`` withholds both
-# gated doors there and an elicit drawn with nothing to decline is elicit by default.  That
-# is the cold-registry case (``classifier-elicits-on-a-cold-registry``), and this one is its
-# populated sibling: plausible candidates dangling in context are not coverage.
-
-UNCOVERED_ASK_CASE_ID = "classifier-elicits-when-no-routine-covers-the-ask"
-
-_UNCOVERED_ASK = "keep track of how many times i go to the gym each week"
-_UNCOVERED_ASK_PHRASINGS = (
-    "keep a weekly count of my gym visits going",
-    "i'd like a weekly count of my gym visits kept",
-    "keep a running count of my gym trips week by week",
-    "keep a running tally of my gym trips each week",
-)
-UNCOVERED_ASK_ARMS = (_UNCOVERED_ASK, *_UNCOVERED_ASK_PHRASINGS)
-
-_UNCOVERED_ASK_BEHAVIOUR = (
-    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when routines are "
-    "on offer and none of them covers what was asked for, Penny opens a teach round in "
-    "elicit."
-)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_an_uncovered_ask_still_elicits(classifier_eval: ClassifierEval, model: str) -> None:
-    """The false-apply guard: one ongoing job neither seeded routine covers, said five ways,
-    against a registry that really does put apply and request on offer.
-
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
-    elicit binds no routine.
-    """
-    cohort = await classifier_eval(
-        case_id=UNCOVERED_ASK_CASE_ID,
-        behaviour=_UNCOVERED_ASK_BEHAVIOUR,
-        model=model,
-        state=ConversationState.IDLE,
-        ask=_UNCOVERED_ASK,
-        also_asked=_UNCOVERED_ASK_PHRASINGS,
-        seed_skills=SEEDED_SKILLS,
-        samples_per_phrasing=3,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
-    # LANDED — the closed field of the typed result, asserted by equality
-    cohort.claim(
-        "state: the draw opened a teach round in elicit",
-        _drew(ConversationState.ELICIT),
-        SpecCategory.LANDED,
-    )
-
-    # STORE — empty by construction; see the section comment.
-    # PROVENANCE — empty because it is closed upstream; see the section comment.
-
-    cohort.measure(output_field(CLASSIFY_STATE))
 
 
 # ── idle → elicit: the same verb shape, a different world ─────────────────────
 #
 # THE FACTS ARE CONSTANT: every wording asks for the SAME ongoing job — new restaurants
-# opening downtown, kept as a list — and none says how.
+# opening downtown, kept as a list — and not one of them says HOW.  Both halves are the
+# edge's own condition, so an arm carrying steps would be the idle → learn behaviour wearing
+# this case's id, and an arm asking for something done once would be idle's.
 #
-# THE TEMPTATION IS SHARPER THAN THE CASE ABOVE'S, and the registry is what makes it so: the
-# seeded discovery routine and the ask share their whole VERB SHAPE — find new X and keep
-# them — in starkly different domains.  A job-listings routine does not cover restaurants,
-# and the code-owner ruling this world records is why the domains are stark rather than
-# adjacent: a watch-shaped ask against a watch-shaped routine is legitimately COVERED, so a
-# near-miss world measures a non-distinction.
+# THE TEMPTATION IS THE FALSE APPLY, and the registry is what makes it sharp: the seeded
+# discovery routine and the ask share their whole VERB SHAPE — find new X and keep them — in
+# starkly different domains, so apply and request are really on offer and neither is right.
+# A job-listings routine does not cover restaurants, and the code-owner ruling this world
+# records is why the domains are stark rather than adjacent: a watch-shaped ask against a
+# watch-shaped routine is legitimately COVERED, so a near-miss world measures a
+# non-distinction.  Measured against an empty registry this case would prove nothing, since
+# ``presented_edges`` withholds both gated doors there; that is the cold-registry case
+# (``classifier-elicits-on-a-cold-registry``), and this one is its populated sibling.
 
 UNCOVERED_DOMAIN_CASE_ID = "classifier-elicits-when-a-routine-shares-the-verb-but-not-the-domain"
 
@@ -1434,12 +1372,8 @@ async def test_a_same_verb_different_domain_ask_still_elicits(
     classifier_eval: ClassifierEval, model: str
 ) -> None:
     """The stark non-coverage contract: one discovery ask said five ways, against a
-    discovery routine in another domain.
-
-    A different decision from the uncovered ask above rather than a second wording of it:
-    that case's routines share nothing with the ask at all, while this one's shares
-    everything except the world it is about — which is the reading a draw can plausibly get
-    wrong.
+    discovery routine in another domain.  The routine shares everything with the ask except
+    the world it is about, which is the reading a draw can plausibly get wrong.
 
     STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
     elicit binds no routine.

@@ -175,7 +175,6 @@ from penny.tests.eval.classifier.test_state_classifier import (
     SEEDED_SKILLS,
     STEPS_ANSWERED_ARMS,
     STILL_CLARIFYING_ARMS,
-    UNCOVERED_ASK_ARMS,
     UNCOVERED_DOMAIN_ARMS,
     UNPROMPTED_TEACH_ARMS,
     VALUE_ARRIVED_ARMS,
@@ -4309,30 +4308,19 @@ def test_the_notify_cases_world_really_stands_its_job_up(tmp_path) -> None:
     assert len(jobs) > 1, f"and beside at least one other, or resolving it is no read: {jobs}"
 
 
-# ── The five tranche-C classifier cases (#2055) ───────────────────────────────
+# ── The four tranche-C classifier cases (#2055) ───────────────────────────────
 #
-# The tranche-B row shape and the same questions, over the five decisions that complete the
+# The tranche-B row shape and the same questions, over the four decisions that complete the
 # map.  Every one of these worlds SEEDS routines, so the second probe asserts the positive
 # direction tranche B's cold cases assert the negative of: the skill-gated doors the parked
 # state can open really are on offer, since each case's temptation is a door that is open
 # and wrong.
 #
-# The two cases whose door STARTS a job hold one more fact as an alternation: a standing
+# The case whose door STARTS a job holds one more fact as an alternation: a standing
 # marker.  Idle owns every message with no standing or scheduling component whatever it
 # resembles, so a subject token says what an ask is ABOUT and never whether it asks for
 # something that keeps running — an arm without the marker is idle's, wearing this case's id.
 _TRANCHE_C: list[_TrancheB] = [
-    (
-        "uncovered-ask",
-        UNCOVERED_ASK_ARMS,
-        ConversationState.IDLE,
-        SEEDED_SKILLS,
-        ConversationState.ELICIT,
-        None,
-        ("gym", "week"),
-        ("price", "menu", "read", "remember", ".example"),
-        (("keep track of", "keep a weekly count", "keep a running", "visits kept"),),
-    ),
     (
         "uncovered-domain",
         UNCOVERED_DOMAIN_ARMS,
@@ -4399,8 +4387,8 @@ def test_every_tranche_c_arm_set_says_one_decision_five_ways() -> None:
     teach would be the parked self-edge or the break-out, and an instruction in the
     post-failure question would be the correction.
 
-    The two idle → elicit cases hold a standing marker as an alternation, because that fact
-    has no single word and it is the one that separates them from idle.
+    The idle → elicit case holds a standing marker as an alternation, because that fact has
+    no single word and it is the one that separates the case from idle.
     """
     for name, arms, _s, _k, _e, _r, carries, withholds, groups in _TRANCHE_C:
         assert len(arms) == 5, f"{name}: five arms"
