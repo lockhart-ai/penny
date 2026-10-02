@@ -9,10 +9,14 @@ machine landed after a whole turn.  They catch different things, and the canonic
 set holds both.
 
 The classifier's axis is the DECISION rather than the edge, which is why fourteen
-out-edges carry twenty cases: ``presented_edges`` structurally withholds every
-skill-gated state when the registry holds nothing, so the same edge drawn from a
-cold registry is a choice out of a narrower union than the same edge drawn from a
-populated one — a materially different decision, not an easier one.
+out-edges carry eighteen cases.  An edge carries a second case where the door the
+draw has to decline is a different door: ``presented_edges`` structurally withholds
+every skill-gated state when the registry holds nothing, so idle → elicit drawn
+from a cold registry declines LEARN where the same edge drawn from a populated one
+declines APPLY.  An empty registry under ordinary conversation is not such a case —
+it removes doors from the union the passing-mention hold already declines and adds
+none — and switching a running job's notifications is one decision whichever way
+the switch goes.
 
 A case NOT YET PORTED sweeps a ten-phrasing pool deterministically (sample i →
 ``pool[i % 10]``), so at N=10 one run covers every phrasing exactly once and the
@@ -523,7 +527,7 @@ def _standing_jobs(jobs: list[tuple[str, str]], notify: bool) -> Seeder:
     all notifying the same way.
 
     The pooled pair passes ``_JOB_PAGES``, one job per phrasing in phrasing order; the
-    ported pair passes its own two, because a cohort says ONE ask five ways and the job
+    ported case passes its own two, because a cohort says ONE ask five ways and the job
     it names has to be the same job on every arm.
 
     ``notify`` is the direction's own world: the ON pool asks to wake jobs that are
@@ -1307,12 +1311,13 @@ async def test_a_called_off_parked_request_falls_to_idle(
     cohort.measure(output_field(CLASSIFY_STATE))
 
 
-# ── The eight decisions inside covered edges (#2055 tranche B) ────────────────
+# ── The six decisions inside covered edges (#2055 tranche B) ──────────────────
 #
-# Tranche A took the six edges nothing had ever drawn in isolation.  These eight sit
-# INSIDE edges the file already covers, and each is its own decision rather than another
-# wording of one: what makes two cases two is that a correct sample for one would be wrong
-# for the other, or that the union the draw chooses from is a different union.
+# Tranche A took the six edges nothing had ever drawn in isolation.  These six sit INSIDE
+# edges the file already covers, and each is its own decision rather than another wording of
+# one: what makes two cases two is that a correct sample for one would be wrong for the
+# other, that the union the draw chooses from opens a different door to decline, or that
+# they are two asks reaching one end state.
 #
 # THE THREE CLAIM CATEGORIES ARE THE SECTION ABOVE'S, unchanged and not restated here:
 # STORE is empty because a micro-context is one call that writes to no store, and
@@ -1320,130 +1325,52 @@ async def test_a_called_off_parked_request_falls_to_idle(
 # supplied.  What is claimed is WHICH member the draw picked (``_drew``), plus — on a
 # skill-gated draw — WHICH routine it bound (``_bound``).
 #
-# THREE of the eight seed no routine at all, and it means two different things.  For the
-# two parked in IDLE it is the case itself: ``presented_edges`` withholds every skill-gated
+# TWO of the six seed no routine at all, and it means two different things.  For the one
+# parked in IDLE it is the case itself: ``presented_edges`` withholds every skill-gated
 # state when there are no candidates, so the union is ``{learn, elicit, idle}`` and the door
-# the draw has to decline is a different door from the one its populated sibling declines —
-# a materially different decision, not an easier one.  For the third, parked in ELICIT,
-# nothing is lost either way: elicit's out-edges carry no skill-gated state, and an empty
-# registry is simply the world a round parked there is in, since it is parked BECAUSE
-# nothing covered the ask.
-
-
-# ── idle → idle: ordinary conversation, with nothing in the registry ──────────
+# the draw has to decline is LEARN, where its populated siblings decline apply — a
+# materially different decision, not an easier one.  For the one parked in ELICIT nothing is
+# lost either way: elicit's out-edges carry no skill-gated state, and an empty registry is
+# simply the world a round parked there is in, since it is parked BECAUSE nothing covered
+# the ask.
 #
-# THE FACTS ARE CONSTANT: every wording reports the SAME thing — this morning's harbour
-# ferry, crowded again — and none of them asks for anything at all.  That is the entry
-# condition, and the case's world is the other half: with no routines seeded, apply and
-# request are structurally absent, so the only doors beside idle are the two that would
-# read ordinary conversation as a job to be set up or taught.
+# No case here holds IDLE against an empty registry.  That union is the passing-mention
+# hold's with two doors removed and none added, so a hold measured there declines nothing
+# the passing-mention case does not already decline.
 #
-# Every arm carries a RECURRENCE MARKER deliberately — "again" on four of them, "another" on
-# the fifth.  A message with nothing repeating in it holds idle for reasons that have nothing
-# to do with this decision; the temptation the case is about is a recurrence the user is
-# DESCRIBING rather than asking for, which is exactly what elicit's own condition is worded
-# to exclude.  Since it is the RECURRENCE that is constant and not any one word for it, the
-# probe holds it as an ALTERNATION and never as a literal — pinning "again" would have let
-# the fifth arm drift out of the case while the check stayed green.
-
-COLD_HOLD_CASE_ID = "classifier-holds-idle-on-chat-with-no-routines"
-
-_COLD_HOLD_ASK = "the ferry was packed again this morning, could barely get a seat"
-_COLD_HOLD_PHRASINGS = (
-    "packed ferry again this morning — i barely got a seat",
-    "the morning ferry was jammed again, hardly anywhere to sit",
-    "couldn't find a seat on the ferry this morning, packed again",
-    "another crowded ferry this morning, only just got a seat",
-)
-COLD_HOLD_ARMS = (_COLD_HOLD_ASK, *_COLD_HOLD_PHRASINGS)
-
-_COLD_HOLD_BEHAVIOUR = (
-    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the registry "
-    "holds no routines at all and the user is simply talking about their morning, Penny "
-    "holds the conversation in idle."
-)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_chat_holds_idle_with_nothing_in_the_registry(
-    classifier_eval: ClassifierEval, model: str
-) -> None:
-    """The cold idle → idle hold: ordinary conversation said five ways, against a registry
-    that offers nothing.
-
-    A DIFFERENT decision from the passing-mention hold, not an easier one: that case's world
-    puts apply and request on offer and the draw declines them, while this one's union is
-    ``{learn, elicit, idle}`` and the doors it declines are the two that read a message as a
-    job.  Neither subsumes the other, so both are kept.
-
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
-    idle binds no routine.
-    """
-    cohort = await classifier_eval(
-        case_id=COLD_HOLD_CASE_ID,
-        behaviour=_COLD_HOLD_BEHAVIOUR,
-        model=model,
-        state=ConversationState.IDLE,
-        ask=_COLD_HOLD_ASK,
-        also_asked=_COLD_HOLD_PHRASINGS,
-        samples_per_phrasing=3,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
-    # LANDED — the closed field of the typed result, asserted by equality
-    cohort.claim(
-        "state: the draw held the conversation in idle",
-        _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
-    )
-
-    # STORE — empty by construction; see the section comment.
-    # PROVENANCE — empty because it is closed upstream; see the section comment.
-
-    cohort.measure(output_field(CLASSIFY_STATE))
+# The notifications boundary is ONE case.  Changing how a running job behaves is the
+# decision, and the direction of the switch is a wording of it: the world, the union and the
+# landing are the same either way.
 
 
 # ── idle → idle: the notifications of a job that is already running ───────────
 #
-# The #1927 boundary, both directions, as two cases sharing one world-builder.  The
-# skill-gated doors are about STARTING a task, so an ask that changes how something already
-# set up behaves holds idle — and the resemblance is the whole difficulty: a watch-shaped
-# routine sits in Known skills looking like it covers the subject.
+# The #1927 boundary.  The skill-gated doors are about STARTING a task, so an ask that
+# changes how something already set up behaves holds idle — and the resemblance is the whole
+# difficulty: a watch-shaped routine sits in Known skills looking like it covers the subject.
 #
-# THE FACTS ARE CONSTANT across each case's arms: every wording names the SAME job — the
-# camera kit price watch — and asks for the SAME switch.  What moves between arms is the
-# verb around the word (turn on/off · switch · enable/disable · put back on), which is the
-# code-owner ruling the pooled pair records: the register is settled product vocabulary, so
-# every phrasing says NOTIFICATIONS and none is built on a bare start verb.
+# THE FACTS ARE CONSTANT across the arms: every wording names the SAME job — the camera kit
+# price watch — and asks for the SAME switch, off.  What moves between arms is the verb
+# around the word (turn off · switch off · disable · shut off), which is the code-owner
+# ruling the pooled pair records: the register is settled product vocabulary, so every
+# phrasing says NOTIFICATIONS.
 #
 # THE SUBJECT EXISTS AS A JOB, standing as a configured collection so the snapshot's
 # ``## Jobs already running`` section renders it — because a subject the section does NOT
 # list is a subject holding idle would be WRONG about: with nothing running by that name,
-# "turn its notifications on" has no existing thing to adjust.  A second job stands beside
+# "turn its notifications off" has no existing thing to adjust.  A second job stands beside
 # it, so resolving "the camera kit price watch" to a derived name is a read among rows
 # rather than the only row there is.
 #
-# EACH DIRECTION SEEDS ITS OWN NOTIFY STATE: the ON case asks to wake jobs that are SILENT,
-# the OFF case to silence jobs that are TALKING, so the rendered row carries the state its
-# ask is about changing.  A job whose notifications already matched the ask would be a
-# different case.
+# THE JOBS ARE SEEDED TALKING, so the rendered row carries the state the ask is about
+# changing.  A job whose notifications were already off would be a different case.
 
 _PORTED_JOBS = [
     (_PRICE_SKILL, "foxden.example/camera-kit"),
     (_CAFE_SKILL, "pinehollow.example/bakery"),
 ]
 
-NOTIFY_ON_CASE_ID = "classifier-holds-idle-when-a-running-jobs-notifications-are-switched-on"
 NOTIFY_OFF_CASE_ID = "classifier-holds-idle-when-a-running-jobs-notifications-are-switched-off"
-
-_NOTIFY_ON_ASK = "turn notifications on for the camera kit price watch"
-_NOTIFY_ON_PHRASINGS = (
-    "switch the camera kit price watch's notifications on",
-    "can you enable notifications for the camera kit price watch",
-    "notifications on for the camera kit price watch, please",
-    "put notifications back on for the camera kit price watch",
-)
-NOTIFY_ON_ARMS = (_NOTIFY_ON_ASK, *_NOTIFY_ON_PHRASINGS)
 
 _NOTIFY_OFF_ASK = "turn notifications off for the camera kit price watch"
 _NOTIFY_OFF_PHRASINGS = (
@@ -1454,24 +1381,18 @@ _NOTIFY_OFF_PHRASINGS = (
 )
 NOTIFY_OFF_ARMS = (_NOTIFY_OFF_ASK, *_NOTIFY_OFF_PHRASINGS)
 
-_NOTIFY_ON_BEHAVIOUR = (
-    f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the ask turns "
-    "notifications on for a job that is already running, Penny holds idle with the request "
-    "door on offer — changing how something already set up behaves is not asking to start it."
-)
-
 _NOTIFY_OFF_BEHAVIOUR = (
     f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when the ask turns "
-    "notifications off for a job that is already running, Penny holds idle with the request "
-    "door on offer — changing how something already set up behaves is not asking to start it."
+    "notifications off for a job that is already running, Penny holds the conversation in "
+    "idle."
 )
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_switching_a_running_jobs_notifications_on_draws_idle(
+async def test_switching_a_running_jobs_notifications_off_draws_idle(
     classifier_eval: ClassifierEval, model: str
 ) -> None:
-    """The adjustment boundary, ON direction: one running job's notifications asked for five
+    """The adjustment boundary: one running job's notifications switched off, asked for five
     ways, with the routine that plainly covers the subject standing in Known skills.
 
     The subject's coverage is load-bearing rather than decorative.  A subject no seeded
@@ -1479,48 +1400,6 @@ async def test_switching_a_running_jobs_notifications_on_draws_idle(
     score green while proving nothing about this boundary; with coverage granted, the only
     thing left that can hold these samples idle is that the ask CHANGES a job rather than
     starting one.
-
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
-    idle binds no routine.
-    """
-    cohort = await classifier_eval(
-        case_id=NOTIFY_ON_CASE_ID,
-        behaviour=_NOTIFY_ON_BEHAVIOUR,
-        model=model,
-        state=ConversationState.IDLE,
-        ask=_NOTIFY_ON_ASK,
-        also_asked=_NOTIFY_ON_PHRASINGS,
-        seed=_standing_jobs(_PORTED_JOBS, notify=False),
-        seed_skills=SEEDED_SKILLS,
-        samples_per_phrasing=3,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
-    # LANDED — the closed field of the typed result, asserted by equality
-    cohort.claim(
-        "state: the draw held the conversation in idle",
-        _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
-    )
-
-    # STORE — empty by construction; see the section comment.
-    # PROVENANCE — empty because it is closed upstream; see the section comment.
-
-    cohort.measure(output_field(CLASSIFY_STATE))
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_switching_a_running_jobs_notifications_off_draws_idle(
-    classifier_eval: ClassifierEval, model: str
-) -> None:
-    """The adjustment boundary, OFF direction: the same switch the other way, over a world
-    whose jobs are talking rather than silent.
-
-    Both directions are kept because they are not one claim.  The pooled pair's own
-    measurement is that the off-direction held 5 of 5 while the on-direction fell — only the
-    ON direction can be phrased as starting anything — so scoring one leaves the other
-    unmeasured, and the unmeasured one is the direction a boundary rewrite is most likely to
-    break.
 
     STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
     idle binds no routine.
@@ -1730,7 +1609,7 @@ MIXED_MESSAGE_ARMS = (_MIXED_MESSAGE_ASK, *_MIXED_MESSAGE_PHRASINGS)
 _MIXED_MESSAGE_BEHAVIOUR = (
     f"In the {PennyConstants.STATE_CLASSIFIER_AGENT_NAME} micro-context, when one message "
     "carries a chat preamble and a covered ask together, Penny draws apply and binds the "
-    "covering routine — the routine half wins."
+    "covering routine."
 )
 
 

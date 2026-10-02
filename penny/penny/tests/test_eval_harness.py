@@ -158,12 +158,10 @@ from penny.tests.eval.classifier.test_state_classifier import (
     _PRICE_SKILL,
     _TEACH_PAGE,
     COLD_ELICIT_ARMS,
-    COLD_HOLD_ARMS,
     COVERED_ASK_ARMS,
     ELICIT_CALLED_OFF_ARMS,
     MIXED_MESSAGE_ARMS,
     NOTIFY_OFF_ARMS,
-    NOTIFY_ON_ARMS,
     OFFER_ACCEPTED_ARMS,
     PASSING_MENTION_ARMS,
     REQUEST_CALLED_OFF_ARMS,
@@ -4031,23 +4029,21 @@ def test_every_parked_tranche_a_case_is_shown_what_its_round_waits_on(tmp_path) 
         )
 
 
-# ── The eight tranche-B classifier cases (#2055) ──────────────────────────────
+# ── The six tranche-B classifier cases (#2055) ────────────────────────────────
 #
-# The same table and the same three questions as tranche A's, over the eight decisions that
+# The same table and the same three questions as tranche A's, over the six decisions that
 # sit INSIDE edges the file already covers.  Two differences.  The second probe asserts a
-# negative direction as well: three of these cases seed NO routine, and for the two parked in
+# negative direction as well: two of these cases seed NO routine, and for the one parked in
 # idle that withholding IS the case, so neither skill-gated door may be on offer.  And a row
 # can hold a fact as an ALTERNATION rather than as a literal — each group is a set of markers
 # of which every arm must carry at least one.
 #
 # The alternation exists because some facts a case holds constant have no single word.  The
-# cold hold's fact is that the thing being described RECURS, which four arms say with "again"
-# and one with "another"; the wrong-routine case's two facts are that the routine was
-# rejected and that the task is still wanted, and the whole point of its arms is that neither
-# is said the same way twice.  Pinning any one wording as a literal there would do the damage
-# the case exists to avoid: it would hold the arms to a phrase the shipped transition
-# condition already spells, so a draw that had learned the phrase would score exactly like
-# one that read the situation.
+# wrong-routine case's two facts are that the routine was rejected and that the task is still
+# wanted, and the whole point of its arms is that neither is said the same way twice.
+# Pinning any one wording as a literal there would do the damage the case exists to avoid: it
+# would hold the arms to a phrase the shipped transition condition already spells, so a draw
+# that had learned the phrase would score exactly like one that read the situation.
 _TrancheB = tuple[
     str,
     tuple[str, ...],
@@ -4060,28 +4056,6 @@ _TrancheB = tuple[
     tuple[tuple[str, ...], ...],
 ]
 _TRANCHE_B: list[_TrancheB] = [
-    (
-        "cold-hold",
-        COLD_HOLD_ARMS,
-        ConversationState.IDLE,
-        [],
-        ConversationState.IDLE,
-        None,
-        ("ferry", "morning"),
-        ("watch", "every", "teach", ".example"),
-        (("again", "another"),),
-    ),
-    (
-        "notify-on",
-        NOTIFY_ON_ARMS,
-        ConversationState.IDLE,
-        SEEDED_SKILLS,
-        ConversationState.IDLE,
-        None,
-        ("notifications", "camera kit price watch"),
-        ("off", "disable", "set up", ".example"),
-        (),
-    ),
     (
         "notify-off",
         NOTIFY_OFF_ARMS,
@@ -4163,20 +4137,19 @@ def test_every_tranche_b_arm_set_says_one_decision_five_ways() -> None:
     behaviours as the instability of one.
 
     A fact with no single word is a group instead, and every arm must match one member of
-    every group.  That is not a weaker check, it is the check the case needs: the cold hold's
-    constant is that the thing RECURS ("again" ×4, "another" ×1), and the wrong-routine
-    case's two constants are the rejection and the task still being wanted, each said a
-    different way on every arm — deliberately, because the shipped transition condition spells
-    "still want the task done" and five arms ending in that clause would score a draw that
-    matched the phrase exactly like one that read the situation.
+    every group.  That is not a weaker check, it is the check the case needs: the
+    wrong-routine case's two constants are the rejection and the task still being wanted, each
+    said a different way on every arm — deliberately, because the shipped transition condition
+    spells "still want the task done" and five arms ending in that clause would score a draw
+    that matched the phrase exactly like one that read the situation.
 
     The withheld tokens keep the arms on the decision the case names, and each one is the
     neighbouring edge it would otherwise slide onto: steps in the cold-elicit arms would be
     idle → learn, an address in the still-clarifying arms would answer the teach question, a
-    call-off in the wrong-routine arms would be the break-out to idle, and the notify pair's
-    two directions must not carry each other's switch.  The wrong-routine case withholds one
-    more thing — the condition's own phrase — so the fixture cannot hand back the wording the
-    draw is being scored on recognising.
+    call-off in the wrong-routine arms would be the break-out to idle, and the notify case's
+    arms must not carry the opposite switch.  The wrong-routine case withholds one more
+    thing — the condition's own phrase — so the fixture cannot hand back the wording the draw
+    is being scored on recognising.
     """
     for name, arms, _s, _k, _e, _r, carries, withholds, groups in _TRANCHE_B:
         assert len(arms) == 5, f"{name}: five arms"
@@ -4199,11 +4172,11 @@ def test_every_tranche_b_world_offers_the_door_its_case_claims(tmp_path) -> None
 
     Asserted from the PRODUCTION snapshot builder, so what this calls offered is what the
     draw will be offered.  The second half is asserted for every case that seeds no routine,
-    and for the two parked in idle it is the case's whole point: ``presented_edges``
-    withholds every skill-gated state when the registry holds no candidates, so those two
-    choose from ``{learn, elicit, idle}``, which is a materially different decision from the
-    same edge drawn against a populated registry.  A case seeding nothing whose snapshot
-    still offered apply would not be that case at all.
+    and for the one parked in idle it is the case's whole point: ``presented_edges``
+    withholds every skill-gated state when the registry holds no candidates, so it chooses
+    from ``{learn, elicit, idle}``, which is a materially different decision from the same
+    edge drawn against a populated registry.  A case seeding nothing whose snapshot still
+    offered apply would not be that case at all.
     """
     for index, (name, arms, state, skills, expected, _r, _c, _w, _g) in enumerate(_TRANCHE_B):
         db = migrated_db(str(tmp_path / f"tranche-b-{index}.db"))
@@ -4238,36 +4211,33 @@ def test_every_gated_tranche_b_case_offers_the_routine_it_claims(tmp_path) -> No
         assert len(offered) > 1, f"{name}: naming one of one is not a choice — {offered}"
 
 
-@pytest.mark.parametrize("notify", [True, False])
-def test_the_notify_pairs_world_really_stands_its_job_up(tmp_path, notify: bool) -> None:
-    """The job the notify pair's ask names is really running, in the state its ask is about
+def test_the_notify_cases_world_really_stands_its_job_up(tmp_path) -> None:
+    """The job the notify case's ask names is really running, in the state its ask is about
     changing (#2055/#1927).
 
-    This is the half of that pair's world no arm can state.  A message that says "turn
-    notifications on for the camera kit price watch" refers to something the SKILL registry
+    This is the half of that case's world no arm can state.  A message that says "turn
+    notifications off for the camera kit price watch" refers to something the SKILL registry
     says nothing about, and the measured leak is the reader concluding from that silence
     that nothing is running — so a case whose job never reached ``## Jobs already running``
     would be scoring the hold against a world where holding is wrong, and would report a
     model failure that is the fixture's.
 
     The row is read back off the production snapshot builder, which selects configured
-    collections exactly as the dispatcher does, and its NOTIFY flag is asserted in the
-    direction the case seeds: the ON case wakes jobs that are silent and the OFF case
-    silences jobs that are talking, so a job already matching its own ask would be a
-    different case.
+    collections exactly as the dispatcher does, and its NOTIFY flag is asserted ON: the ask
+    silences a job that is talking, so a job already silent would be a different case.
     """
-    db = migrated_db(str(tmp_path / f"tranche-b-jobs-{notify}.db"))
+    db = migrated_db(str(tmp_path / "tranche-b-jobs.db"))
     for draft in SEEDED_SKILLS:
         db.skills.upsert(draft, author="probe")
-    _standing_jobs(_PORTED_JOBS, notify=notify)(db)
+    _standing_jobs(_PORTED_JOBS, notify=True)(db)
 
-    arms = NOTIFY_OFF_ARMS if notify else NOTIFY_ON_ARMS
-    jobs = build_snapshot(db, state=ConversationState.IDLE, message=arms[0]).standing_jobs
+    message = NOTIFY_OFF_ARMS[0]
+    jobs = build_snapshot(db, state=ConversationState.IDLE, message=message).standing_jobs
     named = derive_collection_name(_PRICE_SKILL, [_PORTED_JOBS[0][1]])
     running = {job.name: job for job in jobs}
     assert named in running, f"the job the ask names must be listed: {sorted(running)}"
     assert running[named].skill_name == _PRICE_SKILL, "and it must run the covering routine"
-    assert running[named].notify is notify, "in the state its ask is about changing"
+    assert running[named].notify is True, "in the state its ask is about changing"
     assert len(jobs) > 1, f"and beside at least one other, or resolving it is no read: {jobs}"
 
 
