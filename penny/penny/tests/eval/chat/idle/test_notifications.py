@@ -1,33 +1,36 @@
-"""Muting: two cases (#2008, tranche 3).
+"""Muting and unmuting: three cases (#2008, tranche 3; #2215).
 
-Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
+The contract is `docs/eval-case-design.md`.
 
-**Two cases, because one setup cannot produce both directions.**  A case is one setup, one run
-and one set of assertions (#2100), and the harm the negative direction catches is *the switch
-moving when nobody asked* — which in a world where somebody DID ask is the correct answer.
-There is no run that exhibits both, so the two asks get two setups.
+**Three cases, because one setup cannot produce more than one of them.**  A case is one setup,
+one run and one set of assertions (#2100).  The harm the negative direction catches is *the
+switch moving when nobody asked* — which in a world where somebody DID ask is the correct
+answer — and the two directions of an ask start from opposite worlds.
 
-| direction | case | what the run must leave |
-|---|---|---|
-| asked for | ``explicit-mute-request-mutes`` | notifications muted |
-| the topic alone | ``notifications-no-fire`` | notifications still on, as the turn found them |
+| direction | case | the world it starts in | what the run must leave |
+|---|---|---|---|
+| asked to mute | ``explicit-mute-request-mutes`` | notifications on | notifications muted |
+| asked to unmute | ``explicit-unmute-request-unmutes`` | notifications MUTED | notifications on |
+| the topic alone | ``notifications-no-fire`` | notifications on | still on, as it found them |
 
-**Muting and unmuting are the same sentence in two entry conditions** — an unmuted world and a
-muted one — so one of them survives, and the MUTE direction strictly dominates: its end state
-cannot be answered by the seed.  *The user is muted afterwards* is false of a fresh database by
-construction, so a sample that did nothing fails it; *the user is no longer muted* is TRUE of an
-unseeded world, so the unmute case's headline rests entirely on its own seed holding — the
-failure its source file guards against in as many words.  A claim that cannot pass without the
-turn acting beats one that can, so the unmute direction is not a case here.
+**The unmute case stands on its SEED, and the premise holds the seed.**  *The user is muted
+afterwards* is false of a fresh database, so a mute sample that did nothing fails it with no
+help from anyone.  *The user is not muted afterwards* is TRUE of a fresh database, so that
+claim says something only on a world that started muted — and only when the model was told so.
+Its probe therefore asserts both halves before the turn runs: the mute row is in the store,
+and the self-state header states the muted line.  A seed that stopped holding fails there,
+naming what it lost, rather than scoring fifteen samples green for a turn that had nothing to
+undo.
 
 **Dispatch stands on the tool descriptions ALONE.**  Migration 0076 seeded a "Mute or unmute
 notifications" skill whose numbered steps taught this routing; 0092 deleted every seeded rule
-entry and 0097 the collection itself, and 0108 leaves nothing pre-seeded at all — so this case
-seeds no skill, the registry the turn runs against is empty, and what it measures is whether
-``NotificationsMuteTool`` is reachable from an explicit ask with no recipe pointing at it.  The
-seeded world is the production cold start.
+entry and 0097 the collection itself, and 0108 leaves nothing pre-seeded at all — so no case
+here seeds a skill, the registry the turn runs against is empty, and what the two asks measure
+is whether ``NotificationsMuteTool`` and ``NotificationsUnmuteTool`` are reachable from an
+explicit ask with no recipe pointing at them.  The mute and no-fire worlds are the production
+cold start; the unmute world is that cold start with the one switch thrown.
 
-**Neither case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds
+**No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds
 no collection, so the one prior state a preservation claim can read is the switch itself —
 which is the no-fire case's whole claim.  Whether a turn also wrote or stood something up is
 its own call, measured in the entries stored and the tool sequence.
@@ -49,6 +52,7 @@ import pytest
 
 from penny.agents.self_state import SelfStateHeader
 from penny.conversation_machine import ConversationState
+from penny.database import Database
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import (
@@ -79,6 +83,7 @@ _MUTE = "notifications_mute"
 _UNMUTE = "notifications_unmute"
 
 _MUTES = "explicit-mute-request-mutes"
+_UNMUTES = "explicit-unmute-request-unmutes"
 _NO_FIRE = "notifications-no-fire"
 
 # The world every arm is answered against.  Every field is EMPTY, and each is a report rather
@@ -178,6 +183,101 @@ async def test_an_explicit_mute_request_mutes_notifications(
     # TOOL_SEQUENCE is measured and never asserted — the call is a route, and which verb reached
     # the switch is hers.  What a divergence here means is a sample that took a different path to
     # the same end state, which is a sample worth opening rather than a claim worth making.
+    cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
+
+
+# ═══ asked to unmute ═════════════════════════════════════════════════════════
+#
+# The same ask in the other direction, from the other world: notifications are MUTED when the
+# turn begins, and the user asks for them back.
+
+# Empty in every field, for the mute world's reasons: no page answers an ask about her own
+# switch, the ask keeps and excludes nothing, and "done — they're back on" is a complete answer.
+_UNMUTE_WORLD = World(name=_UNMUTES, pages=(), keeps=(), excludes=())
+
+# The mute case's five wordings with the direction turned round, so the pair differs in the
+# entry condition and the direction asked for and in nothing else.
+_UNMUTE_ASK = "please unmute notifications"
+_UNMUTE_ALSO_PHRASED = (
+    "unmute notifications for me",
+    "can you unmute notifications?",
+    "go ahead and unmute notifications",
+    "i'd like notifications unmuted",
+)
+
+_UNMUTE_BEHAVIOUR = (
+    "In the chat agent, when notifications are muted and the user asks for them to be "
+    "unmuted, Penny unmutes them."
+)
+
+
+def seed_muted(db: Database) -> None:
+    """The unmute case's entry condition: proactive notifications muted for the user, through
+    the store's own write — the row ``notifications_mute`` leaves."""
+    db.users.set_muted(TEST_SENDER)
+
+
+def assert_unmute_world(penny: Penny) -> None:
+    """The world the unmute case is answered in, asserted out loud before the turn runs.
+
+    The mute world's three preconditions with the switch the other way: the chat surface
+    carries the two notification tools; the registry holds no collection; and notifications
+    are MUTED — in the store, because "not muted afterwards" is true of a database nobody
+    muted and the claim would be answered by the absence of a seed, and in the header the
+    model reads, because a turn that was never told about a mute has nothing to lift."""
+    assert_dispatch_world(penny, _UNMUTES, [_MUTE, _UNMUTE])
+    assert penny.db.users.is_muted(TEST_SENDER), (
+        f"{_UNMUTES}: the user must start MUTED, or the claim that they are not muted "
+        "afterwards is true of a world nobody seeded"
+    )
+    rendered = SelfStateHeader(penny.db, TEST_SENDER).render()
+    assert SelfStateHeader.NOTIFICATIONS_MUTED in rendered, (
+        f"{_UNMUTES}: the header must state {SelfStateHeader.NOTIFICATIONS_MUTED!r} — the "
+        f"turn would otherwise be asked to lift a mute nothing told it about:\n{rendered}"
+    )
+
+
+def _notifications_are_on(sample: SampleObservation, _world: World) -> Answer:
+    """Proactive notifications are on for the user afterwards — the mute row is gone.
+
+    A violating sample is nameable: one that says they are back on and leaves the row in
+    place, so the jobs stay silent while the user has been told otherwise."""
+    return not sample.muted, "notifications are still muted, whatever the reply said"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_an_explicit_unmute_request_unmutes_notifications(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A muted world, a header that says so, and a request for notifications to be unmuted."""
+    cohort: Cohort = await chat_eval(
+        case_id=_UNMUTES,
+        behaviour=_UNMUTE_BEHAVIOUR,
+        area=Area.NOTIFICATIONS,
+        model=model,
+        seed=seed_muted,
+        prepare=assert_unmute_world,
+        world=_UNMUTE_WORLD,
+        ask=_UNMUTE_ASK,
+        also_phrased=_UNMUTE_ALSO_PHRASED,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+        timeout=240.0,
+    )
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the switch the ask named, and the only prior state this world holds.  It is a
+    # claim rather than a restatement of the seed because ``assert_unmute_world`` holds the
+    # seed: every sample this is answered about began muted and was told so.
+    cohort.claim(
+        "state: notifications are on for the user", _notifications_are_on, SpecCategory.STORE
+    )
+
+    # PROVENANCE — the REPLY half; the STORE half is absent for the mute case's reason.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
     cohort.measure(TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 

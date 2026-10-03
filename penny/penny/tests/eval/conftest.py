@@ -104,6 +104,7 @@ from penny.text_validity import (
     is_degenerate_run,
     is_degenerate_tool_name,
 )
+from penny.tools.collection_instantiation import skill_params
 from penny.tools.micro_context import (
     MicroContext,
     MicroContextResult,
@@ -2499,7 +2500,11 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
     what moved and never where it landed, so a claim naming a value has to read the row.
 
     ``expires`` beside them is whether the row carries an end condition at all — a TERM a turn
-    that stood a job up committed to, read as a named column for the same reason."""
+    that stood a job up committed to, read as a named column for the same reason.
+
+    ``bound_values`` is the row's routine provenance, through the one reader the tool that
+    rebinds it uses (``skill_params``): the ledger records no prior for it, so which values a
+    job is pointed at is a read of the row."""
     return [
         eval_cohort.MechanismRecord(
             name=row.name,
@@ -2514,6 +2519,7 @@ def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.Mecha
             expires_at=row.expires_at,
             max_runs=row.max_runs,
             created_at=row.created_at,
+            bound_values={name: str(value) for name, value in skill_params(row).items()},
         )
         for row in db.memories.list_all()
         if row.type == MemoryType.COLLECTION
