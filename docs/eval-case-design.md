@@ -94,6 +94,15 @@ the fabrication launder itself.
 resolves against the world *that sample* was given. A model that ignores the page and emits a
 plausible value fails the `STORE` claim on whichever world it was handed.
 
+**A sample has its own clock too, and it does not read the day the run was made.** Every sample
+starts at one declared instant — a Wednesday at 14:00 where the eval user is
+(`utils/clock.py`) — and keeps time from there. The time the model is told, the instant a
+relative word in an ask is counted from ("tonight", "sunday night", "tomorrow"), the moment a
+job's rule is anchored at, and the turn time a claim reads are all that clock, so a claim
+about *when* resolves the same way at any hour of any day the run is made. Write an ask's
+relative time against that instant, and derive a claim's expected time from the sample's own
+turn (`SampleObservation.turn_at`), never from the machine's clock.
+
 **A claim read out of model prose is noisier than a structural one — know this before you write
 one.** Measured across two runs of identical code, on the same commit and the same model: a
 reply-content rate moved by **3 samples** where every structural claim moved by **at most 1** (over
@@ -728,6 +737,7 @@ The numbers on the PR inform the review; they are not its verdict.
 | `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the ground a sample is GIVEN: the `pages` a browse returns, the `stores` already in the store when the turn begins and the `mailbox` the email tools answer from (`utils/mailbox.py`), walked together as `sources`, plus the `keeps` token set per source, the `excludes`, and the `answers` the reply must state; carried per **arm** (`cohort.Arm`), not per cohort |
+| `penny/penny/tests/eval/utils/clock.py` | the clock a sample runs on — `PinnedClock`, and the instant every sample starts at |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
 | `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |

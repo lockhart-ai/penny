@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
 
 import numpy as np
 from sqlmodel import Session, select
 
+from penny.clock import Clock
 from penny.database.memory import _similarity as sim
 from penny.database.models import Skill
 from penny.database.skills import SkillDraft, SkillParameter, SkillStep, slug_skill_name
@@ -46,8 +46,9 @@ def parameters_to_json(parameters: list[SkillParameter]) -> str:
 class SkillStore:
     """Registry for skills — upsert-by-name, get, list.  ``db.skills``."""
 
-    def __init__(self, engine) -> None:
+    def __init__(self, engine, clock: Clock | None = None) -> None:
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -68,7 +69,7 @@ class SkillStore:
         rendered text, so a re-teach never changes a past instantiation).
         """
         name = slug_skill_name(draft.name)
-        now = datetime.now(UTC)
+        now = self._clock.now()
         with self._session() as session:
             existing = session.get(Skill, name)
             replaced = existing is not None

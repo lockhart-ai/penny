@@ -1132,7 +1132,7 @@ class BrowserChannel(MessageChannel):
             existing = session.get(RuntimeConfig, req.key)
             if existing:
                 existing.value = str(validated)
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = self._db.clock.now()
                 session.add(existing)
             else:
                 session.add(
@@ -1140,7 +1140,7 @@ class BrowserChannel(MessageChannel):
                         key=req.key,
                         value=str(validated),
                         description=param.description,
-                        updated_at=datetime.utcnow(),
+                        updated_at=self._db.clock.now(),
                     )
                 )
             session.commit()

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from sqlmodel import Session, select
 
+from penny.clock import Clock
 from penny.database.models import DomainPermission
 
 logger = logging.getLogger(__name__)
@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 class DomainPermissionStore:
     """Manages domain access permissions shared across all browser addons."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -59,14 +60,17 @@ class DomainPermissionStore:
             ).first()
             if existing:
                 existing.permission = permission
-                existing.updated_at = datetime.now(UTC)
+                existing.updated_at = self._clock.now()
                 session.add(existing)
                 session.commit()
                 session.refresh(existing)
                 logger.info("Updated domain permission: %s → %s", domain, permission)
                 return existing
 
-            row = DomainPermission(domain=domain, permission=permission)
+            now = self._clock.now()
+            row = DomainPermission(
+                domain=domain, permission=permission, created_at=now, updated_at=now
+            )
             session.add(row)
             session.commit()
             session.refresh(row)

@@ -20,6 +20,7 @@ import logging
 from pydantic import BaseModel, Field
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.constants import MutationAction, MutationActor, MutationEntityType
 from penny.database.models import MutationEvent
 from penny.datetime_utils import format_log_timestamp
@@ -166,8 +167,9 @@ def mutation_change_summary(event: MutationEvent) -> str:
 class MutationStore:
     """Read/write access to the ``mutation_event`` ledger."""
 
-    def __init__(self, engine) -> None:
+    def __init__(self, engine, clock: Clock | None = None) -> None:
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -197,6 +199,7 @@ class MutationStore:
                         actor=actor.value,
                         run_id=run_id,
                         detail=detail_json,
+                        created_at=self._clock.now(),
                     )
                 )
                 session.commit()

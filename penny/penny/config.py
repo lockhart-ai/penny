@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
+from penny.clock import Clock
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 
 if TYPE_CHECKING:
@@ -308,6 +309,11 @@ class Config:
 
     # Runtime-configurable params (DB override → env override → default)
     runtime: RuntimeParams = field(default_factory=RuntimeParams)
+
+    # The clock this process reads the time from.  The real one unless something
+    # constructing the config supplies another; ``Penny`` hands it to the database, and
+    # everything that asks what time it is reads it there (``penny/clock.py``).
+    clock: Clock = field(default_factory=Clock)
 
     @classmethod
     def load(cls, db: Database | None = None) -> Config:

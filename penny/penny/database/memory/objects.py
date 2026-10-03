@@ -36,7 +36,7 @@ import json
 import logging
 import random
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 import numpy as np
@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field, computed_field
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.config_params import RuntimeParams
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
@@ -88,10 +89,15 @@ class Memory:
     so a subclass that doesn't serve that shape refuses with a readable message.
     """
 
-    def __init__(self, row: MemoryRow, engine, *, on_changed=None) -> None:
+    def __init__(
+        self, row: MemoryRow, engine, *, on_changed=None, clock: Clock | None = None
+    ) -> None:
         self.row = row
         self._engine = engine
         self._on_changed = on_changed
+        # The clock entries are stamped from and a recency window is counted back from
+        # — the store's own, handed down by the factory that builds this object.
+        self._clock = clock if clock is not None else Clock()
 
     # ── Metadata passthroughs ────────────────────────────────────────────────
 
@@ -226,7 +232,7 @@ class Memory:
         return self._rows_since(cursor, cap)
 
     def read_recent(self, window_seconds: int, cap: int | None = None) -> list[MemoryEntry]:
-        cutoff = datetime.fromtimestamp(datetime.now(UTC).timestamp() - window_seconds, tz=UTC)
+        cutoff = self._clock.now() - timedelta(seconds=window_seconds)
         return self._rows_since(cutoff, cap)
 
     def read_similar(
@@ -347,8 +353,9 @@ class Collection(Memory):
         runtime: RuntimeParams,
         on_changed=None,
         journal: CycleJournal | None = None,
+        clock: Clock | None = None,
     ) -> None:
-        super().__init__(row, engine, on_changed=on_changed)
+        super().__init__(row, engine, on_changed=on_changed, clock=clock)
         self._runtime = runtime
         # The bound collector cycle's UNDO journal (#1936), and ``None`` for every
         # ordinary caller — chat included, whose turn IS its conclusion.  With one, each
@@ -658,7 +665,7 @@ class Collection(Memory):
             author=author,
             key_embedding=sim.maybe_serialize(entry.key_embedding),
             content_embedding=sim.maybe_serialize(entry.content_embedding),
-            created_at=datetime.now(UTC),
+            created_at=self._clock.now(),
             created_by_run_id=run_id,
             last_written_by_run_id=run_id,
         )
@@ -690,7 +697,7 @@ class Log(Memory):
                     author=author,
                     key_embedding=None,
                     content_embedding=sim.maybe_serialize(entry.content_embedding),
-                    created_at=datetime.now(UTC),
+                    created_at=self._clock.now(),
                     # Log entries are immutable (append-only), so the creating run
                     # is also the last writer (#1560).
                     created_by_run_id=run_id,
@@ -742,8 +749,16 @@ class MessageLogMemory(Log):
     # ``3. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: …``.
     SENT_BY_MARKER = "(sent by {mechanism}) "
 
-    def __init__(self, row: MemoryRow, engine, *, direction: str, on_changed=None) -> None:
-        super().__init__(row, engine, on_changed=on_changed)
+    def __init__(
+        self,
+        row: MemoryRow,
+        engine,
+        *,
+        direction: str,
+        on_changed=None,
+        clock: Clock | None = None,
+    ) -> None:
+        super().__init__(row, engine, on_changed=on_changed, clock=clock)
         self._direction = direction
         self._author = (
             PennyConstants.MessageAuthor.USER

@@ -504,9 +504,7 @@ _EXPIRES_TEACHING = (
 )
 
 
-def parse_expires_at(
-    value: str, timezone_name: str | None, now: datetime | None = None
-) -> datetime | None:
+def parse_expires_at(value: str, timezone_name: str | None, now: datetime) -> datetime | None:
     """Parse the ``expires_at`` end condition into a UTC-aware datetime (#1857), or
     ``None`` when the words state no end date at all (#1944).
 
@@ -524,8 +522,6 @@ def parse_expires_at(
     surface that shows one.  The caller states what happened via
     :func:`sentinel_expiry_note`; it is never silent.
     """
-    if now is None:
-        now = datetime.now(UTC)
     parsed = _parse_iso_datetime(value)
     if parsed is None:
         parsed = _parse_spoken_datetime(value, timezone_name, now)

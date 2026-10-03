@@ -103,8 +103,13 @@ def current_datetime_line(db: Database) -> str:
     from the same wall clock, in the user's profile timezone (never a bare UTC
     ``now()``).  Falls back to UTC on a fresh install / unknown zone, exactly like
     the envelope.
+
+    The instant is the database's own clock (``db.clock``), the one its rows are
+    stamped from — so the time the model is told and the time Penny records and
+    counts from are one reading.
     """
-    stamp = datetime.now(user_timezone(db)).strftime(PennyConstants.CURRENT_DATETIME_FORMAT)
+    local = db.clock.now().astimezone(user_timezone(db))
+    stamp = local.strftime(PennyConstants.CURRENT_DATETIME_FORMAT)
     return f"{PennyConstants.CURRENT_DATETIME_PREFIX}{stamp}"
 
 

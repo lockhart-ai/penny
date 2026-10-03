@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine
 
+from penny.clock import Clock
 from penny.config_params import RuntimeParams
 from penny.database.cursor_store import CursorStore
 from penny.database.device_store import DeviceStore
@@ -42,34 +43,44 @@ class Database:
         users: UserInfo, sender queries, mute state
     """
 
-    def __init__(self, db_path: str, runtime: RuntimeParams | None = None):
+    def __init__(
+        self,
+        db_path: str,
+        runtime: RuntimeParams | None = None,
+        clock: Clock | None = None,
+    ):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(f"sqlite:///{db_path}")
+        # The one clock this database's rows are stamped from, and the one every
+        # reader holding the database asks the time of (``penny/clock.py``).  Each store
+        # is handed the same one, so no two tables can disagree about when it is.
+        self.clock = clock if clock is not None else Clock()
 
-        self.cursors = CursorStore(self.engine)
-        self.devices = DeviceStore(self.engine)
-        self.domain_permissions = DomainPermissionStore(self.engine)
-        self.email_rules = EmailRuleStore(self.engine)
-        self.ios = IosStore(self.engine)
-        self.machine = MachineStore(self.engine)
-        self.media = MediaStore(self.engine)
+        self.cursors = CursorStore(self.engine, self.clock)
+        self.devices = DeviceStore(self.engine, self.clock)
+        self.domain_permissions = DomainPermissionStore(self.engine, self.clock)
+        self.email_rules = EmailRuleStore(self.engine, self.clock)
+        self.ios = IosStore(self.engine, self.clock)
+        self.machine = MachineStore(self.engine, self.clock)
+        self.media = MediaStore(self.engine, self.clock)
         # The registry-mutation ledger (#1560) and the send queue (#1634) are both
         # constructed before ``memories`` so the memory store can record
         # create/update/archive events through the ledger AND cancel a collection's
         # pending queued sends when it's archived (the chokepoint that makes
         # teardown silent through the queue).
-        self.mutations = MutationStore(self.engine)
-        self.send_queue = SendQueueStore(self.engine)
+        self.mutations = MutationStore(self.engine, self.clock)
+        self.send_queue = SendQueueStore(self.engine, self.clock)
         self.memories = MemoryStore(
             self.engine,
             runtime=runtime,
             mutations=self.mutations,
             send_queue=self.send_queue,
+            clock=self.clock,
         )
-        self.messages = MessageStore(self.engine)
-        self.skills = SkillStore(self.engine)
-        self.users = UserStore(self.engine)
+        self.messages = MessageStore(self.engine, self.clock)
+        self.skills = SkillStore(self.engine, self.clock)
+        self.users = UserStore(self.engine, self.clock)
 
         logger.info("Database initialized: %s", db_path)
 

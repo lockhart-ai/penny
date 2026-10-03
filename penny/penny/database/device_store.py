@@ -4,6 +4,7 @@ import logging
 
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.database.models import Device
 
 logger = logging.getLogger(__name__)
@@ -12,8 +13,9 @@ logger = logging.getLogger(__name__)
 class DeviceStore:
     """Manages Device records — one user, many devices."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -72,6 +74,7 @@ class DeviceStore:
                 identifier=identifier,
                 label=label,
                 is_default=is_default,
+                created_at=self._clock.now(),
             )
             session.add(device)
             session.commit()

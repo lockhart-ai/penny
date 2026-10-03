@@ -133,7 +133,7 @@ class SendQueueDrainer:
         latest = self._latest_send_time()
         if latest is None:
             return True
-        elapsed = (_naive_utc_now() - _to_naive(latest)).total_seconds()
+        elapsed = (_to_naive(self._db.clock.now()) - _to_naive(latest)).total_seconds()
         return elapsed >= self._config.runtime.SEND_COOLDOWN_SECONDS
 
     def _latest_send_time(self) -> datetime | None:
@@ -162,12 +162,6 @@ class SendQueueDrainer:
         log = self._db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG)
         entries = log.newest_entries(k=1) if log is not None else []
         return entries[0].created_at if entries else None
-
-
-def _naive_utc_now() -> datetime:
-    """Naive UTC ``now`` to compare against ``MemoryEntry.created_at``,
-    which round-trips through SQLite as a tz-naive value."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _to_naive(value: datetime) -> datetime:

@@ -674,8 +674,9 @@ def resolve_expiry(db: Database, schedule: Schedule, expires_at: str | None) -> 
 
     A schedule's ``UNTIL=`` is lifted onto the same column ``expires_at`` sets, so
     stating both is stating the answer twice — refused rather than silently resolved in
-    one direction.  Words are read in the user's own timezone, which is why this takes
-    the database: the zone is fetched here and passed to the pure parser.
+    one direction.  Words are read in the user's own timezone and counted from the
+    database's own clock, which is why this takes the database: the zone and the instant
+    are fetched here and passed to the pure parser.
 
     ``None`` means the collection has no end condition — either none was stated, or the
     one stated was a far-future sentinel the parser read as "forever" (#1944), which the
@@ -685,7 +686,7 @@ def resolve_expiry(db: Database, schedule: Schedule, expires_at: str | None) -> 
         return schedule.expires_at
     if schedule.expires_at is not None:
         raise ScheduleError(_CONFLICTING_END_CONDITION.format(expires=expires_at))
-    return parse_expires_at(expires_at, user_timezone_name(db))
+    return parse_expires_at(expires_at, user_timezone_name(db), db.clock.now())
 
 
 # A schedule / notify / expiry on a skill-less create: an inert collection has no job
@@ -2372,7 +2373,7 @@ class CollectionUpdateTool(MemoryTool):
             return resolve_expiry(self._db, schedule, expires_at)
         if expires_at is None:
             return None
-        return parse_expires_at(expires_at, user_timezone_name(self._db))
+        return parse_expires_at(expires_at, user_timezone_name(self._db), self._db.clock.now())
 
     async def _edit_metadata(
         self, args: CollectionUpdateArgs, schedule: Schedule | None, expires_at: datetime | None

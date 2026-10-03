@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import NamedTuple
 from urllib.parse import urlparse
 
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from similarity.embeddings import find_similar
 from sqlmodel import Session, select
 
+from penny.clock import Clock
 from penny.constants import PennyConstants
 from penny.database.models import Media
 from penny.llm.embeddings import deserialize_embedding
@@ -69,8 +70,9 @@ class MediaStore:
     is delivered by id via ``send_response(media_ids=...)`` — but generated rows
     are stored with an embedding, so they join this pool for future replies."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -91,7 +93,7 @@ class MediaStore:
                 source_url=source_url,
                 title=title,
                 embedding=embedding,
-                created_at=datetime.now(UTC),
+                created_at=self._clock.now(),
             )
             session.add(row)
             session.commit()

@@ -87,7 +87,7 @@ class Penny:
         materialise the schema. Migrations then apply on top — including
         data-insert migrations like 0026 that seed system log memories.
         """
-        self.db = Database(config.db_path, runtime=config.runtime)
+        self.db = Database(config.db_path, runtime=config.runtime, clock=config.clock)
         self.db.create_tables()
         migrate(config.db_path)
         self.db.analyze()

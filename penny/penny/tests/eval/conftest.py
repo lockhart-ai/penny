@@ -96,6 +96,7 @@ from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import FailureCause
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
+from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE, PinnedClock
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
 from penny.tests.eval.utils.mailbox import CannedEmail, CannedMailbox
 from penny.tests.eval.utils.worlds import World
@@ -537,6 +538,11 @@ def _real_model_config(
     against a remote OpenAI-compatible provider (e.g. OpenRouter), falling back
     to local defaults.  ``signal_api_url`` binds to the sample's own mock server
     so samples never share a channel.
+
+    The sample's CLOCK is set here too, on the one seam every runner builds its config
+    through: a ``PinnedClock`` that starts at the suite's declared instant, so what a
+    sample is told the time is — and everything it records and counts from — does not
+    depend on when the run is made (``utils/clock.py``, #2207).
     """
     return make_config(
         signal_api_url=signal_api_url,
@@ -549,6 +555,7 @@ def _real_model_config(
         llm_retry_delay=_EVAL_LLM_RETRY_DELAY,
         llm_timeout=_EVAL_LLM_TIMEOUT,
         db_path=db_path,
+        clock=PinnedClock(),
         **_endpoint_overrides(),
     )
 
@@ -563,7 +570,7 @@ def seed_user(db: Database) -> None:
         sender=TEST_SENDER,
         name="Test User",
         location="Seattle, WA",
-        timezone="America/Los_Angeles",
+        timezone=SAMPLE_TIMEZONE,
         date_of_birth="1990-01-01",
     )
     db.devices.register(ChannelType.SIGNAL, TEST_SENDER, "Test Signal", is_default=True)

@@ -45,6 +45,7 @@ flowchart TD
 penny/
   penny.py            — Entry point. Penny class: creates agents, channel, scheduler
   config.py           — Config dataclass loaded from .env, channel auto-detection
+  clock.py            — `Clock`: the ONE place the runtime asks what time it is (#2207). `Clock.now()` is the real clock, timezone-aware UTC; it sits on `Config.clock`, `Penny` hands it to `Database(clock=…)`, and every store and reader takes it from there (`db.clock`) — passed down, never ambient, never swapped while Penny runs. On it: the `Current date and time` line (`current_datetime_line`), the instant a user's words about time are counted from (`parse_expires_at`, whose `now` is a required argument), the `created_at` a schedule is anchored at and the `last_collected_at` it is paced from, the collector's readiness and expiry checks, the send cooldown, and every timestamp a store writes — each store stamps its rows explicitly from the clock it was given rather than leaving them to the models' `default_factory`, which stays only as the fallback for a row built outside a store. Deliberately NOT on it, because they measure the process or talk to a system with a clock of its own: model-call durations, uptime, OAuth/APNs token expiry, a browser socket's heartbeat age, the scheduler's monotonic intervals, the window a calendar plugin asks a remote calendar for, and the migration runner's bookkeeping. Production never passes one, so it runs on the real clock exactly as before; the eval harness passes a `PinnedClock`. `tests/test_clock.py` holds the seam: a full turn on a clock years away leaves no row stamped off the machine's
   config_params.py    — ConfigParam + RuntimeParams: runtime-configurable settings with 3-tier lookup
   constants.py        — Enums (SearchTrigger), reaction emojis, browse constants
   prompts.py          — LLM prompt templates (chat conversation, vision, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
@@ -1047,6 +1048,28 @@ handling a message, after the reply's send has come back and its row carries its
 What a sample's claims read was never the apology (the observation is taken before teardown, and
 `reply` is the message the server captured); what it corrupted was the sample's `.db` artifact.
 Pinned in `make check` by a server that holds the send unanswered.
+
+**A sample runs on its own clock, which starts at one declared instant (#2207).** An ask that
+names a time relative to now is a different ask on the machine's clock at every run: "until 10pm
+tonight" has already passed at 23:30, "until sunday night" is today on a Sunday, and a rule that
+states no hour fires at whatever hour the run was made. So `_real_model_config` — the one seam
+every runner builds its config through — sets `Config.clock` to a `PinnedClock`
+(`tests/eval/utils/clock.py`) starting at **Wednesday 14 October 2026, 14:00 in the eval user's
+zone**: mid-week, so a named day lies clearly ahead; early afternoon, so "tonight" is ahead on the
+turn's own date and an hour-less rule does not pass for a morning one; clear of a daylight-saving
+change and a month's end. A fixed date rather than a fixed hour of the run's date, because an hour
+alone leaves the day of the week to the calendar. The clock **starts there and keeps time** — the
+machine's clock moved by a constant offset — so rows written a moment apart keep their order; a
+frozen clock would stamp a whole sample with one instant and collapse every recency read. Because
+the runtime reads the time in one place (`penny/clock.py`, below), the whole sample is on it: the
+`Current date and time` line, the instant `parse_expires_at` counts words from, the `created_at`
+a rule is anchored at, the collector's readiness, every row the seeders and the turn write, and
+the `state_transition` row a claim reads `turn_at` off — so `job_end.py` judges a stored end on
+the clock the job was set up on. "Tonight" is the evening of the day that clock reads, for
+production and the claim alike: neither rolls an hour already past to tomorrow. A seeder that
+states a time as a distance counts it from `db.clock`, never the machine's. Pinned in
+`make check` (`tests/test_clock.py`) end to end: a turn on a clock years away tells the model that
+clock's time and leaves no row stamped off the machine's.
 
 **Per-sample penny logs (#1909).** Beside each sample's DB (`<case_id>-<n>.db`) the harness
 writes that sample's own logger output as `<case_id>-<n>.log` — the fourth durable per-sample

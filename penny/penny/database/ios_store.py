@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
 
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.database.models import Device, IosDeviceRegistration, IosOutboxItem
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 class IosStore:
     """Manage iOS-specific device state and message delivery state."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -37,7 +38,7 @@ class IosStore:
         if device.id is None:
             raise ValueError("device must be persisted before iOS registration")
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
         with self._session() as session:
             row = session.get(IosDeviceRegistration, device.id)
             if row is None:
@@ -89,7 +90,7 @@ class IosStore:
                 source_hint=source_hint,
                 push_title=push_title,
                 push_summary=push_summary,
-                created_at=datetime.now(UTC),
+                created_at=self._clock.now(),
             )
             session.add(row)
             session.commit()
@@ -128,7 +129,7 @@ class IosStore:
         """Acknowledge messages for a device. Returns the number updated."""
         if not item_ids:
             return 0
-        now = datetime.now(UTC)
+        now = self._clock.now()
         count = 0
         with self._session() as session:
             rows = session.exec(
@@ -151,7 +152,7 @@ class IosStore:
             row = session.get(IosOutboxItem, item_id)
             if row is None:
                 return
-            row.push_sent_at = datetime.now(UTC)
+            row.push_sent_at = self._clock.now()
             row.push_error = None
             session.add(row)
             session.commit()

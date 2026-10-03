@@ -12,6 +12,7 @@ from sqlalchemy import and_, bindparam, func, inspect, or_, text
 from sqlmodel import Session, col, select
 
 from penny.agents.models import MessageRole
+from penny.clock import Clock
 from penny.constants import PennyConstants, RunOutcome
 from penny.database.memory.objects import classify_run, render_run_record
 from penny.database.models import (
@@ -169,8 +170,9 @@ def _in_send_order(message: MessageLog) -> tuple[datetime, int]:
 class MessageStore:
     """Manages MessageLog, PromptLog, and CommandLog records."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
         self._on_prompt_logged: Callable[[dict], None] | None = None
         self._on_run_outcome_set: Callable[[str, str, str], None] | None = None
 
@@ -231,6 +233,7 @@ class MessageStore:
                     device_id=device_id,
                     embedding=embedding,
                     mechanism=mechanism,
+                    timestamp=self._clock.now(),
                 )
                 session.add(log)
                 session.commit()
@@ -268,6 +271,7 @@ class MessageStore:
                     prompt_type=prompt_type,
                     run_id=run_id,
                     run_target=run_target,
+                    timestamp=self._clock.now(),
                 )
                 session.add(log)
                 session.commit()
@@ -315,6 +319,7 @@ class MessageStore:
                     command_args=command_args,
                     response=response,
                     error=error,
+                    timestamp=self._clock.now(),
                 )
                 session.add(log)
                 session.commit()

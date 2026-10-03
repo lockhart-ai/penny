@@ -1,10 +1,11 @@
 """User store — user info, sender queries, and mute state."""
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.constants import PennyConstants
 from penny.database.models import MessageLog, MuteState, UserInfo
 
@@ -14,8 +15,9 @@ logger = logging.getLogger(__name__)
 class UserStore:
     """Manages UserInfo and MuteState records, and sender-related queries."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -48,9 +50,10 @@ class UserStore:
                     existing.location = location
                     existing.timezone = timezone
                     existing.date_of_birth = date_of_birth
-                    existing.updated_at = datetime.now(UTC)
+                    existing.updated_at = self._clock.now()
                     session.add(existing)
                 else:
+                    now = self._clock.now()
                     session.add(
                         UserInfo(
                             sender=sender,
@@ -58,6 +61,8 @@ class UserStore:
                             location=location,
                             timezone=timezone,
                             date_of_birth=date_of_birth,
+                            created_at=now,
+                            updated_at=now,
                         )
                     )
                 session.commit()
@@ -100,7 +105,7 @@ class UserStore:
         """Mute proactive notifications for a user."""
         with self._session() as session:
             if not session.get(MuteState, user):
-                session.add(MuteState(user=user))
+                session.add(MuteState(user=user, muted_at=self._clock.now()))
                 session.commit()
 
     def set_unmuted(self, user: str) -> None:

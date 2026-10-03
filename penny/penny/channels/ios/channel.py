@@ -10,7 +10,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -499,7 +499,7 @@ class IosChannel(MessageChannel):
             existing = session.get(RuntimeConfig, req.key)
             if existing:
                 existing.value = str(validated)
-                existing.updated_at = datetime.now(UTC)
+                existing.updated_at = self._db.clock.now()
                 session.add(existing)
             else:
                 session.add(
@@ -507,7 +507,7 @@ class IosChannel(MessageChannel):
                         key=req.key,
                         value=str(validated),
                         description=param.description,
-                        updated_at=datetime.now(UTC),
+                        updated_at=self._db.clock.now(),
                     )
                 )
             session.commit()

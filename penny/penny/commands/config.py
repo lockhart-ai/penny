@@ -24,8 +24,6 @@ class ConfigCommand(Command):
 
     async def execute(self, args: str, context: CommandContext) -> CommandResult:
         """Execute config command."""
-        from datetime import UTC, datetime
-
         from sqlmodel import Session, select
 
         from penny.database.models import RuntimeConfig
@@ -83,14 +81,14 @@ class ConfigCommand(Command):
 
             if existing:
                 existing.value = str(parsed_value)
-                existing.updated_at = datetime.now(UTC)
+                existing.updated_at = context.db.clock.now()
                 session.add(existing)
             else:
                 new_config = RuntimeConfig(
                     key=key,
                     value=str(parsed_value),
                     description=param.description,
-                    updated_at=datetime.now(UTC),
+                    updated_at=context.db.clock.now(),
                 )
                 session.add(new_config)
 

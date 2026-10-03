@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from sqlmodel import Session, select
 
+from penny.clock import Clock
 from penny.database.models import AgentCursor
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,9 @@ logger = logging.getLogger(__name__)
 class CursorStore:
     """Read-cursor persistence for agent consumption of log-shaped memories."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -49,7 +51,7 @@ class CursorStore:
                     AgentCursor.memory_name == memory_name,
                 )
             ).first()
-            now = datetime.now(UTC)
+            now = self._clock.now()
             if row is None:
                 session.add(
                     AgentCursor(
@@ -88,7 +90,7 @@ class CursorStore:
                     AgentCursor.memory_name == memory_name,
                 )
             ).first()
-            now = datetime.now(UTC)
+            now = self._clock.now()
             if row is None:
                 row = AgentCursor(
                     agent_name=agent_name, memory_name=memory_name, last_read_at=incoming

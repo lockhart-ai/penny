@@ -9,10 +9,10 @@ serialized JSON strings, so the database layer never imports a plugin model.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.database.models import EmailRule
 
 logger = logging.getLogger(__name__)
@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 class EmailRuleStore:
     """Create, list-active, and mark-applied for persisted email rules."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -36,7 +37,7 @@ class EmailRuleStore:
                 condition=condition,
                 action=action,
                 enabled=True,
-                created_at=datetime.now(UTC),
+                created_at=self._clock.now(),
             )
             session.add(rule)
             session.commit()
@@ -62,7 +63,7 @@ class EmailRuleStore:
             rule = session.get(EmailRule, rule_id)
             if rule is None:
                 return
-            rule.last_applied_at = datetime.now(UTC)
+            rule.last_applied_at = self._clock.now()
             session.add(rule)
             session.commit()
             logger.debug("Marked email rule %d applied", rule_id)

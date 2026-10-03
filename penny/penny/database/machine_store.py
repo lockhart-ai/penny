@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.constants import TransitionCause
 from penny.database.models import StateTransition
 
@@ -38,8 +39,9 @@ from penny.database.models import StateTransition
 class MachineStore:
     """Read/write access to the machine's transition log — its only state."""
 
-    def __init__(self, engine) -> None:
+    def __init__(self, engine, clock: Clock | None = None) -> None:
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -101,6 +103,7 @@ class MachineStore:
                     skill_frame=skill_frame,
                     round_shortfall=round_shortfall,
                     round_provenance=round_provenance,
+                    created_at=self._clock.now(),
                 )
             )
             session.commit()

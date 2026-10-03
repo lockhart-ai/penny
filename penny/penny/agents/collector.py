@@ -805,7 +805,7 @@ class Collector(BackgroundAgent):
         if collection.expires_at is None or collection.archived:
             return False
         expiry = stored_as_utc(collection.expires_at)
-        if datetime.now(UTC) < expiry:
+        if self.db.clock.now() < expiry:
             return False
         note = f"reached expiry ({expiry.isoformat()})"
         logger.info("Archiving '%s': %s", collection.name, note)
@@ -1175,7 +1175,7 @@ class Collector(BackgroundAgent):
 
     def _next_ready_collection(self) -> MemoryRow | None:
         """Pick the most-overdue ready collection, or None if all caught up."""
-        now = datetime.now(UTC)
+        now = self.db.clock.now()
         ready = [m for m in self.db.memories.list_all() if self._is_ready(m, now)]
         if not ready:
             return None

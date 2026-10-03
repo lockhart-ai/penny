@@ -17,7 +17,7 @@ import difflib
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 
 import numpy as np
 from pydantic import BaseModel
@@ -25,6 +25,7 @@ from similarity.dedup import JobSide, is_same_job
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.memory import _similarity as sim
@@ -235,8 +236,12 @@ class MemoryStore:
         runtime: RuntimeParams | None = None,
         mutations: MutationStore | None = None,
         send_queue: SendQueueStore | None = None,
+        clock: Clock | None = None,
     ):
         self.engine = engine
+        # The clock every row this store writes is stamped from, and the one it hands
+        # each ``Memory`` object it builds (``penny/clock.py``).
+        self._clock = clock if clock is not None else Clock()
         # /config-tunable dedup thresholds; tests get vanilla defaults.
         self._runtime = runtime if runtime is not None else RuntimeParams()
         # The registry-mutation ledger (#1560).  Create/update/archive/unarchive
@@ -245,13 +250,15 @@ class MemoryStore:
         # without the provenance being recorded.  Defaults to one over the shared
         # engine when the facade doesn't inject it (isolated tests), so the
         # recording is never silently skipped.
-        self._mutations = mutations if mutations is not None else MutationStore(engine)
+        self._mutations = mutations if mutations is not None else MutationStore(engine, self._clock)
         # Archiving a collection cancels its still-pending queued sends (#1634):
         # ``_set_archived`` is the chokepoint every archive path funnels through
         # (user, system max_runs/expiry), so cancelling here means teardown is
         # silent through the send queue for all of them.  Defaults like the
         # ledger so isolated tests still get the cancellation.
-        self._send_queue = send_queue if send_queue is not None else SendQueueStore(engine)
+        self._send_queue = (
+            send_queue if send_queue is not None else SendQueueStore(engine, self._clock)
+        )
         # Fired after any mutation so observers (the browser channel) can refresh.
         # The factory injects it into each Memory object it builds.
         self._on_memory_changed: Callable[[str | None], None] | None = None
@@ -318,7 +325,7 @@ class MemoryStore:
         row = self.get(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG)
         if row is None:
             return None
-        return RunLog(row, self.engine, on_changed=self._on_memory_changed)
+        return RunLog(row, self.engine, on_changed=self._on_memory_changed, clock=self._clock)
 
     def _build(self, row: MemoryRow) -> Memory:
         """Construct the right ``Memory`` subclass for an already-loaded row."""
@@ -328,9 +335,10 @@ class MemoryStore:
                 self.engine,
                 direction=_MESSAGE_LOG_DIRECTIONS[row.name],
                 on_changed=self._on_memory_changed,
+                clock=self._clock,
             )
         if row.name == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
-            return RunLog(row, self.engine, on_changed=self._on_memory_changed)
+            return RunLog(row, self.engine, on_changed=self._on_memory_changed, clock=self._clock)
         if row.type == MemoryType.COLLECTION:
             return Collection(
                 row,
@@ -338,8 +346,9 @@ class MemoryStore:
                 runtime=self._runtime,
                 on_changed=self._on_memory_changed,
                 journal=self._journal_for(row.name),
+                clock=self._clock,
             )
-        return Log(row, self.engine, on_changed=self._on_memory_changed)
+        return Log(row, self.engine, on_changed=self._on_memory_changed, clock=self._clock)
 
     def _journal_for(self, name: str) -> CycleJournal | None:
         """The bound cycle's journal, iff ``name`` is the collection it is bound to.
@@ -427,6 +436,7 @@ class MemoryStore:
         name = slug(name)
         if self.get(name) is not None:
             raise MemoryAlreadyExistsError(name)
+        now = self._clock.now()
         with self._session() as session:
             memory = MemoryRow(
                 name=name,
@@ -452,7 +462,8 @@ class MemoryStore:
                 # hand-authored / seeded row — no skill origin.
                 skill_name=skill_name,
                 skill_params=json.dumps(skill_params) if skill_params is not None else None,
-                created_at=datetime.now(UTC),
+                created_at=now,
+                updated_at=now,
             )
             session.add(memory)
             session.commit()
@@ -649,7 +660,7 @@ class MemoryStore:
                 raise MemoryNotFoundError(name)
             was_archived = snapshot_fields(memory)[_ARCHIVED_FIELD]
             memory.archived = archived
-            memory.updated_at = datetime.now(UTC)
+            memory.updated_at = self._clock.now()
             session.add(memory)
             session.commit()
         # Teardown means silence through the queue (#1634): archiving cancels this
@@ -744,7 +755,7 @@ class MemoryStore:
             # ``apply_to`` runs, what these fields used to hold exists nowhere.
             before = snapshot_fields(memory)
             changed = fields.apply_to(memory)
-            memory.updated_at = datetime.now(UTC)
+            memory.updated_at = self._clock.now()
             session.add(memory)
             session.commit()
             session.refresh(memory)
@@ -805,7 +816,7 @@ class MemoryStore:
             memory = session.get(MemoryRow, name)
             if memory is None:
                 raise MemoryNotFoundError(name)
-            memory.last_collected_at = datetime.now(UTC)
+            memory.last_collected_at = self._clock.now()
             session.add(memory)
             session.commit()
         self._notify_changed(name)

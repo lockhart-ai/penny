@@ -14,10 +14,10 @@ was.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from sqlmodel import Session, col, select
 
+from penny.clock import Clock
 from penny.constants import CycleTrigger
 from penny.database.models import SendQueueItem
 
@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 class SendQueueStore:
     """Enqueue outbound messages and drain them oldest-first."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
+        self._clock = clock if clock is not None else Clock()
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -47,7 +48,7 @@ class SendQueueStore:
                 content=content,
                 collection=collection,
                 origin=origin,
-                created_at=datetime.now(UTC),
+                created_at=self._clock.now(),
             )
             session.add(row)
             session.commit()
@@ -110,7 +111,7 @@ class SendQueueStore:
         as an audit trail), while ``sent_at`` stays NULL — a cancelled row was
         never sent.  Already-delivered rows (``sent_at`` set) and already-cancelled
         rows are untouched, so the call is idempotent."""
-        now = datetime.now(UTC)
+        now = self._clock.now()
         with self._session() as session:
             rows = list(
                 session.exec(
@@ -135,7 +136,7 @@ class SendQueueStore:
             row = session.get(SendQueueItem, item_id)
             if row is None:
                 return
-            row.sent_at = datetime.now(UTC)
+            row.sent_at = self._clock.now()
             session.add(row)
             session.commit()
             logger.debug("Marked send_queue %d delivered", item_id)

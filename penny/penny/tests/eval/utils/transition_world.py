@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from penny.constants import PennyConstants, TransitionCause
@@ -2143,7 +2143,7 @@ def _adopt_the_taught_routine(db: Database, journey: _Journey) -> MemoryRow:
         schedule=schedule.rule,
         replace_schedule=True,
         max_runs=schedule.max_runs,
-        expires_at=_end_condition(applied),
+        expires_at=_end_condition(db, applied),
         notify=True,
         skill_name=slug_skill_name(case.skill.name),
         skill_params=params,
@@ -2151,17 +2151,21 @@ def _adopt_the_taught_routine(db: Database, journey: _Journey) -> MemoryRow:
     )
 
 
-def _end_condition(applied: _AppliedJob) -> datetime | None:
+def _end_condition(db: Database, applied: _AppliedJob) -> datetime | None:
     """A bounded job's end, as a DISTANCE from when the world is laid down.
 
     The seeders write through the real store APIs, which stamp every row at the moment
     they run — so a world cannot be dated into the past, and an end condition written as
     a fixed date would be one these jobs had already passed (a passed expiry archives the
     collection at the next sweep).  Stating it as a distance is what keeps all five of
-    them LIVE, which is what the world claims they are."""
+    them LIVE, which is what the world claims they are.
+
+    The distance is counted on the SAMPLE's clock (``db.clock``), the one those store
+    APIs stamp from and the collector reads an expiry against — a distance counted from
+    the machine's own clock would land wherever the two happen to differ."""
     if applied.expires_in is None:
         return None
-    return datetime.now(UTC) + applied.expires_in
+    return db.clock.now() + applied.expires_in
 
 
 def _seed_apply_run(db: Database, journey: _Journey, row: MemoryRow) -> None:

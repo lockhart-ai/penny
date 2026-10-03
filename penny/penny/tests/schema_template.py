@@ -24,6 +24,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from penny.clock import Clock
 from penny.config_params import RuntimeParams
 from penny.database import Database
 from penny.database.migrate import migrate
@@ -66,21 +67,25 @@ def _copy_template(template_path: str, destination: str) -> None:
     shutil.copy(template_path, destination)
 
 
-def schema_only_db(path: str, *, runtime: RuntimeParams | None = None) -> Database:
+def schema_only_db(
+    path: str, *, runtime: RuntimeParams | None = None, clock: Clock | None = None
+) -> Database:
     """A ``Database`` at ``path`` with a bare schema — no migration seed data.
 
     Byte-identical to ``Database(path)`` + ``create_tables()``, but copied from a
     cached template instead of rebuilding the schema.
     """
     _copy_template(schema_only_template_path(), path)
-    return Database(path, runtime=runtime)
+    return Database(path, runtime=runtime, clock=clock)
 
 
-def migrated_db(path: str, *, runtime: RuntimeParams | None = None) -> Database:
+def migrated_db(
+    path: str, *, runtime: RuntimeParams | None = None, clock: Clock | None = None
+) -> Database:
     """A ``Database`` at ``path`` with the full post-migration schema + seed data.
 
     Byte-identical to ``Database(path)`` + ``create_tables()`` + ``migrate(path)``,
     but copied from a cached template instead of rebuilding the schema.
     """
     _copy_template(migrated_template_path(), path)
-    return Database(path, runtime=runtime)
+    return Database(path, runtime=runtime, clock=clock)
