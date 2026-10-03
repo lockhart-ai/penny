@@ -73,19 +73,13 @@ class CannedPage:
     is visible — see ``database/memory/objects.py`` run-health tally).  A
     ``match=""`` page matches every URL (``"" in url`` is always true), so a single
     ``CannedPage(match="", fails=True)`` makes *every* source unreachable — the
-    "browsed a lot, read nothing usable" cycle.
-
-    ``channel_outage=True`` instead raises ``BrowseChannelUnavailableError`` — the whole
-    browse *channel* is down (no browser connected), so the tool names the outage
-    ONCE and binds the terminal move rather than N per-URL failures inviting the
-    doomed URL-variant retries.  ``text`` is ignored when either flag is set.
+    "browsed a lot, read nothing usable" cycle.  ``text`` is ignored when ``fails`` is set.
     """
 
     match: str
     text: str
     image: str | None = None
     fails: bool = False
-    channel_outage: bool = False
 
 
 def datum(page: CannedPage, old: str, new: str) -> CannedPage:

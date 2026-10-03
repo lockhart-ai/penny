@@ -32,7 +32,7 @@ The golden rule underneath all of it: **one beat at a time, pairs before code, e
 - **Variations on a theme.** One scenario structure, five-ish instances varying exactly the axes under test — cadence forms, expiry present/absent, one vs two parameters, subject domains. **Name what each variation stresses.**
 - **The full register.** Each input carries everything the real user shape carries (a watch ask names a source, a store/compare intent, a cadence, a notify clause). A thin input proves less.
 - **Audit the wording for double readings.** "Tell me the second something new shows up" cost **three rounds** before the ordinal reading was spotted. Use plain temporal words; if a phrase can be read two ways, the model eventually will.
-- **Reference replies are review targets, never scorer strings.**
+- **Reference replies are review targets, never strings a claim matches.**
 - The agreed pairs go into the ticket **verbatim** — the ticket body is the canonical contract, **amended in place** when a ruling changes it, never layered with update notes.
 
 ## 3. Encode with entrance-condition fidelity
@@ -66,7 +66,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 ## 6. Diagnose
 
 - **Read the thinking and the ledger — never transcript greps.** Draws come from the **per-sample DBs**; the posted report is authoritative for the counts; use **explicit absolute run-dir paths**. A sample's `.db` and `.log` carry the number the report calls it — `sample 11` is `<case>-11.db` — so open the file the report names and no other.
-- **Causes partition**: behavioral / pathology / harness. Then the behavioral ones partition again: **model choice · scorer strictness · fixture defect · presented-state defect.**
+- **Causes partition**: behavioral / pathology / harness. Then the behavioral ones partition again: **model choice · claim strictness · fixture defect · presented-state defect.**
 - **The model's reasoning is ground truth.** When a draw is wrong, ask first **what the state failed to present**. The window collapse, the required-looking optional field, and the one-shot-verb description were all "model failures" that decoded as **correct reasoning over defective presentation**.
 - **Verify the mechanism, not the inference** — dump the actual history window, parse the actual schema, count the actual draws. **Two diagnoses in this arc reversed on the raw read.**
 - When the thinking shows a **coherent alternative reading of the contract**, the claim is asserting something the model may legitimately say another way: it shrinks to the smallest unique datum or moves to variance ([`docs/eval-case-design.md`](eval-case-design.md) §2), **never a per-case carve-out**. Changing a claim is the code owner's call at review.
@@ -88,7 +88,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 ## 9. Rerun upstream
 
-- A change to **shared seeders, shared scorers, shared prompts, or anything the model reads** = a **non-regression rerun of every touched suite, baselined**.
+- A change to **shared seeders, shared claims, shared prompts, or anything the model reads** = a **non-regression rerun of every touched suite, baselined**.
 - When a **producing** prompt changes (the framer), the suites whose fixtures transcribe its draws need, in order: a **fresh sampling run** → the **fixture re-sample** → the **composed rerun**.
 - **The final state before merge is one composed run of the beat on the finished tree.** A PR that adds or changes eval cases merges only with **both roster models run and posted at its final head**; a rebase that leaves the tree byte-identical to the measured head keeps the runs valid, and the PR says so in a comment (`docs/agent-task-workflow.md` §8).
 

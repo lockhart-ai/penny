@@ -67,7 +67,7 @@ never editing the PR body, never overwriting a prior comment. The comment stream
   review, and each round is mirrored into a comment (the feedback → the change →
   the result → the transcript).
 
-What a **ported** case's report says is **`docs/eval-case-design.md`** (#1994):
+What a case's report says is **`docs/eval-case-design.md`** (#1994):
 end-state assertions in three categories, everything the model emitted measured as
 variance, and a run-health gate under both. The report itself is rendered by
 `report.py` and pinned by `test_report.py` — there is no prose copy of its format
@@ -200,21 +200,22 @@ and the `quality` reviewer no longer dispatch — retired by #1624 / #1569; the
 
 **Query-aware mock browser.** The isolation core stubs browse with one fixed
 string — enough to check *whether* the model browsed, not *how it reasoned over
-the result*. The `browse=` kwarg on `chat_eval` — and a `CycleArm`'s own `pages`
-on `collector_cycles_eval` — installs `CannedPage`s keyed by a query/URL
-substring (`install_browse` in `conftest.py`), so a case returns a realistic page
-(facts + a source URL in the visible body) and a refined follow-up query maps to
-a different page — letting cases score the *subsequent* call (the write, the
-send, the second browse) and even multi-hop chains.
+the result*. A chat case's `World` — and a `CycleArm`'s own `pages` on
+`collector_cycles_eval` — supplies `CannedPage`s keyed by a query/URL substring,
+which the driver installs (`install_browse` in `conftest.py`), so a case returns
+a realistic page (facts + a source URL in the visible body) and a refined
+follow-up query maps to a different page — so what a case claims about the end
+state (the write, the send, a fact one link deep) rests on pages the model had to
+read, multi-hop chains included.
 
 **Assert facts, measure behaviour.** Because browse content is canned and the
 model is stochastic, a case claims only facts about the end state — where the
 machine landed, what the store holds, values that trace to the page, tokens
 that must be absent — and claims what survived, never that the model refrained.
 Which tools were called, how often, and how the reply is worded are variance,
-never claims. Every case is `min_pass_rate=None` (report-only): the counts print
-for a person to read, and nothing on the claim side gates a run
-(`docs/eval-case-design.md`).
+never claims. Every case states `min_pass_rate=None` (report-only) and a driver
+refuses anything else: the counts print for a person to read, and nothing on the
+claim side gates a run (`docs/eval-case-design.md`).
 
 **Performance metrics (model-swap picture).** Each case prints a `PERF` line:
 calls, full request wall, in/out tokens, the **reasoning split** (`completion_tokens`

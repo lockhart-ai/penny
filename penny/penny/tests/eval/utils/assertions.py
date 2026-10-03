@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from penny.agents.chat import ChatAgent
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.utils.cohort import (
     Arm,
@@ -43,11 +42,6 @@ from penny.tests.eval.utils.cohort import (
 from penny.tests.eval.utils.job_end import AskedEnd, job_ends_as_asked
 from penny.tests.eval.utils.schedules import cadence_seconds
 from penny.tests.eval.utils.worlds import World
-from penny.text_validity import (
-    has_leaked_harmony_envelope,
-    is_degenerate_run,
-)
-from penny.validation.conditions import ConditionKey
 
 # The STORE label the round-scoped survival claim is made under, named once because a label is
 # a DIFF-JOIN KEY: a copy per case is a chance for a typo to split one claim's history into two.
@@ -63,9 +57,9 @@ _JOB_IS_THE_DERIVED_CONTAINER = (
     "state: the job it stood up is the container derived for this routine and this listing"
 )
 
-# The ground a claim is answered against by a cohort that declared no arms at all — the
-# unported path, whose cohort is empty and answers nothing.  Matches nothing, so a claim made
-# against it is vacuous rather than answered on pages the sample never saw.
+# The ground a claim is answered against by a cohort built with no arms at all.  Matches
+# nothing, so a claim made against it is vacuous rather than answered on pages the sample
+# never saw.
 _NO_GROUND = World(name="no arms", pages=(), keeps=(), excludes=())
 
 # How one sample answers one claim: ``(ok, rationale)``.
@@ -387,25 +381,6 @@ class Cohort:
             SpecCategory.STORE,
         )
 
-    def assert_no_delivered_message_is_an_unusable_draw(self) -> None:
-        """Nothing that reached the user is a draw the loop was supposed to throw away.
-
-        Read through PRODUCTION'S OWN declaration of what an unusable chat draw is — the
-        chat agent's ``invalid_draw_conditions`` plus the two transport artifacts the loop
-        checks on every draw — never through the one fault a case's injector happens to
-        force.  A recovery case keyed to its own injected shape would pass while a
-        DIFFERENT unusable draw sailed out in the same turn, and a condition added to
-        production would arrive here with nobody remembering to copy it.
-
-        Every DELIVERED message, not the last reply: what the contract forbids is the bad
-        draw reaching the user at all, and a turn that delivered two messages would
-        otherwise be judged on one of them."""
-        self.claim(
-            "state: nothing delivered to the user was an unusable draw",
-            _nothing_unusable_delivered,
-            SpecCategory.STORE,
-        )
-
     def assert_the_reply_answers_the_ask(self) -> None:
         """The reply states what the ask asked for, in the world's own terms.
 
@@ -655,37 +630,6 @@ def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
     stored = sample.stored_text
     landed = [token for token in world.excludes if token_stands_in(token, stored)]
     return not landed, f"stored the excluded {landed}"
-
-
-# What makes a chat draw unusable, COMPOSED from what production declares rather than
-# re-listed: the two transport artifacts ``Agent._unusable_output_condition`` checks on
-# every draw whatever its shape, then the chat agent's OWN ``invalid_draw_conditions`` —
-# the shapes that are not a reply.  Composed, because a recovery case keyed to the one
-# fault its injector forces would pass while a different unusable draw sailed out in the
-# same turn, and a condition added to production would arrive here with nobody remembering
-# to copy it.
-_UNUSABLE_DRAW: tuple[tuple[str, Callable[[str], bool]], ...] = (
-    (ConditionKey.TOOL_CALL_LEAK.value, has_leaked_harmony_envelope),
-    (ConditionKey.DEGENERATE_OUTPUT.value, is_degenerate_run),
-    *((key.value, predicate) for key, predicate in ChatAgent.invalid_draw_conditions),
-)
-
-
-def _unusable_draw_condition(message: str) -> str | None:
-    """The name of the condition that makes ``message`` an unusable draw, or ``None``."""
-    return next((name for name, is_invalid in _UNUSABLE_DRAW if is_invalid(message)), None)
-
-
-def _nothing_unusable_delivered(sample: SampleObservation, _world: World) -> Answer:
-    """The rationale names the CONDITIONS that fired and how many of the turn's messages
-    they landed on, never the messages themselves — the sample's own fold carries those
-    verbatim, and a claim that quotes a slice of one would be inventing where to cut."""
-    unusable = [
-        condition
-        for message in sample.delivered
-        if (condition := _unusable_draw_condition(message)) is not None
-    ]
-    return not unusable, f"{len(unusable)} of {len(sample.delivered)} delivered — {unusable}"
 
 
 def _reply_answers_the_ask(sample: SampleObservation, world: World) -> Answer:

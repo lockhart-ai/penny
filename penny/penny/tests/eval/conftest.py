@@ -2,11 +2,11 @@
 
 Construction reuses the integration-test isolation core (``running_penny``)
 with a config whose model points at the real Ollama endpoint — no second
-construction path, no stubs.  Each case samples N runs (the model is
-stochastic) and reports a pass-rate against PERSISTED DB state, which is the
-real contract.  A case gates on a ``min_pass_rate`` threshold, or — for
-inherently stochastic behaviours (``min_pass_rate=None``) — just prints its X/Y
-rate for inspection without failing the run.  See docs/self-improvement-loop.md.
+construction path, no stubs.  Each case drives one cohort (the model is
+stochastic): K wordings of one ask, sampled N times each, read off PERSISTED DB
+state.  The case body makes its claims against the cohort and names the features
+it measures; the claims are counted and reported, never gated.  What fails a run
+is run health — a cohort that mostly never ran.  See docs/eval-case-design.md.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from collections.abc import (
     Callable,
     Coroutine,
     Iterator,
-    Mapping,
     Sequence,
 )
 from contextlib import asynccontextmanager, contextmanager
@@ -69,19 +68,13 @@ from penny.database.skills import (
     render_spoken_turns,
 )
 from penny.datetime_utils import user_timezone_name
-from penny.llm.client import LlmClient
-from penny.llm.models import (
-    LlmMessage,
-    LlmResponse,
-    strip_harmony_control_tokens,
-)
+from penny.llm.models import strip_harmony_control_tokens
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.preflight import PreflightError
 from penny.responses import PennyResponse
 from penny.round_framing import round_shortfall
 from penny.skill_extraction import build_framing_content, build_naming_content
-from penny.startup import get_restart_message
 from penny.tests.conftest import (
     TEST_SENDER,
     require_memory,
@@ -108,8 +101,6 @@ from penny.text_validity import (
     is_degenerate_run,
     is_degenerate_tool_name,
 )
-from penny.tools.base import RESULT_TAG
-from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
     MicroContext,
     MicroContextResult,
@@ -119,7 +110,6 @@ from penny.tools.micro_context import (
     SkillLabels,
     SkillSignature,
     StateDrawOutcome,
-    spoken_form,
 )
 from penny.tools.skill_tools import render_skill_shape
 
@@ -214,106 +204,73 @@ def pytest_terminal_summary(terminalreporter) -> None:
     terminalreporter.write_line(health.render())
 
 
-# A chat scorer reads persisted DB state (the pre-run collection names + the
-# final reply text) and returns failure strings — empty means the sample passed.
-# A chat scorer returns either failure strings (binary: empty = pass) or a list of graded
-# ``Check``s (partial credit: the sample scores passed/total).  Both flow through the same
-# runner, which grades by the returned type.
-Scorer = Callable[[Database, set[str], str], "list[str] | list[Check]"]
+# A seeder lays a sample's world down in its database before the measured turn.
 Seeder = Callable[[Database], None]
 # A preparer mutates the constructed Penny before the message is pushed — e.g.
 # to mock an external boundary (the image client) the case exercises.
 Preparer = Callable[[Penny], None]
-# A text scorer sees only a returned string (e.g. a generated announcement) and
-# returns either failure strings (binary: empty = pass) or a list of graded ``Check``s
-# (partial credit) — the same dual return as the other scorer types, dispatched by the runner.
-TextScorer = Callable[[str], "list[str] | list[Check]"]
 
 
 @dataclass
 class Check:
-    """One graded expectation of a sample — an expected tool call or an outcome.
+    """One claim's answer for ONE sample — the per-sample form of a cohort claim.
 
-    A scorer can return a list of these instead of a list of failure strings; the sample
-    then scores as (checks that passed) / (checks that applied) — partial credit — instead of
-    all-or-nothing.  ``label`` names the expectation so the report shows exactly which
-    check missed (e.g. "turn-1 memory_metadata called").
+    A case makes its claims over the whole cohort; ``_cohort_checks`` deals each claim's
+    answers back out by sample, so a sample's score, the report's per-sample cells and the
+    ``results.jsonl`` record read one object.  ``label`` is the claim's own sentence.
 
-    ``scored=False`` marks an ADVISORY check — flavour: it renders in the report
-    (✅/❌ beside its row or in the footer) but is excluded from the sample's score.
-    The state-is-core doctrine uses this split: end DB state is the pass/fail;
-    call-sequencing checks annotate how the state came to be.
+    ``rationale`` is the observed-vs-expected note rendered beside the outcome
+    (``changed ['<key>']``), so a ❌ is never bare.
 
-    ``rationale`` is the optional observed-vs-expected note rendered beside the outcome
-    ("expected 3 reads, saw 1"), so a ❌ is never bare.  ``ignored`` is the NOT-APPLICABLE
-    third state — this sample's branch never exercised the check — excluded from the graded
-    denominator (counts as neither pass nor fail), yet still rendered (as ➖) so a skipped
-    expectation reads as skipped, not forgotten.  Build one with ``Check.na(...)``."""
+    ``scored`` and ``ignored`` are the advisory and not-applicable states the report and
+    artifact layers render.  Nothing in the harness sets either: a claim is strictly true or
+    false of a sample, and every claim counts."""
 
     label: str
     ok: bool
     anchor: str | None = None  # substring of the transcript row this check marks (None = no row)
-    scored: bool = True  # False = advisory flavour, visible in the report, not in the score
+    scored: bool = True  # False = advisory, visible in the report, not in the score
     rationale: str | None = None  # observed-vs-expected note rendered beside the outcome
     ignored: bool = False  # not-applicable: rendered (➖) but out of the graded denominator
     kind: str | None = None  # class label rendered `[kind]` (spine/reply/state/proc/guard)
-
-    @classmethod
-    def na(
-        cls,
-        label: str,
-        *,
-        rationale: str | None = None,
-        anchor: str | None = None,
-        kind: str | None = None,
-    ) -> Check:
-        """A not-applicable check — this sample's branch didn't run, so it's excluded from the
-        graded denominator (neither pass nor fail).  Still rendered (➖) so a skipped expectation
-        reads as skipped, not forgotten.  ``kind`` carries the same ``[class]`` tag as a scored
-        check, so an n/a row reads ``C3 [state] …`` in its class like any other."""
-        return cls(
-            label=label, ok=True, anchor=anchor, rationale=rationale, ignored=True, kind=kind
-        )
 
 
 @dataclass
 class SampleResult:
     """A sample's score in [0, 1] + the labels of whatever didn't pass (for the report).
 
-    Binary scoring is the degenerate one-check case (score 1.0 or 0.0); graded scoring
-    (a scorer returning ``Check``s) is passed/total.  A case's metric is the MEAN of its
-    sample scores — identical to the old pass-rate when every sample is binary, but with
-    partial credit when a scorer grades."""
+    The score is claims-passed over claims-answered for this sample, settled when the cohort's
+    claims are dealt back out at case close (``adopt``).  A sample that timed out or was
+    excluded scores 0.0 and carries its reason where a failure's labels go."""
 
     score: float
     failed: list[str]
     total: int = 1
-    checks: list[Check] = field(default_factory=list)  # full graded checks (empty = binary)
+    checks: list[Check] = field(default_factory=list)  # this sample's answered claims
     # The structural failure cause (#1695), settled wherever the score is: ``None`` for a pass;
     # ``behavioral`` / ``pathology`` / ``harness`` for a failure.  The artifact aggregate defaults
     # an unstamped failure to behavioral, so a directly-constructed result is safe.
     cause: FailureCause | None = None
     # The structural facts the cause and the fragile flag are READ from, observed while the
     # sample's database was live (#2125, #2127).  Carried rather than folded straight into the
-    # verdict because a ported case's score is not settled at drive time — its cohort's claims
+    # verdict because a sample's score is not settled at drive time — its cohort's claims
     # come back at case close, long after the database is gone — so both derivations have to run
     # again there, and a derivation needs its inputs.
     timed_out: bool = False
     pathology: bool = False
     rerolled: bool = False
     # Why the cohort could not pool this sample, dealt out with the claims at the same seam
-    # (#2125).  ``None`` for a sample that was pooled, and for every case that drives no cohort.
+    # (#2125).  ``None`` for a sample that was pooled.
     excluded: str | None = None
     # Passed-but-shaky (#1725, #1694): the sample reached its result only after the loop
     # refused/recovered a draw.  DERIVED from the settled score (#2127), the way the cause is —
-    # stamped instead from the drive-time ``passed``, which a ported sample earns VACUOUSLY
+    # stamped instead from the drive-time ``passed``, which a sample earns VACUOUSLY
     # before it has answered a claim, it degenerated into "the run rerolled" and marked
     # claim-FAILING samples fragile.  It renders on the sample's own banner (the flag, and the
     # legend note that flag pulls in) and rides into ``CaseArtifact.sample_fragile``.
     fragile: bool = False
     # What this sample LEFT BEHIND, read while its database was still live (#1995) — the whole
-    # of what a ported case asserts or measures.  ``None`` for every case that has not been
-    # ported, so nothing changes for one still passing a scorer.
+    # of what a case asserts or measures.  ``None`` only for a result built outside a drive.
     observation: eval_cohort.SampleObservation | None = None
 
     @property
@@ -327,7 +284,7 @@ class SampleResult:
     def adopt(self, checks: list[Check]) -> None:
         """Take on the claims the COHORT answered for this sample (#1995).
 
-        A ported case is graded from claims made over the whole cohort AFTER the drive, so the
+        A case is graded from claims made over the whole cohort AFTER the drive, so the
         sample's own score is settled here rather than at drive time.  Re-derived through
         ``graded`` so one definition decides what counts, whatever produced the checks."""
         graded = SampleResult.graded(checks)
@@ -389,16 +346,20 @@ class SampleResult:
         """Whether this sample is a PASSED-but-shaky one, derived the same way (#2127).
 
         A sample the claims failed is never fragile: it is a failure, and its cause says which
-        kind.  Stamped instead from the drive-time ``passed`` — which a ported sample earns
+        kind.  Stamped instead from the drive-time ``passed`` — which a sample earns
         vacuously, before it has answered a claim — the flag said only that the run rerolled."""
         self.fragile = self.passed and self.rerolled
 
     @classmethod
     def graded(cls, checks: list[Check]) -> SampleResult:
+        """The score a sample's answered claims come to: passed over answered.
+
+        No checks at all is a vacuous 1.0 — what a sample holds at drive time, before its
+        cohort's claims arrive."""
         if not checks:
             return cls(1.0, [], 1)
         # NOT-APPLICABLE checks (``ignored``) never count; among the rest, score over the
-        # SCORED ones only (advisory flavour renders but doesn't count), with an all-advisory
+        # SCORED ones only (an advisory check renders but doesn't count), with an all-advisory
         # list degenerating to scoring everything applicable.  Every check applied to this
         # sample was ignored → a vacuous pass (nothing to grade).
         applicable = [check for check in checks if not check.ignored]
@@ -547,8 +508,8 @@ def _real_model_config(
     """
     return make_config(
         signal_api_url=signal_api_url,
-        # A ported case is parametrized over MODEL, so a cohort names the one it is measured
-        # on; everything else takes the run's configured model exactly as before.
+        # A case is parametrized over MODEL, so a cohort names the one it is measured on;
+        # with none named, the run's configured model.
         llm_model=model or os.environ.get("LLM_MODEL", "gpt-oss:20b"),
         llm_api_url=os.environ.get("LLM_API_URL", "http://localhost:11434"),
         llm_embedding_model=os.environ.get("LLM_EMBEDDING_MODEL", "embeddinggemma"),
@@ -641,18 +602,13 @@ MUTATION_HISTORY_WINDOW = 20
 
 
 def collection_names(db: Database) -> set[str]:
-    """Every memory name currently in the DB — the pre-run snapshot for scorers."""
+    """Every memory name currently in the DB — the pre-run snapshot an observer reads."""
     return {memory.name for memory in db.memories.list_all()}
 
 
-def new_collections(db: Database, before: set[str]) -> list[MemoryRow]:
-    """Collections that didn't exist before the run — what the model created."""
-    return [memory for memory in db.memories.list_all() if memory.name not in before]
-
-
 def collection_entries(db: Database, name: str) -> dict[str, str]:
-    """``{key: content}`` for every keyed entry in a collection — a snapshot a
-    collector scorer compares before/after a cycle to detect writes/edits/deletes."""
+    """``{key: content}`` for every keyed entry in a collection — the snapshot a cycle's
+    footprint is read against, before and after, to see writes, edits and deletes."""
     memory = db.memory(name)
     rows = memory.read_all() if memory is not None else []
     return {entry.key: entry.content for entry in rows if entry.key is not None}
@@ -723,42 +679,6 @@ def live_prompt_perf(db: Database) -> PromptPerf:
     )
 
 
-def tool_was_called(db: Database, tool_name: str) -> bool:
-    """Did the model actually invoke ``tool_name`` this run?
-
-    Scans the persisted promptlog responses for a matching tool call — the real
-    record of what the model did, not a harness-side spy.
-    """
-    return any(
-        any(tool_call_name(call) == tool_name for call in _response_tool_calls(row))
-        for row in live_prompts(db)
-    )
-
-
-def tool_not_called(db: Database, tool_name: str) -> bool:
-    """The negative-constraint counterpart to ``tool_was_called``: True when the model did NOT
-    invoke ``tool_name`` this run.  Lets a scorer state an avoided-action expectation directly —
-    ``Check("no write on a discuss turn", tool_not_called(db, "collection_write"))`` — instead of
-    hand-negating ``tool_was_called`` at each call site."""
-    return not tool_was_called(db, tool_name)
-
-
-def count_tool_calls(db: Database, tool_name: str) -> int:
-    """How many times the model invoked ``tool_name`` this run.
-
-    Sourced from the persisted promptlog (the real record of what the model did).
-    Used to detect retry-flailing: after a channel-outage banner, a healthy cycle
-    issues at most one ``browse`` call (the probe that revealed the outage) and
-    then stops — repeated browse calls are the doomed URL-variant retries the
-    outage banner is meant to end."""
-    return sum(
-        1
-        for row in live_prompts(db)
-        for call in _response_tool_calls(row)
-        if tool_call_name(call) == tool_name
-    )
-
-
 def _row_turns(row: PromptLog) -> list[dict]:
     """One promptlog row's conversation: the turns it CARRIED (``messages``) followed by the
     turns the run appended after it (``trailing_messages`` — the tail no later call carried,
@@ -781,65 +701,20 @@ def _iter_prompt_messages(db: Database):
         yield from _row_turns(row)
 
 
-# Tool-result fragments that mean a call the model made was refused.  ``tool_call_rejected``
-# reads the two failure-narration frames (tools/base.py: the generic failure + arg-validation);
-# ``_RECOVERY_FRAMES`` widens that to the framework REFUSAL narrations too (a call rejected
-# before it ran, a duplicate not repeated, a missing / timed-out / errored tool) — the "did the
-# run recover from something?" set the fragile-pass flag reads.
-_REJECTION_FRAMES = ("arguments were wrong", "didn't work")
+# Tool-result fragments that mean a call the model made was refused: the two
+# failure-narration frames (tools/base.py: the generic failure + arg-validation) and the
+# framework REFUSAL narrations (a call rejected before it ran, a duplicate not repeated, a
+# missing / timed-out / errored tool) — the "did the run recover from something?" set the
+# fragile-pass flag reads.
 _RECOVERY_FRAMES = (
-    *_REJECTION_FRAMES,
+    "arguments were wrong",  # FRAMEWORK_NARRATION_INVALID_ARGS
+    "didn't work",  # the generic failure frame
     "rejected before it could run",  # Prompt.REJECTED_CALL_NARRATION (e.g. a premature done())
     "wasn't repeated",  # Prompt.DUPLICATE_CALL_NARRATION
     "there's no such tool",  # FRAMEWORK_NARRATION_NOT_FOUND
     "it timed out",  # FRAMEWORK_NARRATION_TIMEOUT
     "it errored",  # FRAMEWORK_NARRATION_EXCEPTION
 )
-
-
-def _frame_attributes_to(content: str, tool_name: str) -> bool:
-    """Does this framed tool-result name ``tool_name`` as the tool that produced it?
-
-    ``Tool.format_result`` (``penny/tools/base.py``) wraps EVERY result as
-    ``<narration> (<tool> result)\\n<body>`` — one narration line plus the retained
-    ``(<tool> result)`` machine tag.  A call attributes to its tool through EITHER of
-    two shapes, and both must be recognised:
-
-    * the **backticked tool name** in the narration — the generic frame
-      (``You tried to use `browse` but it didn't work:``) and the framework-synthesised
-      failures (arg-validation / timeout / not-found), which lead with `` `<tool>` ``; and
-    * the **parenthesized result tag** ``(<tool> result)`` — the SOLE attribution when
-      the narration backticks the *target* instead of the tool, which is the whole
-      memory-tool execute-time-failure family (``You tried to update `<collection>`'s
-      settings but it didn't work: (collection_set result)``, ``You tried to save to
-      `<collection>` but it didn't work: (collection_write result)``, …).  There the
-      tool name never appears backticked, so matching only `` `<tool>` `` misses it —
-      the latent false-green this fixes (#1726).
-    """
-    return f"`{tool_name}`" in content or RESULT_TAG.format(tool_name=tool_name) in content
-
-
-def tool_call_rejected(db: Database, tool_name: str | None = None) -> bool:
-    """Did a call to ``tool_name`` — or ANY tool, when ``tool_name`` is None — come back REJECTED
-    (arg-validation / failure)?
-
-    The process-fidelity counterpart to ``tool_was_called``: a graded contract that checks
-    the final STATE can still pass when an intermediate call was rejected and a *later* turn
-    happened to re-land the content — this catches the rejected turn (the tool-result failure
-    frame).  Attribution matches BOTH narration shapes ``Tool.format_result`` emits — the
-    backticked tool name AND the ``(<tool> result)`` tag (``_frame_attributes_to``) — so a
-    memory-tool rejection whose narration backticks the *target* (``collection_set`` /
-    ``collection_write`` / …) is no longer invisible to a per-tool probe (#1726).  With no
-    ``tool_name`` it's the run-wide "was any tool refused?" probe."""
-    for message in _iter_prompt_messages(db):
-        content = message.get("content") or ""
-        if message.get("role") != "tool":
-            continue
-        if tool_name is not None and not _frame_attributes_to(content, tool_name):
-            continue
-        if any(frame in content for frame in _REJECTION_FRAMES):
-            return True
-    return False
 
 
 def sample_is_fragile(db: Database) -> bool:
@@ -852,15 +727,13 @@ def sample_is_fragile(db: Database) -> bool:
     event`` with, single-sourced so render and probe can't drift apart again, #1735 finding 2).
     A green sample that only got there after the loop refused a call and retried, or after a nudge
     recovered an empty / unparseable response, is 'passed, fragile' in the report: real, but not
-    robust — exactly the robustness signal the report cares about.  Derived from the same promptlog
-    primitives as ``tool_call_rejected`` / ``_is_nudge``, not a new model judgment.  Fragile is
-    render/artifact-only — never gated — so widening it moves no threshold.
+    robust — exactly the robustness signal the report cares about.  Derived from the promptlog,
+    not a new model judgment.  Fragile is render/artifact-only — never gated.
 
-    Unlike ``tool_call_rejected`` the tool-turn leg filters on NO tool name — it asks "did the run
-    recover from *anything*?" — so it carries none of that probe's target-vs-tool-name attribution
-    gap (#1726): a memory-tool execute-time failure narrates ``… but it didn't work:``, whose
-    ``didn't work`` fragment is already in ``_RECOVERY_FRAMES``, caught regardless of which tool
-    (target-backticked) produced it."""
+    The tool-turn leg filters on NO tool name — it asks "did the run recover from *anything*?"
+    — so it is true of a failure whichever tool produced it: a memory-tool execute-time failure
+    narrates ``… but it didn't work:`` with the TARGET backticked rather than the tool, and the
+    ``didn't work`` fragment catches it all the same (#1726)."""
     for message in _iter_prompt_messages(db):
         content = message.get("content") or ""
         role = message.get("role")
@@ -911,21 +784,17 @@ def run_exhibited_pathology(db: Database) -> bool:
     (``Agent._unusable_output_condition``): a punctuation collapse (``DEGENERATE_OUTPUT``), a
     leaked Harmony envelope (``TOOL_CALL_LEAK``), a collapse-shaped tool name, or a bare
     call-fragment reply (a fragment object, or the bare ``{}`` a nudge-loop spiral ends in —
-    #1732).  Reading only the ``response`` (never the input ``messages``) is what
-    makes this immune to a DELIBERATELY-injected recovery trigger: an ``_Inject*`` bail is
-    returned as a SYNTHETIC ``LlmResponse`` that bypasses the persisting real client, so it
-    never lands in a persisted ``response`` — a ``bail_injected`` sample is tagged pathology
-    only if the LIVE model additionally produced its own poison, never for the forced trigger.
+    #1732).  It reads only the ``response`` — what the model itself produced — and never the
+    input ``messages``, so text the model was HANDED (a page quoting a collapse, a framework
+    nudge) cannot tag a sample.
 
     **The nudge-frame boundary (#1732).** Repeated recovery-nudge frames are DELIBERATELY not
-    counted as a pathology signal: a nudge is an INPUT message, and reading input would forfeit
-    the injection-immunity above (an injected-recovery case produces exactly one live nudge by
-    design, so naive nudge-counting would false-tag its fail path as pathology) and would need
+    counted as a pathology signal: a nudge is an INPUT message, and counting input would need
     an arbitrary count threshold.  A nudge loop is a *symptom* whose *cause* is the model's own
     fragment OUTPUT — the terminal ``{}`` / call-fragment reply the scan already catches on the
-    ``response`` — so classifying on that output tags the #1731 spiral pathology at the root
-    while the output-only immunity holds.  (A spiral whose persisted output stays genuinely
-    clean has no poison to tag and reads harness/behavioral — correctly: no pathology fired.)"""
+    ``response`` — so classifying on that output tags the #1731 spiral pathology at the root.
+    (A spiral whose persisted output stays genuinely clean has no poison to tag and reads
+    harness/behavioral — correctly: no pathology fired.)"""
     return any(_response_is_poison(row) for row in live_prompts(db))
 
 
@@ -935,78 +804,14 @@ def _stamp_cause(db: Database, result: SampleResult, *, timed_out: bool = False)
     Called at every runner's per-sample append site so the cause rides into the
     ``results.jsonl`` record and the RESULT-line cause tally.
 
-    The poison scan runs whatever the sample scored HERE, because on the cohort path what it
-    scored here is nothing: a ported sample is graded from its cohort's claims at case close,
-    long after this database is gone, so a scan skipped on a drive-time pass would leave every
-    later-failing sample unclassifiable (#2125)."""
+    The poison scan runs whatever the sample scored HERE, because what it scored here is
+    nothing: a sample is graded from its cohort's claims at case close, long after this
+    database is gone, so a scan skipped on a drive-time pass would leave every later-failing
+    sample unclassifiable (#2125)."""
     result.observe_faults(timed_out=timed_out, pathology=run_exhibited_pathology(db))
 
 
-# ── Graded-scorer dispatch + framework guard-as-Check (the runners' scoring seam) ──
-def _scorer_is_graded(scored: list[Check | str]) -> bool:
-    """Did the scorer return graded ``Check``s (partial credit) rather than binary failure
-    strings?  The runners dispatch on this: a graded return scores as passed/total with the
-    framework guard Checks prepended, a binary one keeps the all-or-nothing string path."""
-    return bool(scored) and isinstance(scored[0], Check)
-
-
-def _guarded_graded(scored: list[Check | str], guards: list[Check]) -> SampleResult:
-    """A graded sample result with the runner's framework guard Checks PREPENDED (guard-as-Check):
-    a recovery runner's 'the injected bail fired' contract rides as a
-    scored ``Check`` a scorer author can't omit, so a vacuous run — the injected trigger never
-    fired — can't score green off the scorer's own checks alone."""
-    checks = [check for check in scored if isinstance(check, Check)]
-    return SampleResult.graded([*guards, *checks])
-
-
-def _bail_fired_check(bail_injected: bool) -> Check:
-    """The 'the forced bail actually fired' contract guard as a scored ``Check`` — the graded-path
-    twin of the binary path's ``forced bail never fired — contract not exercised`` failure."""
-    return Check(
-        "forced bail fired — contract exercised",
-        bail_injected,
-        kind="guard",
-        rationale=None
-        if bail_injected
-        else "the injected bail never fired — the recovery contract was not exercised",
-    )
-
-
-def last_tool_args(db: Database, tool_name: str) -> dict | None:
-    """Parsed ``arguments`` of the most recent ``tool_name`` call this run (``None``
-    if never called).  Like ``tool_was_called`` but returns the call's args — e.g.
-    read a write call's ``entries``.  Sourced from the persisted promptlog
-    (newest-first), so it's the real record of what the model emitted, not a
-    harness spy.  (Note: ``done`` is argless since #1569, so ``last_tool_args(db,
-    "done")`` is ``{}`` when it closed.)"""
-    for row in live_prompts(db):
-        for call in _response_tool_calls(row):
-            if tool_call_name(call) == tool_name:
-                try:
-                    return json.loads(call.get("function", {}).get("arguments") or "{}")
-                except json.JSONDecodeError, TypeError:
-                    return {}
-    return None
-
-
-def tool_call_sequence(db: Database) -> list[str]:
-    """Every tool the model invoked this run, in chronological call order.
-
-    ``recent_prompts`` returns newest-first, so walk it reversed to read the run
-    forward; within one response the ``tool_calls`` array is already in emission
-    order.  This is the ordering primitive for the multi-step speakable cases: a
-    compound NL instruction must fire the RIGHT tools in the RIGHT order, and this
-    is the persisted record of what actually fired (not a harness spy)."""
-    names: list[str] = []
-    for row in reversed(live_prompts(db)):
-        for call in _response_tool_calls(row):
-            name = tool_call_name(call)
-            if name:
-                names.append(name)
-    return names
-
-
-# ── Shared loop-health + reply helpers (uniform across the eval case files) ──
+# ── Reading a re-rolled draw off the promptlog ───────────────────────────────
 # The text-bail nudges a pre-#1839 loop injected as a user turn.  They can no
 # longer occur — PR #1840 deleted the constants and the validators that appended
 # them — so these markers read HISTORICAL rows only, and a sample recorded before
@@ -1016,10 +821,6 @@ _LEGACY_BAIL_NUDGE_MARKERS = (
     "could not be parsed as a tool call",  # the retired Prompt.TOOL_FORMAT_NUDGE
     "wrote a tool call as plain text",  # the retired Prompt.CHAT_CALL_AS_TEXT_NUDGE
 )
-# The empty-response continue nudge, retired the same way in #1937 — an empty chat draw
-# is discarded and re-rolled now, so this too reads HISTORICAL rows only.  Kept for the
-# same reason as the markers above: a sample recorded before that change still reports it.
-_CONTINUE_NUDGE_MARKER = "Please provide your response"  # the retired Prompt.CONTINUE_NUDGE
 
 
 def _legacy_bail_nudge_fired(db: Database) -> bool:
@@ -1072,19 +873,6 @@ def draw_rerolled(db: Database) -> bool:
     return _same_context_drawn_twice(db) or _legacy_bail_nudge_fired(db)
 
 
-def continue_nudge_fired(db: Database) -> bool:
-    """True when any prompt's message array carries the empty-response retry nudge — the
-    legacy leg for it, since #1937 rerolls that draw instead of nudging about it."""
-    return any(row.messages and _CONTINUE_NUDGE_MARKER in row.messages for row in live_prompts(db))
-
-
-def routing_clean(db: Database) -> bool:
-    """The uniform loop-health verdict every case reports as an ADVISORY check
-    (``Check(..., scored=False)``): no draw was re-rolled AND no continue nudge
-    fired."""
-    return not draw_rerolled(db) and not continue_nudge_fired(db)
-
-
 def outgoing_replies(db: Database) -> list[str]:
     """Every message Penny sent this sample (the per-turn replies), oldest first."""
     entries = require_memory(db, "penny-messages").read_recent(window_seconds=3600, cap=None)
@@ -1127,54 +915,6 @@ def chat_run_tool_sequences(
     return [sequences[run_id] for run_id in order]
 
 
-def is_ordered_subsequence(expected: list[str], actual: list[str]) -> bool:
-    """True when every name in ``expected`` appears in ``actual`` in that relative
-    order — extra calls before, between, or after are allowed.  This is the
-    ordering contract for a multi-step NL sequence: the named tools fired, and in
-    the order the user described them, while tolerating an extra browse hop (a
-    read of a linked page) or a dedup re-read the model interleaves."""
-    remaining = iter(actual)
-    return all(name in remaining for name in expected)
-
-
-def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
-    """Every string value the model passed for ``field`` across all ``tool_name``
-    calls this run.  Lets a scorer assert WHICH collections a multi-read swept
-    (the ``memory`` field of each ``collection_read_latest``) without re-parsing
-    the promptlog.  Sourced from the persisted promptlog (the real record)."""
-    values: list[str] = []
-    for row in live_prompts(db):
-        for call in _response_tool_calls(row):
-            if tool_call_name(call) != tool_name:
-                continue
-            try:
-                args = json.loads(call.get("function", {}).get("arguments") or "{}")
-            except json.JSONDecodeError, TypeError:
-                continue
-            value = args.get(field)
-            if isinstance(value, str):
-                values.append(value)
-    return values
-
-
-def _is_bracket_wrapped(key: str) -> bool:
-    """True when ``key`` is wrapped in display brackets (``[foo]``) — the copied
-    ``[key]`` render form, never a real key."""
-    return len(key) > 2 and key.startswith("[") and key.endswith("]")
-
-
-_NUMBERED_LINE = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
-
-
-def looks_numbered(text: str) -> bool:
-    """True when ``text`` reads as a numbered list (≥2 lines like ``1.`` / ``2)``).
-
-    Used by format contracts: a prompt the model follows reliably is a numbered
-    instruction/tool-call recipe, not flowing prose.
-    """
-    return len(_NUMBERED_LINE.findall(text)) >= 2
-
-
 def tool_call_name(call: dict) -> str:
     """One logged call's tool name, normalised the way PRODUCTION normalises it.
 
@@ -1185,10 +925,10 @@ def tool_call_name(call: dict) -> str:
     registry lookup, done-detection, dedup and result framing all see the clean identifier, and
     the eval reading the raw one was the single exception.
 
-    What it cost while it was the exception: `tool_was_called`, `count_tool_calls` and the
-    sequence readers silently missed a call the store proves ran, which converted a correct
-    sample into an outlier for a divergence that never happened.  Every case in the suite that
-    counts or detects a tool call was exposed to it, not just the one that surfaced it."""
+    What it cost while it was the exception: the sequence readers silently missed a call the
+    store proves ran, which converted a correct sample into an outlier for a divergence that
+    never happened.  Every case that measures a tool sequence was exposed to it, not just the
+    one that surfaced it."""
     return strip_harmony_control_tokens((call.get("function") or {}).get("name") or "")
 
 
@@ -1240,12 +980,6 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
         url = params.get("url", "").lower()
         for page in pages:
             if page.match.lower() in url:
-                if page.channel_outage:
-                    # A whole-channel outage (no browser connected).  Raised straight
-                    # here (bypassing _read_page's retry loop, which BrowseChannelUnavailableError
-                    # deliberately isn't a ConnectionError to trigger) so the tool renders
-                    # the consolidated outage banner without the real backoff wait.
-                    raise BrowseChannelUnavailableError("no browser is connected")
                 if page.fails:
                     raise _BrowseReadError(
                         f"failed to read {url} after 3 attempts: the source could not be read"
@@ -1315,46 +1049,24 @@ def _refuse_dead_cohort(case_id: str, results: list[SampleResult], intended: int
     )
 
 
-def _assert_threshold(
-    case_id: str,
-    results: list[SampleResult],
-    min_pass_rate: float | None,
-    *,
-    intended: int,
-    gate_pathology_excluded: bool = False,
-) -> None:
-    """Print the case's X/Y pass rate, and — unless report-only — gate on it.
+def _report_result(case_id: str, results: list[SampleResult], *, intended: int) -> None:
+    """Refuse a dead cohort, then print the case's RESULT line.  Nothing here gates on a score.
 
     ``intended`` is how many samples the case ASKED for: a cohort that mostly died is
-    refused here before any threshold is compared, report-only cases included, because
-    "no result" is not a score that report-only means to tolerate.
+    refused before anything is printed, because "no result" is not a low score.
 
-    ``min_pass_rate=None`` is report-only: the X/Y line and any per-sample
-    failures print for insight, but the case never fails the run.  Use it for
-    inherently stochastic behaviours we want to *observe* rather than gate (the
-    self-correction cases — the model can't clear every cross-run repeat, and a
-    flaky red adds no signal beyond the printed rate).
-
-    ``gate_pathology_excluded=True`` gates on the **pathology-excluded** mean
-    (#1695) instead of the raw mean — the honest read of model behaviour, over
-    every sample that is NOT a pathology failure (a reroll-guard collapse can't
-    sink the bar).  This is what lets a case that dispatches reliably but for the
-    known gpt-oss degeneracy collapse carry its true bar (e.g. the speakable
-    sequence cases restored to 0.8, #1698) rather than a bar lowered to absorb
-    that pathology.  The raw mean + the pathology count stay visible in the
-    printed cause line, so a pathology spike remains legible.
+    The line carries two numbers over the per-sample scores (claims passed of claims
+    answered): their MEAN, and the all-pass count beside it (samples every claim was true
+    of), so a mean propped up by partial credit is visible.  A second line carries the
+    failure-cause read (#1695): the pathology-excluded mean and the
+    behavioral/pathology/harness tally, so a score sunk by model NOISE (a degeneracy spike)
+    reads distinctly from one sunk by the model getting it WRONG.  Then, per sample that
+    missed something, its score and what missed.
     """
     _refuse_dead_cohort(case_id, results, intended)
     total = len(results)
     mean = sum(result.score for result in results) / total if total else 0.0
     all_pass = sum(1 for result in results if result.passed)
-    # Dual metric: the MEAN of per-sample scores (partial credit) is what the case gates on;
-    # the all-pass count (samples that passed EVERY applicable check — ``SampleResult.passed``)
-    # is the strict companion beside it, so a mean propped up by partial credit is visible.
-    metric = f"mean {mean:.2f} · all-pass {all_pass}/{total}"
-    # Failure-cause read (#1695): the pathology-excluded mean + the behavioral/pathology/harness
-    # tally, on a second line, so a score sunk by model NOISE (a degeneracy spike) reads distinctly
-    # from a score sunk by the model getting it WRONG (the signal the loop chases).
     causes = eval_artifacts.sample_causes(results)
     excluded_mean, kept = eval_artifacts.pathology_excluded(
         [result.score for result in results], causes
@@ -1362,29 +1074,12 @@ def _assert_threshold(
     cause_line = eval_artifacts.render_cause_summary(
         eval_artifacts.count_causes(causes), excluded_mean, kept
     )
-    # Per-sample detail: the score (1.0/0.0 for binary, the check fraction for graded) and
-    # what missed — for every sample that wasn't perfect.
-    detail = "\n".join(
-        f"  [{i + 1}] {result.score:.2f}"
-        + (f" — {'; '.join(result.failed)}" if result.failed else "")
-        for i, result in enumerate(results)
-        if result.failed
-    )
-    if min_pass_rate is None:
-        print(f"\nRESULT [{case_id}] {metric} across {total} samples (report-only)")
-        print(f"  {cause_line}")
-        if detail:
-            print(detail)
-        return
-    # Which metric the gate compares: the pathology-excluded mean when the case opts in
-    # (#1698 — model NOISE can't sink the bar), else the raw mean.
-    gated_value = excluded_mean if gate_pathology_excluded else mean
-    gated_label = "pathology-excluded mean" if gate_pathology_excluded else "mean"
-    need = f"need {gated_label} >={min_pass_rate}"
-    print(f"\nRESULT [{case_id}] {metric} across {total} samples ({need})")
+    metric = f"mean {mean:.2f} · all-pass {all_pass}/{total}"
+    print(f"\nRESULT [{case_id}] {metric} across {total} samples")
     print(f"  {cause_line}")
-    if gated_value < min_pass_rate:
-        pytest.fail(f"{case_id}: {gated_label} {gated_value:.2f} < {min_pass_rate}:\n{detail}")
+    for index, result in enumerate(results):
+        if result.failed:
+            print(f"  [{index + 1}] {result.score:.2f} — {'; '.join(result.failed)}")
 
 
 def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: bool) -> None:
@@ -2013,7 +1708,7 @@ def _turns_to_events(
 
 
 def _assign_check_ids(checks: list[Check]) -> dict[int, str]:
-    """Assign each check its ``Cn`` id (or ``Gn`` for a framework guard), in scorer order."""
+    """Assign each check its ``Cn`` id (or ``Gn`` for a framework guard), in order."""
     ids: dict[int, str] = {}
     counters = {"C": 0, "G": 0}
     for check in checks:
@@ -2041,7 +1736,7 @@ def _build_check_views(
     case_id: str,
 ) -> list[report.CheckView]:
     """Resolve each ``Check`` into a ``report.CheckView`` — its id, class, anchor event (``None`` →
-    run-close), rationale/cause, and baseline flip — in scorer order."""
+    run-close), rationale/cause, and baseline flip — in order."""
     ids = _assign_check_ids(result.checks)
     cause = _cause_word(result.cause)
     views: list[report.CheckView] = []
@@ -2085,7 +1780,7 @@ def _sample_banner(cost: PromptPerf, result: SampleResult) -> str:
     """The per-sample banner tail from what the sample COST and the verdict its case settled on.
 
     The ONE place a banner is made, and it is made at the flush rather than when the sample's
-    database closes: a ported sample has no verdict then — its cohort's claims are answered at
+    database closes: a sample has no verdict then — its cohort's claims are answered at
     case close — so a banner built at drive time read ``✅ pass`` above a sample the claims
     failed or the pooler excluded (#2127).
 
@@ -2186,8 +1881,8 @@ class _HeldSample:
     settle (#2127).
 
     The transcript is assembled while the sample's promptlog is still readable — that is the
-    only moment it exists — but the block's BANNER states the sample's VERDICT, and a ported
-    sample has none then: its cohort's claims are answered at case close.  So the block is
+    only moment it exists — but the block's BANNER states the sample's VERDICT, and a sample
+    has none then: its cohort's claims are answered at case close.  So the block is
     RENDERED at the flush, its banner built there from the score the case settled on and the
     cost read while the database was live."""
 
@@ -2528,13 +2223,13 @@ async def _run_samples(
 
 # ── The cohort: one request, K phrasings, pooled (#1994/#1995) ───────────────
 #
-# A ported case reads as `<priors> / <trigger the action> / <assertions>`, and everything
+# A case reads as `<priors> / <trigger the action> / <assertions>`, and everything
 # below is the MECHANISM behind the middle line: which arm a sample runs, what it left
 # behind, whether its measured turn ran at all, and how the case's three sections are
 # assembled once every sample is in.  What is asserted and what is measured stay with the
-# CASE, so porting the next one is writing arms + fixtures + claims, never harness.
+# CASE, so writing the next one is writing arms + fixtures + claims, never harness.
 
-# The model a ported case is measured on — one cohort per id, so a case parametrized over it
+# The model a case is measured on — one cohort per id, so a case parametrized over it
 # produces one score and one threshold set per model, which is what a per-model ceiling needs.
 #
 # WHICH models exist is the ROSTER's business (`roster.py`, #1999): it is the one configured
@@ -2571,18 +2266,6 @@ NO_CLASSIFIER_DRAW = "the state classifier's call failed, so the turn ran on an 
 NO_CHAT_DRAW = "the chat model's call failed at the endpoint, so the reply is Penny's canned error"
 NO_DRAW = "the draw never returned a usable answer — it failed whole after its rerolls"
 NO_CYCLE = "the dispatcher refused a cycle, so it never ran against the world the case built"
-# A RECOVERY case forces its fault; the injector reports whether it actually fired.  A sample
-# it never fired on answered an unbroken turn, so there was no recovery to observe and its end
-# state says nothing about the behaviour the case is named for.  That is HARNESS debris, not a
-# model failure — a distinction with teeth, since the sabotage misfires in practice.
-#
-# THE COST, STATED (#2018): `bail_injected` does not say the fault could not be APPLIED, it
-# says the turn took a route the injector WATCHES.  A turn that took an unwatched route leaves
-# the cohort here, and whatever else it did goes unjudged with it.  Named per sample and
-# counted in the report's harness section rather than absorbed, so the rate is readable;
-# whether an unwatched route belongs in the cohort at all is #2018's to decide.
-INJECTION_NEVER_FIRED = "the forced fault never fired — the turn ran unbroken, so no recovery"
-
 # The sample the rig never got STARTED (#2070).  Its siblings above are read off a live
 # database, because the sample ran and left one; this one is written by ``_run_samples``
 # when standing the world up raised — a preflight against an unreachable endpoint, a
@@ -2612,12 +2295,10 @@ NEVER_FINISHED = "never finished"
 # knows: which rows are this sample's own.
 
 
-# How a ported case reads one sample: its live database, the reply it produced, the
-# collections that existed before it, the entries the store held before it, and — for a case
-# that forced a fault — whether the injector actually fired.  ``None`` for the injector arm
-# means the case installed none.
+# How a chat case reads one sample: its live database, the reply it produced, the
+# collections that existed before it, and the entries the store held before it.
 Observer = Callable[
-    [Database, str, set[str], list[eval_cohort.StoredEntry], bool | None],
+    [Database, str, set[str], list[eval_cohort.StoredEntry]],
     eval_cohort.SampleObservation,
 ]
 
@@ -2969,7 +2650,6 @@ def _observe_sample(
     reply: str,
     before: set[str],
     held_before: list[eval_cohort.StoredEntry],
-    injected: bool | None,
 ) -> eval_cohort.SampleObservation:
     """Read everything one CHAT sample left behind, while its database is still live.
 
@@ -2981,7 +2661,7 @@ def _observe_sample(
     calling this one: reused elsewhere it returns a row that is structurally fine and
     substantively empty (#2017).
     """
-    exclusion = _exclusion(db, reply, injected)
+    exclusion = _exclusion(db, reply)
     if exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
@@ -3004,7 +2684,6 @@ def _observe_sample(
         mechanisms=_mechanism_records(db, before),
         muted=db.users.is_muted(TEST_SENDER),
         images=stored_images(db),
-        delivered=outgoing_replies(db),
         tool_sequence=_chat_tool_sequence(db),
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
@@ -3017,16 +2696,13 @@ def _observe_sample(
 # The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every
 # shape shares — a sample's database exists from sample START, so a file is not a result — and
 # each gate adds whatever "this shape produced nothing" means for the shape it drives.
-def _exclusion(db: Database, reply: str, injected: bool | None) -> str | None:
+def _exclusion(db: Database, reply: str) -> str | None:
     """Why a CHAT sample cannot be counted, or ``None`` when it can.
 
     Chat's own second condition is an empty reply: the turn is a conversation and a turn that
     said nothing produced no behaviour to read.  It is stated HERE rather than shared, because
     it is false of every other shape — a micro-context sample has no reply at all, and a gate
     that voided one for that would void the entire cohort and refuse the run (#2017).
-
-    ``injected`` is the injector's own account of whether it fired, and ``None`` for a case
-    that installs none — so the third condition is asked only of a case that forced a fault.
 
     Every chat turn opens with a state-classifier draw, so a sample whose turn ran but whose own
     rows carry none is one whose classifier call failed: read off the promptlog, since a call
@@ -3041,8 +2717,6 @@ def _exclusion(db: Database, reply: str, injected: bool | None) -> str | None:
         return NO_CHAT_DRAW
     if not reply.strip():
         return NO_REPLY
-    if injected is False:
-        return INJECTION_NEVER_FIRED
     return None
 
 
@@ -3090,7 +2764,7 @@ def _driven_cohort(
     voided: Sequence[eval_cohort.SampleObservation],
     arms: Sequence[eval_cohort.Arm],
 ) -> Cohort:
-    """The cohort a ported case makes its claims against — every sample the case drove.
+    """The cohort a case makes its claims against — every sample the case drove.
 
     Both halves, always: the samples that produced an observation, then the named void for
     each sample that never started (#2070).  A cohort listing only what ran reports a lost
@@ -3106,12 +2780,6 @@ def _driven_cohort(
         samples=[r.observation for r in results if r.observation is not None] + list(voided),
         arms=arms,
     )
-
-
-def _no_scorer(db: Database, before: set[str], reply: str) -> list[Check]:
-    """A ported case is graded from its cohort's CLAIMS, not from a per-sample callback, so the
-    sample itself scores nothing at drive time."""
-    return []
 
 
 def _phrasing_label(phrasings: Sequence[str], sample_index: int, per_phrasing: int) -> str:
@@ -3167,8 +2835,7 @@ def _arms(inputs: Sequence[str], worlds: Sequence[World], per_phrasing: int, sam
 
     ``worlds`` is either one world for every arm (the chat and micro-context shape, where the
     ground is a property of the CASE) or one per arm (a collector, where the ground moves with
-    the inputs).  An empty ``inputs`` means the case is not ported and takes its fixture's old
-    path, so the arms come back empty."""
+    the inputs)."""
     each = per_phrasing or samples
     ground = (
         list(worlds) if len(worlds) > 1 else [(worlds[0] if worlds else _NO_WORLD) for _ in inputs]
@@ -3201,8 +2868,6 @@ class _PendingCase:
     case_id: str
     family: str | None
     module: str
-    min_pass_rate: float | None
-    gate_pathology_excluded: bool
     behaviour: str = ""
     intended: int = 0
     cohort: Cohort | None = None
@@ -3228,7 +2893,7 @@ class _PendingCase:
         return self.cohort
 
     def finish(self) -> None:
-        """Deal the claims back out to their samples, record, report, and gate."""
+        """Deal the claims back out to their samples, then write the document and the record."""
         self._grade()
         # The claims have settled every sample's score, so the blocks can state a verdict — and
         # they go down BEFORE the document's head is written over them (#2127).
@@ -3241,27 +2906,34 @@ class _PendingCase:
         _record_case_report(
             self.driven_cohort, observations, standings, self.perf, self.driven, self.behaviour
         )
-        _finish_case(
-            self.case_id,
-            self.family,
-            self.module,
-            self.results,
-            self.perf,
-            self.min_pass_rate,
-            self.gate_pathology_excluded,
-            self.driven,
-            self.intended,
-            _expandable(standings),
-            Counter(standing.standing.value for standing in standings),
-            _variance_readings(observations, self.driven_cohort.features),
+        self._record(observations, standings)
+
+    def _record(
+        self,
+        observations: Sequence[eval_cohort.SampleObservation],
+        standings: Sequence[eval_cohort.SampleStanding],
+    ) -> None:
+        """Write the case's ``results.jsonl`` record, print its perf and RESULT lines, and
+        refuse a cohort that mostly never ran."""
+        eval_artifacts.record_case(
+            case_id=self.case_id,
+            family=self.family,
+            module=self.module,
+            results=self.results,
+            perf=self.perf,
+            expand_samples=_expandable(standings),
+            standing_counts=Counter(standing.standing.value for standing in standings),
+            variance=_variance_readings(observations, self.driven_cohort.features),
         )
+        self.perf.report(self.case_id, self.driven)
+        _report_result(self.case_id, self.results, intended=self.intended)
 
     def _grade(self) -> None:
         """Every claim the cohort answered, redistributed to the sample that answered it — and
         every sample the cohort refused to pool, recorded as the loss it is.
 
         The one seam where cohort-level claims meet per-sample grading, and therefore the one
-        place a ported sample's score, its failure cause and its exclusion are settled — so the
+        place a sample's score, its failure cause and its exclusion are settled — so the
         case document and ``results.jsonl`` render one scored object rather than two (#2125)."""
         by_sample = _cohort_checks(self.driven_cohort)
         for result in self.results:
@@ -3305,13 +2977,11 @@ def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
     return [index + 1 for index, s in enumerate(standings) if s.worth_opening]
 
 
-# The one sentence a ported case states about itself, in the fixed form: "In <the locus>, when
-# <X>, Penny <does Y>."  REQUIRED on the cohort path and nowhere else — that path is what every
-# ported case runs on, so a case reaching it without a sentence is one whose contract nobody
-# wrote down, and the report would render a rate with nothing saying what was being asked.  The
-# inline path predates the convention and carries ~40 cases that are their own tickets' to port.
+# The one sentence a case states about itself, in the fixed form: "In <the locus>, when <X>,
+# Penny <does Y>."  REQUIRED: a case without one is a case whose contract nobody wrote down,
+# and the report would render a rate with nothing saying what was being asked.
 _NO_BEHAVIOUR = (
-    '{case_id}: a ported case must state the behaviour it checks — behaviour="In <the locus>, '
+    '{case_id}: a case must state the behaviour it checks — behaviour="In <the locus>, '
     'when <X>, Penny <does Y>.", naming the shipped agent as the locus'
 )
 
@@ -3327,119 +2997,52 @@ class _Unstated:
     """A parameter nobody passed.
 
     ``behaviour`` can use the empty string for this because a case always has something to
-    say; ``min_pass_rate`` cannot, because ``None`` is a VALUE there — the report-only setting
-    every ported case states deliberately — so "not stated" needs a marker of its own."""
+    say; ``min_pass_rate`` cannot, because ``None`` is the VALUE every case states."""
 
     def __repr__(self) -> str:
         return "<unstated>"
 
 
 UNSTATED = _Unstated()
-# What a driver takes for a threshold: a rate, the report-only ``None``, or nothing at all.
+# What a driver takes for ``min_pass_rate``: the report-only ``None``, or nothing at all.  A
+# number is admitted by the type so that passing one is refused by name rather than by a
+# type checker nobody reads at run time.
 PassRate = float | None | _Unstated
 
-# The report-only setting is REQUIRED on the cohort path and nowhere else, for the reason the
-# behaviour sentence is: that path is what every ported case runs on, and a case reaching it
-# without stating its threshold is gated at the inline path's default without anyone deciding
-# that.  Thresholds are the code owner's — a case author states ``None`` and a run PROPOSES.
-# The inline path predates the convention and keeps its default, so the ~40 cases on it are
-# untouched.
-# What the INLINE path has always defaulted to, named rather than repeated at each driver.
-_INLINE_MIN_PASS_RATE = 0.75
-
+# A case's claims are counted and reported, never gated (docs/eval-case-design.md §8), and
+# every case says so in as many words: ``min_pass_rate=None``.  Stated rather than defaulted,
+# so the report-only setting is a line a reviewer reads in the case.
 _NO_PASS_RATE = (
-    "{case_id}: a ported case must state its threshold — min_pass_rate=None, because a ported "
-    "case lands report-only and a floor is the code owner's to accept, never a case author's"
+    "{case_id}: a case must state min_pass_rate=None — its claims are counted and reported, "
+    "never gated"
+)
+_PASS_RATE_FLOOR = (
+    "{case_id}: min_pass_rate={given!r} — an assertion carries no floor, so there is nothing "
+    "to compare it with; state min_pass_rate=None"
 )
 
 
-def _stated_pass_rate(case_id: str, min_pass_rate: PassRate, ported: bool) -> float | None:
-    """The threshold this case runs under, refusing an unstated one on the cohort path."""
-    if not isinstance(min_pass_rate, _Unstated):
-        return min_pass_rate
-    if ported:
+def _require_report_only(case_id: str, min_pass_rate: PassRate) -> None:
+    """Refuse a case that did not state the report-only setting, or stated a floor."""
+    if isinstance(min_pass_rate, _Unstated):
         raise ValueError(_NO_PASS_RATE.format(case_id=case_id))
-    return _INLINE_MIN_PASS_RATE
+    if min_pass_rate is not None:
+        raise ValueError(_PASS_RATE_FLOOR.format(case_id=case_id, given=min_pass_rate))
 
 
-# What a case scored INLINE is refused for omitting.  A ported case leaves these unstated
-# because its cohort's claims replace the per-sample scorer entirely — which is why they carry
-# defaults at all — and an inline case that omits one produces NO checks: its scorer yields an
-# empty list, `SampleResult.graded([])` scores 1.0 over nothing, and the case reports a green
-# every sample it drove.  A vacuous pass is the quieter failure and the harder one to notice.
-_NO_SCORER_INPUT = (
-    "{case_id}: a case scored inline must state its {what} — without it the scorer produces "
-    "no checks at all and every sample reports green over nothing"
+# What every driver refuses a case for omitting: the input its cohort's arms are built from.
+# A case is ONE ask in its wordings, sampled and pooled, and its body makes claims against the
+# cohort that comes back — a driver has no other way to score one.
+_NO_ASK = (
+    "{case_id}: {driver} needs {what} — a case drives one ask in its wordings and makes its "
+    "claims against the cohort that comes back (docs/eval-case-design.md §4)"
 )
 
 
-def _refuse_unscorable(case_id: str, ported: bool, **stated: Sequence[object]) -> None:
-    """Refuse an INLINE case whose scorer has nothing to score.
-
-    Runs before any sample, for the same reason the behaviour and threshold guards do: a case
-    that cannot be graded should say so in a second rather than after N live model calls."""
-    if ported:
-        return
-    for what, value in stated.items():
-        if not value:
-            raise ValueError(_NO_SCORER_INPUT.format(case_id=case_id, what=what))
-
-
-def _finish_case(
-    case_id: str,
-    family: str | None,
-    module: str,
-    results: Sequence[SampleResult],
-    perf: _Perf,
-    min_pass_rate: float | None,
-    gate_pathology_excluded: bool,
-    driven: int,
-    intended: int,
-    expand_samples: Sequence[int] = (),
-    standing_counts: Mapping[str, int] | None = None,
-    variance: Sequence[eval_artifacts.VarianceReading] = (),
-) -> None:
-    """Record the case's artifact, print its perf line, and apply its gate."""
-    # Where an inline case's scores settle, and the blocks state their verdict.  A no-op for a
-    # ported case, whose blocks `_PendingCase.finish` already rendered off its graded claims.
-    _flush_sample_blocks(case_id)
-    _record_unported_prompts(case_id, driven)
-    eval_artifacts.record_case(
-        case_id=case_id,
-        family=family,
-        module=module,
-        results=results,
-        perf=perf,
-        min_pass_rate=min_pass_rate,
-        gate_pathology_excluded=gate_pathology_excluded,
-        expand_samples=expand_samples,
-        standing_counts=standing_counts,
-        variance=variance,
-    )
-    perf.report(case_id, driven)
-    _assert_threshold(
-        case_id,
-        list(results),
-        min_pass_rate,
-        intended=intended,
-        gate_pathology_excluded=gate_pathology_excluded,
-    )
-
-
-def _record_unported_prompts(case_id: str, driven: int) -> None:
-    """A case with no cohort still states its system prompts once. No-op off-report.
-
-    A ported case has already popped its prompts into the case document by the time this runs,
-    so this writes only for a case that never built one — which is what keeps the shared-once
-    rendering true of the whole suite rather than only of the part that has been ported."""
-    prompts = _case_prompts.pop(case_id, [])
-    if not prompts:
-        return
-    eval_artifacts.record_case_report(
-        case_id,
-        "",
-        report.render_prompt_variants(report.prompt_variants(prompts, total=driven)),
-    )
+def _require_ask(case_id: str, driver: str, what: str, given: Sequence[object] | None) -> None:
+    """Refuse a case that names nothing to drive, before any sample runs."""
+    if not given or (isinstance(given, str) and not given.strip()):
+        raise ValueError(_NO_ASK.format(case_id=case_id, driver=driver, what=what))
 
 
 def _cohort_checks(cohort: Cohort) -> dict[str, list[Check]]:
@@ -3523,22 +3126,9 @@ def _record_case_report(
     )
 
 
-# A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
+# A chat-eval runner: a case passes ``ask`` + ``world`` and gets a :class:`Cohort` back to
+# assert against.
 ChatEval = Callable[..., Awaitable["Cohort"]]
-
-
-def _conversation_turns(message: str | None, messages: Sequence[str] | None) -> list[str]:
-    """The user turns to drive, in order — exactly one of ``message`` (a single turn) or
-    ``messages`` (a multi-turn conversation) must be given.  A conversation drives the turns
-    sequentially against the same Penny; Penny sees each earlier turn via the DB history it
-    reconstructs, so a later turn can build on (or adjust) what an earlier one discussed."""
-    if message is not None and messages is None:
-        return [message]
-    if messages is not None and message is None:
-        if not messages:
-            raise ValueError("chat_eval `messages` must contain at least one turn")
-        return list(messages)
-    raise ValueError("chat_eval needs exactly one of `message` or `messages`")
 
 
 async def _seed_sample(
@@ -3607,77 +3197,33 @@ async def _drive_turns(
     return reply
 
 
-def _scored_sample(
-    db: Database,
-    before: set[str],
-    reply: str,
-    score: Scorer,
-    wrapper: _InjectingClient | None,
-) -> SampleResult:
-    """One sample's result from its scorer — graded ``Check``s or binary failure
-    strings — with the forced-bail guard folded in when the case wrapped the client."""
-    scored = list(score(db, before, reply))
-    if _scorer_is_graded(scored):
-        guards = [_bail_fired_check(wrapper.bail_injected)] if wrapper is not None else []
-        return _guarded_graded(scored, guards)
-    fails = [s for s in scored if isinstance(s, str)]  # binary scorer
-    if wrapper is not None and not wrapper.bail_injected:
-        fails.append("forced bail never fired — contract not exercised")
-    return SampleResult.binary(fails)
-
-
-def _guarded_injector(
-    wrapper: _InjectingClient | None, observe: Observer | None
-) -> _InjectingClient | None:
-    """The injector whose misfire is reported as a failed guard CHECK, or ``None``.
-
-    ONE fact — the sabotage never fired — told to whichever half of the report can carry
-    it, and told exactly once.  A case that is OBSERVED reports it as a named exclusion on
-    the observation (``INJECTION_NEVER_FIRED``), because an unbroken turn exercises no
-    recovery and is harness debris rather than the model getting anything wrong; a case
-    scored by a callback has no exclusions section, so the guard Check is where its
-    contract is stated.  Told to both, the same misfire would count twice — once as debris
-    and once as a behavioural failure."""
-    return None if observe is not None else wrapper
-
-
 async def _drive_sample(
     penny: Penny,
     server: MockSignalServer,
     *,
     case_id: str,
     sample_index: int,
-    turns: Sequence[str],
-    score: Scorer,
-    wrap_client: Callable[[LlmClient], _InjectingClient] | None,
+    ask: str,
     timeout: float,
     retryable: bool,
-    observe: Observer | None = None,
+    observe: Observer,
 ) -> SampleResult:
-    """ONE attempt at one sample against an already-seeded Penny: drive the turns,
-    score them, write the sample's report block and dump its thinking.
+    """ONE attempt at one sample against an already-seeded Penny: push the ask, write the
+    sample's report block, read what the turn left behind and dump its thinking.
 
-    A timeout counts as a failed sample, not a crash, and still emits its placeholder
-    block so the transcript's sample count always matches N (#1725/F2).  Raises
-    :class:`_ModelCallError` when the model call itself failed and an attempt remains."""
-    # A recovery case wraps the chat agent's model client to force one bad response
-    # (e.g. a bracket-wrapped key) deterministically.  Keep the wrapper: its
-    # ``bail_injected`` flag is the only proof the sabotage fired — the raw response is
-    # persisted inside the REAL client before the wrapper mutates it, so the promptlog
-    # never shows the injected form and can't be probed for it.
-    wrapper: _InjectingClient | None = None
-    if wrap_client is not None:
-        wrapper = wrap_client(penny.chat_agent._model_client)
-        penny.chat_agent._model_client = wrapper
+    The sample scores nothing here — its cohort's claims are answered at case close.  A
+    timeout still emits its placeholder block, so the transcript's sample count always
+    matches N (#1725/F2).  Raises :class:`_ModelCallError` when the model call itself failed
+    and an attempt remains."""
     before = collection_names(penny.db)
     held_before = _held_entries(penny.db)
     reply = ""
     try:
-        reply = await _drive_turns(penny, server, turns, timeout=timeout, retryable=retryable)
-        result = _scored_sample(penny.db, before, reply, score, _guarded_injector(wrapper, observe))
+        reply = await _drive_turns(penny, server, [ask], timeout=timeout, retryable=retryable)
+        result = SampleResult.graded([])
         _stamp_cause(penny.db, result)
         _write_sample_report(
-            penny.db, case_id, sample_index, result=result, reply=reply, driven=turns
+            penny.db, case_id, sample_index, result=result, reply=reply, driven=[ask]
         )
     except TimeoutError:
         result = SampleResult.binary(["no reply within timeout"])
@@ -3686,32 +3232,25 @@ async def _drive_sample(
     # The observation is read HERE, while this sample's own database is still open — the only
     # moment what the round left behind is available at all.  A timed-out sample reaches this
     # line too, so it is EXCLUDED by name rather than silently absent from the pool.
-    if observe is not None:
-        injected = wrapper.bail_injected if wrapper is not None else None
-        result.observation = observe(penny.db, reply, before, held_before, injected)
+    result.observation = observe(penny.db, reply, before, held_before)
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
 
 
 @pytest.fixture
 def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator[ChatEval]:
-    """Drive the real chat flow N times for one request and return its COHORT.
+    """Drive the real chat flow for one ask and return its COHORT.
 
-    A PORTED case (#1995) passes ``ask`` + ``world`` and gets a :class:`Cohort` back to make
-    its claims against; the three-section report is assembled at teardown, once the test body
-    has made them.  A case not yet ported passes ``message``/``messages`` + ``score`` and is
-    driven and gated inline, exactly as before.
+    A case passes ``ask`` — with ``world`` for what it is answered against, and
+    ``also_phrased`` for the other wordings of that SAME request — and gets a
+    :class:`Cohort` back to make its claims against.  The three-section report is assembled
+    at teardown, once the test body has made them.
 
-    Each sample is fully hermetic — its own mock Signal server, DB, and
-    real-model Penny: seed user (+ any case seed), embed the seeds, push the
-    turn(s), wait for each reply, then score persisted state against the LAST
-    reply.  A per-sample server is essential: a shared one leaks a prior
-    sample's shut-down channel, which then errors on the next sample's
-    broadcast.  A timeout on any turn counts as a failed sample, not a crash.
-
-    Single-message vs. conversation: pass ``message`` for one turn, or
-    ``messages`` for a discuss-then-adjust conversation (see
-    ``_conversation_turns``).
+    Each sample is fully hermetic — its own mock Signal server, DB, and real-model Penny:
+    seed the user and the world (+ any case seed), embed the seeds, push the ask, wait for
+    the reply, then read what the turn left behind.  A per-sample server is essential: a
+    shared one leaks a prior sample's shut-down channel, which then errors on the next
+    sample's broadcast.  A timeout is a sample the pool excludes by name, not a crash.
 
     ``seed_skills`` lays fixture skills into the registry with real description
     embeddings (``_seed_eval_skills``, shared with the classifier runner) — what
@@ -3724,9 +3263,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         *,
         case_id: str,
         behaviour: str = "",
-        message: str | None = None,
-        messages: Sequence[str] | None = None,
-        score: Scorer | None = None,
         ask: str | None = None,
         also_phrased: Sequence[str] = (),
         world: World | None = None,
@@ -3734,58 +3270,42 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         samples_per_phrasing: int = 0,
         seed: Seeder | None = None,
         seed_skills: Sequence[SkillDraft] | None = None,
-        browse: list[CannedPage] | None = None,
         prepare: Preparer | None = None,
-        wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
         timeout: float = 120.0,
         family: str | None = None,
-        gate_pathology_excluded: bool = False,
     ) -> Cohort:
-        """Drive one request and return its COHORT (ported case), or score each sample through
-        a callback (a case not yet ported).
+        """Drive one request in its wordings and return the COHORT.
 
-        A ported case passes ``ask`` — with ``world`` for the pages it is answered against, and
-        ``also_phrased`` for the other wordings of that SAME request — and gets a
-        :class:`Cohort` back to make its claims against.  Analysis then runs over the complete
-        set, which is what the variance statistics want and what a per-sample callback cannot
-        see.  A case with no ``ask`` takes the ``score`` path unchanged."""
+        Analysis runs over the complete set, which is what the variance statistics want and
+        what no single sample can see.  A case with no ``ask`` is refused by name."""
+        _require_ask(case_id, "chat_eval", "ask=<the request>", ask)
+        _require_report_only(case_id, min_pass_rate)
         eval_artifacts.begin_case(case_id)
         # Chat's convenience over the general form: one world, K wordings of one ask.
         arms = _arms(
-            [ask, *also_phrased] if ask is not None else [],
+            [ask or "", *also_phrased],
             [world] if world is not None else [],
             samples_per_phrasing,
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
-        turns = [] if spoken else _conversation_turns(message, messages)
-        driven = arms.driven if spoken else samples
-        pages = list(world.pages) if world is not None else browse
-
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=gate_pathology_excluded,
-                ),
-            )
-            if spoken
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+            ),
         )
 
         def _observe(sample_index: int) -> Observer:
             phrasing = arms.label(sample_index)
             arm = arms.index_of(sample_index)
             name = f"{case_id}-{sample_number(sample_index)} ({phrasing})"
-            return lambda db, reply, before, held_before, injected: _observe_sample(
+            return lambda db, reply, before, held_before: _observe_sample(
                 db,
                 name=name,
                 phrasing=phrasing,
@@ -3793,7 +3313,6 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 reply=reply,
                 before=before,
                 held_before=held_before,
-                injected=injected,
             )
 
         async def _drive(
@@ -3804,7 +3323,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 world=world,
                 seed=seed,
                 seed_skills=seed_skills,
-                browse=pages,
+                browse=list(world.pages) if world is not None else None,
                 prepare=prepare,
             )
             return await _drive_sample(
@@ -3812,48 +3331,28 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 server,
                 case_id=case_id,
                 sample_index=sample_index,
-                turns=[spoken[sample_index]] if spoken else turns,
-                score=score or _no_scorer,
-                wrap_client=wrap_client,
+                ask=spoken[sample_index],
                 timeout=timeout,
                 retryable=retryable,
-                observe=_observe(sample_index) if spoken else None,
+                observe=_observe(sample_index),
             )
 
         results, perf, voided = await _run_samples(
             make_config,
             tmp_path,
             case_id=case_id,
-            samples=driven,
+            samples=arms.driven,
             drive=_drive,
             attempts=_MODEL_CALL_ATTEMPTS,
             model=model,
         )
-        if not spoken:
-            # A case that has not been ported is driven and gated inline, exactly as before, and
-            # gets back a cohort nobody observed — an empty one rather than ``None``, so a ported
-            # case never carries a narrowing assert that every future port would copy.
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                gate_pathology_excluded,
-                driven,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        assert pending is not None
-        pending.add(cohort, results, perf, intended=driven)
+        pending.add(cohort, results, perf, intended=arms.driven)
         return cohort
 
     yield _run
     # The case's claims are made in the TEST BODY, after the drive returns — so the report is
-    # assembled here, once the body has had its say.  A case that drove no cohort finished
-    # inline above and has nothing pending.
+    # assembled here, once the body has had its say.
     for pending in _cohorts.values():
         pending.finish()
     _cohorts.clear()
@@ -3862,7 +3361,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
 class CycleCall(NamedTuple):
     """One tool call a collector cycle made — its name and the arguments it carried.
 
-    The arguments travel as the mapping the ledger stores, because a scorer asks things of
+    The arguments travel as the mapping the ledger stores, because a reader asks things of
     them a typed shape could not answer: WHICH page a browse went to is a question about a
     tool nobody enumerated, and a skill is an arbitrary sequence of them."""
 
@@ -3917,7 +3416,7 @@ def queued_sends(db: Database, collection: str) -> list[str]:
 
     Read EXPLICITLY here rather than through ``pending_items`` because the queue is the
     harness's known blind spot: a collector cycle ENQUEUES, and the drainer that delivers
-    is a separate schedule that may or may not have run by the time a scorer looks.  A
+    is a separate schedule that may or may not have run by the time a claim is answered.  A
     pending-only read therefore reports a delivered notification as silence, which is the
     one thing a notify contract must never get wrong."""
     return [row.content for row in _send_queue_rows(db) if row.collection == collection]
@@ -3999,7 +3498,7 @@ def _ordered_calls(rows: list[PromptLog]) -> list[CycleCall]:
 
 def _decoded_arguments(raw: object) -> dict:
     """One logged call's arguments as a mapping — an unparseable payload reads as no
-    arguments rather than raising, since a scorer asking WHICH page was fetched wants the
+    arguments rather than raising, since a reader asking WHICH page was fetched wants the
     calls that do carry one."""
     if not isinstance(raw, str):
         return raw if isinstance(raw, dict) else {}
@@ -4010,20 +3509,7 @@ def _decoded_arguments(raw: object) -> dict:
     return decoded if isinstance(decoded, dict) else {}
 
 
-# A cycles scorer reads the whole DB plus each cycle's own footprint, in order.  Graded
-# only — every claim about a multi-cycle watch is per-cycle, so binary all-or-nothing would
-# collapse "it fetched but never spoke" and "it did nothing at all" into one number.
-CyclesScorer = Callable[[Database, "list[CycleObservation]"], "list[Check]"]
 CollectorCyclesEval = Callable[..., Awaitable["Cohort"]]
-
-
-def _require_seed(seed: Seeder | None) -> Seeder:
-    """The unported path's seeder, which it must supply.  Stated rather than defaulted: a
-    cycle case with no world laid down would drive against an empty database and every claim
-    would fail for the most boring reason there is."""
-    if seed is None:
-        raise ValueError("collector_cycles_eval needs `seed` when it is not driven with `arms`")
-    return seed
 
 
 class _DrivenCycles(NamedTuple):
@@ -4081,9 +3567,9 @@ async def _drive_cycles(
 
 
 def _cycles_ran_check(driven: _DrivenCycles) -> Check:
-    """The 'the dispatcher actually ran every cycle' guard as a scored ``Check`` — the
-    multi-cycle twin of the recovery runners' ``forced bail fired`` guard, so a case whose
-    collection the dispatcher refused can never read as the model doing nothing."""
+    """The 'the dispatcher actually ran every cycle' guard as a ``Check`` on the sample's
+    own block, so a sample whose collection the dispatcher refused can never read as the
+    model doing nothing.  The cohort excludes that sample by name (``NO_CYCLE``)."""
     return Check(
         "every cycle ran",
         driven.ran,
@@ -4224,14 +3710,12 @@ def _observe_cycles(
 def collector_cycles_eval(
     make_config: Callable[..., Config], tmp_path, request
 ) -> Iterator[CollectorCyclesEval]:
-    """Drive one or SEVERAL real collector cycles (``run_for``) N times for one collection,
-    each cycle against its own browse register, and score them together (#1905).
+    """Drive ONE real collector cycle (``run_for``) per sample and return the case's COHORT.
 
-    The one collector driver there is.  It keeps each cycle's footprint apart rather than
-    folding them into one end state, because a watch's contract is what the SECOND cycle
-    does about a world that moved — no notification when nothing changed, exactly one when
-    something did.  A ported case drives ONE cycle per arm and reads that same footprint,
-    so a single-cycle case needs no driver of its own.
+    The one collector driver there is.  A case passes ``arms`` — five wordings of ONE job's
+    instruction, each bringing its own seed, its own page and its own world — and which
+    behaviour it measures is set by the ENTRY CONDITION each arm's seed lays down (#1905).
+    The cycle's footprint is read off persisted state as a ``CycleObservation``.
 
     Each sample is hermetic (its own mock Signal server, DB and real-model Penny).  Seeds
     run first, then embeddings backfill, then ``prepare`` gets the constructed Penny — a
@@ -4245,37 +3729,30 @@ def collector_cycles_eval(
         case_id: str,
         sample_index: int,
         collection: str,
-        world: World | None,
-        seed: Seeder,
-        cycles: Sequence[list[CannedPage]],
-        score: CyclesScorer | None,
+        arm: CycleArm,
         seed_skills: Sequence[SkillDraft] | None,
         prepare: Preparer | None,
-        observe: Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation] | None,
+        observe: Callable[[Database, _DrivenCycles], eval_cohort.SampleObservation],
     ) -> SampleResult:
         """ONE sample against a constructed Penny: lay its world down, probe it, drive its
-        cycles, score them with the ran-guard folded in, and write its report block."""
+        cycle, and write its report block."""
         seed_user(penny.db)
-        seed_world_stores(penny.db, world)
-        seed(penny.db)
+        seed_world_stores(penny.db, arm.world)
+        arm.seed(penny.db)
         await _embed_seeds(penny)
         if seed_skills:
             await _seed_eval_skills(penny, seed_skills)
         if prepare is not None:
             prepare(penny)
-        driven = await _drive_cycles(penny, collection, cycles)
-        # A ported case is graded from its cohort's CLAIMS, made once every sample has run, so
-        # the sample scores nothing at drive time and carries only the ran-guard.
-        scored: list[Check | str] = (
-            list(score(penny.db, driven.observed)) if score is not None else []
-        )
-        result = _guarded_graded(scored, [_cycles_ran_check(driven)])
+        driven = await _drive_cycles(penny, collection, [arm.pages])
+        # The sample is graded from its cohort's CLAIMS, made once every sample has run, so it
+        # scores nothing at drive time and carries only the ran-guard.
+        result = SampleResult.graded([_cycles_ran_check(driven)])
         _stamp_cause(penny.db, result)
         _write_sample_report(penny.db, case_id, sample_index, result=result)
-        # Read while THIS sample's database is still open — the only moment what the cycles
+        # Read while THIS sample's database is still open — the only moment what the cycle
         # left behind is available at all.
-        if observe is not None:
-            result.observation = observe(penny.db, driven)
+        result.observation = observe(penny.db, driven)
         _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
         return result
 
@@ -4284,9 +3761,6 @@ def collector_cycles_eval(
         case_id: str,
         collection: str,
         behaviour: str = "",
-        seed: Seeder | None = None,
-        cycles: Sequence[list[CannedPage]] = (),
-        score: CyclesScorer | None = None,
         arms: Sequence[CycleArm] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -4296,12 +3770,12 @@ def collector_cycles_eval(
         min_pass_rate: PassRate = UNSTATED,
         family: str | None = None,
     ) -> Cohort:
-        """Drive several real collector cycles N times and return the COHORT (a ported case),
-        or score each sample through ``score`` (a case not yet ported).
+        """Drive one collector cycle per sample and return the COHORT.
 
-        A PORTED case passes ``arms`` — five instances of ONE theme on one program, each
-        bringing its own bound values, its own pages and its own world.  The arms do NOT share
-        a world, which is why the world lives on the arm rather than on the cohort."""
+        The arms do NOT share a world, which is why the world lives on the arm rather than
+        on the cohort.  A case with no ``arms`` is refused by name."""
+        _require_ask(case_id, "collector_cycles_eval", "arms=[CycleArm(...), …]", arms)
+        _require_report_only(case_id, min_pass_rate)
         eval_artifacts.begin_case(case_id)
         driving = _arms(
             [arm.text for arm in arms],
@@ -4309,23 +3783,14 @@ def collector_cycles_eval(
             samples_per_phrasing,
             samples,
         )
-        driven_count = driving.driven if arms else samples
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(arms))
-
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=False,
-                ),
-            )
-            if arms
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+            ),
         )
 
         def _observer(
@@ -4341,40 +3806,27 @@ def collector_cycles_eval(
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            arm = arms[sample_index // driving.per_phrasing] if arms else None
             return await _sample(
                 penny,
                 case_id=case_id,
                 sample_index=sample_index,
                 collection=collection,
-                world=arm.world if arm is not None else None,
-                seed=arm.seed if arm is not None else _require_seed(seed),
-                cycles=[arm.pages] if arm is not None else cycles,
-                score=score,
+                arm=arms[driving.index_of(sample_index)],
                 seed_skills=seed_skills,
                 prepare=prepare,
-                observe=_observer(sample_index) if arms else None,
+                observe=_observer(sample_index),
             )
 
         results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=driven_count, drive=_drive, model=model
+            make_config,
+            tmp_path,
+            case_id=case_id,
+            samples=driving.driven,
+            drive=_drive,
+            model=model,
         )
-        if not arms:
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                False,
-                driven_count,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, driving.arms)
-        assert pending is not None
-        pending.add(cohort, results, perf, intended=driven_count)
+        pending.add(cohort, results, perf, intended=driving.driven)
         return cohort
 
     yield _run
@@ -4385,183 +3837,9 @@ def collector_cycles_eval(
     _cohorts.clear()
 
 
-class _InjectingClient(LlmClient):
-    """Base for the eval injectors that wrap a real ``LlmClient`` to force ONE bad
-    response deterministically, then delegate every other call to the real model.
-
-    Subclasses ``LlmClient`` (so it's assignable to an agent's ``_model_client``)
-    but deliberately skips its ``__init__`` — it owns no real connection, only the
-    wrapped client.  Holds ``bail_injected`` (a declared attribute, so callers read
-    ``wrapper.bail_injected`` directly — no ``getattr`` probing); ``chat`` is
-    overridden by subclasses and every other attribute (e.g. ``model``) forwards to
-    the real client.
-
-    ``target_agent`` CONFINES the sabotage to one caller's turns.  An agent's model client
-    is shared with everything built from it — the browse tool and, through it, every
-    microcontext (``browse-extract``, ``state-classifier``) — so wrapping
-    ``chat_agent._model_client`` does NOT confine the fault to the chat turn: the next
-    ``chat()`` after the turn's browse call is the extractor's, and the bail lands there.
-    Measured on the first ported run, that is where it landed on 12 of 15 gpt-oss samples
-    and 15 of 15 gemma ones: the microcontext discarded it, re-rolled, and the turn under
-    test was never broken — while ``bail_injected`` said the contract had been exercised.
-    Both call sites already pass ``agent_name``, so the caller is a value the client is
-    GIVEN rather than one an injector has to infer.  ``None`` fires on any caller.
-    """
-
-    def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
-        self._real = real
-        self._target_agent = target_agent
-        self.bail_injected = False
-
-    def targets(self, **kwargs) -> bool:
-        """Whether this call belongs to the turn the case is about."""
-        return self._target_agent is None or kwargs.get("agent_name") == self._target_agent
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        raise NotImplementedError
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
-class _InjectAfterToolCall(_InjectingClient):
-    """The mid-turn trigger: delegate to the real model until its first tool call
-    lands, then inject ONE forced bad response (``_bail_response``) and delegate
-    everything after.  Subclasses own only the bail's shape."""
-
-    def __init__(self, real: LlmClient, *, target_agent: str | None = None) -> None:
-        super().__init__(real, target_agent=target_agent)
-        self._saw_tool = False
-
-    def _bail_response(self) -> LlmResponse:
-        raise NotImplementedError
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        """Delegate until the TARGET's first tool call lands, then bail on its next call.
-
-        Both halves are gated on the caller: another agent's tool call must not arm the
-        trigger and must not receive the bail, or the fault is spent on a turn the case is
-        not about — which is exactly what happened before the gate existed."""
-        mine = self.targets(**kwargs)
-        if mine and self._saw_tool and not self.bail_injected:
-            self.bail_injected = True
-            return self._bail_response()
-        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
-        if mine and response.has_tool_calls:
-            self._saw_tool = True
-        return response
-
-
-class _InjectTextBail(_InjectAfterToolCall):
-    """Injects ONE plain-text response right after the model's first tool call.
-
-    It stands in for a draw that should have been a tool call and came back as text
-    (a call written out as text, a leaked envelope, prose), then lets the live model
-    drive the rest of the turn.  ``bail_injected`` records that the forced draw
-    actually fired.
-    """
-
-    def __init__(self, real, bail_text: str, *, target_agent: str | None = None) -> None:
-        super().__init__(real, target_agent=target_agent)
-        self._bail_text = bail_text
-
-    def _bail_response(self) -> LlmResponse:
-        return LlmResponse(message=LlmMessage(role="assistant", content=self._bail_text))
-
-
-class _InjectBracketKey(_InjectingClient):
-    """Rewrites the model's FIRST key-bearing tool call to wrap its key in display
-    brackets (``key='Ark Nova'`` → ``key='[Ark Nova]'``), reproducing the
-    copy-through mistake deterministically against the live model.
-
-    The old ``[key]`` render taught the model to paste the display brackets into a
-    ``key=`` argument; this forces exactly that on the model's own first attempt so
-    the memory-tool teaching rejection fires on every sample, and the live model
-    must recover to the bare key.  Every other call passes through untouched.
-    ``bail_injected`` records the sabotage actually fired (else the contract would
-    be vacuous)."""
-
-    _KEY_TOOLS = ("update_entry", "collection_delete_entry", "collection_get")
-
-    async def chat(self, messages, tools=None, *args, **kwargs):
-        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
-        if self.bail_injected or not response.has_tool_calls:
-            return response
-        for call in response.message.tool_calls or []:
-            if call.function.name not in self._KEY_TOOLS:
-                continue
-            key = call.function.arguments.get("key")
-            if isinstance(key, str) and key and not _is_bracket_wrapped(key):
-                call.function.arguments["key"] = f"[{key}]"
-                self.bail_injected = True
-                break
-        return response
-
-
-# A startup-eval runner: (case_id, commit_message, score) -> asserts threshold.
-StartupEval = Callable[..., Awaitable[None]]
-
-
-@pytest.fixture
-def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> StartupEval:
-    """Drive the real startup-announcement prompt N times and score its text.
-
-    ``get_restart_message`` transforms the latest commit (read from the
-    ``GIT_COMMIT_MESSAGE`` env var, set at build time) into a casual one-line
-    announcement — a single-shot generation prompt, no tools.  Each sample sets
-    the env var to the case's commit, calls the real generator against the real
-    model, and scores the returned string; the prior env value is restored.
-    """
-
-    async def _run(
-        *,
-        case_id: str,
-        commit_message: str,
-        score: TextScorer,
-        samples: int = SAMPLES,
-        min_pass_rate: float | None = 0.75,
-        family: str | None = None,
-    ) -> None:
-        eval_artifacts.begin_case(case_id)
-
-        async def _drive(
-            penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
-        ) -> SampleResult:
-            seed_user(penny.db)
-            announcement = await get_restart_message(penny.db, penny.model_client, commit_message)
-            # Same graded/binary dispatch as the other runners.  Startup has no
-            # injection (no wrapper, no framework guard), so a graded return grades
-            # over the scorer's own Checks with an empty guard list.
-            scored = list(score(announcement))
-            if _scorer_is_graded(scored):
-                result = _guarded_graded(scored, [])
-            else:
-                result = SampleResult.binary([s for s in scored if isinstance(s, str)])
-            _stamp_cause(penny.db, result)
-            return result
-
-        # No exclusions section on this inline-scored runner — the void reaches run health.
-        # It writes no sample report either, so it holds no block and has nothing to flush.
-        results, perf, _voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=samples, drive=_drive
-        )
-        eval_artifacts.record_case(
-            case_id=case_id,
-            family=family,
-            module=request.module.__name__,
-            results=results,
-            perf=perf,
-            min_pass_rate=min_pass_rate,
-        )
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate, intended=samples)
-
-    return _run
-
-
 # ── Classifier eval (#1706 beat 1): one scoped micro-context call per sample ──
-# A classifier-eval runner: a PORTED case passes ``also_asked`` and gets a :class:`Cohort`
-# back to assert against; a case not yet ported keeps the inline path and its threshold.
+# A classifier-eval runner: a case passes ``ask`` + ``also_asked`` and gets a :class:`Cohort`
+# back to assert against.
 ClassifierEval = Callable[..., Awaitable["Cohort"]]
 
 # The fields of a state decision's structured answer, named once.  A case asserts them and
@@ -4630,22 +3908,6 @@ def _observe_classification(
         given=given_to_the_model(db),
         output=_classification_output(decision),
     )
-
-
-# What an unported classification case is scored against, and what it is refused for
-# omitting.  A PORTED case names its expected edge in its own claim instead, so the
-# parameter is optional and this is where the two paths part.
-_NO_EXPECTED_EDGE = (
-    "{case_id}: a case scored inline must name the edge it expects — expected=<state>; a "
-    "ported case states that in its own claim and passes none"
-)
-
-
-def _expected_edge(case_id: str, expected: ConversationState | None) -> ConversationState:
-    """The edge an inline-scored case expects, refusing an unstated one."""
-    if expected is None:
-        raise ValueError(_NO_EXPECTED_EDGE.format(case_id=case_id))
-    return expected
 
 
 class ParkedRound(BaseModel):
@@ -4799,58 +4061,6 @@ def _classifier_world(state: ConversationState, known: int) -> World:
     return World(
         name=f"parked in {state.value}, {known} routine(s) known", pages=(), keeps=(), excludes=()
     )
-
-
-def _score_classifier(
-    decision: StateDecision, expected: ConversationState, expected_skill: str | None
-) -> list[Check]:
-    """The classifier case's graded checks (#1706): ONE scored check — the expected
-    edge was decided — so the case mean IS that direction's confusion-matrix cell.
-    A wrong edge and a contract failure both score 0 (a cleanly-decided WRONG edge
-    must never outscore a harmless no-decision — fail → stay is the safe outcome);
-    the advisory well-formed check plus the rationale keep the two failure kinds
-    distinct in the report without distorting the score.  An apply case also
-    scores WHICH skill the draw bound (``expected_skill``) — n/a when the sample
-    never decided the expected state (no skill to judge; the edge check already
-    failed).  Both skill-gated states (apply, request) score it."""
-    decided = decision.outcome == StateDrawOutcome.DECIDED
-    ok = decided and decision.state is expected
-    if ok:
-        rationale = None
-    elif decided and decision.state is not None:
-        rationale = f"drew {decision.state.value} instead"
-    else:
-        rationale = f"no decision — {decision.outcome.value}"
-    checks = [
-        Check(f"decided {expected.value}", ok, kind="state", rationale=rationale),
-        Check(
-            "draw well-formed (tagged, in-union)",
-            decided,
-            kind="proc",
-            scored=False,
-            rationale=None if decided else f"terminal outcome {decision.outcome.value}",
-        ),
-    ]
-    if expected_skill is not None:
-        if decided and decision.state is expected:
-            named = decision.skill == expected_skill
-            checks.append(
-                Check(
-                    "named the covering skill",
-                    named,
-                    kind="state",
-                    rationale=None if named else f"named {decision.skill}",
-                )
-            )
-        else:
-            checks.append(
-                Check.na(
-                    "named the covering skill",
-                    rationale=f"no {expected.value} decision to carry a skill",
-                    kind="state",
-                )
-            )
-    return checks
 
 
 def _micro_context_rows(db: Database, *agent_names: str) -> list[PromptLog]:
@@ -5019,25 +4229,17 @@ async def _seed_eval_skills(penny: Penny, seed_skills: Sequence[SkillDraft]) -> 
 def classifier_eval(
     make_config: Callable[..., Config], tmp_path, request
 ) -> Iterator[ClassifierEval]:
-    """Drive the conversation-state classifier (#1706) N times — ONE scoped
-    micro-context call per sample, no agent loop.
+    """Drive the conversation-state classifier (#1706) — ONE scoped micro-context call per
+    sample, no agent loop — and return the case's COHORT.
 
-    Two paths, one drive.  A PORTED case (#2006) passes ``also_asked`` — the other wordings
-    of the SAME ask — and gets a :class:`Cohort` back to assert against; the arms are those
-    wordings, over one world, because a classification's whole natural language is the
-    message.  A case not yet ported passes a ``pool`` instead and sweeps it deterministically
-    (sample i → ``pool[i % len(pool)]``), which covers input SPACE rather than re-rolling one
-    point; its per-check cells map 1:1 to phrasings and a baseline diff compares
-    phrasing-for-phrasing.
+    A case passes ``ask`` and ``also_asked`` — the other wordings of the SAME ask — and gets a
+    :class:`Cohort` back to assert against; the arms are those wordings, over one world,
+    because a classification's whole natural language is the message.  Five wordings of one
+    ask pool into one variance number; a different ask is a different case.
 
-    A pool and five wordings are NOT the same mechanism and the port is the whole difference:
-    a pool holds ten different scenarios standing in for one edge's coverage, and a cohort
-    holds five wordings of one ask, whose spread is a variance number rather than ten
-    behaviours averaged into one rate.
-
-    Each sample is hermetic (own DB + real-model Penny, mirroring ``startup_eval``); the
-    snapshot is built PER SAMPLE by the production ``build_snapshot`` from the case's
-    ``state`` + the sample's message — the same path the chat wiring calls.
+    Each sample is hermetic (own DB + real-model Penny); the snapshot is built PER SAMPLE by
+    the production ``build_snapshot`` from the case's ``state`` + the sample's message — the
+    same path the chat wiring calls.
 
     A case parking in REQUEST declares its ``parked_round`` (#2084/#2099): production
     reaches that state only through the binder, so every round parked there carries what it
@@ -5057,14 +4259,11 @@ def classifier_eval(
         *,
         case_id: str,
         state: ConversationState,
-        expected: ConversationState | None = None,
-        pool: Sequence[str] = (),
         ask: str = "",
         also_asked: Sequence[str] = (),
         behaviour: str = "",
         samples_per_phrasing: int = 0,
         model: str = "",
-        expected_skill: str | None = None,
         penny_last_turn: str | None = None,
         task_anchor: str | None = None,
         parked_round: ParkedRound | None = None,
@@ -5075,44 +4274,35 @@ def classifier_eval(
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
-        """Drive one state + message through the classification draw and return its COHORT
-        (a ported case), or sweep ``pool`` and score each sample against ``expected``
-        (a case not yet ported)."""
+        """Drive one state + message through the classification draw and return its COHORT.
+        A case with no ``ask`` is refused by name."""
+        _require_ask(case_id, "classifier_eval", "ask=<the message>", ask)
+        _require_report_only(case_id, min_pass_rate)
+        _refuse_binding_state_mismatch(case_id, state, parked_round)
         eval_artifacts.begin_case(case_id)
         # One situation, K wordings of the message — the same shape chat has, and the world
         # is a property of the CASE rather than of the arm.
         arms = _arms(
-            [ask, *also_asked] if also_asked else [],
+            [ask, *also_asked],
             [_classifier_world(state, len(seed_skills or ()))],
             samples_per_phrasing,
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
-        _refuse_unscorable(case_id, ported=bool(spoken), pool=pool)
-        _refuse_binding_state_mismatch(case_id, state, parked_round)
-        driven = arms.driven if spoken else samples
-
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=False,
-                ),
-            )
-            if spoken
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+            ),
         )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            phrasing = spoken[sample_index] if spoken else pool[sample_index % len(pool)]
+            phrasing = spoken[sample_index]
             seed_user(penny.db)
             if seed is not None:
                 seed(penny.db)
@@ -5139,31 +4329,22 @@ def classifier_eval(
                     classifier.classify(snapshot, phrasing, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                # A ported case is graded from its cohort's CLAIMS, made after every sample
-                # has run, so the sample itself scores nothing at drive time — and it names
-                # no ``expected`` edge either, since its claim states that itself.
-                scored = (
-                    []
-                    if spoken
-                    else _score_classifier(
-                        decision, _expected_edge(case_id, expected), expected_skill
-                    )
-                )
-                result = _guarded_graded(list(scored), [])
+                # The case is graded from its cohort's CLAIMS, made after every sample has
+                # run, so the sample itself scores nothing at drive time.
+                result = SampleResult.graded([])
                 result.observe_rerolled(rerolled=len(_classifier_rows(penny.db)) > 1)
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no decision within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
-            if spoken:
-                label = arms.label(sample_index)
-                result.observation = _observe_classification(
-                    penny.db,
-                    decision,
-                    name=f"{case_id}-{sample_number(sample_index)} ({label})",
-                    phrasing=label,
-                    arm=arms.index_of(sample_index),
-                )
+            label = arms.label(sample_index)
+            result.observation = _observe_classification(
+                penny.db,
+                decision,
+                name=f"{case_id}-{sample_number(sample_index)} ({label})",
+                phrasing=label,
+                arm=arms.index_of(sample_index),
+            )
             _write_classifier_report(
                 penny.db, case_id, sample_index, result=result, phrasing=phrasing
             )
@@ -5171,24 +4352,10 @@ def classifier_eval(
             return result
 
         results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
+            make_config, tmp_path, case_id=case_id, samples=arms.driven, drive=_drive, model=model
         )
-        if not spoken:
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                False,
-                driven,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        assert pending is not None
-        pending.add(cohort, results, perf, intended=driven)
+        pending.add(cohort, results, perf, intended=arms.driven)
         return cohort
 
     yield _run
@@ -5625,11 +4792,10 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
     are authored, never the prompt (an eval that swaps in an artificial prompt measures
     nothing about what ships).
 
-    A PORTED case (#2006) passes ``also_phrased`` — the other wordings of the SAME ask — and
+    A case passes ``turns`` and ``also_phrased`` — the other wordings of the SAME ask — and
     gets a :class:`Cohort` back to assert against.  The arm is the ask itself, which for this
     customer is the whole document: five ways a user might say one thing, over one set of
-    facts.  Every case is ported: ``also_phrased`` is required, and a case is graded by the
-    claims its body makes against the cohort.
+    facts.  A case is graded by the claims its body makes against the cohort.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -5652,6 +4818,8 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         ``also_phrased`` is a sequence of TURN SEQUENCES, not of strings: an ask is however
         many turns the user took to make it, so a wording of it is that many turns said
         differently.  Flattened to one line per arm for the arm's own anchor text."""
+        _require_ask(case_id, "framer_eval", "turns=<the round's user turns>", turns)
+        _require_report_only(case_id, min_pass_rate)
         eval_artifacts.begin_case(case_id)
         wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
         # One ask, K wordings of it — the same shape chat has, and the world is a property of
@@ -5663,7 +4831,6 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, ported=True)
         driven = arms.driven
         documents = [
             build_framing_content(
@@ -5679,8 +4846,6 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 family=family,
                 module=request.module.__name__,
                 behaviour=_stated_behaviour(case_id, behaviour),
-                min_pass_rate=min_pass_rate,
-                gate_pathology_excluded=False,
             ),
         )
 
@@ -5697,7 +4862,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
                 # run, so the sample itself scores nothing at drive time.
-                result = _guarded_graded([], [])
+                result = SampleResult.graded([])
                 result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
@@ -5751,13 +4916,12 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
     polices what a round chose to write — if a round writes two entries, two entries
     are the skill (the code owner's ruling on #1770, unchanged).
 
-    A PORTED case (#2006) passes ``also_demonstrated`` — the other wordings of the SAME
+    A case passes ``utterance`` and ``also_demonstrated`` — the other wordings of the SAME
     demonstration — and gets a :class:`Cohort` back to assert against.  The arm is the
     demonstrating UTTERANCE, because that is the natural language this draw is answered from:
     the CALLS are held byte-identical across the arms, so every arm offers the same spots
-    under the same current names and only the words describing them move.  Every case is
-    ported: ``also_demonstrated`` is required, and a case is graded by the claims its body
-    makes against the cohort.
+    under the same current names and only the words describing them move.  A case is graded
+    by the claims its body makes against the cohort.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -5779,6 +4943,8 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         family: str | None = None,
     ) -> Cohort:
         """Drive one demonstration through the labelling draw and return its COHORT."""
+        _require_ask(case_id, "labeller_eval", "utterance=<the demonstrating turn>", utterance)
+        _require_report_only(case_id, min_pass_rate)
         eval_artifacts.begin_case(case_id)
         wordings = [utterance, *also_demonstrated]
         arms = _arms(
@@ -5788,7 +4954,6 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, ported=True)
         driven = arms.driven
         # One rendered document per arm, and ONE ``by_value`` map for all of them: the calls
         # are constant, so distillation is constant, so every arm offers the same spots under
@@ -5809,8 +4974,6 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                 family=family,
                 module=request.module.__name__,
                 behaviour=_stated_behaviour(case_id, behaviour),
-                min_pass_rate=min_pass_rate,
-                gate_pathology_excluded=False,
             ),
         )
 
@@ -5827,7 +4990,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
                 # run, so the sample itself scores nothing at drive time.
-                result = _guarded_graded([], [])
+                result = SampleResult.graded([])
                 result.observe_rerolled(rerolled=_run_end_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
@@ -5985,7 +5148,7 @@ class BoundExpectation(NamedTuple):
     through the SHIPPED ``spoken_form`` — so a bound url passes whether or not the draw
     kept the scheme, and a phrase passes whether or not it kept the article in front of
     it.  Deliberately not an equality: which span of the ask supplies a value has a
-    little play in it, and a scorer demanding one exact string would be answering for the
+    little play in it, and a claim demanding one exact string would be answering for the
     draw.
 
     An EMPTY anchor is the SHORTFALL direction: the ask supplies nothing for this
@@ -6018,12 +5181,11 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
     shipped validation.  Synthetic here means the TURNS and the SIGNATURE are authored,
     never the prompt.
 
-    A PORTED case (#2006) passes ``also_phrased`` — the other wordings of the SAME ask — and
+    A case passes ``turns`` and ``also_phrased`` — the other wordings of the SAME ask — and
     gets a :class:`Cohort` back to assert against.  The SIGNATURE is held constant across the
     arms and only the user's turns move: a case whose signature moved would be binding a
-    different routine, which is a different behaviour rather than a different wording.  Every
-    case is ported: ``also_phrased`` is required, and a case is graded by the claims its body
-    makes against the cohort.
+    different routine, which is a different behaviour rather than a different wording.  A
+    case is graded by the claims its body makes against the cohort.
     """
 
     _cohorts: dict[str, _PendingCase] = {}
@@ -6048,6 +5210,8 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
 
         ``also_phrased`` is a sequence of TURN SEQUENCES, for ``framer_eval``'s reason: an ask
         is however many turns the user took to make it."""
+        _require_ask(case_id, "binder_eval", "turns=<the round's user turns>", turns)
+        _require_report_only(case_id, min_pass_rate)
         eval_artifacts.begin_case(case_id)
         wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
         arms = _arms(
@@ -6057,7 +5221,6 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, ported=True)
         driven = arms.driven
         declared = [parameter.name for parameter in parameters]
         # One rendered pair per arm: what the user said, and the document that renders it
@@ -6073,8 +5236,6 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 family=family,
                 module=request.module.__name__,
                 behaviour=_stated_behaviour(case_id, behaviour),
-                min_pass_rate=min_pass_rate,
-                gate_pathology_excluded=False,
             ),
         )
 
@@ -6091,7 +5252,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
                 # run, so the sample itself scores nothing at drive time.
-                result = _guarded_graded([], [])
+                result = SampleResult.graded([])
                 result.observe_rerolled(rerolled=_binder_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
@@ -6142,7 +5303,7 @@ class FieldExpectation(NamedTuple):
     ``anchor`` is the span of the page that supplies it, compared through the SHIPPED
     ``spoken_form`` — so a value passes whether or not the draw kept the punctuation or
     the article in front of it.  Deliberately not an equality: which words carry a fact
-    has a little play in it, and a scorer demanding one exact string would be answering
+    has a little play in it, and a claim demanding one exact string would be answering
     for the draw.
 
     An EMPTY anchor is the ABSENT direction: the page supplies nothing for this, so it is
@@ -6156,83 +5317,6 @@ def _extract_rerolled(db: Database) -> bool:
     """Did the extraction draw more than once — the fragile signal, a sample that only
     got there by recovering.  One customer here, so one row is the clean case."""
     return len(_micro_context_rows(db, PennyConstants.BROWSE_EXTRACT_AGENT_NAME)) > 1
-
-
-def _extraction_outcome_check(result: MicroContextResult, carries_something: bool) -> Check:
-    """The decisive check: a page carrying SOME of what was asked for is a read, and a
-    page carrying NONE of it is honestly empty.
-
-    Which direction this case is comes from the expectations themselves — whether any of
-    them names a span the page supplies — so the case declares the world and the scorer
-    reads the contract off it, rather than being told the answer twice."""
-    wanted = MicroExtractOutcome.EXTRACTED if carries_something else MicroExtractOutcome.NOT_PRESENT
-    label = (
-        "reads the page rather than reporting it empty"
-        if carries_something
-        else "reports the page carries none of it"
-    )
-    return Check(
-        label,
-        result.outcome == wanted,
-        kind="state",
-        rationale=None if result.outcome == wanted else f"came back {result.outcome}",
-    )
-
-
-def _field_check(result: MicroContextResult, expectation: FieldExpectation) -> Check:
-    """One thing the instruction asked for that the page DOES supply: the extracted value
-    has to carry it.  This is the per-field half — an instruction naming several things
-    degrades one thing at a time, so each is scored on its own."""
-    carried = spoken_form(expectation.anchor) in spoken_form(result.value)
-    return Check(
-        f"carries the {expectation.field}",
-        carried,
-        kind="state",
-        rationale=None if carried else "not in the extracted value",
-    )
-
-
-def _absent_field_note(expectation: FieldExpectation) -> Check:
-    """One thing the instruction asked for that the page does NOT supply — ADVISORY.
-
-    Nothing about a gap is separately measurable: leaving it out and naming it are both
-    honest, and there is no string whose absence proves the draw declined to invent one.
-    What the gap actually costs — or does not — is the OUTCOME, which is already the
-    decisive check, so scoring this too would grade one fact twice and weight it by how
-    many things the page happened to lack.  It renders so a report shows WHICH thing the
-    page was short of, rather than leaving a reader to infer it from the instruction."""
-    return Check(f"the page carries no {expectation.field}", True, kind="state", scored=False)
-
-
-def _extraction_advisories(result: MicroContextResult) -> list[Check]:
-    """What the draw committed to, verbatim and UNSCORED — the value it returned or the
-    absence it reported, so a report shows the answer whichever way it went."""
-    if result.outcome == MicroExtractOutcome.EXTRACTED:
-        return [Check(f"extracted {result.value!r}", True, kind="state", scored=False)]
-    return [Check(f"{result.outcome}: {result.reason!r}", True, kind="state", scored=False)]
-
-
-def _score_extraction(
-    result: MicroContextResult, expectations: Sequence[FieldExpectation]
-) -> list[Check]:
-    """The extraction case's graded checks (#1942), read off the draw's own typed result.
-
-    Two graded kinds: the OUTCOME — a page that half-answers an instruction is a read,
-    not a NOT_PRESENT — and one check per thing the instruction named that the page DOES
-    supply, since an instruction naming several things degrades one thing at a time.  What
-    the page lacks rides ADVISORY (there is no measurable fact in a gap beyond the outcome
-    itself), and so does the value the draw returned: what a well-chosen value looks like
-    is read at joint review, as the framing and binding cases' answers are, not asserted
-    by a scorer."""
-    carries_something = any(one.anchor for one in expectations)
-    return [
-        _extraction_outcome_check(result, carries_something),
-        *(
-            _field_check(result, one) if one.anchor else _absent_field_note(one)
-            for one in expectations
-        ),
-        *_extraction_advisories(result),
-    ]
 
 
 # The fields of a browse extraction's structured answer, named once.  A case asserts them
@@ -6334,7 +5418,6 @@ def extractor_eval(
         page: str,
         instruction: str,
         behaviour: str = "",
-        expectations: Sequence[FieldExpectation] = (),
         also_instructed: Sequence[str] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -6343,49 +5426,42 @@ def extractor_eval(
         timeout: float = 60.0,
         family: str | None = None,
     ) -> Cohort:
-        """Drive one page + instruction through the extraction draw and return its COHORT
-        (a ported case), or score each sample through ``expectations`` (a case not yet ported).
+        """Drive one page + instruction through the extraction draw and return its COHORT.
 
-        A PORTED case passes ``also_instructed`` — the other wordings of the SAME request —
-        and gets a :class:`Cohort` back to assert against.  The arm here is the ``extract``
-        instruction, which is PENNY's own text: production writes it at the browse call site,
-        so what the cohort measures is whether the answer survives how the calling draw
-        happened to word the request.  The page is FIXED across the arms; it is the world.
+        A case passes ``instruction`` and ``also_instructed`` — the other wordings of the SAME
+        request — and gets a :class:`Cohort` back to assert against.  The arm here is the
+        ``extract`` instruction, which is PENNY's own text: production writes it at the browse
+        call site, so what the cohort measures is whether the answer survives how the calling
+        draw happened to word the request.  The page is FIXED across the arms; it is the world.
+        A case with no ``instruction`` is refused by name.
         """
+        _require_ask(case_id, "extractor_eval", "instruction=<the extract request>", instruction)
+        _require_report_only(case_id, min_pass_rate)
         eval_artifacts.begin_case(case_id)
         # One page, K wordings of the instruction — the same shape chat has, and the world is
         # a property of the CASE rather than of the arm.
         arms = _arms(
-            [instruction, *also_instructed] if also_instructed else [],
+            [instruction, *also_instructed],
             [_extraction_world(url, page)],
             samples_per_phrasing,
             samples,
         )
         spoken = arms.spoken
-        min_pass_rate = _stated_pass_rate(case_id, min_pass_rate, bool(spoken))
-        driven = arms.driven if spoken else samples
         content = f"{PennyConstants.BROWSE_PAGE_HEADER}{url}\n{page}"
-
-        pending = (
-            _cohorts.setdefault(
-                case_id,
-                _PendingCase(
-                    case_id=case_id,
-                    family=family,
-                    module=request.module.__name__,
-                    behaviour=_stated_behaviour(case_id, behaviour),
-                    min_pass_rate=min_pass_rate,
-                    gate_pathology_excluded=False,
-                ),
-            )
-            if spoken
-            else None
+        pending = _cohorts.setdefault(
+            case_id,
+            _PendingCase(
+                case_id=case_id,
+                family=family,
+                module=request.module.__name__,
+                behaviour=_stated_behaviour(case_id, behaviour),
+            ),
         )
 
         async def _drive(
             penny: Penny, server: MockSignalServer, sample_index: int, retryable: bool
         ) -> SampleResult:
-            asked = spoken[sample_index] if spoken else instruction
+            asked = spoken[sample_index]
             micro = MicroContext(penny.model_client)
             extracted: MicroContextResult | None = None
             try:
@@ -6393,24 +5469,22 @@ def extractor_eval(
                     micro.extract(content, asked, run_target=penny.chat_agent.name),
                     timeout=timeout,
                 )
-                # A ported case is graded from its cohort's CLAIMS, made after every sample has
+                # The case is graded from its cohort's CLAIMS, made after every sample has
                 # run, so the sample itself scores nothing at drive time.
-                scored = [] if spoken else _score_extraction(extracted, expectations)
-                result = _guarded_graded(list(scored), [])
+                result = SampleResult.graded([])
                 result.observe_rerolled(rerolled=_extract_rerolled(penny.db))
                 _stamp_cause(penny.db, result)
             except TimeoutError:
                 result = SampleResult.binary(["no extraction draw within timeout"])
                 _stamp_cause(penny.db, result, timed_out=True)
-            if spoken:
-                phrasing = arms.label(sample_index)
-                result.observation = _observe_extraction(
-                    penny.db,
-                    extracted,
-                    name=f"{case_id}-{sample_number(sample_index)} ({phrasing})",
-                    phrasing=phrasing,
-                    arm=arms.index_of(sample_index),
-                )
+            phrasing = arms.label(sample_index)
+            result.observation = _observe_extraction(
+                penny.db,
+                extracted,
+                name=f"{case_id}-{sample_number(sample_index)} ({phrasing})",
+                phrasing=phrasing,
+                arm=arms.index_of(sample_index),
+            )
             _write_classifier_report(
                 penny.db,
                 case_id,
@@ -6423,24 +5497,10 @@ def extractor_eval(
             return result
 
         results, perf, voided = await _run_samples(
-            make_config, tmp_path, case_id=case_id, samples=driven, drive=_drive, model=model
+            make_config, tmp_path, case_id=case_id, samples=arms.driven, drive=_drive, model=model
         )
-        if not spoken:
-            _finish_case(
-                case_id,
-                family,
-                request.module.__name__,
-                results,
-                perf,
-                min_pass_rate,
-                False,
-                driven,
-                samples,
-            )
-            return Cohort(case_id=case_id, model=model, samples=[])
         cohort = _driven_cohort(case_id, model, results, voided, arms.arms)
-        assert pending is not None
-        pending.add(cohort, results, perf, intended=driven)
+        pending.add(cohort, results, perf, intended=arms.driven)
         return cohort
 
     yield _run

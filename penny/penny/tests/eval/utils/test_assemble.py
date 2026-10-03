@@ -3,7 +3,7 @@
 NOT eval-marked — they drive the deterministic assembler over a SYNTHETIC report directory
 (manifest + results.jsonl + per-case ``.md`` transcripts rendered by ``report.py``), so they run
 inside ``make check``: no git, no model, no container. The assembled comment is asserted as a
-WHOLE-RENDER literal (pr-review-guide §6): the run header (identity · RESULT · gate), the
+WHOLE-RENDER literal (pr-review-guide §6): the run header (verdict · identity · flips), the
 per-sample transcript where EVERY sample folds whole under its banner — the one and only rendering
 (#1753/#1759 — collapsed by default, full body a click away, byte-identical to the on-disk ``.md``,
 no compact/banner-only form), the multi-family rollup + per-case headings, the diff-mode flips
@@ -105,10 +105,10 @@ _BROWSE_SAMPLE_FOLDED = (
 _BROWSE_SAMPLE_BANNER_ONLY = "#### sample 1 — ✅ pass · 45s · 8 calls"
 
 
-def test_single_gated_case_whole_render(tmp_path: Path) -> None:
-    """A single gated case: the run header (identity · RESULT with timings · a gate line), the
-    clean-pass sample's FULL folded body (#1759 — collapsed by default, body always present, never
-    banner-only), and the footer — no per-case heading (single case)."""
+def test_single_case_whole_render(tmp_path: Path) -> None:
+    """A single case: no run header at all, the clean-pass sample's FULL folded body (#1759 —
+    collapsed by default, body always present, never banner-only), and the footer — no per-case
+    heading (single case)."""
     manifest = build_manifest(
         commit="abba710a03ae3555148fea6a86712e9af020499a",
         dirty_diff="",
@@ -132,23 +132,19 @@ def test_single_gated_case_whole_render(tmp_path: Path) -> None:
         cause_counts=CauseCounts(harness=1),
         checks=[CheckOutcome(label="browsed", passed=2, total=3, scored=True, cells=[_P, _P, _F])],
         timings=_TIMINGS,
-        min_pass_rate=0.75,
-        gate_metric="mean",
     )
     _write_run(tmp_path, manifest, [artifact], {artifact.case_id: _browse_sample()})
     assert assemble_run_comment(tmp_path) == (
         # A single-case run emits NO roll-up: the case names the report and its own table
         # carries every number one would repeat.
-        "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\n"
-        "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
-        "\n" + _footer(tmp_path)
+        _BROWSE_SAMPLE_FOLDED + "\n\n" + _footer(tmp_path)
     )
 
 
 def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> None:
     """A two-family run: the RESULT line's family rollup, per-case ``### case — family`` headings
     (present only when the run spans multiple cases), and a case whose ``.md`` is absent folding an
-    honest placeholder rather than crashing. No gate line (no case gates)."""
+    honest placeholder rather than crashing."""
     manifest = build_manifest(
         commit="beef1234beef1234beef1234beef1234beef1234",
         dirty_diff="",
@@ -261,8 +257,6 @@ def test_diff_mode_flips_index_whole_render(
         cause_counts=CauseCounts(harness=1),
         checks=[CheckOutcome(label="browsed", passed=2, total=3, scored=True, cells=[_P, _P, _F])],
         timings=_TIMINGS,
-        min_pass_rate=0.75,
-        gate_metric="mean",
     )
     prior = tmp_path / "prior"
     prior.mkdir()
@@ -285,8 +279,9 @@ def test_diff_mode_flips_index_whole_render(
     run = tmp_path / "run"
     _write_run(run, manifest, [artifact], {artifact.case_id: _browse_sample()})
     comment = assemble_run_comment(run)
-    assert "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\nflips: browsed ✅→❌ (s3)\n" in comment
-    assert comment.startswith("**gate:**"), "a single-case run leads with its gate, not a roll-up"
+    assert comment.startswith("flips: browsed ✅→❌ (s3)\n"), (
+        "a single-case run leads with its flips index, not a roll-up"
+    )
 
 
 def _hold_run(
@@ -349,8 +344,6 @@ def _hold_run(
             ),
         ],
         timings=_TIMINGS,
-        min_pass_rate=0.8,
-        gate_metric="mean",
     )
     _write_run(report_dir, manifest, [artifact], {})
     return manifest
@@ -373,7 +366,6 @@ def test_flips_index_from_durable_manifest_baseline(
     # The FLIPS index is what this test is about; the header's layout is pinned whole by the
     # two render tests above, and re-pinning it here would make them one change apart.
     assert "flips: decided idle ✅→❌ (s7, s10)" in comment
-    assert "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)" in comment
     # A single-case run has no roll-up table for the run id to sit in; its identity lives in
     # the case's own table, which the per-case document renders.
     assert manifest.run_id

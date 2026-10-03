@@ -743,8 +743,8 @@ pool reads off the artifacts instead of costing a second run with a pin. The tal
 of VALUES: every chat attempt logs its `LlmFault` and serving provider as structured fields
 (`penny/llm/models.py`), and a `logging.Handler` on the `penny` logger adds them up, so no
 message text is ever matched. **A mostly-dead cohort FAILS**: a case must complete a strict
-majority of its intended samples, refused before any threshold is compared and report-only
-cases included, because dead samples are not missing at random — the faults that kill them
+majority of its intended samples, refused whatever its surviving samples scored, because
+dead samples are not missing at random — the faults that kill them
 correlate with the work, so the survivors are a biased draw rather than a smaller one. The
 run-level verdict moves the session's exit status, so a run computed from a fraction of its
 cohort can never exit 0. **A sample can be lost, but never hang the run (#2168)**: a sample
@@ -763,8 +763,14 @@ its …s wall-clock bound`), so the case still closes and records its cohort. St
 the cancel until the task is actually down (`stop_task` in `tests/conftest.py`), because an
 in-flight HTTP call can absorb a single cancel when a blocked event loop has also run past its
 own deadline — which is how one sample once held a run silent for twenty minutes. Cases drive the
-real chat/collector loops and score persisted DB state + sends at a `pass_rate`
-threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
+real chat/collector loops and make their claims over persisted DB state + sends; the claims are
+counted and reported, never gated, and every case states `min_pass_rate=None`. **Every driver
+refuses a case that names nothing to drive** — `chat_eval` with no `ask`, `collector_cycles_eval`
+with no `arms`, a micro-context driver with no instruction, utterance or turns — and one that states a floor
+or leaves `min_pass_rate` unstated, each with an error naming the case, before a sample runs. A
+case is one ask in its wordings and the claims its body makes against the cohort that comes back;
+no driver takes a per-sample scorer, and a structural pin in `make check` reads that off the
+drivers' own AST. The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`
 (#1919, ported to the cohort structure by #2008 — the chat REPLY on an idle turn, as FIVE
 cohorts of fifteen: two behaviours, one case per ENTRY CONDITION. Browse-and-answer is two
@@ -965,44 +971,42 @@ shipped instantiation seam (retarget → `bind_parameters` → render) over one 
 A watch over a different page, datum or routine is another program of the same behaviour, so it is
 not a separate case. Driven by the `collector_cycles_eval` runner (the one collector driver there
 is — each cycle's footprint kept apart as a `CycleObservation`), report-only, with the program and
-the page variants pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
-`browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
-score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
+the page variants pinned in `make check`). Browse is stubbed; a case supplies realistic pages on
+its `World` — or, for a collector, on each `CycleArm` — which the driver installs as the
+query-aware register (`install_browse` / `CannedPage` in `conftest.py`), so the claims a case makes
+rest on a page the model had to read. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the
 shared `ALL_BROWSES_FAIL` catch-all makes every source unreachable — the way to
 exercise read-failure honesty (a cycle that browsed a lot, read nothing, and must
 not confabulate a write/success at `done()`). See `docs/self-improvement-loop.md`.
 
-**Scoring is graded, not binary.** A chat scorer returns either failure strings (binary:
-empty = pass) or a list of `Check`s (partial credit: the sample scores passed / applicable;
-the case metric is the mean). Prefer graded `Check`s for a multi-step contract — each
-expected tool call and outcome is its own named check, so the report shows exactly which
-expectation missed (e.g. a discuss turn answered from ambient recall dings the
-"memory_metadata called" check instead of hiding behind a green PASS). A `Check` carries
-three axes beyond its `ok`: `scored=False` (advisory flavour — renders but out of the score),
-an optional `rationale` (the observed-vs-expected note rendered beside the outcome —
-"expected 3 reads, saw 1" instead of a bare ❌), and the not-applicable third state
-`Check.na(...)` (`ignored`, rendered as ➖) — excluded from the graded denominator when a
-sample's branch never exercised it, neither pass nor fail. `tool_not_called(db, name)` is the
-negative-constraint counterpart to `tool_was_called` for avoided-action checks.
+**A sample's score is its cohort's claims, dealt back out.** A case makes its claims over the
+whole cohort, after every sample has run; at case close each claim's answers are redistributed to
+the samples that gave them (`_cohort_checks` → `SampleResult.adopt`), one `Check` per claim per
+sample. A sample scores claims-passed over claims-answered, a sample the pool refused scores 0.0
+under its exclusion reason, and a `Check` carries the claim's `rationale` (the violating value —
+``changed ['<key>']`` — rendered beside the outcome, so a ❌ is never bare). The `Check` /
+`CheckOutcome` / `CheckView` shapes also carry an advisory flag (`scored=False`) and a
+not-applicable state (`ignored`, rendered ➖); nothing in the harness sets either, since a claim is
+strictly true or false of a sample and every claim counts.
 
-**The RESULT line reports both metrics; a green-via-recovery sample renders "fragile."** Each
-case prints `mean … · all-pass K/N` — the partial-credit mean (what the case gates on) beside
-the strict all-pass count (samples that passed EVERY applicable check). In the per-sample
+**The console RESULT line; a green-via-recovery sample renders "fragile."** Each case prints
+`RESULT [<case>] mean … · all-pass K/N across N samples` — the mean of the per-sample scores
+beside the count of samples every claim was true of — and nothing gates on either: the line is
+printed for a person to read, after the dead-cohort refusal. In the per-sample
 report a sample that passed but only after the loop refused/recovered a tool call (derived from
-the promptlog via `sample_is_fragile` / `tool_call_rejected`, no new model judgment) is marked
+the promptlog via `sample_is_fragile`, no new model judgment) is marked
 `✅ PASS · fragile`, so real-but-shaky reads distinctly from clean green. **The flag is DERIVED
 from the settled score, the way the cause is (#2127)**: the runner observes the reroll while the
 sample's database is live (`SampleResult.observe_rerolled`) and `_settle_fragile` reads the flag
 off that fact and the score the case settled on. Stamped instead from the drive-time `passed` —
-which a ported sample earns vacuously, having answered no claim yet — it degenerated into "the
+which a sample earns vacuously, having answered no claim yet — it degenerated into "the
 run rerolled" and marked claim-FAILING samples fragile, on the banner and in the record.
 
-**A re-rolled draw is read from the REPEATED CONTEXT, not from a marker (#1841).** The uniform
-loop-health advisory every case reports (`routing_clean` in `tests/eval/conftest.py` — the
-`Check(..., scored=False)` one) used to match the literal text of the two bail nudges #1839
-deleted, so after that change its bail half could never fire again. What a discarded draw still
-leaves is the **second draw itself**: `Agent._invoke_nondegenerate` re-calls the model on the
+**A re-rolled draw is read from the REPEATED CONTEXT, not from a marker (#1841).** `draw_rerolled`
+(`tests/eval/conftest.py`) is the read, and the agent-loop tests assert a re-roll through it. A
+discarded draw writes nothing into the conversation (#1839), so there is no marker to match. What
+it still leaves is the **second draw itself**: `Agent._invoke_nondegenerate` re-calls the model on the
 *unchanged* message list and `LlmClient.chat` persists every completed draw before returning, so
 a re-rolled step is two `promptlog` rows carrying byte-identical `messages` — while an ordinary
 step's context has grown by the turns the previous step appended and can never repeat.
@@ -1106,16 +1110,14 @@ loop chases). Pathology is read post-hoc off the persisted promptlog by `run_exh
 (in `tests/eval/conftest.py`), which scans each row's RESPONSE with the SAME `text_validity`
 detectors the agent-loop reroll guard runs live (`Agent._unusable_output_condition`): a punctuation
 collapse (`DEGENERATE_OUTPUT`), a leaked Harmony envelope (`TOOL_CALL_LEAK`), a collapse-shaped
-tool NAME, or a bare call-fragment reply. **The distinguishing rule** — an eval `_Inject*` recovery
-trigger is NOT a pathology failure: an injected bail is returned as a synthetic `LlmResponse` that
-bypasses the persisting client, so it never lands in a persisted `response`; reading only the output
-(never the input `messages`) makes the scan structurally immune to it, so a `bail_injected` sample is
-tagged pathology only if the LIVE model additionally produced its own poison. Cause ordering:
+tool NAME, or a bare call-fragment reply. **The scan reads only the model's own OUTPUT** — each
+row's persisted `response`, never the input `messages` — so text the model was handed (a page
+quoting a collapse, a framework nudge) cannot tag a sample. Cause ordering:
 pathology outranks a timeout (the poison is the root cause, the timeout its symptom), then harness,
 then behavioral. `classify_cause` (pure, in `artifacts.py`) encodes the partition. **The cause is
 DERIVED from carried facts, wherever the score settles (#2125)**: the runner observes the two
 structural facts while the sample's database is live (`SampleResult.observe_faults` — did it time
-out, did its persisted output carry poison) and one derivation reads the cause off them. A ported
+out, did its persisted output carry poison) and one derivation reads the cause off them. A
 sample scores nothing at drive time — its cohort's claims arrive at case close, long after that
 database is gone — so `adopt` settles the cause again there against the score it just took on, and
 a re-scored sample can never keep the cause its old score earned. `sample_causes` (in `artifacts.py`)
@@ -1143,17 +1145,13 @@ not the clock, was the event. Two boundary questions, resolved to the narrowest 
   detector — not just the scan — keeps #1695's "same detectors live and post-hoc" invariant: the live
   chat guard now discards+rerolls a `{}` reply too (a strict improvement — it was being delivered).
 - **Nudge frames are NOT counted.** Repeated recovery nudges are *input* messages; counting them would
-  forfeit the output-only injection-immunity (an `_Inject*` case produces exactly one live nudge by
-  design, so naive counting would false-tag its fail path pathology) and would need an arbitrary
-  threshold. The nudge loop is a *symptom* whose *cause* is the model's own fragment OUTPUT — the
-  terminal `{}` the widened detector now catches — so classifying on that output tags the spiral at the
-  root while the output-only immunity holds. A count threshold and threading the runner's
-  `bail_injected` into classification were both considered and rejected (arbitrary cap / classifier↔runner
-  coupling for a case the output scan already handles). Cause ordering is unchanged: pathology still
-  outranks the timeout, so the spiral reads pathology, not harness.
+  read the model's input rather than its output and would need an arbitrary threshold. The nudge
+  loop is a *symptom* whose *cause* is the model's own fragment OUTPUT — the terminal `{}` the widened
+  detector now catches — so classifying on that output tags the spiral at the root. Cause ordering
+  is unchanged: pathology still outranks the timeout, so the spiral reads pathology, not harness.
 
 **Regression-aware reports + thinking at failed turns (#1693).** When `EVAL_BASELINE` names a
-prior run's report directory (or its `results.jsonl`), the per-sample report diffs each graded
+prior run's report directory (or its `results.jsonl`), the per-sample report diffs each
 check against that prior run and marks a NOW-FAILING check **REGRESSED** (`❌ 🔻 REGRESSED`) when
 it was FULLY GREEN there (`passed == total`) — a flip, distinct from a check that was already red.
 The flip is per-check, per-`(case_id, label)`, reading the prior `CaseArtifact` records unchanged
@@ -1168,15 +1166,13 @@ bloats. On a first run with no baseline, thinking still renders at failed turns.
 a run, but no step composes them into THE ONE markdown comment that gets posted.
 `penny/tests/eval/utils/assemble.py` is that step, and is where that document's shape is DEFINED —
 there is no prose spec to drift from what is emitted. Given a completed run's report directory it
-emits one document: the case's own heading and measures table (a run-level roll-up appears above
-them only when the run spans more than one case), the **run totals** (the run-level
-aggregate across every case — mean · all-pass · the cause tally, from flattening every case's
-`sample_scores`/`sample_causes`), then one block per case: its **dual RESULT line** (mean + all-pass)
-and **cause summary** (`render_cause_summary` — this is where the per-case aggregates finally render;
-the incremental per-sample flow in `conftest.py` cannot, a whole-case tally not existing yet at
-sample-write time), above the case's `<case_id>.md` transcript folded into a collapsed `<details>`
-(its own manifest-header prefix stripped, since the assembler renders that header once atop the
-comment). Pure artifact consumption — no model, no git, no network — so it's exercised by plain
+emits one document: a run-level **roll-up** only when the run spans more than one case (one counted
+verdict over every check the run made, its spread reading, and the run's identity as a table —
+commit, provider, embeddings, cost per sample, run id), in diff mode a `flips:` index, then one
+section per case — the case document its `<case_id>.md` carries (its own manifest-header prefix
+stripped) — and the local-artifacts footer. The comment carries **no RESULT line and no gate
+line**: `mean` and `all-pass` are aggregates of per-sample scores, printed on the console and kept
+in `results.jsonl`, and no case gates on either. Pure artifact consumption — no model, no git, no network — so it's exercised by plain
 (non-eval) whole-render tests (`tests/eval/utils/test_assemble.py`), not a GPU run. Run it via
 `python -m penny.tests.eval.utils.assemble <report_dir>` (prints the comment to stdout) or
 `EVAL_REPORT_DIR=… make assemble` (the same dir `make eval` wrote to). **One and only rendering
@@ -1185,14 +1181,9 @@ body always one click away ("default collapsed" never means the body is dropped)
 on-disk `.md` and the assembled comment. There is **no compact / banner-only form and no `--full` /
 `EVAL_FULL` flag** (removed in #1759 — banner-only rendering dropped entirely). The assembler
 re-normalizes each block via `report.split_sample_blocks`/`parse_sample_block`/`fold_sample`, so a
-re-assembled pre-#1753 run (unfolded `#### ` failures) folds uniformly too. A passed sample carries no
-cause (`_sample_cause` in `artifacts.py`), so the all-pass count is the count of `None` causes —
-run totals and each per-case line are computed identically. (The header carries no `embedding`/
-`prior` line — `render_manifest_header` omits them, the `prior:` line deferred per `baseline.py` —
-and no gate verdict, since a `CaseArtifact` carries no `min_pass_rate`; the RESULT line reports the
-two metrics the artifacts hold.)
+re-assembled pre-#1753 run (unfolded `#### ` failures) folds uniformly too.
 
-**Report format v3 — transcript-integrated (#1725).** The graded-check mechanics live *inside* the
+**Report format v3 — transcript-integrated (#1725).** A sample's checks render *inside* its
 transcript, in causal order (contract → thinking → action → verdict-on-action), rendered by the pure
 `penny/tests/eval/utils/report.py` from a `SampleTranscript` the `conftest.py` extractor builds off the
 persisted promptlog. Each sample is a series of **per-step tables** (a user turn opens each step):
@@ -1214,10 +1205,7 @@ under its banner — the ONE and only rendering (uniform collapse, #1753/#1759: 
 full body always a click away, identical in the `.md` and the comment; no compact/banner-only form,
 no `--full`/`EVAL_FULL` — removed in #1759), and a harness-timeout sample gets an honest placeholder
 (F2) inside its fold. The **run
-header** carries the identity line, a one-line RESULT (mean · all-pass ·
-pathology-excluded · cause tally · `families:` rollup · timings), a **gate** line per gated case
-(`⚖ threshold on mean|pathology-excluded → PASS/FAIL`, from the new `CaseArtifact.min_pass_rate` /
-`gate_metric`), and — in diff mode — a **flips** index (`flips: <label> ✅→❌ (s…)`, one entry per
+header** carries, in diff mode, a **flips** index (`flips: <label> ✅→❌ (s…)`, one entry per
 check fully green in the baseline that failed a sample here). The flips index resolves its baseline
 from the run's **durable manifest reference** (`RunManifest.baseline`, recorded from `EVAL_BASELINE`
 at eval time, #1752) — NOT from a re-read of the volatile env at assemble time — so `make assemble`
@@ -1225,7 +1213,7 @@ renders the same flips the per-row REGRESSED badges were baked from, even when i
 `EVAL_BASELINE` (an explicit `EVAL_BASELINE` at assemble time still overrides, for an ad-hoc re-diff).
 Additive artifact fields carry it:
 `CheckOutcome` gained `scored`/`cells[]`, `Check` gained `kind`, `CaseArtifact` gained
-`sample_fragile[]` + `min_pass_rate`/`gate_metric`; `RunManifest` gained `baseline` (#1752). **No artifact is committed** — the PR comment is
+`sample_fragile[]`; `RunManifest` gained `baseline` (#1752). **No artifact is committed** — the PR comment is
 the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
 `EVAL_BASELINE` diffs those local paths (#1725 policy). The format is pinned by whole-render tests
 in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`) rather than by a
@@ -1284,13 +1272,12 @@ the record cannot name one lost sample two ways.
 
 **A sample's BANNER states the verdict its case settled on, so the block is rendered LATE (#2127).**
 The banner is the one line a reader sees before opening anything, and it was built while the
-sample's database was live — where a ported sample has no verdict, so it read `✅ pass` above a
+sample's database was live — where a sample has no verdict, so it read `✅ pass` above a
 sample the claims failed or the pooler excluded. A sample's transcript is still ASSEMBLED at that
 moment (its promptlog exists nowhere else), but it is held as a `_HeldSample` — the transcript, the
-result, and the cost read off the live database — and RENDERED at the flush, which each path runs
-where its own scores settle: `_PendingCase.finish` right after `_grade` for a ported case, and
-`_finish_case` for one scored inline. So `_sample_banner` stays the one and only place a banner is
-made, and there is no second rendering to disagree with the first.
+result, and the cost read off the live database — and RENDERED at the flush, which runs where the
+case's scores settle: `_PendingCase.finish`, right after `_grade`. So `_sample_banner` stays the
+one and only place a banner is made, and there is no second rendering to disagree with the first.
 
 Around the sections, `report.render_case_document` states what every sample shares: **the ask in
 its K wordings** (listed once — a sample names which it used), **the seeded world**
@@ -1319,8 +1306,7 @@ diff could not: **every prompt renders verbatim**, so a reader opening one reads
 read rather than a reconstruction. A sample's own block therefore carries only its own sequence —
 inputs, tool calls, tool results, reply — and `SampleTranscript` no longer has a `system_prompts`
 field at all; `conftest` deposits each sample's prompts into the case accumulator while its
-database is live, and the case document groups them at close (a case with no cohort still gets
-its prompts stated once, so the rule holds across the whole suite and not only the ported part).
+database is live, and the case document groups them at close.
 `comment_split.py` is untouched — GitHub's cap has not moved, and a sample fold is still the only
 legal seam.
 
@@ -1457,7 +1443,7 @@ the harness against the live model* (`make eval` / a focused case) and the resul
 **before you commit the prompt** — a case you wrote but didn't run tells you nothing
 about whether the model actually complies, and "coverage" without execution has shipped
 broken prompts here before. When it fails, read the model's thinking (auto-dumped on
-failed samples), not just the scorer line — that's where the reason lives.
+failed samples), not just the RESULT line — that's where the reason lives.
 
 **The eval runs the SHIPPED prompts, and a failure is often stale data — not model
 incapacity.** A fresh eval DB is built exactly like prod (`create_tables()` then
@@ -1504,8 +1490,8 @@ guess at a fix from the code, drive it from a real failing example:
    verbatim replay into a committable `fixtures.py` case.
 5. **Run it again to confirm the genericized version still reproduces** the failure. If
    genericizing killed the repro, the trigger was in the specifics — narrow it back.
-6. **Now tweak the prompt to correct it**, re-running the (now report-only or gated)
-   eval case until it passes — and watch the *other* cases to catch over-correction.
+6. **Now tweak the prompt to correct it**, re-running the eval case until its claims
+   hold — and watch the *other* cases to catch over-correction.
 
 Caveat: the loop only applies when the failure is a *model decision on a visible input*.
 If the model is making the right call on what it's shown but the input itself is wrong
@@ -1514,13 +1500,13 @@ data/rendering bug — fix it in Python first (so the signal is visible), *then*
 applies. Distinguish "model ignored the signal" from "model was never shown the signal"
 before reaching for a prompt change.
 
-Second caveat — **check the scorer before you blame the model.** A surprising `0/N`
-(especially on a report-only case) is as often a mis-specified scorer as a real
-failure: read the model's actual tool calls (the auto-dumped thinking) and confirm it
-did the wrong thing before tuning the prompt. This session, two `0/3`s were both scorer
-bugs — one counted a *distinct* seeded skill as a "duplicate", another penalised a bare
-`example.com` that appeared only in an example phrasing. The model was correct; the
-contract was wrong. Verify the scorer encodes the intended contract first.
+Second caveat — **check the claim before you blame the model.** A surprising `0/N`
+is as often a mis-specified claim as a real failure: read the model's actual tool calls
+(the auto-dumped thinking) and confirm it did the wrong thing before tuning the prompt.
+Two `0/3`s in one session were both bugs in the check — one counted a *distinct* seeded
+skill as a "duplicate", another penalised a bare `example.com` that appeared only in an
+example phrasing. The model was correct; the contract was wrong. Verify the claim encodes
+the intended contract first.
 
 #### Iterating fast: focused low-N first, full suite last
 
@@ -1539,8 +1525,8 @@ Live-model cases are slow — a collector cycle is ~120-180s **per sample**, so 
 
 #### Always read the model's thinking on a failure — that's where the "why" lives
 
-When a prompt change doesn't move the pass rate, the reason is almost never visible
-from the scorer's one-line failure — it's in the model's **thinking trace**. (Real
+When a prompt change doesn't move a claim's count, the reason is almost never visible
+from the claim's one-line rationale — it's in the model's **thinking trace**. (Real
 example: the publish-flag cases failed not because the model misunderstood `published`
 — it set it correctly — but because a *stale seeded skill* still told it to add a
 `send_message` step. Only the thinking + tool trace made that obvious.) So **reviewing

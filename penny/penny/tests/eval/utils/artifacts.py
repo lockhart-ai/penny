@@ -359,10 +359,6 @@ class CaseArtifact(BaseModel):
     cause_counts: CauseCounts
     checks: list[CheckOutcome]
     timings: CaseTimings
-    # The gate this case ran under (#1725): the threshold + which score it compares
-    # ("mean" | "pathology-excluded mean"). Both None for a report-only case.
-    min_pass_rate: float | None = None
-    gate_metric: str | None = None
     # Which samples the POSTED COMMENT carries in full (1-based), decided at case close where the
     # cohort's standings exist.  It rides in the record because the assembler runs as its own
     # process over the report dir and has no cohort — and re-deriving it from the rendered
@@ -477,14 +473,6 @@ def sample_causes(results: Sequence[ScoredSample]) -> list[FailureCause | None]:
     return [_sample_cause(result) for result in results]
 
 
-def gate_metric_label(min_pass_rate: float | None, *, gate_pathology_excluded: bool) -> str | None:
-    """Which score a gated case compares — ``None`` when report-only (no ``min_pass_rate``), else
-    ``pathology-excluded mean`` (the honest-threshold opt-in, #1698) or plain ``mean``."""
-    if min_pass_rate is None:
-        return None
-    return "pathology-excluded" if gate_pathology_excluded else "mean"
-
-
 def build_case_artifact(
     *,
     run_id: str,
@@ -492,8 +480,6 @@ def build_case_artifact(
     family: str,
     results: Sequence[ScoredSample],
     timings: CaseTimings,
-    min_pass_rate: float | None = None,
-    gate_pathology_excluded: bool = False,
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
     variance: Sequence[VarianceReading] = (),
@@ -505,7 +491,6 @@ def build_case_artifact(
     scores = [result.score for result in results]
     causes = sample_causes(results)
     excluded_mean, _kept = pathology_excluded(scores, causes)
-    metric = gate_metric_label(min_pass_rate, gate_pathology_excluded=gate_pathology_excluded)
     return CaseArtifact(
         run_id=run_id,
         case_id=case_id,
@@ -520,8 +505,6 @@ def build_case_artifact(
         cause_counts=count_causes(causes),
         checks=aggregate_checks(results),
         timings=timings,
-        min_pass_rate=min_pass_rate,
-        gate_metric=metric,
         expand_samples=list(expand_samples),
         standing_counts=dict(standing_counts or {}),
         variance=list(variance),
@@ -750,14 +733,11 @@ def record_case(
     module: str,
     results: Sequence[ScoredSample],
     perf: PerfTotals,
-    min_pass_rate: float | None = None,
-    gate_pathology_excluded: bool = False,
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
     variance: Sequence[VarianceReading] = (),
 ) -> None:
-    """Append the case's ``results.jsonl`` record. No-op off-report. The gate the case ran under
-    (``min_pass_rate`` + which score it compares, #1725) rides into the record for the gate line."""
+    """Append the case's ``results.jsonl`` record. No-op off-report."""
     run = active_run()
     if run is None:
         return
@@ -767,8 +747,6 @@ def record_case(
         family=family or default_family(module),
         results=results,
         timings=timings_from_perf(perf),
-        min_pass_rate=min_pass_rate,
-        gate_pathology_excluded=gate_pathology_excluded,
         expand_samples=expand_samples,
         standing_counts=standing_counts,
         variance=variance,

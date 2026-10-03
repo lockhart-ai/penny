@@ -1082,70 +1082,10 @@ def test_a_name_the_page_never_carried_is_still_caught_beside_the_tags():
     assert unsourced_specifics(invented, _WHOLE_PROMPT) == ["Casimir", "Oyelaran"]
 
 
-# ── What reached the user (#2009) ────────────────────────────────────────────
-_NO_WORLD = World(name="base", pages=(), keeps=(), excludes=())
-
-
-def _delivered(*messages: str) -> Cohort:
-    """A one-sample cohort that delivered exactly these messages, oldest first."""
-    sample = SampleObservation(
-        name="s0",
-        phrasing="the ask",
-        arm=0,
-        landed="idle",
-        reply=messages[-1],
-        delivered=list(messages),
-    )
-    return Cohort("case", _MODEL, [sample], _one_arm(_NO_WORLD))
-
-
+# ── What the reply states ────────────────────────────────────────────────────
 def _reply_sample(reply: str) -> SampleObservation:
-    """A sample that delivered exactly this reply."""
-    return SampleObservation(
-        name="s0", phrasing="the ask", arm=0, landed="idle", reply=reply, delivered=[reply]
-    )
-
-
-def _answered(cohort: Cohort) -> tuple[int, int]:
-    claim = cohort.claims[0]
-    return claim.passed, claim.total
-
-
-_CLEAN_REPLY = "Lake Baikal is the deepest, at about 1,642 metres."
-_SERIALIZED_CALL = '{"queries": ["deepest lake"], "reasoning": "look it up"}'
-_LEAKED_ENVELOPE = (
-    "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
-)
-
-
-def test_an_unusable_draw_is_read_by_productions_rule_not_by_the_injected_shape():
-    """The claim reads EVERY shape production refuses, not the one a case's injector forces.
-
-    A recovery case keyed to its own fault would pass while a DIFFERENT unusable draw sailed
-    out in the same turn — so the condition set is composed from the chat agent's own
-    ``invalid_draw_conditions`` plus the transport artifacts the loop checks on every draw,
-    and this pins that both halves answer.  Asserting a leaked envelope here is deliberate:
-    it is the shape the call-as-text case's own injector never emits."""
-    clean = _delivered(_CLEAN_REPLY)
-    clean.assert_no_delivered_message_is_an_unusable_draw()
-    assert _answered(clean) == (1, 1)
-
-    for unusable in (_SERIALIZED_CALL, _LEAKED_ENVELOPE, "{}"):
-        cohort = _delivered(unusable)
-        cohort.assert_no_delivered_message_is_an_unusable_draw()
-        assert _answered(cohort) == (0, 1), f"{unusable!r} is a draw the loop refuses"
-        assert cohort.claims[0].rationales, "and the rationale names the condition that fired"
-
-
-def test_every_delivered_message_is_read_and_not_only_the_last():
-    """What the contract forbids is the bad draw reaching the user AT ALL.
-
-    A turn that delivers two messages would otherwise be judged on one of them, which is how
-    a discarded draw arriving FIRST went unseen — so the bad one leads here, where a
-    reply-only read would miss it."""
-    cohort = _delivered(_SERIALIZED_CALL, _CLEAN_REPLY)
-    cohort.assert_no_delivered_message_is_an_unusable_draw()
-    assert _answered(cohort) == (0, 1)
+    """A sample whose reply is exactly this."""
+    return SampleObservation(name="s0", phrasing="the ask", arm=0, landed="idle", reply=reply)
 
 
 def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():

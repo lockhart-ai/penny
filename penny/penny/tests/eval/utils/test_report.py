@@ -493,8 +493,8 @@ def test_the_tail_states_the_inputs_and_what_the_outliers_did():
 
 
 def test_a_case_declaring_nothing_shared_closes_with_nothing():
-    """Every part of the tail is optional, so an unported case — or one driven with a single
-    wording against no declared world — closes with nothing at all."""
+    """Every part of the tail is optional, so a case driven with a single wording against no
+    declared world closes with nothing at all."""
     assert report.render_case_tail() == ""
 
 

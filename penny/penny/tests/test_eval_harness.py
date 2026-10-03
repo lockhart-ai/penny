@@ -2,10 +2,10 @@
 
 These drive the ``tests/eval/conftest.py`` scoring/report code directly with fixture
 ``Check`` / ``SampleResult`` data and a seeded promptlog — no live model, no ``eval`` marker —
-so they run inside ``make check`` and pin the new ergonomics: check ``rationale``, the
-not-applicable (``ignored``) third state, the fragile-pass verdict, the dual strict+partial
-RESULT line, and the ``tool_not_called`` negative-constraint primitive.  Whole-render literal
-assertions cover every new report shape.
+so they run inside ``make check`` and pin what the drivers do: how a sample's answered claims
+come to a score (``rationale``, the advisory and not-applicable states), the fragile-pass
+verdict, the RESULT line, the exclusions, and what a driver refuses.  Whole-render literal
+assertions cover every report shape.
 
 The labeller runner's learn → render step (#1770/#1782/#1828) is pinned here too — the
 fixture ledger through the SHIPPED distiller and renderer, and the five agreed cases' input
@@ -63,7 +63,6 @@ from penny.database.skills import (
 )
 from penny.llm.models import (
     LlmMessage,
-    LlmResponse,
     LlmToolCall,
     LlmToolCallFunction,
     strip_harmony_control_tokens,
@@ -270,7 +269,6 @@ from penny.tests.eval.conftest import (
     FRAME_DESCRIPTION,
     FRAME_NAME,
     FRAME_PARAMETERS,
-    INJECTION_NEVER_FIRED,
     MICRO_CONTEXT_PLACEMENTS,
     MUTATION_HISTORY_WINDOW,
     NO_CHAT_DRAW,
@@ -284,13 +282,10 @@ from penny.tests.eval.conftest import (
     Check,
     CycleCall,
     CycleObservation,
-    FieldExpectation,
     ParameterFamily,
     ParkedRound,
     SampleResult,
-    _assert_threshold,
     _awaited_parameters,
-    _bail_fired_check,
     _binding_output,
     _case_prompts,
     _chat_tool_sequence,
@@ -298,17 +293,15 @@ from penny.tests.eval.conftest import (
     _classifier_snapshot,
     _cycle_shape,
     _cycles_exclusion,
+    _cycles_ran_check,
     _draw_exclusion,
     _drive_turns,
+    _DrivenCycles,
     _exclusion,
     _extraction_output,
     _flush_sample_blocks,
-    _frame_attributes_to,
     _framing_output,
-    _guarded_graded,
-    _guarded_injector,
     _held_entries,
-    _InjectTextBail,
     _labelling_input,
     _labelling_output,
     _machine_walk,
@@ -322,15 +315,14 @@ from penny.tests.eval.conftest import (
     _PendingCase,
     _Perf,
     _refuse_binding_state_mismatch,
-    _refuse_unscorable,
     _registry_shortfall,
+    _report_result,
+    _require_ask,
+    _require_report_only,
     _sample_db_path,
     _sample_turns,
-    _score_extraction,
-    _scorer_is_graded,
     _seed_sample,
     _stamp_cause,
-    _stated_pass_rate,
     _stored_entries,
     _turn_kind,
     _write_classifier_report,
@@ -338,8 +330,6 @@ from penny.tests.eval.conftest import (
     bound_value_field,
     classify_by_family,
     collection_entries,
-    continue_nudge_fired,
-    count_tool_calls,
     cycle_script,
     draw_rerolled,
     env_seconds,
@@ -354,7 +344,6 @@ from penny.tests.eval.conftest import (
     outgoing_replies,
     routine_names_a_destination,
     routine_open_parameters,
-    routing_clean,
     run_exhibited_pathology,
     sample_is_fragile,
     sample_log_path,
@@ -365,9 +354,6 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
     stored_images,
     tool_call_name,
-    tool_call_rejected,
-    tool_not_called,
-    tool_was_called,
 )
 from penny.tests.eval.conftest import (
     _stated_behaviour as stated_behaviour,
@@ -461,7 +447,7 @@ from penny.tests.schema_template import migrated_db, schema_only_db
 # against the same definition the ported claim answers with, never a second copy of it.
 from penny.text_validity import half_formed_send_reason
 from penny.tools import micro_context as micro_context_module
-from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
+from penny.tools.base import Tool
 from penny.tools.choose import CHOSE_MESSAGE
 from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import (
@@ -676,7 +662,7 @@ def test_graded_excludes_ignored_and_advisory_from_denominator() -> None:
             Check("state written", ok=True),
             Check("read count", ok=False),
             Check("routing clean", ok=False, scored=False),  # advisory: renders, doesn't count
-            Check.na("browse branch", rationale="no browse this sample"),  # n/a: out of denom
+            Check("browse branch", ok=True, ignored=True),  # n/a: out of the denominator
         ]
     )
     assert result.total == 2  # only the two scored, applicable checks
@@ -689,7 +675,9 @@ def test_graded_excludes_ignored_and_advisory_from_denominator() -> None:
 
 
 def test_graded_all_ignored_is_vacuous_pass() -> None:
-    result = SampleResult.graded([Check.na("branch a"), Check.na("branch b")])
+    result = SampleResult.graded(
+        [Check("branch a", ok=True, ignored=True), Check("branch b", ok=True, ignored=True)]
+    )
     assert result.total == 0
     assert result.score == 1.0
     assert result.passed
@@ -699,24 +687,6 @@ def test_graded_all_ignored_is_vacuous_pass() -> None:
 def test_graded_failed_label_carries_rationale() -> None:
     result = SampleResult.graded([Check("reads", ok=False, rationale="expected 3 reads, saw 1")])
     assert result.failed == ["reads — expected 3 reads, saw 1"]
-
-
-def test_check_na_constructor() -> None:
-    check = Check.na("browse branch", rationale="not exercised")
-    assert check.ignored
-    assert check.rationale == "not exercised"
-    assert check.ok  # n/a is not a failure
-
-
-# ── The negative-constraint primitive + the fragility scan ──
-
-
-def test_tool_not_called_reads_the_promptlog(tmp_path) -> None:
-    db = _make_db(tmp_path)
-    _log_prompt(db, response=_tool_call_response("collection_write"))
-    assert tool_was_called(db, "collection_write")
-    assert not tool_not_called(db, "collection_write")
-    assert tool_not_called(db, "send_message")
 
 
 def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path, monkeypatch) -> None:
@@ -837,6 +807,51 @@ def test_a_sample_is_numbered_in_exactly_one_place() -> None:
 # The runner-local index the numbering pin reads by name: 0-based, because that is what a range
 # produces, and the one thing no other surface may turn into a number on its own.
 _SAMPLE_INDEX = "sample_index"
+
+
+def _names_called(function: ast.AsyncFunctionDef | ast.FunctionDef) -> set[str]:
+    """Every bare name a function calls, at any depth inside it."""
+    return {
+        node.func.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
+def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
+    """Every ``*_eval`` driver fixture calls both stated-input guards and takes no per-sample
+    scorer, so a case can only be written as one ask, in its wordings, with claims made against
+    the cohort that comes back.
+
+    Structural, off the module's own AST, so a driver added tomorrow is covered without anybody
+    remembering the rule: a driver that skipped the guard would run a case with nothing to
+    drive and report a vacuous pass for every sample."""
+    tree = ast.parse(_EVAL_CONFTEST.read_text())
+    drivers = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name.endswith(_DRIVER_SUFFIX)
+    ]
+    assert len(drivers) == 7, f"the drivers this pin reads: {[node.name for node in drivers]}"
+    for driver in drivers:
+        missing = _DRIVER_GUARDS - _names_called(driver)
+        assert not missing, f"{driver.name} never calls {sorted(missing)}"
+        accepted = {
+            arg.arg
+            for node in ast.walk(driver)
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+            for arg in [*node.args.args, *node.args.kwonlyargs]
+        }
+        assert not accepted & _SCORER_ARGUMENTS, (
+            f"{driver.name} accepts {sorted(accepted & _SCORER_ARGUMENTS)} — a per-sample scorer"
+        )
+
+
+# What the pin above reads by name: the fixtures that drive a case, the two guards each one
+# must call before a sample runs, and the arguments a per-sample scorer path would take.
+_DRIVER_SUFFIX = "_eval"
+_DRIVER_GUARDS = {"_require_ask", "_require_report_only"}
+_SCORER_ARGUMENTS = {"score", "message", "messages", "pool", "expected", "expectations", "cycles"}
 
 
 def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
@@ -2096,20 +2111,23 @@ def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
     rows are history: every "what did the model do" reader excludes them by their run id,
     which the seeder mints under the shared prefix.
 
-    Pinned here because the exclusion is what keeps a negative check honest — a seeded
-    round's browse must not read as this turn's, which is exactly the check the learn →
-    apply cases score ("she set it running instead of running it again").  A live run's
-    own rows are untouched, so every other case reads identically to before."""
+    Pinned here because the exclusion is what keeps a sample's tool sequence honest — a
+    seeded round's browse must not read as this turn's.  A live run's own rows are
+    untouched."""
     db = _make_db(tmp_path)
-    _log_prompt(db, response=_tool_call_response("browse"), run_id=seeded_run_id("learn-turn"))
-    assert tool_not_called(db, "browse"), "a seeded prior turn's call is not this sample's"
-    assert count_tool_calls(db, "browse") == 0
+    chat = PennyConstants.CHAT_AGENT_NAME
+    _log_prompt(
+        db,
+        response=_tool_call_response("browse"),
+        run_id=seeded_run_id("learn-turn"),
+        agent_name=chat,
+    )
+    assert _chat_tool_sequence(db) == [], "a seeded prior turn's call is not this sample's"
     assert live_prompt_perf(db).calls == 0, "a seeded row is not one of this sample's calls"
     assert not measured_turn_ran(db), "a world and nothing added to it is the dead sample"
 
-    _log_prompt(db, response=_tool_call_response("browse"), run_id="r1")
-    assert tool_was_called(db, "browse"), "the sample's own call still reads"
-    assert count_tool_calls(db, "browse") == 1, "only the live call is counted"
+    _log_prompt(db, response=_tool_call_response("browse"), run_id="r1", agent_name=chat)
+    assert _chat_tool_sequence(db) == ["browse"], "only the sample's own call is read"
     assert live_prompt_perf(db).calls == 1
     assert measured_turn_ran(db), "the sample's own row is the turn having run"
 
@@ -2153,53 +2171,6 @@ def test_a_micro_context_draw_over_a_seeded_world_is_a_measured_turn(tmp_path, a
     assert _draw_exclusion(db, "") == NO_DRAW, "the turn ran; the draw is what failed"
 
 
-def test_tool_call_rejected_matches_backticked_tool_name_form(tmp_path) -> None:
-    # The framework arg-validation failure leads with the backticked TOOL name
-    # (`FRAMEWORK_NARRATION_INVALID_ARGS`) — the shape the per-tool probe already matched.
-    db = _make_db(tmp_path)
-    frame = _framed_result(
-        "update_entry",
-        {"memory": "trip-notes", "key": "hotel"},
-        ok=False,
-        narration=FRAMEWORK_NARRATION_INVALID_ARGS.format(tool_name="update_entry"),
-    )
-    assert "`update_entry`" in frame[0]["content"]  # the tool name IS backticked in this form
-    _log_prompt(db, messages=frame)
-    assert tool_call_rejected(db, "update_entry")
-    assert tool_call_rejected(db)  # any-tool probe
-    assert not tool_call_rejected(db, "collection_write")
-
-
-def test_tool_call_rejected_matches_memory_tool_target_backticked_form(tmp_path) -> None:
-    # A memory-tool execute-time failure backticks the TARGET, not the tool — the tool is
-    # named only in the `(<tool> result)` tag.  Before #1726 a per-tool probe matched solely
-    # the backticked tool name and went blind to these, false-greening every memory-surface
-    # rejection check.  Frames are the PRODUCTION templates (via `Tool.format_result`).
-    db = _make_db(tmp_path)
-    write_frame = _framed_result("collection_write", {"memory": "trip-notes"}, ok=False)
-    update_frame = _framed_result(
-        "update_entry", {"memory": "trip-notes", "key": "hotel"}, ok=False
-    )
-    _log_prompt(db, messages=write_frame)
-    _log_prompt(db, messages=update_frame)
-
-    # The bug's signature: the tool name is NOT backticked — only the tag names it.
-    assert "`collection_write`" not in write_frame[0]["content"]
-    assert "(collection_write result)" in write_frame[0]["content"]
-    assert "`update_entry`" not in update_frame[0]["content"]
-    assert "(update_entry result)" in update_frame[0]["content"]
-
-    # The fix: attributed by the tag, each rejection is visible to its per-tool probe again.
-    assert tool_call_rejected(db, "collection_write")
-    assert tool_call_rejected(db, "update_entry")
-    assert tool_call_rejected(db)  # any-tool probe
-    assert not tool_call_rejected(db, "log_append")  # a tag names exactly one tool
-
-    # The attribution primitive recognises the tag shape and never cross-attributes.
-    assert _frame_attributes_to(write_frame[0]["content"], "collection_write")
-    assert not _frame_attributes_to(write_frame[0]["content"], "update_entry")
-
-
 def test_sample_is_fragile_detects_recovery_frames(tmp_path) -> None:
     db = _make_db(tmp_path)
     _log_prompt(
@@ -2232,7 +2203,7 @@ def test_sample_is_fragile_counts_a_user_turn_recovery_nudge(tmp_path) -> None:
     assert sample_is_fragile(db)
 
 
-# ── The loop-health advisory: a re-rolled draw, not a deleted nudge (#1839/#1841) ──
+# ── Reading a re-rolled draw: the repeated context, not a deleted nudge (#1839/#1841) ──
 
 
 def test_draw_rerolled_reads_the_repeated_context_a_discarded_draw_leaves(tmp_path) -> None:
@@ -2251,12 +2222,10 @@ def test_draw_rerolled_reads_the_repeated_context_a_discarded_draw_leaves(tmp_pa
     _log_prompt(db, messages=step_one)
     _log_prompt(db, messages=step_two)
     assert not draw_rerolled(db)
-    assert routing_clean(db)
 
     # The discarded draw's row: the SAME context, drawn again.
     _log_prompt(db, messages=step_two)
     assert draw_rerolled(db)
-    assert not routing_clean(db)
 
     # A micro-context re-draws the same way, and its shape-violation re-draw (`_draw`, the outer
     # loop) mints a FRESH run id each time — so the read keys on the repeated context alone and
@@ -2270,7 +2239,7 @@ def test_draw_rerolled_reads_the_repeated_context_a_discarded_draw_leaves(tmp_pa
     assert draw_rerolled(micro)
 
 
-def test_routing_clean_keeps_the_legacy_bail_marker_and_continue_nudge_halves(tmp_path) -> None:
+def test_draw_rerolled_keeps_the_legacy_bail_marker_leg(tmp_path) -> None:
     # A promptlog written BEFORE #1840 carries the retired bail nudge as a user turn.  Nothing
     # can write one now, but the marker stays as the legacy leg so a historical row still reads.
     legacy = _make_db(tmp_path, "legacy")
@@ -2279,180 +2248,63 @@ def test_routing_clean_keeps_the_legacy_bail_marker_and_continue_nudge_halves(tm
         messages=[{"role": "user", "content": "That could not be parsed as a tool call."}],
     )
     assert draw_rerolled(legacy)
-    assert not routing_clean(legacy)
-
-    # The empty-response retry nudge is still live, and is the verdict's other half — a sample
-    # that only continued because it was nudged is not cleanly routed either.
-    nudged = _make_db(tmp_path, "nudged")
-    _log_prompt(nudged, messages=[{"role": "user", "content": _RETIRED_CONTINUE_NUDGE}])
-    assert not draw_rerolled(nudged)
-    assert continue_nudge_fired(nudged)
-    assert not routing_clean(nudged)
 
 
-# ── The graded runner paths: dispatch + framework guard-as-Check (#1697) ──
+def test_a_chat_sample_is_excluded_for_the_most_fundamental_fact_about_it(tmp_path) -> None:
+    """The order a chat sample's exclusion is read in, pinned.
 
-
-def test_scorer_is_graded_dispatches_on_return_type() -> None:
-    # A graded scorer returns Checks; a binary one returns failure strings; empty → binary (pass).
-    assert _scorer_is_graded([Check("wrote entry", ok=True)])
-    assert not _scorer_is_graded(["did not write the entry"])
-    assert not _scorer_is_graded([])
-
-
-def test_bail_fired_guard_check() -> None:
-    # The guard is a scored Check: it passes silently (no rationale) when the contract fired, and
-    # fails with a rationale naming the vacuous contract when it did not — so a run the injected
-    # trigger never reached can't score green off the scorer's own checks alone.
-    fired = _bail_fired_check(True)
-    assert fired.ok and fired.scored and fired.rationale is None
-    missed = _bail_fired_check(False)
-    assert not missed.ok and missed.rationale is not None
-
-
-class _RecordingClient:
-    """A real client's stand-in: records who called, answers with a tool call once."""
-
-    def __init__(self) -> None:
-        self.callers: list[str | None] = []
-
-    async def chat(self, messages=None, tools=None, *args, **kwargs):
-        self.callers.append(kwargs.get("agent_name"))
-        function = LlmToolCallFunction(name="browse", arguments={})
-        call = LlmToolCall(id="call-1", function=function)
-        return LlmResponse(message=LlmMessage(role="assistant", content="", tool_calls=[call]))
-
-
-async def test_the_forced_fault_is_confined_to_the_turn_the_case_is_about() -> None:
-    """An agent's model client is SHARED with every microcontext built from it, so an
-    injector installed on ``chat_agent._model_client`` sees the extractor's calls too.
-
-    Both halves of the trigger are gated on the caller, and both matter.  If another
-    agent's tool call can ARM it, the bail is aimed one call early; if another agent's
-    call can RECEIVE it, the fault is spent on a turn the case is not about and the turn
-    under test runs clean — while ``bail_injected`` reports the contract exercised.  That
-    is not hypothetical: on the first ported run the bail landed in ``browse-extract`` on
-    12 of 15 gpt-oss samples and 15 of 15 gemma ones, and both cohorts were read as
-    recoveries."""
-    real = _RecordingClient()
-    injector = _InjectTextBail(real, "{}", target_agent=PennyConstants.CHAT_AGENT_NAME)
-
-    # A microcontext's tool-calling response must not arm the trigger...
-    await injector.chat([], agent_name="browse-extract")
-    assert not injector.bail_injected
-    # ...and once the TARGET has made its tool call, the next microcontext call is still
-    # the real model's, not the bail's.
-    await injector.chat([], agent_name=PennyConstants.CHAT_AGENT_NAME)
-    micro = await injector.chat([], agent_name="browse-extract")
-    assert micro.has_tool_calls, "the extractor got the real model, not the sabotage"
-    assert not injector.bail_injected, "the fault is still unspent"
-
-    bailed = await injector.chat([], agent_name=PennyConstants.CHAT_AGENT_NAME)
-    assert injector.bail_injected and bailed.message.content == "{}"
-    assert real.callers == ["browse-extract", "chat", "browse-extract"], (
-        "every call but the sabotaged one reached the real model"
-    )
-
-
-async def test_an_untargeted_injector_still_fires_on_any_caller() -> None:
-    """An injector that names no target keeps the any-caller behaviour — this pins that
-    the confinement is opt-in and changes nothing for a case that did not ask for it."""
-    real = _RecordingClient()
-    injector = _InjectTextBail(real, "Done.")
-    await injector.chat([], agent_name="collector")
-    bailed = await injector.chat([], agent_name="browse-extract")
-    assert injector.bail_injected and bailed.message.content == "Done."
-
-
-def test_a_misfired_injection_is_a_named_exclusion_and_never_also_a_failed_check() -> None:
-    """A recovery case's forced fault reports its misfire ONCE, to whichever half of the
-    report can carry it (#2009).
-
-    A sample the sabotage never fired on answered an unbroken turn: it exercised no
-    recovery, so its end state says nothing about the behaviour the case is named for.  A
-    PORTED case says so as a named exclusion and the sample leaves before any claim is
-    answered; a case still on the scorer path has no exclusions section, so the guard Check
-    stays its carrier.  Pinned in both directions because telling BOTH would count one
-    misfire twice — as harness debris and as the model getting it wrong — which is exactly
-    the reading a recorded run produced, marking a sample behavioural while the entry it
-    was asked to correct had landed."""
-    wrapper = _InjectTextBail(object(), "{}")
-
-    def observe(db, reply, before, held_before, injected):  # a ported case's observer
-        raise AssertionError("not called here")
-
-    assert _guarded_injector(wrapper, None) is wrapper, "a scorer case keeps its guard"
-    assert _guarded_injector(wrapper, observe) is None, "an observed case reports it itself"
-    assert _guarded_injector(None, observe) is None, "a case that forced nothing has nothing"
-
-
-def test_the_exclusion_asks_about_the_injector_only_where_one_was_installed(tmp_path) -> None:
-    """``injected`` is the injector's own account of whether it fired, and ``None`` means the
-    case installed none — so the condition is asked only of a case that forced a fault.
-
-    The order matters and is pinned with it: a sample whose measured turn never ran, whose
-    state classifier never answered (#2154), whose chat model call failed at the endpoint
-    (#2170), or that produced no reply, is excluded for THAT rather than for the injector,
-    because those are the more fundamental facts and naming the injector for them would send a
-    reader after the wrong thing.
+    A sample whose measured turn never ran, whose state classifier never answered (#2154),
+    whose chat model call failed at the endpoint (#2170), or that produced no reply, is
+    excluded for the FIRST of those that is true, because each is a more fundamental fact
+    than the next and naming a later one would send a reader after the wrong thing.
 
     The chat draw that counts is one the MEASURED turn made, after its classifier answered: an
     earlier turn's chat row, ledgered before it, cannot stand in for a call that raised."""
     db = _make_db(tmp_path)
-    assert _exclusion(db, "an answer", None) == NO_MEASURED_TURN, "no live turn outranks all"
+    assert _exclusion(db, "an answer") == NO_MEASURED_TURN, "no live turn outranks all"
 
     _log_prompt(
         db,
         response=_content_response("an earlier answer"),
         agent_name=PennyConstants.CHAT_AGENT_NAME,
     )
-    assert _exclusion(db, "an answer", None) == NO_CLASSIFIER_DRAW, "the turn ran undecided"
-    assert _exclusion(db, "   ", False) == NO_CLASSIFIER_DRAW, "it outranks the reply and injector"
+    assert _exclusion(db, "an answer") == NO_CLASSIFIER_DRAW, "the turn ran undecided"
+    assert _exclusion(db, "   ") == NO_CLASSIFIER_DRAW, "it outranks the empty reply"
 
     _log_prompt(
         db,
         response=_content_response("STATE: idle"),
         agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
     )
-    assert _exclusion(db, "an answer", None) == NO_CHAT_DRAW, "the chat call raised, no row"
-    assert _exclusion(db, "   ", False) == NO_CHAT_DRAW, "it outranks the reply and injector"
+    assert _exclusion(db, "an answer") == NO_CHAT_DRAW, "the chat call raised, no row"
+    assert _exclusion(db, "   ") == NO_CHAT_DRAW, "it outranks the empty reply"
 
     _log_prompt(
         db, response=_content_response("an answer"), agent_name=PennyConstants.CHAT_AGENT_NAME
     )
-    assert _exclusion(db, "an answer", None) is None, "no injector, nothing to ask"
-    assert _exclusion(db, "an answer", True) is None, "the fault fired — a real sample"
-    assert _exclusion(db, "an answer", False) == INJECTION_NEVER_FIRED
-    assert _exclusion(db, "   ", False) == NO_REPLY, "an empty reply outranks the injector"
+    assert _exclusion(db, "an answer") is None, "a turn that ran and replied is counted"
+    assert _exclusion(db, "   ") == NO_REPLY
 
 
-def test_a_ported_case_must_state_its_threshold_and_the_inline_path_keeps_its_default() -> None:
-    """``min_pass_rate`` is REQUIRED on the cohort path, the way the behaviour sentence is.
+def test_a_case_must_state_what_it_drives_and_that_it_is_report_only() -> None:
+    """Every driver refuses, by the case's own name and before a sample runs, a case that
+    names nothing to drive or that does not state the report-only setting.
 
-    ``None`` cannot double as "not stated" the way an empty behaviour string can, because on
-    this path ``None`` IS the value every ported case states deliberately — a report-only
-    case.  So an unstated threshold has its own marker, and a ported case reaching the driver
-    without one is refused before a sample runs rather than being gated at the inline path's
-    default with nobody having decided that.
+    ``None`` cannot double as "not stated" the way an empty behaviour string can, because
+    ``None`` IS the value every case states — so an unstated ``min_pass_rate`` has its own
+    marker.  A number is refused too: an assertion carries no floor, so there is nothing a
+    driver could compare one with, and accepting it silently would read as a gate."""
+    _require_report_only("a-case", None)
+    with pytest.raises(ValueError, match="a-case: a case must state min_pass_rate=None"):
+        _require_report_only("a-case", UNSTATED)
+    with pytest.raises(ValueError, match="a-case: min_pass_rate=0.9 — an assertion carries no"):
+        _require_report_only("a-case", 0.9)
 
-    Both directions, and the second is what keeps the ~40 unported cases untouched: on the
-    inline path an unstated threshold still means 0.75, exactly as it always has."""
-    assert _stated_pass_rate("a-case", None, ported=True) is None, "report-only is a VALUE"
-    assert _stated_pass_rate("a-case", 0.9, ported=True) == 0.9, "and so is a stated floor"
-
-    with pytest.raises(ValueError, match="must state its threshold"):
-        _stated_pass_rate("a-case", UNSTATED, ported=True)
-
-    assert _stated_pass_rate("a-case", UNSTATED, ported=False) == 0.75, "the inline default"
-
-    # The SCORER's inputs take the same shape, and for a sharper reason (#2006): they carry
-    # defaults so a ported case can omit them, and an inline case that omits one produces no
-    # checks at all — `SampleResult.graded([])` scores 1.0 over nothing, so the case reports a
-    # green for every sample it drove.  Refused before a sample runs; a ported case passes.
-    _refuse_unscorable("a-case", ported=True, pool=())
-    _refuse_unscorable("a-case", ported=False, pool=("something to sweep",))
-    with pytest.raises(ValueError, match="must state its pool"):
-        _refuse_unscorable("a-case", ported=False, pool=())
+    _require_ask("a-case", "chat_eval", "ask=<the request>", "what does the deck cost?")
+    _require_ask("a-case", "framer_eval", "turns=<the round's user turns>", ("watch it",))
+    for nothing in (None, "", "   ", (), []):
+        with pytest.raises(ValueError, match="a-case: chat_eval needs ask=<the request>"):
+            _require_ask("a-case", "chat_eval", "ask=<the request>", nothing)
 
 
 def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path) -> None:
@@ -2585,37 +2437,7 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     )
 
 
-def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:
-    # A scorer whose own check PASSES but whose injected bail never fired: the prepended guard
-    # (leading the list) drags the sample below a full pass — the vacuous-contract catch.
-    vacuous = _guarded_graded([Check("wrote the entry", ok=True)], [_bail_fired_check(False)])
-    assert vacuous.total == 2  # guard + scorer check, both scored
-    assert vacuous.score == 0.5 and not vacuous.passed
-    assert vacuous.checks[0].label == "forced bail fired — contract exercised"  # guard leads
-    # With the bail fired, the same scorer sample is a clean full pass.
-    clean = _guarded_graded([Check("wrote the entry", ok=True)], [_bail_fired_check(True)])
-    assert clean.passed and clean.total == 2
-
-
-def test_guarded_graded_no_guards_is_the_startup_peripheral_path() -> None:
-    # startup_eval (and the peripheral / prompt-format runners) dispatch with NO framework
-    # guards — no injection — so _guarded_graded(scored, []) grades purely over the scorer's
-    # own Checks.  A 2-of-3 graded text scorer scores 0.67 where the old binary scorer scored
-    # 0.0 on the same miss: the monotonicity the conversion buys (graded mean >= binary mean).
-    result = _guarded_graded(
-        [Check("generated", ok=True), Check("length", ok=True), Check("voice", ok=False)], []
-    )
-    assert result.total == 3
-    assert round(result.score, 2) == 0.67
-    assert not result.passed
-    assert result.failed == ["voice"]
-    # A clean all-pass graded text scorer is a full pass, and a binary text scorer's failure
-    # strings still route through the binary path (a text scorer that returns strings).
-    assert _guarded_graded([Check("only", ok=True)], []).passed
-    assert not _scorer_is_graded(["fell back to the canned message"])
-
-
-def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) -> None:
+def test_report_renders_the_cycle_ran_guard_in_the_footer(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     db = _make_db(tmp_path)
@@ -2627,21 +2449,18 @@ def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) ->
             {"role": "assistant", "tool_calls": [write_call]},
         ],
     )
-    # The scorer's own check passed (anchored to the write row), but the injected bail-fired guard
-    # failed — so the guard-as-Check lands in the footer with its vacuous-contract rationale.
-    result = _guarded_graded(
-        [Check("wrote the entry", ok=True, anchor="collection_write(")],
-        [_bail_fired_check(False)],
-    )
+    # A collector sample whose dispatcher refused the cycle: the guard is a Check with no row
+    # of its own, so it lands in the footer under a `G` id, carrying the refusal it read.
+    refused = _DrivenCycles(observed=[], ran=False, refusal="no usable program")
+    result = SampleResult.graded([_cycles_ran_check(refused)])
     _write_sample_report(db, "guard-case", 0, result=result, reply="saved")
     text = _sample_report_text(tmp_path, "guard-case")
-    # the guard failed → 1/2
     assert text.startswith("<details><summary>sample 1 — ❌ fail ·")
-    assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert (
-        "| expected | G1 [guard]⚖ forced bail fired — contract exercised | "
-        "❌ G1 — the injected bail never fired — the recovery contract was not exercised |"
+        "| expected | G1 [guard]⚖ every cycle ran | "
+        "❌ G1 — the dispatcher refused the collection: no usable program |"
     ) in text
+    assert _cycles_ran_check(_DrivenCycles(observed=[], ran=True, refusal=None)).ok
 
 
 # ── Whole-render assertions for the new report shapes ──
@@ -2662,7 +2481,7 @@ def test_report_renders_rationale_and_ignored(tmp_path, monkeypatch) -> None:
         [
             Check("write happened", ok=True, anchor="collection_write("),
             Check("read count", ok=False, rationale="expected 3 reads, saw 1"),
-            Check.na("browse branch", rationale="no browse this sample"),
+            Check("browse branch", ok=True, ignored=True, rationale="no browse this sample"),
         ]
     )
     _write_sample_report(db, "rationale-case", 0, result=result, reply="saved")
@@ -2796,7 +2615,7 @@ def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) 
     assert report.NO_TURNS_PLACEHOLDER in text
 
 
-# ── The dual strict+partial RESULT line ──
+# ── The RESULT line: the mean beside the all-pass count ──
 
 
 def test_result_line_reports_dual_metric(capsys) -> None:
@@ -2804,110 +2623,55 @@ def test_result_line_reports_dual_metric(capsys) -> None:
         SampleResult.graded([Check("a", ok=True), Check("b", ok=True)]),  # 1.0, all-pass
         SampleResult.graded([Check("a", ok=True), Check("b", ok=False)]),  # 0.5, not all-pass
     ]
-    _assert_threshold("dual-case", results, None, intended=2)
+    _report_result("dual-case", results, intended=2)
     out = capsys.readouterr().out
-    assert "RESULT [dual-case] mean 0.75 · all-pass 1/2 across 2 samples (report-only)" in out
+    assert "RESULT [dual-case] mean 0.75 · all-pass 1/2 across 2 samples\n" in out
 
 
 def test_result_line_detail_carries_rationale(capsys) -> None:
-    _assert_threshold(
+    _report_result(
         "detail-case",
         [SampleResult.graded([Check("reads", ok=False, rationale="expected 3 reads, saw 1")])],
-        None,
         intended=1,
     )
     out = capsys.readouterr().out
-    assert "RESULT [detail-case] mean 0.00 · all-pass 0/1 across 1 samples (report-only)" in out
+    assert "RESULT [detail-case] mean 0.00 · all-pass 0/1 across 1 samples\n" in out
     assert "  [1] 0.00 — reads — expected 3 reads, saw 1" in out
 
 
-def test_result_line_gated_pass_names_mean_threshold(capsys) -> None:
-    _assert_threshold(
-        "gate-case", [SampleResult.binary([]), SampleResult.binary([])], 0.75, intended=2
-    )
-    out = capsys.readouterr().out
-    assert "RESULT [gate-case] mean 1.00 · all-pass 2/2 across 2 samples (need mean >=0.75)" in out
-
-
-def test_result_line_gate_fails_below_threshold() -> None:
-    with pytest.raises(pytest.fail.Exception):
-        _assert_threshold("red-case", [SampleResult.binary(["boom"])], 0.75, intended=1)
+def test_a_low_score_is_reported_and_never_fails_the_case(capsys) -> None:
+    """Nothing on the assertion side fails a run: the count is printed for a person to read."""
+    _report_result("red-case", [SampleResult.binary(["boom"])], intended=1)
+    assert "RESULT [red-case] mean 0.00 · all-pass 0/1" in capsys.readouterr().out
 
 
 # ── A mostly-dead cohort is not a result, whatever the survivors scored (#1996) ──
 
 
-def test_a_mostly_dead_cohort_fails_before_any_score_is_compared() -> None:
+def test_a_mostly_dead_cohort_fails_whatever_its_survivors_scored() -> None:
     """Two of five samples ever ran, and BOTH passed — the case still refuses.
 
     This is the run that reported `6 passed, EXIT=0` over 34 dead samples: every mean it
-    printed was computed from whatever survived. The refusal has to come before the
-    threshold, because a perfect score over a fraction is the exact shape that looked green.
+    printed was computed from whatever survived, and a perfect score over a fraction is the
+    exact shape that looked green.
     """
     survivors = [SampleResult.binary([]), SampleResult.binary([])]
     with pytest.raises(pytest.fail.Exception) as failure:
-        _assert_threshold("dead-cohort", survivors, 0.75, intended=5)
+        _report_result("dead-cohort", survivors, intended=5)
 
     message = str(failure.value)
     assert "2 of 5 samples produced their measured turn" in message
     assert "more than half the samples it intended" in message
     assert "at least 3 here" in message
 
-
-def test_a_report_only_case_refuses_a_dead_cohort_too() -> None:
-    """Report-only means "don't gate the SCORE", never "tolerate having no result"."""
     with pytest.raises(pytest.fail.Exception):
-        _assert_threshold("quiet-case", [], None, intended=5)
+        _report_result("quiet-case", [], intended=5)
 
 
 def test_a_cohort_that_squeaks_past_the_bar_still_scores(capsys) -> None:
     """Three of five is a real read — reduced, and the RESULT line says the N it used."""
-    _assert_threshold("thin-case", [SampleResult.binary([])] * 3, 0.75, intended=5)
+    _report_result("thin-case", [SampleResult.binary([])] * 3, intended=5)
     assert "across 3 samples" in capsys.readouterr().out
-
-
-# ── Honest-threshold restoration: gate on the pathology-excluded mean (#1698) ──
-
-
-def test_gate_pathology_excluded_gates_on_the_honest_mean(capsys) -> None:
-    # One clean pass + one pathology failure: the raw mean is 0.50, but the pathology sample
-    # drops out of the pathology-excluded denominator, so the honest read is 1.00.  Opting in
-    # (gate_pathology_excluded=True) gates on that honest 1.00 and clears an 0.8 bar the raw
-    # mean would miss — the mechanism behind the speakable sequence cases' 0.6→0.8 restore.
-    passed = SampleResult.binary([])
-    pathological = SampleResult.binary(["collapse"])
-    pathological.cause = FailureCause.PATHOLOGY
-    _assert_threshold(
-        "honest-case", [passed, pathological], 0.8, intended=2, gate_pathology_excluded=True
-    )
-    out = capsys.readouterr().out
-    assert (
-        "RESULT [honest-case] mean 0.50 · all-pass 1/2 across 2 samples "
-        "(need pathology-excluded mean >=0.8)" in out
-    )
-
-
-def test_gate_pathology_excluded_still_fails_on_a_behavioral_miss() -> None:
-    # A BEHAVIORAL failure stays in the pathology-excluded denominator, so the honest mean is
-    # 0.50 — the opt-in gate is not a free pass; only reroll-guard pathology noise is excluded.
-    passed = SampleResult.binary([])
-    behavioral = SampleResult.binary(["wrong end state"])
-    behavioral.cause = FailureCause.BEHAVIORAL
-    with pytest.raises(pytest.fail.Exception):
-        _assert_threshold(
-            "behav-case", [passed, behavioral], 0.8, intended=2, gate_pathology_excluded=True
-        )
-
-
-def test_pathology_noise_sinks_the_raw_gate_without_the_opt_in() -> None:
-    # The flag is load-bearing: the SAME clean-pass + pathology-fail pair FAILS the default
-    # raw-mean gate (0.50 < 0.8) — exactly the flake the honest-threshold restoration removes
-    # by opting the case into the pathology-excluded gate above.
-    passed = SampleResult.binary([])
-    pathological = SampleResult.binary(["collapse"])
-    pathological.cause = FailureCause.PATHOLOGY
-    with pytest.raises(pytest.fail.Exception):
-        _assert_threshold("raw-gate-case", [passed, pathological], 0.8, intended=2)
 
 
 # ── Failure-cause partition (#1695): the structural pathology scan + stamping ──
@@ -2949,15 +2713,15 @@ def test_run_exhibited_pathology_ignores_clean_and_input_only_poison(tmp_path) -
     _log_prompt(clean, response=_tool_call_response("collection_write"))
     _log_prompt(clean, response=_content_response("Here's your answer."))
     assert not run_exhibited_pathology(clean)
-    # Poison in the INPUT messages (e.g. an injected bail echoed into history) is NOT the
-    # model's output — the scan reads only the response, so an injected trigger stays invisible.
-    injected = _make_db(tmp_path, "injected")
+    # Poison in the INPUT messages (text the model was handed) is NOT the model's output — the
+    # scan reads only the response, so a collapse quoted in the history stays invisible.
+    handed = _make_db(tmp_path, "handed")
     _log_prompt(
-        injected,
+        handed,
         messages=[{"role": "assistant", "content": "Hi there! ......???"}],
         response=_tool_call_response("collection_write"),
     )
-    assert not run_exhibited_pathology(injected)
+    assert not run_exhibited_pathology(handed)
 
 
 def test_stamp_cause_partitions_pass_pathology_harness_behavioral(tmp_path) -> None:
@@ -3018,12 +2782,11 @@ def test_nudge_loop_spiral_classifies_pathology_not_harness(tmp_path) -> None:
     assert spiral_timeout.cause == FailureCause.PATHOLOGY
 
 
-def test_single_nudge_injected_recovery_stays_non_pathology(tmp_path) -> None:
-    # The immunity boundary (#1732): a DELIBERATELY-injected recovery trigger produces exactly
-    # ONE live nudge (the production recovery responding to the forced bail).  Counting nudge
-    # frames would false-tag its fail path pathology; the output-only scan does not.  Built the
-    # same way — a real production nudge in the INPUT — but the persisted OUTPUTS are all clean
-    # (the injected bail's synthetic response never persists) and there is no bare `{}` reply.
+def test_a_lone_nudge_frame_in_the_input_is_not_a_pathology_signal(tmp_path) -> None:
+    # The other side of the boundary (#1732): a run that carries a recovery nudge in its INPUT
+    # and whose persisted OUTPUTS are all clean.  Counting nudge frames would tag it pathology;
+    # the output-only scan does not.  Built the same way as the spiral above — a nudge in the
+    # INPUT — but with no bare `{}` reply.
     recovery = _make_db(tmp_path, "recovery")
     _log_prompt(
         recovery,
@@ -3032,8 +2795,7 @@ def test_single_nudge_injected_recovery_stays_non_pathology(tmp_path) -> None:
     )
     _log_prompt(recovery, response=_content_response("Lake Baikal is the deepest, at 1,642 m."))
     assert not run_exhibited_pathology(recovery)  # a lone nudge frame is not a pathology signal
-    # A failed injected-recovery sample that TIMED OUT stays harness, never pathology — the
-    # forced trigger is invisible to the output-only scan, exactly as #1695 requires.
+    # A sample like that which TIMED OUT stays harness, never pathology.
     recovery_timeout = SampleResult.binary(["no reply within timeout"])
     _stamp_cause(recovery, recovery_timeout, timed_out=True)
     assert recovery_timeout.cause == FailureCause.HARNESS
@@ -3043,9 +2805,9 @@ def test_result_line_renders_cause_summary(capsys) -> None:
     passed = SampleResult.binary([])
     pathological = SampleResult.binary(["poison"])
     pathological.cause = FailureCause.PATHOLOGY
-    _assert_threshold("cause-case", [passed, pathological], None, intended=2)
+    _report_result("cause-case", [passed, pathological], intended=2)
     out = capsys.readouterr().out
-    assert "RESULT [cause-case] mean 0.50 · all-pass 1/2 across 2 samples (report-only)" in out
+    assert "RESULT [cause-case] mean 0.50 · all-pass 1/2 across 2 samples\n" in out
     # The pathology sample drops out of the excluded denominator, so the honest read is 1.00.
     assert (
         "  pathology-excluded mean 1.00 (1 samples) · "
@@ -3058,7 +2820,7 @@ def test_result_line_renders_cause_summary(capsys) -> None:
 # The two renderings of one scored case: the document `make eval-report` posts, and the
 # `results.jsonl` record `baseline.py` and the flips index read.  They disagreed, because only
 # the document was rendered from the cohort's claims — the record kept the drive-time scores,
-# where a ported sample scores nothing and a vacuous 1.0 stands in.  So a case whose document
+# where a sample scores nothing and a vacuous 1.0 stands in.  So a case whose document
 # said `14 pooled + 1 excluded` recorded fifteen passes and no causes, and a later run diffed
 # against it saw no regression.
 
@@ -3067,9 +2829,9 @@ _COHORT_RECORD_BEHAVIOUR = "In the chat agent, when the user teaches a round, Pe
 
 
 def _drive_time_result(db: Database, observation: SampleObservation) -> SampleResult:
-    """One sample as the COHORT PATH leaves it: scored nothing (its claims are answered after
-    every sample has run), its fault facts read off its own database, its observation attached."""
-    result = _guarded_graded([], [])
+    """One sample as a DRIVE leaves it: scored nothing (its claims are answered after every
+    sample has run), its fault facts read off its own database, its observation attached."""
+    result = SampleResult.graded([])
     _stamp_cause(db, result)
     result.observation = observation
     return result
@@ -3082,8 +2844,6 @@ def _close_cohort_case(cohort: Cohort, results: Sequence[SampleResult]) -> None:
         case_id=cohort.case_id,
         family="chat",
         module="penny.tests.eval.chat.learn.test_case",
-        min_pass_rate=None,
-        gate_pathology_excluded=False,
         behaviour=_COHORT_RECORD_BEHAVIOUR,
     )
     pending.add(cohort, results, _Perf(), intended=len(results))
@@ -3144,10 +2904,7 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
 
     # And the console RESULT line prints that same tally.
     out = capsys.readouterr().out
-    assert (
-        f"RESULT [{_COHORT_RECORD_CASE}] mean 0.33 · all-pass 1/3 across 3 samples (report-only)"
-        in out
-    )
+    assert f"RESULT [{_COHORT_RECORD_CASE}] mean 0.33 · all-pass 1/3 across 3 samples\n" in out
     assert (
         "  pathology-excluded mean 0.33 (3 samples) · "
         "causes — behavioral 1 · pathology 0 · harness 1" in out
@@ -3190,7 +2947,6 @@ def _observed_chat_sample(
         reply=reply,
         before=set(),
         held_before=[],
-        injected=None,
     )
 
 
@@ -3932,9 +3688,8 @@ def test_a_microcontext_case_states_the_prompt_its_draw_was_given(tmp_path, monk
         ("sample 2", "skill-namer", _NAMER_PROMPT),
     ], "both customers under test deposit, in ledger order; the main agent neither was does not"
 
-    # The case document's own section, composed exactly as the two case-close paths compose it
-    # (`_record_case_report` for a ported case, `_record_unported_prompts` for one that never
-    # built a cohort) — both pop this accumulator and render it through the same two calls.
+    # The case document's own section, composed exactly as case close composes it
+    # (`_record_case_report`): it pops this accumulator and renders it through the same two calls.
     assert report.render_prompt_variants(
         report.prompt_variants(_case_prompts.pop(_MICRO_PROMPT_CASE), total=2)
     ) == (
@@ -5589,8 +5344,8 @@ _MIXED_WORLD = World(
     stores=(_SEEDED_ROUTES,),
 )
 
-# A world declaring no ground at all — what a case that is not ported hands the cohort.  It
-# renders no ground fold, and the closed summary still has to state a substrate.
+# A world declaring no ground at all — no pages, no store.  It renders no ground fold, and the
+# closed summary still has to state a substrate.
 _GROUNDLESS_WORLD = World(name="nothing declared", pages=(), keeps=(), excludes=())
 
 _PAGE_BACKED_TAIL = """\
@@ -5879,13 +5634,11 @@ def test_each_extract_field_case_coheres_with_the_page_it_claims(fixture) -> Non
     assert repeated == {}, f"an anchor must identify ONE span of its page: {repeated}"
 
 
-def test_a_ported_case_states_the_behaviour_it_checks() -> None:
-    """A case reaching the COHORT path without its sentence is refused, loudly.
+def test_a_case_states_the_behaviour_it_checks() -> None:
+    """A case reaching a driver without its sentence is refused, loudly.
 
     The case id is a filename — it says which fixture ran, never what was being asked — so a
-    report rendering a rate above it states a number with no question attached.  Required on
-    the cohort path alone: that is what every ported case runs on, while the inline path
-    predates the convention and carries the cases whose porting is still ahead.
+    report rendering a rate above it states a number with no question attached.
 
     The refusal names the case and the form, because the sentence is the one thing whoever hit
     this has to write."""
@@ -5896,70 +5649,6 @@ def test_a_ported_case_states_the_behaviour_it_checks() -> None:
     for empty in ("", "   ", "\n"):
         with pytest.raises(ValueError, match="must state the behaviour it checks"):
             stated_behaviour("watch-writes-the-first-reading", empty)
-
-
-def test_score_extraction_grades_the_outcome_and_each_named_field() -> None:
-    """The extraction case's scoring over fixture answers (#1942): the outcome check
-    reads the direction off the expectations themselves, each thing the page SUPPLIES is
-    scored on its own, and what the page lacks — along with the value the draw returned —
-    rides ADVISORY, so one fact is never graded twice.
-
-    Both directions here, because the fix and its guard are one contract: a page carrying
-    some of what was asked for is a read that must carry those things, and a page carrying
-    none of it is honestly empty."""
-    partly = _score_extraction(
-        MicroContextResult(
-            outcome=MicroExtractOutcome.EXTRACTED,
-            value="Lantern festival draws a record crowd — https://news-alpha.example/lantern",
-        ),
-        [
-            FieldExpectation("headline", "Lantern festival draws a record crowd"),
-            FieldExpectation("link", "https://news-alpha.example/lantern"),
-            FieldExpectation("summary"),
-        ],
-    )
-    assert [(check.label, check.ok, check.scored) for check in partly] == [
-        ("reads the page rather than reporting it empty", True, True),
-        ("carries the headline", True, True),
-        ("carries the link", True, True),
-        ("the page carries no summary", True, False),
-        (
-            "extracted 'Lantern festival draws a record crowd — "
-            "https://news-alpha.example/lantern'",
-            True,
-            False,
-        ),
-    ]
-
-    # The same page answered as though it were empty — the regression itself: the outcome
-    # check fails, and so does every thing the page did in fact carry.
-    refused = _score_extraction(
-        MicroContextResult(
-            outcome=MicroExtractOutcome.NOT_PRESENT, reason="no summaries are given."
-        ),
-        [
-            FieldExpectation("headline", "Lantern festival draws a record crowd"),
-            FieldExpectation("summary"),
-        ],
-    )
-    assert [(check.label, check.ok) for check in refused if check.scored] == [
-        ("reads the page rather than reporting it empty", False),
-        ("carries the headline", False),
-    ]
-    assert refused[0].rationale == "came back not_present"
-
-    # And a page carrying none of it: the honest absence is the whole contract there, so
-    # the outcome check is the only graded one and both gaps render beside it.
-    absent = _score_extraction(
-        MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason="no prices are listed."),
-        [FieldExpectation("closing price"), FieldExpectation("ticker symbol")],
-    )
-    assert [(check.label, check.ok, check.scored) for check in absent] == [
-        ("reports the page carries none of it", True, True),
-        ("the page carries no closing price", True, False),
-        ("the page carries no ticker symbol", True, False),
-        ("not_present: 'no prices are listed.'", True, False),
-    ]
 
 
 # ── What a micro-context sample was GIVEN is its whole prompt (#2078) ────────

@@ -385,11 +385,6 @@ class SampleObservation(BaseModel):
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
-    # Every message the sample DELIVERED to the user, oldest first.  ``reply`` is only the
-    # last one, and a claim about what reached the user has to read them all: a turn that
-    # delivered two messages would otherwise be judged on one of them, which is how a
-    # discarded draw arriving first went unseen.
-    delivered: list[str] = Field(default_factory=list)
     # Everything the round was given, and which part of it was stated — see ``Given``.
     given: Given = Given()
     # The container the round was FRAMED on, read off the move that settled it — the same anchor

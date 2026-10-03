@@ -14,9 +14,8 @@ Given a completed run's report directory it emits one markdown comment (v3, #172
 
   1. the **run roll-up** — ONLY when the run spans more than one case, because a single case
      names the report itself and its own table already carries every number one would repeat:
-     a verdict over every deterministic check, the run's identity as a table, a **gate** line
-     per gated case (``⚖ threshold on metric → PASS/FAIL``), and — in diff mode — a **flips**
-     index (each regressed check + the samples it flipped in).
+     a verdict over every deterministic check, the run's identity as a table, and — in diff
+     mode — a **flips** index (each regressed check + the samples it flipped in).
   2. one section per case — its heading (only when the run spans multiple cases) above the
      case's per-sample transcript blocks. EVERY sample block folds whole under its banner — the
      one and only rendering (#1753/#1759): collapsed by default, its full body always a click
@@ -25,8 +24,7 @@ Given a completed run's report directory it emits one markdown comment (v3, #172
   3. the **footer** — the local artifact directory + the ``make assemble`` re-render line.
 
 Pure artifact + transcript consumption: no model, no git, no network — so it's exercised by
-plain (non-eval) whole-render tests. The gate value is read from each ``CaseArtifact``'s
-``min_pass_rate`` / ``gate_metric``; the flips index resolves the baseline from the run's DURABLE
+plain (non-eval) whole-render tests. The flips index resolves the baseline from the run's DURABLE
 manifest reference (``RunManifest.baseline``, recorded at eval time; ``EVAL_BASELINE`` overrides
 for an ad-hoc re-diff), joining on ``(case_id, label)`` — the same diff key the per-sample REGRESSED
 marks use. Reading a durable reference (not a volatile env at assemble time) is what keeps the
@@ -55,7 +53,6 @@ from penny.tests.eval.utils.artifacts import (
 from penny.tests.eval.utils.baseline import Baseline, resolve_baseline
 
 # ── Section literals (no magic strings) ──────────────────────────────────────
-GATE_LABEL = "**gate:**"
 FLIPS_LABEL = "flips:"
 NO_TRANSCRIPT = "_(no transcript recorded)_"
 SECTION_SEPARATOR = "\n\n"
@@ -65,7 +62,6 @@ SECTION_SEPARATOR = "\n\n"
 # than restated: a fold larger than one part can never be packed into a postable comment however
 # the document is cut, because a fold is the finest seam the splitter has.
 SAMPLE_FOLD_BUDGET = comment_split.PART_BUDGET
-GATING_GLYPH = "⚖"
 FLIP_GLYPH = "✅→❌"
 UNKNOWN_COMMIT = "unknown"
 
@@ -129,7 +125,7 @@ def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
     return [CaseArtifact.model_validate_json(line) for line in load_results_lines(report_dir)]
 
 
-# ── The run header (verdict · identity table · lever · gate · flips) ─────────
+# ── The run header (verdict · identity table · flips) ────────────────────────
 #
 # A REPORT, not a debug log.  The verdict LEADS: the run id and the model are scaffolding, and
 # the counted reading with its colour is the finding — it used to sit last, under five dense
@@ -170,9 +166,8 @@ def render_run_header(
     score now.  There is no LEVER line either: it described the CODE CHANGE under test, which is
     changelog rather than result, and the commit and the PR carry that already.  What a run is
     testing, when it needs saying, belongs in plain language beside the report."""
-    gates = render_gate_lines(artifacts)
     flips = render_flips_line(artifacts, baseline)
-    extra = [*gates, *([flips] if flips else [])]
+    extra = [flips] if flips else []
     if len(artifacts) < _ROLLS_UP:
         return "\n".join(extra)
     lines = [_RUN_HEADING.format(model=manifest.model), "", render_run_verdict(artifacts), ""]
@@ -284,25 +279,6 @@ def render_run_cost(artifacts: list[CaseArtifact]) -> str:
     )
 
 
-def render_gate_lines(artifacts: list[CaseArtifact]) -> list[str]:
-    """One gate line per gated case (``min_pass_rate`` set): the threshold, which score it gates,
-    the gated value, and PASS/FAIL. In a multi-case run each gate names its case."""
-    lines = []
-    for artifact in artifacts:
-        if artifact.min_pass_rate is None:
-            continue
-        gated = (
-            artifact.mean if artifact.gate_metric == "mean" else artifact.pathology_excluded_mean
-        )
-        verdict = "✅ PASS" if gated >= artifact.min_pass_rate else "❌ FAIL"
-        prefix = f"`{artifact.case_id}`: " if len(artifacts) > 1 else ""
-        lines.append(
-            f"{GATE_LABEL} {prefix}{GATING_GLYPH} {artifact.min_pass_rate} on "
-            f"{artifact.gate_metric} → **{verdict}** ({gated:.2f})"
-        )
-    return lines
-
-
 def render_flips_line(artifacts: list[CaseArtifact], baseline: Baseline | None) -> str:
     """The diff-mode flips index — each check that was fully green in the baseline but failed a
     sample here (a regression), with the samples it flipped in. Empty off-diff / on a clean run."""
@@ -395,8 +371,8 @@ def _bounded_fold(
 
     The two shapes a sample can take here are the two the renderer bounds: a case that named a
     REPRESENTATIVE carries that sample under its own heading with the prompts it was run with,
-    and one that named none keeps every sample in its own banner form — the unported path,
-    unchanged."""
+    and one that named none — no sample of its cohort was worth opening — keeps every sample in
+    its own banner form."""
     folded = report.summarise_thinking(body)
     if not nominated:
         return report.bounded_sample_folds(number, banner, folded, SAMPLE_FOLD_BUDGET)

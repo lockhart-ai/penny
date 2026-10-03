@@ -476,9 +476,15 @@ condition does it.
 **In \<the locus\>, when \<X\>, Penny \<does Y\>.** The locus names where the behaviour happens
 by its **shipped agent name** — `browse-extract`, `state-classifier`, `skill-framer`, the chat
 agent, a price-watch collector — never a label invented for the report. It is `behaviour=` on the
-driver call, required on the cohort path, and it renders in the case's report header above every
+driver call, required, and it renders in the case's report header above every
 number: a case id says which fixture ran, and a rate means nothing until a reader knows what was
 being asked.
+
+**A driver refuses a case it cannot drive as a cohort**, with an error naming the case, before a
+sample runs: one with no `behaviour`, one that names nothing to drive (`ask` for chat and the
+classifier, `arms` for a collector, the instruction, utterance or turns for a microcontext), and one that
+leaves `min_pass_rate` unstated or states a floor. No driver takes a per-sample scorer: the body's
+claims against the returned cohort are the only way a case is graded.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
@@ -661,7 +667,8 @@ signature of a *system* defect rather than a model one, and it is only visible b
 
 ## 8 · Thresholds — not yours to set
 
-**Your case lands report-only** (`min_pass_rate=None`) and stays there.
+**Your case lands report-only** (`min_pass_rate=None`) and stays there. The driver refuses a case
+that states any other value, or none.
 
 - **Assertions carry no floor at all.** They are expected to run at 100%, so the run counts them and
   a person reads the count (§1).

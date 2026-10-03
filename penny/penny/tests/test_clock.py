@@ -359,7 +359,6 @@ def _a_turn_that_stood_a_job_up(
         reply="done",
         before=set(),
         held_before=[],
-        injected=None,
     )
     return db, sample
 

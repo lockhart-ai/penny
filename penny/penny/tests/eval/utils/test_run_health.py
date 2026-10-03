@@ -551,3 +551,61 @@ class TestASampleTheRigNeverStarted:
             CohortRecord(case_id="stuck", intended=15, completed=14)
         ]
         assert perf.calls == 14
+
+
+# ── A driver refuses a case it cannot drive as a cohort ──────────────────────
+#
+# Through the REAL driver fixtures rather than their guards alone, so what is pinned is that
+# the refusal reaches a case author: by the case's own name, and before a sample is stood up.
+
+_SENTENCE = "In the chat agent, when asked, Penny answers."
+
+
+async def _no_sample_may_start(*args, **kwargs):
+    raise AssertionError("a refused case must not stand a sample up")
+
+
+class TestADriverRefusesACaseItCannotDriveAsACohort:
+    async def test_a_case_naming_nothing_to_drive_is_refused_by_name(
+        self,
+        chat_eval,
+        collector_cycles_eval,
+        classifier_eval,
+        framer_eval,
+        labeller_eval,
+        binder_eval,
+        extractor_eval,
+        monkeypatch,
+    ):
+        """Every driver, handed a case with no ask, raises before a sample is stood up."""
+        monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
+        stated = {"case_id": "no-ask", "behaviour": _SENTENCE, "min_pass_rate": None}
+        idle = eval_conftest.ConversationState.IDLE
+        refused = {
+            "chat_eval": chat_eval(**stated),
+            "collector_cycles_eval": collector_cycles_eval(collection="a-job", **stated),
+            "classifier_eval": classifier_eval(state=idle, **stated),
+            "framer_eval": framer_eval(turns=(), also_phrased=(), **stated),
+            "labeller_eval": labeller_eval(
+                utterance=" ", calls=(), target="a-job", also_demonstrated=(), **stated
+            ),
+            "binder_eval": binder_eval(
+                turns=(), skill="a_routine", intent="x", parameters=(), also_phrased=(), **stated
+            ),
+            "extractor_eval": extractor_eval(url="u", page="p", instruction="", **stated),
+        }
+        for driver, drive in refused.items():
+            with pytest.raises(ValueError, match=f"no-ask: {driver} needs "):
+                await drive
+
+    async def test_a_case_must_state_the_report_only_setting_and_nothing_else(
+        self, chat_eval, monkeypatch
+    ):
+        """An unstated ``min_pass_rate`` and a stated floor are both refused by the case's name."""
+        monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
+        with pytest.raises(ValueError, match="unstated: a case must state min_pass_rate=None"):
+            await chat_eval(case_id="unstated", behaviour=_SENTENCE, ask="what does it cost?")
+        with pytest.raises(ValueError, match="floored: min_pass_rate=0.8"):
+            await chat_eval(
+                case_id="floored", behaviour=_SENTENCE, ask="what does it cost?", min_pass_rate=0.8
+            )
