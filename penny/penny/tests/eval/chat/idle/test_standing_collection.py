@@ -13,7 +13,7 @@ right for one is wrong for another, and each action is a case with its own sente
 | switch it on | ``standing-notify-on`` | ``notify`` on, the rest of the row as it was |
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
-| give it an end | ``standing-end-changed`` | it stops when the ask said, and runs as it ran |
+| give it an end | ``standing-end-changed`` | it stops when the ask said, firing when it was due |
 | re-point it | ``standing-page-changed`` | bound to the new page, which no second job watches |
 | read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
 | list them | ``standing-list-running`` | every row as it was; the reply names each job |
@@ -51,7 +51,7 @@ hands back a different job under the same name.
 priors the store records, and it records none for the values a routine is bound to or for a
 run quota.  So the re-pointing case reads the bound values themselves — the page is the new
 one, the rest are what they were — and the end case, where a rule rewritten to carry its own
-end is a legitimate way to state one, reads the cadence the rule still fires on.
+end is a legitimate way to state one, reads the moments the rule fires at from now on.
 
 **No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds its
 jobs — one, or three where the ask is to list them — what each gathered and the global switch,
@@ -109,6 +109,7 @@ from penny.database.skills import (
     retarget_writes,
     slug_skill_name,
 )
+from penny.datetime_utils import zone_or_utc
 from penny.penny import Penny
 from penny.program import program_calls
 from penny.skill_extraction import _apply_leaf_labels, _interface_parameters
@@ -132,7 +133,7 @@ from penny.tests.eval.utils.cohort import (
     SpecCategory,
 )
 from penny.tests.eval.utils.fixtures import CannedPage
-from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT, firings
+from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT
 from penny.tests.eval.utils.worlds import World
 from penny.tools.collection_instantiation import next_occurrence, skill_params
 from penny.tools.micro_context import (
@@ -1227,47 +1228,68 @@ for _wording in (_END_CHANGED.ask, *_END_CHANGED.also_phrased):
     assert _ASKED_END.says in _wording, f"an end wording must say {_ASKED_END.says!r}: {_wording!r}"
 
 
-class _Rhythm(NamedTuple):
-    """When a job comes round, on the user's clock: the hour of its first firing, and the gap
-    to its second."""
+# How many of the job's coming firings the rhythm claim reads.  Three is enough to tell a moved
+# hour and a widened cadence apart from the rhythm the job had, and few enough that an end on
+# the right night leaves all of them standing.
+_FIRINGS_READ = 3
 
-    hour: int
-    every_seconds: int
+_FIRING_SPOKEN = "%a %H:%M"
 
 
-def _rhythm(row: MechanismRecord, timezone: str | None) -> _Rhythm | None:
-    """The rhythm a row's stored rule fires on, walked from production's own anchor on the
-    user's clock (``job_end.firings``) — or ``None`` for a rule that fires fewer than twice
-    or will not parse, an honest reading the claim fails on rather than a raise."""
+def _coming_firings(
+    schedule: str, row: MechanismRecord, timezone: str | None, after: datetime
+) -> list[datetime] | None:
+    """The next few moments a rule fires after ``after``, through production's own
+    ``next_occurrence`` — anchored where the collector anchors it, on the user's clock.
+    Fewer than asked for when the rule ends first; ``None`` for a rule that will not parse or
+    a row with no creation moment to anchor it at, an honest reading the claim fails on."""
+    if row.created_at is None:
+        return None
+    fired: list[datetime] = []
+    moment = after
     try:
-        fired = firings(row, timezone, 2)
+        for _ in range(_FIRINGS_READ):
+            upcoming = next_occurrence(schedule, row.created_at, timezone, moment)
+            if upcoming is None:
+                break
+            fired.append(upcoming)
+            moment = upcoming
     except ValueError, TypeError:
         return None
-    if len(fired) < 2:
-        return None
-    return _Rhythm(fired[0].hour, int((fired[1] - fired[0]).total_seconds()))
+    return fired
+
+
+def _spoken_firings(fired: list[datetime] | None, timezone: str | None) -> str:
+    """Firings as a rationale says them: the weekday and the hour, where the user is."""
+    if fired is None:
+        return "nothing readable"
+    zone = zone_or_utc(timezone)
+    return str([moment.astimezone(zone).strftime(_FIRING_SPOKEN) for moment in fired])
 
 
 def _it_runs_when_it_ran(job: StandingJob) -> _ClaimFn:
-    """The job still comes round as often as it did, at the hour it did — PRESERVATION of when
-    it runs, read off the rule's own firings.
+    """Every time the job fires from now on is a time it would have fired anyway —
+    PRESERVATION of when it runs, read off the rule's own coming firings.
 
     Its own claim because the ledger cannot make it here: a rule rewritten to carry its own
     end is one of the ways a job stores an end, so the schedule field is one the ask may move,
-    and "the rule's text changed" no longer says whether its rhythm did.  What it ran on is
-    read the same way, off the same row carrying the rule it was seeded with, so both sides
-    share one anchor and one clock.  A violating sample is nameable: one that gives the job
-    its end and, restating the rule to do it, moves the hour or turns a daily check into a
-    weekly one."""
+    and "the rule's text changed" no longer says whether its rhythm did.  The job's coming
+    firings are compared with the ones the rule it was seeded with makes from the same row,
+    so both sides share one anchor and one clock; a job that now stops sooner makes fewer of
+    them and is still on its rhythm, since where it stops is the end claim's to answer.  A
+    violating sample is nameable: one that gives the job its end and, restating the rule to do
+    it, moves the hour or turns a daily check into a weekly one."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         row = _job_row(sample, job.container)
-        if row is None:
-            return False, f"{job.container!r} is no longer in the registry"
-        seeded = row.model_copy(update={"schedule": job.schedule, "max_runs": None})
-        ran, runs = _rhythm(seeded, sample.timezone), _rhythm(row, sample.timezone)
-        return runs is not None and runs == ran, (
-            f"the rule {row.schedule!r} runs on {runs}, it ran on {ran}"
+        if row is None or row.schedule is None or sample.turn_at is None:
+            return False, f"{job.container!r} has no schedule, or the sample no turn, to read"
+        ran = _coming_firings(job.schedule, row, sample.timezone, sample.turn_at)
+        runs = _coming_firings(row.schedule, row, sample.timezone, sample.turn_at)
+        holds = ran is not None and runs is not None and runs == ran[: len(runs)]
+        return holds, (
+            f"the rule {row.schedule!r} next fires {_spoken_firings(runs, sample.timezone)}, "
+            f"it was due {_spoken_firings(ran, sample.timezone)}"
         )
 
     return answer
@@ -1295,7 +1317,7 @@ async def test_giving_a_job_an_end_stops_it_when_the_ask_said(
     cohort.assert_the_job_ends_when_asked(_FINDS.container, _ASKED_END)
     cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
     cohort.claim(
-        "state: it still runs as often as it did, at the hour it did",
+        "state: every time it fires from now on is a time it was already due",
         _it_runs_when_it_ran(_FINDS),
         SpecCategory.STORE,
     )

@@ -829,7 +829,8 @@ own switch off), `standing-notify-on` (the same job seeded quiet, its switch bac
 `standing-schedule-fix-prior` (re-timed, and every clock time the reply names is one the job
 has had — any third hour is invented, since the ask supplies one and the seed the other, #1946),
 `standing-end-changed` (given an end: the job stops when the ask said, read on the sample's
-pinned clock through `utils/job_end.py`, and still fires as often as it did at the hour it did),
+pinned clock through `utils/job_end.py`, and every time it fires until then is a time it was
+already due),
 `standing-page-changed` (pointed at another page: the row's bound page and the program it runs
 both name the new page, every other bound value is as it was, and no other job watches that
 page), `standing-describe-routine` (read back: the reply names the page the routine fetches, a
