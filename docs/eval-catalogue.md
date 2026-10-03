@@ -10,14 +10,14 @@ A case declares its area and, where it covers one, the edge of the conversation 
 |---|---|
 | Conversation machine | 30 |
 | Teaching a routine | 17 |
-| Memory | 11 |
+| Memory | 12 |
 | Answering from the web | 3 |
 | Standing jobs | 5 |
 | Notifications | 2 |
 | Background collectors | 4 |
 | Reading a page | 4 |
-| Chat tools | 5 |
-| Total | 81 |
+| Chat tools | 6 |
+| Total | 83 |
 
 ## Conversation machine
 
@@ -85,6 +85,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | `memory-a-like-and-a-dislike` | In the chat agent, when one message carries two facts of different kinds and a fitting list already exists for each, Penny files each fact in the list that fits it and neither in the other. | jot down that I'm into bouldering, and that I can't stand instant coffee |  |
 | `memory-change-lands-on-the-entry-that-exists` | In the chat agent, when the user asks her to change a note she keeps under a key worded differently from how the user names it, Penny finds the entry that exists and records the change on it, and the list holds the same entries it started with. | add a 10-minute lime marinade to my fajitas recipe |  |
 | `memory-cold-recall` | In the chat agent, when the user asks for a fact they had her remember in an earlier session and nothing in the conversation carries it, Penny brings it back out of the store and states it, leaving the store exactly as she found it. | hey — a while back I asked you to remember what the aurora deck 2 was listed at. what was the price? |  |
+| `memory-delete-a-whole-list` | In the chat agent, when the user asks her to get rid of one of the lists she keeps, Penny archives that list with everything it held still in it, and every other list is still live and holds what it held. | get rid of my recipe box list, i don't use it any more |  |
 | `memory-forget-then-list` | In the chat agent, when the user names one note to drop from a list, Penny drops that note and leaves every other one exactly as it was, and tells them what is still on the list. | remove jazz from my list of things i'm into, then tell me what else is on it |  |
 | `memory-look-up-and-save` | In the chat agent, when the user asks her to look a subject up and put it in a list they name, Penny reads about it and writes it into that list, and the subject is still there when the turn ends. | can you look up Mistforge Tactics, read up on it, and save it to my games list? |  |
 | `memory-no-fire-wistful` | In the chat agent, when the user muses about something a list she already keeps is about, Penny answers in conversation and the list she keeps about it is left as it was. | I finally wrapped up that long strategy game campaign last night, felt so satisfying |  |
@@ -140,6 +141,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | Case | Behaviour | First wording | Edge |
 |---|---|---|---|
 | `choose-dispatch-fires` | In the chat agent, when the user asks for one of several named options to be picked at random, Penny reports the option the fair pick actually returned. | choose one of cedar, maple, or birch at random for me, and tell me which one you picked. |  |
+| `email-absent-message` | In the chat agent, when the user asks what an email comes to from a sender the mailbox holds other mail from, on a subject no message carries, Penny states and stores no value she was not given, and the turn ends back in idle with everything the store already held still there. | did priya nakamura email me the battery storage estimate yet? what does it come to? |  |
 | `email-answers-from-the-message-asked-about` | In the chat agent, when the user asks what an email from a named sender about a named subject says, Penny answers with the figure that message carries and none of the figures the messages beside it carry, and the turn ends back in idle. | did priya nakamura send me the rooftop solar quote yet? what does it come to? |  |
 | `email-remark-stays-idle` | In the chat agent, when the user remarks on their email without asking anything of it, Penny stays in idle and everything the store already held is still there, unchanged. | honestly i get way too much email these days, my inbox is out of control |  |
 | `image-no-fire` | In the chat agent, when a message talks about a painting without asking for a picture, Penny stays in idle and says nothing she was not given. | i saw a really nice watercolor painting at the gallery today, it was lovely |  |
