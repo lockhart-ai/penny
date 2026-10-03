@@ -914,10 +914,12 @@ a subject that only one message shares — asking by sender and asking by subjec
 behaviour, since a correct sample for either is correct for the other, and which field she
 searches on is a route measured in the tool sequence — and claims the reply carries that
 message's figure and none of the figures its neighbours carry (the sender's other mail, and
-another sender's mail on the same subject). `email-absent-message` asks the same five ways about
-a sender and a subject no message carries — no word of any wording is a word of any message,
-pinned in `make check` — and claims idle, the newsletters collection unchanged, every stored and
-said value sourced, and a reply carrying none of the amounts the mailbox's messages hold;
+another sender's mail on the same subject). `email-absent-message` is a near miss: it names that
+same sender, whose two messages each carry an amount, and a subject no message carries, in five
+wordings that each say "email" or "inbox" — pinned in `make check`: a sender search returns the
+two messages, the subject matches none. It claims idle, the newsletters collection unchanged,
+every stored and said value sourced, and a reply carrying none of the amounts the mailbox's
+messages hold — read as a token, so an amount mentioned as a correctly attributed aside fails it;
 whether the reply says nothing was found is reply spread. `email-remark-stays-idle` is a remark about the
 volume of email: idle, the seeded newsletters collection unchanged, and every stored value
 sourced — the reply is advice in her own words, measured as reply spread and never read for

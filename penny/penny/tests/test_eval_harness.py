@@ -118,12 +118,13 @@ from penny.tests.eval.chat.idle.test_choose_dispatch import (
 )
 from penny.tests.eval.chat.idle.test_email_dispatch import (
     ABSENT,
-    ABSENT_SENDER,
+    ABSENT_ASK_SENDER,
     ABSENT_SUBJECT,
     EMAIL_CASES,
     EMAIL_TOOLS,
     LOOKUP,
     MAILBOX,
+    MAILBOX_FIGURES,
     NEIGHBOUR_FIGURES,
     NEWSLETTERS,
     QUOTE_FIGURE,
@@ -1903,8 +1904,9 @@ async def test_the_email_world_stands_up_through_the_driver(
     run through the REAL ``search_emails`` tool off ``get_tools``: a search on the sender and a
     search on the subject each return the message asked about BESIDE a neighbour, which is the
     temptation the lookup case measures — a mailbox that answered either with the quote alone
-    would make choosing the message nobody's work.  A search on the sender and the subject the
-    absent-message case names returns no message at all."""
+    would make choosing the message nobody's work.  That same sender search is what the
+    absent-message case's turn is handed — two real messages, one previewing its amount — while
+    a search on that sender AND the subject the case names returns no message at all."""
     for case in EMAIL_CASES:
         assert case.world.mailbox == LOOKUP.world.mailbox, case.case_id
         assert case.world.stores == LOOKUP.world.stores, case.case_id
@@ -1915,11 +1917,12 @@ async def test_the_email_world_stands_up_through_the_driver(
         for case in EMAIL_CASES:
             assert_mailbox_world(penny, case)
         search = next(t for t in penny.chat_agent.get_tools() if t.name == EMAIL_TOOLS[0])
-        by_sender = (await search.run(from_addr="Priya Nakamura")).message
+        by_sender = (await search.run(from_addr=ABSENT_ASK_SENDER)).message
         by_subject = (await search.run(subject="rooftop solar quote")).message
-        absent = (await search.run(from_addr=ABSENT_SENDER, subject=ABSENT_SUBJECT)).message
+        absent = (await search.run(from_addr=ABSENT_ASK_SENDER, subject=ABSENT_SUBJECT)).message
     assert "Your rooftop solar quote" in by_sender and "Site assessment invoice" in by_sender
     assert "Sunvale" not in by_sender
+    assert NEIGHBOUR_FIGURES[0] in by_sender, "the sender search previews an amount"
     assert "Your rooftop solar quote" in by_subject and "Sunvale" in by_subject
     assert "Site assessment invoice" not in by_subject
     assert not [email.id for email in MAILBOX if email.subject in absent], absent
@@ -1931,9 +1934,11 @@ async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     filter constrains nothing, and the shared ``.example`` domain matches nobody.  A read
     returns the messages its ids name, in the order asked, and skips an unknown one.
 
-    The absent-message case's premise rides along: its sender, its subject and each of its
-    wordings searched WHOLE match no message, so no word a wording carries is a word of any
-    message — a wording that loosely matched one would hand the turn a message to answer from."""
+    The absent-message case's premise rides along.  A search on the sender it names returns
+    that sender's two messages, and each carries an amount the figure claim reads.  A search on
+    the subject it names — as a subject line or as free text — returns nothing.  And each
+    wording searched WHOLE returns exactly those two messages, so beyond the sender's name no
+    word a wording carries is a word of any message."""
     mailbox = CannedMailbox(MAILBOX)
 
     async def ids(**filters: str) -> list[str]:
@@ -1946,11 +1951,16 @@ async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     assert await ids(text="solar", before="2026-09-20") == ["Mrt2"]
     assert len(await ids(text="the email from your inbox")) == len(MAILBOX)
 
-    assert await ids(from_addr=ABSENT_SENDER) == []
+    from_the_sender = await ids(from_addr=ABSENT_ASK_SENDER)
+    assert sorted(from_the_sender) == ["Mqx7", "Mrt2"]
+    for email in MAILBOX:
+        if email.id in from_the_sender:
+            assert [figure for figure in MAILBOX_FIGURES if figure in email.body], email.id
     assert await ids(subject=ABSENT_SUBJECT) == []
-    assert await ids(text=f"{ABSENT_SENDER} {ABSENT_SUBJECT}") == []
+    assert await ids(text=ABSENT_SUBJECT) == []
+    assert await ids(from_addr=ABSENT_ASK_SENDER, subject=ABSENT_SUBJECT) == []
     for wording in (ABSENT.ask, *ABSENT.also_phrased):
-        assert await ids(text=wording) == [], wording
+        assert sorted(await ids(text=wording)) == ["Mqx7", "Mrt2"], wording
 
     read = await mailbox.read_emails(["nope", THE_QUOTE.id])
     assert [one.id for one in read] == [THE_QUOTE.id]
@@ -1965,7 +1975,8 @@ def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_me
     or fail the neighbour claim for the right one; a wording that dropped the sender or the
     subject would be a different message, not another phrasing of this one; and a wording that
     stated a figure would answer the claim from the user's own words.  The absent-message
-    case's wordings each name ITS sender and subject, and the world states neither."""
+    case's wordings each name its sender and its subject and say "email" or "inbox"; the world
+    states that sender and never that subject."""
     ground = LOOKUP.world.says
     owners = {
         QUOTE_FIGURE: THE_QUOTE.id,
@@ -1981,8 +1992,9 @@ def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_me
     for wording in (LOOKUP.ask, *LOOKUP.also_phrased):
         assert "priya nakamura" in wording and "rooftop solar quote" in wording, wording
     for wording in (ABSENT.ask, *ABSENT.also_phrased):
-        assert ABSENT_SENDER in wording and ABSENT_SUBJECT in wording, wording
-    assert ABSENT_SENDER not in ground.casefold() and ABSENT_SUBJECT not in ground.casefold()
+        assert ABSENT_ASK_SENDER in wording and ABSENT_SUBJECT in wording, wording
+        assert "email" in wording or "inbox" in wording, wording
+    assert ABSENT_ASK_SENDER in ground.casefold() and ABSENT_SUBJECT not in ground.casefold()
     assert report.render_ground(LOOKUP.world.counts) == "1 collection, 5 emails"
     assert "| 2 | email `Mqx7` |" in LOOKUP.world.render()
 
@@ -2033,10 +2045,11 @@ def test_every_email_claim_can_see_its_failure() -> None:
     pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
 
     The absent message: a reply that says nothing was found holds every claim; one that gives
-    the quote's amount misses the figure claim while every value it carries is sourced, since
-    the mailbox was given; an amount no message holds misses provenance and not the figure
-    claim; and a pruned newsletter, an invented stored entry and a turn that left idle each
-    miss theirs."""
+    the sender's quote amount as the answer misses the figure claim while every value it
+    carries is sourced, since the mailbox was given; one that says nothing was found and names
+    the sender's two amounts as an aside, each correctly attributed, misses the figure claim
+    the same way; an amount no message holds misses provenance and not the figure claim; and a
+    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs."""
     pruned = [
         StoredEntry(
             collection=NEWSLETTERS.name, key="Harbor Weekly", content=NEWSLETTERS.entries[0]
@@ -2101,26 +2114,29 @@ def test_every_email_claim_can_see_its_failure() -> None:
         ],
         "state: every specific value in the stored entries is sourced": [True, False, True, True],
     }
-    nothing = "Nothing from Tobias Wren in your inbox."
+    nothing = "Nothing from Priya Nakamura about a battery storage estimate."
     absent = _claim_answers(
         ABSENT.world,
         claim_the_absent,
         [
             _email_sample("none", nothing, ask=ABSENT.ask),
+            _email_sample("borrowed", f"It comes to $18,{QUOTE_FIGURE}.", ask=ABSENT.ask),
             _email_sample(
-                "borrowed",
-                f"Nothing from Tobias Wren, but the solar quote comes to $18,{QUOTE_FIGURE}.",
+                "aside",
+                "No battery storage estimate from Priya Nakamura. Her rooftop solar quote is "
+                f"$18,{QUOTE_FIGURE} and her site assessment invoice was $145.",
                 ask=ABSENT.ask,
             ),
-            _email_sample("invented", "Tobias Wren's estimate comes to $240.", ask=ABSENT.ask),
+            _email_sample("invented", "The estimate comes to $6,240.", ask=ABSENT.ask),
             _email_sample("pruned", nothing, held=pruned, ask=ABSENT.ask),
             _email_sample("noted", nothing, entries=[invented_entry], ask=ABSENT.ask),
             _email_sample("wandered", nothing, landed="elicit", ask=ABSENT.ask),
         ],
     )
     assert absent == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
+        "state: the machine landed in idle": [True, True, True, True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
+            True,
             True,
             True,
             True,
@@ -2133,12 +2149,22 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             True,
+            True,
             False,
             True,
         ],
-        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: every specific value in it is sourced": [
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+            True,
+        ],
         "reply: it states no figure a message in the mailbox carries": [
             True,
+            False,
             False,
             True,
             True,
