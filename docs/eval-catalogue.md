@@ -8,7 +8,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 
 | Area | Cases |
 |---|---|
-| Conversation machine | 30 |
+| Conversation machine | 32 |
 | Teaching a routine | 17 |
 | Memory | 11 |
 | Answering from the web | 3 |
@@ -17,7 +17,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | Background collectors | 4 |
 | Reading a page | 4 |
 | Chat tools | 5 |
-| Total | 81 |
+| Total | 83 |
 
 ## Conversation machine
 
@@ -40,6 +40,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | `classifier-holds-idle-when-a-running-jobs-notifications-are-switched-off` | In the state-classifier micro-context, when the ask turns notifications off for a job that is already running, Penny holds the conversation in idle. | turn notifications off for the camera kit price watch | idle → idle |
 | `classifier-stays-in-learn-on-a-correction` | In the state-classifier micro-context, when the reply to a failed demonstration corrects it and the correction is actionable now, Penny holds the round in learn. | that link's dead — use harborferries.example/timetable-v2 instead | learn → learn |
 | `classifier-stays-parked-when-the-teach-question-is-unanswered` | In the state-classifier micro-context, when the reply to the teach question asks a question back instead of answering it, Penny leaves the round parked in elicit. | what would you need from me to do that? | elicit → elicit |
+| `transition-elicit-to-elicit` | In the chat agent, when she has asked to be taught a job and the user answers with a question back instead of the instructions, Penny leaves the round parked in elicit. | what would you need from me to do that? | elicit → elicit |
 | `transition-elicit-to-idle` | In the chat agent, when she has asked to be taught a job and the user calls it off and changes the subject in the same breath, Penny lets go of the round entirely — creating nothing, changing nothing and registering nothing — and answers the new subject as the ordinary conversation it is. | ah never mind, forget that — anything good at the harbor market this weekend? | elicit → idle |
 | `transition-elicit-to-learn` | In the chat agent, when she has asked to be taught a job and the user walks her through it once, Penny follows the steps as given, mints a routine from what she just did, and tells the user what that routine will run — without setting it running. | yeah — go to https://faux-market.example/aurora-deck-2, find the current price, and remember it | elicit → learn |
 | `transition-elicit-to-learn-absent` | In the chat agent, when she has asked to be taught a job and the user walks her through it on a page that does not carry the fact asked for, Penny stays in the round, every entry she keeps is something the page says, and everything already in the store survives as it was. | go to https://communitygarden.example/noticeboard, find the plot waitlist opening date, and remember it | elicit → learn |
@@ -52,6 +53,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | `transition-learn-to-idle` | In the chat agent, when a teach round is under way with its container built and written into and the user abandons it, Penny archives that container and registers nothing — leaving every other collection exactly as she found it. | actually forget it, i don't need this | learn → idle |
 | `transition-learn-to-learn` | In the chat agent, when the user corrects what a demonstrated round was aimed at, Penny re-runs the round against the corrected target: what the corrected target says lands in the round's own container, and the one routine she taught for the round now looks for it. | sorry — i meant the south loop line, use that one | learn → learn |
 | `transition-request-to-apply` | In the chat agent, when the value a round was parked waiting on arrives, Penny composes it with what the ask already settled and stands the job up under the name both turns' values derive, on the terms the ask gave, and every job already running survives unchanged. | https://northpier.example/departures | request → apply |
+| `transition-request-to-elicit` | In the chat agent, when a round is parked in request on a routine she named and the user says that routine is the wrong one but still wants the task done, Penny moves the round to elicit, and every job already running and everything the store already held survive unchanged. | no, watching for a phrase isn't what i'm after — i do need the sailings watched though | request → elicit |
 | `transition-request-to-idle` | In the chat agent, when a round is parked waiting on the one detail an ask left out and the user calls it off, Penny ends the round and builds nothing out of the half it had already settled — no job stood up, and none of the running ones touched. | you know what, skip it | request → idle |
 
 ## Teaching a routine
@@ -157,11 +159,11 @@ One row per edge of the conversation machine. A classifier draw covers an edge w
 | idle → elicit | `classifier-elicits-on-a-cold-registry`, `classifier-elicits-when-a-routine-shares-the-verb-but-not-the-domain` | `transition-idle-to-elicit` |
 | idle → idle | `classifier-holds-idle-on-a-passing-mention`, `classifier-holds-idle-when-a-running-jobs-notifications-are-switched-off` | `transition-idle-to-idle` |
 | elicit → learn | `classifier-draws-learn-when-the-teach-question-is-answered` | `transition-elicit-to-learn`, `transition-elicit-to-learn-absent` |
-| elicit → elicit | `classifier-stays-parked-when-the-teach-question-is-unanswered` | — |
+| elicit → elicit | `classifier-stays-parked-when-the-teach-question-is-unanswered` | `transition-elicit-to-elicit` |
 | elicit → idle | `classifier-falls-to-idle-when-the-elicit-round-is-called-off` | `transition-elicit-to-idle` |
 | learn → apply | `classifier-draws-apply-when-the-offer-is-accepted` | `transition-learn-to-apply` |
 | learn → learn | `classifier-stays-in-learn-on-a-correction` | `transition-learn-to-learn` |
 | learn → idle | `classifier-falls-to-idle-when-a-post-failure-reply-carries-no-instructions` | `transition-learn-to-idle` |
 | request → apply | `classifier-draws-apply-when-the-missing-value-arrives` | `transition-request-to-apply` |
-| request → elicit | `classifier-elicits-when-the-named-routine-was-wrong` | — |
+| request → elicit | `classifier-elicits-when-the-named-routine-was-wrong` | `transition-request-to-elicit` |
 | request → idle | `classifier-falls-to-idle-when-a-parked-request-is-called-off` | `transition-request-to-idle` |
