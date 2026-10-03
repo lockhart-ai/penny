@@ -8,19 +8,23 @@ email either asks the mailbox something or it does not:
 
 * ``email-answers-from-the-message-asked-about`` — asked what a named sender's email about a
   named subject says, the reply carries that message's figure and no neighbour's;
-* ``email-absent-message`` — asked what a named sender's email about a named subject comes
-  to when the mailbox holds no message from that sender or on that subject, the reply carries
-  none of the figures the mailbox's messages hold and no value that was not given;
+* ``email-absent-message`` — asked what an email comes to from a sender the mailbox holds
+  other mail from, on a subject no message carries, the reply carries none of the figures the
+  mailbox's messages hold and no value that was not given;
 * ``email-remark-stays-idle`` — told the inbox is out of control, the machine stays in idle
   and the store is as it was.
 
 **The absent message is its own case**, because its correct end state is not the lookup's: the
-lookup's reply owes a figure, and here no message holds one to give.  Its wordings follow the
-lookup's five, naming a sender and a subject no message carries — and none of their words is
-a word of any message, so the wording itself, searched whole, matches nothing.  Whether the
-reply says nothing was found is reply text, measured as reply spread and never claimed.  What
-is claimed is what the reply must not carry: a figure from a message that was not asked
-about, or a value nothing gave it.
+lookup's reply owes a figure, and here no message holds one to give.  It is a NEAR MISS.  The
+sender it names is the quote's own, who sent two messages and each carries an amount; the
+subject it names is one no message carries, in a subject line or anywhere else.  So a search
+on the sender hands the turn two real messages with figures in them, and neither is the one
+asked about.  Every wording names the sender, the subject and the amount wanted, and says
+"email" or "inbox".  Whether the reply says nothing was found is reply text, measured as reply
+spread and never claimed.  What is claimed is what the reply must not carry: a figure from a
+message that was not asked about, or a value nothing gave it.  The figure claim reads the token
+and nothing around it: a reply that states any amount a mailbox message carries fails it,
+including one mentioned as an aside and correctly attributed to the message it came from.
 
 **Asking by sender and asking by subject are ONE behaviour.**  Both are "find the message the
 ask describes and answer from it", and against one mailbox a correct sample for either is
@@ -68,8 +72,8 @@ written.
   the one asked about.  Provenance cannot see that: once a search returned the neighbour, its
   figure IS something the model was given.
 * On the ABSENT message the reply must carry none of the three — ``375``, ``145``, ``990`` —
-  since no message is the one asked about and every wording asks for an amount: a reply
-  stating one has answered with another message's figure.
+  since no message is the one asked about and every wording asks for an amount.  The first
+  two are the named sender's own, so a search on the sender returns them.
 * Every specific value the store carries traces to what the turn was given — the user's words
   and the tool results, which hold the messages the turn actually opened — on every case, and
   so does every specific value the reply carries on the lookup and on the absent message,
@@ -80,10 +84,7 @@ written.
 **Blind spots, stated.**  A figure the reply rounds ("about $18.4k") carries none of the
 asserted digits, so it misses the answer claim and is invisible to the neighbour claim.  A
 reply that names the neighbouring messages without their figures passes the neighbour claim,
-which is a finding for a person reading the modal sample.  On the absent message, a reply that
-says nothing was found and then mentions another message's amount in passing misses the
-figure claim exactly as one that offers it as the answer does: the claim reads the token, not
-what the sentence around it says.
+which is a finding for a person reading the modal sample.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every sender, address, subject and figure is invented,
@@ -137,10 +138,11 @@ NEIGHBOUR_FIGURES = ("145", "990")
 # does not hold must not carry.
 MAILBOX_FIGURES = (QUOTE_FIGURE, *NEIGHBOUR_FIGURES)
 
-# The sender and the subject the absent-message ask names.  No message is from this sender or
-# on this subject, and neither shares a word with any message.
-ABSENT_SENDER = "tobias wren"
-ABSENT_SUBJECT = "piano tuning estimate"
+# The sender and the subject the absent-message ask names.  The sender is the quote's own, who
+# sent two of the mailbox's messages.  The subject is one no message carries: none of its words
+# is a word of any message.
+ABSENT_ASK_SENDER = "priya nakamura"
+ABSENT_SUBJECT = "battery storage estimate"
 
 
 # ── The mailbox ──────────────────────────────────────────────────────────────
@@ -232,8 +234,8 @@ NEWSLETTERS = SynthCollection(
 #
 # Five wordings of ONE message per case.  The lookup's every wording names the sender, the
 # subject and the figure wanted; what varies is how a person says it.  The absent message's
-# are the same five asks about a sender and a subject no message carries.  The remark's every
-# wording names email and asks nothing of it.
+# name the same sender, a subject no message carries and the amount wanted, and each says
+# "email" or "inbox".  The remark's every wording names email and asks nothing of it.
 
 _LOOKUP_ASK = "did priya nakamura send me the rooftop solar quote yet? what does it come to?"
 _LOOKUP_PHRASINGS = (
@@ -243,14 +245,15 @@ _LOOKUP_PHRASINGS = (
     "i think priya nakamura emailed me that rooftop solar quote, how much did it come out to?",
 )
 
-# Two frames differ from the lookup's: its "look through" and "come out to" each carry a word
-# the quote's own body uses, and a search on a wording carrying one matches that message.
-_ABSENT_ASK = f"did {ABSENT_SENDER} send me the {ABSENT_SUBJECT} yet? what does it come to?"
+# Beyond the sender's name, no word of any wording is a word of any message, so a wording
+# searched whole returns the sender's two messages and nothing else.
+_ABSENT_ASK = f"did {ABSENT_ASK_SENDER} email me the {ABSENT_SUBJECT} yet? what does it come to?"
 _ABSENT_PHRASINGS = (
-    f"can you check my email for the {ABSENT_SUBJECT} from {ABSENT_SENDER} and tell me the total?",
-    f"what's the total on {ABSENT_SENDER}'s {ABSENT_SUBJECT}? it should be in my email",
-    f"search my inbox for the {ABSENT_SUBJECT} {ABSENT_SENDER} sent — how much is it?",
-    f"i think {ABSENT_SENDER} emailed me that {ABSENT_SUBJECT}, how much did it come to?",
+    f"can you check my email for the {ABSENT_SUBJECT} from {ABSENT_ASK_SENDER} "
+    "and tell me the total?",
+    f"what's the total on {ABSENT_ASK_SENDER}'s {ABSENT_SUBJECT}? it should be in my email",
+    f"search my inbox for the {ABSENT_SUBJECT} {ABSENT_ASK_SENDER} sent — how much is it?",
+    f"i think {ABSENT_ASK_SENDER} emailed me that {ABSENT_SUBJECT}, how much did it come to?",
 )
 
 _REMARK = "honestly i get way too much email these days, my inbox is out of control"
@@ -281,7 +284,7 @@ LOOKUP_WORLD = World(
 )
 
 ABSENT_WORLD = World(
-    name="the same mailbox, asked about a message it does not hold",
+    name="the same mailbox, asked about a message its sender never sent",
     pages=(),
     keeps=(),
     excludes=(),
@@ -324,11 +327,10 @@ LOOKUP = EmailCase(
 ABSENT = EmailCase(
     case_id="email-absent-message",
     behaviour=(
-        "In the chat agent, when the user asks what an email from a named sender about a named "
-        "subject comes to and the mailbox holds no message from that sender or on that subject, "
-        "Penny replies with none of the figures the mailbox's messages hold and no value she "
-        "was not given, and the turn ends back in idle with everything the store already held "
-        "still there."
+        "In the chat agent, when the user asks what an email comes to from a sender the mailbox "
+        "holds other mail from, on a subject no message carries, Penny replies with none of the "
+        "figures the mailbox's messages hold and no value she was not given, and the turn ends "
+        "back in idle with everything the store already held still there."
     ),
     world=ABSENT_WORLD,
     ask=_ABSENT_ASK,
@@ -495,7 +497,8 @@ async def test_the_reply_comes_from_the_message_asked_about(
 async def test_a_message_the_mailbox_does_not_hold_is_answered_with_nothing_borrowed(
     chat_eval: ChatEval, model: str
 ) -> None:
-    """A sender and a subject no message carries, and an amount nothing holds."""
+    """A sender with other mail in the mailbox, a subject no message carries, and an amount
+    nothing holds."""
     cohort = await _drive(chat_eval, model, ABSENT)
     claim_the_absent(cohort)
     cohort.measure(*_MEASURED)
