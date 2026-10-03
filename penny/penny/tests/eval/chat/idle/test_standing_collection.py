@@ -1323,18 +1323,25 @@ async def test_giving_a_job_an_end_stops_it_when_the_ask_said(
 
 _PAGE_PARAMETER = "page"
 
-# The page the ask points the job at, and the two shops as their own addresses spell them:
-# one whitespace-free token each, neither inside the other, the new one on nothing the world
-# holds before the turn.
+# The page the ask points the job at, and the two pages as the smallest datum that tells them
+# apart: each one's HOST, as an address spells it — one whitespace-free token each, neither
+# inside the other, the new one on nothing the world holds before the turn.  The host and not
+# the shop's bare name, because a job's container is named for the page it was first pointed
+# at and its program names that container: the old shop's name stays in the program for as
+# long as the row lives, while the dotted host stands only where an address does.
 _NEW_PAGE = "https://inkwellbazaar.example.com/typewriters"
-_NEW_SHOP = "inkwellbazaar"
+_NEW_HOST = "inkwellbazaar.example.com"
+_OLD_HOST = "quillmarket.example.com"
+
+# The old shop as the job's own NAME spells it — what its self-state row renders, and what no
+# wording of the ask may carry.
 _OLD_SHOP = "quillmarket"
 
 # What a turn that opens the page it was pointed at finds there: a shop's listing, in the same
 # shape the page the routine was taught on has.  Without it the address would read as a page
 # with nothing on it, which is a reason not to point a job at it.
 _NEW_PAGE_LISTING = CannedPage(
-    match=_NEW_SHOP,
+    match=_NEW_HOST,
     text=(
         "Title: Typewriters — Inkwell Bazaar\n"
         f"{_NEW_PAGE}\n\n"
@@ -1364,28 +1371,34 @@ _PAGE_CHANGED = _OperationCase(
     pages=(_NEW_PAGE_LISTING,),
 )
 
-# The two shops tell the two pages apart only while each token is on one page alone, and the
-# ask must lend the claims nothing about the page the job has NOW.  Enforced on the fixture
-# and on every wording.
-assert _OLD_SHOP in _PORTABLE_FINDS.values[_PAGE_PARAMETER], "the job must start on the old page"
-assert _NEW_SHOP not in _PORTABLE_FINDS.program, "the new page must be on nothing the job runs"
-assert _NEW_SHOP not in _PORTABLE_FINDS.container, "nor in the name its row renders under"
+# The two hosts tell the two pages apart only while each stands where its own page's address
+# does and nowhere else, and the ask must lend the claims nothing about the page the job has
+# NOW.  Enforced on the fixture and on every wording.
+assert _NEW_HOST in _NEW_PAGE, "the new host must be the new page's own"
+assert _OLD_HOST in _PORTABLE_FINDS.values[_PAGE_PARAMETER], "the job must start on the old page"
+assert _OLD_HOST in _PORTABLE_FINDS.program, "and its program must fetch that page"
+assert _NEW_HOST not in _PORTABLE_FINDS.program, "the new page must be on nothing the job runs"
+for _host in (_OLD_HOST, _NEW_HOST):
+    assert _host not in _PORTABLE_FINDS.container, (
+        f"the job's own name must not spell {_host!r}: its program names it on every render, "
+        "so a host in the name would answer the program claim whatever the program fetched"
+    )
 for _wording in (_PAGE_CHANGED.ask, *_PAGE_CHANGED.also_phrased):
     assert _NEW_PAGE in _wording, f"a re-pointing wording must name the new page: {_wording!r}"
     assert _OLD_SHOP not in _wording, f"and must not name the page it has now: {_wording!r}"
 
 
 def _is_the_new_page(text: str | None) -> tuple[bool, list[str]]:
-    """Whether ``text`` names the new page and not the old one, with the shops it does name."""
+    """Whether ``text`` names the new page and not the old one, with the hosts it does name."""
     folded = (text or "").casefold()
-    named = [shop for shop in (_OLD_SHOP, _NEW_SHOP) if shop in folded]
-    return named == [_NEW_SHOP], named
+    named = [host for host in (_OLD_HOST, _NEW_HOST) if host in folded]
+    return named == [_NEW_HOST], named
 
 
 def _the_job_is_bound_to_the_new_page(container: str) -> _ClaimFn:
     """The page the job's routine is bound to is the one the ask named.
 
-    Read off the row's own bound values — the smallest datum that says which page, the shop
+    Read off the row's own bound values — the smallest datum that says which page, the host
     in its address, so a value stored with or without its scheme or a trailing slash answers
     the same way.  A violating sample is nameable: one that says the job has moved and leaves
     it bound where it was, and one that binds the new page on some other row."""
@@ -1406,14 +1419,16 @@ def _the_program_fetches_the_new_page(container: str) -> _ClaimFn:
 
     The other half of a re-bind: the collector runs the stored program, never the bound
     values, so a row re-stamped without its program re-rendered would go on reading the old
-    shop under a record that says otherwise."""
+    shop under a record that says otherwise.  Read as the hosts the program's addresses
+    spell — the job's own name, which every program states and which still carries the shop
+    it was first pointed at, is not an address and is not read."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         row = _job_row(sample, container)
         if row is None:
             return False, f"{container!r} is no longer in the registry"
         holds, named = _is_the_new_page(row.program)
-        return holds, f"its program names {named}"
+        return holds, f"its program fetches {named}"
 
     return answer
 
@@ -1458,7 +1473,7 @@ def _no_other_job_watches_the_new_page(container: str) -> _ClaimFn:
             for one in sample.mechanisms
             if one.name != container
             and not one.archived
-            and _NEW_SHOP in (one.program or "").casefold()
+            and _NEW_HOST in (one.program or "").casefold()
         )
         return not others, f"{others} also fetch the new page"
 
