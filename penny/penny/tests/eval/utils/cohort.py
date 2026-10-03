@@ -96,6 +96,24 @@ class StoredEntry(BaseModel):
         return " ".join(part for part in (self.key, self.content) if part)
 
 
+class StoredImage(BaseModel):
+    """One image the media store holds — what the row SAYS it is, and where it came from.
+
+    The image bytes are not carried: what a claim can read about a picture is the row's own
+    description, which is the text it was generated from (or a browsed page's title), and
+    whether a page supplied it.  ``source_url`` is the store's own mark on that second
+    question — a browsed capture carries the page it came from, an image made on request
+    carries none — so ``drawn`` is a read of the row rather than of which tool wrote it."""
+
+    description: str
+    source_url: str | None = None
+
+    @property
+    def drawn(self) -> bool:
+        """Whether the image was made rather than captured off a page."""
+        return self.source_url is None
+
+
 class MechanismRecord(BaseModel):
     """One MECHANISM — a collection row — as the sample left it.
 
@@ -308,6 +326,10 @@ class SampleObservation(BaseModel):
     # that writes its own observation leaves the default, which is what a database nobody
     # muted holds — and no non-chat case claims it.
     muted: bool = False
+    # Every image the MEDIA store holds when the sample ends — a store of its own, beside the
+    # collections, which is where a picture made on request lands.  Read by the CHAT observer;
+    # a shape that writes its own observation leaves it empty, and no non-chat case claims it.
+    images: list[StoredImage] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None

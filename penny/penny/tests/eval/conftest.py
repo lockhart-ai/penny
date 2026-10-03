@@ -55,7 +55,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, MemoryType
 from penny.database.memory.store import snapshot_fields
 from penny.database.message_store import MessageStore, PromptPerf
-from penny.database.models import MemoryRow, MutationEvent, PromptLog, SendQueueItem
+from penny.database.models import Media, MemoryRow, MutationEvent, PromptLog, SendQueueItem
 from penny.database.mutation_store import mutation_detail
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
@@ -2814,6 +2814,20 @@ def _held_entries(db: Database) -> list[eval_cohort.StoredEntry]:
     return held
 
 
+def stored_images(db: Database) -> list[eval_cohort.StoredImage]:
+    """Every image the media store holds, oldest first — its description and its source page.
+
+    Read off the ``media`` table directly: the store has no list read of its own, because
+    production only ever selects one image to attach.  Ordered by ``created_at``, the store's
+    own clock, so a turn that made two pictures reads them in the order it made them."""
+    with Session(db.engine) as session:
+        rows = session.exec(select(Media).order_by(col(Media.created_at).asc())).all()
+    return [
+        eval_cohort.StoredImage(description=row.title or "", source_url=row.source_url)
+        for row in rows
+    ]
+
+
 def _mechanism_records(db: Database, before: set[str]) -> list[eval_cohort.MechanismRecord]:
     """Every mechanism the registry holds when the sample ends, ARCHIVED ONES INCLUDED.
 
@@ -3022,6 +3036,7 @@ def _observe_sample(
         held_before=held_before,
         mechanisms=_mechanism_records(db, before),
         muted=db.users.is_muted(TEST_SENDER),
+        images=stored_images(db),
         delivered=outgoing_replies(db),
         tool_sequence=_chat_tool_sequence(db),
         reply=reply,

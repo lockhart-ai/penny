@@ -842,8 +842,13 @@ world where the answer token exists in exactly ONE place — an out-of-window tu
 failed cycle's stamped reason the header never carries — so the reply stating it cites that
 place; #2001's world-integrity probe rides along. `speak-logread-browse-results` and
 `speak-logread-user-messages-act` are not cases),
-`test_command_tools.py` (NL-dispatch
-contracts for the command-retirement tools), `test_email_dispatch.py`
+`test_image_dispatch.py` (the `generate_image` tool that retired `/draw`, PORTED (#2208): TWO
+cases — `image-request-draws` (five wordings of one request for a picture, "draw me" and "make a
+picture of" among them; the media store holds an image drawn this turn whose description names
+both things the ask put in it) and `image-no-fire` (a remark about a painting asks for nothing;
+the turn lands in idle and the reply invents nothing). The image backend is a canned stub in front
+of the real tool, and the chat observer reads the media store as `SampleObservation.images`, a
+drawn image being one with no source page), `test_email_dispatch.py`
 (#2209 — the email tools that retired `/email` + `/zoho`, PORTED to the cohort structure: TWO
 cases over one canned mailbox. `email-answers-from-the-message-asked-about` names a sender AND
 a subject that only one message shares — asking by sender and asking by subject are one

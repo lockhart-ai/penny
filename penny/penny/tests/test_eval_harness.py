@@ -115,12 +115,6 @@ from penny.tests.eval.chat.idle.test_choose_dispatch import (
     picks_on_the_record,
     reply_reports,
 )
-from penny.tests.eval.chat.idle.test_command_tools import (
-    IMAGE_CASES,
-    _claims_no_picture_check,
-    assert_image_world,
-    install_image_client,
-)
 from penny.tests.eval.chat.idle.test_email_dispatch import (
     EMAIL_CASES,
     EMAIL_TOOLS,
@@ -142,6 +136,14 @@ from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
 )
 from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
     probe_seeded_world as probe_source_down_world,
+)
+from penny.tests.eval.chat.idle.test_image_dispatch import (
+    IMAGE_CASES,
+    SUBJECT,
+    ImageCase,
+    assert_image_world,
+    drew,
+    install_image_client,
 )
 from penny.tests.eval.chat.idle.test_notifications import assert_mute_world
 from penny.tests.eval.chat.idle.test_notifications import (
@@ -354,6 +356,7 @@ from penny.tests.eval.conftest import (
     seed_collection,
     seed_world_stores,
     seeded_run_id,
+    stored_images,
     tool_call_name,
     tool_call_rejected,
     tool_not_called,
@@ -393,6 +396,7 @@ from penny.tests.eval.utils.cohort import (
     MechanismRecord,
     SampleObservation,
     StoredEntry,
+    StoredImage,
     unsourced_specifics,
 )
 from penny.tests.eval.utils.dispatch_world import assert_no_collections, collection_names
@@ -1433,7 +1437,7 @@ def test_the_correction_scorer_passes_each_case_s_own_reference_reply() -> None:
             assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
 
 
-def _assert_five_wordings_each_state_the_facts(case: SourceDownCase) -> None:
+def _assert_five_wordings_each_state_the_facts(case: SourceDownCase | ImageCase) -> None:
     """Five distinct wordings, every one of them stating the case's own constant facts.
 
     The facts come off the CASE rather than being restated here, so the guard and the thing it
@@ -1560,27 +1564,61 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
     async with running_penny(test_config) as penny:
         install_image_client(penny)
         for image_case in IMAGE_CASES:
-            assert_image_world(penny, image_case)
+            assert_image_world(penny, image_case.case_id)
         assert_choose_world(penny)
         assert_mute_world(penny)
         assert_mute_no_fire_world(penny)
 
 
-def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> None:
-    """Every dispatch case's reference reply — the answer the case itself calls correct —
-    passes its module's one reply floor, and a reply that really does make the claim fails
-    it.
+async def test_the_drawn_image_claim_reads_what_the_real_tool_stored(
+    mock_llm, running_penny, test_config
+) -> None:
+    """The image cases' wordings each state their case's constant facts, and the request
+    case's one STORE claim can see each way a turn can fail it.
 
-    The same tripwire the chat beats carry (the "check the scorer before you blame the
-    model" rule, applied before the run rather than after it).  The floor reads a
-    vocabulary, and a vocabulary that cannot match the agreed answer would score every
-    sample a miss — while one that matches nothing at all would pass a reply claiming a
-    picture was drawn.  Both halves are checked, because only the pair keeps the floor
-    meaning anything."""
+    The WORDINGS: five distinct ones per case, every one carrying the facts its claims hinge on
+    — an arm that dropped the lighthouse would measure a different ask under the same number.
+
+    The READ: the real ``generate_image`` tool, behind the canned backend the cases install,
+    lands a row the observer reads as DRAWN under the description it was called with, while a
+    browsed capture — which carries its source page — reads as captured.  So the claim reads
+    the store the tool writes, not a row the harness made up.
+
+    The CLAIM, both directions: a drawn image naming the dragon and the lighthouse holds it.  It
+    misses, naming what was drawn, when the picture shows only half the subject, when nothing
+    was drawn, and when the only image naming both came off a page — none of which a sample
+    that only fired the tool could tell apart."""
     for case in IMAGE_CASES:
-        drew = _claims_no_picture_check(case.reference)
-        assert drew.ok, f"{case.case_id}: {drew.rationale} — reference: {case.reference!r}"
-    assert not _claims_no_picture_check("here's the picture you asked for!").ok
+        _assert_five_wordings_each_state_the_facts(case)
+    async with running_penny(test_config) as penny:
+        install_image_client(penny)
+        assert_image_world(penny, "image-claim-probe")
+        tool = next(t for t in penny.chat_agent.get_tools() if t.name == "generate_image")
+        result = await tool.run(description="A teal origami dragon on a stormy Lighthouse")
+        assert result.success, result.message
+        penny.db.media.put(
+            data=b"page", mime_type="image/png", source_url="https://pier.example/x", title="t"
+        )
+        images = stored_images(penny.db)
+    assert [(image.description, image.drawn) for image in images] == [
+        ("A teal origami dragon on a stormy Lighthouse", True),
+        ("t", False),
+    ]
+
+    claim = drew(SUBJECT)
+
+    def answer(*held: StoredImage) -> tuple[bool, str | None]:
+        sample = SampleObservation(name="s-1", phrasing=IMAGE_CASES[0].ask, images=list(held))
+        return claim(sample, IMAGE_CASES[0].world)
+
+    whole = StoredImage(description="A teal origami dragon on a stormy Lighthouse")
+    half = StoredImage(description="a teal origami dragon in flight")
+    browsed = StoredImage(description="dragon over a lighthouse", source_url="https://p.example")
+    assert answer(*images)[0], "the tool's own row, read back, holds the claim"
+    assert answer(half, whole)[0], "any one drawn image showing the whole subject holds it"
+    assert answer(half) == (False, "drew ['a teal origami dragon in flight']")
+    assert answer() == (False, "drew nothing")
+    assert answer(browsed) == (False, "drew nothing"), "a captured image is not a drawn one"
 
 
 async def test_the_email_world_stands_up_through_the_driver(
