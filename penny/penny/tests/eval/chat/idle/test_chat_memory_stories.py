@@ -121,6 +121,7 @@ from penny.tests.eval.utils.fixtures import (
     SynthCollection,
 )
 from penny.tests.eval.utils.memory_world import _FAMILY
+from penny.tests.eval.utils.stored_words import STORED_WORDS_FOUND_NOWHERE
 from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
@@ -933,7 +934,7 @@ async def test_a_change_lands_on_the_entry_that_exists(chat_eval: ChatEval, mode
     cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
-    cohort.measure(*_MEASURED)
+    cohort.measure(*_MEASURED, STORED_WORDS_FOUND_NOWHERE)
 
 
 # ═══ fan-out ═════════════════════════════════════════════════════════════════

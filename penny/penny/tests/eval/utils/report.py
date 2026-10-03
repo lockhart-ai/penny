@@ -608,6 +608,8 @@ _VARIANCE_HEAD = (
     "|  | feature | distinct | modal | entropy | proposed ceiling |\n|---|---|---|---|---|---|"
 )
 _PHRASING_HEAD = "| feature | phrasing | distinct | only under this wording |\n|---|---|---|---|"
+_SHARE_HEAD = "|  | share | read | median | range | to open |\n|---|---|---|---|---|---|"
+_SHARE_OPEN_HEAD = "| sample | share | what it counted |\n|---|---|---|"
 _COST_HEAD = "| tokens | observed | proposed ceiling |\n|---|---|---|"
 
 _NO_ASSERTIONS = "_(no assertions)_"
@@ -643,6 +645,24 @@ _CEILING_NOTE = (
     "reads 0.527 at N=32 and 0.605 at N=15), and two models differ ~3x on the same feature "
     "(routine shape 0.53 against 0.18), so a shared ceiling would measure neither._"
 )
+# What a SHARE is, said where its table ends.  It sits in the variance section because it is
+# measured over the same pooled samples, and it is not a variance: stated, because a number in
+# this fold with no entropy beside it would otherwise read as a row somebody forgot to finish.
+_SHARE_NOTE = (
+    "_A share is a FRACTION read off each sample, not a value the samples agree on, so it "
+    "carries no entropy and proposes no ceiling. `read` is how many pooled samples had "
+    "anything to take the fraction of, and the median and the range are over those. Nothing "
+    "is compared against these numbers and nothing fails by them._"
+)
+_SHARE_SAYS = "_`{name}` — {says}_"
+_SHARE_OPEN_LEAD = "_`{name}` above {open_above:.2f} — the samples to open:_"
+_SHARE_NONE_OPEN = "_`{name}`: no sample read above {open_above:.2f}._"
+_SHARE_TO_OPEN = "{count} above {open_above:.2f}"
+_SHARE_READ = "{read}/{pooled}"
+_SHARE_RANGE = "{low:.2f}–{high:.2f}"
+_NO_READING = "—"
+_SHARE_EVIDENCE_GAP = ", "
+_B_SHARES = " · {shares}"
 _PHRASING_LEAD = (
     "_Per-phrasing rows below are DIAGNOSTIC and never locked — at 3 samples each there is no "
     "reliable per-phrasing entropy, so what is reported is the honest weaker signal: a wording "
@@ -797,11 +817,14 @@ class CaseSections:
     def _variance_summary(self) -> str:
         """The spread reading its case line carries — read while the fold is CLOSED, so it holds
         the finding rather than the noun."""
+        shares = self.variance.shares
+        measured = _B_SHARES.format(shares=plural(len(shares), "share")) if shares else ""
         if not self.variance.features:
-            return _B_EMPTY
-        return _B_SUMMARY.format(
+            return f"{_B_EMPTY}{measured}"
+        summary = _B_SUMMARY.format(
             features=plural(len(self.variance.features), "feature"), spread=self._spread()
         )
+        return f"{summary}{measured}"
 
     def _cost_summary(self) -> str:
         assert self.cost is not None
@@ -988,8 +1011,14 @@ class CaseSections:
 
     # ── B ────────────────────────────────────────────────────────────────
     def _variance(self) -> str:
+        """The features' spread, then the shares' distributions — two kinds of measurement,
+        each under its own table and its own note."""
+        parts = [*self._feature_spread(), *self._shares()]
+        return "\n\n".join(parts) if parts else _NOTHING_POOLED
+
+    def _feature_spread(self) -> list[str]:
         if not self.variance.features:
-            return _NOTHING_POOLED
+            return []
         rows = "\n".join(_variance_row(f, self.model) for f in self.variance.features)
         parts = [
             f"{_VARIANCE_HEAD}\n{rows}",
@@ -998,7 +1027,19 @@ class CaseSections:
         ]
         if self.variance.text is not None:
             parts.append(_text_spread_line(self.variance.text))
-        return "\n\n".join(parts)
+        return parts
+
+    def _shares(self) -> list[str]:
+        """Each measured share as a DISTRIBUTION — how many samples it read, where they sit,
+        how far they reach — then the samples above its stated share, by name, with what each
+        one counted."""
+        shares = self.variance.shares
+        if not shares:
+            return []
+        rows = "\n".join(_share_row(share) for share in shares)
+        says = [_SHARE_SAYS.format(name=share.name, says=share.says) for share in shares]
+        to_open = [block for block in map(_share_to_open, shares) if block is not None]
+        return [f"{_SHARE_HEAD}\n{rows}", *says, _SHARE_NOTE, *to_open]
 
     def _cost(self) -> str:
         """What one SAMPLE spends, never what the run did — a total is not comparable across
@@ -1076,6 +1117,48 @@ def _variance_row(feature: cohort.VarianceFeature, model: str) -> str:
         f"{feature.modal}/{feature.n} ({feature.modal_share:.2f}) | {feature.entropy:.3f} | "
         f"{proposal} |"
     )
+
+
+def share_glyph(share: cohort.ShareSpread) -> str:
+    """A share's colour, by the rule a feature's follows: grey, since nothing gates it, and RED
+    where it read nothing on every sample and so is not a reading at all."""
+    return FAIL_GLYPH if share.blind else UNGATED_GLYPH
+
+
+def _share_row(share: cohort.ShareSpread) -> str:
+    read = _SHARE_READ.format(read=len(share.readings), pooled=share.n)
+    if not share.readings:
+        to_open = _BLIND_FEATURE if share.blind else _NO_READING
+        return (
+            f"| {share_glyph(share)} | `{share.name}` | {read} | {_NO_READING} | "
+            f"{_NO_READING} | {to_open} |"
+        )
+    to_open = _SHARE_TO_OPEN.format(count=len(share.above), open_above=share.open_above)
+    spread = _SHARE_RANGE.format(low=share.low, high=share.high)
+    return (
+        f"| {share_glyph(share)} | `{share.name}` | {read} | {share.median:.2f} | "
+        f"{spread} | {to_open} |"
+    )
+
+
+def _share_to_open(share: cohort.ShareSpread) -> str | None:
+    """The samples above the share's stated value, each with what put it there.  A share with
+    no reading at all has nothing to say here: its row already says it read nothing."""
+    if not share.readings:
+        return None
+    if not share.above:
+        return _SHARE_NONE_OPEN.format(name=share.name, open_above=share.open_above)
+    rows = "\n".join(
+        f"| `{reading.sample}` | {reading.value:.2f} | {_share_evidence(reading.evidence)} |"
+        for reading in share.above
+    )
+    lead = _SHARE_OPEN_LEAD.format(name=share.name, open_above=share.open_above)
+    return f"{lead}\n\n{_SHARE_OPEN_HEAD}\n{rows}"
+
+
+def _share_evidence(evidence: Sequence[str]) -> str:
+    """What one sample's share counted, every item of it, each safe inside the cell."""
+    return _SHARE_EVIDENCE_GAP.join(feature_cell(item) for item in evidence) or _NO_READING
 
 
 def _cost_block(cost: cohort.SampleCost, model: str) -> str:

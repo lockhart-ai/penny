@@ -2927,6 +2927,7 @@ class _PendingCase:
             expand_samples=_expandable(standings),
             standing_counts=Counter(standing.standing.value for standing in standings),
             variance=_variance_readings(observations, self.driven_cohort.features),
+            shares=_share_records(observations, self.driven_cohort.shares),
         )
         self.perf.report(self.case_id, self.driven)
         _report_result(self.case_id, self.results, intended=self.intended)
@@ -2970,6 +2971,26 @@ def _variance_readings(
         )
         for feature in pooled.features
     ]
+
+
+def _share_records(
+    samples: Sequence[eval_cohort.SampleObservation], shares: Sequence[eval_cohort.Share]
+) -> list[eval_artifacts.ShareRecord]:
+    """What the case's measured SHARES read, in the record: one value per sample the case
+    drove, in the order it drove them.  Read through the same pool the document renders, so a
+    sample the pool excluded carries no value here either."""
+    records = []
+    for spread in eval_cohort.pool(samples, [], shares).shares:
+        read = {reading.sample: reading.value for reading in spread.readings}
+        records.append(
+            eval_artifacts.ShareRecord(
+                name=spread.name,
+                open_above=spread.open_above,
+                blind=spread.blind,
+                values=[read.get(sample.name) for sample in samples],
+            )
+        )
+    return records
 
 
 def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
@@ -3158,7 +3179,7 @@ def _record_case_report(
     Assembled HERE rather than in the report layer because this is where the three halves meet:
     the claims come from the case body, the pooled variance from the observations, and the
     prompts from what each sample was handed while its database was live."""
-    variance = eval_cohort.pool(samples, cohort.features)
+    variance = eval_cohort.pool(samples, cohort.features, cohort.shares)
     sections = report.CaseSections(
         case_id=cohort.case_id,
         model=cohort.model,

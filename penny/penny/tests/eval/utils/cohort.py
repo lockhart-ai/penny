@@ -35,6 +35,7 @@ from __future__ import annotations
 import calendar
 import math
 import re
+import statistics
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -649,6 +650,45 @@ def output_field(
     return Feature(name, lambda o: o.field(name), consequence=consequence, absent=absent)
 
 
+# ── A measured SHARE: a fraction per sample, which has no entropy ────────────
+class ShareReading(BaseModel):
+    """One sample's reading of a measured share: the fraction, and what made its numerator.
+
+    ``evidence`` rides with the number because a share alone sends its reader to the
+    transcripts, and the things it counted are the finding."""
+
+    value: float
+    evidence: list[str] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Share:
+    """One measured axis whose reading is a FRACTION of something the sample produced.
+
+    :class:`Feature`'s sibling rather than one of them.  A feature measures DISTINCTNESS: two
+    samples agree when they produced the same value, and entropy is taken over those values.
+    A fraction is continuous, so fifteen samples give close to fifteen different numbers
+    whatever the behaviour, and its entropy would read near 1.0 on a cohort in perfect
+    agreement.  So a share is reported as what it is: where the cohort's readings sit (the
+    median), how far they reach (the range), and which samples read above ``open_above``.
+
+    ``read`` answers ``None`` for a sample that produced nothing to take the fraction of.
+    That is this axis's absent reading, and a share that read ``None`` on every pooled sample
+    is BLIND, exactly as a feature that read its absent value on every sample is.
+
+    MEASURED, never gated: a share proposes no ceiling, enters no headline, decides no
+    sample's standing and answers no claim.  ``open_above`` says which samples a reader is
+    pointed at.  It is not a threshold anything is compared against.
+
+    ``says`` is what the number IS, in one sentence, rendered under its row: a fraction with
+    no statement of what it is a fraction of is a number a reader has to look up."""
+
+    name: str
+    read: Callable[[SampleObservation], ShareReading | None]
+    open_above: float
+    says: str
+
+
 # What an exclusion is called when the observation that carried it named no reason.
 UNEXPLAINED_EXCLUSION = "the measured turn never ran"
 
@@ -760,6 +800,57 @@ class TextSpread(BaseModel):
         return self.cosine_pairs > 0
 
 
+class SampleShare(BaseModel):
+    """One pooled sample's reading of a share, by the sample's own name."""
+
+    sample: str
+    value: float
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ShareSpread(BaseModel):
+    """One :class:`Share` across the POOLED cohort: where its readings sit and how far they
+    reach.
+
+    ``readings`` holds only the samples that HAD a reading, in the order they were driven, and
+    ``n`` is every pooled sample, so ``len(readings)`` of ``n`` is how much of the cohort this
+    number speaks for.  Everything else is derived from those two, so no summary figure can
+    drift from the readings it summarises."""
+
+    name: str
+    n: int
+    open_above: float
+    says: str
+    readings: list[SampleShare] = Field(default_factory=list)
+
+    @property
+    def blind(self) -> bool:
+        """Whether NO pooled sample had anything to take the fraction of.  An empty pool is
+        not blind: nothing was pooled, which the excluded-samples section reports."""
+        return self.n > 0 and not self.readings
+
+    @property
+    def values(self) -> list[float]:
+        return [reading.value for reading in self.readings]
+
+    @property
+    def median(self) -> float:
+        return statistics.median(self.values) if self.readings else NO_SPREAD
+
+    @property
+    def low(self) -> float:
+        return min(self.values, default=NO_SPREAD)
+
+    @property
+    def high(self) -> float:
+        return max(self.values, default=NO_SPREAD)
+
+    @property
+    def above(self) -> list[SampleShare]:
+        """The samples a reader is pointed at: every reading strictly above ``open_above``."""
+        return [reading for reading in self.readings if reading.value > self.open_above]
+
+
 class CohortVariance(BaseModel):
     """A case's whole measured half: what was pooled, what was thrown out, and the spread."""
 
@@ -768,6 +859,10 @@ class CohortVariance(BaseModel):
     excluded: list[ExcludedSample] = Field(default_factory=list)
     features: list[VarianceFeature] = Field(default_factory=list)
     text: TextSpread | None = None
+    # The measured SHARES, beside the features and never among them: every reader of
+    # ``features`` computes a headline, a ceiling or a glyph from an entropy, and a share has
+    # none to give.
+    shares: list[ShareSpread] = Field(default_factory=list)
 
     @property
     def dominant_exclusion(self) -> tuple[str, int] | None:
@@ -953,7 +1048,27 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else NO_SPREAD
 
 
-def pool(samples: Sequence[SampleObservation], features: Sequence[Feature]) -> CohortVariance:
+def share_spread(share: Share, samples: Sequence[SampleObservation]) -> ShareSpread:
+    """One share's readings across the samples it is pooled over."""
+    read = [(sample.name, share.read(sample)) for sample in samples]
+    return ShareSpread(
+        name=share.name,
+        n=len(samples),
+        open_above=share.open_above,
+        says=share.says,
+        readings=[
+            SampleShare(sample=name, value=reading.value, evidence=reading.evidence)
+            for name, reading in read
+            if reading is not None
+        ],
+    )
+
+
+def pool(
+    samples: Sequence[SampleObservation],
+    features: Sequence[Feature],
+    shares: Sequence[Share] = (),
+) -> CohortVariance:
     """Gate for completeness, THEN pool — the order is the point.
 
     Nothing is measured over a sample that did not run, and what is excluded is NAMED rather
@@ -970,6 +1085,7 @@ def pool(samples: Sequence[SampleObservation], features: Sequence[Feature]) -> C
         excluded=excluded,
         features=[feature_variance(feature, kept) for feature in structural],
         text=text_spread(kept) if REPLY_SPREAD in features else None,
+        shares=[share_spread(share, kept) for share in shares],
     )
 
 
@@ -1890,6 +2006,13 @@ def _whole_tokens(folded: str) -> list[str]:
     """``folded`` as whole tokens — each word without its possessive or the quotes around it."""
     bare = (_without_possessive(token).strip(_QUOTE_MARK) for token in _WORLD_TOKEN.findall(folded))
     return [token for token in bare if token]
+
+
+def words_in(text: str) -> list[str]:
+    """Every WORD ``text`` is written in, in order — typography and case folded the way every
+    claim folds them, each word without its possessive or the quotes around it.  A figure is
+    not a word: the numbers a text states are read by ``unsourced_specifics``."""
+    return [token for token in _whole_tokens(fold_typography(text)) if not token.isdigit()]
 
 
 def _side_by_side(tokens: Sequence[str]) -> str:

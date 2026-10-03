@@ -71,6 +71,7 @@ from penny.tests.eval.utils.cohort import (
 )
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
 from penny.tests.eval.utils.memory_world import _FAMILY
+from penny.tests.eval.utils.stored_words import STORED_WORDS_FOUND_NOWHERE
 from penny.tests.eval.utils.worlds import (
     FOXES_NEWS,
     FOXES_URL,
@@ -421,4 +422,4 @@ async def test_half_the_sources_landed(chat_eval: ChatEval, model: str) -> None:
         kind="reply",
     )
 
-    cohort.measure(*_MEASURED)
+    cohort.measure(*_MEASURED, STORED_WORDS_FOUND_NOWHERE)

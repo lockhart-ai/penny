@@ -596,6 +596,32 @@ pooling at all. But the pooled number hides what phrasings are for: four phrasin
 completely — and pooled to `0.18`. The pooled number is the gate; the rows are the diagnostic
 saying which wording moved it.
 
+### A share is reported as a distribution, not as a spread
+
+Some model behaviour is a **fraction** of what a sample produced rather than a value two samples
+can agree on. A fraction is continuous: fifteen samples give close to fifteen different numbers
+whatever the behaviour, so its normalised entropy reads near `1.0` on a cohort in agreement and
+says nothing. A **share** (`cohort.Share`) is therefore reported as what it is: how many pooled
+samples had a reading, their median, their range, and the samples above a stated share, each
+named with what it counted. It sits in the variance section under its own table.
+
+A share carries no entropy, proposes no ceiling, enters no headline, decides no sample's standing
+and answers no claim. A sample with nothing to take the fraction of has **no reading** — never
+`0.0`, which is the best reading a share has — and a share with no reading on any pooled sample
+is **blind**, rendered red exactly as a blind feature is.
+
+**`STORED_WORDS_FOUND_NOWHERE`** (`utils/stored_words.py`) is the one share there is: of the
+distinct content words in the entries a turn wrote, the fraction found nowhere in the content the
+round was given. `PROVENANCE` reads only the values that have a fixed written form, so an entry
+that gains invented plain prose passes every claim, and whether prose follows from a source
+cannot be answered true or false without a judge (§9). So it is measured. The module's docstring
+states the tokenisation, the closed stop list, the ending rule and what the reading cannot see.
+The one to remember: **it reads words, never what they say**, so a false note built from words
+the round was given reads zero.
+
+Measure it on a case whose behaviour is to **write an entry of prose**. Where writing is the
+model's own call, the cohort that does best writes nothing, and the row reads blind.
+
 ### Rejected draws are never scored
 
 A re-rolled draw is persisted whole in the promptlog, so every discarded attempt is sitting there
@@ -782,7 +808,8 @@ The numbers on the PR inform the review; they are not its verdict.
 
 | file | holds |
 |---|---|
-| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
+| `penny/penny/tests/eval/utils/cohort.py` | the arithmetic — `SampleObservation`, `Claim`, `SpecCategory` (the closed three), `Feature` + `Consequence`, `Share` + `ShareSpread`, `normalised_entropy`, `pool`, `proposed_ceiling`, `compare_to_ceiling`, the standings |
+| `penny/penny/tests/eval/utils/stored_words.py` | the one measured share — the words a turn stored that stand nowhere in what the round was given: the stop list, the ending rule, and what the reading cannot see |
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the ground a sample is GIVEN: the `pages` a browse returns, the `stores` already in the store when the turn begins and the `mailbox` the email tools answer from (`utils/mailbox.py`), walked together as `sources`, plus the `keeps` token set per source, the `excludes`, and the `answers` the reply must state; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/clock.py` | the clock a sample runs on — `PinnedClock`, and the instant every sample starts at |

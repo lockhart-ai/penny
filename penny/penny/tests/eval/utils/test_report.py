@@ -1037,6 +1037,100 @@ def test_the_three_sections_render_whole():
     )
 
 
+_SHARE_NOTE = (
+    "_A share is a FRACTION read off each sample, not a value the samples agree on, so it "
+    "carries no entropy and proposes no ceiling. `read` is how many pooled samples had "
+    "anything to take the fraction of, and the median and the range are over those. Nothing "
+    "is compared against these numbers and nothing fails by them._"
+)
+_FAILED = "failed"
+
+
+def _failed_calls(sample: cohort.SampleObservation) -> cohort.ShareReading | None:
+    """A toy share: of the calls a sample made, the fraction that failed."""
+    if not sample.tool_sequence:
+        return None
+    failed = [call for call in sample.tool_sequence if call.startswith(_FAILED)]
+    return cohort.ShareReading(value=len(failed) / len(sample.tool_sequence), evidence=failed)
+
+
+_CALLS_THAT_FAILED = cohort.Share(
+    "calls that failed",
+    _failed_calls,
+    open_above=0.5,
+    says="of the calls the sample made, the fraction that failed",
+)
+
+
+def test_a_measured_share_renders_as_a_distribution_under_its_own_table():
+    """A share is a fraction per sample, so it renders as how many samples it read, where they
+    sit, how far they reach and which to open — under its own table, with the features' table
+    and its ceiling note exactly as they were.  The whole Variance fold, as one literal.
+
+    Four pooled samples: one made no call and has no reading, so the share speaks for three.
+    The sample above the stated share is named with everything it counted."""
+    many = [f"{_FAILED}-{n}" for n in range(1, 15)]
+    samples = [
+        _observation("c-1", "the ask", ["read", "write"]),
+        _observation("c-2", "the ask", ["read", *many]),
+        _observation("c-3", "the ask", ["read", f"{_FAILED}-1"]),
+        _observation("c-4", "the ask", []),
+    ]
+    sections = report.CaseSections(
+        case_id="c",
+        model="m",
+        variance=cohort.pool(samples, [cohort.ENTRIES_STORED], [_CALLS_THAT_FAILED]),
+    )
+    counted = ", ".join(f"`{call}`" for call in many)
+
+    assert (
+        report.titled_fold(
+            "⚪ Variance",
+            "1 feature · max H 0.000 `entries stored` · 0 of 1 features vary · 1 share",
+            "\n\n".join(
+                [
+                    "\n".join(
+                        [
+                            "|  | feature | distinct | modal | entropy | proposed ceiling |",
+                            "|---|---|---|---|---|---|",
+                            "| ⚪ | `entries stored` | 1 | 4/4 (1.00) | 0.000 | `0.10` @ m N=4 |",
+                        ]
+                    ),
+                    _CEILING_NOTE.replace("N=3,", "N=4,"),
+                    "_No phrasing produced a value the others did not._",
+                    "\n".join(
+                        [
+                            "|  | share | read | median | range | to open |",
+                            "|---|---|---|---|---|---|",
+                            "| ⚪ | `calls that failed` | 3/4 | 0.50 | 0.00–0.93 | 1 above 0.50 |",
+                        ]
+                    ),
+                    "_`calls that failed` — of the calls the sample made, the fraction that "
+                    "failed_",
+                    _SHARE_NOTE,
+                    "_`calls that failed` above 0.50 — the samples to open:_",
+                    "\n".join(
+                        [
+                            "| sample | share | what it counted |",
+                            "|---|---|---|",
+                            f"| `c-2` | 0.93 | {counted} |",
+                        ]
+                    ),
+                ]
+            ),
+        )
+        in sections.render()
+    )
+
+    # Where no sample is above the stated share, the fold says so rather than ending on a
+    # table with no rows.
+    calm = report.CaseSections(
+        case_id="c", model="m", variance=cohort.pool(samples[:1], [], [_CALLS_THAT_FAILED])
+    ).render()
+    assert "_`calls that failed`: no sample read above 0.50._" in calm
+    assert "nothing pooled · 1 share" in calm, "a case measuring only a share says so"
+
+
 def test_a_case_whose_cohort_all_agreed_says_so_rather_than_rendering_an_empty_table():
     """The quiet path: nothing excluded, no phrasing outlier, no assertions declared — each
     absence stated in words rather than left as a table with no rows."""

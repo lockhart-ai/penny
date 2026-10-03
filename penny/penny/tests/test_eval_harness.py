@@ -415,6 +415,7 @@ from penny.tests.eval.utils.job_end import (
 )
 from penny.tests.eval.utils.mailbox import CannedMailbox
 from penny.tests.eval.utils.schedules import cadence_seconds, rule_parts
+from penny.tests.eval.utils.stored_words import STORED_WORDS_FOUND_NOWHERE
 from penny.tests.eval.utils.transition_world import (
     _JOURNEYS,
     _SHORT_LISTING,
@@ -2327,6 +2328,9 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
 
     assert _stored_entries(db) == [], "a seeded row cites a seeded run, so no round wrote it"
     assert {entry.key for entry in _held_entries(db)} == set(seeded), "the store holds them all"
+    # Which is the reading the stored-words share calls ABSENT, off the observer that fills it:
+    # a round that wrote nothing has nothing to take a share of (#2199).
+    assert _stored_words(_stored_entries(db)) is None
 
     require_memory(db, BOARD_GAMES.name).update(
         key="Ark Nova", content="Ark Nova — now with a playtime.", author="chat", run_id="r1"
@@ -2334,10 +2338,21 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
     assert [(entry.key, entry.content) for entry in _stored_entries(db)] == [
         ("Ark Nova", "Ark Nova — now with a playtime.")
     ], "the round wrote exactly one entry"
+    wrote = _stored_words(_stored_entries(db))
+    assert wrote is not None and wrote.evidence == ["playtime"], "and that entry is read"
     held = {entry.key: entry.content for entry in _held_entries(db)}
     assert set(held) == set(seeded), "and the collection still holds every key it was seeded with"
     assert held["Ark Nova"] == "Ark Nova — now with a playtime."
     assert held["Spirit Island"] == seeded["Spirit Island"], "an untouched row reads as seeded"
+
+
+def _stored_words(entries: list[eval_cohort.StoredEntry]) -> eval_cohort.ShareReading | None:
+    """What the stored-words share reads off a sample that wrote ``entries`` and was given only
+    the name of the game its one entry is about."""
+    sample = SampleObservation(
+        name="s", phrasing="the ask", entries=entries, given=eval_cohort.Given("Ark Nova")
+    )
+    return STORED_WORDS_FOUND_NOWHERE.read(sample)
 
 
 def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(tmp_path) -> None:

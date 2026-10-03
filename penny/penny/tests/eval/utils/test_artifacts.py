@@ -21,6 +21,7 @@ from penny.tests.eval.utils.artifacts import (
     RESULTS_FILENAME,
     RESULTS_GLOB,
     XDIST_WORKER_ENV,
+    CaseArtifact,
     CaseTimings,
     CauseCounts,
     CheckCell,
@@ -28,6 +29,7 @@ from penny.tests.eval.utils.artifacts import (
     FailureCause,
     MissingLeverError,
     RunManifest,
+    ShareRecord,
     build_case_artifact,
     build_manifest,
     classify_cause,
@@ -557,6 +559,7 @@ def test_two_runs_produce_mechanically_diffable_jsonl(tmp_path: Path) -> None:
             family="fam",
             results=results_a,
             timings=_TIMINGS,
+            shares=[ShareRecord(name="a share", open_above=0.25, values=[0.0, None])],
         )
     )
     run_b.append_case(
@@ -566,6 +569,7 @@ def test_two_runs_produce_mechanically_diffable_jsonl(tmp_path: Path) -> None:
             family="fam",
             results=results_b,
             timings=_TIMINGS,
+            shares=[ShareRecord(name="a share", open_above=0.25, values=[0.5, None])],
         )
     )
 
@@ -583,6 +587,17 @@ def test_two_runs_produce_mechanically_diffable_jsonl(tmp_path: Path) -> None:
     assert record_a["all_pass_rate"] == 0.5 and record_b["all_pass_rate"] == 0.0
     assert _passed(record_a, "c1") == 2 and _passed(record_b, "c1") == 1
     assert _passed(record_a, "c2") == 1 and _passed(record_b, "c2") == 0
+
+    # A measured share rides beside the scores as its per-sample readings — aligned with
+    # ``sample_scores``, ``null`` for a sample with nothing to read — so the two runs lay side
+    # by side by sample.  It moved, and neither run's mean did because of it.
+    assert record_a["shares"] == [
+        {"name": "a share", "open_above": 0.25, "values": [0.0, None], "blind": False}
+    ]
+    assert record_b["shares"][0]["values"] == [0.5, None]
+    # A record written before the field existed decodes as a case that measured none.
+    older = {key: value for key, value in record_b.items() if key != "shares"}
+    assert CaseArtifact.model_validate(older).shares == []
 
     # Each run's own manifest is the input-side of that diff (distinct run ids join back).
     assert record_a["run_id"] != record_b["run_id"]

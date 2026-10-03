@@ -33,6 +33,7 @@ from penny.tests.eval.utils.cohort import (
     Feature,
     MechanismRecord,
     SampleObservation,
+    Share,
     SpecCategory,
     StoredEntry,
     distinct_worlds,
@@ -102,6 +103,9 @@ class Cohort:
         # live here, listed once, rather than reprinted under every sample.
         self.arms = list(arms)
         self.features: list[Feature] = []
+        # The measured SHARES, kept apart from the features: a share has no entropy, so
+        # nothing that reads ``features`` for a spread, a ceiling or a standing can read one.
+        self.shares: list[Share] = []
         # A claim is DECLARED here and answered at report time, over every sample the case
         # drove.  Declaring rather than answering immediately is what keeps the case body
         # readable as `<priors> / <trigger> / <assertions>`: the claims are written where
@@ -431,9 +435,16 @@ class Cohort:
         )
 
     # ── what is measured ─────────────────────────────────────────────────────
-    def measure(self, *features: Feature) -> None:
-        """Declare the axes this case MEASURES — never asserted, one-sided ceiling."""
-        self.features += [feature for feature in features if feature not in self.features]
+    def measure(self, *axes: Feature | Share) -> None:
+        """Declare the axes this case MEASURES — never asserted.
+
+        A :class:`Feature` is pooled for its spread under a one-sided ceiling; a
+        :class:`Share` is reported as a distribution and carries no ceiling at all."""
+        for axis in axes:
+            if isinstance(axis, Share):
+                self.shares += [] if axis in self.shares else [axis]
+            else:
+                self.features += [] if axis in self.features else [axis]
 
     # ── a claim only this case makes ─────────────────────────────────────────
     def claim(

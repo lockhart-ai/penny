@@ -343,6 +343,23 @@ class VarianceReading(BaseModel):
     distinct: int = 1
 
 
+class ShareRecord(BaseModel):
+    """One measured SHARE as the record keeps it: the readings themselves, one per sample.
+
+    Beside ``VarianceReading`` and never one of them: every reader of ``variance`` rolls an
+    entropy up into a headline, and a share has none.  ``values`` is aligned with
+    ``sample_scores`` — ``None`` for a sample that had nothing to take the fraction of, and
+    for one the pool excluded — so two runs' readings can be laid side by side by sample.  The
+    median and the range are the document's to render and are derived from these, so they are
+    not stored a second time."""
+
+    name: str
+    open_above: float
+    values: list[float | None]
+    # Every pooled sample read nothing: not a distribution at all, and never a zero.
+    blind: bool = False
+
+
 class CaseArtifact(BaseModel):
     """One case's line in ``results.jsonl`` — the mechanically-diffable record."""
 
@@ -375,6 +392,9 @@ class CaseArtifact(BaseModel):
     # a record written before this field decodes as a run with no variance to report rather than
     # failing to load at all.
     variance: list[VarianceReading] = Field(default_factory=list)
+    # The SHARES the case measured — reported, never gated.  Defaulted, so a record written
+    # before this field decodes as a case that measured none.
+    shares: list[ShareRecord] = Field(default_factory=list)
 
 
 class RunManifest(BaseModel):
@@ -483,6 +503,7 @@ def build_case_artifact(
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
     variance: Sequence[VarianceReading] = (),
+    shares: Sequence[ShareRecord] = (),
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -508,6 +529,7 @@ def build_case_artifact(
         expand_samples=list(expand_samples),
         standing_counts=dict(standing_counts or {}),
         variance=list(variance),
+        shares=list(shares),
     )
 
 
@@ -736,6 +758,7 @@ def record_case(
     expand_samples: Sequence[int] = (),
     standing_counts: Mapping[str, int] | None = None,
     variance: Sequence[VarianceReading] = (),
+    shares: Sequence[ShareRecord] = (),
 ) -> None:
     """Append the case's ``results.jsonl`` record. No-op off-report."""
     run = active_run()
@@ -750,5 +773,6 @@ def record_case(
         expand_samples=expand_samples,
         standing_counts=standing_counts,
         variance=variance,
+        shares=shares,
     )
     run.append_case(artifact)
