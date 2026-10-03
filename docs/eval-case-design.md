@@ -152,7 +152,7 @@ is its behaviour sentence, which names the state she stays in rather than the ac
 from.
 
 The near boundary: *nothing the ask excluded was stored* **is** an assertion, because an excluded
-token appears only on a line the ask rules out in as many words (§11). The ask named it, so a
+token appears only on a line the ask rules out in as many words (§12). The ask named it, so a
 stored exclusion is a wrong fact rather than a matter of taste.
 
 ### It differs by shape
@@ -703,7 +703,25 @@ Two other scope rules that come from the same place:
 
 ---
 
-## 11 · Where this lives in code
+## 11 · How a case is reviewed
+
+**A case is reviewed for whether the test is well formed, not for whether the models pass it.** A
+well-formed case that fails because Penny falls short is a good test (`docs/principles.md` §4, rule 8),
+and it lands as written. The review asks five things:
+
+- **A real use case.** The behaviour is one a user actually brings to Penny.
+- **A world the model can reasonably answer.** What the sample is given — the seeded state, the
+  pages, the wording — makes the right answer reachable to a model reasoning from it.
+- **Claims only over facts.** Where the machine landed, what the store holds, values that trace to
+  the world, and tokens that must be absent (§2).
+- **Everything else measured as variance.** Tool calls, routes, names and reply wording (§5).
+- **`docs/principles.md` followed.**
+
+The numbers on the PR inform the review; they are not its verdict.
+
+---
+
+## 12 · Where this lives in code
 
 | file | holds |
 |---|---|

@@ -151,8 +151,10 @@ A pytest suite under `penny/penny/tests/eval/`:
   to end against the real model.
 - **Score:** inspect `penny.db` (created/updated collections, written entries)
   and captured channel messages — the persisted effect *is* the contract.
-- **Threshold contracts, not exact-match.** The model is stochastic, so each
-  case samples N runs and asserts `pass_rate >= k`. This is the one property
+- **Measured cohorts, not exact-match.** The model is stochastic, so each case
+  runs a cohort (five wordings × three samples), counts how many samples each
+  fact-claim holds for, and measures everything the model emits as variance —
+  with no pass floor (`docs/eval-case-design.md`). This is the one property
   that makes eval a different animal from the rest of `tests/`.
 
 ### Gating
@@ -170,9 +172,10 @@ we expect — invoked locally on demand, never in CI, never against prod data.
 ### The canonical use-case matrix
 
 Beyond the self-improvement cases, the eval suite is the **canonical coverage of
-Penny's core use cases** — and, because it gates on real-model behaviour, the
+Penny's core use cases** — and, because it measures real-model behaviour, the
 **yardstick for swapping models** (e.g. off `gpt-oss:20b`). Run the suite against
-a candidate model and read the pass-rates and `PERF` lines side by side.
+a candidate model and read the claim counts, the variance and the `PERF` lines
+side by side.
 
 Everything Penny does reduces to **two agent shapes**, each branching on whether
 it needs the world or just its own memory — what we're really measuring is
@@ -204,12 +207,14 @@ substring (`install_browse` in `conftest.py`), so a case returns a realistic pag
 a different page — letting cases score the *subsequent* call (the write, the
 send, the second browse) and even multi-hop chains.
 
-**Score behaviour, not content.** Because browse content is canned and the model
-is stochastic, scorers assert on behaviour (tool called, entry written, message
-queued, fact surfaced, nothing spurious created), never on exact wording. Cases
-whose chain is long/stochastic (multi-hop browse, inner-monologue) are
-`min_pass_rate=None` (report-only) — the X/Y rate prints for inspection without
-gating, same convention as the quality cases.
+**Assert facts, measure behaviour.** Because browse content is canned and the
+model is stochastic, a case claims only facts about the end state — where the
+machine landed, what the store holds, values that trace to the page, tokens
+that must be absent — and claims what survived, never that the model refrained.
+Which tools were called, how often, and how the reply is worded are variance,
+never claims. Every case is `min_pass_rate=None` (report-only): the counts print
+for a person to read, and nothing on the claim side gates a run
+(`docs/eval-case-design.md`).
 
 **Performance metrics (model-swap picture).** Each case prints a `PERF` line:
 calls, full request wall, in/out tokens, the **reasoning split** (`completion_tokens`

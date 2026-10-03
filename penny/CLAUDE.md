@@ -1271,10 +1271,9 @@ from any worktree.
 
 **Posting a run: `make eval-report` one-shot + the unreviewed-run banner (#1757).** Posting a run's
 report is a **one-shot**, and the debt of *not* posting is made **structural** (structural-state-over-
-model-judgment, applied to the eval loop). The joint-checkpoint rule (run → post the report to the PR →
-STOP for joint review before the next run) was prose-only — posting was a manual step separate from
-running, so skipping it left no visible debt and nothing interrupted the next run (a real violation ran
-4+ sequential report-runs without posting any). Two mechanisms:
+model-judgment, applied to the eval loop). Every run's report belongs on its PR, and posting is a step
+separate from running, so skipping it would leave no visible debt and nothing would interrupt the next
+run (one session ran 4+ sequential report-runs without posting any). Two mechanisms:
 `make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]` assembles the named run — default: **the run
 THIS TREE measured** (see the next paragraph) in the durable home — captures the
 containerized `python -m penny.tests.eval.utils.assemble` stdout **cleanly** (never `make assemble` piped
