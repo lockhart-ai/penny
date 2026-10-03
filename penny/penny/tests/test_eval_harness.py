@@ -863,9 +863,11 @@ def _job_ending(
         name="a-job",
         archived=False,
         born_this_run=True,
-        changed_this_run=True,
+        touched_this_run=["created"],
+        moved_this_run=["created"],
         notifies=True,
         schedule=schedule,
+        program=None,
         expires=expires_at is not None,
         expires_at=expires_at,
         max_runs=max_runs,
@@ -2178,9 +2180,10 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
         (seeded_by, seeded_by)
     }, "the entry write cites the same seeded run the creation does"
 
+    db.memories.create_collection("a-minted-job", "One the turn made.", created_by_run_id="live-1")
     db.memories.create_collection(
-        "a-minted-job",
-        "One the turn made.",
+        "a-job-with-terms",
+        "One the turn stood up on its terms.",
         created_by_run_id="live-1",
         schedule="FREQ=HOURLY",
         notify=True,
@@ -2189,12 +2192,13 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     db.memories.archive(_SEEDED_ROUTES.name, actor=MutationActor.SYSTEM, run_id="live-1")
     records = {record.name: record for record in _mechanism_records(db, before)}
 
-    minted = records["a-minted-job"]
-    assert minted.born_this_run and minted.changed_this_run
-    assert minted.notifies and minted.expires
-    assert minted.expires_at == datetime(2030, 1, 1), "the stored end travels as stored"
-    assert minted.max_runs is None and minted.created_at is not None
-    assert minted.schedule == "FREQ=HOURLY", "the rule travels verbatim — the case reads its gap"
+    assert records["a-minted-job"].born_this_run and records["a-minted-job"].changed_this_run
+    termed = records["a-job-with-terms"]
+    assert termed.born_this_run and termed.changed_this_run
+    assert termed.notifies and termed.expires
+    assert termed.expires_at == datetime(2030, 1, 1), "the stored end travels as stored"
+    assert termed.max_runs is None and termed.created_at is not None
+    assert termed.schedule == "FREQ=HOURLY", "the rule travels verbatim — the case reads its gap"
     retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run
