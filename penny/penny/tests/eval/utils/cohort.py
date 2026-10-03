@@ -213,6 +213,11 @@ class MechanismRecord(BaseModel):
     reads: the two columns an end is stored in, and the creation moment a rule with no start
     of its own is anchored at.  They travel as stored, so the reading — on the user's clock —
     is ``job_end``'s.
+
+    ``bound_values`` is what the job's routine is POINTED AT — each declared parameter's bound
+    value, off the row's own provenance column, empty for a row no routine was applied to.  A
+    rebind writes it beside the program it re-renders, and the ledger keeps no prior for it, so
+    a claim about which page a job checks, or about a value a rebind left alone, reads it here.
     """
 
     name: str
@@ -227,6 +232,7 @@ class MechanismRecord(BaseModel):
     expires_at: datetime | None = None
     max_runs: int | None = None
     created_at: datetime | None = None
+    bound_values: dict[str, str] = Field(default_factory=dict)
 
     @property
     def changed_this_run(self) -> bool:

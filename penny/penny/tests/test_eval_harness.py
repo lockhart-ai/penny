@@ -144,7 +144,11 @@ from penny.tests.eval.chat.idle.test_image_dispatch import (
     drew,
     install_image_client,
 )
-from penny.tests.eval.chat.idle.test_notifications import assert_mute_world
+from penny.tests.eval.chat.idle.test_notifications import (
+    assert_mute_world,
+    assert_unmute_world,
+    seed_muted,
+)
 from penny.tests.eval.chat.idle.test_notifications import (
     assert_no_fire_world as assert_mute_no_fire_world,
 )
@@ -1336,7 +1340,7 @@ def test_every_standing_operation_is_answered_against_the_job_it_claims(tmp_path
     for index, case in enumerate(OPERATION_CASES):
         _assert_one_ask_in_five_wordings(case.case_id, case.ask, case.also_phrased)
         db = migrated_db(str(tmp_path / f"standing-{index}.db"))
-        seed_standing_jobs(case.job)(db)
+        seed_standing_jobs(*case.jobs)(db)
         assert_the_operation_world(db, case)
 
 
@@ -1712,6 +1716,10 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
         assert_choose_world(penny)
         assert_mute_world(penny)
         assert_mute_no_fire_world(penny)
+        # The unmute case's world is the same one with the switch thrown, so it is probed
+        # last: its seed is the one thing here that changes what the others stand on.
+        seed_muted(penny.db)
+        assert_unmute_world(penny)
 
 
 async def test_the_drawn_image_claim_reads_what_the_real_tool_stored(
@@ -2389,7 +2397,8 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     The TERMS half is the opposite direction and fails the opposite way: an inert container
     reading as a job on a schedule would pass "it fires on the cadence they asked for" on a
     turn that stood nothing up, so the row that carries terms and the row that carries none are
-    both driven here."""
+    both driven here.  The values a routine is BOUND to travel the same way, since a claim
+    about which page a job checks reads them off the row."""
     db = _make_db(tmp_path)
     seeded_by = seeded_run_id(_SEEDED_ROUTES.name)
     seed_world_stores(db, _STORE_BACKED_WORLD)
@@ -2422,6 +2431,8 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
         schedule="FREQ=HOURLY",
         notify=True,
         expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+        skill_name="a-routine",
+        skill_params={"page": "kelp.example.com/prices"},
     )
     db.memories.archive(_SEEDED_ROUTES.name, actor=MutationActor.SYSTEM, run_id="live-1")
     records = {record.name: record for record in _mechanism_records(db, before)}
@@ -2433,6 +2444,10 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     assert termed.expires_at == datetime(2030, 1, 1), "the stored end travels as stored"
     assert termed.max_runs is None and termed.created_at is not None
     assert termed.schedule == "FREQ=HOURLY", "the rule travels verbatim — the case reads its gap"
+    assert termed.bound_values == {"page": "kelp.example.com/prices"}, (
+        "what the routine is pointed at travels off the row — the ledger keeps no prior for it"
+    )
+    assert records["a-minted-job"].bound_values == {}, "a row no routine was applied to binds none"
     retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run

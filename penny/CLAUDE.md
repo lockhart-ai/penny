@@ -822,22 +822,34 @@ condition is now SEEDED rather than driven as a first turn, because a case is on
 condition and ONE model run. It replaced `test_chat_response.py` + `test_narration_survival.py`,
 whose `likes`-collection seed migration 0097 had left crashing at seed time and whose chitchat
 case the canonical `transition-idle-to-idle` already covers on a stronger world),
-`test_standing_collection.py` (a job that is already running, PORTED to the cohort
-structure (#2008, tranche 3): FOUR cases on one seeded world — `standing-notify-off` (the job's
-own switch off), `standing-archive` (retired as a tombstone that still holds what it gathered),
+`test_standing_collection.py` (a job that is already running, on the cohort structure
+(#2008, tranche 3; #2215): EIGHT cases on one seeded world — `standing-notify-off` (the job's
+own switch off), `standing-notify-on` (the same job seeded quiet, its switch back on),
+`standing-archive` (retired as a tombstone that still holds what it gathered),
 `standing-schedule-fix-prior` (re-timed, and every clock time the reply names is one the job
-has had — any third hour is invented, since the ask supplies one and the seed the other, #1946)
-and `standing-describe-routine` (read back: the reply names the page the routine fetches, a
-token only the job's record carries, and every value it states traces to that record). Each claims the job's own ROW as the turn left it — the
+has had — any third hour is invented, since the ask supplies one and the seed the other, #1946),
+`standing-end-changed` (given an end: the job stops when the ask said, read on the sample's
+pinned clock through `utils/job_end.py`, and every time it fires until then is a time it was
+already due),
+`standing-page-changed` (pointed at another page: the row's bound page and the program it runs
+both name the new page, every other bound value is as it was, and no other job watches that
+page), `standing-describe-routine` (read back: the reply names the page the routine fetches, a
+token only the job's record carries, and every value it states traces to that record) and
+`standing-list-running` (three jobs running: the reply carries one token per job that only
+that job's record holds, with every job and everything each gathered as it was). Each claims
+the job's own ROW as the turn left it — the
 field the ask named moved, and PRESERVATION of everything else, read as the row's END STATE
 through the ledger (`MechanismRecord.moved_this_run`: each field whose value now differs from
 the prior the mutation ledger recorded for it, so a field a call merely restated has not moved)
 — plus what the job gathered still being there and notifications still on for everything else.
+The ledger keeps no prior for the values a routine is bound to, so the re-pointing case reads
+them off the row (`MechanismRecord.bound_values`).
 No case claims what the turn did NOT do (`docs/principles.md` §4.3); which verb she used is a
 route, measured in the tool sequence. Every case lands in `idle` — changing how a running job
 behaves is idle by the machine's own boundary (#1927). The re-timing case reads the hour the
-stored RULE fires at through production's own `next_occurrence`. `standing-notify-on` is
-not a case: the same sentence in the other entry condition. Broadening a job's scope is NOT
+stored RULE fires at through production's own `next_occurrence`. The two directions of the
+notification switch are two cases, each on a job seeded with the switch the other way.
+Broadening a job's scope is NOT
 here — that is a re-teach of the routine (code-owner ruling). Its seeded world is a taught
 routine stood up through the production instantiation seam, which `test_speakable_log_reads.py`
 reuses for the jobs its collector-runs case reads about),
@@ -878,13 +890,16 @@ claim.
 The page each case is given is what the content script returns for it, so the two halves
 of #1942 meet in the fixtures; a coherence probe in `make check` holds every anchor against
 its own page, exactly once),
-`test_notifications.py` (the muting contract that retired `/mute` + `/unmute`, PORTED to the
-cohort structure (#2008, tranche 3): `explicit-mute-request-mutes` (the user asks
-for notifications to be muted, against the production cold start — the user is muted afterwards) and
+`test_notifications.py` (the muting contract that retired `/mute` + `/unmute`, on the
+cohort structure (#2008, tranche 3; #2215): `explicit-mute-request-mutes` (the user asks
+for notifications to be muted, against the production cold start — the user is muted afterwards),
+`explicit-unmute-request-unmutes` (the same ask in the other direction, on a world SEEDED muted —
+the user is not muted afterwards) and
 `notifications-no-fire` (a remark that names notifications and asks nothing — the turn stays in
 idle with notifications still on, PRESERVATION of the one prior state that world holds). That
-the header carries the switch (#1919) is a prepare-time PREMISE rather than a claim.
-`explicit-unmute-request-unmutes` is not a case: its end state is true of an unseeded world),
+the header carries the switch (#1919) is a prepare-time PREMISE rather than a claim, and the
+unmute case's premise also holds its seed: not being muted is true of a world nobody muted, so
+its probe asserts the mute row and the header's muted line before the turn runs),
 `test_choose_dispatch.py` (the fair pick, PORTED (#2008, tranche 3): ONE case,
 `choose-dispatch-fires` — the option the reply reports is the one the run's own record chose,
 read off the tool's shipped result template. A question about which option she prefers is not
