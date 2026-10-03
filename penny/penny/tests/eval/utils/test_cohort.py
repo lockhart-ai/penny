@@ -446,7 +446,9 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     What decides layout is POSITION, never the word (#2190).  The head of a line is read
     through a list bullet and a list number as well, a label may carry an aside in brackets,
     and a short phrase alone on its line is a title when emphasis marks it as one or when it
-    heads the bullets under it.  A list item's own number counts the items and states nothing.
+    heads the bullets under it.  A title names the item under it, so it may run longer than a
+    label — six words to a label's four — and a headline set apart the same way is still read.
+    A list item's own number counts the items and states nothing.
     MEASURED on two models describing one routine: `Scout`, `Mission`, `Logbook`, `Contender`,
     `Typical`, `5`, each a title the reply gave its own list.
 
@@ -509,6 +511,20 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     )
     assert specifics(steps) == []
     assert unsourced_specifics(steps, "a typewriter watch") == []
+    # A title names the item under it — its own name and what it is — so it may run longer than
+    # a field's label (#2219).  MEASURED: the five-word list title below was read as the
+    # invented name `Tracker`, and the same title with a U+2011 hyphen broke in two.
+    titled = (
+        "**Mistforge Tactics Patch Notes Tracker**\n"
+        "### Verdant Hollow Trail Conditions Tracker\n"
+        "1. Verdant Hollow Trail Conditions Tracker\n"
+        "- What it watches: the trail page\n"
+        "2. Verdant Hollow Trail\u2011Conditions Tracker  \n"
+        "- What it watches: the trail page\n"
+    )
+    assert specifics(titled) == []
+    trails = "the patch notes for Mistforge Tactics, and the Verdant Hollow trail conditions"
+    assert unsourced_specifics(titled, trails) == []
     # …and the guard.  A number that opens a line without being a list number is a value; a
     # title's words in a sentence are values; so is a bare list of names, a name after a
     # label, a name with a dash after it, and a list item too long to be a title.
@@ -533,6 +549,10 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
         "- Signed: Casimir Oyelaran\n- Signed: Aurelio Brandt",
         "- Casimir Oyelaran – signed today\n- Aurelio Brandt – signed today",
         "1. Foxes Sign Casimir Oyelaran To A Deal\n- and Aurelio Brandt",
+        "**Foxes Sign Casimir Oyelaran To A Deal**\n- and Aurelio Brandt",
+        "### Foxes Sign Casimir Oyelaran To A Deal\nand Aurelio Brandt",
+        "### Casimir Oyelaran\u2014Signed\nand Aurelio Brandt",
+        "**Casimir Oyelaran\u2013Signed**\nand Aurelio Brandt",
         "the pick was **Casimir Oyelaran** and then Aurelio Brandt",
     ):
         assert unsourced_specifics(listed, news) == ["Casimir", "Oyelaran"], listed
@@ -541,8 +561,8 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
 def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
     """Stated rather than discovered later: a name or short clause heading a line before a
     colon is a field label by definition, so a name written in that position is not read,
-    invented or not — decorated or not, and as a heading of label size.  The same name anywhere
-    after the colon still is."""
+    invented or not — decorated or not, and as a heading of label size or a title of title size.
+    The same name anywhere after the colon still is."""
     given = "Aurelio Brandt signed today."
     assert unsourced_specifics("Casimir Oyelaran: signed today", given) == []
     assert unsourced_specifics("**Casimir Oyelaran:** signed today", given) == []
@@ -550,6 +570,7 @@ def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
     assert unsourced_specifics("- Casimir Oyelaran: signed today", given) == []
     assert unsourced_specifics("**Casimir Oyelaran**\nsigned today", given) == []
     assert unsourced_specifics("Casimir Oyelaran\n- signed today", given) == []
+    assert unsourced_specifics("**The Casimir Oyelaran Signing Tracker**\nsigned", given) == []
 
 
 _GAME_PAGE = (
@@ -745,6 +766,22 @@ def test_a_url_written_with_a_non_breaking_hyphen_is_the_url_it_was_given():
     drawn = "https://faux\u2011market.example/aurora\u2011deck\u20112"
     assert specifics(f"saved the price from {drawn}") == [drawn]
     assert unsourced_specifics(f"saved the price from {drawn}", _GIVEN) == []
+
+
+def test_a_token_in_an_entry_is_read_however_its_word_was_hyphenated():
+    """The store's token claims fold the way the reply's does (#2219): a kept token stands in
+    an entry that hyphenated its word, and so does an excluded one — the stricter direction,
+    since an excluded fact written with a hyphen is still the excluded fact."""
+    world = World(name="base", pages=(), keeps=(("silverleaf",),), excludes=("frostfern",))
+    entry = StoredEntry(collection="moss", key="pick", content="silver\u2011leaf, not frost-fern")
+    sample = SampleObservation(name="s0", phrasing="the ask", arm=0, entries=[entry])
+    cohort = Cohort("case", _MODEL, [sample], _one_arm(world))
+    cohort.assert_something_from_each_page_was_written()
+    cohort.assert_nothing_excluded_was_stored()
+    assert [(claim.passed, claim.rationales) for claim in cohort.claims] == [
+        (1, []),
+        (0, ["stored the excluded ['frostfern']"]),
+    ]
 
 
 def test_a_url_runs_only_as_far_as_the_address_does():
@@ -989,6 +1026,35 @@ def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
         answering = Cohort("case", _MODEL, [_reply_sample(answered)], _one_arm(world))
         answering.assert_the_reply_answers_the_ask()
         assert (answering.claims[0].passed, answering.claims[0].total) == (1, 1), answered
+
+    # A word is one token however it was hyphenated (#2219).  MEASURED: "silver\u2011leaf moss",
+    # drawn with U+2011, failed a reply that stated the answer `silverleaf`.  Both sides fold, so
+    # a world that names the word hyphenated is answered by it run together; a zero-width space
+    # is read both ways, as nothing and as a gap; and every match the plain fold made still
+    # holds.  The guard: a different word is not the answer, nor is one a dash that punctuates
+    # (en, em) sets apart, nor figures a hyphen keeps apart — and an address is not a word, so
+    # nothing is found in one, and nothing is matched as one, by taking its hyphens out.
+    for token, said, answers in (
+        ("silverleaf", "use silver\u2011leaf moss", True),
+        ("silverleaf", "use silver-leaf moss", True),
+        ("silverleaf", "use silver\u00adleaf moss", True),
+        ("silverleaf", "use **Silver\u200bLeaf** moss", True),
+        ("silver-leaf", "use silverleaf moss", True),
+        ("silver leaf", "use silver\u200bleaf moss", True),
+        ("aurora-deck", "it is at https://faux-market.example/aurora-deck-2 today", True),
+        ("https://harbor-seals.example", "read https://harbor\u2011seals.example", True),
+        ("silverleaf", "use silver leaf moss", False),
+        ("silverleaf", "use silverleaves", False),
+        ("silverleaf", "use silver\u2013leaf moss", False),
+        ("silverleaf", "use silver\u2014leaf moss", False),
+        ("1012", "open 10-12 daily", False),
+        ("harborseals", "read https://harbor-seals.example/moss", False),
+        ("https://harbor-seals.example", "read https://harborseals.example", False),
+    ):
+        hyphened = World(name="base", pages=(), keeps=(), excludes=(), answers=(token,))
+        reading = Cohort("case", _MODEL, [_reply_sample(said)], _one_arm(hyphened))
+        reading.assert_the_reply_answers_the_ask()
+        assert reading.claims[0].passed == int(answers), (token, said)
 
 
 def test_a_world_naming_no_answer_makes_no_completeness_claim():

@@ -1307,6 +1307,12 @@ _NUMBER = r"\d[\d,.:%$]*"
 # URL grammar because that is where one was measured: a sample cited the page it read with
 # U+2011 hyphens throughout the address.
 _DASHES = "‐‑‒–—−"
+# The ones among them that are HYPHENS — a mark inside a word, joining its parts — as against
+# the dashes that punctuate a sentence.  With the hyphen key they are the marks a word is ONE
+# word across, wherever words are read: a label's or a title's words, and a token matched in a
+# reply or an entry.  An en dash, an em dash and a minus sign end the word in both.
+_DRAWN_HYPHENS = "\u2010\u2011"
+_HYPHENS = f"-{_DRAWN_HYPHENS}"
 # A URL is bounded by the characters a URI may CONTAIN, not by "everything up to a space".
 # `\S*` ran the address into whatever the prose put beside it — first the full stop closing the
 # sentence (`…/aurora-deck-2.`, which matches no world), then the delimiter a reply wrapped it
@@ -1362,27 +1368,49 @@ _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 #
 #   a short phrase before a colon      `1.  The Scout Mission: I head over…`
 #   …with an aside in brackets         `Cedar (The Top Contender): a classic choice…`
-#   a line that is ONLY a short phrase and is marked as a title, by heading marks or by
-#   emphasis                           `**Scout**`  ·  `### Team News Update`
-#   a line that is only a short phrase and HEADS A LIST, the next line being a bullet under it
-#                                      `1. Mistforge Patch Notes Tracker` / `- What it watches: …`
+#   a TITLE: a line that is ONLY a short phrase and is marked as a title, by heading marks or
+#   by emphasis                        `**Scout**`  ·  `### Team News Update`
+#   a TITLE: a line that is only a short phrase and HEADS A LIST, the next line being a bullet
+#   under it                           `1. Mistforge Patch Notes Tracker` / `- What it watches: …`
 #
 # and a list item's own NUMBER is layout too: `5.` at the head of a line counts the items, and
 # MEASURED, was reported as `unsourced: ['5']` on a five-step answer over a four-step world.
 # MEASURED on two models' replies describing one routine: `Scout`, `Mission`, `Logbook`,
 # `Contender`, `Typical` and a dozen more, every one a title the reply gave its own list.
 #
+# A label and a title are bounded differently because they are different things (#2219).  A
+# label INTRODUCES a value on its own line, so it is the few words a field is called by — a
+# capitalised word and at most three more.  A title has its line to itself and NAMES the item
+# under it: the item's own name, and the word for what kind of thing it is.  That runs longer
+# than a field's name — MEASURED, `Verdant Hollow Trail Conditions Tracker`, a job's name and
+# what it is, was read as the invented name `Tracker` — and a title is still a name, never a
+# sentence: a headline set apart on its line (`Foxes Sign Casimir Oyelaran To A Deal`, or a
+# page's own ten-word headline, MEASURED) says what happened, and its names are values.  So a
+# title is a capitalised word and at most five more: room for every title-cased title the saved
+# replies gave a list or a section (five words at most, MEASURED across them), and short of the
+# shortest headline pinned below (seven).
+#
+# A word in either is a word however it was hyphenated, the drawn hyphens included: MEASURED,
+# `Verdant Hollow Trail\u2011Conditions Tracker`, with U+2011 for the hyphen, broke the title
+# in two.  A dash that punctuates (en, em) is not a hyphen and still ends the word, so
+# `### Casimir Oyelaran\u2014Signed` is not four title words.
+#
 # THE BLIND SPOT, STATED: a name or a short clause in any of those positions
 # (`Casimir Oyelaran: signed`, `- Casimir Oyelaran: signed`, `### Casimir Oyelaran`,
 # `**Casimir Oyelaran**` alone on its line) is a label by this definition, so an invented name
 # there is not read.  The same name after the colon, in a sentence, in a list item that is not
 # a label, or in a heading longer than a title, still is.
-_LABEL_WORD = r"[A-Za-z][A-Za-z'-]*"
+_LABEL_WORD = rf"[A-Za-z][A-Za-z'{re.escape(_HYPHENS)}]*"
+_LABEL_HEAD = rf"[A-Z][A-Za-z'{re.escape(_HYPHENS)}]*"
 # Label words stand side by side, or either side of the marks that pair them: `Pros/Cons`.
 _LABEL_GAP = r"(?:[ \t]*[/&][ \t]*|[ \t]+)"
-_LABEL_WORDS_MORE = rf"(?:{_LABEL_GAP}{_LABEL_WORD}){{0,3}}"
+_LABEL_MORE_WORDS = 3
+_TITLE_MORE_WORDS = 5
+_LABEL_WORDS_MORE = rf"(?:{_LABEL_GAP}{_LABEL_WORD}){{0,{_LABEL_MORE_WORDS}}}"
+_TITLE_WORDS_MORE = rf"(?:{_LABEL_GAP}{_LABEL_WORD}){{0,{_TITLE_MORE_WORDS}}}"
 _LABEL_ASIDE = rf"(?:[ \t]*\({_LABEL_WORD}{_LABEL_WORDS_MORE}\))?"
-_LABEL = rf"{_CAPITALISED}{_LABEL_WORDS_MORE}{_LABEL_ASIDE}"
+_LABEL = rf"{_LABEL_HEAD}{_LABEL_WORDS_MORE}{_LABEL_ASIDE}"
+_TITLE = rf"{_LABEL_HEAD}{_TITLE_WORDS_MORE}{_LABEL_ASIDE}"
 _EMPHASIS = r"[*_]*"
 _EMPHASISED = r"[*_]+"
 _HEADING_MARKS = r"#{1,6}[ \t]+"
@@ -1395,9 +1423,9 @@ _LINE_END = r"[ \t]*$"
 _A_BULLET_UNDER_IT = rf"(?=\n(?:[ \t]*\n)*[ \t]*{_LIST_BULLET}[ \t])"
 _FIELD_LABEL = re.compile(
     rf"{_LINE_HEAD}{_EMPHASIS}{_NUMBERED}{_LABEL}{_EMPHASIS}(?=:)"
-    rf"|^[ \t]*{_HEADING_MARKS}{_EMPHASIS}{_NUMBERED}{_LABEL}{_EMPHASIS}{_LINE_END}"
-    rf"|{_LINE_HEAD}{_EMPHASISED}{_NUMBERED}{_LABEL}{_EMPHASISED}{_LINE_END}"
-    rf"|^[ \t]*{_NUMBERED}{_LABEL}{_LINE_END}{_A_BULLET_UNDER_IT}"
+    rf"|^[ \t]*{_HEADING_MARKS}{_EMPHASIS}{_NUMBERED}{_TITLE}{_EMPHASIS}{_LINE_END}"
+    rf"|{_LINE_HEAD}{_EMPHASISED}{_NUMBERED}{_TITLE}{_EMPHASISED}{_LINE_END}"
+    rf"|^[ \t]*{_NUMBERED}{_TITLE}{_LINE_END}{_A_BULLET_UNDER_IT}"
     rf"|^[ \t]*{_EMPHASIS}{_LIST_NUMBER}(?=[ \t])",
     re.MULTILINE,
 )
@@ -1434,6 +1462,57 @@ def fold_typography(text: str) -> str:
     for mark in _DROPPED:
         text = text.replace(mark, "")
     return text.casefold()
+
+
+# A word written whole, with a hyphen, with the hyphen the model drew instead of one, or with an
+# invisible break inside it is ONE word: `silverleaf`, `silver-leaf`, `silver\u2011leaf` and
+# `silver\u00adleaf` (a soft hyphen) are the same token.  MEASURED: a reply recommending
+# "silver\u2011leaf moss" failed the claim that it states the answer, `silverleaf`, which it did.
+#
+# The marks are the hyphens (`_HYPHENS`, the same set a label's words are read across) and the
+# invisible ones that sit inside a word: soft hyphen, zero-width space, non-joiner, joiner,
+# word joiner, byte-order mark.  Only a join BETWEEN TWO LETTERS is taken out.  An en or em
+# dash is punctuation rather than a hyphen, and a hyphen beside a figure carries meaning — a
+# range, a date, a code — so `10-12` is not `1012`.  A different word is still a different
+# word: `silverleaf` does not stand in `silver leaf` or `silverleaves`.
+#
+# An ADDRESS is not a word.  `harbor-seals.example` and `harborseals.example` are two sites, so
+# nothing inside an address is joined, on either side of the comparison — a token that is an
+# address is matched as that address, and a word is not found inside an address by taking the
+# address's hyphens out.  An address is what the provenance read calls one: `_URL`.
+_INVISIBLE_BREAKS = "\u00ad\u200b\u200c\u200d\u2060\ufeff"
+_JOIN_INSIDE_A_WORD = re.compile(
+    rf"(?<=[^\W\d_])[{re.escape(_HYPHENS + _INVISIBLE_BREAKS)}]+(?=[^\W\d_])"
+)
+
+
+def fold_for_token_match(text: str) -> str:
+    """``text`` with each word's own joins taken out, then folded through ``fold_typography``
+    — every word in the form it has however it was hyphenated.  Addresses are left as written.
+
+    The two folds read a ZERO-WIDTH SPACE differently, on purpose.  ``fold_typography`` makes
+    it a space, because the provenance read builds names out of words and two words glued by
+    one are two words.  Here, between two letters, it is taken out: it draws nothing, so the
+    word around it is the word the reader sees.  ``token_stands_in`` asks both."""
+    kept: list[str] = []
+    cursor = 0
+    for address in _URL_PATTERN.finditer(text):
+        kept += [_JOIN_INSIDE_A_WORD.sub("", text[cursor : address.start()]), address.group()]
+        cursor = address.end()
+    kept.append(_JOIN_INSIDE_A_WORD.sub("", text[cursor:]))
+    return fold_typography("".join(kept))
+
+
+def token_stands_in(token: str, text: str) -> bool:
+    """Whether a token the world names stands in ``text`` — a reply, or an entry.
+
+    THE ONE token match, for every claim that looks for a world's token.  The token stands
+    there as written (typography folded, the comparison this has always been), or as the same
+    word hyphenated another way.  Either reading is the token; neither makes a different word
+    one."""
+    return fold_typography(token) in fold_typography(text) or fold_for_token_match(
+        token
+    ) in fold_for_token_match(text)
 
 
 _POSSESSIVE = "'s"

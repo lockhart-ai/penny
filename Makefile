@@ -35,6 +35,17 @@ EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.check
 EVAL_PROFILE ?= local
 # FIFO ticket directory for serializing make eval on the single-tenant GPU.
 EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
+# One run at a time against one PINNED provider (scripts/eval-provider-lock.sh). A pin gets
+# that provider's capacity and no other, so two runs against the same pin draw HTTP 429s and
+# lose samples. The recipe takes a lock named for the provider it pinned — two DIFFERENT
+# providers never wait on each other — waits at most EVAL_PROVIDER_LOCK_WAIT seconds for a
+# live holder, clears a lock whose holder is gone, and releases it however the run ends.
+# The wait is an hour because the line can be several runs long: a fleet's agents queue on one
+# provider, a scoped run holds it for about ten minutes, and whichever waiter looks first when
+# it frees takes it — there is no order — so a waiter may sit behind four or five runs. Past
+# the hour it gives up, naming the lock and its holder, rather than wait on a run that hung.
+EVAL_PROVIDER_LOCK_DIR ?= /tmp/penny-eval-provider-locks
+EVAL_PROVIDER_LOCK_WAIT ?= 3600
 
 # --- Durable eval artifacts (#1734) ------------------------------------------
 # Eval artifacts (per-sample DBs, results.jsonl, manifests, transcripts) must
@@ -320,9 +331,9 @@ pytest: $(if $(LOCAL),,build)
 # GPU queue below, since it contends for no GPU. An empty key on a remote
 # endpoint fails the run up front rather than 401-ing every sample.
 # GPU queue: LOCAL RUNS ONLY, and it exists for exactly one reason — this machine has one
-# GPU. A remote run takes no ticket, waits for nothing, and is invisible to the probe, so
-# any number of them proceed at once; that is what lets several agents drive remote evals
-# concurrently without colliding with each other or with someone working locally.
+# GPU. A remote run takes no ticket and is invisible to the probe, which is what lets several
+# agents drive remote evals without colliding with someone working locally. (What remote runs
+# wait on is each other, per provider — the provider lock, below.)
 # For a local run it is strictly first-come-first-served via ticket files: each takes a
 # ticket in EVAL_QUEUE_DIR and runs only when its ticket is the oldest LIVE one (tickets
 # whose holder PID is gone are reaped, so a killed waiter can never wedge the line) and no
@@ -332,6 +343,12 @@ pytest: $(if $(LOCAL),,build)
 # The busy probe reads the endpoint out of the container's own command and matches only
 # LOCAL_ENDPOINT_HOSTS: it used to match any eval container, so a remote run held the line
 # against a local one while touching no GPU at all.
+# Provider lock: PINNED RUNS ONLY. A remote run is free of the GPU queue but not of its
+# provider: two runs pinned to the same one share that provider's rate limit, and the second
+# loses samples to 429s. So a run that pinned a provider holds that provider's lock (see
+# EVAL_PROVIDER_LOCK_DIR) from just before its samples start until the recipe exits — by any
+# route, which is what the EXIT trap is for — and a second run against the same provider waits
+# for it, saying who it is waiting on. Runs against different providers do not wait.
 # Durable reports (#1734): a report run (one that declares its EVAL_LEVER) with
 # no explicit EVAL_REPORT_DIR defaults to a run-stamped dir under the primary
 # checkout's mounted data/eval-artifacts, so artifacts survive the worktree that
@@ -417,6 +434,12 @@ eval: $(if $(LOCAL),,build)
 			echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
 			sleep $$((15 + $$$$ % 10)); \
 		done; \
+	fi; \
+	if [ -n "$$pinned" ]; then \
+		. "$(CURDIR)/scripts/eval-provider-lock.sh"; \
+		provider_lock_acquire "$(EVAL_PROVIDER_LOCK_DIR)" "$$pinned" "$(EVAL_PROVIDER_LOCK_WAIT)" || exit 1; \
+		trap 'provider_lock_release; [ -z "$$ticket" ] || rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT; \
+		trap 'exit 130' INT; trap 'exit 143' TERM; \
 	fi; \
 	stamp="$$(date -u +%Y%m%dT%H%M%SZ)"; \
 	commit="$$($(HEAD_COMMIT_CMD))"; \

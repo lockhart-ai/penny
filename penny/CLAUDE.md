@@ -689,11 +689,31 @@ local GPU, and median embed latency measured 91ms at 10 samples in flight, 161ms
 384ms at 80.
 
 **The GPU queue is local-only.** It exists because this machine has one GPU, so a remote
-run takes no ticket, waits for nothing, and is invisible to the queue's busy probe — any
-number proceed at once, which is what lets several agents drive remote evals concurrently
-without colliding with each other or with someone working locally. The probe reads the
+run takes no ticket and is invisible to the queue's busy probe, which is what lets several
+agents drive remote evals without colliding with someone working locally. The probe reads the
 endpoint out of each container's own command and matches only local hosts; it used to match
 any eval container, so a remote run held the line against a local one while touching no GPU.
+
+**A pinned provider is serialised instead (#2219).** A pin gets that one provider's rate limit
+and no other, so two runs pinned to the same provider at once draw HTTP 429s and lose samples.
+`make eval-remote` therefore takes a lock named for the provider it pinned
+(`scripts/eval-provider-lock.sh`: a directory in `EVAL_PROVIDER_LOCK_DIR`, default
+`/tmp/penny-eval-provider-locks`, holding one file named for the holding shell's pid) just
+before its samples start, and holds it until the recipe exits by any route (an EXIT trap). A
+second run against the same provider waits — printing
+`eval: provider <name> is busy — <lock> is held by pid <n>; waiting (<s>s of 3600s)` every 15
+seconds — for at most `EVAL_PROVIDER_LOCK_WAIT` seconds (default 3600, room for the several
+scoped runs a fleet queues), then stops with the lock, its holder and what to do. Runs pinned
+to DIFFERENT providers never wait on each other. A lock whose holder is gone (a run killed
+outright) is stale: the next run says so and clears it. No step can take a LIVE run's lock
+away, however many runs are waiting and clearing at once: a pid file is only ever removed by
+the run it names or by a run that read that pid as dead, and the directory only by `rmdir`,
+which removes nothing that is not empty — so there is no second lock guarding the clearing,
+and none to be left behind. An EMPTY lock directory (a run killed between making it and naming
+itself) is cleared by a waiter that finds it empty on two looks in a row. A path that is not
+such a lock — a file, a link, a directory holding anything but pid files — is refused and left
+alone. Driven from real shells in `tests/eval/utils/test_provider_lock.py` (the override mounts
+the script into the container for it), with the wait replaced so no test sleeps.
 
 **One call proves the endpoint before a run commits to anything**
 (`penny.tests.eval.utils.endpoint_smoke`, run by the `eval` recipe before it takes a queue

@@ -37,7 +37,7 @@ from penny.tests.eval.utils.cohort import (
     SpecCategory,
     StoredEntry,
     distinct_worlds,
-    fold_typography,
+    token_stands_in,
     unsourced_specifics,
 )
 from penny.tests.eval.utils.job_end import AskedEnd, job_ends_as_asked
@@ -500,8 +500,12 @@ def _names_a_destination(sample: SampleObservation, _world: World) -> Answer:
 
 
 def _each_source_kept(sample: SampleObservation, world: World) -> Answer:
-    stored = _normalise(sample.stored_text)
-    missed = [source[0] for source in world.keeps if not any(t in stored for t in source)]
+    stored = sample.stored_text
+    missed = [
+        source[0]
+        for source in world.keeps
+        if not any(token_stands_in(token, stored) for token in source)
+    ]
     return bool(sample.entries) and not missed, f"nothing stored from {missed}"
 
 
@@ -648,8 +652,8 @@ def _running_mechanisms_untouched(sample: SampleObservation, _world: World) -> A
 
 
 def _nothing_excluded(sample: SampleObservation, world: World) -> Answer:
-    stored = _normalise(sample.stored_text)
-    landed = [token for token in world.excludes if token in stored]
+    stored = sample.stored_text
+    landed = [token for token in world.excludes if token_stands_in(token, stored)]
     return not landed, f"stored the excluded {landed}"
 
 
@@ -686,12 +690,12 @@ def _nothing_unusable_delivered(sample: SampleObservation, _world: World) -> Ans
 
 def _reply_answers_the_ask(sample: SampleObservation, world: World) -> Answer:
     """Every token the world says an answer carries is in the reply, folded through the ONE
-    typography definition so a no-break space or a curly dash cannot fail a correct answer.
+    token-match definition so a no-break space, a curly dash or a hyphen inside the word cannot
+    fail a correct answer.
 
     A world naming no answer tokens makes no claim and is true — that is an ask with nothing
     to state, not a claim that went unasked."""
-    said = fold_typography(sample.reply)
-    missing = [token for token in world.answers if fold_typography(token) not in said]
+    missing = [token for token in world.answers if not token_stands_in(token, sample.reply)]
     return not missing, f"the reply never states {missing}"
 
 
@@ -715,13 +719,6 @@ def _entry_lines(entry: StoredEntry) -> str:
 def _reply_is_sourced(sample: SampleObservation, _world: World) -> Answer:
     invented = unsourced_specifics(sample.reply, sample.given)
     return not invented, f"unsourced: {invented}"
-
-
-# The state claims fold through the SAME definition the provenance ones do.  Two spellings of
-# one intention drift, and this pair already had: the dash folding here was missing there, so a
-# URL written with a non-breaking hyphen was tolerated by one claim and called an invention by
-# the other on the same reply.
-_normalise = fold_typography
 
 
 def assertion_rows(claims: Sequence[Claim]) -> list[AssertionRow]:
