@@ -67,6 +67,7 @@ from penny.database import Database
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer, collection_entries
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -369,6 +370,8 @@ async def test_elicit_to_learn_keeps_only_what_the_page_says(
     cohort = await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.ELICIT, ConversationState.LEARN),
         model=model,
         seed=case.seed,
         prepare=_probe(case),

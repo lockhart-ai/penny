@@ -109,6 +109,7 @@ from penny.database import Database
 from penny.database.skills import SkillDraft, derive_collection_name, slug_skill_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     JOB_TERMS,
@@ -350,6 +351,8 @@ async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.APPLY),
         model=model,
         seed=seed_composed_world(),
         seed_skills=[journey.round.skill for journey in _JOURNEYS],

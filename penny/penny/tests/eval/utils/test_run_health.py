@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,7 @@ from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import worker_filename
+from penny.tests.eval.utils.catalogue import CATALOGUE_ENV, Area, CatalogueEntry, Layer, load
 from penny.tests.eval.utils.run_health import (
     CohortRecord,
     ProviderTally,
@@ -609,3 +611,111 @@ class TestADriverRefusesACaseItCannotDriveAsACohort:
             await chat_eval(
                 case_id="floored", behaviour=_SENTENCE, ask="what does it cost?", min_pass_rate=0.8
             )
+
+    async def test_a_case_declaring_no_area_is_refused_by_name(self, every_driver, monkeypatch):
+        """Every driver, handed a case it could drive but with no area, raises before a sample
+        is stood up — and so does one handed a string where a member of the closed set goes."""
+        monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
+        for driver, drive in every_driver.items():
+            with pytest.raises(ValueError, match=f"{driver}: a case must declare its area"):
+                await drive(case_id=driver, behaviour=_SENTENCE, min_pass_rate=None)
+            with pytest.raises(ValueError, match=f"{driver}: a case must declare its area"):
+                await drive(case_id=driver, behaviour=_SENTENCE, min_pass_rate=None, area="memory")
+
+    async def test_a_case_must_state_its_behaviour_and_name_only_an_edge_the_machine_has(
+        self, every_driver, monkeypatch
+    ):
+        """A blank behaviour sentence and an edge outside ``OUT_EDGES`` are both refused by the
+        case's name."""
+        monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
+        drive = every_driver["chat_eval"]
+        machine = {"min_pass_rate": None, "area": Area.CONVERSATION_MACHINE}
+        with pytest.raises(ValueError, match="blank: a case must state the behaviour it checks"):
+            await drive(case_id="blank", behaviour="  ", **machine)
+        unreachable = "from request it offers apply, elicit, idle"
+        with pytest.raises(ValueError, match=rf"parked: edge=\(request, request\).*{unreachable}"):
+            await drive(case_id="parked", behaviour=_SENTENCE, edge=(_REQUEST, _REQUEST), **machine)
+        with pytest.raises(ValueError, match=r"done: edge=\(apply, idle\).*it offers nothing"):
+            await drive(case_id="done", behaviour=_SENTENCE, edge=(_APPLY, _IDLE), **machine)
+
+    async def test_catalogue_mode_records_the_case_and_stops_before_any_sample(
+        self, every_driver, monkeypatch, tmp_path, request
+    ):
+        """With ``EVAL_CATALOGUE`` set, every driver appends its case to that file and skips —
+        before the run is resolved and before a sample is stood up — and the entry carries the
+        layer of the driver it came through and the first of the case's wordings."""
+        gathered = tmp_path / "entries.jsonl"
+        monkeypatch.setenv(CATALOGUE_ENV, str(gathered))
+        monkeypatch.setattr(eval_conftest, "_run_samples", _no_sample_may_start)
+        monkeypatch.setattr(eval_conftest.eval_artifacts, "begin_case", _no_sample_may_start)
+        edge = (_IDLE, _ELICIT)
+        for driver, drive in every_driver.items():
+            with pytest.raises(pytest.skip.Exception, match="catalogued"):
+                await drive(
+                    case_id=driver,
+                    behaviour=f"  {_SENTENCE}  ",
+                    min_pass_rate=None,
+                    area=Area.MEMORY,
+                    edge=edge,
+                )
+        assert load(gathered) == [
+            CatalogueEntry(
+                case_id=driver,
+                area=Area.MEMORY,
+                edge=edge,
+                layer=layer,
+                sentence=_SENTENCE,
+                wording=wording,
+                node_id=request.node.nodeid,
+            )
+            for driver, layer, wording in _CATALOGUED
+        ]
+
+    @pytest.fixture
+    def every_driver(
+        self,
+        chat_eval,
+        collector_cycles_eval,
+        classifier_eval,
+        framer_eval,
+        labeller_eval,
+        binder_eval,
+        extractor_eval,
+    ) -> dict[str, Callable[..., Awaitable[object]]]:
+        """Each driver, already handed something it could drive — so what a test leaves out is
+        the only thing a refusal can be about."""
+        arm = eval_conftest.CycleArm(
+            text=_INSTRUCTION, seed=lambda db: None, pages=[], world=eval_conftest._NO_WORLD
+        )
+        routine = {"skill": "a_routine", "intent": "x", "parameters": ()}
+        return {
+            "chat_eval": partial(chat_eval, ask=_ASK),
+            "collector_cycles_eval": partial(collector_cycles_eval, collection="a-job", arms=[arm]),
+            "classifier_eval": partial(classifier_eval, state=_IDLE, ask=_ASK),
+            "framer_eval": partial(framer_eval, turns=_TURNS, also_phrased=()),
+            "labeller_eval": partial(
+                labeller_eval, utterance=_ASK, calls=(), target="a-job", also_demonstrated=()
+            ),
+            "binder_eval": partial(binder_eval, turns=_TURNS, also_phrased=(), **routine),
+            "extractor_eval": partial(extractor_eval, url="u", page="p", instruction=_INSTRUCTION),
+        }
+
+
+# What each driver is handed above, and what catalogue mode records of it: the driver's own
+# layer, and the first wording — an ask of several turns written on one line.
+_ASK = "what does it cost?"
+_TURNS = ("watch the listing", "tell me when it moves")
+_INSTRUCTION = "the price on the page"
+_IDLE = eval_conftest.ConversationState.IDLE
+_ELICIT = eval_conftest.ConversationState.ELICIT
+_REQUEST = eval_conftest.ConversationState.REQUEST
+_APPLY = eval_conftest.ConversationState.APPLY
+_CATALOGUED = (
+    ("chat_eval", Layer.WHOLE_TURN, _ASK),
+    ("collector_cycles_eval", Layer.COLLECTOR_CYCLE, _INSTRUCTION),
+    ("classifier_eval", Layer.CLASSIFIER_DRAW, _ASK),
+    ("framer_eval", Layer.MICRO_CONTEXT, "watch the listing / tell me when it moves"),
+    ("labeller_eval", Layer.MICRO_CONTEXT, _ASK),
+    ("binder_eval", Layer.MICRO_CONTEXT, "watch the listing / tell me when it moves"),
+    ("extractor_eval", Layer.MICRO_CONTEXT, _INSTRUCTION),
+)

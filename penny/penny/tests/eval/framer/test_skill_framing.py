@@ -80,6 +80,7 @@ from penny.tests.eval.conftest import (
     framed_parameters,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     FIELD_UNSET,
     Consequence,
@@ -396,6 +397,7 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
     cohort = await framer_eval(
         case_id=PAGE_ONLY_ARMS.case_id,
         behaviour=_PAGE_ONLY_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=_AVAILABILITY.turns,
         also_phrased=_PAGE_ONLY_PHRASINGS,
@@ -535,6 +537,7 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
     cohort = await framer_eval(
         case_id=TICKER_ARMS.case_id,
         behaviour=_TICKER_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=_TICKER.turns,
         also_phrased=_TICKER_PHRASINGS,
@@ -636,6 +639,7 @@ async def test_a_single_turn_teach_still_separates_the_piece_that_varies(
     cohort = await framer_eval(
         case_id=SINGLE_TURN_ARMS.case_id,
         behaviour=_SINGLE_TURN_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=_SINGLE_TURN.turns,
         also_phrased=_SINGLE_TURN_PHRASINGS,
@@ -750,6 +754,7 @@ async def test_a_search_look_up_is_named_as_a_search(framer_eval: FramerEval, mo
     cohort = await framer_eval(
         case_id=SEARCH_ARMS.case_id,
         behaviour=_SEARCH_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=_SEARCH.turns,
         also_phrased=_SEARCH_PHRASINGS,
@@ -867,6 +872,7 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
     cohort = await framer_eval(
         case_id=PAGE_AND_TITLE_ARMS.case_id,
         behaviour=_PAGE_AND_TITLE_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=_PAGE_AND_TITLE.turns,
         also_phrased=_PAGE_AND_TITLE_PHRASINGS,
@@ -982,6 +988,7 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
     cohort = await framer_eval(
         case_id=THREE_SOURCES_ARMS.case_id,
         behaviour=_THREE_SOURCES_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=_THREE_SOURCES_TURNS,
         also_phrased=_THREE_SOURCES_PHRASINGS,

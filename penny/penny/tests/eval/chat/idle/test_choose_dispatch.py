@@ -49,6 +49,7 @@ from penny.tests.eval.conftest import (
     ChatEval,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -181,6 +182,7 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
     cohort: Cohort = await chat_eval(
         case_id=_FIRES,
         behaviour=_BEHAVIOUR,
+        area=Area.CHAT_TOOLS,
         model=model,
         prepare=assert_choose_world,
         world=_WORLD,

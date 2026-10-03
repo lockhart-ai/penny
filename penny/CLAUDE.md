@@ -591,6 +591,7 @@ tests/eval/
   utils/            — shared machinery, and nothing else: artifacts · checkpoint ·
                       cohort · report · assemble · comment_split · roster ·
                       endpoint_smoke · baseline · replay · run_health · assertions ·
+                      catalogue (the generated list of every case, by area) ·
                       given (what a round was given, split into the content a number is
                       sourced by, the scaffolding around it, and the moments it was told) ·
                       worlds · fixtures · seeds · dispatch_world, the transition
@@ -619,6 +620,25 @@ rows in a run's per-sample DB (`data/eval-artifacts/<run>/<case>-N.db`) say whic
 states a case walks, and `promptlog.agent_name` says which agents it drove. `N` is the
 sample's own number — the one its report banner and its cohort name carry (`sample_number`),
 so a name the report renders opens that sample's own evidence and never a neighbour's.
+
+**Every case declares its area, and the list of cases is generated from them (#2214).** A
+case passes its driver `area=` — a member of the closed `Area` set in `utils/catalogue.py`
+(conversation machine · teaching a routine · memory · answering from the web · standing jobs ·
+notifications · background collectors · reading a page · chat tools) — and, when it moves the
+conversation machine along one edge, `edge=(from_state, to_state)`, validated against
+`OUT_EDGES`. A classifier case names the state it draws from and the state its claim says the
+draw lands in; a whole-turn case names the move its turn makes. The LAYER (classifier draw ·
+whole turn · micro-context · collector cycle) is not declared: each driver states its own.
+`docs/eval-catalogue.md` is the document generated from those declarations — a count per area,
+each area's cases (id · behaviour sentence · first wording · edge), and one row per machine edge
+naming the cases that cover it at the classifier-draw and whole-turn layers. **`make fix` writes
+it and `make check` fails when it is stale**, so a PR that adds, renames or re-declares a case
+commits the regenerated file. Collecting the cases calls no model and no endpoint: with
+`EVAL_CATALOGUE` naming a file, each driver validates its case, appends it as a
+`CatalogueEntry` and skips the test before a sample is stood up
+(`python -m penny.tests.eval.utils.catalogue write|check <path>` runs the suite that way in a
+child pytest, leaving `utils/` out — it holds no case). An eval test that reaches no driver
+fails that run rather than going unlisted.
 
 **An isolated draw is handed what production hands it — a REQUEST case declares its
 `parked_round` (#2084/#2099).** `classifier_eval` builds each sample's snapshot through the
@@ -766,8 +786,9 @@ own deadline — which is how one sample once held a run silent for twenty minut
 real chat/collector loops and make their claims over persisted DB state + sends; the claims are
 counted and reported, never gated, and every case states `min_pass_rate=None`. **Every driver
 refuses a case that names nothing to drive** — `chat_eval` with no `ask`, `collector_cycles_eval`
-with no `arms`, a micro-context driver with no instruction, utterance or turns — and one that states a floor
-or leaves `min_pass_rate` unstated, each with an error naming the case, before a sample runs. A
+with no `arms`, a micro-context driver with no instruction, utterance or turns — one that states a floor
+or leaves `min_pass_rate` unstated, and one that states no behaviour, declares no `area` or names an
+`edge` the machine does not have, each with an error naming the case, before a sample runs. A
 case is one ask in its wordings and the claims its body makes against the cohort that comes back;
 no driver takes a per-sample scorer, and a structural pin in `make check` reads that off the
 drivers' own AST. The coverage matrix is the two

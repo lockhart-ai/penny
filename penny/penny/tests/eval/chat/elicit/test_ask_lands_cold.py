@@ -78,6 +78,7 @@ import pytest
 
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -150,6 +151,8 @@ async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str)
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.ELICIT),
         model=model,
         world=_COLD_LISTING,
         ask=LISTING_SETUP_ASK,

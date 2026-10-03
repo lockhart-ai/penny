@@ -69,6 +69,7 @@ from penny.tests.eval.conftest import (
     bound_value_field,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     FIELD_UNSET,
     Consequence,
@@ -383,6 +384,7 @@ async def _drive_ported(binder_eval: BinderEval, ported: PortedBinding, model: s
     return await binder_eval(
         case_id=ported.case_id,
         behaviour=ported.behaviour,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         turns=ported.fixture.turns,
         also_phrased=ported.also_phrased,

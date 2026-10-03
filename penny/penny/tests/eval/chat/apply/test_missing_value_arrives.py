@@ -95,6 +95,7 @@ from penny.database.skills import derive_collection_name, slug_skill_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer
 from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     JOB_TERMS,
@@ -330,6 +331,8 @@ async def test_request_to_apply_composes_both_turns_and_stands_the_job_up(
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.REQUEST, ConversationState.APPLY),
         model=model,
         seed=seed_parked_in_request(_CASE),
         seed_skills=[journey.round.skill for journey in _CASE.parked.journeys],

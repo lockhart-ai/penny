@@ -60,6 +60,7 @@ from penny.tests.eval.conftest import (
     FieldExpectation,
 )
 from penny.tests.eval.utils.assertions import Answer, WorldClaim
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     Consequence,
     SampleObservation,
@@ -313,6 +314,7 @@ async def test_a_page_that_answers_everything_still_answers_everything(
     cohort = await extractor_eval(
         case_id=_ALL_PRESENT.case_id,
         behaviour=_ALL_PRESENT.behaviour,
+        area=Area.READING_A_PAGE,
         model=model,
         url=_ALL_PRESENT.url,
         page=_ALL_PRESENT.page,
@@ -418,6 +420,7 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
     cohort = await extractor_eval(
         case_id=_PARTLY_PRESENT.case_id,
         behaviour=_PARTLY_PRESENT.behaviour,
+        area=Area.READING_A_PAGE,
         model=model,
         url=_PARTLY_PRESENT.url,
         page=_PARTLY_PRESENT.page,
@@ -520,6 +523,7 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
     cohort = await extractor_eval(
         case_id=_PARTLY_PRESENT_ON_A_PROSE_PAGE.case_id,
         behaviour=_PARTLY_PRESENT_ON_A_PROSE_PAGE.behaviour,
+        area=Area.READING_A_PAGE,
         model=model,
         url=_PARTLY_PRESENT_ON_A_PROSE_PAGE.url,
         page=_PARTLY_PRESENT_ON_A_PROSE_PAGE.page,
@@ -620,6 +624,7 @@ async def test_a_page_carrying_none_of_it_still_says_so(
     cohort = await extractor_eval(
         case_id=_NONE_PRESENT.case_id,
         behaviour=_NONE_PRESENT.behaviour,
+        area=Area.READING_A_PAGE,
         model=model,
         url=_NONE_PRESENT.url,
         page=_NONE_PRESENT.page,

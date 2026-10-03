@@ -123,6 +123,7 @@ from penny.tests.eval.conftest import (
     collection_entries,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -496,6 +497,7 @@ class _AnsweringCase(NamedTuple):
     naming itself."""
 
     case_id: str
+    area: Area
     behaviour: str
     family: str
     world: World
@@ -520,6 +522,7 @@ def _probe(case: _AnsweringCase) -> Preparer | None:
 
 _ANSWER_FROM_PAGE = _AnsweringCase(
     case_id="chat-answer-from-page",
+    area=Area.ANSWERING_FROM_THE_WEB,
     behaviour=(
         "In the chat agent, when a question needs a current fact nothing stored can answer, "
         "Penny opens the page it is posted on and puts that page's own value in her reply, "
@@ -533,6 +536,7 @@ _ANSWER_FROM_PAGE = _AnsweringCase(
 
 _ANSWER_ONE_LINK_DEEP = _AnsweringCase(
     case_id="chat-answer-one-link-deep",
+    area=Area.ANSWERING_FROM_THE_WEB,
     behaviour=(
         "In the chat agent, when the fact a question asks for is not on the page she reaches "
         "first but that page names the address it is credited at, Penny follows the link and "
@@ -547,6 +551,7 @@ _ANSWER_ONE_LINK_DEEP = _AnsweringCase(
 
 _ADMITS_THE_READ_FAILED = _AnsweringCase(
     case_id="chat-reply-admits-the-read-failed",
+    area=Area.ANSWERING_FROM_THE_WEB,
     behaviour=(
         "In the chat agent, when every source she tries is unreachable, everything Penny says "
         "in her reply traces to what she was given, and the turn ends back in idle."
@@ -560,6 +565,7 @@ _ADMITS_THE_READ_FAILED = _AnsweringCase(
 
 _SAYS_NOTHING_IS_STORED = _AnsweringCase(
     case_id="chat-reply-says-nothing-is-stored",
+    area=Area.MEMORY,
     behaviour=(
         "In the chat agent, when the question is about something the user has told her and "
         "the store holds nothing of it, everything Penny says in her reply traces to what she "
@@ -574,6 +580,7 @@ _SAYS_NOTHING_IS_STORED = _AnsweringCase(
 
 _SAYS_ALREADY_THERE = _AnsweringCase(
     case_id="chat-reply-says-already-there",
+    area=Area.MEMORY,
     behaviour=(
         "In the chat agent, when she is asked to record something the store already holds, "
         "Penny reports that it was already there, and it is still held in the collection that "
@@ -603,6 +610,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _AnsweringCase) -> Cohor
     return await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=case.area,
         model=model,
         prepare=_probe(case),
         world=case.world,

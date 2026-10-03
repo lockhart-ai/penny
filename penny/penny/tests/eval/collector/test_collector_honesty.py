@@ -76,6 +76,7 @@ from penny.tests.eval.conftest import (
     collection_entries,
 )
 from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     CYCLE_SCRIPT,
     ENTRIES_STORED,
@@ -467,6 +468,7 @@ async def test_the_cycle_writes_nothing_when_every_read_fails(
     cohort = await collector_cycles_eval(
         case_id=EVERY_READ_FAILS.case_id,
         behaviour=_BEHAVIOUR,
+        area=Area.BACKGROUND_COLLECTORS,
         model=model,
         collection=_CONTAINER,
         arms=_arms(EVERY_READ_FAILS),

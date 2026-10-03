@@ -302,6 +302,10 @@ time, on every case.**
 > **Does the ported case make a claim in it?**
 >
 > **No → write one**, even though the source case had none to copy.
+>
+> ### Then — for the case itself
+>
+> **Declare the area, and the edge when the case covers one** (§4).
 
 **The inward direction is the one nobody runs.** Outward feels like work — you are looking at a
 check and deciding its fate. Inward looks like nothing is missing, because the thing that is missing
@@ -361,6 +365,8 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
     cohort = await chat_eval(
         case_id="<behaviour>-<what it does>",
         behaviour=<THE SENTENCE>,                       # what this case checks — below
+        area=Area.<AREA>,                               # the part of Penny it is about — below
+        edge=(<FROM STATE>, <TO STATE>),                # only when it covers a machine edge
         model=model,
         seed=<the round this turn continues>,           # seeded, never hoped for
         world=<WORLD>,                                  # the pages, the keeps, the excludes
@@ -399,6 +405,7 @@ async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> N
     cohort = await collector_cycles_eval(
         case_id="<behaviour>-<what it does>",
         behaviour=<THE SENTENCE>,
+        area=Area.<AREA>,
         model=model,
         collection=_CONTAINER,                          # the job this case drives
         arms=[_arm(<THE CASE>, reading) for reading in READINGS],
@@ -430,6 +437,7 @@ async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
     cohort = await extractor_eval(
         case_id="<behaviour>-<what it does>",
         behaviour=<THE SENTENCE>,
+        area=Area.<AREA>,
         model=model,
         url=<URL>, page=<PAGE>,                         # one world, fixed across the arms
         instruction=<THE INSTRUCTION>,                  # Penny's own words, written upstream
@@ -480,11 +488,27 @@ driver call, required, and it renders in the case's report header above every
 number: a case id says which fixture ran, and a rate means nothing until a reader knows what was
 being asked.
 
+**Every case declares its area, and the edge it covers when it covers one.** `area=` is a member
+of the closed `Area` set (`utils/catalogue.py`) — the part of Penny the case is about. `edge=` is a
+`(from, to)` pair of `ConversationState`, for a case that moves the conversation machine along one
+edge of `OUT_EDGES`: a classifier case names the state it draws from and the state its claim says
+the draw lands in, and a whole-turn case names the move its turn makes. A case about anything else
+leaves `edge` out. The **layer** — classifier draw, whole turn, micro-context, collector cycle — is
+not declared: it is the driver the case uses.
+
+**`docs/eval-catalogue.md` is the list of every case**, generated from those declarations: each
+area's cases with their behaviour sentence and first wording, and which cases cover each machine
+edge at the classifier-draw and whole-turn layers. `make fix` writes it and `make check` fails when
+it is stale, so adding, renaming or re-declaring a case means committing the regenerated file.
+Collecting the cases calls no model: with `EVAL_CATALOGUE` set, each driver records its case and
+skips before a sample is stood up.
+
 **A driver refuses a case it cannot drive as a cohort**, with an error naming the case, before a
-sample runs: one with no `behaviour`, one that names nothing to drive (`ask` for chat and the
-classifier, `arms` for a collector, the instruction, utterance or turns for a microcontext), and one that
-leaves `min_pass_rate` unstated or states a floor. No driver takes a per-sample scorer: the body's
-claims against the returned cohort are the only way a case is graded.
+sample runs: one with no `behaviour`, one with no `area` or with an `edge` the machine does not
+have, one that names nothing to drive (`ask` for chat and the classifier, `arms` for a collector,
+the instruction, utterance or turns for a microcontext), and one that leaves `min_pass_rate`
+unstated or states a floor. No driver takes a per-sample scorer: the body's claims against the
+returned cohort are the only way a case is graded.
 
 **A claim only one case makes stays inline in that case**, as a small local function. It graduates
 into `assertions.py` at the **second** customer, not the first.
@@ -765,6 +789,7 @@ The numbers on the PR inform the review; they are not its verdict.
 | `penny/penny/tests/eval/utils/given.py` | what a round was given, read off its prompt log and split into content, scaffolding and moments — the world a `PROVENANCE` claim reads against |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
+| `penny/penny/tests/eval/utils/catalogue.py` | `Area` and `Layer`, the `CatalogueEntry` a driver records for its case, and the generator, renderer and staleness check behind `docs/eval-catalogue.md` |
 | `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
 
 A `World`'s `keeps` is one token set **per source** — tokens appearing only on that page, so a

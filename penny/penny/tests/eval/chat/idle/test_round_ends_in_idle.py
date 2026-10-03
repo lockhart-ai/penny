@@ -87,6 +87,7 @@ from penny.tests.eval.conftest import (
     Seeder,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area, Edge
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -190,6 +191,7 @@ class _BailCase(NamedTuple):
     """
 
     case_id: str
+    edge: Edge
     behaviour: str
     world: _BailWorld
     bail: str
@@ -269,6 +271,7 @@ _UNPARKED = _BailWorld(
 
 _BAIL_FROM_ELICIT = _BailCase(
     case_id="transition-elicit-to-idle",
+    edge=(ConversationState.ELICIT, ConversationState.IDLE),
     behaviour=(
         "In the chat agent, when she has asked to be taught a job and the user calls it off "
         "and changes the subject in the same breath, Penny lets go of the round entirely — "
@@ -292,6 +295,7 @@ _BAIL_FROM_ELICIT = _BailCase(
 
 _BAIL_FROM_LEARN = _BailCase(
     case_id="transition-learn-to-idle",
+    edge=(ConversationState.LEARN, ConversationState.IDLE),
     behaviour=(
         "In the chat agent, when a teach round is under way with its container built and "
         "written into and the user abandons it, Penny archives that container and registers "
@@ -311,6 +315,7 @@ _BAIL_FROM_LEARN = _BailCase(
 
 _BAIL_FROM_HELD_BINDING = _BailCase(
     case_id="transition-request-to-idle",
+    edge=(ConversationState.REQUEST, ConversationState.IDLE),
     behaviour=(
         "In the chat agent, when a round is parked waiting on the one detail an ask left out "
         "and the user calls it off, Penny ends the round and builds nothing out of the half "
@@ -330,6 +335,7 @@ _BAIL_FROM_HELD_BINDING = _BailCase(
 
 _BANTER_ON_IDLE = _BailCase(
     case_id="transition-idle-to-idle",
+    edge=(ConversationState.IDLE, ConversationState.IDLE),
     behaviour=(
         "In the chat agent, when a message arriving on an idle machine asks for nothing that "
         "needs to keep running, Penny answers it in conversation and changes nothing — even "
@@ -516,6 +522,8 @@ async def _drive(chat_eval: ChatEval, model: str, case: _BailCase) -> Cohort:
     return await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=Area.CONVERSATION_MACHINE,
+        edge=case.edge,
         model=model,
         seed=case.world.seed,
         seed_skills=list(case.world.skills),

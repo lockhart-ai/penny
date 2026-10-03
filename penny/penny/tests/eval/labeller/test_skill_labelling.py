@@ -51,6 +51,7 @@ from penny.tests.eval.conftest import (
     label_says_field,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     Consequence,
     SampleObservation,
@@ -663,6 +664,7 @@ async def _run_ported_case(
     return await labeller_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=Area.TEACHING_A_ROUTINE,
         model=model,
         utterance=case.arms[0],
         also_demonstrated=case.arms[1:],

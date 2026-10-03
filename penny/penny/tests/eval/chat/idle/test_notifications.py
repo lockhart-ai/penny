@@ -56,6 +56,7 @@ from penny.tests.eval.conftest import (
     ChatEval,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -149,6 +150,7 @@ async def test_an_explicit_mute_request_mutes_notifications(
     cohort: Cohort = await chat_eval(
         case_id=_MUTES,
         behaviour=_BEHAVIOUR,
+        area=Area.NOTIFICATIONS,
         model=model,
         prepare=assert_mute_world,
         world=_WORLD,
@@ -245,6 +247,7 @@ async def test_a_remark_about_notifications_leaves_them_on(chat_eval: ChatEval, 
     cohort: Cohort = await chat_eval(
         case_id=_NO_FIRE,
         behaviour=_NO_FIRE_BEHAVIOUR,
+        area=Area.NOTIFICATIONS,
         model=model,
         prepare=assert_no_fire_world,
         world=_NO_FIRE_WORLD,

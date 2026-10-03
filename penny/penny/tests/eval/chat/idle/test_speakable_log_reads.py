@@ -110,6 +110,7 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -172,6 +173,7 @@ class _LogReadCase(NamedTuple):
     """
 
     case_id: str
+    area: Area
     behaviour: str
     seed: Seeder
     premise: Callable[[Database], None]
@@ -606,6 +608,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _LogReadCase) -> Cohort:
     return await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=case.area,
         model=model,
         seed=case.seed,
         seed_skills=list(case.skills),
@@ -634,6 +637,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 _PENNY_MESSAGES = _LogReadCase(
     case_id="speak-logread-penny-messages-recall",
+    area=Area.MEMORY,
     behaviour=(
         "In the chat agent, when the user asks what she told them and the answer is out of the "
         "conversation window, Penny states what her own earlier message actually said."
@@ -685,6 +689,7 @@ async def test_what_she_said_comes_back_out_of_her_own_messages(
 
 _COLLECTOR_RUNS_CASE = _LogReadCase(
     case_id="speak-logread-collector-runs",
+    area=Area.STANDING_JOBS,
     behaviour=(
         "In the chat agent, when the user asks how her background jobs are doing and why any of "
         "them is in trouble, Penny states the reason the failing cycle's run record gives, with "

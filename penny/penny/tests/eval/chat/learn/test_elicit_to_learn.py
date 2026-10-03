@@ -29,6 +29,7 @@ import pytest
 
 from penny.conversation_machine import ConversationState
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -84,6 +85,8 @@ async def test_elicit_to_learn_runs_the_round_and_reports_what_it_captured(
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.ELICIT, ConversationState.LEARN),
         model=model,
         seed=standing_elicit_round,
         world=AURORA_LISTING,

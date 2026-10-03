@@ -105,6 +105,7 @@ from penny.database import Database
 from penny.database.skills import slug_skill_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer, collection_entries
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     JOB_TERMS,
@@ -265,6 +266,8 @@ async def test_learn_to_apply_stands_the_taught_round_up_on_its_own_container(
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.LEARN, ConversationState.APPLY),
         model=model,
         seed=seed_learned_round(_AURORA_APPLY),
         seed_skills=[_AURORA_APPLY.skill, _DECOY_SKILL],

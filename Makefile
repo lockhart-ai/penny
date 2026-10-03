@@ -16,6 +16,12 @@ EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # is what decides whether a cycle closes, and importing them together would only ever
 # exercise the first one's order.
 EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.checkpoint penny.tests.eval.utils.report
+# The catalogue of supported behaviours, generated from the eval cases by
+# `penny.tests.eval.utils.catalogue`: `fix` writes it and `check` fails when it is stale, or
+# when a case states no behaviour or declares no area. Collecting the cases calls no model.
+# The path is relative to where the tools run — `penny/` under LOCAL, `/penny` in the
+# container, where docker-compose.override.yml mounts `./docs` at `/docs`.
+EVAL_CATALOGUE = ../docs/eval-catalogue.md
 
 # --- Eval profiles -----------------------------------------------------------
 # HOW a run is driven, named rather than reassembled from six variables each time.
@@ -265,6 +271,7 @@ endif
 fix: $(if $(LOCAL),,build)
 	$(RUN) ruff format $(RUFF_TARGETS)
 	$(RUN) ruff check --fix $(RUFF_TARGETS)
+	$(RUN) python -m penny.tests.eval.utils.catalogue write $(EVAL_CATALOGUE)
 
 typecheck: $(if $(LOCAL),,build)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
@@ -275,6 +282,7 @@ check: $(if $(LOCAL),,build)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
 	$(RUN) python -m penny.database.migrate --validate
 	$(RUN) sh -c 'for module in $(EVAL_COLD_IMPORTS); do echo "cold import: $$module" && python -c "import $$module" || exit 1; done'
+	$(RUN) python -m penny.tests.eval.utils.catalogue check $(EVAL_CATALOGUE)
 	$(RUN) pytest $(PYTEST_ARGS)
 	cd browser && npm install --silent && npm run typecheck && npm test
 

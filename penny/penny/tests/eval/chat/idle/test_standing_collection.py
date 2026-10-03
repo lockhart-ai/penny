@@ -108,6 +108,7 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -631,6 +632,7 @@ async def _drive(
     return await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=Area.STANDING_JOBS,
         model=model,
         seed=seed_standing_jobs(case.job),
         seed_skills=[WATCH_ROUTINE],

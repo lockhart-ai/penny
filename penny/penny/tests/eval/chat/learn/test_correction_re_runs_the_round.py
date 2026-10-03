@@ -130,6 +130,7 @@ from penny.tests.eval.conftest import (
     collection_entries,
 )
 from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -1166,6 +1167,8 @@ async def test_learn_to_learn_re_runs_the_round_against_the_corrected_target(
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.LEARN, ConversationState.LEARN),
         model=model,
         seed=seed_corrected_round(_SURVIVOR),
         seed_skills=[*(journey.round.skill for journey in _JOURNEYS), _SURVIVOR.skill],

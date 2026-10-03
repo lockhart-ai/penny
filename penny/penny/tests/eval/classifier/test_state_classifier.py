@@ -57,6 +57,7 @@ from penny.tests.eval.conftest import (
     eval_skill,
 )
 from penny.tests.eval.utils.assertions import Answer, WorldClaim
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import SampleObservation, SpecCategory, output_field
 from penny.tests.eval.utils.worlds import World
 
@@ -219,6 +220,8 @@ async def test_a_passing_mention_holds_idle_with_the_routine_doors_open(
     cohort = await classifier_eval(
         case_id=HOLD_CASE_ID,
         behaviour=_HOLD_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.IDLE),
         model=model,
         state=ConversationState.IDLE,
         ask=_PASSING_MENTION,
@@ -386,6 +389,8 @@ async def test_a_covered_ask_missing_its_page_draws_request(
     cohort = await classifier_eval(
         case_id=REQUEST_SHORT_CASE_ID,
         behaviour=_REQUEST_SHORT_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.REQUEST),
         model=model,
         state=ConversationState.IDLE,
         ask=_REQUEST_SHORT_ASK,
@@ -474,6 +479,8 @@ async def test_unprompted_teaching_draws_learn(classifier_eval: ClassifierEval, 
     cohort = await classifier_eval(
         case_id=UNPROMPTED_TEACH_CASE_ID,
         behaviour=_UNPROMPTED_TEACH_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.LEARN),
         model=model,
         state=ConversationState.IDLE,
         ask=_UNPROMPTED_TEACH_ASK,
@@ -537,6 +544,8 @@ async def test_a_called_off_elicit_round_falls_to_idle(
     cohort = await classifier_eval(
         case_id=ELICIT_CALLED_OFF_CASE_ID,
         behaviour=_ELICIT_CALLED_OFF_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.ELICIT, ConversationState.IDLE),
         model=model,
         state=ConversationState.ELICIT,
         ask=_ELICIT_CALLED_OFF_ASK,
@@ -622,6 +631,8 @@ async def test_an_accepted_offer_draws_apply(classifier_eval: ClassifierEval, mo
     cohort = await classifier_eval(
         case_id=OFFER_ACCEPTED_CASE_ID,
         behaviour=_OFFER_ACCEPTED_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.LEARN, ConversationState.APPLY),
         model=model,
         state=ConversationState.LEARN,
         ask=_OFFER_ACCEPTED_ASK,
@@ -710,6 +721,8 @@ async def test_the_missing_value_arriving_draws_apply(
     cohort = await classifier_eval(
         case_id=VALUE_ARRIVED_CASE_ID,
         behaviour=_VALUE_ARRIVED_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.REQUEST, ConversationState.APPLY),
         model=model,
         state=ConversationState.REQUEST,
         ask=_VALUE_ARRIVED_ASK,
@@ -783,6 +796,8 @@ async def test_a_called_off_parked_request_falls_to_idle(
     cohort = await classifier_eval(
         case_id=REQUEST_CALLED_OFF_CASE_ID,
         behaviour=_REQUEST_CALLED_OFF_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.REQUEST, ConversationState.IDLE),
         model=model,
         state=ConversationState.REQUEST,
         ask=_REQUEST_CALLED_OFF_ASK,
@@ -904,6 +919,8 @@ async def test_switching_a_running_jobs_notifications_off_draws_idle(
     cohort = await classifier_eval(
         case_id=NOTIFY_OFF_CASE_ID,
         behaviour=_NOTIFY_OFF_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.IDLE),
         model=model,
         state=ConversationState.IDLE,
         ask=_NOTIFY_OFF_ASK,
@@ -972,6 +989,8 @@ async def test_a_setup_ask_on_a_cold_registry_elicits(
     cohort = await classifier_eval(
         case_id=COLD_ELICIT_CASE_ID,
         behaviour=_COLD_ELICIT_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.ELICIT),
         model=model,
         state=ConversationState.IDLE,
         ask=_COLD_ELICIT_ASK,
@@ -1052,6 +1071,8 @@ async def test_a_fully_supplied_cold_ask_names_its_routine(
     cohort = await classifier_eval(
         case_id=COVERED_ASK_CASE_ID,
         behaviour=_COVERED_ASK_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.APPLY),
         model=model,
         state=ConversationState.IDLE,
         ask=_COVERED_ASK,
@@ -1131,6 +1152,8 @@ async def test_chat_carrying_a_covered_ask_draws_apply(
     cohort = await classifier_eval(
         case_id=MIXED_MESSAGE_CASE_ID,
         behaviour=_MIXED_MESSAGE_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.APPLY),
         model=model,
         state=ConversationState.IDLE,
         ask=_MIXED_MESSAGE_ASK,
@@ -1203,6 +1226,8 @@ async def test_an_unanswered_teach_question_stays_parked(
     cohort = await classifier_eval(
         case_id=STILL_CLARIFYING_CASE_ID,
         behaviour=_STILL_CLARIFYING_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.ELICIT, ConversationState.ELICIT),
         model=model,
         state=ConversationState.ELICIT,
         ask=_STILL_CLARIFYING_ASK,
@@ -1294,6 +1319,8 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     cohort = await classifier_eval(
         case_id=WRONG_ROUTINE_CASE_ID,
         behaviour=_WRONG_ROUTINE_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.REQUEST, ConversationState.ELICIT),
         model=model,
         state=ConversationState.REQUEST,
         ask=_WRONG_ROUTINE_ASK,
@@ -1381,6 +1408,8 @@ async def test_a_same_verb_different_domain_ask_still_elicits(
     cohort = await classifier_eval(
         case_id=UNCOVERED_DOMAIN_CASE_ID,
         behaviour=_UNCOVERED_DOMAIN_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.ELICIT),
         model=model,
         state=ConversationState.IDLE,
         ask=_UNCOVERED_DOMAIN_ASK,
@@ -1446,6 +1475,8 @@ async def test_an_answered_teach_question_draws_learn(
     cohort = await classifier_eval(
         case_id=STEPS_ANSWERED_CASE_ID,
         behaviour=_STEPS_ANSWERED_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.ELICIT, ConversationState.LEARN),
         model=model,
         state=ConversationState.ELICIT,
         ask=_STEPS_ANSWERED_ASK,
@@ -1527,6 +1558,8 @@ async def test_a_correction_holds_the_round_in_learn(
     cohort = await classifier_eval(
         case_id=CORRECTION_CASE_ID,
         behaviour=_CORRECTION_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.LEARN, ConversationState.LEARN),
         model=model,
         state=ConversationState.LEARN,
         ask=_CORRECTION_ASK,
@@ -1599,6 +1632,8 @@ async def test_a_post_failure_question_falls_to_idle(
     cohort = await classifier_eval(
         case_id=POST_FAILURE_QUESTION_CASE_ID,
         behaviour=_POST_FAILURE_QUESTION_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.LEARN, ConversationState.IDLE),
         model=model,
         state=ConversationState.LEARN,
         ask=_POST_FAILURE_QUESTION_ASK,

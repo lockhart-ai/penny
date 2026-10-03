@@ -819,13 +819,14 @@ def _names_called(function: ast.AsyncFunctionDef | ast.FunctionDef) -> set[str]:
 
 
 def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
-    """Every ``*_eval`` driver fixture calls both stated-input guards and takes no per-sample
-    scorer, so a case can only be written as one ask, in its wordings, with claims made against
-    the cohort that comes back.
+    """Every ``*_eval`` driver fixture calls the stated-input guards, takes the case's ``area``
+    and ``edge``, and takes no per-sample scorer — so a case can only be written as one ask, in
+    its wordings, declared under an area, with claims made against the cohort that comes back.
 
     Structural, off the module's own AST, so a driver added tomorrow is covered without anybody
-    remembering the rule: a driver that skipped the guard would run a case with nothing to
-    drive and report a vacuous pass for every sample."""
+    remembering the rule: a driver that skipped a guard would run a case with nothing to
+    drive and report a vacuous pass for every sample, and one that skipped the declaration
+    would drive cases the catalogue never lists."""
     tree = ast.parse(_EVAL_CONFTEST.read_text())
     drivers = [
         node
@@ -845,12 +846,16 @@ def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
         assert not accepted & _SCORER_ARGUMENTS, (
             f"{driver.name} accepts {sorted(accepted & _SCORER_ARGUMENTS)} — a per-sample scorer"
         )
+        undeclared = _DECLARED_ARGUMENTS - accepted
+        assert not undeclared, f"{driver.name} takes no {sorted(undeclared)} from its case"
 
 
-# What the pin above reads by name: the fixtures that drive a case, the two guards each one
-# must call before a sample runs, and the arguments a per-sample scorer path would take.
+# What the pin above reads by name: the fixtures that drive a case, the guards each one must
+# call before a sample runs, what a case declares for the catalogue, and the arguments a
+# per-sample scorer path would take.
 _DRIVER_SUFFIX = "_eval"
-_DRIVER_GUARDS = {"_require_ask", "_require_report_only"}
+_DRIVER_GUARDS = {"_require_ask", "_require_report_only", "_declare_case"}
+_DECLARED_ARGUMENTS = {"area", "edge"}
 _SCORER_ARGUMENTS = {"score", "message", "messages", "pool", "expected", "expectations", "cycles"}
 
 

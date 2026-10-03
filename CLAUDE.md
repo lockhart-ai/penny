@@ -159,6 +159,8 @@ docs/                           — Design documents and review guides
   eval-iteration-workflow.md    — Eval iteration loop: one beat → pairs → seeded world → run → report → merge
   eval-case-design.md           — Eval case contract: end-state assertions (three categories),
                                   measured variance, the porting checklist (#1994)
+  eval-catalogue.md             — GENERATED: every eval case by area, and which cases cover each
+                                  machine edge. `make fix` writes it; `make check` fails when stale
   browser-extension-architecture.md — Browser extension architecture & design
   channel-manager-plan.md       — Multi-channel implementation plan
   browser-tools-plan.md         — Browser tools implementation plan
@@ -185,13 +187,13 @@ make clean-project-images # Remove this compose project's built images + anon vo
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
 make build            # Build the penny Docker image
 make token            # Generate GitHub App installation token for gh CLI
-make check            # Format check, lint, typecheck, and run tests
+make check            # Format check, lint, typecheck, eval-catalogue staleness check, and run tests
 make pytest           # Run integration tests
 make eval             # Live-model eval suite on the LOCAL GPU, one sample at a time
 make eval-remote      # Live-model eval suite on a remote provider, 8 cases x 5 samples at once
 make fmt              # Format with ruff
 make lint             # Lint with ruff
-make fix              # Format + autofix lint issues
+make fix              # Format + autofix lint issues + regenerate docs/eval-catalogue.md
 make typecheck        # Type check with ty
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes

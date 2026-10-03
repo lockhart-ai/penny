@@ -81,6 +81,7 @@ from penny.database.skills import slug_skill_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer
 from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -259,6 +260,8 @@ async def test_idle_to_learn_runs_the_taught_round_in_one_turn(
     cohort = await chat_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
+        area=Area.CONVERSATION_MACHINE,
+        edge=(ConversationState.IDLE, ConversationState.LEARN),
         model=model,
         seed=seed_composed_world(),
         seed_skills=[journey.round.skill for journey in _JOURNEYS],

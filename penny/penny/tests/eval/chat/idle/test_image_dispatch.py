@@ -75,6 +75,7 @@ from penny.tests.eval.conftest import (
     stored_images,
 )
 from penny.tests.eval.utils.assertions import Answer, Cohort
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
@@ -198,6 +199,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: ImageCase) -> Cohort:
     return await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
+        area=Area.CHAT_TOOLS,
         model=model,
         prepare=_prepare(case),
         world=case.world,

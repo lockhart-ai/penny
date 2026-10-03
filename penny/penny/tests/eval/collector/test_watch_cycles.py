@@ -79,6 +79,7 @@ from penny.tests.eval.conftest import (
     seeded_run_id,
 )
 from penny.tests.eval.utils.assertions import Answer
+from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     CYCLE_SCRIPT,
     ENTRIES_STORED,
@@ -679,6 +680,7 @@ async def test_the_watch_writes_the_first_reading(
     cohort = await collector_cycles_eval(
         case_id=FIRST_READING.case_id,
         behaviour=_BEHAVIOUR[FIRST_READING.case_id],
+        area=Area.BACKGROUND_COLLECTORS,
         model=model,
         collection=_CONTAINER,
         arms=_arms(FIRST_READING),
@@ -723,6 +725,7 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
     cohort = await collector_cycles_eval(
         case_id=UNCHANGED_READING.case_id,
         behaviour=_BEHAVIOUR[UNCHANGED_READING.case_id],
+        area=Area.BACKGROUND_COLLECTORS,
         model=model,
         collection=_CONTAINER,
         arms=_arms(UNCHANGED_READING),
@@ -764,6 +767,7 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
     cohort = await collector_cycles_eval(
         case_id=MOVED_READING.case_id,
         behaviour=_BEHAVIOUR[MOVED_READING.case_id],
+        area=Area.BACKGROUND_COLLECTORS,
         model=model,
         collection=_CONTAINER,
         arms=_arms(MOVED_READING),

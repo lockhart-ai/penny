@@ -23,6 +23,7 @@ from collections.abc import (
     Awaitable,
     Callable,
     Coroutine,
+    Generator,
     Iterator,
     Sequence,
 )
@@ -84,11 +85,13 @@ from penny.tests.conftest import (
 )
 from penny.tests.eval.utils import artifacts as eval_artifacts
 from penny.tests.eval.utils import assertions as eval_assertions
+from penny.tests.eval.utils import catalogue as eval_catalogue
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import FailureCause
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
+from penny.tests.eval.utils.catalogue import Area, Edge, Layer
 from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE, PinnedClock
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
 from penny.tests.eval.utils.given import read_given
@@ -3045,6 +3048,65 @@ def _require_ask(case_id: str, driver: str, what: str, given: Sequence[object] |
         raise ValueError(_NO_ASK.format(case_id=case_id, driver=driver, what=what))
 
 
+def _declare_case(
+    request: pytest.FixtureRequest,
+    *,
+    case_id: str,
+    layer: Layer,
+    behaviour: str,
+    area: Area | None,
+    edge: Edge | None,
+    wording: str,
+) -> eval_catalogue.CatalogueEntry:
+    """Refuse a case that states no behaviour, declares no area or names an edge the machine
+    has not got, before any sample runs — and return the case as the catalogue lists it.
+
+    In catalogue mode the case is recorded and the test stops here, so collecting the suite
+    stands up no sample, endpoint check or database of its own."""
+    entry = eval_catalogue.declare(
+        case_id=case_id,
+        layer=layer,
+        sentence=_stated_behaviour(case_id, behaviour),
+        area=area,
+        edge=edge,
+        wording=wording,
+        node_id=request.node.nodeid.partition(_PARAMETER_SUFFIX)[0],
+    )
+    destination = eval_catalogue.catalogue_path()
+    if destination is not None:
+        eval_catalogue.record(destination, entry)
+        pytest.skip(eval_catalogue.CATALOGUED)
+    return entry
+
+
+# How an ask of several turns is written on one line, for an arm's text and a case's first
+# wording alike.
+_TURN_SEPARATOR = " / "
+
+# Where a test's node id starts naming its parameters — the model, which varies by run and is
+# no part of which test a case lives in.
+_PARAMETER_SUFFIX = "["
+
+_RAN_TO_ITS_END = (
+    "{node_id}: ran to its end in catalogue mode — an eval test hands its case to a driver, "
+    "which records it and stops"
+)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Generator[None, object, object]:
+    """In catalogue mode, fail an eval test that finished without reaching a driver.
+
+    Every case is recorded and skipped at its driver, so a test body that completes drove
+    nothing through one: it is missing from the catalogue, and it ran whatever it does.  The
+    mode is read before the body runs, since it is the run's and not the test's."""
+    collecting = eval_catalogue.catalogue_path() is not None
+    result = yield
+    if collecting:
+        pytest.fail(_RAN_TO_ITS_END.format(node_id=item.nodeid))
+    return result
+
+
 def _cohort_checks(cohort: Cohort) -> dict[str, list[Check]]:
     """The case's claims, redistributed to the samples that answered them.
 
@@ -3263,6 +3325,8 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         *,
         case_id: str,
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         ask: str | None = None,
         also_phrased: Sequence[str] = (),
         world: World | None = None,
@@ -3282,6 +3346,15 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
         what no single sample can see.  A case with no ``ask`` is refused by name."""
         _require_ask(case_id, "chat_eval", "ask=<the request>", ask)
         _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.WHOLE_TURN,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=ask or "",
+        )
         eval_artifacts.begin_case(case_id)
         # Chat's convenience over the general form: one world, K wordings of one ask.
         arms = _arms(
@@ -3297,7 +3370,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterator
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
@@ -3761,6 +3834,8 @@ def collector_cycles_eval(
         case_id: str,
         collection: str,
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         arms: Sequence[CycleArm] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -3776,6 +3851,15 @@ def collector_cycles_eval(
         on the cohort.  A case with no ``arms`` is refused by name."""
         _require_ask(case_id, "collector_cycles_eval", "arms=[CycleArm(...), …]", arms)
         _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.COLLECTOR_CYCLE,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=arms[0].text,
+        )
         eval_artifacts.begin_case(case_id)
         driving = _arms(
             [arm.text for arm in arms],
@@ -3789,7 +3873,7 @@ def collector_cycles_eval(
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
@@ -4262,6 +4346,8 @@ def classifier_eval(
         ask: str = "",
         also_asked: Sequence[str] = (),
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         samples_per_phrasing: int = 0,
         model: str = "",
         penny_last_turn: str | None = None,
@@ -4279,6 +4365,15 @@ def classifier_eval(
         _require_ask(case_id, "classifier_eval", "ask=<the message>", ask)
         _require_report_only(case_id, min_pass_rate)
         _refuse_binding_state_mismatch(case_id, state, parked_round)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.CLASSIFIER_DRAW,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=ask,
+        )
         eval_artifacts.begin_case(case_id)
         # One situation, K wordings of the message — the same shape chat has, and the world
         # is a property of the CASE rather than of the arm.
@@ -4295,7 +4390,7 @@ def classifier_eval(
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
@@ -4806,6 +4901,8 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         turns: Sequence[str],
         also_phrased: Sequence[Sequence[str]],
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
@@ -4820,12 +4917,21 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         differently.  Flattened to one line per arm for the arm's own anchor text."""
         _require_ask(case_id, "framer_eval", "turns=<the round's user turns>", turns)
         _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.MICRO_CONTEXT,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=_TURN_SEPARATOR.join(turns),
+        )
         eval_artifacts.begin_case(case_id)
         wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
         # One ask, K wordings of it — the same shape chat has, and the world is a property of
         # the CASE rather than of the arm: every wording says the same thing.
         arms = _arms(
-            [" / ".join(one) for one in wordings],
+            [_TURN_SEPARATOR.join(one) for one in wordings],
             [_turns_world(case_id)],
             samples_per_phrasing,
             samples,
@@ -4845,7 +4951,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
@@ -4935,6 +5041,8 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         also_demonstrated: Sequence[str],
         conversation: Sequence[DemoTurn] = (),
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
@@ -4945,6 +5053,15 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         """Drive one demonstration through the labelling draw and return its COHORT."""
         _require_ask(case_id, "labeller_eval", "utterance=<the demonstrating turn>", utterance)
         _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.MICRO_CONTEXT,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=utterance,
+        )
         eval_artifacts.begin_case(case_id)
         wordings = [utterance, *also_demonstrated]
         arms = _arms(
@@ -4973,7 +5090,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
@@ -5199,6 +5316,8 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         parameters: Sequence[SkillParameter],
         also_phrased: Sequence[Sequence[str]],
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         samples_per_phrasing: int = 0,
         model: str = "",
         samples: int = SAMPLES,
@@ -5212,10 +5331,19 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         is however many turns the user took to make it."""
         _require_ask(case_id, "binder_eval", "turns=<the round's user turns>", turns)
         _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.MICRO_CONTEXT,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=_TURN_SEPARATOR.join(turns),
+        )
         eval_artifacts.begin_case(case_id)
         wordings = [tuple(turns), *(tuple(one) for one in also_phrased)]
         arms = _arms(
-            [" / ".join(one) for one in wordings],
+            [_TURN_SEPARATOR.join(one) for one in wordings],
             [_turns_world(case_id)],
             samples_per_phrasing,
             samples,
@@ -5235,7 +5363,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
@@ -5418,6 +5546,8 @@ def extractor_eval(
         page: str,
         instruction: str,
         behaviour: str = "",
+        area: Area | None = None,
+        edge: Edge | None = None,
         also_instructed: Sequence[str] = (),
         samples_per_phrasing: int = 0,
         model: str = "",
@@ -5437,6 +5567,15 @@ def extractor_eval(
         """
         _require_ask(case_id, "extractor_eval", "instruction=<the extract request>", instruction)
         _require_report_only(case_id, min_pass_rate)
+        catalogued = _declare_case(
+            request,
+            case_id=case_id,
+            layer=Layer.MICRO_CONTEXT,
+            behaviour=behaviour,
+            area=area,
+            edge=edge,
+            wording=instruction,
+        )
         eval_artifacts.begin_case(case_id)
         # One page, K wordings of the instruction — the same shape chat has, and the world is
         # a property of the CASE rather than of the arm.
@@ -5454,7 +5593,7 @@ def extractor_eval(
                 case_id=case_id,
                 family=family,
                 module=request.module.__name__,
-                behaviour=_stated_behaviour(case_id, behaviour),
+                behaviour=catalogued.sentence,
             ),
         )
 
