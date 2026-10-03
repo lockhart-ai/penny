@@ -1,7 +1,8 @@
 """The world the NL-dispatch stories are answered in, and the probe that asserts it.
 
-The three dispatch modules (email, generate_image, choose) make the SAME two claims about
-the world before a turn is driven, so the claims live here once rather than three times:
+The dispatch modules (generate_image, choose, the muting contracts) make the SAME two claims
+about the world before a turn is driven, so the claims live here once rather than in each
+(the email cases seed a collection of their own, so they read only the first):
 
   * the tool the case is about is REGISTERED on the chat surface — for the config-gated
     tools the hook that mocks the boundary is the same hook that registers them, so a hook

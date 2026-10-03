@@ -95,6 +95,7 @@ from penny.tests.eval.utils.artifacts import FailureCause
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
+from penny.tests.eval.utils.mailbox import CannedEmail, CannedMailbox
 from penny.tests.eval.utils.worlds import World
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.text_validity import (
@@ -1268,6 +1269,18 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
 
     penny.chat_agent._browse_provider = provider
     penny.collector._browse_provider = provider
+
+
+def install_mailbox(penny: Penny, emails: Sequence[CannedEmail]) -> None:
+    """Put a canned mailbox behind the chat agent's email tools.
+
+    The email tools are config-gated: ``ChatAgent`` registers them only when a mailbox is
+    configured, so installing the builder is what puts them on the surface at all.  The
+    builder is PRODUCTION'S OWN Fastmail one (``Penny._fastmail_tools_builder``) wrapped
+    around a ``CannedMailbox``, so the tools, their descriptions and the per-turn summarising
+    read are the shipped ones and only the boundary behind them is canned.  Fastmail's
+    surface — search and read — because a canned mailbox is never changed by a turn."""
+    penny.chat_agent._email_tools_builder = penny._fastmail_tools_builder(CannedMailbox(emails))
 
 
 async def _embed_seeds(penny: Penny) -> None:
@@ -3485,7 +3498,7 @@ async def _seed_sample(
 ) -> None:
     """Lay a sample's world down before its first turn: the user, the world's own seeded
     store, the case's own seed, the embeddings those seeds need, any fixture skills, the
-    canned browse, and the case's late hook."""
+    canned browse, the world's mailbox, and the case's late hook."""
     seed_user(penny.db)
     seed_world_stores(penny.db, world)
     if seed is not None:
@@ -3495,6 +3508,8 @@ async def _seed_sample(
         await _seed_eval_skills(penny, seed_skills)
     if browse is not None:
         install_browse(penny, browse)
+    if world is not None and world.mailbox:
+        install_mailbox(penny, world.mailbox)
     if prepare is not None:
         prepare(penny)
 

@@ -836,7 +836,17 @@ place; #2001's world-integrity probe rides along. `speak-logread-browse-results`
 `speak-logread-user-messages-act` are not cases),
 `test_command_tools.py` (NL-dispatch
 contracts for the command-retirement tools), `test_email_dispatch.py`
-(NL-dispatch of the email tools that retired `/email` + `/zoho`),
+(#2209 — the email tools that retired `/email` + `/zoho`, PORTED to the cohort structure: TWO
+cases over one canned mailbox. `email-answers-from-the-message-asked-about` names a sender AND
+a subject that only one message shares — asking by sender and asking by subject are one
+behaviour, since a correct sample for either is correct for the other, and which field she
+searches on is a route measured in the tool sequence — and claims the reply carries that
+message's figure and none of the figures its neighbours carry (the sender's other mail, and
+another sender's mail on the same subject). `email-remark-stays-idle` is a remark about the
+volume of email: idle, the seeded newsletters collection unchanged, and every value sourced.
+The mailbox is declared on the world (`World.mailbox`, `utils/mailbox.py`'s `CannedMailbox`,
+whose deliberately lenient search rules are stated once there) and installed by the chat
+driver behind production's own Fastmail tool builder, so only the backend is canned),
 `test_skill_labelling.py` (#1828/#2058 — the run-end LEAF
 labeller's canonical set: four cohort cases (`namer-tells-two-sources-apart` ·
 `namer-names-a-search-spot-as-a-search` · `namer-names-every-spot-from-a-single-turn-teach` ·

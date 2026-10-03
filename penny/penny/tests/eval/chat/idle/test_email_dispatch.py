@@ -1,408 +1,404 @@
-"""NL-dispatch story: an email question reaches the mailbox, a grumble does not (#1445).
+"""Email: answering from the message an ask describes, and a remark that asks nothing (#2209).
 
-The retired ``/email`` + ``/zoho`` commands became a tool surface the model reaches from
-plain language, so the story is one sentence with two directions:
+Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-  * a question ABOUT the mailbox ("did I get an email from X?", "check my email for Y")
-    dispatches to ``search_emails`` — the entry point of the search → read → answer
-    surface — carrying the sender or topic the user actually named; and
-  * a REMARK about email ("i get way too much email these days") reaches nothing, and
-    the reply does not claim she went and looked.
+**Two cases.**  The email tools reach a mailbox from plain language, and a message about email
+either asks the mailbox something or it does not:
 
-**Dispatch stands on the tool descriptions ALONE.**  Migration 0078 seeded a "Look up
-email" skill that taught this routing; 0092 deleted its entries, 0097 deleted the
-collection carrying them, and since 0108 nothing is pre-seeded at all.  These cases seed
-no skills and no collections, so the world they measure is exactly a fresh deployment's:
-the model reads ``search_emails``'s own description and decides.  The loud probe below
-asserts that world out loud rather than trusting it — a mailbox that failed to install
-would score every sample a dispatch failure it never had a chance to make.
+* ``email-answers-from-the-message-asked-about`` — asked what a named sender's email about a
+  named subject says, the reply carries that message's figure and no neighbour's;
+* ``email-remark-stays-idle`` — told the inbox is out of control, the machine stays in idle
+  and the store is as it was.
 
-**The conversation state machine fronts every driven turn** (#1706): it classifies before
-the chat agent runs, and an email question lands in whatever state it lands in.  What is
-scored here is the chat turn's DISPATCH, never the state it landed in.
+**Asking by sender and asking by subject are ONE behaviour.**  Both are "find the message the
+ask describes and answer from it", and against one mailbox a correct sample for either is
+correct for the other: the reply carries the matching message's figure, and none of the
+figures the messages beside it carry.  What differs is which field the search is made on —
+the sender, the subject, the free text, or several at once — and that is a ROUTE, measured in
+the tool sequence and never asserted.  So every wording names BOTH the sender and the subject,
+and the mailbox is built so that neither alone picks the message out: the same sender sent a
+second message about something else, and a second sender sent mail about the same subject.
+A search on either field returns the matching message beside a neighbour, and choosing
+between them is the behaviour.
 
-Scoring is STRUCTURAL — the persisted tool call and its arguments, and the store read
-before and after — with one narrow REPLY floor on the no-fire direction, where saying she
-checked the inbox is a claim the record contradicts (the visible-degradation rule applied
-to what she tells the user).  How well she answered is read at joint review against each
-case's ``reference`` reply, which is DATA rather than a comment so the deterministic pin
-in ``test_eval_harness.py`` can run it through this module's own vocabulary without a GPU.
+**The remark is its own case**, because its correct end state is not the lookup's: a reply
+that answers it carries no figure from the mailbox at all, so the lookup's claims fail it.  It
+claims what SURVIVES — the machine still in idle and the store as it was — never that the
+mailbox went unsearched: whether to look is the model's call on a remark about her inbox, and
+it is measured in the tool sequence (``docs/principles.md`` §4.3).
 
-The mailbox is mocked at the system boundary via the ``prepare`` hook — that hook is also
-what REGISTERS the tools, since ``ChatAgent`` builds them only when a mailbox is
-configured — so no real IMAP/JMAP is involved.  Senders and topics are synthetic (the repo
-is public).
+**The mailbox is canned at the system boundary.**  The world declares five synthetic messages
+(``World.mailbox``), and the driver installs them behind production's own Fastmail tool
+builder — ``search_emails`` and ``read_emails``, the shipped descriptions, the shipped
+summarising read — so only the backend is fake.  How a canned search matches is stated once,
+in ``utils/mailbox.py``; it is deliberately lenient, so a query is answered with every message
+carrying any of its words and the neighbours reach the model.
 
-Report-only (``min_pass_rate=None``): a live-model dispatch rate is a number to read, and
-the threshold is the code owner's to set once the numbers are read.
+**The world also holds one collection** — the newsletters the user reads.  It is what gives a
+preservation claim something to read on both cases: a remark that the inbox is out of control
+can reasonably tempt a turn into pruning the user's subscriptions, and an email question is a
+read.  Both claim the collection is still there, unchanged; neither claims nothing was written.
+
+**What the claims read.**
+
+* The FIGURE the lookup asks for is ``18,375``, asserted as its last digit group ``375`` — the
+  part every rendering of the amount shares (``$18,375`` · ``18,375`` · ``18375``).  It is the
+  only answer the ask requests: the sender and the subject are named in the ask itself, so a
+  reply repeating them proves nothing about which message was read.
+* The NEIGHBOURS' figures — ``145`` (the same sender's site-assessment invoice) and ``990``
+  (the other sender's ``$14,990`` advertised price) — are the tokens the reply must not carry.
+  Each answers no part of the ask, so a reply stating one has taken a neighbouring message for
+  the one asked about.  Provenance cannot see that: once a search returned the neighbour, its
+  figure IS something the model was given.
+* Every specific value the reply or the store carries traces to what the turn was given — the
+  user's words and the tool results, which hold the messages the turn actually opened.
+* A route is never claimed: not which email tool ran, not whether she read the message or
+  answered from its preview, not how many searches it took.
+
+**Blind spots, stated.**  A figure the reply rounds ("about $18.4k") carries none of the
+asserted digits, so it misses the answer claim and is invisible to the neighbour claim.  A
+reply that names the neighbouring messages without their figures passes the neighbour claim,
+which is a finding for a person reading the modal sample.
+
+REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
+accept once the numbers have been read.  Every sender, address, subject and figure is invented,
+because the repo is public.
 """
 
 from __future__ import annotations
 
-from functools import partial
 from typing import NamedTuple
-from unittest.mock import AsyncMock
 
 import pytest
 
-from penny.email.models import EmailAddress, EmailDetail, EmailSummary
+from penny.conversation_machine import ConversationState
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
-    REPLY_ANCHOR,
+    EVAL_MODELS,
     ChatEval,
-    Check,
     Preparer,
-    Scorer,
-    last_tool_args,
-    new_collections,
-    routing_clean,
-    tool_call_sequence,
-    tool_not_called,
-    tool_was_called,
+    collection_entries,
 )
-from penny.tests.eval.utils.dispatch_world import assert_dispatch_world
-from penny.tools.draft_email import DraftEmailTool
-from penny.tools.list_emails import ListEmailsTool
-from penny.tools.list_folders import ListFoldersTool
-from penny.tools.read_emails import ReadEmailsTool
-from penny.tools.search_emails import SearchEmailsTool
+from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
+from penny.tests.eval.utils.cohort import (
+    ENTRIES_STORED,
+    REPLY_SPREAD,
+    TOOL_SEQUENCE,
+    TRANSITIONS,
+    SampleObservation,
+    SpecCategory,
+    fold_typography,
+)
+from penny.tests.eval.utils.dispatch_world import assert_surface_carries
+from penny.tests.eval.utils.fixtures import SynthCollection
+from penny.tests.eval.utils.mailbox import CannedEmail
+from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
-# Family tag (explicit, meaningful grouping) for every case in this module — shared with
-# the sibling dispatch stories (generate_image, choose) so the report's families rollup
-# reads chat-surface tool dispatch as one group.
+# Shared with the sibling dispatch stories (generate_image, choose, the muting contracts) so the
+# report's families rollup reads chat-surface tool dispatch as one group.
 _FAMILY = "nl-dispatch"
 
-_SEARCH_EMAILS = "search_emails"
+# The surface a Fastmail deployment carries, which is what the driver installs.
+EMAIL_TOOLS = ("search_emails", "read_emails")
 
-# The whole mailbox surface a configured deployment carries.  The no-fire direction asks
-# that NONE of it fired, so the set is named once and read twice.
-_EMAIL_TOOLS = (
-    _SEARCH_EMAILS,
-    "read_emails",
-    "list_emails",
-    "list_folders",
-    "draft_email",
-)
-
-# ── The canned mailbox ────────────────────────────────────────────────────────
-# One message, synthetic throughout.  It exists so a dispatched search RETURNS something
-# and the turn can go on being an ordinary turn; nothing here is scored.
-
-_SUMMARY = EmailSummary(
-    id="E1",
-    subject="Rooftop solar quote — next steps",
-    from_addresses=[EmailAddress(name="Priya Nakamura", email="priya@example.com")],
-    received_at="2026-02-10T14:30:00Z",
-    preview="Thanks for the site visit — attached is the quote for the rooftop solar install...",
-)
-
-_DETAIL = EmailDetail(
-    id="E1",
-    subject="Rooftop solar quote — next steps",
-    from_addresses=[EmailAddress(name="Priya Nakamura", email="priya@example.com")],
-    to_addresses=[EmailAddress(name="Test User", email="test@example.com")],
-    received_at="2026-02-10T14:30:00Z",
-    text_body="The rooftop solar quote is $18,400, valid for 30 days. Let me know to proceed.",
-)
+# What the lookup's reply owes, and what it must not carry — see the module docstring.
+QUOTE_FIGURE = "375"
+NEIGHBOUR_FIGURES = ("145", "990")
 
 
-def install_mailbox(penny: Penny) -> None:
-    """Wire a mocked mailbox so the email tools REGISTER and their boundary calls are
-    no-ops returning the canned message.
-
-    Installing the builder is what puts the tools on the surface at all —
-    ``ChatAgent._email_tools`` returns nothing without one — so this hook stands the
-    world up rather than merely stubbing a network call."""
-    client = AsyncMock()
-    client.search_emails.return_value = [_SUMMARY]
-    client.read_emails.return_value = [_DETAIL]
-    client.list_emails.return_value = [_SUMMARY]
-    client.get_folders.return_value = []
-    client.draft_response.return_value = "draft-1"
-
-    def build(user_query: str, today: str) -> list:
-        return [
-            SearchEmailsTool(client),
-            ReadEmailsTool(client, penny.chat_agent._model_client, user_query, today),
-            ListEmailsTool(client),
-            ListFoldersTool(client),
-            DraftEmailTool(client),
-        ]
-
-    penny.chat_agent._email_tools_builder = build
-
-
-# ── What a reply CLAIMING she went and looked says ────────────────────────────
+# ── The mailbox ──────────────────────────────────────────────────────────────
 #
-# Deliberately NARROW, and the only reply reading in the module: this is the one reply
-# failure with a structural answer — no email tool ran, so saying the inbox was checked is
-# a claim the record contradicts.  Every entry pairs a looking verb with the MAILBOX, in a
-# form a denial or an offer cannot produce: "want me to check your inbox?" carries none of
-# them, and neither does "i haven't looked".  A wide vocabulary would fail ordinary
-# sympathy about a full inbox, which is the correct answer to this message.
-#
-# The tripwire is each case's own ``reference`` reply, run through this set by the pin in
-# ``test_eval_harness.py``: a vocabulary that cannot pass the answer the case calls correct
-# would score every sample a miss, on a GPU, an hour later.
-_CLAIMS_SHE_CHECKED_THE_MAILBOX = (
-    "i checked your inbox",
-    "i checked your email",
-    "i checked your mail",
-    "i've checked your inbox",
-    "i've checked your email",
-    "i searched your inbox",
-    "i searched your email",
-    "i searched your mail",
-    "i've searched your inbox",
-    "i've searched your email",
-    "i looked through your inbox",
-    "i looked through your email",
-    "i went through your inbox",
-    "i went through your email",
-    "i'll search your inbox",
-    "i'll check your inbox for",
+# Five messages.  The quote is the one the ask describes; the invoice shares its sender, the
+# advert shares its subject, and the other two are ordinary mail.  Ids are opaque, as a real
+# backend's are, so no id says which message is which.
+
+_PRIYA = "Priya Nakamura"
+_PRIYA_ADDRESS = "priya@brightleaf-solar.example"
+
+THE_QUOTE = CannedEmail(
+    id="Mqx7",
+    subject="Your rooftop solar quote",
+    sender=_PRIYA,
+    address=_PRIYA_ADDRESS,
+    received_at="2026-09-22T15:10:00Z",
+    body=(
+        "Hi — thanks again for having us out to look at the roof. Here is the quote for the "
+        "rooftop solar install we talked about: 14 panels, a 5.6 kW system, installed price "
+        f"$18,{QUOTE_FIGURE} including permits. The quote holds until October 31. Reply here "
+        "when you'd like to book a start date.\n\nPriya Nakamura\nBrightleaf Solar"
+    ),
+)
+
+_SAME_SENDER = CannedEmail(
+    id="Mrt2",
+    subject="Site assessment invoice",
+    sender=_PRIYA,
+    address=_PRIYA_ADDRESS,
+    received_at="2026-09-12T18:40:00Z",
+    body=(
+        "Hi — here is the invoice for Thursday's site assessment visit: $145, already paid by "
+        "card on the day, so nothing is owed. Your quote will follow once our designer has the "
+        "roof measurements.\n\nPriya Nakamura\nBrightleaf Solar"
+    ),
+)
+
+_SAME_SUBJECT = CannedEmail(
+    id="Mvk9",
+    subject="Rooftop solar quotes — this month only",
+    sender="Sunvale Energy",
+    address="offers@sunvale-energy.example",
+    received_at="2026-09-25T13:00:00Z",
+    body=(
+        "Thinking about rooftop solar? Book a free home quote before October 15 and lock in "
+        "our autumn pricing: complete installs from $14,990. Unsubscribe any time."
+    ),
+)
+
+_LIBRARY = CannedEmail(
+    id="Mhp4",
+    subject="Your hold is ready",
+    sender="Cedar Hill Library",
+    address="holds@cedarhill-library.example",
+    received_at="2026-09-27T09:05:00Z",
+    body=(
+        "The book you reserved, The Salt Road, is waiting at the front desk. Please pick it "
+        "up within a week."
+    ),
+)
+
+_NEWSLETTER = CannedEmail(
+    id="Mzd6",
+    subject="Harbor Weekly — this Friday's roundup",
+    sender="Harbor Weekly",
+    address="news@harborweekly.example",
+    received_at="2026-09-26T11:00:00Z",
+    body=(
+        "This week: the ferry timetable changes, a new bakery on Quay Street, and the autumn "
+        "market returns to the square on Saturday."
+    ),
+)
+
+MAILBOX = (THE_QUOTE, _SAME_SENDER, _SAME_SUBJECT, _LIBRARY, _NEWSLETTER)
+
+# The collection the store already holds — see the module docstring.
+NEWSLETTERS = SynthCollection(
+    "newsletters",
+    "Newsletters the user is subscribed to and actually reads, with what each one covers.",
+    entries=(
+        "Harbor Weekly — local news roundup, every Friday",
+        "The Seedling — gardening tips, every other Tuesday",
+    ),
 )
 
 
-class _EmailCase(NamedTuple):
-    """One agreed message, and what the turn it opens has to look like.
+# ── The asks ─────────────────────────────────────────────────────────────────
+#
+# Five wordings of ONE message per case.  The lookup's every wording names the sender, the
+# subject and the figure wanted; what varies is how a person says it.  The remark's every
+# wording names email and asks nothing of it.
 
-    ``asks_for`` is the salient token of the sender or topic the user named — what a
-    faithful search must carry — or ``None`` for the no-fire direction, which is the
-    declaration that this message asks the mailbox for nothing.
+_LOOKUP_ASK = "did priya nakamura send me the rooftop solar quote yet? what does it come to?"
+_LOOKUP_PHRASINGS = (
+    "can you check my email for the rooftop solar quote from priya nakamura and tell me the price?",
+    "what's the total on priya nakamura's rooftop solar quote? it should be in my email",
+    "look through my inbox for the rooftop solar quote priya nakamura sent — how much is it?",
+    "i think priya nakamura emailed me that rooftop solar quote, how much did it come out to?",
+)
 
-    ``reference`` is how the message would be answered WELL: a review target, read at
-    joint review and never matched by the scorer.  It is DATA rather than a comment so
-    the deterministic pin can run it through this module's reply vocabulary without a GPU
-    — a scorer that cannot pass the answer the case itself calls correct is a broken
-    scorer, and that is cheaper to find here than on the queue."""
+_REMARK = "honestly i get way too much email these days, my inbox is out of control"
+_REMARK_PHRASINGS = (
+    "my inbox has been a total mess lately, there's just so much email",
+    "ugh, the amount of email i get now is ridiculous",
+    "i swear my inbox doubles every week, it's too much email",
+    "email has gotten completely out of hand for me lately",
+)
+
+
+# ── The worlds ───────────────────────────────────────────────────────────────
+#
+# One mailbox and one collection under both cases.  ``keeps`` and ``excludes`` are EMPTY on
+# both, and that is a report: neither ask tells her to keep anything.  ``answers`` is the
+# lookup's figure and nothing on the remark, which asks for nothing.
+
+LOOKUP_WORLD = World(
+    name="a mailbox with the quote, its sender's other mail and other mail on its subject",
+    pages=(),
+    keeps=(),
+    excludes=(),
+    answers=(QUOTE_FIGURE,),
+    stores=(NEWSLETTERS,),
+    mailbox=MAILBOX,
+)
+
+REMARK_WORLD = World(
+    name="the same mailbox, and a remark about it",
+    pages=(),
+    keeps=(),
+    excludes=(),
+    stores=(NEWSLETTERS,),
+    mailbox=MAILBOX,
+)
+
+
+class EmailCase(NamedTuple):
+    """One case: its id, its sentence, its world and the five wordings of its one message."""
 
     case_id: str
-    message: str
-    asks_for: str | None
-    reference: str
+    behaviour: str
+    world: World
+    ask: str
+    also_phrased: tuple[str, ...]
 
 
-_FROM_SENDER = _EmailCase(
-    case_id="tool-email-from-sender",
-    message="did I get an email from Priya Nakamura about the lease?",
-    asks_for="nakamura",
-    reference=(
-        "nothing from priya nakamura about a lease — the only thing of hers in there is a "
-        "rooftop solar quote from february."
+LOOKUP = EmailCase(
+    case_id="email-answers-from-the-message-asked-about",
+    behaviour=(
+        "In the chat agent, when the user asks what an email from a named sender about a named "
+        "subject says, Penny answers with the figure that message carries and none of the "
+        "figures the messages beside it carry, and the turn ends back in idle."
     ),
+    world=LOOKUP_WORLD,
+    ask=_LOOKUP_ASK,
+    also_phrased=_LOOKUP_PHRASINGS,
 )
 
-_FOR_TOPIC = _EmailCase(
-    case_id="tool-email-for-topic",
-    message="check my email for the rooftop solar quote",
-    asks_for="solar",
-    reference=(
-        "found it — priya nakamura sent the rooftop solar quote in february: $18,400, good "
-        "for 30 days."
+REMARK = EmailCase(
+    case_id="email-remark-stays-idle",
+    behaviour=(
+        "In the chat agent, when the user remarks on their email without asking anything of it, "
+        "Penny stays in idle and everything the store already held is still there, unchanged."
     ),
+    world=REMARK_WORLD,
+    ask=_REMARK,
+    also_phrased=_REMARK_PHRASINGS,
 )
 
-_GRUMBLE = _EmailCase(
-    case_id="tool-email-nofire",
-    message="honestly i get way too much email these days, my inbox is out of control",
-    asks_for=None,
-    reference="ugh, yeah. want me to dig through it and see what's actually worth reading?",
-)
-
-EMAIL_CASES = (_FROM_SENDER, _FOR_TOPIC, _GRUMBLE)
+# Every case, in one place — so the deterministic pins in ``test_eval_harness.py`` can hold each
+# world and its claims without a GPU.
+EMAIL_CASES = (LOOKUP, REMARK)
 
 
-# ── The loud probe: the mailbox really is on the surface ──────────────────────
+# ── The premise, asserted inside each sample before the turn ─────────────────
 
 
-def assert_mailbox_world(penny: Penny, case: _EmailCase) -> None:
-    """Everything this case's world is responsible for, asserted out loud: the five email
-    tools are registered, and the registry holds no collection.
+def assert_mailbox_world(penny: Penny, case: EmailCase) -> None:
+    """The world this case is answered in, asserted out loud: the email tools are on the chat
+    surface, and the store holds the newsletters collection exactly as the world seeds it.
 
-    Both claims are the shared dispatch-world probe (``dispatch_world``) — the registry
-    half reads COLLECTION-shaped memories only, since the four migration-0026 system log
-    markers are in every database and a probe that counted them could never pass."""
-    assert_dispatch_world(penny, case.case_id, _EMAIL_TOOLS)
+    The surface is read off the real ``get_tools``, so a mailbox that failed to install fails
+    here naming the missing tools rather than scoring fifteen samples that were never offered
+    one.  The collection is read back whole, so the preservation claim reads a store that
+    really held what the world says."""
+    assert_surface_carries(penny, case.case_id, EMAIL_TOOLS)
+    for held in case.world.stores:
+        stored = collection_entries(penny.db, held.name)
+        assert stored == dict(held.keyed), (
+            f"{case.case_id}: {held.name!r} must hold exactly what the world seeds — it holds "
+            f"{stored}"
+        )
 
 
-def _probe_mailbox_world(case: _EmailCase) -> Preparer:
-    """Install the mocked mailbox, then assert the world it stood up."""
-
-    def prepare(penny: Penny) -> None:
-        install_mailbox(penny)
+def _probe(case: EmailCase) -> Preparer:
+    def probe(penny: Penny) -> None:
         assert_mailbox_world(penny, case)
 
-    return prepare
+    return probe
 
 
-# ── Checks ────────────────────────────────────────────────────────────────────
+# ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _searched_check(db) -> Check:
-    """The headline: the question reached the mailbox at all.
+def _carries_no_neighbour_figure(tokens: tuple[str, ...]) -> WorldClaim:
+    """The reply carries none of the figures only a neighbouring message carries.
 
-    Anchored to the call itself, so the verdict sits on the row that made it and a miss
-    falls to the run-close table where a missing action belongs."""
-    fired = tool_was_called(db, _SEARCH_EMAILS)
-    return Check(
-        "calls: the question reached search_emails",
-        fired,
-        anchor=f"{_SEARCH_EMAILS}(",
-        rationale=None if fired else f"the turn fired {tool_call_sequence(db) or 'nothing'}",
-        kind="spine",
-    )
+    Read through ``fold_typography``, the one definition every reply probe folds through.  The
+    rationale names the figure the reply carried, which says which neighbour it was taken from."""
 
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        said = fold_typography(sample.reply)
+        carried = [token for token in tokens if token in said]
+        return not carried, f"the reply states {carried}, which only a neighbouring message carries"
 
-def _faithful_args_check(db, case: _EmailCase) -> Check:
-    """The search asks for what the USER named — the half that makes dispatch worth
-    anything, since a search for the wrong thing is a call that fired and answered nobody.
-
-    Read across every argument the call carried rather than one named field: the surface
-    takes sender, subject and free text, and which one a faithful search uses is the
-    model's to pick.  N/A when nothing was searched — there is no argument to read, and
-    counting it a miss would report one failure twice."""
-    label = f"calls: the search asks for {case.asks_for!r}"
-    args = last_tool_args(db, _SEARCH_EMAILS)
-    if args is None:
-        return Check.na(label, anchor=f"{_SEARCH_EMAILS}(", kind="spine")
-    asked = " ".join(str(value) for value in args.values()).lower()
-    carried = (case.asks_for or "") in asked
-    return Check(
-        label,
-        carried,
-        anchor=f"{_SEARCH_EMAILS}(",
-        rationale=None if carried else f"it asked for {args!r}",
-        kind="spine",
-    )
+    return answer
 
 
-def _no_mailbox_call_check(db) -> Check:
-    """Nothing on the mailbox surface fired — the whole no-fire direction in one check,
-    because "she went and searched" and "she drafted a reply" are the same failure: a
-    remark was read as an instruction.
+def claim_the_lookup(cohort: Cohort) -> None:
+    """Every claim the lookup case makes, declared in one place so the deterministic pins
+    answer the very set the case declares."""
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
 
-    The rationale NAMES which tool fired, so a miss reads as what happened rather than as
-    a bare red."""
-    fired = [name for name in _EMAIL_TOOLS if not tool_not_called(db, name)]
-    return Check(
-        "calls: no email tool fired on a remark about email",
-        not fired,
-        rationale=f"fired {fired}" if fired else None,
-        kind="spine",
-    )
+    # STORE — the figure the ask asked for is in the reply (a delivered message is a record the
+    # store holds), and the collection the turn was not sent to is as it was.
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.assert_what_the_store_held_survives()
 
-
-def _store_untouched_check(db, before: set[str]) -> Check:
-    """Nothing was created.  An email question is a READ, and this world holds no
-    collection at all — so a collection appearing is the whole "nothing else was touched"
-    claim rather than a sample of it: with an empty registry there is nowhere to write
-    that does not first show up here."""
-    created = sorted(row.name for row in new_collections(db, before))
-    return Check(
-        "state: nothing was created",
-        not created,
-        rationale=f"created {created}" if created else None,
-        kind="state",
-    )
-
-
-def _claims_no_search_check(reply: str) -> Check:
-    """The reply does not say she checked the mailbox when nothing checked it.
-
-    A FLOOR, deliberately narrow: everything else about the answer — whether the sympathy
-    landed, whether the offer was the right one — is read at joint review against the
-    case's reference reply, and an answer that just commiserates is not a miss."""
-    claimed = [phrase for phrase in _CLAIMS_SHE_CHECKED_THE_MAILBOX if phrase in reply.lower()]
-    return Check(
-        "reply: it claims no search happened",
-        not claimed,
-        anchor=REPLY_ANCHOR,
-        rationale=f"said {claimed}" if claimed else None,
+    # PROVENANCE — nothing stored or said was invented, and the figure came from the message
+    # asked about rather than from one beside it.
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.claim(
+        "reply: it states no figure only a neighbouring message carries",
+        _carries_no_neighbour_figure(NEIGHBOUR_FIGURES),
+        SpecCategory.PROVENANCE,
         kind="reply",
     )
 
 
-def _dispatch_advisories(db, reply: str) -> list[Check]:
-    """What the turn actually did, verbatim and UNSCORED — the calls it made and the
-    answer it gave — so a report shows the turn whichever way it went and the wording is
-    read where wording is read: at joint review."""
-    return [
-        Check(f"fired: {tool_call_sequence(db)}", True, kind="proc", scored=False),
-        Check(f"answered: {reply!r}", True, kind="reply", scored=False),
-        Check(
-            "calls: clean routing (no re-rolled draw or continue nudge)",
-            routing_clean(db),
-            scored=False,
-            kind="proc",
-        ),
-    ]
+def claim_the_remark(cohort: Cohort) -> None:
+    """Every claim the remark case makes — where the turn landed, what survived it, and that
+    nothing it stored or said was invented."""
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — what was already there survives.  The remark asks for nothing, so there is no
+    # answer for the reply to owe.
+    cohort.assert_what_the_store_held_survives()
+
+    # PROVENANCE — a remark about a full inbox invites a count nobody looked up; any number the
+    # reply states has to trace to something the turn was given.
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
 
 
-# ── Scorers ───────────────────────────────────────────────────────────────────
+# ``TOOL_SEQUENCE`` carries the route — which field she searched on, whether she read the message
+# or answered from its preview, whether she looked at all on the remark.  ``ENTRIES_STORED``
+# carries whether a turn chose to note something.  The registry features are out: neither ask
+# teaches a routine, so they would read the same empty registry on every sample.
+_MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
-def _score_email_ask(db, before: set[str], reply: str, *, case: _EmailCase) -> list[Check]:
-    """The question reached the mailbox, carrying what the user named, and the turn
-    touched nothing else.
-
-    No reply check on this direction: what the answer should say depends on what the
-    mailbox returned, which is the surface's business rather than dispatch's — so the
-    answer is an advisory, read at joint review against the case's reference."""
-    return [
-        _searched_check(db),
-        _faithful_args_check(db, case),
-        _store_untouched_check(db, before),
-        *_dispatch_advisories(db, reply),
-    ]
-
-
-def _score_email_grumble(db, before: set[str], reply: str) -> list[Check]:
-    """The remark reached nothing, nothing was created, and the reply does not claim a
-    search that never happened.
-
-    Every check is a negative, because the failure this direction exists to catch is
-    firing anything at all."""
-    return [
-        _no_mailbox_call_check(db),
-        _store_untouched_check(db, before),
-        _claims_no_search_check(reply),
-        *_dispatch_advisories(db, reply),
-    ]
-
-
-async def _run_email_case(chat_eval: ChatEval, case: _EmailCase) -> None:
-    """Drive one email case: the mocked mailbox installed and probed, the scorer bound to
-    the case's own token.  Report-only — the threshold is the code owner's to set once the
-    numbers are read."""
-    score: Scorer = (
-        _score_email_grumble if case.asks_for is None else partial(_score_email_ask, case=case)
-    )
-    await chat_eval(
+async def _drive(chat_eval: ChatEval, model: str, case: EmailCase) -> Cohort:
+    return await chat_eval(
         case_id=case.case_id,
+        behaviour=case.behaviour,
+        model=model,
+        prepare=_probe(case),
+        world=case.world,
+        ask=case.ask,
+        also_phrased=case.also_phrased,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
-        message=case.message,
-        prepare=_probe_mailbox_world(case),
-        score=score,
-        min_pass_rate=None,
+        timeout=240.0,  # a search, a read and its summarising call, maybe a second search
     )
 
 
-async def test_email_from_sender_dispatches(chat_eval: ChatEval) -> None:
-    """ "did I get an email from X about Y?" — the sender-anchored ask, and the one where a
-    search that drops the name would still look like it worked."""
-    await _run_email_case(chat_eval, _FROM_SENDER)
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_the_reply_comes_from_the_message_asked_about(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A sender and a subject that only one message shares, and the figure it carries."""
+    cohort = await _drive(chat_eval, model, LOOKUP)
+    claim_the_lookup(cohort)
+    cohort.measure(*_MEASURED)
 
 
-async def test_check_email_for_topic_dispatches(chat_eval: ChatEval) -> None:
-    """ "check my email for X" — the topic-anchored ask, an explicit instruction to go and
-    look, with nothing but a subject to search on."""
-    await _run_email_case(chat_eval, _FOR_TOPIC)
-
-
-async def test_casual_email_grumble_does_not_dispatch(chat_eval: ChatEval) -> None:
-    """A remark about the VOLUME of email asks the mailbox for nothing — the over-firing
-    direction, where the topic is email and the request is not."""
-    await _run_email_case(chat_eval, _GRUMBLE)
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_remark_about_email_stays_idle(chat_eval: ChatEval, model: str) -> None:
+    """Email named, and nothing asked of it."""
+    cohort = await _drive(chat_eval, model, REMARK)
+    claim_the_remark(cohort)
+    cohort.measure(*_MEASURED)

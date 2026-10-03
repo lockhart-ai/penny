@@ -1250,13 +1250,13 @@ def render_phrasings(arms: Sequence[cohort.Arm]) -> str:
 
 def render_ground(facts: WorldFacts) -> str:
     """The sources a world stands on, named by WHAT THEY ARE — ``1 page`` · ``2 collections``
-    · ``1 page, 2 collections``.
+    · ``1 page, 2 collections`` · ``1 collection, 5 emails``.
 
     Each substrate the world actually carries, and only those: a page-backed world says
     nothing about collections, so a world that grew a substrate is legible as one that did.
     A world carrying NO source still reads ``0 pages`` — the fold has to state a substrate,
     and a page is the one every world can count."""
-    carried = ((facts.pages, "page"), (facts.collections, "collection"))
+    carried = ((facts.pages, "page"), (facts.collections, "collection"), (facts.emails, "email"))
     named = [plural(count, noun) for count, noun in carried if count]
     return ", ".join(named) or plural(0, "page")
 
@@ -1424,6 +1424,7 @@ def _arm_world_facts(arms: Sequence[cohort.Arm]) -> WorldFacts:
     return WorldFacts(
         pages=sum(one.pages for one in counts),
         collections=sum(one.collections for one in counts),
+        emails=sum(one.emails for one in counts),
         keeps=sum(one.keeps for one in counts),
         excludes=sum(one.excludes for one in counts),
     )

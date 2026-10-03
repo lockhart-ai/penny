@@ -123,9 +123,17 @@ from penny.tests.eval.chat.idle.test_command_tools import (
 )
 from penny.tests.eval.chat.idle.test_email_dispatch import (
     EMAIL_CASES,
-    _claims_no_search_check,
+    EMAIL_TOOLS,
+    LOOKUP,
+    MAILBOX,
+    NEIGHBOUR_FIGURES,
+    NEWSLETTERS,
+    QUOTE_FIGURE,
+    REMARK,
+    THE_QUOTE,
     assert_mailbox_world,
-    install_mailbox,
+    claim_the_lookup,
+    claim_the_remark,
 )
 from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
     SOURCE_DOWN_CASES,
@@ -311,6 +319,7 @@ from penny.tests.eval.conftest import (
     _sample_turns,
     _score_extraction,
     _scorer_is_graded,
+    _seed_sample,
     _stamp_cause,
     _stated_pass_rate,
     _stored_entries,
@@ -380,6 +389,7 @@ from penny.tests.eval.utils.artifacts import (
 from penny.tests.eval.utils.assertions import Cohort, _ends_when_asked, assertion_rows
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import (
+    Arm,
     MechanismRecord,
     SampleObservation,
     StoredEntry,
@@ -405,6 +415,7 @@ from penny.tests.eval.utils.job_end import (
     job_ends_as_asked,
     until_tonight_at,
 )
+from penny.tests.eval.utils.mailbox import CannedMailbox
 from penny.tests.eval.utils.schedules import cadence_seconds, rule_parts
 from penny.tests.eval.utils.transition_world import (
     _JOURNEYS,
@@ -1547,10 +1558,7 @@ async def test_each_dispatch_probe_accepts_the_world_its_own_hook_stands_up(
     the world a sample is seeded into.  No model call is made — the probes only read the
     surface and the store."""
     async with running_penny(test_config) as penny:
-        install_mailbox(penny)
         install_image_client(penny)
-        for email_case in EMAIL_CASES:
-            assert_mailbox_world(penny, email_case)
         for image_case in IMAGE_CASES:
             assert_image_world(penny, image_case)
         assert_choose_world(penny)
@@ -1564,20 +1572,191 @@ def test_the_dispatch_no_fire_scorers_pass_each_case_s_own_reference_reply() -> 
     it.
 
     The same tripwire the chat beats carry (the "check the scorer before you blame the
-    model" rule, applied before the run rather than after it).  Both floors read a
+    model" rule, applied before the run rather than after it).  The floor reads a
     vocabulary, and a vocabulary that cannot match the agreed answer would score every
-    sample a miss — while one that matches nothing at all would pass a reply claiming an
-    inbox was searched or a picture drawn.  Both halves are checked, because only the pair
-    keeps the floor meaning anything."""
-    for case in EMAIL_CASES:
-        claimed = _claims_no_search_check(case.reference)
-        assert claimed.ok, f"{case.case_id}: {claimed.rationale} — reference: {case.reference!r}"
-    assert not _claims_no_search_check("i checked your inbox — nothing from priya.").ok
-
+    sample a miss — while one that matches nothing at all would pass a reply claiming a
+    picture was drawn.  Both halves are checked, because only the pair keeps the floor
+    meaning anything."""
     for case in IMAGE_CASES:
         drew = _claims_no_picture_check(case.reference)
         assert drew.ok, f"{case.case_id}: {drew.rationale} — reference: {case.reference!r}"
     assert not _claims_no_picture_check("here's the picture you asked for!").ok
+
+
+async def test_the_email_world_stands_up_through_the_driver(
+    mock_llm, running_penny, test_config
+) -> None:
+    """The email cases' world, laid down by the chat driver's OWN seeding path, puts the
+    shipped email tools on the surface behind the canned mailbox — and each case's loud probe
+    accepts it.
+
+    Driven through ``_seed_sample`` rather than a hand-installed builder, so a world whose
+    mailbox the driver silently skipped fails here naming the missing tools, inside ``make
+    check``, rather than as fifteen samples that were never offered a mailbox.  The search is
+    run through the REAL ``search_emails`` tool off ``get_tools``: a search on the sender and a
+    search on the subject each return the message asked about BESIDE a neighbour, which is the
+    temptation the lookup case measures — a mailbox that answered either with the quote alone
+    would make choosing the message nobody's work."""
+    assert LOOKUP.world.mailbox == REMARK.world.mailbox
+    assert LOOKUP.world.stores == REMARK.world.stores
+    async with running_penny(test_config) as penny:
+        await _seed_sample(
+            penny, world=LOOKUP.world, seed=None, seed_skills=None, browse=None, prepare=None
+        )
+        for case in EMAIL_CASES:
+            assert_mailbox_world(penny, case)
+        search = next(t for t in penny.chat_agent.get_tools() if t.name == EMAIL_TOOLS[0])
+        by_sender = (await search.run(from_addr="Priya Nakamura")).message
+        by_subject = (await search.run(subject="rooftop solar quote")).message
+    assert "Your rooftop solar quote" in by_sender and "Site assessment invoice" in by_sender
+    assert "Sunvale" not in by_sender
+    assert "Your rooftop solar quote" in by_subject and "Sunvale" in by_subject
+    assert "Site assessment invoice" not in by_subject
+
+
+async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
+    """The canned search's stated rules, each pinned: any word of a filter matches, every
+    supplied filter must match, the best match leads, the dates are applied, a stopword-only
+    filter constrains nothing, and the shared ``.example`` domain matches nobody.  A read
+    returns the messages its ids name, in the order asked, and skips an unknown one."""
+    mailbox = CannedMailbox(MAILBOX)
+
+    async def ids(**filters: str) -> list[str]:
+        return [found.id for found in await mailbox.search_emails(**filters)]
+
+    assert await ids(text="Priya Nakamura rooftop solar quote") == ["Mqx7", "Mrt2", "Mvk9"]
+    assert await ids(from_addr="priya", subject="quote") == ["Mqx7"]
+    assert await ids(from_addr="someone@nowhere.example") == []
+    assert await ids(text="solar", after="2026-09-23T00:00:00Z") == ["Mvk9"]
+    assert await ids(text="solar", before="2026-09-20") == ["Mrt2"]
+    assert len(await ids(text="the email from your inbox")) == len(MAILBOX)
+
+    read = await mailbox.read_emails(["nope", THE_QUOTE.id])
+    assert [one.id for one in read] == [THE_QUOTE.id]
+    assert f"18,{QUOTE_FIGURE}" in read[0].text_body
+
+
+def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_message() -> None:
+    """The figures the lookup's claims read are each carried by ONE message and nowhere else in
+    the world, and every wording names the sender and the subject while stating no figure.
+
+    A figure carried twice would let a reply read off the wrong message pass the answer claim,
+    or fail the neighbour claim for the right one; a wording that dropped the sender or the
+    subject would be a different message, not another phrasing of this one; and a wording that
+    stated a figure would answer the claim from the user's own words."""
+    ground = LOOKUP.world.says
+    owners = {
+        QUOTE_FIGURE: THE_QUOTE.id,
+        NEIGHBOUR_FIGURES[0]: "Mrt2",
+        NEIGHBOUR_FIGURES[1]: "Mvk9",
+    }
+    for token, owner in owners.items():
+        carriers = [email.id for email in MAILBOX if token in email.text]
+        assert carriers == [owner] and ground.count(token) == 1, (token, carriers)
+    for case in EMAIL_CASES:
+        for wording in (case.ask, *case.also_phrased):
+            assert not any(token in wording for token in owners), wording
+    for wording in (LOOKUP.ask, *LOOKUP.also_phrased):
+        assert "priya nakamura" in wording and "rooftop solar quote" in wording, wording
+    assert report.render_ground(LOOKUP.world.counts) == "1 collection, 5 emails"
+    assert "| 2 | email `Mqx7` |" in LOOKUP.world.render()
+
+
+def _email_sample(
+    name: str,
+    reply: str,
+    *,
+    landed: str = "idle",
+    held: list[StoredEntry] | None = None,
+    entries: list[StoredEntry] | None = None,
+) -> SampleObservation:
+    """One lookup-world sample: the newsletters the store held before, what it holds after,
+    and everything the mailbox carries as what the turn was given."""
+    before = [
+        StoredEntry(collection=NEWSLETTERS.name, key=k, content=c) for k, c in NEWSLETTERS.keyed
+    ]
+    return SampleObservation(
+        name=name,
+        phrasing="p",
+        arm=0,
+        landed=landed,
+        reply=reply,
+        given=LOOKUP.ask + "\n" + "\n".join(email.text for email in MAILBOX),
+        held_before=before,
+        held=before if held is None else held,
+        entries=entries or [],
+    )
+
+
+def _claim_answers(case_world, declare, samples: list[SampleObservation]) -> dict[str, list[bool]]:
+    cohort = Cohort("c", "m", samples, [Arm(label="p", text="p", world=case_world)])
+    declare(cohort)
+    return {claim.label: [one.ok for one in claim.outcomes] for claim in cohort.claims}
+
+
+def test_every_email_claim_can_see_its_failure() -> None:
+    """Each claim the two email cases declare holds on a correct sample and misses on the
+    sample that breaks it — answered through the very declarations the cases make.
+
+    The lookup: a reply that quotes the neighbour's figure misses the answer and the neighbour
+    claim while every value it carries is sourced (which is why provenance alone cannot see
+    it); an invented figure misses the answer and provenance; a pruned newsletter misses the
+    preservation claim; an invented stored entry misses store provenance; a turn that left idle
+    misses the landing.  The remark: a count nobody looked up misses reply provenance."""
+    pruned = [
+        StoredEntry(
+            collection=NEWSLETTERS.name, key="Harbor Weekly", content=NEWSLETTERS.entries[0]
+        )
+    ]
+    invented_entry = StoredEntry(collection="notes", key="Quote", content="Quote: $21,000")
+    samples = [
+        _email_sample("good", f"Yes — Priya's quote came to $18,{QUOTE_FIGURE} for 14 panels."),
+        _email_sample("swapped", "Sunvale's quote comes to $14,990."),
+        _email_sample("invented", "It comes to $19,200."),
+        _email_sample("pruned", f"$18,{QUOTE_FIGURE}.", held=pruned),
+        _email_sample("noted", f"$18,{QUOTE_FIGURE}.", entries=[invented_entry]),
+        _email_sample("wandered", f"$18,{QUOTE_FIGURE}.", landed="elicit"),
+    ]
+    lookup = _claim_answers(LOOKUP.world, claim_the_lookup, samples)
+    assert lookup == {
+        "state: the machine landed in idle": [True, True, True, True, True, False],
+        "reply: it states the answer the world carries": [True, False, False, True, True, True],
+        "state: everything the store already held is still there, unchanged": [
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+        ],
+        "state: every specific value in the stored entries is sourced": [
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+        ],
+        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: it states no figure only a neighbouring message carries": [
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+        ],
+    }
+    remark = _claim_answers(
+        REMARK.world,
+        claim_the_remark,
+        [
+            _email_sample("calm", "Ugh, same. Want help sorting it?"),
+            _email_sample("counted", "You have 312 unread emails right now."),
+        ],
+    )
+    assert remark["reply: every specific value in it is sourced"] == [True, False]
+    assert remark["state: the machine landed in idle"] == [True, True]
 
 
 def test_the_choose_claim_reads_the_pick_the_record_carries() -> None:

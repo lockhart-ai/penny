@@ -23,19 +23,22 @@ from penny.tests.eval.utils.fixtures import (
     CannedPage,
     SynthCollection,
 )
+from penny.tests.eval.utils.mailbox import CannedEmail
 
 
 class SourceKind(StrEnum):
     """What one of a world's sources IS — the only thing a substrate changes about it.
 
-    A world stands on pages a tool returns, on entries seeded into the store, or on both,
-    and every reader asks the same question of all of them: what does it say, what must be
-    kept from it, what does a reader open to check that.  So the substrate is a field on the
-    source rather than a second list each reader has to remember to look in — which is what
-    it was, and why a store-backed world rendered no ground at all (#2108)."""
+    A world stands on pages a tool returns, on entries seeded into the store, on the messages
+    a mailbox holds, or on any mix of them, and every reader asks the same question of all of
+    them: what does it say, what must be kept from it, what does a reader open to check that.
+    So the substrate is a field on the source rather than a second list each reader has to
+    remember to look in — which is what it was, and why a store-backed world rendered no ground
+    at all (#2108)."""
 
     PAGE = "page"
     COLLECTION = "collection"
+    EMAIL = "email"
 
 
 class WorldSource(BaseModel):
@@ -64,6 +67,7 @@ class WorldFacts(BaseModel):
 
     pages: int = 0
     collections: int = 0
+    emails: int = 0
     keeps: int = 0
     excludes: int = 0
 
@@ -75,7 +79,8 @@ class World(BaseModel):
     when the turn begins — the entries a case seeds into the user's own collections.  Both are
     ground the sample is GIVEN, so the driver lays both down and every reader walks them
     together as ``sources``; a world whose ground is entries rather than pages is not a world
-    with no ground.
+    with no ground.  ``mailbox`` is the third substrate: the messages the email tools answer
+    from (``CannedMailbox``), installed by the driver beside the pages for the same reason.
 
     ``keeps`` is one token set per SOURCE, in that same order — tokens that appear ONLY on that
     source, so a stored copy says which one it came from and an invented one matches neither.
@@ -111,16 +116,25 @@ class World(BaseModel):
     excludes: tuple[str, ...]
     answers: tuple[str, ...] = ()
     stores: tuple[SynthCollection, ...] = ()
+    mailbox: tuple[CannedEmail, ...] = ()
 
     @property
     def sources(self) -> tuple[WorldSource, ...]:
-        """Everything this world is made of, pages first — the ONE list every reader walks."""
-        return tuple(
-            WorldSource(label=page.match, kind=SourceKind.PAGE, text=page.text)
-            for page in self.pages
-        ) + tuple(
-            WorldSource(label=held.name, kind=SourceKind.COLLECTION, text=_holdings(held))
-            for held in self.stores
+        """Everything this world is made of, pages first, then the store, then the mailbox —
+        the ONE list every reader walks."""
+        return (
+            tuple(
+                WorldSource(label=page.match, kind=SourceKind.PAGE, text=page.text)
+                for page in self.pages
+            )
+            + tuple(
+                WorldSource(label=held.name, kind=SourceKind.COLLECTION, text=_holdings(held))
+                for held in self.stores
+            )
+            + tuple(
+                WorldSource(label=email.id, kind=SourceKind.EMAIL, text=email.text)
+                for email in self.mailbox
+            )
         )
 
     @property
@@ -169,6 +183,7 @@ class World(BaseModel):
         return WorldFacts(
             pages=len(self.pages),
             collections=len(self.stores),
+            emails=len(self.mailbox),
             keeps=len(self.names),
             excludes=len(self.excludes),
         )
