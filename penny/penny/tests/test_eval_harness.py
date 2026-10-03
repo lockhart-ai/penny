@@ -124,7 +124,10 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
     EMAIL_TOOLS,
     LOOKUP,
     MAILBOX,
+    MAILBOX_FIGURE_IN_REPLY,
     MAILBOX_FIGURES,
+    NAMES_A_MAILBOX_FIGURE,
+    NAMES_NO_MAILBOX_FIGURE,
     NEIGHBOUR_FIGURES,
     NEWSLETTERS,
     QUOTE_FIGURE,
@@ -1935,10 +1938,10 @@ async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     returns the messages its ids name, in the order asked, and skips an unknown one.
 
     The absent-message case's premise rides along.  A search on the sender it names returns
-    that sender's two messages, and each carries an amount the figure claim reads.  A search on
-    the subject it names — as a subject line or as free text — returns nothing.  And each
-    wording searched WHOLE returns exactly those two messages, so beyond the sender's name no
-    word a wording carries is a word of any message."""
+    that sender's two messages, and each carries an amount its measured feature reads.  A
+    search on the subject it names — as a subject line or as free text — returns nothing.  And
+    each wording searched WHOLE returns exactly those two messages, so beyond the sender's name
+    no word a wording carries is a word of any message."""
     mailbox = CannedMailbox(MAILBOX)
 
     async def ids(**filters: str) -> list[str]:
@@ -2044,12 +2047,14 @@ def test_every_email_claim_can_see_its_failure() -> None:
     measured as variance — so an invented unread count holds every claim it makes, while a
     pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
 
-    The absent message: a reply that says nothing was found holds every claim; one that gives
-    the sender's quote amount as the answer misses the figure claim while every value it
-    carries is sourced, since the mailbox was given; one that says nothing was found and names
-    the sender's two amounts as an aside, each correctly attributed, misses the figure claim
-    the same way; an amount no message holds misses provenance and not the figure claim; and a
-    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs."""
+    The absent message: a reply that says nothing was found holds every claim, and so does one
+    that names the sender's two amounts, since the mailbox was given and what a reply does with
+    a figure it was handed is measured; an amount no message holds misses provenance; and a
+    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
+
+    Its measured feature reads the first of those replies as naming none and the second as
+    naming a mailbox figure.  It declares no absent reading, so a cohort agreeing on either
+    value pools as agreement and never as blind."""
     pruned = [
         StoredEntry(
             collection=NEWSLETTERS.name, key="Harbor Weekly", content=NEWSLETTERS.entries[0]
@@ -2115,18 +2120,19 @@ def test_every_email_claim_can_see_its_failure() -> None:
         "state: every specific value in the stored entries is sourced": [True, False, True, True],
     }
     nothing = "Nothing from Priya Nakamura about a battery storage estimate."
+    silent = _email_sample("none", nothing, ask=ABSENT.ask)
+    naming = _email_sample(
+        "aside",
+        "No battery storage estimate from Priya Nakamura. Her rooftop solar quote is "
+        f"$18,{QUOTE_FIGURE} and her site assessment invoice was $145.",
+        ask=ABSENT.ask,
+    )
     absent = _claim_answers(
         ABSENT.world,
         claim_the_absent,
         [
-            _email_sample("none", nothing, ask=ABSENT.ask),
-            _email_sample("borrowed", f"It comes to $18,{QUOTE_FIGURE}.", ask=ABSENT.ask),
-            _email_sample(
-                "aside",
-                "No battery storage estimate from Priya Nakamura. Her rooftop solar quote is "
-                f"$18,{QUOTE_FIGURE} and her site assessment invoice was $145.",
-                ask=ABSENT.ask,
-            ),
+            silent,
+            naming,
             _email_sample("invented", "The estimate comes to $6,240.", ask=ABSENT.ask),
             _email_sample("pruned", nothing, held=pruned, ask=ABSENT.ask),
             _email_sample("noted", nothing, entries=[invented_entry], ask=ABSENT.ask),
@@ -2134,9 +2140,8 @@ def test_every_email_claim_can_see_its_failure() -> None:
         ],
     )
     assert absent == {
-        "state: the machine landed in idle": [True, True, True, True, True, True, False],
+        "state: the machine landed in idle": [True, True, True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
-            True,
             True,
             True,
             True,
@@ -2149,29 +2154,19 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             True,
-            True,
             False,
             True,
         ],
-        "reply: every specific value in it is sourced": [
-            True,
-            True,
-            True,
-            False,
-            True,
-            True,
-            True,
-        ],
-        "reply: it states no figure a message in the mailbox carries": [
-            True,
-            False,
-            False,
-            True,
-            True,
-            True,
-            True,
-        ],
+        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
     }
+
+    assert MAILBOX_FIGURE_IN_REPLY.read(silent) == NAMES_NO_MAILBOX_FIGURE
+    assert MAILBOX_FIGURE_IN_REPLY.read(naming) == NAMES_A_MAILBOX_FIGURE
+    assert MAILBOX_FIGURE_IN_REPLY.absent is None
+    split = eval_cohort.feature_variance(MAILBOX_FIGURE_IN_REPLY, [silent, naming])
+    agreed = eval_cohort.feature_variance(MAILBOX_FIGURE_IN_REPLY, [silent, silent])
+    assert (split.distinct, split.modal, split.blind) == (2, 1, False)
+    assert (agreed.distinct, agreed.modal, agreed.blind) == (1, 2, False)
 
 
 def test_the_choose_claim_reads_the_pick_the_record_carries() -> None:

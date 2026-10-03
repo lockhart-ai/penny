@@ -917,10 +917,11 @@ message's figure and none of the figures its neighbours carry (the sender's othe
 another sender's mail on the same subject). `email-absent-message` is a near miss: it names that
 same sender, whose two messages each carry an amount, and a subject no message carries, in five
 wordings that each say "email" or "inbox" — pinned in `make check`: a sender search returns the
-two messages, the subject matches none. It claims idle, the newsletters collection unchanged,
-every stored and said value sourced, and a reply carrying none of the amounts the mailbox's
-messages hold — read as a token, so an amount mentioned as a correctly attributed aside fails it;
-whether the reply says nothing was found is reply spread. `email-remark-stays-idle` is a remark about the
+two messages, the subject matches none. It claims idle, the newsletters collection unchanged, and
+every stored and said value sourced. What the reply does with the amounts it was handed is
+MEASURED, by a feature declared beside the case (`mailbox figure in the reply`: names a mailbox
+figure / names none), and whether the reply says nothing was found is reply spread.
+`email-remark-stays-idle` is a remark about the
 volume of email: idle, the seeded newsletters collection unchanged, and every stored value
 sourced — the reply is advice in her own words, measured as reply spread and never read for
 provenance.
