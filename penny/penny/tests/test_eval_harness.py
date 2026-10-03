@@ -400,6 +400,7 @@ from penny.tests.eval.utils.assertions import Cohort, _ends_when_asked, assertio
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import (
     Arm,
+    Given,
     MechanismRecord,
     SampleObservation,
     StoredEntry,
@@ -1606,7 +1607,7 @@ def _faithful_absent_fact_sample(case: AbsentFactCase) -> SampleObservation:
             "read the noticeboard — compost collection is the second and fourth Saturday at "
             "9am and there's a potluck on the 14th, but nothing about the plot waitlist."
         ),
-        given=f"{case.world.pages[0].text}\n{case.ask}",
+        given=Given(f"{case.world.pages[0].text}\n{case.ask}"),
     )
 
 
@@ -1841,7 +1842,7 @@ def _email_sample(
         arm=0,
         landed=landed,
         reply=reply,
-        given=LOOKUP.ask + "\n" + "\n".join(email.text for email in MAILBOX),
+        given=Given(LOOKUP.ask + "\n" + "\n".join(email.text for email in MAILBOX)),
         held_before=before,
         held=before if held is None else held,
         entries=entries or [],
@@ -6080,7 +6081,12 @@ def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
     the words the draw was TOLD to answer in were missing from it and read as inventions.
     The extraction case is the one that measured it; the other four carry the same defect on
     their own contracts' vocabulary, so all five are held here rather than one standing in
-    for the rest."""
+    for the rest.
+
+    What reached it is split by who put it there (#2203): the document the draw was handed is
+    what was STATED to it, and the contract is the frame around that — so a figure the draw
+    returns has to be in the document, while the contract's own words stay words it was
+    given."""
     db = _make_db(tmp_path, "micro-context-given")
     _log_prompt(
         db,
@@ -6095,6 +6101,8 @@ def test_every_micro_context_observer_is_given_the_contract_it_drew_under(
     assert observation.complete
     assert contract in observation.given
     assert EXTRACT_TAGGED_PAGE in observation.given
+    assert EXTRACT_TAGGED_PAGE in observation.given.content
+    assert contract not in observation.given.content
 
 
 def test_an_extraction_answer_carrying_the_contract_tags_invents_nothing(tmp_path) -> None:

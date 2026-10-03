@@ -98,6 +98,7 @@ from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
 from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE, PinnedClock
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
+from penny.tests.eval.utils.given import read_given
 from penny.tests.eval.utils.mailbox import CannedEmail, CannedMailbox
 from penny.tests.eval.utils.worlds import World
 from penny.tests.mocks.signal_server import MockSignalServer
@@ -2605,19 +2606,10 @@ NEVER_SPOKEN = "never started"
 SAMPLE_NEVER_FINISHED = "the sample never finished — stopped at its {bound:g}s wall-clock bound"
 NEVER_FINISHED = "never finished"
 
-# The turn roles that count as WORLD for a provenance claim.  Assistant turns are absent by
-# design — a value Penny invents early in a turn rides into the message history and would
-# then source itself from her own account of it, which is how a fabrication launders itself.
-# The SYSTEM prompt IS included, which is a correction: excluding it reported the CURRENT
-# DATE as a fabrication in 3 of 18 measured samples, because an entry keyed by the day it was
-# saved reads that date off the self-state header and nowhere else.  It carries none of the
-# laundering risk an assistant turn does — framework-rendered from the registry and the
-# ledger, and rendered BEFORE the turn acts, so it cannot contain anything this turn invented.
-#
-# For a MICRO-CONTEXT draw the system prompt is its output CONTRACT, which makes the same
-# correction load-bearing for a second reason (#2078): the tags the contract tells the draw
-# to write with are words the draw was GIVEN, so one appearing in the answer is a copy.
-_GIVEN_ROLES = frozenset({"user", "tool", "system"})
+# WHICH turns count as world for a provenance claim, and which part of each was stated rather
+# than wrapped around it, is ``utils/given.py``'s — the roles, the frame a result is narrated
+# in, the entry render, the timestamps.  What stays HERE is the one thing only a fixture
+# knows: which rows are this sample's own.
 
 
 # How a ported case reads one sample: its live database, the reply it produced, the
@@ -2640,9 +2632,9 @@ def measured_turn_ran(db: Database) -> bool:
     return bool(live_prompts(db))
 
 
-def given_to_the_model(db: Database) -> str:
-    """Everything this sample's turn was GIVEN, as one blob — the world a provenance claim
-    reads against (#1994).
+def given_to_the_model(db: Database) -> eval_cohort.Given:
+    """Everything this sample's turn was GIVEN — the world a provenance claim reads against
+    (#1994), split into what was stated and what the framework wrapped it in (#2203).
 
     THE ONE reader, for a chat turn and for a single-call micro-context draw alike, and it
     reads the PROMPTLOG rather than rebuilding the input at the call site — so the haystack is
@@ -2656,12 +2648,12 @@ def given_to_the_model(db: Database) -> str:
     failed on 2 of 15 CORRECT draws.  ``NOT_PRESENT:`` is in the extraction contract, so
     reading what was really given passes it by construction, and passes the classifier's state
     names, the binder's outcome names and every contract token nobody has written yet with it —
-    there is no list of tags to keep anywhere."""
-    return "\n".join(
-        str(turn.get("content") or "")
-        for turn in _iter_prompt_messages(db)
-        if turn.get("role") in _GIVEN_ROLES
-    )
+    there is no list of tags to keep anywhere.
+
+    The contract stays in the text for exactly that reason, and is scaffolding for the reason
+    #2203 measured: a NAME is sourced by anything the round was handed, a NUMBER only by what
+    was stated to it.  ``read_given`` draws that line where the turns still have their roles."""
+    return read_given(_iter_prompt_messages(db))
 
 
 def reply_embedding(db: Database, reply: str) -> list[float] | None:

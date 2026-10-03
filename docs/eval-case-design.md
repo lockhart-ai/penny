@@ -90,6 +90,23 @@ sends its reader to the transcripts, which show what the model *said* rather tha
 rides into the message history, and a later check that treats the history as source material lets
 the fabrication launder itself.
 
+**What a round was given is two things, and a number is sourced by only one of them.** The split
+is made where the observation is assembled (`utils/given.py`), from the turns' own structure:
+
+| | is | sources |
+|---|---|---|
+| **content** | what was stated to the round: every user-role turn (the user's message, a seeded turn, the document a micro-context is handed), a tool result's payload, and the entries a store read returned (key and content) | figures, names, addresses |
+| **scaffolding** | what the framework wrapped that in: system prompts, the narration line a result opens with, and the count line, list numbers and stamps the entry render lays entries out with | names and addresses only |
+| **moments** | the timestamps the framework rendered, wherever they stand: the date and time the round was told, the stamp on an entry, a run or a change | a date or a clock time, and nothing else |
+
+A stored recipe with an invented `2 tbsp` used to read as sourced, because a read is headed
+`2 entries`, its entries are numbered and the prompts number their lists. A reply may still say
+*when* something happened: `2026-10-02`, `October 2` and `20:11` are sourced by a stamp that says
+so, and the day of a date sources no quantity. The line between a result's payload and its frame is
+the one `Tool.format_result` draws for every tool, so nothing here knows a tool's name. A figure
+only a system prompt states is not sourced: a job's terms reach content through the classifier's
+document, which lists every running job with its schedule, and through any read that returns them.
+
 **A sample is hermetic** — its own database, its own conversation, its own pages — and every claim
 resolves against the world *that sample* was given. A model that ignores the page and emits a
 plausible value fails the `STORE` claim on whichever world it was handed.
@@ -738,6 +755,7 @@ The numbers on the PR inform the review; they are not its verdict.
 | `penny/penny/tests/eval/utils/assertions.py` | `Cohort` and the named claims a case makes against it |
 | `penny/penny/tests/eval/utils/worlds.py` | `World` — the ground a sample is GIVEN: the `pages` a browse returns, the `stores` already in the store when the turn begins and the `mailbox` the email tools answer from (`utils/mailbox.py`), walked together as `sources`, plus the `keeps` token set per source, the `excludes`, and the `answers` the reply must state; carried per **arm** (`cohort.Arm`), not per cohort |
 | `penny/penny/tests/eval/utils/clock.py` | the clock a sample runs on — `PinnedClock`, and the instant every sample starts at |
+| `penny/penny/tests/eval/utils/given.py` | what a round was given, read off its prompt log and split into content, scaffolding and moments — the world a `PROVENANCE` claim reads against |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
 | `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |

@@ -591,6 +591,8 @@ tests/eval/
   utils/            — shared machinery, and nothing else: artifacts · checkpoint ·
                       cohort · report · assemble · comment_split · roster ·
                       endpoint_smoke · baseline · replay · run_health · assertions ·
+                      given (what a round was given, split into the content a number is
+                      sourced by, the scaffolding around it, and the moments it was told) ·
                       worlds · fixtures · seeds · dispatch_world, the transition
                       ledger + world the state cases are built on, the memory-story
                       readers, and each of their own unit tests

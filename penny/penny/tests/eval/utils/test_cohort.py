@@ -9,8 +9,13 @@ completeness gate and the rendering in one dependency-light leaf is that they ar
 from __future__ import annotations
 
 import math
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
+from penny.database.models import MemoryEntry
+from penny.datetime_utils import format_log_timestamp
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.cohort import (
@@ -27,6 +32,7 @@ from penny.tests.eval.utils.cohort import (
     Arm,
     AssertionRow,
     AssertionSummary,
+    Given,
     MechanismRecord,
     OutputField,
     RoutineRecord,
@@ -54,8 +60,12 @@ from penny.tests.eval.utils.fixtures import (
     EXTRACT_TAGGED_PAGE,
     EXTRACT_UNSOURCED_NAME,
 )
+from penny.tests.eval.utils.given import read_given
 from penny.tests.eval.utils.worlds import World
+from penny.tools.base import Tool
+from penny.tools.memory_tools import format_entries
 from penny.tools.micro_context import MICRO_CONTEXT_SYSTEM_PROMPT
+from penny.tools.models import ToolResult
 
 _MODEL = "openai/gpt-oss-20b"
 _OTHER_MODEL = "google/gemma-4-26b-a4b-it"
@@ -327,6 +337,13 @@ def test_a_name_phrase_and_a_number_are_specific_values():
     # `7 AM PDT` reported `AM` as a name (#2190).
     assert specifics("it runs at 7 AM PDT, not 6:30 p.m. Pacific") == ["7 AM", "6:30 p.m"]
     assert specifics("it runs at 7\u202fAM every day") == ["7\u202fAM"]
+    # A word with a number hyphenated onto it is ONE name, not a name beside a quantity
+    # (#2203); a figure with its unit hyphenated after it is still the figure.
+    assert specifics("looked at run seeded-trail-cycle-2, then aurora\u2011deck\u20112") == [
+        "seeded-trail-cycle-2",
+        "aurora\u2011deck\u20112",
+    ]
+    assert specifics("a 10-minute marinade, per patch-2.3-notes") == ["10", "patch-2.3-notes"]
 
 
 def test_a_capital_at_a_clause_boundary_does_not_glue_into_a_name():
@@ -360,6 +377,74 @@ def test_a_name_the_round_was_never_given_is_reported_by_name():
         "Harbor",
         "Lights",
     ]
+    # A figure is sourced by what was STATED to the round, never by what the framework wrapped
+    # it in (#2203).  MEASURED: a stored recipe with an invented `2 tbsp` and `1 tsp` read as
+    # sourced — `2` and `1` are the count a read is headed by, the numbers its entries are
+    # listed under, the numbers of a prompt's own list and the day of every stamp.  The round
+    # below is laid out by production's own renders, so each of those is on it.
+    invented = "juice of 2 limes, 2 tbsp olive oil, 1 tsp ground cumin"
+    round_given = _recipe_round()
+    assert unsourced_specifics(invented, str(round_given)) == []
+    assert unsourced_specifics(invented, round_given) == ["2", "1"]
+    # What the round WAS told still traces: the entry's own `425F` and `25 min`, and the
+    # figure in the user's own message.
+    assert unsourced_specifics("a 10-minute marinade, then 25 min at 425 °F", round_given) == []
+    # A name is sourced by everything the round was handed, as before: the prompt's own words
+    # are words it was given (#2078), and the collection is named in the narration alone.
+    assert unsourced_specifics("Then Give it a stir, from Recipe Box", round_given) == []
+    assert unsourced_specifics("the Casimir Oyelaran recipe", round_given) == [
+        "Casimir",
+        "Oyelaran",
+    ]
+    # An identifier is weighed as the name it is: whole, against everything the round was
+    # handed.  MEASURED: a reply naming the run it had looked at, by the id the self-state
+    # header rendered for it, read as inventing the quantity `2`.
+    ran = read_given([{"role": "system", "content": "run seeded-trail-cycle-2 · FAILED (1 call)"}])
+    assert unsourced_specifics("I looked at run seeded\u2011trail\u2011cycle\u20112", ran) == []
+    assert unsourced_specifics("I looked at run seeded-trail-cycle-3", ran) == [
+        "seeded-trail-cycle-3"
+    ]
+    assert unsourced_specifics("it made 1 call, 2 times over", ran) == ["1", "2"]
+
+
+_TOLD = datetime(2026, 10, 2, 13, 11, tzinfo=ZoneInfo("America/Los_Angeles"))
+_TOLD_LINE = (
+    f"{PennyConstants.CURRENT_DATETIME_PREFIX}"
+    f"{_TOLD.strftime(PennyConstants.CURRENT_DATETIME_FORMAT)}"
+)
+_STAMPED = datetime(2026, 10, 2, 20, 11)
+_STAMP = format_log_timestamp(_STAMPED)
+_READ_CALL = {"id": "call-1", "function": {"name": "collection_read_latest"}}
+
+
+def _recipe_round() -> Given:
+    """One chat round as the prompt log holds it: a prompt with a numbered list and the date,
+    the user's ask, and a read of two stored recipes framed and laid out by production."""
+    recipes = [
+        MemoryEntry(
+            memory_name="recipe-box",
+            key=key,
+            content=content,
+            author="user",
+            created_at=_STAMPED,
+        )
+        for key, content in (
+            ("One-pot orzo", "One-pot orzo — orzo, lemon, spinach, 20 min."),
+            ("Sheet-pan fajitas", "Sheet-pan fajitas — peppers, onion, chicken, 25 min at 425F."),
+        )
+    ]
+    read = ToolResult(
+        message=format_entries(recipes, source="recipe-box", ordering="most recent first")
+    )
+    framed = Tool.format_result("collection_read_latest", {"memory": "recipe-box"}, read)
+    return read_given(
+        [
+            {"role": "system", "content": f"{_TOLD_LINE}\n1. Read it.\n2. Then give the answer."},
+            {"role": "user", "content": "add a 10-minute lime marinade to my fajitas recipe"},
+            {"role": "assistant", "content": "", "tool_calls": [_READ_CALL]},
+            {"role": "tool", "tool_call_id": _READ_CALL["id"], "content": framed},
+        ]
+    )
 
 
 def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_traces():
@@ -412,6 +497,54 @@ def test_a_value_said_in_a_different_shape_from_the_one_it_arrived_in_still_trac
     ran = "1. [2026-10-02 04:01 UTC] worked"
     assert unsourced_specifics("Runs: 04:01 UTC Oct 2, in October", ran) == []
     assert unsourced_specifics("Runs: 04:01 UTC Nov 2", ran) == ["Nov"]
+    # A stamp the framework rendered is a MOMENT (#2203): the date and time the round was told
+    # and the stamp on a run may each be said back, as a date or as a clock time, however
+    # either is written — and the digits of a stamp are no quantity.  The round below was told
+    # 1:11 PM on October 2 and shown a run stamped 20:11 UTC that day, in a prompt and nowhere
+    # else.
+    told = read_given(
+        [{"role": "system", "content": f"{_TOLD_LINE}\n- watch — last run FAILED {_STAMP}"}]
+    )
+    for said in (
+        "2026-10-02",
+        "2026‑10‑02 20:11 UTC",
+        "October 2, 2026",
+        "Friday, October 2nd",
+        "Oct. 2",
+        "2 October 2026",
+        "October 2026",
+        "20:11",
+        "8:11 PM",
+        "1:11 p.m.",
+        "13:11",
+    ):
+        assert unsourced_specifics(f"the last run was at {said}", told) == [], said
+    assert unsourced_specifics("add 2 tbsp, wait 20 min, 11 cloves, 2026 grams", told) == [
+        "2",
+        "20",
+        "11",
+        "2026",
+    ]
+    assert unsourced_specifics("it ran on 2026-10-03, at 21:11, on October 3", told) == [
+        "2026",
+        "10",
+        "03",
+        "21:11",
+        "3",
+    ]
+    # A job's stored terms are content where a content turn carries them, and a system prompt
+    # is not one: the self-state header alone sources no hour, the classifier's document —
+    # which lists every running job with its rule — does, and the expiry the header stamps is
+    # a moment like any other stamp.
+    header = {"role": "system", "content": f"- watch — FREQ=DAILY;BYHOUR=7 · expires: {_STAMP}"}
+    document = {"role": "user", "content": '- "watch" — runs "track" · FREQ=DAILY;BYHOUR=7'}
+    assert unsourced_specifics("it runs at 7 AM", read_given([header])) == ["7 AM"]
+    said = "it runs at 7 AM until 2026-10-02"
+    assert unsourced_specifics(said, read_given([header, document])) == []
+    # A date inside an address is part of the address, and is weighed as one.
+    assert unsourced_specifics("see https://news.example/2026-10-02/lantern", told) == [
+        "https://news.example/2026-10-02/lantern"
+    ]
     for reached in (
         "https://harborseals.example/news",
         "http://www.harborseals.example/news",
@@ -529,6 +662,16 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     # title's words in a sentence are values; so is a bare list of names, a name after a
     # label, a name with a dash after it, and a list item too long to be a title.
     assert specifics("5 listings matched.\n25. The Last One: it sold") == ["5"]
+    # A label that counts its own item is the list number said aloud (#2203).  MEASURED: a
+    # reply walking a two-step program as three steps of its own read as inventing `3`, once a
+    # numbered list in the prompt stopped sourcing it.  The same words in a sentence are read.
+    walked = (
+        "- Step\u202f1 \u2013 Browse: it loads the page\n"
+        "- Step\u202f2 \u2013 Extract: it pulls the value out\n"
+        "- Step 3: it stores the value"
+    )
+    assert specifics(walked) == []
+    assert specifics("after Step 3 it lost 4 entries") == ["3", "4"]
     assert specifics("I call it The Scout Mission, and The Top Contender is cedar.") == [
         "The",
         "Scout",
@@ -582,7 +725,12 @@ _GAME_PAGE = (
 def _stored(name: str, content: str, key: str | None = None) -> SampleObservation:
     entry = StoredEntry(collection="games", key=key, content=content)
     return SampleObservation(
-        name=name, phrasing="the ask", arm=0, landed="idle", entries=[entry], given=_GAME_PAGE
+        name=name,
+        phrasing="the ask",
+        arm=0,
+        landed="idle",
+        entries=[entry],
+        given=Given(_GAME_PAGE),
     )
 
 
@@ -687,7 +835,7 @@ def _round(name: str, *, container: str | None, wrote: str | None) -> SampleObse
         landed=ConversationState.LEARN.value,
         container=container,
         entries=entries,
-        given=wrote or "",
+        given=Given(wrote or ""),
     )
 
 
@@ -839,7 +987,7 @@ def test_the_reply_provenance_claim_reads_a_wrapped_url_as_sourced():
         arm=0,
         landed="idle",
         reply=f"i read `{_CITED}` today",
-        given=_GIVEN,
+        given=Given(_GIVEN),
     )
     world = World(name="base", pages=(), keeps=(), excludes=())
     cohort = Cohort("case", _MODEL, [sample], _one_arm(world))
@@ -1076,7 +1224,7 @@ def test_no_claim_can_opt_out_of_being_scored():
     world = World(name="base", pages=(), keeps=(("499",),), excludes=())
     samples = [
         SampleObservation(
-            name=f"s{i}", phrasing="the ask", arm=0, landed="learn", reply="x", given="x"
+            name=f"s{i}", phrasing="the ask", arm=0, landed="learn", reply="x", given=Given("x")
         )
         for i in range(2)
     ]

@@ -36,13 +36,15 @@ import calendar
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from functools import lru_cache
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_core import CoreSchema, core_schema
 from similarity.embeddings import cosine_similarity, token_containment_ratio
 
 from penny.tests.eval.utils.worlds import World
@@ -58,6 +60,56 @@ CEILING_MARGIN = 0.10
 COST_CEILING_MARGIN = 0.10
 
 NO_SPREAD = 0.0
+
+
+# ── What a round was given ───────────────────────────────────────────────────
+class Given(str):
+    """Everything a round was GIVEN, as one text — which also knows which part of itself was
+    STATED to the round and which part the framework wrapped that in (#2203).
+
+    The text is every turn the round was handed, in order, exactly as before: a name or an
+    address is sourced by any of it.  ``content`` is the part somebody or something stated —
+    the user's turns, a tool's own payload, the entries a store read returned — and a FIGURE
+    is sourced by that alone.  The rest is scaffolding: prompt instructions, list numbers,
+    counts, the line a result is narrated with.  MEASURED, before the two were told apart: a
+    stored recipe entry with an invented `2 tbsp` and `1 tsp` read as sourced, because a read
+    tool's own framing said `2 entries` and `1.` and the prompts number their lists.
+
+    ``moments`` are the timestamps the framework rendered for the round — the date and time it
+    was told, and every stamp on an entry, a run or a change.  A reply may say WHEN something
+    happened, so a date or a clock time is sourced by them; the digits of a stamp are not a
+    quantity, and source nothing else.
+
+    A ``str`` so that every reader of the whole text keeps reading it, and the split travels
+    with the value it describes instead of beside it, where a caller could leave it behind.  A
+    plain string read as one is all content and has no moments: text somebody assembled by
+    hand has no frame."""
+
+    content: str
+    moments: tuple[datetime, ...]
+
+    def __new__(
+        cls, text: str = "", *, content: str | None = None, moments: Iterable[datetime] = ()
+    ) -> Given:
+        given = super().__new__(cls, text)
+        given.content = text if content is None else content
+        given.moments = tuple(moments)
+        return given
+
+    @classmethod
+    def read(cls, value: object) -> Given:
+        """``value`` as a ``Given`` — itself, or a plain string as all content."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            return cls(value)
+        raise TypeError(f"what a round was given is text, not {type(value).__name__}")
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, _source: Any, _handler: Any) -> CoreSchema:
+        """Validated by ``read`` and kept as it is: the stock string schema hands back a plain
+        ``str``, which drops the split."""
+        return core_schema.no_info_plain_validator_function(cls.read)
 
 
 # ── What one sample left behind ──────────────────────────────────────────────
@@ -338,7 +390,8 @@ class SampleObservation(BaseModel):
     # delivered two messages would otherwise be judged on one of them, which is how a
     # discarded draw arriving first went unseen.
     delivered: list[str] = Field(default_factory=list)
-    given: str = ""
+    # Everything the round was given, and which part of it was stated — see ``Given``.
+    given: Given = Given()
     # The container the round was FRAMED on, read off the move that settled it — the same anchor
     # the turn's instruction rendered.  A write that landed anywhere else invented a destination
     # over one it was given.
@@ -1334,7 +1387,20 @@ _NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
 # The gap before it is whatever space the model drew, a narrow no-break one included.
 _GAP = r"[^\S\n]"
 _MERIDIEM = rf"(?:{_GAP}?[AaPp]\.?[Mm]\b)"
-_SPECIFIC = re.compile(rf"{_URL}|{_NAME_PHRASE}|\b{_NUMBER}\b{_MERIDIEM}?")
+# AN IDENTIFIER is a name, not a figure: a word with a number hyphenated onto it or into it
+# (`aurora-deck-2`, `seeded-trail-cycle-2`, `patch-2.3-notes`) names one thing, and its digits
+# count nothing.  Read as a figure, its number was sourced by any `2` the round happened to
+# carry and unsourced wherever the only `2` was the framework's own — MEASURED, a reply naming
+# the run it had looked at, by the id the self-state header rendered for it, read as inventing
+# a quantity.  So it is weighed as a name is: the world states that whole run of tokens side by
+# side, or it does not.  The word comes FIRST: a figure with something hyphenated after it
+# (`10-minute`, `15-20 min`) is still a figure with its unit.
+_IDENTIFIER_PART = r"[A-Za-z0-9']+(?:\.\d+)*"
+_IDENTIFIER = (
+    rf"\b[A-Za-z][A-Za-z']*(?=[A-Za-z0-9'.{re.escape(_HYPHENS)}]*[{re.escape(_HYPHENS)}]\d)"
+    rf"(?:[{re.escape(_HYPHENS)}]{_IDENTIFIER_PART})+"
+)
+_SPECIFIC = re.compile(rf"{_URL}|{_IDENTIFIER}|{_NAME_PHRASE}|\b{_NUMBER}\b{_MERIDIEM}?")
 # A percentage in front of a word for the speaker's OWN certainty measures nothing in the
 # world: "not 100% sure" states no value, and MEASURED, was reported as `unsourced: ['100']`
 # on a reply that named no figure at all.  The class is closed by what it means — how sure
@@ -1395,13 +1461,21 @@ _NEVER_A_NAME = frozenset({"i", "im", "ive", "ill", "id"})
 # in two.  A dash that punctuates (en, em) is not a hyphen and still ends the word, so
 # `### Casimir Oyelaran\u2014Signed` is not four title words.
 #
+# A label that COUNTS its own item is the same layout with the number said aloud: `Step 3 –
+# Store:` numbers the third thing in the reply's own list exactly as `3.` does.  The number
+# stands straight after the label's first word, with or without a dash set off after it.
+# MEASURED (#2203): a reply walking a routine as `Step 1 – … Step 2 – … Step 3 – …` over a
+# two-step program read as inventing `3`, once a numbered list in the prompt stopped sourcing it.
+#
 # THE BLIND SPOT, STATED: a name or a short clause in any of those positions
 # (`Casimir Oyelaran: signed`, `- Casimir Oyelaran: signed`, `### Casimir Oyelaran`,
 # `**Casimir Oyelaran**` alone on its line) is a label by this definition, so an invented name
-# there is not read.  The same name after the colon, in a sentence, in a list item that is not
-# a label, or in a heading longer than a title, still is.
+# there is not read, and nor is a figure a label counts itself by (`Batch 12: …`).  The same
+# name after the colon, in a sentence, in a list item that is not a label, or in a heading
+# longer than a title, still is.
 _LABEL_WORD = rf"[A-Za-z][A-Za-z'{re.escape(_HYPHENS)}]*"
-_LABEL_HEAD = rf"[A-Z][A-Za-z'{re.escape(_HYPHENS)}]*"
+_LABEL_COUNT = rf"(?:{_GAP}+\d+\b(?:{_GAP}+[{re.escape(_DASHES)}-](?={_GAP}))?)?"
+_LABEL_HEAD = rf"[A-Z][A-Za-z'{re.escape(_HYPHENS)}]*{_LABEL_COUNT}"
 # Label words stand side by side, or either side of the marks that pair them: `Pros/Cons`.
 _LABEL_GAP = r"(?:[ \t]*[/&][ \t]*|[ \t]+)"
 _LABEL_MORE_WORDS = 3
@@ -1700,14 +1774,35 @@ def _stated_values(text: str) -> list[list[str]]:
 #              read with, as the WHOLE address.  How an address is reached is not what it
 #              names, so its scheme, a leading `www.` and a closing slash are not compared.
 #
-# THE BLIND SPOTS, STATED.  A digit run inside an identifier (`a3f2b1`, `utf8`) is a number by
-# this definition, so a world carrying a hash sources the small numbers in it: telling an
-# identifier from a figure with its unit (`425F`, `14T10:00`) needs a list of shapes, and a list
-# of shapes is what this comparison is being repaired out of.  And the world is EVERYTHING the
-# round was given, scaffolding included — a numbered list, an entry count, a timestamp each
-# state a number whole, so a small quantity is sourced by them wherever they appear.  And
-# which half of the day an hour falls in is not weighed: `7 PM` is sourced by a world that
-# says `7`, because a world says "7 in the evening" in more ways than a grammar can list.
+#
+# WHICH PART OF THE WORLD states each kind is not the same (#2203):
+#
+#   a NUMBER   by the round's CONTENT alone — what the user said, what a tool returned, what
+#              the store held.  The framework's own numbers are not something anybody stated:
+#              a prompt's numbered list, the count a read is headed by, the number an entry is
+#              listed under.  MEASURED: an invented `2 tbsp` and `1 tsp` in a stored entry read
+#              as sourced by a read result's `2 entries` and `1.`.
+#   a MOMENT   a date or a clock time, by the round's timestamps as well: the date and time
+#              it was told, the stamp on an entry, a run or a change.  A reply may say WHEN, so
+#              `2026-10-02`, `October 2`, `20:11` and `8:11 PM` are each sourced by a stamp
+#              saying so, and the stamp's digits source nothing else — the day of a date is not
+#              a quantity.  A date or a time no stamp tells is read as the numbers it is
+#              written in, against the content, as it always was.
+#   a NAME and a URL  by everything the round was given, as before.  A prompt's own words are
+#              words the round was handed, and a contract's tag turning up in an answer is a
+#              copy (#2078).
+#
+# THE BLIND SPOTS, STATED.  A digit run inside a word with no hyphen (`a3f2b1`, `utf8`) is a
+# number by this definition, so content carrying a hash sources the small numbers in it:
+# telling an identifier from a figure with its unit (`425F`, `14T10:00`) needs a list of shapes,
+# and a list of shapes is what this comparison is being repaired out of.  Content is taken as
+# it comes, so a number a tool words into its own message (`Found 3 email(s)`), a date a page
+# or an email carries, and a list the content numbers itself each state their digits.  A figure
+# only a system prompt states — a job's terms in the self-state header, the values a collector
+# is pointed at — is not sourced; the same terms reach content wherever a document or a read
+# returns them.  And which half of the day an hour falls in is not weighed: `7 PM` is sourced
+# by a world that says `7`, because a world says "7 in the evening" in more ways than a grammar
+# can list.
 _FIGURE = re.compile(r"(\d+(?:[.,:]\d+)*)(?:[ \t]?([ap])\.?m\b)?")
 _CLOCK_TIME = re.compile(r"(\d{1,2}):(\d{2})")
 _ON_THE_HOUR = "00"
@@ -1812,6 +1907,94 @@ def _address(url: str) -> str:
     return _HOW_AN_ADDRESS_IS_REACHED.sub("", fold_typography(url)).rstrip(_CLOSING_SLASH)
 
 
+# ── Moments: a date or a time the round was told ──
+#
+# Read off the TEXT with the marks the model draws them in — the drawn dashes of an ISO date,
+# the narrow space before a meridiem — and compared with the round's timestamps as the
+# datetimes they are.  A month is its name or its usual short form; an ordinal's letters and a
+# stop after an abbreviation are how the day and the month were written, not part of either.
+_DATE_HYPHEN = rf"[{re.escape(_DASHES)}-]"
+_MONTH_NUMBERS = {
+    name: number
+    for number in range(1, _MONTHS_IN_A_YEAR + 1)
+    for name in (calendar.month_name[number], calendar.month_abbr[number])
+}
+_MONTH_SAID = rf"\b(?P<month>{'|'.join(sorted(_MONTH_NUMBERS, key=len, reverse=True))})\b\.?"
+_DAY_SAID = r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\b"
+_YEAR_SAID = r"(?P<year>\d{4})\b"
+_THE_YEAR_AFTER = rf"(?:,?{_GAP}+{_YEAR_SAID})?"
+_DATES_SAID = (
+    re.compile(rf"\b{_YEAR_SAID}{_DATE_HYPHEN}(?P<month>\d{{2}}){_DATE_HYPHEN}(?P<day>\d{{2}})\b"),
+    re.compile(rf"{_MONTH_SAID}{_GAP}+{_DAY_SAID}{_THE_YEAR_AFTER}"),
+    re.compile(rf"\b{_DAY_SAID}{_GAP}+(?:of{_GAP}+)?{_MONTH_SAID}{_THE_YEAR_AFTER}"),
+    re.compile(rf"{_MONTH_SAID},?{_GAP}+{_YEAR_SAID}"),
+)
+# A clock time stands on its own: `15:10` inside `15:10:00` is part of a longer figure.
+_CLOCK_SAID = re.compile(
+    rf"(?<![\d:.])(?P<hour>\d{{1,2}})(?::(?P<minutes>\d{{2}}))?\b(?!:\d)"
+    rf"(?:{_GAP}?(?P<meridiem>[AaPp])\.?[Mm]\b)?"
+)
+
+
+def _tells_the_date(said: re.Match[str], moments: Sequence[datetime]) -> bool:
+    """Whether a date written in the text is the date of a moment the round was told — on
+    every part the text states, so `October 2` is told by any October 2nd."""
+    parts = said.groupdict()
+    month = parts["month"]
+    number = int(month) if month.isdigit() else _MONTH_NUMBERS[month]
+    day, year = parts.get("day"), parts.get("year")
+    return any(
+        moment.month == number
+        and (day is None or moment.day == int(day))
+        and (year is None or moment.year == int(year))
+        for moment in moments
+    )
+
+
+def _tells_the_time(said: re.Match[str], moments: Sequence[datetime]) -> bool:
+    """Whether a CLOCK TIME written in the text is the time of a moment the round was told.
+    A bare number is not a clock time: it takes minutes or a meridiem to say one."""
+    minutes, meridiem = said["minutes"], (said["meridiem"] or "").casefold()
+    if minutes is None and not meridiem:
+        return False
+    figure = said["hour"] if minutes is None else f"{said['hour']}{_CLOCK_SEPARATOR}{minutes}"
+    told = {form for moment in moments for form in _clock_forms(moment)}
+    return bool(_readings(figure, meridiem) & told)
+
+
+def _clock_forms(moment: datetime) -> list[str]:
+    """One moment's time of day in its written forms, on either clock."""
+    minutes = f"{moment.minute:02d}"
+    hours = {moment.hour, moment.hour % _HALF_DAY or _HALF_DAY}
+    return [form for hour in hours for form in _told(hour, minutes)]
+
+
+def _inside_any(span: tuple[int, int], spans: Sequence[tuple[int, int]]) -> bool:
+    return any(start <= span[0] and span[1] <= end for start, end in spans)
+
+
+_Tells = Callable[[re.Match[str], Sequence[datetime]], bool]
+
+
+def _without_told_moments(text: str, moments: Sequence[datetime]) -> str:
+    """``text`` with every date and clock time a moment tells blanked in place, so what is left
+    to read is what the content has to answer for.  Nothing inside an address is a date."""
+    if not moments:
+        return text
+    addresses = [match.span() for match in _URL_PATTERN.finditer(text)]
+
+    def blank_if(tells: _Tells) -> Callable[[re.Match[str]], str]:
+        def blank(said: re.Match[str]) -> str:
+            told = not _inside_any(said.span(), addresses) and tells(said, moments)
+            return _blank(said) if told else said.group()
+
+        return blank
+
+    for date in _DATES_SAID:
+        text = date.sub(blank_if(_tells_the_date), text)
+    return _CLOCK_SAID.sub(blank_if(_tells_the_time), text)
+
+
 @dataclass(frozen=True)
 class _WorldValues:
     """Everything a round was given, read as the values it states."""
@@ -1819,6 +2002,7 @@ class _WorldValues:
     addresses: frozenset[str]
     figures: frozenset[str]
     tokens: str
+    moments: tuple[datetime, ...] = ()
 
     def unsourced(self, value: Sequence[str]) -> list[str]:
         """The parts of one stated value the world does not state."""
@@ -1848,19 +2032,27 @@ class _WorldValues:
         return _side_by_side(tokens) in self.tokens
 
 
-@lru_cache(maxsize=8)
 def _world_values(given: str) -> _WorldValues:
-    """``given`` read once.  A cohort weighs every entry and reply of a sample against one
-    world, so the reading is kept rather than repeated per value."""
-    folded = fold_typography(given)
+    """What ``given`` states, kind by kind — a plain string as all content."""
+    world = Given.read(given)
+    return _read_world(str(world), world.content, world.moments)
+
+
+@lru_cache(maxsize=8)
+def _read_world(everything: str, content: str, moments: tuple[datetime, ...]) -> _WorldValues:
+    """One world read once.  A cohort weighs every entry and reply of a sample against one
+    world, so the reading is kept rather than repeated per value.  Keyed on all three parts: a
+    ``Given`` compares equal to its own text, which says nothing about what in it is content."""
+    folded = fold_typography(everything)
     return _WorldValues(
         addresses=frozenset(
             _address(url)
-            for match in _URL_PATTERN.finditer(given)
+            for match in _URL_PATTERN.finditer(everything)
             for url in _urls_in(match.group())
         ),
-        figures=_figures(folded),
+        figures=_figures(fold_typography(content)),
         tokens=_side_by_side([*_whole_tokens(folded), *_months_named(folded)]),
+        moments=moments,
     )
 
 
@@ -1871,9 +2063,13 @@ def unsourced_specifics(text: str, given: str) -> list[str]:
     the world, never by its characters turning up inside a larger one.  Matching folds
     typography and drops possessives on both sides, because a value is usually said in a
     different shape from the one it arrived in — comparing raw forms reported the model's own
-    grammar as an invention."""
+    grammar as an invention.
+
+    ``given`` is a :class:`Given` wherever a round was observed: its figures are weighed
+    against the round's content, its dates and times against the round's moments as well, and
+    its names and addresses against everything."""
     world = _world_values(given)
     missing: list[str] = []
-    for value in _stated_values(text):
+    for value in _stated_values(_without_told_moments(text, world.moments)):
         missing += [part for part in world.unsourced(value) if part not in missing]
     return missing
