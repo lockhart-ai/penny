@@ -308,8 +308,8 @@ def render_key(key: str) -> str:
     source of the convention: the entry-list renders and the chat recall
     headers all call this, so the form can't
     partially revert to the old copy-hostile ``[key]`` display (whose brackets
-    the model pasted verbatim into key args — the eval contract in
-    ``tests/eval/test_bracket_key_recovery.py`` guards the behaviour).
+    the model pasted verbatim into key args — the key tools' teaching rejection
+    of a bracket-wrapped key is pinned in ``tests/tools/test_memory_tools.py``).
     """
     return f"key={render_key_value(key)}"
 

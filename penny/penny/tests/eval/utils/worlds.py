@@ -20,7 +20,6 @@ from pydantic import BaseModel, ConfigDict
 from penny.tests.eval.utils.fixtures import (
     AURORA_LISTING_499,
     LISTING_URL,
-    TOPIC_PAGES,
     CannedPage,
     SynthCollection,
 )
@@ -307,49 +306,4 @@ LISTING_DEMO_PHRASINGS = (
     f"ok, head to {LISTING_URL}, check what the price is right now, and save it",
     f"yep — read {LISTING_URL}, pull the current price off it, and remember that",
     f"just visit {LISTING_URL}, note the price it's at now, and hang on to it",
-)
-
-
-# ── The lookup world (the recovery cases' ground) ────────────────────────────
-#
-# ONE page, carrying one fact with a number in it, because what a recovery case asks is
-# whether the answer that finally reaches the user came off the page — and a number is a
-# specific value a provenance claim can trace.  Nothing is meant to be KEPT: the turn
-# answers a question, so a `keeps` token set would state a contract the ask never made.
-
-# The ask names BOTH halves — which lake, and how deep — because `answers` states what the
-# ask asked for, and an assertion may only require what a correct reply owes.  Asked for the
-# lake alone, "It's Lake Baikal, in Siberia." is a complete answer, and requiring the depth
-# of it would fail a correct run for something nobody requested.  The depth is what the case
-# is FOR (it is the page's own figure, so a reply carrying it read the page rather than its
-# own memory), which makes asking for it the fixture's job rather than the claim's.
-DEEPEST_LAKE_ASK = "what's the deepest lake in the world, and how deep is it?"
-
-# Four more wordings of that same question.  What varies is only how a person asks it —
-# which noun opens it, "deepest" or "greatest depth", whether it is put as a plain
-# question or as a request to look something up.  What does NOT vary is the pair of facts
-# being asked for, the page that carries them, or the state the turn ends in.
-DEEPEST_LAKE_PHRASINGS = (
-    "which lake is the deepest on earth, and what depth does it reach?",
-    "hey, do you know what the world's deepest lake is and how deep it goes?",
-    "can you look up which lake is the deepest anywhere in the world, and how deep?",
-    "i'm curious — what lake has the greatest depth of any lake, and what is that depth?",
-)
-
-# `keeps` is empty because the turn answers a question and stores nothing, so a keeps set
-# would state a contract the ask never made.  `answers` is what the REPLY has to state, and
-# it is not that contract read twice: both tokens are things the ask asked for, and the
-# page's own figure is what says the answer came off the page rather than out of the model,
-# which is the whole behaviour these cases are named for.  `baikal` is a proper noun and
-# `642` is digits — both strictly identifiable, neither a phrasing.  `642` rather than
-# `1,642` because the models group the digits three different ways in observed replies —
-# `1,642`, `1642` and `1 642` — and the bare group is the part all three share, so the claim
-# reads the value and not the formatting.  It appears nowhere else in this world, so nothing
-# but the depth can satisfy it.
-DEEPEST_LAKE = World(
-    name="base",
-    pages=TOPIC_PAGES,
-    keeps=(),
-    excludes=(),
-    answers=("baikal", "642"),
 )

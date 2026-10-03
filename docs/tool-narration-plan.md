@@ -83,8 +83,8 @@ These are the settled findings that constrain the design. They orient the rest o
 `format_result` is a "what the model reads" change, so per house rules it ships with a
 **non-regression** eval against the existing cases — the tagged framing must not raise the
 call-as-text / envelope-confusion signal vs. the terse header. The #1477 chat-surface
-call-as-text guard (`test_chat_call_recovery.py`) must stay at its recovered ceiling, and
-`test_chat_reply.py` must still hold. Deterministic coverage (`make check`) pins the
+call-as-text guard (pinned in `tests/agents/test_agentic_loop.py`) must still refuse a
+call-shaped draw, and `test_chat_reply.py` must still hold. Deterministic coverage (`make check`) pins the
 framed-string shape for a success and a failure `ToolResult`.
 
 ## What this ticket deliberately does NOT do (later in the epic)

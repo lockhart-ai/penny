@@ -310,22 +310,6 @@ MESSAGES: tuple[Message, ...] = (
 # ── Canned browse pages (for the browse-driven tool-reasoning cases) ──────────
 # All invented, privacy-safe topics on example.com domains.
 
-# chat-browse-answer: one search whose result carries the fact (Lake Baikal) + URL.
-# A plain topic lookup — "look something up, find the fact, answer/store it" — the
-# canonical Penny workflow (never software-version discrimination).
-TOPIC_PAGES = (
-    CannedPage(
-        match="lake",
-        text=(
-            "Title: The world's deepest lakes\n"
-            "A rundown of the deepest freshwater lakes on Earth.\n"
-            "[Lake Baikal — profile](https://geo.example.test/lakes/baikal)\n"
-            "Lake Baikal, in southern Siberia, is the deepest lake in the world at "
-            "1,642 metres, holding roughly a fifth of Earth's unfrozen fresh water.\n"
-        ),
-    ),
-)
-
 # chat-browse-multihop: the search page links to a detail page but withholds the
 # date; the year (2031) lives ONLY on the detail page, so a reply that cites it
 # proves the model chained a second browse to the linked URL.

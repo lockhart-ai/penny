@@ -96,11 +96,6 @@ from penny.tests.eval.chat.apply.test_missing_value_arrives import (
 from penny.tests.eval.chat.apply.test_offer_accepted import (
     assert_every_wording_gives_the_terms,
 )
-from penny.tests.eval.chat.idle.test_bracket_key_recovery import (
-    BRACKET_KEY_CASES,
-    _seed_board_games,
-    assert_board_games_world,
-)
 from penny.tests.eval.chat.idle.test_chat_memory_stories import (
     VERB_CASES,
     probe_seeded_world,
@@ -347,6 +342,7 @@ from penny.tests.eval.conftest import (
     sample_log_path,
     sample_logging,
     sample_number,
+    seed_collection,
     seed_world_stores,
     seeded_run_id,
     tool_call_name,
@@ -1426,18 +1422,6 @@ def test_the_correction_scorer_passes_each_case_s_own_reference_reply() -> None:
             assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
 
 
-def test_the_bracket_key_world_probe_passes_the_world_its_seed_lays_down(db) -> None:
-    """The bracket-key guards' own seed satisfies its own loud probe.
-
-    The probe asserts three premises — the collection is inert, it holds the target under
-    its bare multi-word key, and the read surface renders that key in invocation form — and
-    all three are properties of the FIXTURE, so a fixture edit that broke any of them would
-    otherwise surface as the guard failing an hour into a GPU run."""
-    _seed_board_games(db)
-    for case in BRACKET_KEY_CASES:
-        assert_board_games_world(db, case)
-
-
 def _assert_five_wordings_each_state_the_facts(case: SourceDownCase) -> None:
     """Five distinct wordings, every one of them stating the case's own constant facts.
 
@@ -1540,7 +1524,7 @@ def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> 
     assert collection_names(db) == []
     assert_no_collections(db, "a fresh migrated database")
 
-    _seed_board_games(db)
+    seed_collection(db, BOARD_GAMES)
     assert collection_names(db) == [BOARD_GAMES.name]
     with pytest.raises(AssertionError, match=BOARD_GAMES.name):
         assert_no_collections(db, "a database holding a collection")
@@ -2125,11 +2109,11 @@ def test_what_the_store_holds_is_read_apart_from_what_this_round_wrote(tmp_path)
 
     ``entries`` is stamped by run id, so it carries only what this round wrote — which makes
     an entry the round never touched and an entry it DELETED look identical there, both
-    simply absent.  The bracket-key recovery case's "nothing else in the collection moved"
-    claim is answered against the seeded rows this round did not write, so it needs the read
-    that can see them."""
+    simply absent.  A preservation claim — what was already there is still there — is
+    answered against the seeded rows this round did not write, so it needs the read that can
+    see them."""
     db = _make_db(tmp_path)
-    _seed_board_games(db)
+    seed_collection(db, BOARD_GAMES)
     seeded = collection_entries(db, BOARD_GAMES.name)
 
     assert _stored_entries(db) == [], "a seeded row cites a seeded run, so no round wrote it"
