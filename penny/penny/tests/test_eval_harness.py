@@ -97,8 +97,10 @@ from penny.tests.eval.chat.apply.test_offer_accepted import (
 )
 from penny.tests.eval.chat.elicit.test_named_routine_was_wrong import (
     REJECTED_ROUTINE_ARMS,
+    REJECTED_ROUTINE_CARRIES,
     REJECTED_ROUTINE_CASE_ID,
     REJECTED_ROUTINE_ROUND,
+    REJECTED_ROUTINE_WITHHOLDS,
     assert_every_job_holds_what_it_gathered,
 )
 from penny.tests.eval.chat.elicit.test_teach_question_goes_unanswered import (
@@ -1297,8 +1299,17 @@ def test_both_moves_into_elicit_from_a_parked_round_start_where_they_claim(tmp_p
     entry, or the empty category is an omission rather than a report.  The rejected-routine case
     claims that what the store held survives — so the world must hold something, or the claim is
     true whatever the turn does.  That round must also carry a settled half and an open one,
-    which is the basis it was chosen on, and no wording may hand over the detail it is waiting
-    on: an arm that did would be the request → apply turn.
+    which is the basis it was chosen on.
+
+    The rejected-routine case's five wordings are its own, and they are held here to the facts
+    the case declares for them.  Every arm carries a member of each group — what she proposed,
+    that it is turned down, and that the task is wanted all the same — and none carries a
+    withheld token: a call-off would be the request → idle turn, the detail the round is waiting
+    on would be the request → apply turn, and the transition condition's own phrasing would hand
+    the draw the words it is measured on recognising.  The referent group is held against the
+    seeded history as well as against the arms: each word an arm uses for what she proposed is a
+    word her own reply used, and the two words no arm may say are words the parked exchange
+    never held.
 
     The cohort's own arithmetic rides along too — five wordings of one message, all distinct."""
     for case_id, arms in (
@@ -1324,10 +1335,23 @@ def test_both_moves_into_elicit_from_a_parked_round_start_where_they_claim(tmp_p
     assert waiting.bound and waiting.missing, (
         f"{REJECTED_ROUTINE_CASE_ID}: the round holds a settled half and an open one"
     )
+    withheld = (*REJECTED_ROUTINE_WITHHOLDS, *REJECTED_ROUTINE_ROUND.supplies.values())
     for arm in REJECTED_ROUTINE_ARMS:
-        supplied = [value for value in REJECTED_ROUTINE_ROUND.supplies.values() if value in arm]
-        assert not supplied, (
-            f"{REJECTED_ROUTINE_CASE_ID}: this wording supplies {supplied}: {arm!r}"
+        for group in REJECTED_ROUTINE_CARRIES:
+            assert any(token in arm for token in group), (
+                f"{REJECTED_ROUTINE_CASE_ID}: every arm states the fact {group} holds: {arm!r}"
+            )
+        carried = [token for token in withheld if token in arm]
+        assert not carried, f"{REJECTED_ROUTINE_CASE_ID}: no arm may carry {carried}: {arm!r}"
+    referents, _rejection, _wanted = REJECTED_ROUTINE_CARRIES
+    parked_exchange = f"{REJECTED_ROUTINE_ROUND.parked.ask}\n{REJECTED_ROUTINE_ROUND.reply}".lower()
+    for referent in referents:
+        assert referent in REJECTED_ROUTINE_ROUND.reply.lower(), (
+            f"{REJECTED_ROUTINE_CASE_ID}: {referent!r} must be a word her own reply used"
+        )
+    for unsaid in ("routine", "skill"):
+        assert unsaid in REJECTED_ROUTINE_WITHHOLDS and unsaid not in parked_exchange, (
+            f"{REJECTED_ROUTINE_CASE_ID}: {unsaid!r} is withheld because the round never said it"
         )
 
 

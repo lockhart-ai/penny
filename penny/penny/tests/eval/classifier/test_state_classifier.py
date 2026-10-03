@@ -1309,7 +1309,8 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     """The request → elicit draw: the proposal was rejected and the task is still wanted, so
     the routine has to be taught.
 
-    The whole turn these same five messages open is ``transition-request-to-elicit``.
+    The whole turn that makes this move is ``transition-request-to-elicit``, which is driven
+    from five wordings of its own against a round with its history behind it.
 
     STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
     elicit binds no routine.

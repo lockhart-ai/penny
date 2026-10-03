@@ -14,9 +14,9 @@ one where she asks to be taught: it moves to elicit, still the same round, on th
 
 * *The rejection is an answer to what she actually said.*  The ask was to be told when the
   pier adds a sailing; her reply read that as a routine that watches for a phrase and asked
-  which phrase.  "That's not what i meant" is the natural reply to exactly that question.  On
-  the other parked rounds her reply says the ask back and asks only for its page, so a
-  rejection there would contradict the user's own ask.
+  which phrase.  Saying that watching for a phrase is not the idea is the natural reply to
+  exactly that question.  On the other parked rounds her reply says the ask back and asks only
+  for its page, so a rejection there would contradict the user's own ask.
 * *The round holds a settled half as well as an open one.*  The page came with the ask and is
   recorded on the round, so the turn enters elicit with an address in hand and its page
   installed and reachable: a turn that carried on with the job instead of asking to be taught
@@ -31,15 +31,24 @@ move — parked in request, anchored to the ask, naming the routine, carrying th
 round is waiting on and no framing.  That is what production records, and the classifier is
 shown the round's `## The details this task is waiting on` section from it.
 
-**The wordings are the classifier case's own five.**
-`classifier-elicits-when-the-named-routine-was-wrong` draws this decision in isolation from
-these same messages, and this case drives the whole turn they open.  Read from where that case
-declares them rather than restated, so a miss here is attributable: where the draw holds there,
-a turn that lands elsewhere here is the turn's.  Every wording carries both halves the edge
-turns on — the routine was the wrong one, and the task is still wanted — and each says them a
-different way; none supplies the missing detail (that is request → apply) and none calls the
-task off (that is request → idle).  The arms are held to that in `make check`, including that
-none carries the transition condition's own phrase.
+**The wordings are this case's own five, and each answers what she said.**  Her reply asked
+which phrase identifies the sailing to watch for, so every wording turns that proposal down in
+the user's own words — watching for a phrase is not what they were after — and says they want
+the pier watched all the same.  Those are the two facts the edge turns on, each said a
+different way on every arm.  What no arm does is held in `make check` beside what every arm
+carries:
+
+* none supplies the detail the round is waiting on (that is request → apply);
+* none calls the task off (that is request → idle);
+* none says "routine" or "skill" — she never used either word in this conversation, so a user
+  answering her would not reach for them;
+* none borrows the transition condition's own phrasing, so the fixture cannot hand the draw
+  the words it is being measured on recognising;
+* and every arm names something the seeded history holds — the phrase she asked for, the
+  sailings, the page — so no wording arrives without a referent.
+
+`classifier-elicits-when-the-named-routine-was-wrong` draws the same decision in isolation
+from its own five wordings, over a lean snapshot with no history behind it.
 
 **What is claimed.**  Where the machine landed, and what SURVIVES the turn: the three jobs this
 user already has running, and everything their collections held.  A turn told the routine was
@@ -82,7 +91,6 @@ import pytest
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.penny import Penny
-from penny.tests.eval.classifier.test_state_classifier import WRONG_ROUTINE_ARMS
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer, collection_entries
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -119,9 +127,44 @@ _BEHAVIOUR = (
 REJECTED_ROUTINE_ROUND: _RequestApplyCase = _SUPPLIED_PIER
 
 # One message in five wordings: the rejection, with the first as the ask and the rest as its
-# other phrasings.  Named at module level so the deterministic pin in ``make check`` holds the
-# cohort's arithmetic against the same tuple the case drives.
-REJECTED_ROUTINE_ARMS = WRONG_ROUTINE_ARMS
+# other phrasings.  Each answers her question — which phrase identifies the sailing — by saying
+# that watching for a phrase is not the idea, and that the pier should be watched all the same.
+# Named at module level so the deterministic pin in ``make check`` holds the tuple the case
+# drives to the facts below.
+REJECTED_ROUTINE_ARMS = (
+    "no, watching for a phrase isn't what i'm after — i do need the sailings watched though",
+    "i wasn't asking you to look for a particular phrase — but i'd like this set up all the same",
+    "hunting for one phrase is the wrong idea here, and i do need you keeping an eye on that page",
+    "that's not it — matching a phrase isn't the idea, but please do get this going",
+    "looking for a keyword isn't how i pictured it, i'd like the sailings covered anyway",
+)
+
+# What every arm carries, as alternations: each fact is said a different way on every arm, so
+# it is held as a group of which an arm must match one member rather than as one literal.
+#
+#   * the REFERENT — what she proposed, in the words her own reply used for it;
+#   * the REJECTION of that proposal;
+#   * the task being WANTED all the same.
+REJECTED_ROUTINE_CARRIES: tuple[tuple[str, ...], ...] = (
+    ("phrase", "keyword"),
+    ("isn't", "wasn't", "wrong"),
+    ("i do need", "i'd like", "please do"),
+)
+
+# What no arm may carry, each one the neighbour it would otherwise slide onto or a word the
+# conversation never held: a call-off (request → idle), an address (a detail supplied, request →
+# apply), the two words she never said, and the transition condition's own phrasing.
+REJECTED_ROUTINE_WITHHOLDS: tuple[str, ...] = (
+    "never mind",
+    "forget",
+    "http",
+    ".example",
+    "routine",
+    "skill",
+    "what i meant",
+    "still want",
+    "task done",
+)
 
 # The ground every arm is answered against: every space this history's asks name, the pier's
 # own page among them, installed and reachable — so a turn that DOES go and look gets a real
@@ -145,7 +188,7 @@ _PARKED_PIER = World(
 _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 
 
-# ── The probe: the round really is parked on a named routine, over a world with something in it ─
+# ── The probe: parked on a named routine, over a world with something in it ───
 
 
 def _probe_parked_round(case: _RequestApplyCase) -> Preparer:
