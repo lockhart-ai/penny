@@ -843,7 +843,9 @@ behaviour, since a correct sample for either is correct for the other, and which
 searches on is a route measured in the tool sequence — and claims the reply carries that
 message's figure and none of the figures its neighbours carry (the sender's other mail, and
 another sender's mail on the same subject). `email-remark-stays-idle` is a remark about the
-volume of email: idle, the seeded newsletters collection unchanged, and every value sourced.
+volume of email: idle, the seeded newsletters collection unchanged, and every stored value
+sourced — the reply is advice in her own words, measured as reply spread and never read for
+provenance.
 The mailbox is declared on the world (`World.mailbox`, `utils/mailbox.py`'s `CannedMailbox`,
 whose deliberately lenient search rules are stated once there) and installed by the chat
 driver behind production's own Fastmail tool builder, so only the backend is canned),

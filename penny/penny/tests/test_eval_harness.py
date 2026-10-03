@@ -1702,7 +1702,9 @@ def test_every_email_claim_can_see_its_failure() -> None:
     claim while every value it carries is sourced (which is why provenance alone cannot see
     it); an invented figure misses the answer and provenance; a pruned newsletter misses the
     preservation claim; an invented stored entry misses store provenance; a turn that left idle
-    misses the landing.  The remark: a count nobody looked up misses reply provenance."""
+    misses the landing.  The remark makes no reply claim — a reply to a remark is advice,
+    measured as variance — so an invented unread count holds every claim it makes, while a
+    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs."""
     pruned = [
         StoredEntry(
             collection=NEWSLETTERS.name, key="Harbor Weekly", content=NEWSLETTERS.entries[0]
@@ -1751,12 +1753,22 @@ def test_every_email_claim_can_see_its_failure() -> None:
         REMARK.world,
         claim_the_remark,
         [
-            _email_sample("calm", "Ugh, same. Want help sorting it?"),
             _email_sample("counted", "You have 312 unread emails right now."),
+            _email_sample("noted", "Noted.", entries=[invented_entry]),
+            _email_sample("pruned", "Ugh, same.", held=pruned),
+            _email_sample("wandered", "Ugh, same.", landed="elicit"),
         ],
     )
-    assert remark["reply: every specific value in it is sourced"] == [True, False]
-    assert remark["state: the machine landed in idle"] == [True, True]
+    assert remark == {
+        "state: the machine landed in idle": [True, True, True, False],
+        "state: everything the store already held is still there, unchanged": [
+            True,
+            True,
+            False,
+            True,
+        ],
+        "state: every specific value in the stored entries is sourced": [True, False, True, True],
+    }
 
 
 def test_the_choose_claim_reads_the_pick_the_record_carries() -> None:

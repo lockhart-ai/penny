@@ -25,7 +25,11 @@ between them is the behaviour.
 that answers it carries no figure from the mailbox at all, so the lookup's claims fail it.  It
 claims what SURVIVES — the machine still in idle and the store as it was — never that the
 mailbox went unsearched: whether to look is the model's call on a remark about her inbox, and
-it is measured in the tool sequence (``docs/principles.md`` §4.3).
+it is measured in the tool sequence (``docs/principles.md`` §4.3).  Nor does it claim anything
+about what her reply says.  A reply to a remark is advice in her own words — the apps, settings
+and habits she would suggest — none of which the world was ever going to supply, so the reply
+is measured as reply spread and never read for provenance.  What she stores is still read: a
+value written to the store has to trace to something the turn was given.
 
 **The mailbox is canned at the system boundary.**  The world declares five synthetic messages
 (``World.mailbox``), and the driver installs them behind production's own Fastmail tool
@@ -50,8 +54,9 @@ read.  Both claim the collection is still there, unchanged; neither claims nothi
   Each answers no part of the ask, so a reply stating one has taken a neighbouring message for
   the one asked about.  Provenance cannot see that: once a search returned the neighbour, its
   figure IS something the model was given.
-* Every specific value the reply or the store carries traces to what the turn was given — the
-  user's words and the tool results, which hold the messages the turn actually opened.
+* Every specific value the store carries traces to what the turn was given — the user's words
+  and the tool results, which hold the messages the turn actually opened — on both cases, and
+  so does every specific value the lookup's reply carries.
 * A route is never claimed: not which email tool ran, not whether she read the message or
   answered from its preview, not how many searches it took.
 
@@ -349,7 +354,7 @@ def claim_the_lookup(cohort: Cohort) -> None:
 
 def claim_the_remark(cohort: Cohort) -> None:
     """Every claim the remark case makes — where the turn landed, what survived it, and that
-    nothing it stored or said was invented."""
+    nothing it stored was invented."""
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
@@ -357,10 +362,9 @@ def claim_the_remark(cohort: Cohort) -> None:
     # answer for the reply to owe.
     cohort.assert_what_the_store_held_survives()
 
-    # PROVENANCE — a remark about a full inbox invites a count nobody looked up; any number the
-    # reply states has to trace to something the turn was given.
+    # PROVENANCE — the STORE half only.  The reply to a remark is advice in her own words, so it
+    # is behaviour, measured as reply spread rather than read for provenance.
     cohort.assert_every_value_in_the_store_is_sourced()
-    cohort.assert_every_value_in_the_reply_is_sourced()
 
 
 # ``TOOL_SEQUENCE`` carries the route — which field she searched on, whether she read the message
