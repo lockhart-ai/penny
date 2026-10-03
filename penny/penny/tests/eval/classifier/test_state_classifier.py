@@ -1217,8 +1217,7 @@ async def test_an_unanswered_teach_question_stays_parked(
     """The elicit → elicit self-edge: a question back, said five ways, against the teach
     question it is answering.
 
-    One of the two edges no chat transition case reaches, so this case is its only isolated
-    coverage.
+    The whole turn these same five messages open is ``transition-elicit-to-elicit``.
 
     STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
     elicit binds no routine.
@@ -1310,8 +1309,7 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     """The request → elicit draw: the proposal was rejected and the task is still wanted, so
     the routine has to be taught.
 
-    The other edge no chat transition case reaches, so this case is its only isolated
-    coverage.
+    The whole turn these same five messages open is ``transition-request-to-elicit``.
 
     STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
     elicit binds no routine.

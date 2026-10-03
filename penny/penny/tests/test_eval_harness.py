@@ -95,6 +95,17 @@ from penny.tests.eval.chat.apply.test_missing_value_arrives import (
 from penny.tests.eval.chat.apply.test_offer_accepted import (
     assert_every_wording_gives_the_terms,
 )
+from penny.tests.eval.chat.elicit.test_named_routine_was_wrong import (
+    REJECTED_ROUTINE_ARMS,
+    REJECTED_ROUTINE_CASE_ID,
+    REJECTED_ROUTINE_ROUND,
+    assert_every_job_holds_what_it_gathered,
+)
+from penny.tests.eval.chat.elicit.test_teach_question_goes_unanswered import (
+    PARKED_ON_THE_TEACH_QUESTION,
+    QUESTION_BACK_ARMS,
+    QUESTION_BACK_CASE_ID,
+)
 from penny.tests.eval.chat.idle.test_chat_memory_stories import (
     VERB_CASES,
     probe_seeded_world,
@@ -1269,6 +1280,55 @@ def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> 
         case.world.seed(db)
         case.world.seeded(db)
         assert_the_round_built_what_it_claims(db, case)
+
+
+def test_both_moves_into_elicit_from_a_parked_round_start_where_they_claim(tmp_path) -> None:
+    """The two whole-turn cases that land in elicit from a round already parked — the question
+    back on a teach question, and the rejected routine — each seed the parked round their
+    behaviour sentence names, and each one's store premise holds (#2215).
+
+    Driven here against a real migrated database for the reason their sibling pins are: the
+    seeders are CODE, and their loud probes otherwise run only under ``make eval``, where a
+    raise costs a paid run before it is seen.
+
+    What rides along is each case's reason for the STORE claims it makes or leaves out, since
+    both ways of getting that wrong are silent on a run.  The question-back case claims nothing
+    about the store because its round opened on a cold machine — so the world must hold no
+    entry, or the empty category is an omission rather than a report.  The rejected-routine case
+    claims that what the store held survives — so the world must hold something, or the claim is
+    true whatever the turn does.  That round must also carry a settled half and an open one,
+    which is the basis it was chosen on, and no wording may hand over the detail it is waiting
+    on: an arm that did would be the request → apply turn.
+
+    The cohort's own arithmetic rides along too — five wordings of one message, all distinct."""
+    for case_id, arms in (
+        (QUESTION_BACK_CASE_ID, QUESTION_BACK_ARMS),
+        (REJECTED_ROUTINE_CASE_ID, REJECTED_ROUTINE_ARMS),
+    ):
+        assert len(arms) == 5, f"{case_id}: a cohort is FIVE wordings of one message"
+        assert len(set(arms)) == 5, f"{case_id}: two of its wordings are the same string"
+
+    cold = migrated_db(str(tmp_path / "question-back.db"))
+    PARKED_ON_THE_TEACH_QUESTION(cold)
+    parked = cold.machine.latest_transition()
+    assert parked is not None and parked.to_state == ConversationState.ELICIT.value
+    assert not _held_entries(cold), (
+        f"{QUESTION_BACK_CASE_ID}: the round opened on a cold machine, so the store holds nothing"
+    )
+
+    held = migrated_db(str(tmp_path / "rejected-routine.db"))
+    seed_parked_in_request(REJECTED_ROUTINE_ROUND)(held)
+    assert_parked_in_request_world(held, REJECTED_ROUTINE_ROUND)
+    assert_every_job_holds_what_it_gathered(held, REJECTED_ROUTINE_ROUND)
+    waiting = parked_binding(REJECTED_ROUTINE_ROUND)
+    assert waiting.bound and waiting.missing, (
+        f"{REJECTED_ROUTINE_CASE_ID}: the round holds a settled half and an open one"
+    )
+    for arm in REJECTED_ROUTINE_ARMS:
+        supplied = [value for value in REJECTED_ROUTINE_ROUND.supplies.values() if value in arm]
+        assert not supplied, (
+            f"{REJECTED_ROUTINE_CASE_ID}: this wording supplies {supplied}: {arm!r}"
+        )
 
 
 def test_every_memory_verb_case_is_answered_against_the_world_its_claims_assume(
