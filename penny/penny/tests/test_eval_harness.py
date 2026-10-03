@@ -96,7 +96,9 @@ from penny.tests.eval.chat.apply.test_offer_accepted import (
     assert_every_wording_gives_the_terms,
 )
 from penny.tests.eval.chat.idle.test_chat_memory_stories import (
+    _DELETE_LIST,
     VERB_CASES,
+    claim_the_list_delete,
     probe_seeded_world,
 )
 from penny.tests.eval.chat.idle.test_chat_reply import (
@@ -115,6 +117,9 @@ from penny.tests.eval.chat.idle.test_choose_dispatch import (
     reply_reports,
 )
 from penny.tests.eval.chat.idle.test_email_dispatch import (
+    ABSENT,
+    ABSENT_SENDER,
+    ABSENT_SUBJECT,
     EMAIL_CASES,
     EMAIL_TOOLS,
     LOOKUP,
@@ -125,6 +130,7 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
     REMARK,
     THE_QUOTE,
     assert_mailbox_world,
+    claim_the_absent,
     claim_the_lookup,
     claim_the_remark,
 )
@@ -1306,6 +1312,125 @@ def test_every_memory_verb_case_is_answered_against_the_world_its_claims_assume(
             )
 
 
+def _plain_list(name: str, *, archived: bool) -> MechanismRecord:
+    """One plain list as a sample left it — live and untouched, or archived this turn."""
+    touched = ["archived"] if archived else []
+    return MechanismRecord(
+        name=name,
+        archived=archived,
+        born_this_run=False,
+        touched_this_run=touched,
+        moved_this_run=touched,
+        notifies=False,
+        schedule=None,
+        program=None,
+        expires=False,
+    )
+
+
+def _list_delete_sample(
+    name: str,
+    *,
+    archived: tuple[str, ...],
+    dropped: tuple[tuple[str, str], ...] = (),
+    landed: str = "idle",
+    reply: str = "Done.",
+) -> SampleObservation:
+    """One delete-a-list sample: the four seeded lists, which of them the turn archived, and
+    which ``(list, key)`` entries it removed."""
+    stores = _DELETE_LIST.world.stores
+    before = [
+        StoredEntry(collection=held.name, key=key, content=content)
+        for held in stores
+        for key, content in held.keyed
+    ]
+    return SampleObservation(
+        name=name,
+        phrasing="p",
+        arm=0,
+        landed=landed,
+        reply=reply,
+        given=Given(_DELETE_LIST.ask),
+        held_before=before,
+        held=[entry for entry in before if (entry.collection, entry.key) not in dropped],
+        mechanisms=[_plain_list(held.name, archived=held.name in archived) for held in stores],
+    )
+
+
+def test_every_list_delete_claim_can_see_its_failure() -> None:
+    """Each claim the delete-a-list case declares holds on a correct sample and misses on the
+    sample that breaks it — answered through the very declarations the case makes.
+
+    A list left live misses the archive claim alone; a list emptied before it was archived
+    misses only the claim that it still holds its entries; archiving a different list misses
+    the archive claim and that list's own; a note dropped from a neighbour misses the claim
+    about what the other lists hold; a count nothing stated misses reply provenance; a turn
+    that left idle misses the landing."""
+    recipes = tuple(("recipe-box", key) for key, _ in _DELETE_LIST.world.stores[-1].keyed)
+    samples = [
+        _list_delete_sample("archived", archived=("recipe-box",)),
+        _list_delete_sample("left live", archived=()),
+        _list_delete_sample("emptied", archived=("recipe-box",), dropped=recipes),
+        _list_delete_sample("wrong list", archived=("gear-notes",)),
+        _list_delete_sample(
+            "pruned", archived=("recipe-box",), dropped=(("things-im-into", "jazz"),)
+        ),
+        _list_delete_sample("counted", archived=("recipe-box",), reply="Archived all 7 recipes."),
+        _list_delete_sample("wandered", archived=("recipe-box",), landed="elicit"),
+    ]
+    assert _claim_answers(_DELETE_LIST.world, claim_the_list_delete, samples) == {
+        "state: the machine landed in idle": [True, True, True, True, True, True, False],
+        "state: the list it was asked to get rid of is archived": [
+            True,
+            False,
+            True,
+            False,
+            True,
+            True,
+            True,
+        ],
+        "state: the list it was asked to get rid of still holds everything it held": [
+            True,
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+        ],
+        "state: the 'things-im-into' list is still the live list it was": [True] * 7,
+        "state: the 'things-i-avoid' list is still the live list it was": [True] * 7,
+        "state: the 'gear-notes' list is still the live list it was": [
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+            True,
+        ],
+        "state: every other list still holds everything it held": [
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+        ],
+        "state: every specific value in the stored entries is sourced": [True] * 7,
+        "reply: every specific value in it is sourced": [
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+        ],
+    }
+
+
 def _assert_one_ask_in_five_wordings(case_id: str, ask: str, also_phrased: tuple[str, ...]) -> None:
     """A cohort is FIVE wordings of ONE ask, all distinct.
 
@@ -1778,9 +1903,11 @@ async def test_the_email_world_stands_up_through_the_driver(
     run through the REAL ``search_emails`` tool off ``get_tools``: a search on the sender and a
     search on the subject each return the message asked about BESIDE a neighbour, which is the
     temptation the lookup case measures — a mailbox that answered either with the quote alone
-    would make choosing the message nobody's work."""
-    assert LOOKUP.world.mailbox == REMARK.world.mailbox
-    assert LOOKUP.world.stores == REMARK.world.stores
+    would make choosing the message nobody's work.  A search on the sender and the subject the
+    absent-message case names returns no message at all."""
+    for case in EMAIL_CASES:
+        assert case.world.mailbox == LOOKUP.world.mailbox, case.case_id
+        assert case.world.stores == LOOKUP.world.stores, case.case_id
     async with running_penny(test_config) as penny:
         await _seed_sample(
             penny, world=LOOKUP.world, seed=None, seed_skills=None, browse=None, prepare=None
@@ -1790,17 +1917,23 @@ async def test_the_email_world_stands_up_through_the_driver(
         search = next(t for t in penny.chat_agent.get_tools() if t.name == EMAIL_TOOLS[0])
         by_sender = (await search.run(from_addr="Priya Nakamura")).message
         by_subject = (await search.run(subject="rooftop solar quote")).message
+        absent = (await search.run(from_addr=ABSENT_SENDER, subject=ABSENT_SUBJECT)).message
     assert "Your rooftop solar quote" in by_sender and "Site assessment invoice" in by_sender
     assert "Sunvale" not in by_sender
     assert "Your rooftop solar quote" in by_subject and "Sunvale" in by_subject
     assert "Site assessment invoice" not in by_subject
+    assert not [email.id for email in MAILBOX if email.subject in absent], absent
 
 
 async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     """The canned search's stated rules, each pinned: any word of a filter matches, every
     supplied filter must match, the best match leads, the dates are applied, a stopword-only
     filter constrains nothing, and the shared ``.example`` domain matches nobody.  A read
-    returns the messages its ids name, in the order asked, and skips an unknown one."""
+    returns the messages its ids name, in the order asked, and skips an unknown one.
+
+    The absent-message case's premise rides along: its sender, its subject and each of its
+    wordings searched WHOLE match no message, so no word a wording carries is a word of any
+    message — a wording that loosely matched one would hand the turn a message to answer from."""
     mailbox = CannedMailbox(MAILBOX)
 
     async def ids(**filters: str) -> list[str]:
@@ -1812,6 +1945,12 @@ async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     assert await ids(text="solar", after="2026-09-23T00:00:00Z") == ["Mvk9"]
     assert await ids(text="solar", before="2026-09-20") == ["Mrt2"]
     assert len(await ids(text="the email from your inbox")) == len(MAILBOX)
+
+    assert await ids(from_addr=ABSENT_SENDER) == []
+    assert await ids(subject=ABSENT_SUBJECT) == []
+    assert await ids(text=f"{ABSENT_SENDER} {ABSENT_SUBJECT}") == []
+    for wording in (ABSENT.ask, *ABSENT.also_phrased):
+        assert await ids(text=wording) == [], wording
 
     read = await mailbox.read_emails(["nope", THE_QUOTE.id])
     assert [one.id for one in read] == [THE_QUOTE.id]
@@ -1825,7 +1964,8 @@ def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_me
     A figure carried twice would let a reply read off the wrong message pass the answer claim,
     or fail the neighbour claim for the right one; a wording that dropped the sender or the
     subject would be a different message, not another phrasing of this one; and a wording that
-    stated a figure would answer the claim from the user's own words."""
+    stated a figure would answer the claim from the user's own words.  The absent-message
+    case's wordings each name ITS sender and subject, and the world states neither."""
     ground = LOOKUP.world.says
     owners = {
         QUOTE_FIGURE: THE_QUOTE.id,
@@ -1840,6 +1980,9 @@ def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_me
             assert not any(token in wording for token in owners), wording
     for wording in (LOOKUP.ask, *LOOKUP.also_phrased):
         assert "priya nakamura" in wording and "rooftop solar quote" in wording, wording
+    for wording in (ABSENT.ask, *ABSENT.also_phrased):
+        assert ABSENT_SENDER in wording and ABSENT_SUBJECT in wording, wording
+    assert ABSENT_SENDER not in ground.casefold() and ABSENT_SUBJECT not in ground.casefold()
     assert report.render_ground(LOOKUP.world.counts) == "1 collection, 5 emails"
     assert "| 2 | email `Mqx7` |" in LOOKUP.world.render()
 
@@ -1851,9 +1994,10 @@ def _email_sample(
     landed: str = "idle",
     held: list[StoredEntry] | None = None,
     entries: list[StoredEntry] | None = None,
+    ask: str = LOOKUP.ask,
 ) -> SampleObservation:
-    """One lookup-world sample: the newsletters the store held before, what it holds after,
-    and everything the mailbox carries as what the turn was given."""
+    """One email-world sample: the newsletters the store held before, what it holds after,
+    and the ask plus everything the mailbox carries as what the turn was given."""
     before = [
         StoredEntry(collection=NEWSLETTERS.name, key=k, content=c) for k, c in NEWSLETTERS.keyed
     ]
@@ -1863,7 +2007,7 @@ def _email_sample(
         arm=0,
         landed=landed,
         reply=reply,
-        given=Given(LOOKUP.ask + "\n" + "\n".join(email.text for email in MAILBOX)),
+        given=Given(ask + "\n" + "\n".join(email.text for email in MAILBOX)),
         held_before=before,
         held=before if held is None else held,
         entries=entries or [],
@@ -1886,7 +2030,13 @@ def test_every_email_claim_can_see_its_failure() -> None:
     preservation claim; an invented stored entry misses store provenance; a turn that left idle
     misses the landing.  The remark makes no reply claim — a reply to a remark is advice,
     measured as variance — so an invented unread count holds every claim it makes, while a
-    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs."""
+    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
+
+    The absent message: a reply that says nothing was found holds every claim; one that gives
+    the quote's amount misses the figure claim while every value it carries is sourced, since
+    the mailbox was given; an amount no message holds misses provenance and not the figure
+    claim; and a pruned newsletter, an invented stored entry and a turn that left idle each
+    miss theirs."""
     pruned = [
         StoredEntry(
             collection=NEWSLETTERS.name, key="Harbor Weekly", content=NEWSLETTERS.entries[0]
@@ -1950,6 +2100,51 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
         ],
         "state: every specific value in the stored entries is sourced": [True, False, True, True],
+    }
+    nothing = "Nothing from Tobias Wren in your inbox."
+    absent = _claim_answers(
+        ABSENT.world,
+        claim_the_absent,
+        [
+            _email_sample("none", nothing, ask=ABSENT.ask),
+            _email_sample(
+                "borrowed",
+                f"Nothing from Tobias Wren, but the solar quote comes to $18,{QUOTE_FIGURE}.",
+                ask=ABSENT.ask,
+            ),
+            _email_sample("invented", "Tobias Wren's estimate comes to $240.", ask=ABSENT.ask),
+            _email_sample("pruned", nothing, held=pruned, ask=ABSENT.ask),
+            _email_sample("noted", nothing, entries=[invented_entry], ask=ABSENT.ask),
+            _email_sample("wandered", nothing, landed="elicit", ask=ABSENT.ask),
+        ],
+    )
+    assert absent == {
+        "state: the machine landed in idle": [True, True, True, True, True, False],
+        "state: everything the store already held is still there, unchanged": [
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+        ],
+        "state: every specific value in the stored entries is sourced": [
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+        ],
+        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: it states no figure a message in the mailbox carries": [
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+        ],
     }
 
 

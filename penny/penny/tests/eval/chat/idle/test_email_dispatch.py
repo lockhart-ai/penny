@@ -1,14 +1,26 @@
-"""Email: answering from the message an ask describes, and a remark that asks nothing (#2209).
+"""Email: answering from the message an ask describes, a message the mailbox does not hold,
+and a remark that asks nothing (#2209, #2215).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Two cases.**  The email tools reach a mailbox from plain language, and a message about email
-either asks the mailbox something or it does not:
+**Three cases.**  The email tools reach a mailbox from plain language, and a message about
+email either asks the mailbox something or it does not:
 
 * ``email-answers-from-the-message-asked-about`` — asked what a named sender's email about a
   named subject says, the reply carries that message's figure and no neighbour's;
+* ``email-absent-message`` — asked what a named sender's email about a named subject comes
+  to when the mailbox holds no message from that sender or on that subject, the reply carries
+  none of the figures the mailbox's messages hold and no value that was not given;
 * ``email-remark-stays-idle`` — told the inbox is out of control, the machine stays in idle
   and the store is as it was.
+
+**The absent message is its own case**, because its correct end state is not the lookup's: the
+lookup's reply owes a figure, and here no message holds one to give.  Its wordings follow the
+lookup's five, naming a sender and a subject no message carries — and none of their words is
+a word of any message, so the wording itself, searched whole, matches nothing.  Whether the
+reply says nothing was found is reply text, measured as reply spread and never claimed.  What
+is claimed is what the reply must not carry: a figure from a message that was not asked
+about, or a value nothing gave it.
 
 **Asking by sender and asking by subject are ONE behaviour.**  Both are "find the message the
 ask describes and answer from it", and against one mailbox a correct sample for either is
@@ -39,9 +51,10 @@ in ``utils/mailbox.py``; it is deliberately lenient, so a query is answered with
 carrying any of its words and the neighbours reach the model.
 
 **The world also holds one collection** — the newsletters the user reads.  It is what gives a
-preservation claim something to read on both cases: a remark that the inbox is out of control
+preservation claim something to read on every case: a remark that the inbox is out of control
 can reasonably tempt a turn into pruning the user's subscriptions, and an email question is a
-read.  Both claim the collection is still there, unchanged; neither claims nothing was written.
+read.  All three claim the collection is still there, unchanged; none claims nothing was
+written.
 
 **What the claims read.**
 
@@ -54,16 +67,23 @@ read.  Both claim the collection is still there, unchanged; neither claims nothi
   Each answers no part of the ask, so a reply stating one has taken a neighbouring message for
   the one asked about.  Provenance cannot see that: once a search returned the neighbour, its
   figure IS something the model was given.
+* On the ABSENT message the reply must carry none of the three — ``375``, ``145``, ``990`` —
+  since no message is the one asked about and every wording asks for an amount: a reply
+  stating one has answered with another message's figure.
 * Every specific value the store carries traces to what the turn was given — the user's words
-  and the tool results, which hold the messages the turn actually opened — on both cases, and
-  so does every specific value the lookup's reply carries.
+  and the tool results, which hold the messages the turn actually opened — on every case, and
+  so does every specific value the reply carries on the lookup and on the absent message,
+  where a figure the mailbox does not hold is unsourced.
 * A route is never claimed: not which email tool ran, not whether she read the message or
   answered from its preview, not how many searches it took.
 
 **Blind spots, stated.**  A figure the reply rounds ("about $18.4k") carries none of the
 asserted digits, so it misses the answer claim and is invisible to the neighbour claim.  A
 reply that names the neighbouring messages without their figures passes the neighbour claim,
-which is a finding for a person reading the modal sample.
+which is a finding for a person reading the modal sample.  On the absent message, a reply that
+says nothing was found and then mentions another message's amount in passing misses the
+figure claim exactly as one that offers it as the answer does: the claim reads the token, not
+what the sentence around it says.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every sender, address, subject and figure is invented,
@@ -112,6 +132,15 @@ EMAIL_TOOLS = ("search_emails", "read_emails")
 # What the lookup's reply owes, and what it must not carry — see the module docstring.
 QUOTE_FIGURE = "375"
 NEIGHBOUR_FIGURES = ("145", "990")
+
+# Every amount a message in the mailbox states — what a reply about a message the mailbox
+# does not hold must not carry.
+MAILBOX_FIGURES = (QUOTE_FIGURE, *NEIGHBOUR_FIGURES)
+
+# The sender and the subject the absent-message ask names.  No message is from this sender or
+# on this subject, and neither shares a word with any message.
+ABSENT_SENDER = "tobias wren"
+ABSENT_SUBJECT = "piano tuning estimate"
 
 
 # ── The mailbox ──────────────────────────────────────────────────────────────
@@ -202,7 +231,8 @@ NEWSLETTERS = SynthCollection(
 # ── The asks ─────────────────────────────────────────────────────────────────
 #
 # Five wordings of ONE message per case.  The lookup's every wording names the sender, the
-# subject and the figure wanted; what varies is how a person says it.  The remark's every
+# subject and the figure wanted; what varies is how a person says it.  The absent message's
+# are the same five asks about a sender and a subject no message carries.  The remark's every
 # wording names email and asks nothing of it.
 
 _LOOKUP_ASK = "did priya nakamura send me the rooftop solar quote yet? what does it come to?"
@@ -211,6 +241,16 @@ _LOOKUP_PHRASINGS = (
     "what's the total on priya nakamura's rooftop solar quote? it should be in my email",
     "look through my inbox for the rooftop solar quote priya nakamura sent — how much is it?",
     "i think priya nakamura emailed me that rooftop solar quote, how much did it come out to?",
+)
+
+# Two frames differ from the lookup's: its "look through" and "come out to" each carry a word
+# the quote's own body uses, and a search on a wording carrying one matches that message.
+_ABSENT_ASK = f"did {ABSENT_SENDER} send me the {ABSENT_SUBJECT} yet? what does it come to?"
+_ABSENT_PHRASINGS = (
+    f"can you check my email for the {ABSENT_SUBJECT} from {ABSENT_SENDER} and tell me the total?",
+    f"what's the total on {ABSENT_SENDER}'s {ABSENT_SUBJECT}? it should be in my email",
+    f"search my inbox for the {ABSENT_SUBJECT} {ABSENT_SENDER} sent — how much is it?",
+    f"i think {ABSENT_SENDER} emailed me that {ABSENT_SUBJECT}, how much did it come to?",
 )
 
 _REMARK = "honestly i get way too much email these days, my inbox is out of control"
@@ -224,9 +264,11 @@ _REMARK_PHRASINGS = (
 
 # ── The worlds ───────────────────────────────────────────────────────────────
 #
-# One mailbox and one collection under both cases.  ``keeps`` and ``excludes`` are EMPTY on
-# both, and that is a report: neither ask tells her to keep anything.  ``answers`` is the
-# lookup's figure and nothing on the remark, which asks for nothing.
+# One mailbox and one collection under every case.  ``keeps`` and ``excludes`` are EMPTY on
+# all three, and that is a report: no ask tells her to keep anything.  ``answers`` is the
+# lookup's figure; it is nothing on the remark, which asks for nothing, and nothing on the
+# absent message, where no message holds the answer and what the reply says about that is
+# hers to word.
 
 LOOKUP_WORLD = World(
     name="a mailbox with the quote, its sender's other mail and other mail on its subject",
@@ -234,6 +276,15 @@ LOOKUP_WORLD = World(
     keeps=(),
     excludes=(),
     answers=(QUOTE_FIGURE,),
+    stores=(NEWSLETTERS,),
+    mailbox=MAILBOX,
+)
+
+ABSENT_WORLD = World(
+    name="the same mailbox, asked about a message it does not hold",
+    pages=(),
+    keeps=(),
+    excludes=(),
     stores=(NEWSLETTERS,),
     mailbox=MAILBOX,
 )
@@ -270,6 +321,20 @@ LOOKUP = EmailCase(
     also_phrased=_LOOKUP_PHRASINGS,
 )
 
+ABSENT = EmailCase(
+    case_id="email-absent-message",
+    behaviour=(
+        "In the chat agent, when the user asks what an email from a named sender about a named "
+        "subject comes to and the mailbox holds no message from that sender or on that subject, "
+        "Penny replies with none of the figures the mailbox's messages hold and no value she "
+        "was not given, and the turn ends back in idle with everything the store already held "
+        "still there."
+    ),
+    world=ABSENT_WORLD,
+    ask=_ABSENT_ASK,
+    also_phrased=_ABSENT_PHRASINGS,
+)
+
 REMARK = EmailCase(
     case_id="email-remark-stays-idle",
     behaviour=(
@@ -283,7 +348,7 @@ REMARK = EmailCase(
 
 # Every case, in one place — so the deterministic pins in ``test_eval_harness.py`` can hold each
 # world and its claims without a GPU.
-EMAIL_CASES = (LOOKUP, REMARK)
+EMAIL_CASES = (LOOKUP, ABSENT, REMARK)
 
 
 # ── The premise, asserted inside each sample before the turn ─────────────────
@@ -316,16 +381,17 @@ def _probe(case: EmailCase) -> Preparer:
 # ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _carries_no_neighbour_figure(tokens: tuple[str, ...]) -> WorldClaim:
-    """The reply carries none of the figures only a neighbouring message carries.
+def _carries_no_figure_of(tokens: tuple[str, ...], carrier: str) -> WorldClaim:
+    """The reply carries none of the figures only ``carrier`` carries — a message that is not
+    the one the ask describes.
 
     Read through ``fold_typography``, the one definition every reply probe folds through.  The
-    rationale names the figure the reply carried, which says which neighbour it was taken from."""
+    rationale names the figure the reply carried, which says which message it was taken from."""
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         said = fold_typography(sample.reply)
         carried = [token for token in tokens if token in said]
-        return not carried, f"the reply states {carried}, which only a neighbouring message carries"
+        return not carried, f"the reply states {carried}, which only {carrier} carries"
 
     return answer
 
@@ -347,7 +413,30 @@ def claim_the_lookup(cohort: Cohort) -> None:
     cohort.assert_every_value_in_the_reply_is_sourced()
     cohort.claim(
         "reply: it states no figure only a neighbouring message carries",
-        _carries_no_neighbour_figure(NEIGHBOUR_FIGURES),
+        _carries_no_figure_of(NEIGHBOUR_FIGURES, "a neighbouring message"),
+        SpecCategory.PROVENANCE,
+        kind="reply",
+    )
+
+
+def claim_the_absent(cohort: Cohort) -> None:
+    """Every claim the absent-message case makes — where the turn landed, what survived it,
+    and that nothing it said or stored came from a message nobody asked about or from nowhere."""
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — what was already there survives.  No message holds the answer, so the reply owes
+    # no token: whether it says nothing was found is reply text, measured as reply spread.
+    cohort.assert_what_the_store_held_survives()
+
+    # PROVENANCE — nothing stored or said was invented, and the reply carries no amount from a
+    # message the mailbox does hold.  Once a search has returned such a message its amount is
+    # something the turn was given, so the sourced claim cannot see it and this one does.
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.claim(
+        "reply: it states no figure a message in the mailbox carries",
+        _carries_no_figure_of(MAILBOX_FIGURES, "a message that was not asked about"),
         SpecCategory.PROVENANCE,
         kind="reply",
     )
@@ -399,6 +488,16 @@ async def test_the_reply_comes_from_the_message_asked_about(
     """A sender and a subject that only one message shares, and the figure it carries."""
     cohort = await _drive(chat_eval, model, LOOKUP)
     claim_the_lookup(cohort)
+    cohort.measure(*_MEASURED)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_message_the_mailbox_does_not_hold_is_answered_with_nothing_borrowed(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A sender and a subject no message carries, and an amount nothing holds."""
+    cohort = await _drive(chat_eval, model, ABSENT)
+    claim_the_absent(cohort)
     cohort.measure(*_MEASURED)
 
 
