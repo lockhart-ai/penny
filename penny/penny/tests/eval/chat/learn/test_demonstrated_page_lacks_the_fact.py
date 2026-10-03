@@ -92,10 +92,16 @@ _CASE_ID = "transition-elicit-to-learn-absent"
 
 _BEHAVIOUR = (
     "In the chat agent, when she has asked to be taught a job and the user walks her through it "
-    "on a page that does not carry the fact asked for, Penny stays in the round, keeps nothing "
-    "the page does not say, invents no value for the missing fact, and leaves everything "
-    "already in the store as it was."
+    "on a page that does not carry the fact asked for, Penny stays in the round, every entry she "
+    "keeps is something the page says, and everything already in the store survives as it was."
 )
+
+# How long one demonstration turn may run.  Measured on the second roster model at 240s: the
+# turns that completed took 153-237s (gemma thinks for ~93% of its output tokens), and five of
+# fifteen were cut off at the bound, so their true length is unknown.  Twice the longest turn
+# that finished leaves room for the tail the old bound hid; a turn cut off here is excluded
+# as harness debris, and the case cannot be read from a cohort it lost to the clock.
+_TURN_TIMEOUT_SECONDS = 480.0
 
 # ── The world: a noticeboard that never mentions the waitlist ────────────────
 
@@ -372,7 +378,7 @@ async def test_elicit_to_learn_keeps_only_what_the_page_says(
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
-        timeout=240.0,
+        timeout=_TURN_TIMEOUT_SECONDS,
     )
     declare_the_claims(cohort)
     cohort.measure(*_MEASURED)
