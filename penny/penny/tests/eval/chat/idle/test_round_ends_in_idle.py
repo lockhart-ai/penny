@@ -114,7 +114,7 @@ from penny.tests.eval.utils.transition_world import (
     _ApplyCase,
     _assert_parked_on_the_ask,
     _assert_seeded_world,
-    _ElicitRound,
+    _LearnCase,
     _RequestApplyCase,
     _seed_elicit_round,
     _seeded_ask_id,
@@ -213,7 +213,7 @@ class _BailCase(NamedTuple):
         return World(name=self.case_id, pages=self.pages, keeps=(), excludes=())
 
 
-def _assert_parked_in_elicit(db: Database, case: _ElicitRound) -> None:
+def _assert_parked_in_elicit(db: Database, case: _LearnCase) -> None:
     """The elicit-parked world, re-read once the sample's Penny is up — the same claim the
     seeder makes on its way out, made again where a drift would otherwise be invisible."""
     _assert_seeded_world(db, case, _seeded_ask_id(db, case.ask))

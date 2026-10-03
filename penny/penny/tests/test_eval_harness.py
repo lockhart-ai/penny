@@ -166,6 +166,13 @@ from penny.tests.eval.chat.learn.test_correction_re_runs_the_round import (
     assert_the_teach_round_is_parked,
     seed_corrected_round,
 )
+from penny.tests.eval.chat.learn.test_demonstrated_page_lacks_the_fact import (
+    ABSENT_FACT_CASE,
+    AbsentFactCase,
+    assert_the_page_lacks_the_fact,
+    declare_the_claims,
+    probe_the_seeded_world,
+)
 from penny.tests.eval.chat.learn.test_teach_arrives_whole import (
     assert_every_wording_names_the_page,
     assert_the_teach_is_new_to_the_world,
@@ -431,9 +438,7 @@ from penny.tests.eval.utils.transition_world import (
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
     REQUEST_APPLY_CASES,
-    _interface_check,
     _overlaps,
-    _round_reported_checks,
     _said_back,
     assert_composed_world,
     assert_parked_in_request_world,
@@ -1379,22 +1384,6 @@ def test_every_seeded_routine_satisfies_the_claims_made_over_the_whole_registry(
         assert not still_open, f"{draft.name}: still a leaf parameter: {still_open}"
 
 
-def test_the_round_report_check_passes_each_teach_case_s_own_reference_reply() -> None:
-    """Every idle → learn case's reference reply — the answer the case itself calls correct
-    — passes the round-report REPLY checks.
-
-    The tripwire the correction beat still needs (the "check the scorer before you blame the
-    model" rule, applied before the run rather than after it): a reply check that cannot pass
-    the agreed answer scores every sample a miss, and this suite has shipped that bug once
-    already.  The idle → learn edge itself no longer runs those checks — its ported case makes
-    no claim over reply text beyond provenance (#2005) — but these five references are the
-    widest set the shared check has, so they stay its cheapest exercise, and the fixtures they
-    read are what the four quarantined variants would come back on."""
-    for case in IDLE_LEARN_CASES:
-        for check in _round_reported_checks(case.stored, case.reference, [case.reference]):
-            assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
-
-
 def test_every_correction_is_answered_against_the_round_it_corrects(tmp_path) -> None:
     """Each learn → learn case's world — the composed history plus the completed teach round
     its correction answers — seeds cleanly and reads back as that state: the five jobs still
@@ -1423,21 +1412,9 @@ def test_every_correction_is_answered_against_the_round_it_corrects(tmp_path) ->
         assert_the_correction_is_unsaid(db, case)
 
 
-def test_the_correction_scorer_passes_each_case_s_own_reference_reply() -> None:
-    """Every learn → learn case's reference reply — the answer the case itself calls correct
-    — passes that beat's two REPLY checks.
-
-    The same tripwire every beat over this world carries (the "check the scorer before you
-    blame the model" rule, applied before the run rather than after it): a reply check that
-    cannot pass the agreed answer scores every sample a miss.  Here it reads the CORRECTED
-    value, which is the whole point — a report naming the value the round replaced would be
-    the wrong answer stated well."""
-    for case in CORRECTION_CASES:
-        for check in _round_reported_checks(case.corrected, case.reference, [case.reference]):
-            assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
-
-
-def _assert_five_wordings_each_state_the_facts(case: SourceDownCase | ImageCase) -> None:
+def _assert_five_wordings_each_state_the_facts(
+    case: SourceDownCase | ImageCase | AbsentFactCase,
+) -> None:
     """Five distinct wordings, every one of them stating the case's own constant facts.
 
     The facts come off the CASE rather than being restated here, so the guard and the thing it
@@ -1517,6 +1494,151 @@ def _assert_the_unread_page_entry_is_seen(case: SourceDownCase) -> None:
         False,
         "not from the page that answered: ['Harbor Seals no news']",
     ), "an entry carrying none of the readable page's tokens is the miss, named by its key"
+
+
+def test_the_absent_fact_case_stands_on_its_world_and_each_claim_sees_its_failure(
+    tmp_path,
+) -> None:
+    """The elicit → learn absent-fact case's world is what it says, and every claim it makes
+    can fail.
+
+    The premise first, because each half of it is silent on a run: five wordings naming the
+    page and the thing to find on it; a page that never mentions that thing; tokens that are the
+    page's alone; and a seeded round and seed list that read back as declared.
+
+    Then the claims, answered over one faithful sample and one sample per way of breaking the
+    contract.  The faithful one holds every claim, and every claim misses on at least the sample
+    built to break it — including the one only the entry claim can see, a note about the page's
+    silence that names nothing a provenance claim reads."""
+    case = ABSENT_FACT_CASE
+    _assert_five_wordings_each_state_the_facts(case)
+    assert_the_page_lacks_the_fact(case)
+    db = migrated_db(str(tmp_path / "absent-fact.db"))
+    seed_world_stores(db, case.world)
+    case.seed(db)
+    probe_the_seeded_world(db, case)
+
+    cohort = Cohort(
+        case.case_id,
+        "m",
+        _absent_fact_samples(case),
+        arms=[eval_cohort.Arm(label="phrasing 1", text=case.ask, world=case.world)],
+    )
+    declare_the_claims(cohort)
+    missed = {
+        claim.label: [o.sample for o in claim.outcomes if not o.ok] for claim in cohort.claims
+    }
+    assert missed == _ABSENT_FACT_MISSES
+
+
+# Which samples each of the case's claims misses: the faithful one never, and every claim at
+# least the sample built to break it.
+_ABSENT_FACT_MISSES = {
+    "state: the machine landed in learn": ["drifted"],
+    "state: every entry this turn wrote is something the noticeboard says": [
+        "noted the gap",
+        "invented a date",
+    ],
+    "state: nothing it created was scheduled": ["set it running"],
+    "state: everything the store already held is still there, unchanged": ["rewrote the list"],
+    "state: every mechanism already there, but the round's own, is still there, unchanged": [
+        "archived the list"
+    ],
+    "state: every specific value in the stored entries is sourced": ["invented a date"],
+    "reply: every specific value in it is sourced": ["invented a date"],
+}
+
+_ABSENT_FACT_CONTAINER = "check-noticeboard-communitygarden-example-noticeboard"
+_ABSENT_FACT_KEPT = StoredEntry(
+    collection=_ABSENT_FACT_CONTAINER,
+    key="compost collection",
+    content="second and fourth Saturday, 9am, by the east gate",
+)
+
+
+def _absent_fact_samples(case: AbsentFactCase) -> list[SampleObservation]:
+    """One faithful sample — it read the page, kept a notice, said the waitlist is not there —
+    and one sample per way of breaking the case's contract, each changing exactly one thing."""
+    faithful = _faithful_absent_fact_sample(case)
+    held, kept = faithful.held_before, _ABSENT_FACT_KEPT
+    gap = StoredEntry(
+        collection=_ABSENT_FACT_CONTAINER, key="plot waitlist", content="not posted yet"
+    )
+    invented = StoredEntry(
+        collection=_ABSENT_FACT_CONTAINER, key="plot waitlist opens", content="3 March"
+    )
+    broken = {
+        "faithful": {},
+        "drifted": {"landed": ConversationState.IDLE.value},
+        "noted the gap": {"entries": [kept, gap], "held": [*held, kept, gap]},
+        "invented a date": {
+            "entries": [invented],
+            "held": [*held, invented],
+            "reply": "the plot waitlist opens on 3 March — saved it.",
+        },
+        "set it running": {"scheduled": [_ABSENT_FACT_CONTAINER]},
+        "rewrote the list": {"held": [held[0].model_copy(update={"content": "none"}), kept]},
+        "archived the list": {"mechanisms": [_absent_fact_list(touched=["archived"])]},
+    }
+    return [
+        faithful.model_copy(update={"name": name, **changes}) for name, changes in broken.items()
+    ]
+
+
+def _faithful_absent_fact_sample(case: AbsentFactCase) -> SampleObservation:
+    """What a faithful sample leaves: in learn, one notice kept in the round's container, the
+    user's list as it was, and a reply naming only what the page says."""
+    held = [
+        StoredEntry(collection=store.name, key=key, content=content)
+        for store in case.world.stores
+        for key, content in store.keyed
+    ]
+    return SampleObservation(
+        name="faithful",
+        phrasing="phrasing 1",
+        arm=0,
+        landed=ConversationState.LEARN.value,
+        entries=[_ABSENT_FACT_KEPT],
+        held_before=held,
+        held=[*held, _ABSENT_FACT_KEPT],
+        mechanisms=[_absent_fact_list(), _absent_fact_round()],
+        reply=(
+            "read the noticeboard — compost collection is the second and fourth Saturday at "
+            "9am and there's a potluck on the 14th, but nothing about the plot waitlist."
+        ),
+        given=f"{case.world.pages[0].text}\n{case.ask}",
+    )
+
+
+def _absent_fact_list(*, touched: list[str] | None = None) -> MechanismRecord:
+    """The user's own list as the sample left it — untouched unless ``touched`` says how."""
+    (store,) = ABSENT_FACT_CASE.world.stores
+    return MechanismRecord(
+        name=store.name,
+        archived=bool(touched),
+        born_this_run=False,
+        touched_this_run=touched or [],
+        moved_this_run=touched or [],
+        notifies=False,
+        schedule=None,
+        program=None,
+        expires=False,
+    )
+
+
+def _absent_fact_round() -> MechanismRecord:
+    """The round's own container, built this turn — outside every survival claim."""
+    return MechanismRecord(
+        name=_ABSENT_FACT_CONTAINER,
+        archived=False,
+        born_this_run=True,
+        touched_this_run=["created"],
+        moved_this_run=[],
+        notifies=False,
+        schedule=None,
+        program=None,
+        expires=False,
+    )
 
 
 def test_the_registry_claim_reads_collections_not_the_system_log_markers(db) -> None:
@@ -6124,64 +6246,6 @@ def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
     # A letter-suffixed name keeps the family its name names.
     single = _drawn(name="site_a", description="the front page to read")
     assert _answered([single], (page,)) == ["url"]
-
-
-def _required(*pairs: tuple[str, str | None]) -> list[SkillParameter]:
-    """The learned skill's required parameters, as the interface check reads them."""
-    return [
-        SkillParameter(name=name, required=True, description=description)
-        for name, description in pairs
-    ]
-
-
-def test_the_learn_interface_accepts_the_page_plus_at_most_the_found_thing() -> None:
-    """The elicit → learn interface check under the code owner's leeway ruling (2026-08-05).
-
-    The audited draw that prompted it asked for a `search_phrase` beside the url, and the
-    thinking read "the late sailing" out of both of the user's own turns — the
-    enumerate-then-filter rule applied CORRECTLY, so scoring it a miss would be the scorer
-    marking a sound draw wrong.  The page stays mandatory (a routine nobody can point
-    anywhere can only repeat its demonstration) and the leeway is exactly one: a second
-    parameter of another kind is the invention the rule exists to stop, and a third is one
-    however it is named.  The rationale names WHICH reading was drawn, on the pass as well
-    as the miss."""
-    alone = _interface_check(_required(("url", "the listing page to check")))
-    assert (alone.ok, alone.rationale) == (True, "url alone")
-
-    leeway = _interface_check(
-        _required(
-            ("url", "the timetable page to read"),
-            ("search_phrase", "the line to look for on it"),
-        )
-    )
-    assert (leeway.ok, leeway.rationale) == (True, "url + search_phrase (user-named)")
-
-    # A second parameter of any OTHER kind is the invention, whatever it is called.
-    invented = _interface_check(
-        _required(("url", "the page to read"), ("frequency", "how often to check it"))
-    )
-    assert (invented.ok, invented.rationale) == (
-        False,
-        "rejected: frequency answers no accepted family",
-    )
-
-    # A third fails even when the first two are the accepted pair.
-    third = _interface_check(
-        _required(
-            ("url", "the page to read"),
-            ("search_phrase", "the line to look for"),
-            ("collection", "where to keep it"),
-        )
-    )
-    assert third.ok is False
-
-    # The page half is MANDATORY: a found-thing on its own is not an interface.
-    orphan = _interface_check(_required(("search_phrase", "the line to look for")))
-    assert (orphan.ok, orphan.rationale) == (False, "0 answer the page: []")
-
-    # An accepted parameter still has to say what to supply.
-    undescribed = _interface_check(_required(("url", None)))
-    assert (undescribed.ok, undescribed.rationale) == (False, "carries no description: url")
 
 
 # ── The idle answering cases' own fixtures (#2008) ───────────────────────────

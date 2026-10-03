@@ -175,11 +175,6 @@ def _structural_reset(db: Database) -> None:
     )
 
 
-def _landed_state(db: Database) -> str | None:
-    latest = db.machine.latest_transition()
-    return latest.to_state if latest else None
-
-
 def _log_ask(db: Database, content: str, case_id: str) -> int:
     """One incoming turn, with its id asserted where it is written.
 
@@ -234,10 +229,6 @@ def _entries_written_by_this_run(db: Database) -> list[MemoryEntry]:
     trigger read as things she did.  The run-id stamp says exactly what this run
     wrote (#1560), so ask that instead of inferring from newness.
 
-    The whole entry, not its content alone: where in the entry a fact landed is a
-    question about key/value semantics that is deliberately open (#1854), so the
-    callers read both halves through ``_written_texts``.
-
     "This run" is now a stamp that is present AND not a seeded one (#1846): a seeded
     round's own entry carries the run that wrote it, exactly as production does, so
     "stamped at all" no longer distinguishes what this sample did from what it was
@@ -263,15 +254,6 @@ def _written_by_this_run(entry: MemoryEntry) -> bool:
     the reading there is unchanged."""
     stamps = (entry.created_by_run_id, entry.last_written_by_run_id)
     return any(stamp is not None and not is_seeded_run(stamp) for stamp in stamps)
-
-
-def _written_texts(entries: list[MemoryEntry]) -> list[str]:
-    """Both halves of every written entry — its KEY and its CONTENT.
-
-    One shape, two customers: what the durable-write check matches the case's fact
-    against, and what a rationale names when it missed.  A log entry has no key, so
-    what it contributes is its content alone."""
-    return [text for entry in entries for text in (entry.key, entry.content) if text]
 
 
 def _pages_fetched(db: Database) -> list[MemoryEntry]:

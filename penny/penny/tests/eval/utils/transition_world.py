@@ -29,15 +29,11 @@ from penny.conversation_machine import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput, MemoryType
-from penny.database.models import MemoryRow, MessageLog, Skill, StateTransition
-from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.models import MemoryRow, MessageLog, StateTransition
 from penny.database.skills import (
     DistillInput,
     SkillDraft,
-    SkillParameter,
     SkillStep,
-    SkillSubKind,
-    SkillSubstitution,
     derive_collection_name,
     distill_steps,
     render_skill,
@@ -55,28 +51,18 @@ from penny.round_framing import container_name
 # fixture that drifts from the pipeline it stands in for.  Both halves of the #1824
 # split are applied by their own production function — ``_apply_leaf_labels`` for the
 # labeller's spots, ``_naming`` + ``_interface_parameters`` for the framer's signature.
-# ``attachment_names`` is the registry policy for what a routine can be attached to, read
-# for the same reason: the scorer asks whether a learned routine HAS a destination, and
-# that is the question extraction already answers when it decides which leaves to mark.
 from penny.skill_extraction import (
     _apply_leaf_labels,
     _interface_parameters,
     _naming,
-    attachment_names,
 )
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
-    Check,
-    ParameterFamily,
     Seeder,
-    asked_for_page_structure,
-    classify_by_family,
     collection_entries,
-    is_seeded_run,
     outgoing_replies,
     seeded_run_id,
     tool_call_name,
-    tool_was_called,
 )
 
 # The agreed breadth for "the page the routine is pointed at", READ from where the framer
@@ -122,9 +108,7 @@ from penny.tests.eval.utils.transition_ledger import (
     _structural_reset,
     _tool_result_turn,
     _wire_tool_call,
-    _written_texts,
 )
-from penny.text_validity import is_blank
 
 # The production tool-result framer, used as itself: a seeded ledger's tool turns have to
 # read the way the loop really writes them, and a hand-written frame is a second copy of a
@@ -336,31 +320,27 @@ _IDLE_ASK_URGENCY = (
 
 # ── elicit → learn: the teach question answered, the round run once ───────────
 #
-# Five cases, one per idle → elicit ask above, so the two edges chain subject for
-# subject.  Each starts where its own sibling stopped: the instigating ask logged
-# INCOMING as the round's ANCHOR, Penny's teach question logged OUTGOING as her last
-# turn, and the machine parked in elicit ON that ask.  An elicit park ALWAYS has an
-# anchor — a bare park is a state production never produces, and it left the turn
-# classified against no task at all.
+# Five rounds, one per idle → elicit ask above, so the two edges chain subject for
+# subject.  None is DRIVEN as a case any more — the edge's canonical case is the ported
+# ``transition-elicit-to-learn`` (#2002), which brings its own turns, and the variants
+# that were driven from these were retired as covered by it (#2210).  They survive as the
+# ROUNDS the composed world and the learn → apply seeds are laid down from, which is why
+# each id names what it seeds: one id must never name two cases (#2005).
+#
+# Each round is the shape its turns really had: the instigating ask logged INCOMING as
+# the round's ANCHOR, Penny's teach question logged OUTGOING as her last turn, and the
+# machine parked in elicit ON that ask.  An elicit park ALWAYS has an anchor — a bare
+# park is a state production never produces.
 #
 # The user then answers that question with the steps, in their own words: the
-# three-step look-up / extract / remember shape.  Cases 2, 3 and 5 supply the url
+# three-step look-up / extract / remember shape.  Rounds 2, 3 and 5 supply the url
 # their ask never gave, which makes the url user-supplied in EVERY scenario — the one
 # piece the framer then has to mint as a parameter.  Each page carries exactly one
-# controllable fact, so what she stored is provable from the entry alone.
+# controllable fact, so what a round stored is provable from the entry alone.
 #
-# Since #1868 the demonstration's DESTINATION is settled before the turn runs: entering
-# learn frames the round and builds the container derived from the routine plus the values
-# the user said, and the LEARN instruction renders both names verbatim.  So "remember it"
-# writes into a container that already exists, and the case scores that the write landed
-# THERE — a copy of a rendered anchor — instead of grading a name the model chose.
-#
-# Each case's reference reply is DATA (``closing_report``) rather than prose — the same
-# promotion ``teach_question`` got, and for the same reason: the learn → apply cases
-# below seed it as Penny's closing turn, so the line the review reads and the line the
-# next beat replays are one string.  It stays a review target here (#1827's turn-2
-# shape: report what was found and what was saved, then the offer), never a scorer
-# string.
+# Each round's closing report is DATA (``closing_report``) rather than prose — the same
+# promotion ``teach_question`` got, and for the same reason: the learn → apply seeds
+# below replay it as Penny's closing turn.
 
 
 # The user answers the teach question with the steps — the very question case 1
@@ -370,17 +350,16 @@ _TEACH_TURN = f"yeah — go to {LISTING_URL}, find the current price, and rememb
 
 
 class _LearnCase(NamedTuple):
-    """One agreed elicit → learn pair, and the world its turn is answered against.
+    """One agreed elicit → learn round, and the page its demonstration read.
 
     ``ask`` is the sibling idle → elicit case's ask, seeded INCOMING — the round's
     anchor.  ``teach_question`` is that case's reference reply, seeded OUTGOING as
     Penny's last turn (the same agreed line documented above it, here as data rather
-    than as prose).  ``demo`` is the turn under test.  ``closing_report`` is THIS
-    case's own reference reply — how the demonstrated round is reported and the offer
-    made — carried as data for the same reason, since the learn → apply case seeds it
-    as the turn its acceptance answers.  ``page`` is what the demonstration reads, and
-    ``stored`` the one controllable fact it carries — what makes browse-sourced storage
-    provable, in the entry AND in the reply."""
+    than as prose).  ``demo`` is the user's demonstration.  ``closing_report`` is how
+    the demonstrated round is reported and the offer made — carried as data for the
+    same reason, since the learn → apply seed replays it as the turn its acceptance
+    answers.  ``page`` is what the demonstration reads, and ``stored`` the one
+    controllable fact it carries — what makes browse-sourced storage provable."""
 
     case_id: str
     ask: str
@@ -389,28 +368,6 @@ class _LearnCase(NamedTuple):
     closing_report: str
     page: CannedPage
     stored: str
-
-
-class _AbsentRound(NamedTuple):
-    """The same agreed pair for a demonstration whose page does NOT hold the asked-for
-    fact — the absent-fact round at the bottom of this section.
-
-    Every field means what ``_LearnCase``'s does and is seeded identically.  The
-    difference is the field that is MISSING: there is no ``stored``, because the page
-    speaks to the question nowhere, and a fixture naming a fact here would be naming the
-    one thing the round is contracted never to produce."""
-
-    case_id: str
-    ask: str
-    teach_question: str
-    demo: str
-    page: CannedPage
-
-
-# The two shapes an elicit → learn round's fixture comes in.  The seed below reads only
-# what they share — the case's name, the ask, and the teach question — so it is typed by
-# what it USES rather than by the shape that happened to come first.
-_ElicitRound = _LearnCase | _AbsentRound
 
 
 # Case 1 — the script's own round, continuing ``transition-idle-to-elicit``.  It is no longer
@@ -435,10 +392,10 @@ _AURORA_ROUND = _LearnCase(
     stored="499",
 )
 
-# Case 2 — continuing ``transition-idle-to-elicit-no-url``: the ask named a source and
+# Round 2 — continuing ``transition-idle-to-elicit-no-url``: the ask named a source and
 # no page, so the demonstration is where the url arrives.
 _FERRY_ROUND = _LearnCase(
-    case_id="transition-elicit-to-learn-no-url",
+    case_id="seed-ferry-round",
     ask=_IDLE_ASK_NO_URL,
     teach_question=(
         "i can learn that — walk me through it once? where should i check the "
@@ -455,10 +412,10 @@ _FERRY_ROUND = _LearnCase(
     stored="not scheduled",
 )
 
-# Case 3 — continuing ``transition-idle-to-elicit-digest``: the store-each-day digest,
+# Round 3 — continuing ``transition-idle-to-elicit-digest``: the store-each-day digest,
 # demonstrated once.
 _BAKERY_ROUND = _LearnCase(
-    case_id="transition-elicit-to-learn-digest",
+    case_id="seed-bakery-round",
     ask=_IDLE_ASK_DIGEST,
     teach_question=(
         "happy to — show me once how you'd want it done? what page should i read, "
@@ -473,10 +430,10 @@ _BAKERY_ROUND = _LearnCase(
     stored="rye",
 )
 
-# Case 4 — continuing ``transition-idle-to-elicit-threshold``: a number to keep track
+# Round 4 — continuing ``transition-idle-to-elicit-threshold``: a number to keep track
 # of, demonstrated as a plain read-and-remember (the comparison is a later beat's).
 _COLONY_ROUND = _LearnCase(
-    case_id="transition-elicit-to-learn-threshold",
+    case_id="seed-colony-round",
     ask=_IDLE_ASK_THRESHOLD,
     teach_question=(
         "i don't have a routine for that yet — walk me through it once? what should "
@@ -493,9 +450,9 @@ _COLONY_ROUND = _LearnCase(
     stored="214",
 )
 
-# Case 5 — continuing ``transition-idle-to-elicit-urgency``: the act-now ask, taught.
+# Round 5 — continuing ``transition-idle-to-elicit-urgency``: the act-now ask, taught.
 _ARRIVALS_ROUND = _LearnCase(
-    case_id="transition-elicit-to-learn-urgency",
+    case_id="seed-arrivals-round",
     ask=_IDLE_ASK_URGENCY,
     teach_question=(
         "i can learn that — walk me through it once? where should i look, and what "
@@ -517,7 +474,7 @@ _ARRIVALS_ROUND = _LearnCase(
 _ROUND_INCOMING_TURNS = 2
 
 
-def _seed_elicit_round(case: _ElicitRound) -> Seeder:
+def _seed_elicit_round(case: _LearnCase) -> Seeder:
     """Lay down the state the PRECEDING beat ends in, item for item — this edge starts
     where ``idle → elicit`` stops, so its precondition is that beat's scored terminal
     state and nothing else:
@@ -551,7 +508,7 @@ def _seed_elicit_round(case: _ElicitRound) -> Seeder:
 
 def _seed_elicit_turn_ledger(
     db: Database,
-    case: _ElicitRound,
+    case: _LearnCase,
     runs: _JourneyRuns,
     *,
     candidates: tuple[SkillCandidate, ...] = (),
@@ -579,7 +536,7 @@ def _seed_elicit_turn_ledger(
     )
 
 
-def _assert_seeded_world(db: Database, case: _ElicitRound, ask_id: int | None) -> None:
+def _assert_seeded_world(db: Database, case: _LearnCase, ask_id: int | None) -> None:
     """Loud probe: the seeded world IS the sibling idle → elicit case's scored terminal
     state — parked in elicit, on THIS ask.
 
@@ -603,7 +560,7 @@ def _assert_seeded_world(db: Database, case: _ElicitRound, ask_id: int | None) -
     )
 
 
-def _assert_the_round_reads_as_a_conversation(db: Database, case: _ElicitRound) -> None:
+def _assert_the_round_reads_as_a_conversation(db: Database, case: _LearnCase) -> None:
     """The ask and the teach question come back as a two-turn CONVERSATION, not as one
     user turn — the cheap version of the composed world's own window probe, on the beat
     whose whole precondition is that Penny asked something and the demonstration answers
@@ -617,7 +574,7 @@ def _assert_the_round_reads_as_a_conversation(db: Database, case: _ElicitRound) 
     assert seen == expected, f"{case.case_id}: the round must read as a conversation, got {seen}"
 
 
-def _assert_nothing_enacted(db: Database, case: _ElicitRound) -> None:
+def _assert_nothing_enacted(db: Database, case: _LearnCase) -> None:
     """The other half of that probe — turn 1 enacted NOTHING, which is the whole of what
     its scored state checks assert: no skill learned, no entry written by any run, and no
     page fetched.  (The seeded-collection check went with the seeded collections
@@ -650,482 +607,6 @@ def _mentions(token: str, texts: list[str]) -> bool:
     matching case-sensitively would score correct writes as misses on most of these
     pages, which is a scorer bug reported as a finding."""
     return any(token.lower() in text.lower() for text in texts)
-
-
-def _learned_this_turn(db: Database) -> list[Skill]:
-    """Every routine THIS turn's round left in the registry.
-
-    Read by the run that TAUGHT it (#1846's seeded-run exclusion, the same reading
-    ``_entries_written_by_this_run`` uses for entries), because a round is not always
-    taught into an empty registry: the beat that teaches beside five running jobs starts
-    with five routines already there, and "is there a skill?" would then be true before
-    the turn began.  Where the registry does start empty — the elicit → learn rounds —
-    this is every row, so both beats read one definition."""
-    return [skill for skill in db.skills.list_all() if not is_seeded_run(skill.source_run_id)]
-
-
-def _skill_steps(skills: list[Skill]) -> list[SkillStep]:
-    """Every step of the routines ``skills`` holds — what run-end extraction left behind,
-    read structurally off the stored rows rather than off the demonstration.
-
-    The step, not its substitutions alone, because a leaf's demonstrated value lives in
-    its step's ``arguments`` and that is what says whether the leaf is a destination
-    (#1854)."""
-    return [step for skill in skills for step in steps_from_json(skill.steps)]
-
-
-def _skill_substitutions(steps: list[SkillStep]) -> list[SkillSubstitution]:
-    """Every dynamic leaf of the learned routine — the SHAPE of what was captured."""
-    return [sub for step in steps for sub in step.substitutions]
-
-
-def _skill_parameters(skills: list[Skill]) -> list[SkillParameter]:
-    """Every declared parameter of the routines ``skills`` holds — the INTERFACE, which
-    since #1830 is the framer's draw and lives at SKILL level (its declared interim:
-    nothing joins a parameter to a leaf of the program yet)."""
-    return [parameter for skill in skills for parameter in parameters_from_json(skill.parameters)]
-
-
-# The three shape labels, named once: each is read BOTH as a scored check and as the
-# not-applicable row a sample with no learned skill renders, and a label is a diff-join
-# key — two spellings of one check are two checks to every report that reads them.
-_PLACEHOLDERS_ONLY_LABEL = (
-    "state: every spot in the routine is a placeholder (the labelling draw landed)"
-)
-_ATTACHMENT_MARK_LABEL = "state: the destination leaf still carries the attachment mark"
-_INTERFACE_LABEL = "state: the interface asks for the page, plus at most the found-thing"
-
-# What the interface may ask for, as the two families a drawn parameter can answer —
-# classified by the SHARED name-first-then-description discipline (``classify_by_family``),
-# so this check and the framer suite's own set check can never read a draw two ways.
-#
-# The PAGE is mandatory and NAME-ONLY, on the framer suite's breadth (imported rather than
-# restated: what a page parameter may reasonably be called is one agreed vocabulary, and a
-# page is the thing NAMED as one — a description mentioning a page promotes nothing).
-_PAGE_LABEL = "page"
-_PAGE_FAMILY = ParameterFamily(_PAGE_LABEL, _PLACE_TOKENS, name_only=True)
-
-# The FOUND-THING is the leeway (code-owner ruling, 2026-08-05, from a thinking-audited
-# draw): every one of these asks names what to look for as well as where — "look for the
-# late sailing line" — so a second parameter carrying THAT is a defensible reading of the
-# enumerate-then-filter rule, not an invention, and the check accepts at most one.  Both
-# passes apply here, unlike the page: the piece has no canonical noun, so a well-judged
-# name the tokens don't anticipate is allowed to land through its description.
-_FOUND_THING_LABEL = "found-thing"
-_FOUND_THING_FAMILY = ParameterFamily(
-    _FOUND_THING_LABEL, ("search", "phrase", "term", "keyword", "target", "line", "query")
-)
-_INTERFACE_FAMILIES = (_PAGE_FAMILY, _FOUND_THING_FAMILY)
-
-
-def _placeholders_only_check(subs: list[SkillSubstitution]) -> Check:
-    """Every spot in the routine is a PLACEHOLDER — none is still a leaf parameter
-    (#1828).
-
-    The labeller names every spot unconditionally and a named spot stops being a
-    parameter, so a leftover ``HOLE`` means the labelling draw FELL BACK (it is
-    all-or-nothing at the draw) and the routine kept its arg-derived names.  Bindings
-    are untouched by any of this: a value a prior step produced was never asked of
-    anyone."""
-    left = [sub for sub in subs if sub.kind == SkillSubKind.HOLE]
-    asking = sorted({sub.parameter for sub in left if sub.parameter is not None})
-    return Check(
-        _PLACEHOLDERS_ONLY_LABEL,
-        not left,
-        rationale=f"{len(left)} spot(s) still a leaf parameter: {asking}" if left else None,
-        kind="state",
-    )
-
-
-def _attachment_mark_check(db: Database, steps: list[SkillStep]) -> Check:
-    """The destination leaf still carries the ATTACHMENT MARK (#1783, #1827 principle
-    4) — scored only when the routine HAS a destination (#1854).
-
-    Where a routine writes is decided by what it is applied to and is never asked of the
-    user, and the mark is exactly what the apply turn binds — so a routine whose
-    destination came back unmarked is one the next edge cannot point anywhere.
-
-    A routine that keeps nothing has no such leaf to mark, and read-only routines are
-    legitimate (code-owner ruling: "there's tons of skills that be like 'check the scores
-    here, check the schedule there, tell me' — that doesn't require a store step").  Since
-    #1850 a learn round is extracted whatever shape it had, so a browse-only skill is now
-    a state this suite reaches, and grading it here would fail a routine for a step nobody
-    asked for.
-
-    Applicability is read from the DEMONSTRATED VALUES, never from the marks — "is
-    anything marked?" is the check itself, so answering applicability with it would pass
-    every routine vacuously and never catch a dropped mark.  A leaf is a destination when
-    its demonstrated value names one of Penny's own collections, which is exactly what
-    ``distill_steps`` marks on, read through the same registry policy extraction uses
-    (``attachment_names``).  Bindings are excluded there and excluded here: a value a
-    prior step produced is already explained, so nothing is left for an attachment to
-    decide.  Keyed to no tool name — a skill is an arbitrary tool sequence, so a plugin
-    verb's destination counts like a ``collection_write``'s."""
-    destinations = _destination_subs(db, steps)
-    if not destinations:
-        return Check.na(_ATTACHMENT_MARK_LABEL, kind="state")
-    marked = any(sub.attachment for sub in destinations)
-    return Check(
-        _ATTACHMENT_MARK_LABEL,
-        marked,
-        rationale=None if marked else "the destination leaf came back unmarked",
-        kind="state",
-    )
-
-
-def _destination_subs(db: Database, steps: list[SkillStep]) -> list[SkillSubstitution]:
-    """Every leaf of the routine that points at one of Penny's own collections — the
-    spots the attachment fills, identified by their demonstrated value alone."""
-    collections = attachment_names(db)
-    return [
-        sub
-        for step in steps
-        for sub in step.substitutions
-        if sub.kind != SkillSubKind.BINDING and _leaf_at(step.arguments, sub.path) in collections
-    ]
-
-
-def _interface_check(required: list[SkillParameter]) -> Check:
-    """The interface asks for the PAGE, plus AT MOST the found-thing (#1830, amended by
-    the code owner's leeway ruling of 2026-08-05).
-
-    The page is mandatory — it is the one piece every one of these asks leaves to re-say,
-    and a routine that cannot be pointed at one can only repeat its demonstration.  A
-    SECOND parameter is accepted when it carries what the user's own turns named as the
-    thing to find: the ferry round's draws ask for one under several names (`search_phrase`,
-    `search_term`, `keyword`, `line_text` — the family is what is agreed, never one
-    spelling), and the audited thinking read "the late sailing" out of both turns — which is
-    the enumerate-then-filter rule applied correctly, so scoring it a miss would be the
-    scorer marking a sound draw wrong.  Anything else stays a miss: a second parameter of
-    another kind is the invention that rule exists to stop, and a third is one however it
-    is named.  Every accepted
-    parameter carries a description — it is what the ambient ``needs:`` row renders, so one
-    nobody can read is one nobody can bind."""
-    answered = _interface_families(required)
-    pages, found, rejected = (_of_family(required, answered, label) for label in _READINGS)
-    accepted = len(pages) == 1 and len(found) <= 1 and not rejected
-    described = all(_says_what_to_supply(parameter) for parameter in pages + found)
-    return Check(
-        _INTERFACE_LABEL,
-        accepted and described,
-        rationale=_interface_rationale(pages, found, rejected, described),
-        kind="state",
-    )
-
-
-def _interface_families(required: list[SkillParameter]) -> list[ParameterFamily | None]:
-    """Which family each required parameter answers, through the SHARED classifier — a
-    parameter carries no description in the model when a draw left none, and an absent
-    description classifies as the empty text it is."""
-    return classify_by_family(
-        [(parameter.name, parameter.description or "") for parameter in required],
-        _INTERFACE_FAMILIES,
-    )
-
-
-# The three readings a required parameter can land in, in the order the rationale names
-# them: the mandatory page, the accepted found-thing, and everything else.
-_READINGS = (_PAGE_LABEL, _FOUND_THING_LABEL, None)
-
-
-def _of_family(
-    required: list[SkillParameter],
-    answered: list[ParameterFamily | None],
-    label: str | None,
-) -> list[SkillParameter]:
-    """The required parameters that answered ``label`` — ``None`` for the ones that
-    answered no accepted family at all."""
-    return [
-        parameter
-        for parameter, family in zip(required, answered, strict=True)
-        if (family.label if family is not None else None) == label
-    ]
-
-
-def _says_what_to_supply(parameter: SkillParameter) -> bool:
-    """A parameter carries the one-line what-to-supply the framer writes for it — the
-    description is optional in the model (a labelling fallback leaves none), so an
-    absent one is a real, distinct shape and not something to read as empty text."""
-    return parameter.description is not None and not is_blank(parameter.description)
-
-
-def _interface_rationale(
-    pages: list[SkillParameter],
-    found: list[SkillParameter],
-    rejected: list[SkillParameter],
-    described: bool,
-) -> str:
-    """WHICH reading was drawn, named on the pass as well as the miss — the two accepted
-    shapes are different answers to the same ask, and a report that showed only "passed"
-    would hide which one the run committed to."""
-    if rejected:
-        names = ", ".join(parameter.name for parameter in rejected)
-        return f"rejected: {names} answers no accepted family"
-    if len(pages) != 1:
-        return f"{len(pages)} answer the page: {[parameter.name for parameter in pages]}"
-    if len(found) > 1:
-        return f"{len(found)} answer the found-thing: {[parameter.name for parameter in found]}"
-    if not described:
-        undescribed = [p.name for p in pages + found if not _says_what_to_supply(p)]
-        return f"carries no description: {', '.join(undescribed)}"
-    if not found:
-        return f"{pages[0].name} alone"
-    return f"{pages[0].name} + {found[0].name} (user-named)"
-
-
-def _interface_advisories(skills: list[Skill]) -> list[Check]:
-    """What the framer committed to, verbatim — one ADVISORY row per parameter.
-
-    Whether a name is WELL judged is read at joint review against the reference outputs
-    on the ticket; a scorer that faked that reading would be answering for the draw."""
-    return [
-        Check(
-            f"drew parameter {parameter.name!r} — {parameter.description!r}",
-            True,
-            scored=False,
-            kind="state",
-        )
-        for parameter in _skill_parameters(skills)
-    ]
-
-
-def _extraction_shape_checks(db: Database, learned: list[Skill]) -> list[Check]:
-    """The shape run-end extraction produced, read off the stored skill: the LABELLER's
-    half (every spot a placeholder, and — where the routine keeps anything — the
-    destination still marked) and the FRAMER's half (one required parameter, described),
-    with the drawn interface riding advisory.
-
-    ``learned`` is what THIS round taught (``_learned_this_turn``), never the whole
-    registry: a beat that teaches beside routines the user already has would otherwise
-    grade five fixtures' shapes as the round's own work.
-
-    All three go NOT-APPLICABLE when no skill was learned at all.  That miss is already
-    the scored "a skill was learned from the round" check, so grading the shape of a
-    skill that does not exist would recount one failure three times — and "every spot is
-    a placeholder" over an empty routine is vacuously true, which would render as a pass
-    for a round that produced nothing.  The mark check has a second not-applicable case
-    of its own (#1854): a routine with no destination has nothing to mark."""
-    if not learned:
-        return [
-            Check.na(_PLACEHOLDERS_ONLY_LABEL, kind="state"),
-            Check.na(_ATTACHMENT_MARK_LABEL, kind="state"),
-            Check.na(_INTERFACE_LABEL, kind="state"),
-        ]
-    steps = _skill_steps(learned)
-    required = [parameter for parameter in _skill_parameters(learned) if parameter.required]
-    return [
-        _placeholders_only_check(_skill_substitutions(steps)),
-        _attachment_mark_check(db, steps),
-        _interface_check(required),
-        *_interface_advisories(learned),
-    ]
-
-
-def _attaches_nothing_checks(
-    db: Database, created: list[MemoryRow], *, already_running: tuple[str, ...] = ()
-) -> list[Check]:
-    """Learning must not INSTANTIATE (#1706).  Scored against what this turn PRODUCED: the
-    collections that did not exist before it — since #1868 that is normally the container
-    the entry hook built plus anything the round made itself — or, when the round reused an
-    existing one, nothing, since a seeded collection's own prompt and cadence predate the
-    round and failing on those would report the framework's fixtures as her doing.
-
-    The claims hold either way, and that is the point: a framework-built container is inert
-    by construction, so "no program, nothing scheduled" is true of it for a structural
-    reason rather than because the model refrained.
-
-    ``already_running`` names the collections that carried a routine BEFORE the turn — empty
-    for a round taught into a world with no jobs in it, and the world's own live containers
-    for a round taught beside them, which would otherwise read as five things this turn
-    attached.  Named rather than inferred from newness, because the claim is about
-    attaching a routine ANYWHERE and a turn attaching one to a collection it did not create
-    is exactly the fold this check exists to catch."""
-    instantiated = [
-        row
-        for row in db.memories.list_all()
-        if row.skill_name is not None and row.name not in already_running
-    ]
-    return [
-        Check(
-            "state: no skill was attached anywhere (learning does not instantiate)",
-            not instantiated,
-            rationale=f"attached to {[row.name for row in instantiated]}" if instantiated else None,
-            kind="state",
-        ),
-        Check(
-            "state: no program was rendered into the collection it created",
-            all(row.extraction_prompt is None for row in created),
-            kind="state",
-        )
-        if created
-        else Check.na(
-            "state: no program was rendered into the collection it created", kind="state"
-        ),
-        Check(
-            "state: nothing it created was scheduled (no trigger, no notify)",
-            all(row.schedule is None and not row.notify for row in created),
-            kind="state",
-        )
-        if created
-        else Check.na(
-            "state: nothing it created was scheduled (no trigger, no notify)", kind="state"
-        ),
-    ]
-
-
-# The two claims the entry framing makes, named once: each is read BOTH as a scored check
-# and as the not-applicable row a sample whose entry draw failed renders, and a label is a
-# diff-join key.
-_FRAMED_LABEL = "state: the round was framed on entry and its container built"
-_WROTE_INTO_CONTAINER_LABEL = "state: the demonstrated write landed in the round's container"
-
-
-def _round_framing(db: Database) -> RoundFraming | None:
-    """The round's framing, read off the move that settled it (#1868) — the same anchor
-    the turn's own instruction rendered and run-end extraction reused.
-
-    Read from the machine rather than guessed from the collections that appeared, because
-    the question these checks ask is whether the write landed where the turn was TOLD to
-    put it, and only the framing says where that was."""
-    latest = db.machine.latest_transition()
-    if latest is None or latest.skill_frame is None:
-        return None
-    return RoundFraming.model_validate_json(latest.skill_frame)
-
-
-def _framed_checks(db: Database, framing: RoundFraming | None) -> list[Check]:
-    """What the ENTRY framing settled, before the turn ran (#1868): the round has a
-    routine and a container built for it.
-
-    Scored, because the draw that decides it is a live one: a round nothing framed runs
-    unframed — the honest degrade path — and every claim about writing into the container
-    then has nothing to be about.  The drawn name and container ride ADVISORY beside it, so
-    a reader sees what the framework committed the round to."""
-    if framing is None:
-        return [
-            Check(
-                _FRAMED_LABEL, False, rationale="the entry draw produced no framing", kind="state"
-            )
-        ]
-    row = db.memories.get(framing.container)
-    built = row is not None and not row.archived
-    return [
-        Check(
-            _FRAMED_LABEL,
-            built,
-            rationale=None if built else f"no container named {framing.container!r} exists",
-            kind="state",
-        ),
-        Check(
-            f"framed the round as {framing.signature.name!r} into {framing.container!r}",
-            True,
-            scored=False,
-            kind="state",
-        ),
-        *(
-            Check(
-                f"framed parameter {parameter.name!r} = {parameter.value!r}",
-                True,
-                scored=False,
-                kind="state",
-            )
-            for parameter in framing.signature.parameters
-        ),
-    ]
-
-
-def _wrote_into_the_container_check(db: Database, framing: RoundFraming | None) -> Check:
-    """The demonstrated write landed in the container the turn was told to write into
-    (#1868) — the check that replaces every judgment about what a collection should be
-    called.
-
-    The instruction renders that container's name verbatim, so the write's destination is a
-    COPY of a rendered anchor: a write that landed anywhere else is a destination invented
-    over one that was given.  Not applicable when nothing framed the round (there was no
-    container to write into) and when the round wrote nothing at all — that absence is
-    already the durable-write check's own miss, and grading it twice would report one
-    failure as two."""
-    if framing is None:
-        return Check.na(_WROTE_INTO_CONTAINER_LABEL, kind="state")
-    written = _entries_written_by_this_run(db)
-    if not written:
-        return Check.na(_WROTE_INTO_CONTAINER_LABEL, kind="state")
-    landed = [entry for entry in written if entry.memory_name == framing.container]
-    elsewhere = sorted({entry.memory_name for entry in written if entry not in landed})
-    return Check(
-        _WROTE_INTO_CONTAINER_LABEL,
-        bool(landed),
-        rationale=None if landed else f"wrote into {elsewhere} instead of {framing.container!r}",
-        kind="state",
-    )
-
-
-# The two claims a demonstrated round makes wherever one is watched, named once: each is a
-# diff-join key, and two beats spelling them out would drift a word at a time.  They keep
-# the wording the auction script gave them even where a harbour signal board is what was
-# read — the same reason the elicit → learn set keeps it across five subjects.
-_FETCH_HAPPENED_LABEL = "state: she browsed the listing (the demonstrated fetch happened)"
-_LANDED_DURABLY_LABEL = "state: the browsed price landed durably (remember = a plain write)"
-
-
-def _round_ran_checks(db: Database, fact: str) -> list[Check]:
-    """The demonstrated round RAN: the page was read, and what it said landed durably.
-
-    Shared by both beats that watch a round being taught — the demonstration answered
-    against an elicit question, and the teach that arrives whole from idle — because it is
-    one contract read twice.
-
-    The fact counts wherever in the entry it landed — its KEY or its content (#1854,
-    code-owner ruling: "loosen the scorer; we can reason about the semantics of
-    keys/values/remembering later").  Two measured samples wrote the arrival's title as the
-    KEY and the date as the value, which is a workable shape for an arrival-shaped watch —
-    a repeat title is KEY_EXISTS_UNCHANGED and a new one is a new key — and was scored a
-    miss for putting the fact on the wrong side of the entry.  What the check tests is
-    still that the browsed fact landed durably."""
-    written = _written_texts(_entries_written_by_this_run(db))
-    landed = _mentions(fact, written)
-    return [
-        Check(_FETCH_HAPPENED_LABEL, tool_was_called(db, _BROWSE_TOOL), kind="state"),
-        Check(
-            _LANDED_DURABLY_LABEL,
-            landed,
-            rationale=None
-            if landed
-            else (f"wrote {written}" if written else "nothing was written"),
-            kind="state",
-        ),
-    ]
-
-
-def _round_reported_checks(fact: str, reply: str, replies: list[str]) -> list[Check]:
-    """What the turn that ran a demonstrated round SAID: it reports the value the round
-    really stored (SAID == DID), and it does not ask the user how the page is built.
-
-    Whether the report also makes the OFFER — the round's own closing move — is read at
-    joint review against the case's reference reply: one line of English carries no
-    structural signal, and a vocabulary for "would you like me to keep doing this" would
-    fail ordinary phrasings instead.
-
-    ``replies`` is every turn of Penny's this sample rather than the last one alone, so a
-    round that reported the value and then said something else still counts.  Both are
-    passed IN rather than read from a database, so the deterministic pin can run these
-    checks over a case's reference reply without one."""
-    said = _mentions(fact, replies)
-    term = asked_for_page_structure(reply)
-    return [
-        Check(
-            "reply: she reports the value she stored (SAID == DID)",
-            said,
-            rationale=None if said else f"no reply names {fact!r}",
-            kind="reply",
-        ),
-        Check(
-            "reply: asked for no page structure",
-            term is None,
-            rationale=f"asked for {term!r}" if term else None,
-            kind="reply",
-        ),
-    ]
 
 
 # ── learn → apply: the offer accepted, the routine set running ────────────────
@@ -3123,13 +2604,14 @@ _UNKNOWN_SPACES = [
 # noun for the page — and scoring that a miss would mark the plainest possible ask wrong.
 _ASKS_FOR_THE_PAGE = (*_PLACE_TOKENS, "where", "posted")
 
-# What a reply naming the missing FOUND-THING looks like.  The declared-parameter family
-# (``_FOUND_THING_FAMILY``) is what a PARAMETER may be called; a reply is written for a
-# person, so it also reaches for the plain verb — "what should i be looking out for" —
-# which no parameter would ever be named.  Both spellings are the same ask, so the reply
-# vocabulary is the parameter family plus that verb, in the forms it is actually written
-# in (the bare stem "look" is deliberately absent: "i'll look at the board" is a reply that
-# asked for nothing, and passing it would make the check mean nothing).
+# What a reply naming the missing FOUND-THING looks like.  The nouns are what a parameter
+# carrying it may be called (the leeway the code owner ruled on 2026-08-05: every one of
+# these asks names what to look for as well as where); a reply is written for a person, so
+# it also reaches for the plain verb — "what should i be looking out for" — which no
+# parameter would ever be named.  Both spellings are the same ask, so the reply vocabulary
+# is those nouns plus that verb, in the forms it is actually written in (the bare stem
+# "look" is deliberately absent: "i'll look at the board" is a reply that asked for
+# nothing, and passing it would make the check mean nothing).
 #
 # It is a FLOOR, not a proof: it says the reply named the thing, and whether it named it
 # WELL is read at joint review against the reference reply.  That reference reply is the
@@ -3137,7 +2619,13 @@ _ASKS_FOR_THE_PAGE = (*_PLACE_TOKENS, "where", "posted")
 # CORRECT would score the beat's own answer a miss, so the pin in ``test_eval_harness.py``
 # runs it through this set without a GPU.
 _ASKS_FOR_THE_FOUND_THING = (
-    *_FOUND_THING_FAMILY.tokens,
+    "search",
+    "phrase",
+    "term",
+    "keyword",
+    "target",
+    "line",
+    "query",
     "look for",
     "looking for",
     "look out for",
