@@ -383,6 +383,8 @@ async def test_startup_preflight_hard_fails_when_embedding_model_missing(
             await penny._run_preflight()
         assert "qwen3-embedding:4b" in str(excinfo.value)
         assert "LLM_EMBEDDING_MODEL" in str(excinfo.value)
+        # The report rides the error, so a caller deciding what to do reads the failed checks.
+        assert [f.name for f in excinfo.value.report.failures] == [PreflightCheck.EMBEDDING_MODEL]
     finally:
         await penny.shutdown()
 

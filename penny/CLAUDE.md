@@ -726,7 +726,15 @@ correlate with the work, so the survivors are a biased draw rather than a smalle
 run-level verdict moves the session's exit status, so a run computed from a fraction of its
 cohort can never exit 0. **A sample can be lost, but never hang the run (#2168)**: a sample
 whose boot fails (a preflight that refused) is voided the moment its Penny's run ends, named
-by the fault class; and every drive of a sample runs under `SAMPLE_WALL_CLOCK_SECONDS` (30
+by the fault class — unless the preflight failed on a TRANSIENT endpoint fault (#2230): every
+failed check carries the `LlmFault` its call failed of (`CheckResult.fault`, riding
+`PreflightError.report`), and when each one is `transient` (a timeout, a dropped or reset
+connection, a 5xx, a rate limit) the sample is torn down and booted again from a fresh world
+onto a database of its own, after a short doubling backoff, up to `SAMPLE_BOOT_ATTEMPTS`
+boots. A verdict (a model the endpoint does not list, credentials refused, any other 4xx)
+voids at once, and every re-boot is counted on the case's `CohortRecord.retried_boots`, which
+the health block prints. Production's own preflight still aborts on the first failure. And
+every drive of a sample runs under `SAMPLE_WALL_CLOCK_SECONDS` (30
 minutes), past which it is stopped and voided by name (`the sample never finished — stopped at
 its …s wall-clock bound`), so the case still closes and records its cohort. Stopping re-sends
 the cancel until the task is actually down (`stop_task` in `tests/conftest.py`), because an

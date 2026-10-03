@@ -23,13 +23,22 @@ from pydantic import BaseModel
 from penny.config import Config
 from penny.llm.client import LlmClient
 from penny.llm.image_client import OllamaImageClient
-from penny.llm.models import LlmConnectionError, LlmError
+from penny.llm.models import LlmConnectionError, LlmError, LlmFault
 
 logger = logging.getLogger(__name__)
 
 
 class PreflightError(Exception):
-    """Raised when a hard startup prerequisite fails — aborts startup."""
+    """Raised when a hard startup prerequisite fails — aborts startup.
+
+    Carries the whole ``report`` beside its message, so a caller that has to decide what
+    to do about the failure reads the failed checks' values rather than the sentence
+    built from them.
+    """
+
+    def __init__(self, report: PreflightReport) -> None:
+        super().__init__(report.failure_summary())
+        self.report = report
 
 
 class CheckStatus(StrEnum):
@@ -75,11 +84,18 @@ def model_available(model: str, available: list[str]) -> bool:
 
 
 class CheckResult(BaseModel):
-    """The outcome of one preflight check."""
+    """The outcome of one preflight check.
+
+    ``fault`` is what a check that failed ON A MODEL CALL failed of — the class the client
+    attached to the error it raised.  It is ``None`` for every other outcome, including a
+    failure that is a verdict about the configuration (a model the endpoint does not
+    list): there was no call that failed, so there is no fault to carry.
+    """
 
     name: PreflightCheck
     status: CheckStatus
     detail: str
+    fault: LlmFault | None = None
 
     def render(self) -> str:
         """One-line human summary: ``<icon> <name>: <detail>``."""
@@ -169,6 +185,7 @@ class Preflight:
                 name,
                 f"LLM endpoint unreachable at {url}: {error}. Start your LLM server "
                 f"(e.g. Ollama) and check LLM_API_URL.",
+                fault=error.fault,
             )
         except LlmError as error:
             return self._warn(
@@ -199,6 +216,7 @@ class Preflight:
                 name,
                 f"embedding endpoint unreachable at {url}: {error}. Penny's memory "
                 f"(dedup + recall) requires it.",
+                fault=error.fault,
             )
         except LlmError as error:
             return self._warn(
@@ -230,6 +248,7 @@ class Preflight:
                 f"/v1/embeddings/models could not verify it: {error}. Memory "
                 f"(dedup + recall) depends on it. Pull it (`ollama pull {model}`) "
                 f"or fix LLM_EMBEDDING_MODEL.",
+                fault=error.fault,
             )
         if model_available(model, embedding_available):
             return self._ok(
@@ -327,5 +346,5 @@ class Preflight:
         return CheckResult(name=name, status=CheckStatus.WARN, detail=detail)
 
     @staticmethod
-    def _fail(name: PreflightCheck, detail: str) -> CheckResult:
-        return CheckResult(name=name, status=CheckStatus.FAIL, detail=detail)
+    def _fail(name: PreflightCheck, detail: str, *, fault: LlmFault | None = None) -> CheckResult:
+        return CheckResult(name=name, status=CheckStatus.FAIL, detail=detail, fault=fault)

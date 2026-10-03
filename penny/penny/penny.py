@@ -409,7 +409,7 @@ class Penny:
         report = await self._build_preflight().run()
         report.log(logger)
         if report.has_failures:
-            raise PreflightError(report.failure_summary())
+            raise PreflightError(report)
 
     def _build_preflight(self) -> Preflight:
         """Assemble the preflight with a snapshot of the current channel/routing facts."""

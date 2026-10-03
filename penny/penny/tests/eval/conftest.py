@@ -12,6 +12,7 @@ rate for inspection without failing the run.  See docs/self-improvement-loop.md.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -76,6 +77,7 @@ from penny.llm.models import (
 )
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
+from penny.preflight import PreflightError
 from penny.responses import PennyResponse
 from penny.round_framing import round_shortfall
 from penny.skill_extraction import build_framing_content, build_naming_content
@@ -145,6 +147,17 @@ SAMPLE_READY_TIMEOUT_SECONDS = 60.0
 # tuned: a healthy drive, a slow local model's several turns or collector cycles included,
 # finishes well inside it, and a cut here costs a sample that could have been measured.
 SAMPLE_WALL_CLOCK_SECONDS = 1800.0
+
+# How many times one sample is stood up before a failing preflight voids it (#2230), and how
+# long it waits before the first re-boot (doubling each time after).  A sample's preflight
+# probes the endpoint ONCE, so one timed-out request used to lose the sample and thin the
+# run — measured on four consecutive runs, one sample each, at a random index, with no fault
+# on any model call beside it.  Only a TRANSIENT failure earns another boot (see
+# :func:`preflight_was_transient`); a verdict voids at once.  Small on purpose: a provider
+# that cannot answer a model listing three times in a few seconds is not having a moment, and
+# the sample is then voided by name exactly as before.
+SAMPLE_BOOT_ATTEMPTS = 3
+SAMPLE_BOOT_RETRY_SECONDS = 2.0
 
 # Embedding backfill batch size for seeded memory.
 _EMBED_BATCH = 100
@@ -1641,11 +1654,13 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int, attempt: int = 0)
     Named by :func:`sample_number`, so the file a report's sample name points at is that
     sample's own (#2076).  Its log lands beside it under the same stem.
 
-    ``attempt`` keys a RE-DRIVEN sample onto its own file (#1803 review): nothing
-    deletes a sample's DB, so a retry handed the same path would re-seed over the
-    failed attempt's rows and inherit its ``messagelog``/``promptlog`` — the failed
-    turn replayed into the next attempt's context and into its transcript.  The first
-    attempt keeps the unsuffixed name, so a runner that never retries is unchanged."""
+    ``attempt`` keys every STAND-UP after the first onto its own file — a re-driven sample
+    (#1803 review) or a re-booted one (#2230): nothing deletes a sample's DB, so a retry
+    handed the same path would re-seed over the failed attempt's rows and inherit its
+    ``messagelog``/``promptlog`` — the failed turn replayed into the next attempt's context
+    and into its transcript — and a re-boot would open a database the failed boot had
+    already built, where a first boot opens none.  The first attempt keeps the unsuffixed
+    name, so a sample that never retries is unchanged."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     base = Path(report_dir) if report_dir else tmp_path
     Path(base).mkdir(parents=True, exist_ok=True)
@@ -2333,6 +2348,28 @@ def _never_started(
     )
 
 
+def preflight_was_transient(error: PreflightError) -> bool:
+    """Was every hard failure in this preflight a MOMENT rather than a verdict (#2230)?
+
+    Read off the fault each failed check carries — the class the client put on the error it
+    raised — and judged by ``LlmFault.transient``, the one definition the endpoint smoke check
+    retries on too: a timeout, a dropped or reset connection, a 5xx, a rate limit.  A check
+    that failed on a VERDICT carries no fault at all (a model the endpoint does not list), and
+    a refused request carries a non-transient one (credentials refused, any other 4xx), so
+    either voids the sample at once.  One verdict among transient failures is still a verdict:
+    another boot would meet it again."""
+    failures = error.report.failures
+    return bool(failures) and all(
+        failure.fault is not None and failure.fault.transient for failure in failures
+    )
+
+
+def _boot_retry_delay(retry: int) -> float:
+    """How long to wait before the ``retry``-th re-boot (from 0): short, doubling, bounded by
+    :data:`SAMPLE_BOOT_ATTEMPTS`."""
+    return SAMPLE_BOOT_RETRY_SECONDS * 2**retry
+
+
 class SampleOverranError(Exception):
     """One drive of a sample ran past :data:`SAMPLE_WALL_CLOCK_SECONDS` and was stopped."""
 
@@ -2409,35 +2446,68 @@ async def _run_samples(
     ``gather`` with it — no cohort recorded, no result written, the run silent until killed by
     hand.  Each attempt runs under :data:`SAMPLE_WALL_CLOCK_SECONDS`; one that runs past it is
     stopped and voided by name like a sample that never started, so the case still closes.
+
+    **A boot whose preflight failed TRANSIENTLY is stood up again (#2230)** — torn down, then
+    booted from a fresh world exactly like a first boot, after a short backoff, up to
+    :data:`SAMPLE_BOOT_ATTEMPTS` boots.  Only the last boot's failure voids the sample; a
+    preflight failure that is a verdict (:func:`preflight_was_transient`) voids it at once.
+    Every re-boot is counted on the case's cohort record, so the run's health block shows it.
     """
     limit = asyncio.Semaphore(EVAL_CONCURRENCY)
     perf = _Perf()
+    retried_boots = 0
 
-    async def _attempt(sample_index: int, attempt: int) -> SampleResult:
-        """ONE attempt at one sample: its own channel, its own database, its own Penny."""
+    async def _attempt(sample_index: int, stand_up: int, retryable: bool) -> SampleResult:
+        """ONE stand-up of one sample: its own channel, its own database, its own Penny."""
         server = MockSignalServer()
         await server.start()
         try:
             config = _real_model_config(
                 make_config,
                 signal_api_url=f"http://localhost:{server.port}",
-                db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
+                db_path=_sample_db_path(tmp_path, case_id, sample_index, stand_up),
                 model=model,
             )
             async with eval_penny(config, server) as penny:
-                result = await drive(penny, server, sample_index, attempt + 1 < attempts)
+                result = await drive(penny, server, sample_index, retryable)
                 perf.add(live_prompt_perf(penny.db))
                 return result
         finally:
             await server.stop()
 
+    async def _booted(sample_index: int, stand_ups: Iterator[int], retryable: bool) -> SampleResult:
+        """One attempt at one sample, booted again while its preflight fails transiently.
+
+        The failed boot's own teardown has already run by the time its error arrives here
+        (its Penny stopped and shut down, its channel closed), and the next boot is a whole
+        new stand-up — a new channel, a new database, a new Penny — so a re-booted sample is
+        as hermetic as one that booted first time."""
+        nonlocal retried_boots
+        for retry in range(SAMPLE_BOOT_ATTEMPTS - 1):
+            try:
+                return await _attempt(sample_index, next(stand_ups), retryable)
+            except PreflightError as error:
+                if not preflight_was_transient(error):
+                    raise
+                retried_boots += 1
+                print(
+                    f"  ↻ {case_id} sample {sample_number(sample_index)}: its preflight failed "
+                    f"on a transient endpoint fault — booting again "
+                    f"({retry + 1} of {SAMPLE_BOOT_ATTEMPTS - 1}): {error}"
+                )
+                await asyncio.sleep(_boot_retry_delay(retry))
+        return await _attempt(sample_index, next(stand_ups), retryable)
+
     async def _sample(sample_index: int) -> SampleResult | eval_cohort.SampleObservation | None:
         """This sample's scored result, the named void that replaces it, or ``None`` when
         its model call failed on every attempt."""
         async with limit:
+            stand_ups = itertools.count()
             for attempt in range(attempts):
                 try:
-                    return await _within_wall_clock(_attempt(sample_index, attempt))
+                    return await _within_wall_clock(
+                        _booted(sample_index, stand_ups, attempt + 1 < attempts)
+                    )
                 except _ModelCallError:
                     print(
                         f"  ↻ {case_id} sample {sample_number(sample_index)}: "
@@ -2461,7 +2531,9 @@ async def _run_samples(
     # What the case ASKED for beside what it got, recorded whatever happens next — this is
     # the only place both numbers exist, and a case that dies on its threshold must still
     # contribute its cohort to the run's health block.
-    run_health.record_cohort(case_id, intended=samples, completed=len(results))
+    run_health.record_cohort(
+        case_id, intended=samples, completed=len(results), retried_boots=retried_boots
+    )
     return _Drive(results=results, perf=perf, voided=voided)
 
 

@@ -15,7 +15,7 @@ import pytest
 from penny.config import Config
 from penny.llm.client import LlmClient
 from penny.llm.image_client import OllamaImageClient
-from penny.llm.models import LlmConnectionError, LlmResponseError
+from penny.llm.models import LlmConnectionError, LlmFault, LlmResponseError, LlmTimeoutError
 from penny.preflight import CheckStatus, Preflight, PreflightCheck, PreflightReport
 
 _DUMMY_URL = "http://localhost:11434"
@@ -164,6 +164,8 @@ async def test_llm_endpoint_unreachable_hard_fails(monkeypatch, test_config):
     assert _status(report, PreflightCheck.LLM_ENDPOINT) is CheckStatus.FAIL
     assert "unreachable" in report.failure_summary()
     assert "LLM_API_URL" in report.failure_summary()
+    # The failure carries what the call failed OF, so a caller reads a value, not the prose.
+    assert [failure.fault for failure in report.failures] == [LlmFault.CONNECTION]
 
 
 @pytest.mark.asyncio
@@ -175,6 +177,8 @@ async def test_chat_model_missing_hard_fails(monkeypatch, test_config):
     assert report.has_failures
     assert _status(report, PreflightCheck.LLM_ENDPOINT) is CheckStatus.FAIL
     assert test_config.llm_model in report.failure_summary()
+    # A model the endpoint does not list is a verdict, not a failed call: no fault.
+    assert [failure.fault for failure in report.failures] == [None]
 
 
 @pytest.mark.asyncio
@@ -224,7 +228,7 @@ async def test_embedding_model_fallback_endpoint_error_hard_fails(monkeypatch, t
         monkeypatch,
         test_config,
         embed_available=["some-other-model"],
-        embed_specific_error=LlmResponseError("HTTP 404: not found"),
+        embed_specific_error=LlmResponseError("HTTP 404: not found", fault=LlmFault.CLIENT_ERROR),
     )
     report = await preflight.run()
 
@@ -232,6 +236,7 @@ async def test_embedding_model_fallback_endpoint_error_hard_fails(monkeypatch, t
     assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.FAIL
     result = next(r for r in report.results if r.name is PreflightCheck.EMBEDDING_MODEL)
     assert "/v1/embeddings/models could not verify it" in result.detail
+    assert result.fault is LlmFault.CLIENT_ERROR
     assert "LLM_EMBEDDING_MODEL" in report.failure_summary()
 
 
@@ -239,12 +244,13 @@ async def test_embedding_model_fallback_endpoint_error_hard_fails(monkeypatch, t
 async def test_embedding_endpoint_unreachable_hard_fails(monkeypatch, test_config):
     """An unreachable embedding endpoint is a hard failure."""
     preflight = _build_preflight(
-        monkeypatch, test_config, embed_error=LlmConnectionError("connection refused")
+        monkeypatch, test_config, embed_error=LlmTimeoutError("Request timed out.")
     )
     report = await preflight.run()
 
     assert report.has_failures
     assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.FAIL
+    assert [failure.fault for failure in report.failures] == [LlmFault.TIMEOUT]
 
 
 @pytest.mark.asyncio

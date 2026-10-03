@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -19,7 +21,7 @@ import pytest
 
 from penny.database.message_store import PromptPerf
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmConnectionError, LlmFault, LlmResponseError
+from penny.llm.models import LlmFault, LlmResponseError, LlmTimeoutError
 from penny.tests import conftest as root_conftest
 from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
@@ -167,7 +169,7 @@ _HEALTHY = RunHealth(
 _DEGRADED = RunHealth(
     cohorts=[
         CohortRecord(case_id="chat-reply", intended=5, completed=1),
-        CohortRecord(case_id="chat-browse", intended=5, completed=4),
+        CohortRecord(case_id="chat-browse", intended=5, completed=4, retried_boots=2),
     ],
     calls=402,
     faults={LlmFault.NO_CHOICES: 188, LlmFault.RATE_LIMITED: 3},
@@ -199,6 +201,7 @@ class TestTheBlockARunPrintsAboutItself:
         assert _DEGRADED.render() == (
             "samples: 5 of 10 completed · 5 dead "
             "(completed = the sample's measured turn ran and was scored)\n"
+            "  2 boot(s) retried after a transient preflight fault — chat-browse 2\n"
             "cases: 1 of 2 readable — a case must complete more than half the samples "
             "it intended\n"
             "  not readable: chat-reply 1/5\n"
@@ -309,6 +312,34 @@ def _stubbed_world(monkeypatch, *, stands_up: bool = True) -> None:
     _isolated_health(monkeypatch)
 
 
+def _boot_through_the_real_preflight(
+    monkeypatch, faults: Sequence[Exception], *, embedding_listed: bool = True
+) -> list[str]:
+    """Stand samples up through Penny's REAL boot and preflight, the endpoint stubbed at the
+    client boundary: each boot's embedding-model listing raises the next of ``faults`` and,
+    once they run out, answers — listing the embedding model or not.  Returns one entry per
+    boot that reached that listing, so a test can count the boots."""
+    _isolated_health(monkeypatch)
+    monkeypatch.setattr(eval_conftest, "SAMPLE_READY_TIMEOUT_SECONDS", 3600.0)
+    monkeypatch.setattr(eval_conftest, "SAMPLE_BOOT_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(eval_conftest, "EVAL_CONCURRENCY", 1)
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setenv("LLM_EMBEDDING_MODEL", _EMBEDDING_MODEL)
+    pending = iter(faults)
+    boots: list[str] = []
+
+    async def _list_models(client: LlmClient) -> list[str]:
+        if client.model != _EMBEDDING_MODEL:
+            return [client.model]
+        boots.append(client.model)
+        if (fault := next(pending, None)) is not None:
+            raise fault
+        return [client.model] if embedding_listed else []
+
+    monkeypatch.setattr(LlmClient, "list_models", _list_models)
+    return boots
+
+
 def _isolated_health(monkeypatch) -> None:
     """A run-health tally of this test's own, and no report directory to write into."""
     monkeypatch.setattr(run_health, "_cohorts", [])
@@ -397,30 +428,22 @@ class TestASampleTheRigNeverStarted:
         assert "REFUSED: 1 case(s) scored a fraction of their intended cohort" in health.render()
 
     @pytest.mark.asyncio
-    async def test_a_sample_whose_preflight_fails_closes_as_never_started(
+    async def test_a_preflight_that_times_out_once_is_booted_again_from_a_fresh_world(
         self, mock_llm, make_config, tmp_path, monkeypatch
     ):
-        """The incident's door through the REAL boot path (#2168): the first sample's
-        embedding endpoint times out at preflight, so its Penny's run ENDS before its channel
-        connects.  The readiness wait watches that run and raises what ended it, so the sample
-        is voided as the never-started exclusion the moment its boot fails, and the case
-        closes.  The readiness budget is one no test would outlive, so a wait that ignored the
-        dead run would be caught by the guard rather than passing slowly."""
-        _isolated_health(monkeypatch)
-        monkeypatch.setattr(eval_conftest, "SAMPLE_READY_TIMEOUT_SECONDS", 3600.0)
-        monkeypatch.setattr(eval_conftest, "EVAL_CONCURRENCY", 1)
-        monkeypatch.setenv("LLM_MODEL", "test-model")
-        monkeypatch.setenv("LLM_EMBEDDING_MODEL", _EMBEDDING_MODEL)
-        failures = iter([True])
-
-        async def _list_models(client: LlmClient) -> list[str]:
-            if client.model == _EMBEDDING_MODEL and next(failures, False):
-                raise LlmConnectionError("Request timed out.")
-            return [client.model]
-
-        monkeypatch.setattr(LlmClient, "list_models", _list_models)
+        """The incident's door through the REAL boot path (#2168/#2230): the first sample's
+        embedding endpoint times out ONCE at preflight, so its Penny's run ENDS before its
+        channel connects and the readiness wait raises what ended it.  A timeout is a moment,
+        not a verdict, so the sample is torn down and booted again — onto a database of its
+        own, as hermetic as a first boot — and is driven like its siblings; the case loses
+        nothing, and the re-boot is counted where the health block reads it.  The readiness
+        budget is one no test would outlive, so a wait that ignored the dead run would be
+        caught by the guard rather than passing slowly."""
+        boots = _boot_through_the_real_preflight(monkeypatch, [LlmTimeoutError("timed out")])
+        driven: list[str] = []
 
         async def _drive(penny, server, sample_index, retryable):
+            driven.append(Path(penny.config.db_path).name)
             return _pooled("preflight", sample_index)
 
         async with asyncio.timeout(_GUARD_SECONDS):
@@ -428,12 +451,68 @@ class TestASampleTheRigNeverStarted:
                 make_config, tmp_path, case_id="preflight", samples=3, drive=_drive
             )
 
-        assert len(results) == 2
+        assert (len(results), voided) == (3, [])
+        assert len(boots) == 4
+        assert driven == ["preflight-1-attempt2.db", "preflight-2.db", "preflight-3.db"]
+        assert run_health.process_health().cohorts == [
+            CohortRecord(case_id="preflight", intended=3, completed=3, retried_boots=1)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_preflight_that_times_out_every_time_voids_after_the_bound(
+        self, mock_llm, make_config, tmp_path, monkeypatch
+    ):
+        """A provider that cannot answer a model listing on any boot is not having a moment:
+        the sample is booted :data:`SAMPLE_BOOT_ATTEMPTS` times and then voided by name, as a
+        sample that never started, with every re-boot still on the record."""
+        timeouts = [LlmTimeoutError("timed out")] * eval_conftest.SAMPLE_BOOT_ATTEMPTS
+        boots = _boot_through_the_real_preflight(monkeypatch, timeouts)
+
+        async def _drive(penny, server, sample_index, retryable):
+            raise AssertionError("the drive is unreachable when no boot passes its preflight")
+
+        async with asyncio.timeout(_GUARD_SECONDS):
+            results, _perf, voided = await eval_conftest._run_samples(
+                make_config, tmp_path, case_id="preflight", samples=1, drive=_drive
+            )
+
+        assert results == []
+        assert len(boots) == eval_conftest.SAMPLE_BOOT_ATTEMPTS
         assert [(s.name, s.phrasing, s.complete, s.exclusion) for s in voided] == [
             ("preflight-1", eval_conftest.NEVER_SPOKEN, False, _PREFLIGHT_FAULT)
         ]
         assert run_health.process_health().cohorts == [
-            CohortRecord(case_id="preflight", intended=3, completed=2)
+            CohortRecord(case_id="preflight", intended=1, completed=0, retried_boots=2)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_preflight_refused_on_its_credentials_voids_at_once(
+        self, mock_llm, make_config, tmp_path, monkeypatch
+    ):
+        """A refused request is a verdict: another boot would meet the same refusal.  The
+        embedding model is absent from the listing and the second listing answers 401, so the
+        check fails carrying a client-error fault — and the sample is voided on its FIRST boot,
+        with nothing retried."""
+        boots = _boot_through_the_real_preflight(monkeypatch, [], embedding_listed=False)
+        refusal = LlmResponseError("HTTP 401: invalid key", fault=LlmFault.CLIENT_ERROR)
+
+        async def _refuse(client: LlmClient) -> list[str]:
+            raise refusal
+
+        monkeypatch.setattr(LlmClient, "list_embedding_models", _refuse)
+
+        async def _drive(penny, server, sample_index, retryable):
+            raise AssertionError("the drive is unreachable when the preflight refused")
+
+        async with asyncio.timeout(_GUARD_SECONDS):
+            results, _perf, voided = await eval_conftest._run_samples(
+                make_config, tmp_path, case_id="preflight", samples=1, drive=_drive
+            )
+
+        assert (results, len(boots)) == ([], 1)
+        assert [sample.exclusion for sample in voided] == [_PREFLIGHT_FAULT]
+        assert run_health.process_health().cohorts == [
+            CohortRecord(case_id="preflight", intended=1, completed=0)
         ]
 
     @pytest.mark.asyncio

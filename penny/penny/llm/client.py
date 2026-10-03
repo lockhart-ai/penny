@@ -458,7 +458,10 @@ class LlmClient:
         except openai.APIConnectionError as error:
             raise LlmConnectionError(str(error)) from error
         except openai.OpenAIError as error:
-            raise LlmResponseError(_summarize_llm_error(error)) from error
+            raise LlmResponseError(
+                _summarize_llm_error(error),
+                fault=fault_for_status(getattr(error, "status_code", None)),
+            ) from error
         return [model.id for model in response.data]
 
     async def list_embedding_models(self) -> list[str]:
@@ -482,12 +485,17 @@ class LlmClient:
                 response.raise_for_status()
         except httpx.TimeoutException as error:
             raise LlmTimeoutError(str(error)) from error
-        except httpx.ConnectError as error:
+        # A NETWORK error is the connection failing — refused, or reset mid-request — which is
+        # the same moment ``list_models`` reports as a connection error through the SDK.
+        except httpx.NetworkError as error:
             raise LlmConnectionError(str(error)) from error
         except httpx.RequestError as error:
             raise LlmResponseError(str(error)) from error
         except httpx.HTTPStatusError as error:
-            raise LlmResponseError(_summarize_httpx_error(error.response)) from error
+            raise LlmResponseError(
+                _summarize_httpx_error(error.response),
+                fault=fault_for_status(error.response.status_code),
+            ) from error
 
         try:
             payload = response.json()

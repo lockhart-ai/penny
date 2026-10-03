@@ -353,6 +353,8 @@ class TestListEmbeddingModels:
         message = str(exc_info.value)
         assert "HTTP 404" in message
         assert "<!DOCTYPE" not in message  # summarized, not the raw HTML body
+        # The status rides as a value, so a 4xx reads as a verdict without parsing the summary.
+        assert exc_info.value.fault is LlmFault.CLIENT_ERROR
 
         await client.close()
 

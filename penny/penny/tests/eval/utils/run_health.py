@@ -121,11 +121,18 @@ class ProviderTally(BaseModel):
 
 
 class CohortRecord(BaseModel):
-    """One case's cohort: how many samples it asked for, and how many produced a turn."""
+    """One case's cohort: how many samples it asked for, and how many produced a turn.
+
+    ``retried_boots`` counts the times one of its samples was stood up AGAIN because its
+    preflight failed on a transient endpoint fault (#2230).  A retried boot that then ran
+    is a completed sample like any other, so nothing else here would show it — and a run
+    whose samples only start on their second try is a run worth knowing about.
+    """
 
     case_id: str
     intended: int
     completed: int
+    retried_boots: int = 0
 
     @property
     def dead(self) -> int:
@@ -151,6 +158,7 @@ class RunHealth(BaseModel):
         return "\n".join(
             [
                 self._samples_line(),
+                *self._retried_boot_lines(),
                 self._cases_line(),
                 *self._dead_case_lines(),
                 self._calls_line(),
@@ -219,6 +227,14 @@ class RunHealth(BaseModel):
             f"samples: {self.completed} of {self.intended} completed · {self.dead} dead "
             "(completed = the sample's measured turn ran and was scored)"
         )
+
+    def _retried_boot_lines(self) -> list[str]:
+        retried = [cohort for cohort in self.cohorts if cohort.retried_boots]
+        if not retried:
+            return []
+        total = sum(cohort.retried_boots for cohort in retried)
+        cases = " · ".join(f"{cohort.case_id} {cohort.retried_boots}" for cohort in retried)
+        return [f"  {total} boot(s) retried after a transient preflight fault — {cases}"]
 
     def _cases_line(self) -> str:
         readable = len(self.cohorts) - len(self.dead_cohorts)
@@ -325,9 +341,13 @@ def begin_run() -> FaultTally:
     return _tally
 
 
-def record_cohort(case_id: str, *, intended: int, completed: int) -> None:
-    """Record what one case asked for and what it got."""
-    _cohorts.append(CohortRecord(case_id=case_id, intended=intended, completed=completed))
+def record_cohort(case_id: str, *, intended: int, completed: int, retried_boots: int = 0) -> None:
+    """Record what one case asked for, what it got, and how many boots it had to retry."""
+    _cohorts.append(
+        CohortRecord(
+            case_id=case_id, intended=intended, completed=completed, retried_boots=retried_boots
+        )
+    )
 
 
 def process_health() -> RunHealth:
