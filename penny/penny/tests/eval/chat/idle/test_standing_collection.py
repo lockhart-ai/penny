@@ -1,32 +1,31 @@
-"""Operating a job that is already running, and reading one back: four cases (#2008, tranche 3).
+"""Operating a job that is already running, and reading jobs back: eight cases (#2008, tranche 3;
+#2215).
 
-Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
+The contract is `docs/eval-case-design.md`.
 
-**One sentence, THREE cases.**  #2008 states the behaviour as *Penny flips a running job's
-notification switch, retires it, or re-times it without disturbing the job itself — and
-without inventing the hour it used to run at*, and that sentence names three ACTIONS rather
-than three wordings of one.  The design's test decides it: a correct sample for *retire*
-archives the job, which is exactly what a correct sample for *flip the switch* must not do —
-so a sample that is right for one is wrong for another, and they are three cases with three
-sentences.  The count came out at three rather than the ticket's one, and the reason is
-recorded here.
+**One case per ACTION on a running job.**  A correct sample for *retire* archives the job,
+which is exactly what a correct sample for *flip the switch* must not do — so a sample that is
+right for one is wrong for another, and each action is a case with its own sentence.
 
 | action | case | what the row must show |
 |---|---|---|
-| flip the switch | ``standing-notify-off`` | ``notify`` off, everything else on the row as it was |
+| switch it off | ``standing-notify-off`` | ``notify`` off, the rest of the row as it was |
+| switch it on | ``standing-notify-on`` | ``notify`` on, the rest of the row as it was |
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
-| read it back | ``standing-describe-routine`` | the row as it was; the reply names its page |
+| give it an end | ``standing-end-changed`` | it stops when the ask said, and runs as it ran |
+| re-point it | ``standing-page-changed`` | bound to the new page, which no second job watches |
+| read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
+| list them | ``standing-list-running`` | every row as it was; the reply names each job |
 
-**Which survivor the flip kept, and why.**  ``standing-notify-off`` and ``standing-notify-on``
-are the same sentence in two entry conditions, so one of them survives — and the OFF direction
-strictly dominates, because it is the only one whose world can produce the failure the
-behaviour is about.  Asked to stop one watch's pings, a measured sample enumerated what it
-could see — archive the collection, or mute notifications globally — read that as no
-granularity, and retired the whole job.  Neither wrong move is available in the other
-direction: a job cannot be woken by archiving it or by lifting a global mute.  So the ON
-direction is not a case here (#1927 records it at 3 of 5 against the OFF direction's 5 of 5,
-and the leak is the classifier's rather than this turn's).
+**The two directions of the switch are two cases, because they start in two worlds.**
+``standing-notify-off`` is answered on a job seeded telling the user and
+``standing-notify-on`` on the same job seeded quiet; each claims the switch the ask named,
+which its own seed holds the other way.  The OFF direction is where the wrong levers are — a
+measured sample asked to stop one watch's pings read the state as offering no granularity and
+retired the whole job, or reached for the global mute.  The ON direction is where the LANDING
+is in question: only it can be worded as starting something, which is the wording the two
+skill-gated doors out of idle are keyed to (#1927).
 
 **Every case claims the landing, and that is deliberate.**  Changing how a running job behaves
 is idle by the machine's own boundary (#1927) — the state definitions say so in as many words —
@@ -48,9 +47,17 @@ nothing.  That applies to the retire case too, since archiving is reversible: th
 for again revives this row, so a retire that also rebound the routine or re-timed the cadence
 hands back a different job under the same name.
 
-**No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds one
-job, what it gathered and the global switch, so those are what the cases claim still holds;
-whether a turn also stood something new up is its own call, measured in the tool sequence.
+**A field the ledger keeps no prior for is read off the row.**  ``moved_this_run`` compares the
+priors the store records, and it records none for the values a routine is bound to or for a
+run quota.  So the re-pointing case reads the bound values themselves — the page is the new
+one, the rest are what they were — and the end case, where a rule rewritten to carry its own
+end is a legitimate way to state one, reads the cadence the rule still fires on.
+
+**No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds its
+jobs — one, or three where the ask is to list them — what each gathered and the global switch,
+so those are what the cases claim still holds; whether a turn also stood something new up is
+its own call, measured in the tool sequence.  The re-pointing case's *no other job watches the
+new page* is a statement about what the registry holds for that page, which the ask named.
 
 **The world is built the way production builds one (#1911/migration 0108: nothing is
 pre-seeded).**  Every collection here is one the user built: the container is created
@@ -66,6 +73,12 @@ would be claiming a job that could never run.
 asserts is what the reply CITES from the job's record — the page its routine fetches — that
 every value the reply states traces to what the round was given, and the job still as it was;
 which read she reaches for, and how she words the walk-through, are measured.
+
+``standing-list-running`` reads THREE jobs back at once: the same routine pointed at three
+pages, each looking for its own kind of thing.  The reply carries one token per job — the
+thing that job looks for, which its page, its bound value and its description all spell and
+no other job's record does — and every job, everything each gathered and the global switch
+are as the turn found them.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to
 accept once the numbers have been read.  Every page, shop and job is synthetic, on an
@@ -118,9 +131,17 @@ from penny.tests.eval.utils.cohort import (
     SampleObservation,
     SpecCategory,
 )
+from penny.tests.eval.utils.fixtures import CannedPage
+from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT, firings
 from penny.tests.eval.utils.worlds import World
-from penny.tools.collection_instantiation import next_occurrence
-from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
+from penny.tools.collection_instantiation import next_occurrence, skill_params
+from penny.tools.micro_context import (
+    FramedParameter,
+    LeafLabel,
+    SkillLabels,
+    SkillSignature,
+    spoken_form,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -430,6 +451,38 @@ _assert_the_job_can_run(_FINDS)
 # world stopped seeding.
 _HELD_KEYS = tuple(key for key, _ in _FINDS.holdings)
 
+# The same job with its own switch OFF — the entry condition of the case that asks for its
+# notifications back.  A job's container is named for its routine and the values it is bound
+# to, so this is the same row under the same name, differing in that one field.
+_QUIET_FINDS = _FINDS._replace(notify=False)
+
+# The same job under a description that says WHAT it gathers and not WHERE from — the entry
+# condition of the case that points it at another page.  A description naming the shop would
+# stop being true the moment the job was re-pointed, so rewriting it would be a reasonable
+# thing for a turn to do and "the rest of the row is as it was" would be a ruling on that.
+_PORTABLE_FINDS = _FINDS._replace(description="Portable typewriters newly listed for sale.")
+
+# Two more jobs of the same routine, for the case that asks what is running: each pointed at
+# its own page and looking for its own kind of thing, on its own cadence and switch.
+_KETTLES = StandingJob(
+    routine=WATCH_ROUTINE,
+    values={"page": "https://brasswick.example.com/kettles", "watched_for": "enamel kettles"},
+    description="Enamel kettles newly listed at the Brasswick shop.",
+    schedule="FREQ=DAILY;BYHOUR=9",
+    notify=True,
+    holdings=(("Tidewater No. 4", "Tidewater No. 4 — two-quart enamel kettle, $48."),),
+)
+_ATLASES = StandingJob(
+    routine=WATCH_ROUTINE,
+    values={"page": "https://fernhollow.example.com/atlases", "watched_for": "pocket atlases"},
+    description="Pocket atlases newly listed at the Fernhollow shop.",
+    schedule="FREQ=HOURLY",
+    notify=False,
+    holdings=(("Marlowe 1931", "Marlowe 1931 — pocket atlas, cloth boards, $35."),),
+)
+for _job in (_KETTLES, _ATLASES):
+    _assert_the_job_can_run(_job)
+
 # How the user refers to it: their own words for the job, never its derived name.  The
 # derived name renders on the ambient mechanisms line, so resolving those words to that
 # collection is a read the turn is expected to make — asking with the container's own
@@ -528,15 +581,23 @@ class _OperationCase(NamedTuple):
     cadence, its switch and the end state expected of the turn are constant, which is what
     makes the fifteen samples one number and what lets a claim name a value at all.
 
-    ``job`` is the world's one standing job, seeded through the production instantiation
+    ``job`` is the standing job the ask is about, seeded through the production instantiation
     seam.  ``renders`` is the clause its self-state row must carry before the turn runs,
     asserted rather than hoped for, since the model can only reach for a lever the state
-    presents: the switch for the two cases about stopping something — where its presence is
-    also what makes the global mute a WRONG lever rather than the only one — the stored rule
-    for the case about moving it, and the switch again for the read-back, which moves nothing.
+    presents: the switch, in the direction it is seeded, for the cases that flip it or retire
+    the job — where its presence is also what makes the global mute a WRONG lever rather than
+    the only one — the stored rule for the cases about when it runs and when it stops, the
+    shop in the row's own name for the case that points it elsewhere, and the switch again for
+    the two read-backs, which move nothing.
 
-    ``answers`` is what the reply owes, and only the read-back case owes anything: each
+    ``answers`` is what the reply owes, and only the two read-back cases owe anything: each
     operation's ask is an INSTRUCTION, and "done, that one's quiet now" is a complete answer.
+
+    ``others`` are the jobs running BESIDE ``job`` — empty everywhere but the case that asks
+    what is running, whose answer is every one of them.
+
+    ``pages`` is what a browse returns — empty everywhere but the case whose ask names an
+    address, where a turn that opens that address has to find a page there.
     """
 
     case_id: str
@@ -546,6 +607,14 @@ class _OperationCase(NamedTuple):
     ask: str
     also_phrased: tuple[str, ...]
     answers: tuple[str, ...] = ()
+    others: tuple[StandingJob, ...] = ()
+    pages: tuple[CannedPage, ...] = ()
+
+    @property
+    def jobs(self) -> tuple[StandingJob, ...]:
+        """Every job the world holds when the turn begins: the one the ask is about, then the
+        ones running beside it."""
+        return (self.job, *self.others)
 
     @property
     def ground(self) -> World:
@@ -556,15 +625,16 @@ class _OperationCase(NamedTuple):
         as plain entries and this one is a JOB: its container is stood up through the production
         instantiation seam, with a program, a cadence, a switch and its provenance, which is the
         whole thing these cases operate on.  Declaring it here would seed its holdings a second
-        time.  ``pages`` is empty because these asks are about a job's configuration and no page
-        answers one —
-        a page set here would hand a sample that went browsing something to talk about
-        instead of letting the wrong turn read as one.  ``keeps`` states what a round must
-        have written down and none of these turns is asked to write anything;
-        ``excludes`` states what it was told to leave out and none of them excludes
-        anything in as many words.  ``answers`` is the case's own: empty for an instruction,
-        whose complete answer names nothing."""
-        return World(name=self.case_id, pages=(), keeps=(), excludes=(), answers=self.answers)
+        time.  ``pages`` is the case's own, and empty for every ask about a job's
+        configuration, which no page answers — a page set there would hand a sample that went
+        browsing something to talk about instead of letting the wrong turn read as one.
+        ``keeps`` states what a round must have written down and none of these turns is asked
+        to write anything; ``excludes`` states what it was told to leave out and none of them
+        excludes anything in as many words.  ``answers`` is the case's own: empty for an
+        instruction, whose complete answer names nothing."""
+        return World(
+            name=self.case_id, pages=self.pages, keeps=(), excludes=(), answers=self.answers
+        )
 
 
 def _job_row(sample: SampleObservation, container: str) -> MechanismRecord | None:
@@ -576,24 +646,43 @@ def _job_row(sample: SampleObservation, container: str) -> MechanismRecord | Non
 def assert_the_operation_world(db: Database, case: _OperationCase) -> None:
     """The case's premise, asserted out loud before the turn runs.
 
-    Three things, and every one of them is the precondition of a claim below: the lever the
-    ask is about RENDERS on the job's own self-state row (with nothing there, a measured
-    sample asked to stop one watch's pings read the state as offering no granularity and
-    retired the whole job); the job already holds what the retire case says it keeps; and
-    proactive notifications are ON, so "they are still on for everything else" is a claim
-    about this turn rather than about the world it started in.
+    Every part is the precondition of a claim below: the lever the ask is about RENDERS on
+    the job's own self-state row (with nothing there, a measured sample asked to stop one
+    watch's pings read the state as offering no granularity and retired the whole job), and
+    every job running beside it renders a row of its own; each job already holds what its
+    fixture says it gathered and is bound to the values its fixture names, so "it kept them"
+    and "it is pointed at the new page" are claims about the turn; the job the ask is about
+    stores no end, so an end the turn leaves on it is the turn's; and proactive notifications
+    are ON, so "they are still on for everything else" is a claim about this turn rather than
+    about the world it started in.
 
     Takes the DATABASE rather than the running Penny so the same assertions run without a
     model: a premise that quietly stopped holding turns a scored claim into a claim about the
     fixture, and the cheapest place to catch that is ``make check``."""
     _assert_the_row_renders(db, case)
-    keys = sorted(entry.key or "" for entry in require_memory(db, case.job.container).read_all())
-    assert keys == sorted(_HELD_KEYS), (
-        f"{case.case_id}: the job must already hold {sorted(_HELD_KEYS)}, it holds {keys}"
+    for job in case.jobs:
+        _assert_the_job_is_as_seeded(db, case.case_id, job)
+    row = db.memories.get(case.job.container)
+    assert row is not None and row.expires_at is None and row.max_runs is None, (
+        f"{case.case_id}: the job must start with no end, or an end the turn leaves on it "
+        "is answered by the seed"
     )
     assert not db.users.is_muted(TEST_SENDER), (
         f"{case.case_id}: notifications must start ON, or the claim that they are still on "
         "is answered by the seed"
+    )
+
+
+def _assert_the_job_is_as_seeded(db: Database, case_id: str, job: StandingJob) -> None:
+    """One job holds what its fixture says it gathered and is bound to the values its fixture
+    names — read off the store, which is what the claims read afterwards."""
+    held = sorted(entry.key or "" for entry in require_memory(db, job.container).read_all())
+    gathered = sorted(key for key, _ in job.holdings)
+    assert held == gathered, f"{case_id}: {job.container} must hold {gathered}, it holds {held}"
+    row = db.memories.get(job.container)
+    bound = skill_params(row) if row is not None else {}
+    assert bound == job.values, (
+        f"{case_id}: {job.container} must be bound to {job.values}, it is bound to {bound}"
     )
 
 
@@ -614,27 +703,33 @@ def _assert_the_row_renders(db: Database, case: _OperationCase) -> None:
     make every sample measure the model's guesswork rather than its reading, and would do
     so silently."""
     rendered = SelfStateHeader(db, TEST_SENDER).render()
-    row = next(
-        (line for line in rendered.splitlines() if line.startswith(f"- {case.job.container} ")),
-        None,
-    )
-    assert row is not None, f"{case.job.container} must render as a mechanism:\n{rendered}"
+    rows = {job.container: _mechanism_row(rendered, job.container) for job in case.jobs}
+    missing = sorted(container for container, row in rows.items() if row is None)
+    assert not missing, f"{missing} must each render as a mechanism:\n{rendered}"
+    row = rows[case.job.container] or ""
     assert case.renders in row, (
         f"{case.job.container} must render {case.renders!r} — it renders {row!r}"
+    )
+
+
+def _mechanism_row(rendered: str, container: str) -> str | None:
+    """One job's own row in the rendered self-state, or ``None`` when it has none."""
+    return next(
+        (line for line in rendered.splitlines() if line.startswith(f"- {container} ")), None
     )
 
 
 async def _drive(
     chat_eval: ChatEval, model: str, case: _OperationCase, family: str = _OPERATIONS_FAMILY
 ) -> Cohort:
-    """Drive one case on the standing job: the job its own apply turn left behind, the
-    routine it runs in the registry, and the premise re-asserted before the turn."""
+    """Drive one case on its standing jobs: each as its own apply turn left it, the routine
+    they run in the registry, and the premise re-asserted before the turn."""
     return await chat_eval(
         case_id=case.case_id,
         behaviour=case.behaviour,
         area=Area.STANDING_JOBS,
         model=model,
-        seed=seed_standing_jobs(case.job),
+        seed=seed_standing_jobs(*case.jobs),
         seed_skills=[WATCH_ROUTINE],
         prepare=_premise(case),
         world=case.ground,
@@ -663,7 +758,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 # keyed to ``collection_set`` would simply not fire for a plugin verb nobody enumerated.
 #
 # They stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the
-# second CUSTOMER, and the three cases below are one behaviour family in one file: a second
+# second CUSTOMER, and the cases below are one behaviour family in one file: a second
 # FILE asking one of these questions is what would make it shared, and none has yet.
 
 _ClaimFn = Callable[[SampleObservation, World], Answer]
@@ -876,6 +971,68 @@ async def test_turning_notifications_off_silences_only_that_job(
     cohort.measure(*_MEASURED)
 
 
+# ═══ flip the switch back ════════════════════════════════════════════════════
+#
+# The same switch from the other world: the job is running QUIET, and the user asks for its
+# notifications back.  The wordings are the off case's turned round, so the pair differs in the
+# entry condition and the direction asked for and in nothing else.
+
+_NOTIFY_ON = _OperationCase(
+    case_id="standing-notify-on",
+    behaviour=(
+        "In the chat agent, when the user asks for one running job's notifications to be "
+        "turned back on, Penny turns that job's own switch on, with the job still running as "
+        "it was and proactive notifications still on everywhere else."
+    ),
+    job=_QUIET_FINDS,
+    renders=SelfStateHeader.MECHANISM_QUIET,
+    ask=f"turn notifications back on for {_THEIR_WORDS}",
+    also_phrased=(
+        f"start the notifications on {_THEIR_WORDS} again",
+        f"can you turn notifications back on for {_THEIR_WORDS}?",
+        f"switch notifications back on for {_THEIR_WORDS} please",
+        f"i want notifications from {_THEIR_WORDS} again",
+    ),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_turning_notifications_back_on_wakes_only_that_job(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """One quiet job's switch, flipped on, with the job still running behind it.
+
+    The job is seeded with its switch OFF and its row says so, so a sample that left the row
+    alone fails the headline whatever its reply said.  The global switch is a separate lever
+    one row up, already on in this world: it is claimed as what the turn found and left."""
+    cohort = await _drive(chat_eval, model, _NOTIFY_ON)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the field the ask named moved, and nothing else did.
+    cohort.claim(
+        "state: the job's notifications are on",
+        _the_switch_is(_QUIET_FINDS.container, on=True),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_STILL_LIVE, _the_job_is_still_live(_QUIET_FINDS.container), SpecCategory.STORE)
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_QUIET_FINDS.container, asked=_NOTIFIES),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        _KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_QUIET_FINDS.container), SpecCategory.STORE
+    )
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
 # ═══ retire it ═══════════════════════════════════════════════════════════════
 #
 # The user is done with the job.  Archived rather than deleted is the contract everywhere in
@@ -1037,6 +1194,333 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
     cohort.measure(*_MEASURED)
 
 
+# ═══ give it an end ══════════════════════════════════════════════════════════
+#
+# The job runs with no end, and the user says how long it should keep going.  The end is read
+# the way every stored end is (``utils/job_end.py``): as when the job STOPS on the user's own
+# clock, counted from the sample's pinned turn, whichever of the three ways a job stores an end
+# the turn reached for — an expiry, an ``UNTIL=`` in the rule, or a ``COUNT=``.
+
+_ASKED_END = UNTIL_SUNDAY_NIGHT
+
+_END_CHANGED = _OperationCase(
+    case_id="standing-end-changed",
+    behaviour=(
+        "In the chat agent, when the user says how long a running job should keep going, "
+        "Penny gives that job the end they named, with the job running as it ran until then "
+        "and proactive notifications still on everywhere else."
+    ),
+    job=_FINDS,
+    renders=_FINDS.schedule,
+    ask=f"keep {_THEIR_WORDS} going until sunday night",
+    also_phrased=(
+        f"can you keep {_THEIR_WORDS} running until sunday night?",
+        f"i only need {_THEIR_WORDS} until sunday night — keep it going till then",
+        f"let {_THEIR_WORDS} run until sunday night, then it can stop",
+        f"{_THEIR_WORDS} should keep going until sunday night and stop after that",
+    ),
+)
+
+# Every wording states the end in the words the claim's window is declared for — ENFORCED,
+# since an arm that said "the weekend" would be read against a window it never named.
+for _wording in (_END_CHANGED.ask, *_END_CHANGED.also_phrased):
+    assert _ASKED_END.says in _wording, f"an end wording must say {_ASKED_END.says!r}: {_wording!r}"
+
+
+class _Rhythm(NamedTuple):
+    """When a job comes round, on the user's clock: the hour of its first firing, and the gap
+    to its second."""
+
+    hour: int
+    every_seconds: int
+
+
+def _rhythm(row: MechanismRecord, timezone: str | None) -> _Rhythm | None:
+    """The rhythm a row's stored rule fires on, walked from production's own anchor on the
+    user's clock (``job_end.firings``) — or ``None`` for a rule that fires fewer than twice
+    or will not parse, an honest reading the claim fails on rather than a raise."""
+    try:
+        fired = firings(row, timezone, 2)
+    except ValueError, TypeError:
+        return None
+    if len(fired) < 2:
+        return None
+    return _Rhythm(fired[0].hour, int((fired[1] - fired[0]).total_seconds()))
+
+
+def _it_runs_when_it_ran(job: StandingJob) -> _ClaimFn:
+    """The job still comes round as often as it did, at the hour it did — PRESERVATION of when
+    it runs, read off the rule's own firings.
+
+    Its own claim because the ledger cannot make it here: a rule rewritten to carry its own
+    end is one of the ways a job stores an end, so the schedule field is one the ask may move,
+    and "the rule's text changed" no longer says whether its rhythm did.  What it ran on is
+    read the same way, off the same row carrying the rule it was seeded with, so both sides
+    share one anchor and one clock.  A violating sample is nameable: one that gives the job
+    its end and, restating the rule to do it, moves the hour or turns a daily check into a
+    weekly one."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = _job_row(sample, job.container)
+        if row is None:
+            return False, f"{job.container!r} is no longer in the registry"
+        seeded = row.model_copy(update={"schedule": job.schedule, "max_runs": None})
+        ran, runs = _rhythm(seeded, sample.timezone), _rhythm(row, sample.timezone)
+        return runs is not None and runs == ran, (
+            f"the rule {row.schedule!r} runs on {runs}, it ran on {ran}"
+        )
+
+    return answer
+
+
+# The store's labels for the fields an end may be written to: its expiry, and the rule itself
+# when the end is stated inside it.
+_END_FIELDS = frozenset({"expires_at", "schedule"})
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_giving_a_job_an_end_stops_it_when_the_ask_said(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """The job keeps running, and now stops when the user said it should.
+
+    The job is seeded with no end at all, so a sample that left the row alone fails the
+    headline.  What the end claim reads is when the job stops, never which field holds it; the
+    cadence claim beside it is what keeps "restated the rule" from being a way to re-time it."""
+    cohort = await _drive(chat_eval, model, _END_CHANGED)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the end the ask named, and the rest of the job as it was.
+    cohort.assert_the_job_ends_when_asked(_FINDS.container, _ASKED_END)
+    cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
+    cohort.claim(
+        "state: it still runs as often as it did, at the hour it did",
+        _it_runs_when_it_ran(_FINDS),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(_FINDS.container, asked=_END_FIELDS),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(_FINDS.container), SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+# ═══ point it at another page ════════════════════════════════════════════════
+#
+# The job keeps doing what it does, somewhere else.  A job's page is one of the values its
+# routine is BOUND to, and re-binding re-renders the program from the routine's steps — so the
+# row carries the change twice, as the bound value and as the address its program fetches, and
+# both are read.
+
+_PAGE_PARAMETER = "page"
+
+# The page the ask points the job at, and the two shops as their own addresses spell them:
+# one whitespace-free token each, neither inside the other, the new one on nothing the world
+# holds before the turn.
+_NEW_PAGE = "https://inkwellbazaar.example.com/typewriters"
+_NEW_SHOP = "inkwellbazaar"
+_OLD_SHOP = "quillmarket"
+
+# What a turn that opens the page it was pointed at finds there: a shop's listing, in the same
+# shape the page the routine was taught on has.  Without it the address would read as a page
+# with nothing on it, which is a reason not to point a job at it.
+_NEW_PAGE_LISTING = CannedPage(
+    match=_NEW_SHOP,
+    text=(
+        "Title: Typewriters — Inkwell Bazaar\n"
+        f"{_NEW_PAGE}\n\n"
+        "Inkwell Bazaar — typewriters in stock\n\n"
+        "- Corvane Courier — 1961 portable, new ribbon, $165.\n"
+        "- Halberd Standard — 1947 desktop, serviced, $240.\n"
+        "- Corvane Featherweight — 1955 portable, case included, $190.\n"
+    ),
+)
+
+_PAGE_CHANGED = _OperationCase(
+    case_id="standing-page-changed",
+    behaviour=(
+        "In the chat agent, when the user points a running job at a different page, Penny "
+        "re-binds that job to the new page — its program fetches it and no other job watches "
+        "it — with the rest of the job as it was."
+    ),
+    job=_PORTABLE_FINDS,
+    renders=_OLD_SHOP,
+    ask=f"point {_THEIR_WORDS} at {_NEW_PAGE} instead",
+    also_phrased=(
+        f"can you switch {_THEIR_WORDS} over to {_NEW_PAGE}?",
+        f"change the page {_THEIR_WORDS} checks to {_NEW_PAGE}",
+        f"have {_THEIR_WORDS} check {_NEW_PAGE} from now on, not the page it checks now",
+        f"{_THEIR_WORDS} should be looking at {_NEW_PAGE} now — swap the page it checks",
+    ),
+    pages=(_NEW_PAGE_LISTING,),
+)
+
+# The two shops tell the two pages apart only while each token is on one page alone, and the
+# ask must lend the claims nothing about the page the job has NOW.  Enforced on the fixture
+# and on every wording.
+assert _OLD_SHOP in _PORTABLE_FINDS.values[_PAGE_PARAMETER], "the job must start on the old page"
+assert _NEW_SHOP not in _PORTABLE_FINDS.program, "the new page must be on nothing the job runs"
+assert _NEW_SHOP not in _PORTABLE_FINDS.container, "nor in the name its row renders under"
+for _wording in (_PAGE_CHANGED.ask, *_PAGE_CHANGED.also_phrased):
+    assert _NEW_PAGE in _wording, f"a re-pointing wording must name the new page: {_wording!r}"
+    assert _OLD_SHOP not in _wording, f"and must not name the page it has now: {_wording!r}"
+
+
+def _is_the_new_page(text: str | None) -> tuple[bool, list[str]]:
+    """Whether ``text`` names the new page and not the old one, with the shops it does name."""
+    folded = (text or "").casefold()
+    named = [shop for shop in (_OLD_SHOP, _NEW_SHOP) if shop in folded]
+    return named == [_NEW_SHOP], named
+
+
+def _the_job_is_bound_to_the_new_page(container: str) -> _ClaimFn:
+    """The page the job's routine is bound to is the one the ask named.
+
+    Read off the row's own bound values — the smallest datum that says which page, the shop
+    in its address, so a value stored with or without its scheme or a trailing slash answers
+    the same way.  A violating sample is nameable: one that says the job has moved and leaves
+    it bound where it was, and one that binds the new page on some other row."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = _job_row(sample, container)
+        if row is None:
+            return False, f"{container!r} is no longer in the registry"
+        bound = row.bound_values.get(_PAGE_PARAMETER)
+        holds, _named = _is_the_new_page(bound)
+        return holds, f"its {_PAGE_PARAMETER!r} is bound to {bound!r}"
+
+    return answer
+
+
+def _the_program_fetches_the_new_page(container: str) -> _ClaimFn:
+    """The program the job runs fetches the new page, and no longer the old one.
+
+    The other half of a re-bind: the collector runs the stored program, never the bound
+    values, so a row re-stamped without its program re-rendered would go on reading the old
+    shop under a record that says otherwise."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = _job_row(sample, container)
+        if row is None:
+            return False, f"{container!r} is no longer in the registry"
+        holds, named = _is_the_new_page(row.program)
+        return holds, f"its program names {named}"
+
+    return answer
+
+
+def _the_other_values_are_as_they_were(job: StandingJob) -> _ClaimFn:
+    """Every value the routine is bound to, except the page, is the one it was bound to before
+    the turn — PRESERVATION of what the job looks for.
+
+    Read off the row because the ledger keeps no prior for a bound value: a re-bind reports the
+    program re-rendered, and a re-bind that also changed what the job looks for reports exactly
+    the same thing.  Compared the way production joins a bound value to its leaf (whitespace
+    and case), so a value restated with a capital has not moved.  A violating sample is
+    nameable: one that re-points the job and narrows or drops what it was watching for."""
+    expected = {
+        name: spoken_form(value) for name, value in job.values.items() if name != _PAGE_PARAMETER
+    }
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = _job_row(sample, job.container)
+        if row is None:
+            return False, f"{job.container!r} is no longer in the registry"
+        bound = {
+            name: spoken_form(value)
+            for name, value in row.bound_values.items()
+            if name != _PAGE_PARAMETER
+        }
+        return bound == expected, f"it is now bound to {bound}, it was bound to {expected}"
+
+    return answer
+
+
+def _no_other_job_watches_the_new_page(container: str) -> _ClaimFn:
+    """The new page is watched by this job alone — no other live job's program fetches it.
+
+    A statement about what the registry holds for the page the ask named.  A violating sample
+    is nameable: one that stands up a second collection for the new page, beside the job it
+    was asked to move or in place of moving it, so two jobs — or the wrong one — now run."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        others = sorted(
+            one.name
+            for one in sample.mechanisms
+            if one.name != container
+            and not one.archived
+            and _NEW_SHOP in (one.program or "").casefold()
+        )
+        return not others, f"{others} also fetch the new page"
+
+    return answer
+
+
+# The store's label for the field a re-bind moves: the program it re-renders.  The routine's
+# name is restated by a re-bind and stays what it was, so it is not among them.
+_PROGRAM = frozenset({"extraction_prompt"})
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_pointing_a_job_at_another_page_rebinds_that_job(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """The job is the same job, reading a different page.
+
+    The failure this exists to catch is a turn that answers "point it somewhere else" by
+    standing a new job up for the new page — leaving the old one running, or retired with what
+    it gathered stranded on a row nothing writes to any more."""
+    cohort = await _drive(chat_eval, model, _PAGE_CHANGED)
+    job = _PORTABLE_FINDS
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the page the ask named, on the row and in the program it runs; then the rest.
+    cohort.claim(
+        "state: the job is bound to the new page",
+        _the_job_is_bound_to_the_new_page(job.container),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the program it runs fetches the new page",
+        _the_program_fetches_the_new_page(job.container),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: no other job watches the new page",
+        _no_other_job_watches_the_new_page(job.container),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: every other value it is bound to is as it was",
+        _the_other_values_are_as_they_were(job),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_STILL_LIVE, _the_job_is_still_live(job.container), SpecCategory.STORE)
+    cohort.claim(
+        _NOTHING_ELSE_MOVED,
+        _nothing_else_moved(job.container, asked=_PROGRAM),
+        SpecCategory.STORE,
+    )
+    cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(job.container), SpecCategory.STORE)
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
 # ═══ read it back ═══════════════════════════════════════════════════════════
 #
 # "What does that thing actually do?" — the same job, asked about rather than operated on.  The
@@ -1110,6 +1594,114 @@ async def test_she_describes_the_routine_the_job_runs(chat_eval: ChatEval, model
     cohort.measure(*_MEASURED)
 
 
-# Every ported case, in one place — so the deterministic probe in ``test_eval_harness.py`` can
-# drive each one's seeder and premise without a GPU.
-OPERATION_CASES = (_NOTIFY_OFF, _ARCHIVE, _RE_TIME, _DESCRIBE)
+# ═══ list what is running ════════════════════════════════════════════════════
+#
+# "What are you watching for me?" — every running job, asked about at once.  Each one renders
+# ambiently as a row (its name, its cadence, its switch) and again in the store map with what
+# it is for, so the answer is in front of the turn; which of those she reads it off, and
+# whether she reaches for a read as well, are routes.
+
+# What each job looks for, as the SMALLEST datum a faithful listing carries.  Every render of
+# a job's record spells its own — the address its program fetches, the value it is bound to
+# look for, the name derived from both, the description it was stood up with — so a reply that
+# names the job at all, by any of them, carries it; and no other job's record does, so a reply
+# carrying all three has named all three.  Case-folded on both sides.
+_LISTED = ((_FINDS, "typewriter"), (_KETTLES, "kettle"), (_ATLASES, "atlas"))
+_LISTED_JOBS = tuple(job for job, _ in _LISTED)
+
+_LIST_RUNNING = _OperationCase(
+    case_id="standing-list-running",
+    behaviour=(
+        "In the chat agent, when the user asks what Penny is watching for them, Penny names "
+        "every running job from its record, with every job, what each gathered and "
+        "proactive notifications as they were."
+    ),
+    job=_FINDS,
+    others=(_KETTLES, _ATLASES),
+    renders=SelfStateHeader.MECHANISM_NOTIFIES,
+    ask="what are you watching for me right now?",
+    also_phrased=(
+        "which jobs do you have running for me at the moment?",
+        "can you list everything you're currently keeping an eye on for me?",
+        "remind me what you're watching for me these days",
+        "what do you have running in the background for me right now?",
+    ),
+    answers=tuple(token for _, token in _LISTED),
+)
+
+# Each token is on its own job's record — its page, what it looks for, its description — and
+# on no other job's, and in none of the wordings.  ENFORCED, because either leak is invisible
+# once it exists: a token two jobs share credits a reply for naming one of them twice, and a
+# question carrying one credits a reply for repeating the question back.
+for _job, _token in _LISTED:
+    _record = f"{_job.program} {_job.description} {_job.container} {_job.holdings}".casefold()
+    assert all(
+        _token in text.casefold()
+        for text in (*_job.values.values(), _job.description, _job.container)
+    ), f"{_token!r} must be on every part of its own job's record"
+    for _other, _other_token in _LISTED:
+        assert _other is _job or _other_token not in _record, (
+            f"{_other_token!r} must not be on {_job.container}'s record"
+        )
+    for _wording in (_LIST_RUNNING.ask, *_LIST_RUNNING.also_phrased):
+        assert _token not in _wording.casefold(), (
+            f"a listing wording must not carry an answer token: {_wording!r}"
+        )
+
+
+def _every_job_is_as_it_was(sample: SampleObservation, _world: World) -> Answer:
+    """Every running job's row holds what it held before the turn — PRESERVATION of the jobs
+    the ask was only about.
+
+    Read as each row's END STATE (``moved_this_run``), so a turn that restated a value has
+    moved nothing.  A violating sample is nameable: one that tidies while it lists — retiring
+    a job it judged stale, or switching one's notifications to match the others."""
+    drifted: list[str] = []
+    for job in _LISTED_JOBS:
+        row = _job_row(sample, job.container)
+        if row is None or row.moved_this_run:
+            drifted.append(f"{job.container}: {row.moved_this_run if row else 'gone'}")
+    return not drifted, f"moved {drifted}"
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_she_lists_every_job_she_is_running(chat_eval: ChatEval, model: str) -> None:
+    """Three jobs running, and a question about all of them: the reply names each one, every
+    specific it states is one the round was given, and the world is exactly as the turn found
+    it.
+
+    What is NOT claimed is how the listing is worded or how much of each job it gives — a
+    cadence, a switch, a page — since the ask names none of them; a specific the reply does
+    state and the record does not is what the sourcing claim reads."""
+    cohort = await _drive(chat_eval, model, _LIST_RUNNING, family=_LEGIBILITY_FAMILY)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — each job named in the reply; and every job, what each gathered and the global
+    # switch, as the turn found them.
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.claim(
+        "state: every running job is as it was", _every_job_is_as_it_was, SpecCategory.STORE
+    )
+    cohort.assert_what_the_store_held_survives()
+    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+# Every case, in one place — so the deterministic probe in ``test_eval_harness.py`` can drive
+# each one's seeder and premise without a GPU.
+OPERATION_CASES = (
+    _NOTIFY_OFF,
+    _NOTIFY_ON,
+    _ARCHIVE,
+    _RE_TIME,
+    _END_CHANGED,
+    _PAGE_CHANGED,
+    _DESCRIBE,
+    _LIST_RUNNING,
+)

@@ -12,12 +12,12 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | Teaching a routine | 17 |
 | Memory | 11 |
 | Answering from the web | 3 |
-| Standing jobs | 5 |
-| Notifications | 2 |
+| Standing jobs | 9 |
+| Notifications | 3 |
 | Background collectors | 4 |
 | Reading a page | 4 |
 | Chat tools | 5 |
-| Total | 81 |
+| Total | 86 |
 
 ## Conversation machine
 
@@ -107,7 +107,11 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | `speak-logread-collector-runs` | In the chat agent, when the user asks how her background jobs are doing and why any of them is in trouble, Penny states the reason the failing cycle's run record gives, with both jobs still running as they were. | how have your background jobs been doing lately? if any of them is having trouble i want to know why |  |
 | `standing-archive` | In the chat agent, when the user says they are done with a running job, Penny retires it as a tombstone that still holds everything it gathered, with proactive notifications still on everywhere else. | i'm done with the typewriter watch — you can retire that one |  |
 | `standing-describe-routine` | In the chat agent, when the user asks what a standing job does, Penny describes the routine from its record, and every value in her reply traces to that record. | what does the typewriter watch actually do? walk me through it. |  |
+| `standing-end-changed` | In the chat agent, when the user says how long a running job should keep going, Penny gives that job the end they named, with the job running as it ran until then and proactive notifications still on everywhere else. | keep the typewriter watch going until sunday night |  |
+| `standing-list-running` | In the chat agent, when the user asks what Penny is watching for them, Penny names every running job from its record, with every job, what each gathered and proactive notifications as they were. | what are you watching for me right now? |  |
 | `standing-notify-off` | In the chat agent, when the user asks for one running job's notifications to be turned off, Penny turns that job's own switch off, with the job still running as it was and proactive notifications still on everywhere else. | turn off notifications for the typewriter watch |  |
+| `standing-notify-on` | In the chat agent, when the user asks for one running job's notifications to be turned back on, Penny turns that job's own switch on, with the job still running as it was and proactive notifications still on everywhere else. | turn notifications back on for the typewriter watch |  |
+| `standing-page-changed` | In the chat agent, when the user points a running job at a different page, Penny re-binds that job to the new page — its program fetches it and no other job watches it — with the rest of the job as it was. | point the typewriter watch at https://inkwellbazaar.example.com/typewriters instead |  |
 | `standing-schedule-fix-prior` | In the chat agent, when the user says a running job checks at the wrong time and names a new one, Penny re-times that job with the rest of it as it was, and every clock time she names is one the job has actually had. | the typewriter watch is checking too early — move it to 11 in the morning |  |
 
 ## Notifications
@@ -115,6 +119,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | Case | Behaviour | First wording | Edge |
 |---|---|---|---|
 | `explicit-mute-request-mutes` | In the chat agent, when the user asks for notifications to be muted, Penny mutes them. | please mute notifications |  |
+| `explicit-unmute-request-unmutes` | In the chat agent, when notifications are muted and the user asks for them to be unmuted, Penny unmutes them. | please unmute notifications |  |
 | `notifications-no-fire` | In the chat agent, when a message names notifications as its subject without asking for them to be changed, Penny stays in idle with notifications still on. | your notifications have been really useful this week, thanks |  |
 
 ## Background collectors
