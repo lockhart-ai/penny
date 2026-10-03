@@ -841,6 +841,12 @@ not a case: the same sentence in the other entry condition. Broadening a job's s
 here — that is a re-teach of the routine (code-owner ruling). Its seeded world is a taught
 routine stood up through the production instantiation seam, which `test_speakable_log_reads.py`
 reuses for the jobs its collector-runs case reads about),
+`test_chat_memory_stories.py` (the memory verbs — save, recall, forget, update, fan-out, no-fire
+— and `memory-delete-a-whole-list` (#2215): four plain lists, storage only, and an ask to get
+rid of one by name; the claims are that the named list is ARCHIVED and still holds every entry
+it held, and that each other list is still the live list it was with its entries. It is not
+`memory-forget-then-list`, which names one NOTE and claims the list is still live — a correct
+sample for either is wrong for the other),
 `test_half_the_sources_landed.py` (#2149 — `memory-save-with-a-source-down`, the cohort-form
 port of #1946's writes-landed case and the only live-model coverage that frame has: the user
 names two pages and one list, ONE page answers and the other cannot be read, and what is
@@ -902,13 +908,17 @@ both things the ask put in it) and `image-no-fire` (a remark about a painting as
 the turn lands in idle and the reply invents nothing). The image backend is a canned stub in front
 of the real tool, and the chat observer reads the media store as `SampleObservation.images`, a
 drawn image being one with no source page), `test_email_dispatch.py`
-(#2209 — the email tools that retired `/email` + `/zoho`, PORTED to the cohort structure: TWO
-cases over one canned mailbox. `email-answers-from-the-message-asked-about` names a sender AND
+(#2209/#2215 — the email tools that retired `/email` + `/zoho`, PORTED to the cohort structure:
+THREE cases over one canned mailbox. `email-answers-from-the-message-asked-about` names a sender AND
 a subject that only one message shares — asking by sender and asking by subject are one
 behaviour, since a correct sample for either is correct for the other, and which field she
 searches on is a route measured in the tool sequence — and claims the reply carries that
 message's figure and none of the figures its neighbours carry (the sender's other mail, and
-another sender's mail on the same subject). `email-remark-stays-idle` is a remark about the
+another sender's mail on the same subject). `email-absent-message` asks the same five ways about
+a sender and a subject no message carries — no word of any wording is a word of any message,
+pinned in `make check` — and claims idle, the newsletters collection unchanged, every stored and
+said value sourced, and a reply carrying none of the amounts the mailbox's messages hold;
+whether the reply says nothing was found is reply spread. `email-remark-stays-idle` is a remark about the
 volume of email: idle, the seeded newsletters collection unchanged, and every stored value
 sourced — the reply is advice in her own words, measured as reply spread and never read for
 provenance.

@@ -1,8 +1,9 @@
-"""The memory verbs: save · recall · forget · update · fan-out · no-fire (#2008, tranche 1).
+"""The memory verbs: save · recall · forget · update · fan-out · no-fire (#2008, tranche 1),
+and deleting a whole list (#2215).
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Seven cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
+**Eight cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
 different claims rather than scenarios standing in for one — saving, recalling, forgetting and
 updating are four contracts, and a sample that is correct for one is wrong for another.  Only
 *within* a verb is there paraphrase-collapsing to do, and each case here is one ask in five
@@ -17,6 +18,14 @@ wordings against one world, with its facts held constant across the arms.
 | update | ``memory-change-lands-on-the-entry-that-exists`` | the edit lands on the entry |
 | fan-out | ``memory-a-like-and-a-dislike`` | the slot's only candidate |
 | no-fire | ``memory-no-fire-wistful`` | the mention with a matching collection sitting there |
+| delete a list | ``memory-delete-a-whole-list`` | the ask names a LIST, not a note in one |
+
+**DELETING A LIST IS NOT FORGETTING A NOTE.**  ``memory-forget-then-list`` starts from one list
+and names one NOTE in it: the note goes, and the list is still the live list it was.
+``memory-delete-a-whole-list`` starts from several lists and names one LIST: the list is
+archived, and every note in it is still there.  A correct sample for either is wrong for the
+other — archiving the list fails the forget, and removing notes fails the delete — so they are
+two behaviours.
 
 No per-variant pass rate exists for any of these slots — the file they come from scored each
 case as one mean over a scorer callback, never per candidate — so every survivor above is
@@ -247,7 +256,11 @@ class _VerbCase(NamedTuple):
 
     ``unspoken`` is a premise about the WORDINGS rather than the store: each is a key the store
     holds that no wording may say verbatim.  A case about finding an entry under a key the user
-    never says measures nothing the day one of its wordings says it."""
+    never says measures nothing the day one of its wordings says it.
+
+    ``plain`` is a premise about the lists THEMSELVES rather than what they hold: each must be
+    in the registry, not archived, and storage only — no program for a collector to run.  A
+    list that arrived already archived would answer a claim that the turn archived it."""
 
     case_id: str
     behaviour: str
@@ -258,6 +271,7 @@ class _VerbCase(NamedTuple):
     empty: tuple[str, ...] = ()
     withholds: tuple[str, ...] = ()
     unspoken: tuple[tuple[str, str], ...] = ()
+    plain: tuple[str, ...] = ()
 
 
 def _collection_text(db: Database, name: str) -> str:
@@ -301,6 +315,21 @@ def probe_seeded_world(db: Database, case: _VerbCase) -> None:
             f"names it passes without the turn acting — the store holds {everywhere!r}"
         )
     _probe_unspoken(db, case)
+    _probe_plain(db, case)
+
+
+def _probe_plain(db: Database, case: _VerbCase) -> None:
+    """Each plain list is in the registry, live, and carries no program."""
+    for name in case.plain:
+        row = db.memories.get(name)
+        assert row is not None, f"{case.case_id}: {name!r} must be in the registry"
+        assert not row.archived, (
+            f"{case.case_id}: {name!r} must start live, or a claim that the turn archived it "
+            "is answered by the seed"
+        )
+        assert row.extraction_prompt is None, (
+            f"{case.case_id}: {name!r} must be storage only — it carries a program"
+        )
 
 
 def _probe_unspoken(db: Database, case: _VerbCase) -> None:
@@ -524,6 +553,42 @@ def _the_list_itself_survived(collection: str) -> _ClaimFn:
         )
         standing = any(not one.archived and not one.changed_this_run for one in rows)
         return standing, f"{collection} is {state}"
+
+    return answer
+
+
+def _the_list_is_archived(collection: str) -> _ClaimFn:
+    """The list the ask named is ARCHIVED — still in the registry as a tombstone.
+
+    Read off the registry row, archived rows included.  A violating sample is nameable: one
+    that leaves the list live and says it is gone, and one that empties the list and leaves
+    the empty container standing."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        row = next((one for one in sample.mechanisms if one.name == collection), None)
+        if row is None:
+            return False, f"{collection} was removed from the registry rather than archived"
+        return row.archived, f"{collection} is still live"
+
+    return answer
+
+
+def _still_hold_what_they_held(collections: tuple[str, ...]) -> _ClaimFn:
+    """Every entry these lists held when the turn began is still in them, key and content.
+
+    Read against the store as the turn FOUND it (``held_before``) rather than against the
+    seed's text, and over archived lists too: an archived list still holds its entries, so an
+    entry missing from one was deleted.  The rationale names each lost entry by list and key."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        held = {(entry.collection, entry.key, entry.content) for entry in sample.held}
+        lost = sorted(
+            f"{entry.collection}: {entry.key}"
+            for entry in sample.held_before
+            if entry.collection in collections
+            and (entry.collection, entry.key, entry.content) not in held
+        )
+        return not lost, f"no longer holds {lost}"
 
     return answer
 
@@ -1076,6 +1141,102 @@ async def test_a_wistful_aside_fires_nothing(chat_eval: ChatEval, model: str) ->
     cohort.measure(*_MEASURED)
 
 
+# ═══ delete a list ═══════════════════════════════════════════════════════════
+#
+# The user is done with a whole LIST, not a note in one.  Four plain lists sit in the store —
+# storage only, none with a job — and the ask names one of them.  A list is retired by
+# archiving it: the row stays in the registry as a tombstone and every entry stays in it, so
+# what the user kept can be read again and the list can be brought back.  The other three are
+# not the ask's subject, and each is still the live list it was, holding what it held.
+#
+# Which calls retire the list is the route, measured by ``TOOL_SEQUENCE``.  Whether the reply
+# says the list was archived rather than erased is reply text, measured as reply spread.
+
+# The list the ask names, and the lists it does not.
+_DELETED_LIST = _RECIPE_BOX
+_LISTS_LEFT_ALONE = (_INTO, _AVOID, _GEAR_NOTES)
+
+_DELETE_LIST = _VerbCase(
+    case_id="memory-delete-a-whole-list",
+    behaviour=(
+        "In the chat agent, when the user asks her to get rid of one of the lists she keeps, "
+        "Penny archives that list with everything it held still in it, and every other list is "
+        "still live and holds what it held."
+    ),
+    # ``answers`` is EMPTY: the ask is an instruction, so a bare "done" answers it.  No pages:
+    # nothing in the ask is looked up.  ``keeps`` and ``excludes`` are empty because the ask
+    # tells her to keep nothing.
+    world=World(
+        name="four plain lists",
+        pages=(),
+        keeps=(),
+        excludes=(),
+        stores=(*_LISTS_LEFT_ALONE, _DELETED_LIST),
+    ),
+    ask="get rid of my recipe box list, i don't use it any more",
+    also_phrased=(
+        "delete my recipe box list, i don't use it any more",
+        "can you remove my recipe box list? i don't use it any more",
+        "i don't use my recipe box list any more, please get rid of it",
+        "you can delete my recipe box list, i've stopped using it",
+    ),
+    holds=(
+        (_DELETED_LIST.name, ("fajitas", "orzo")),
+        (_INTO.name, (_INTO_ANCHOR,)),
+        (_AVOID.name, (_AVOIDED,)),
+        (_GEAR_NOTES.name, (_PRICE,)),
+    ),
+    plain=tuple(held.name for held in (*_LISTS_LEFT_ALONE, _DELETED_LIST)),
+)
+
+
+def claim_the_list_delete(cohort: Cohort) -> None:
+    """Every claim the delete-a-list case makes, declared in one place so the deterministic
+    pin in ``test_eval_harness.py`` answers the very set the case declares."""
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the named list is archived and still holds its entries; each other list is
+    # still the live list it was, and still holds its entries.
+    cohort.claim(
+        "state: the list it was asked to get rid of is archived",
+        _the_list_is_archived(_DELETED_LIST.name),
+        SpecCategory.STORE,
+    )
+    cohort.claim(
+        "state: the list it was asked to get rid of still holds everything it held",
+        _still_hold_what_they_held((_DELETED_LIST.name,)),
+        SpecCategory.STORE,
+    )
+    for other in _LISTS_LEFT_ALONE:
+        cohort.claim(
+            f"state: the {other.name!r} list is still the live list it was",
+            _the_list_itself_survived(other.name),
+            SpecCategory.STORE,
+        )
+    cohort.claim(
+        "state: every other list still holds everything it held",
+        _still_hold_what_they_held(tuple(other.name for other in _LISTS_LEFT_ALONE)),
+        SpecCategory.STORE,
+    )
+
+    # PROVENANCE — a turn that wrote something, or a reply that describes what the list held,
+    # may only state what the store and the user's message gave it.
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_deleting_a_list_archives_it_with_its_entries(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """One list named for removal among four: it is archived with its entries still in it,
+    and the other three are untouched."""
+    cohort = await _drive(chat_eval, model, _DELETE_LIST)
+    claim_the_list_delete(cohort)
+    cohort.measure(*_MEASURED)
+
+
 # Every ported case, in one place — so the deterministic probe in ``test_eval_harness.py`` can
 # drive each one's seeder and premise without a GPU.
 VERB_CASES = (
@@ -1086,4 +1247,5 @@ VERB_CASES = (
     _UPDATE,
     _FAN_OUT,
     _NO_FIRE_WISTFUL,
+    _DELETE_LIST,
 )
