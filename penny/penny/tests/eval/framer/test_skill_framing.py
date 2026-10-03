@@ -7,7 +7,7 @@ occasion.  It never sees the tool calls; the leaf labeller, which names the rout
 implementation, never sees the ask (#1824).  Nothing is offered to it: it MINTS the
 parameters by reading what the user said.
 
-**Seven cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each one ask
+**Six cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each one ask
 in five wordings pooled into a cohort of fifteen and claimed against
 ``docs/eval-case-design.md``.  Every one of them states its behaviour in the fixed sentence
 form, asserts the parameter SET by equality under LANDED, and reports STORE and PROVENANCE
@@ -15,8 +15,6 @@ empty with the reason:
 
 * ``framer-mints-only-the-piece-that-varies`` — the ticker ask: the symbol is the one piece
   that varies, and the share price and the notification are both settled elsewhere.
-* ``framer-keeps-two-of-a-kind-as-two-parameters`` — two URLS, where run 1 measured all five
-  samples folding both into one ``sites — list of URLs``.
 * ``framer-mints-both-pieces-when-they-are-different-kinds`` — a catalog page and a book
   looked up on it.
 * ``framer-names-a-search-as-a-search`` and
@@ -26,8 +24,9 @@ empty with the reason:
 * ``framer-frames-from-a-single-turn`` — the whole teach in one sentence, so the routine's
   purpose and the piece that varies have to be separated out of one turn rather than read
   off two.
-* ``framer-keeps-three-of-a-kind-as-three-parameters`` — the same-kind ask at three, where
-  the list is more tempting than it is at two.
+* ``framer-keeps-three-of-a-kind-as-three-parameters`` — three URLS of the same kind, where
+  run 1 measured every two-page sample folding them into one ``sites — list of URLs``; at
+  three the list is more tempting still.
 
 What the cases deliberately do NOT claim, and why, is stated in each of them: the
 genericity contract (that a routine's name says the KIND of task and never THIS occasion) is
@@ -414,140 +413,7 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
     _measure_the_draw(cohort, positions=len(_AVAILABILITY.parameters))
 
 
-# ── Case 2: two pages named is two parameters ─────────────────────────────────
-#
-# Reference output (read at review, never matched):
-#   NAME: headline-collector
-#   DESCRIPTION: collect the top headline from each of the news front pages it is
-#                pointed at
-#   PARAMETER first_site — the first front page to read
-#   PARAMETER second_site — the second front page to read
-
-_TWO_SOURCES = FramingFixture(
-    case_id="frame-two-sources-two-parameters",
-    turns=(
-        "hey could you keep an eye on the morning headlines for me",
-        "read citydesk.example/front and harborpost.example/front, and remember each "
-        "site's top headline",
-    ),
-    rendered_input=(
-        "hey could you keep an eye on the morning headlines for me\n"
-        "read citydesk.example/front and harborpost.example/front, and remember each "
-        "site's top headline"
-    ),
-    parameters=(
-        ParameterFamily("first source", ("first", "one", "1", "primary")),
-        ParameterFamily("second source", ("second", "two", "2", "secondary", "other")),
-    ),
-)
-
-
-# ── The ported case: two of a kind, in five wordings ──────────────────────────
-#
-# The world is URLS rather than symbols because that is where the failure was MEASURED: on
-# run 1 all five two-sources samples drew one `sites — list of URLs`, folding two pieces the
-# user named into a single list parameter.
-#
-# THE FACTS ARE CONSTANT across the five wordings: every arm names both front pages and asks
-# for each site's top headline.  An arm naming one page would leave a family claim with
-# nothing that could answer it, and an arm asking for something other than the headline
-# would be a different ask under one case id.
-_TWO_SOURCES_PHRASINGS = (
-    (
-        "could you watch the morning news for me",
-        "open citydesk.example/front and harborpost.example/front, find each site's top "
-        "headline, and remember them",
-    ),
-    (
-        "i'd like the morning headlines followed",
-        "check citydesk.example/front and harborpost.example/front, and keep each one's "
-        "top headline",
-    ),
-    (
-        "can you keep track of the morning headlines?",
-        "look at citydesk.example/front and harborpost.example/front, and save the top "
-        "headline from each",
-    ),
-    (
-        "keep up with the morning headlines for me",
-        "go to citydesk.example/front and harborpost.example/front, get each site's top "
-        "headline, and store them",
-    ),
-)
-
-TWO_SOURCES_ARMS = PortedArms(
-    case_id="framer-keeps-two-of-a-kind-as-two-parameters",
-    arms=(_TWO_SOURCES.turns, *_TWO_SOURCES_PHRASINGS),
-    carries=("citydesk.example/front", "harborpost.example/front", "top headline"),
-    demonstrates=("remember", "save", "keep", "store"),
-)
-
-# The ONE family a same-kind ask is answered by, at whatever multiplicity the ask names.
-# Grounded: every arm says "read <address> and <address>", so `url`/`site`/`page` are words
-# the ask itself puts in front of the draw, and a parameter named at that breadth is a piece
-# the routine can be pointed at.  What is NOT claimed is how the draw tells the several
-# apart — see `_answers`.
-_SAME_KIND_SOURCE = _page_family("source")
-
-_TWO_SOURCES_BEHAVIOUR = (
-    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when one ask points a "
-    "routine at two things of the same kind, Penny mints two distinct scalar parameters "
-    "rather than folding them into one list."
-)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_two_of_a_kind_stay_two_distinct_parameters(
-    framer_eval: FramerEval, model: str
-) -> None:
-    """One ask in five wordings: read these two front pages, keep each one's top headline.
-
-    Two things of the SAME kind are where a single list parameter is most tempting, and a
-    list is not a parameter — what a user says fills one whole.  Both pages have to be
-    re-suppliable next time and they have to be tellable apart, so a correct draw mints two
-    scalars distinguished by position.  The headline is what the routine IS and belongs in
-    the framing.
-
-    **Test 1 is what separates this from ``framer-mints-only-the-piece-that-varies``**: a
-    one-parameter draw is the correct answer there and the wrong one here, so the two are two
-    cases rather than one behaviour under two sets of facts.  The failure this case exists to
-    catch fails all three claims at once — a single ``sites — list of URLs`` answers neither
-    ordinal family and mints one where two are required — and that is several unmet
-    contracts, not one counted three times.
-
-    **STORE is EMPTY, and that is the correct report** — one call returns a typed result; it
-    moves no machine and writes to no store.
-
-    **PROVENANCE is EMPTY, and that needs its reason stated**: a framing's open fields are an
-    identifier and two lines of deliberately generic prose, and the suite's one instrument
-    for the invented direction does not transfer to them.  The measurement behind that is in
-    ``test_the_symbol_is_the_parameter_and_everything_else_bakes``; it is not re-derived here.
-
-    **Three claims are missing because production already validates them** — at least one
-    parameter minted, no two sharing a name, every demonstrated value a literal span of the
-    user's own turns — all ``_mints_a_usable_signature``'s, re-rolled until they hold.
-    """
-    cohort = await framer_eval(
-        case_id=TWO_SOURCES_ARMS.case_id,
-        behaviour=_TWO_SOURCES_BEHAVIOUR,
-        model=model,
-        turns=_TWO_SOURCES.turns,
-        also_phrased=_TWO_SOURCES_PHRASINGS,
-        samples_per_phrasing=3,
-        min_pass_rate=None,  # report-only until the numbers are read with the code owner
-        family=_FAMILY,
-    )
-    # LANDED
-    _claim_the_parameter_set(cohort, (_SAME_KIND_SOURCE,), answers=2)
-
-    # STORE — EMPTY; see the docstring.
-
-    # PROVENANCE — EMPTY; see the docstring.
-
-    _measure_the_draw(cohort, positions=2)
-
-
-# ── Case 3: cadence and notification are not signature ────────────────────────
+# ── Case 2: cadence and notification are not signature ────────────────────────
 #
 # Reference output (read at review, never matched):
 #   NAME: stock-tracker
@@ -692,7 +558,7 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
     _measure_the_draw(cohort, positions=len(_TICKER.parameters))
 
 
-# ── Case 4: one turn is enough to frame ───────────────────────────────────────
+# ── Case 3: one turn is enough to frame ───────────────────────────────────────
 #
 # Reference output (read at review, never matched):
 #   NAME: temperature-recorder
@@ -787,7 +653,7 @@ async def test_a_single_turn_teach_still_separates_the_piece_that_varies(
     _measure_the_draw(cohort, positions=len(_SINGLE_TURN.parameters))
 
 
-# ── Case 5: the look-up is a search, not a page ───────────────────────────────
+# ── Case 4: the look-up is a search, not a page ───────────────────────────────
 #
 # Reference output (read at review, never matched):
 #   NAME: ticket-price-watcher
@@ -901,7 +767,7 @@ async def test_a_search_look_up_is_named_as_a_search(framer_eval: FramerEval, mo
     _measure_the_draw(cohort, positions=len(_SEARCH.parameters))
 
 
-# ── Case 6: two re-suppliable pieces of DIFFERENT types ───────────────────────
+# ── Case 5: two re-suppliable pieces of DIFFERENT types ───────────────────────
 #
 # Reference output (read at review, never matched):
 #   NAME: catalog-checker
@@ -1020,10 +886,19 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
 
 # ── The ported case: three of a kind, in five wordings ────────────────────────
 #
-# The same-kind ask at THREE, where the list is more tempting than it is at two — three
-# scalars is where a description that promises "the news sites" starts to look like the
-# tidier interface — and nothing else measures whether a framer that keeps two apart keeps
-# three apart.
+# The suite's one same-kind ask.  The world is URLS because that is where the fold into a
+# list was MEASURED: on run 1 every sample asked to read two front pages drew one
+# `sites — list of URLs`, folding the pieces the user named into a single list parameter.
+# It is put at THREE because the list is more tempting there than at two — three scalars is
+# where a description that promises "the news sites" starts to look like the tidier
+# interface — and a framer that keeps three apart keeps two apart.
+
+# The ONE family a same-kind ask is answered by, at whatever multiplicity the ask names.
+# Grounded: every arm says "read <address>, <address> and <address>", so `url`/`site`/`page`
+# are words the ask itself puts in front of the draw, and a parameter named at that breadth
+# is a piece the routine can be pointed at.  What is NOT claimed is how the draw tells the
+# several apart — see `_answers`.
+_SAME_KIND_SOURCE = _page_family("source")
 
 # THE FACTS ARE CONSTANT across the five wordings: every arm names all three front pages and
 # asks for each site's top headline.
@@ -1086,10 +961,11 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
     list parameter, or two scalars and a description that promises the rest, has lost a piece
     the user named.
 
-    **Test 1 is what separates this from the two-of-a-kind case**: a two-parameter draw is
-    the correct answer there and the wrong one here.  Whether the behaviour survives the
-    extra piece is the open question — the two-of-a-kind failure was a fold into one list,
-    and nothing has measured whether the fold returns when there is one more thing to fold.
+    **Test 1 is what separates this from ``framer-mints-only-the-piece-that-varies``**: a
+    one-parameter draw is the correct answer there and the wrong one here.  The failure this
+    case exists to catch fails every claim at once — a single ``sites — list of URLs``
+    answers the family once where three are required — and that is several unmet contracts,
+    not one counted several times.
 
     **STORE is EMPTY, and that is the correct report** — one call returns a typed result; it
     moves no machine and writes to no store.
@@ -1128,7 +1004,6 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
 PORTED_ARMS = (
     TICKER_ARMS,
     PAGE_ONLY_ARMS,
-    TWO_SOURCES_ARMS,
     SINGLE_TURN_ARMS,
     SEARCH_ARMS,
     PAGE_AND_TITLE_ARMS,
@@ -1140,7 +1015,6 @@ PORTED_ARMS = (
 # probes and the live runs can never be checking two different fixtures.
 FIXTURES = (
     _AVAILABILITY,
-    _TWO_SOURCES,
     _TICKER,
     _SINGLE_TURN,
     _SEARCH,

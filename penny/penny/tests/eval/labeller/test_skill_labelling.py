@@ -6,14 +6,14 @@ provenance verdict, no routine name, no routine description.  The interface half
 description · parameters, decided from the user's ask alone) is the framer's, a separate
 draw that never sees this one's evidence.
 
-The file holds the canonical set (#2004's, #2058).  Five cases, each one demonstration in
+The file holds the canonical set (#2004's, #2058).  Four cases, each one demonstration in
 five wordings pooled into a cohort of fifteen, claimed against ``docs/eval-case-design.md``:
 ``namer-tells-two-sources-apart`` · ``namer-names-a-search-spot-as-a-search`` ·
-``namer-names-an-availability-spot-for-this-routine`` ·
 ``namer-names-every-spot-from-a-single-turn-teach`` ·
-``namer-names-every-spot-in-a-longer-routine``.  Four of them make the SAME three claims on
-different demonstrations — they exercise, they do not newly assert — and each says so in its
-own docstring rather than dressing it up.  No case claims that a value filling two argument
+``namer-names-every-spot-in-a-longer-routine``.  All four make the SAME three claims on
+different demonstrations; the two-sources and longer-routine cases each add a distinctness
+claim their ledger earns, and the other two exercise rather than newly assert — each says so
+in its own docstring rather than dressing it up.  No case claims that a value filling two argument
 sites draws ONE name: a split shared spot keys a line to a name nobody offered, which the
 production validator refuses and re-rolls, so the claim would run 15/15 by construction.
 
@@ -104,72 +104,7 @@ _CONVERSATION_HEADING = (
 _PLACEHOLDER_HEADING = "Placeholders (each currently named after the tool arg it fills):"
 
 
-# ── Case 1: the canonical shape, on availability rather than price ─────────────
-
-_AVAILABILITY = LabellingFixture(
-    case_id="leaf-topic-availability",
-    conversation=(
-        _user(
-            "can you keep an eye on bookbarn.example/atlas-of-clouds and let me know "
-            "when it's back in stock"
-        ),
-        _penny(_ELICIT),
-    ),
-    utterance=(
-        "go to bookbarn.example/atlas-of-clouds, check whether it's in stock, and remember that"
-    ),
-    calls=(
-        (
-            "browse",
-            {
-                "queries": ["bookbarn.example/atlas-of-clouds"],
-                "extract": "whether it is in stock",
-            },
-            "You opened the atlas of clouds page (browse result)\nin stock",
-            True,
-        ),
-        (
-            "collection_write",
-            {
-                "memory": "book-availability",
-                "entries": [{"key": "atlas of clouds availability", "content": "in stock"}],
-            },
-            "You saved an entry to book-availability: (collection_write result)\nWrote 1 entry.",
-            True,
-        ),
-    ),
-    target="book-availability",
-    leaves=(
-        "bookbarn.example/atlas-of-clouds",
-        "whether it is in stock",
-        "atlas of clouds availability",
-        "book-availability",
-    ),
-    rendered_input=(
-        f"{_CONVERSATION_HEADING}\n"
-        "user: can you keep an eye on bookbarn.example/atlas-of-clouds and let me know "
-        "when it's back in stock\n"
-        f"penny: {_ELICIT}\n"
-        "user: go to bookbarn.example/atlas-of-clouds, check whether it's in stock, and "
-        "remember that\n"
-        "\n"
-        "Routine steps:\n"
-        "1. browse(queries=[{queries}], extract={extract})\n"
-        "2. collection_write(memory={memory}, entries=["
-        "{'key': {key}, 'content': the value from step 1}])\n"
-        "\n"
-        f"{_PLACEHOLDER_HEADING}\n"
-        "- queries: fills browse.queries[0]; "
-        "demonstrated value: 'bookbarn.example/atlas-of-clouds'\n"
-        "- extract: fills browse.extract; demonstrated value: 'whether it is in stock'\n"
-        "- memory: fills collection_write.memory; demonstrated value: 'book-availability'\n"
-        "- key: fills collection_write.entries[0].key; "
-        "demonstrated value: 'atlas of clouds availability'"
-    ),
-)
-
-
-# ── Case 2: two spots on one argument must draw two names ─────────────────────
+# ── Case 1: two spots on one argument must draw two names ─────────────────────
 
 _TWO_SOURCES = LabellingFixture(
     case_id="leaf-two-sources-distinct-names",
@@ -235,7 +170,7 @@ _TWO_SOURCES = LabellingFixture(
 )
 
 
-# ── Case 3: the conversation block at its minimum — one direct instruction ────
+# ── Case 2: the conversation block at its minimum — one direct instruction ────
 
 _SINGLE_TURN = LabellingFixture(
     case_id="leaf-single-turn-teach",
@@ -284,7 +219,7 @@ _SINGLE_TURN = LabellingFixture(
 )
 
 
-# ── Case 4: the look-up is a search, not a page ───────────────────────────────
+# ── Case 3: the look-up is a search, not a page ───────────────────────────────
 
 _SEARCH = LabellingFixture(
     case_id="leaf-search-not-page",
@@ -443,7 +378,7 @@ _LONGER_ROUTINE = LabellingFixture(
 )
 
 
-# ── The PORTED set: five cases, each one demonstration in five wordings ───────
+# ── The PORTED set: four cases, each one demonstration in five wordings ───────
 #
 # THE ARM IS THE DEMONSTRATING UTTERANCE, and the LEDGER is held constant across the five.
 # Distillation is deterministic Python over the calls, so identical calls mean identical spots
@@ -498,7 +433,7 @@ def _behaviour(when: str, does: str = _NAMES_EVERY_SPOT) -> str:
     """The case's one sentence, in the fixed form *In <the locus>, when <X>, Penny <does Y>.*
 
     The locus is the SHIPPED agent name, read off the constant production draws with, so a
-    rename cannot leave five case reports describing an agent that no longer exists."""
+    rename cannot leave four case reports describing an agent that no longer exists."""
     locus = PennyConstants.SKILL_NAMING_AGENT_NAME
     return f"In the {locus} micro-context, when {when}, Penny {does}."
 
@@ -538,22 +473,6 @@ SEARCH_CASE = PortedNamingCase(
     ),
     offered=("queries", "extract", "memory", "key"),
     anchors=("aurora fest tickets", "cheapest ticket price"),
-)
-
-AVAILABILITY_CASE = PortedNamingCase(
-    case_id="namer-names-an-availability-spot-for-this-routine",
-    behaviour=_behaviour("the demonstrated routine watches availability rather than a price"),
-    ledger=_AVAILABILITY,
-    arms=(
-        _AVAILABILITY.utterance,
-        "open bookbarn.example/atlas-of-clouds, see whether it's in stock, and keep that",
-        "have a look at bookbarn.example/atlas-of-clouds, find out if it's in stock, and "
-        "remember it",
-        "check bookbarn.example/atlas-of-clouds for whether it's in stock, and note that down",
-        "read bookbarn.example/atlas-of-clouds, work out whether it's in stock, and save that",
-    ),
-    offered=("queries", "extract", "memory", "key"),
-    anchors=("bookbarn.example/atlas-of-clouds", "in stock"),
 )
 
 SINGLE_TURN_CASE = PortedNamingCase(
@@ -611,7 +530,6 @@ LONGER_ROUTINE_CASE = PortedNamingCase(
 PORTED_CASES = (
     TWO_SOURCES_CASE,
     SEARCH_CASE,
-    AVAILABILITY_CASE,
     SINGLE_TURN_CASE,
     LONGER_ROUTINE_CASE,
 )
@@ -699,8 +617,8 @@ def _says_what_belongs_there(spots: Sequence[str]) -> WorldClaim:
 # The three claims EVERY naming case makes, as data: the labeller is handed a set of spots and
 # asked for a name and a line for each, and these are the three ways that answer can fail to
 # arrive — nothing usable, the question handed back, or no line at all.  One table rather than
-# three spellings per case, because five cases make exactly this set and a claim edited in one
-# of five places is a claim that has stopped meaning one thing.
+# three spellings per case, because four cases make exactly this set and a claim edited in one
+# of four places is a claim that has stopped meaning one thing.
 #
 # All three are the *nothing omitted* direction of fact alignment.  The other direction is
 # absent from every case in this file, and each case's docstring says why.
@@ -861,35 +779,6 @@ async def test_a_search_spot_is_named_as_a_search_however_it_is_worded(
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_an_availability_spot_is_named_for_this_routine_however_it_is_worded(
-    labeller_eval: LabellerEval, model: str
-) -> None:
-    """One demonstration in five wordings: read a book's page, keep whether it is in stock.
-
-    **This case asserts nothing the two-sources case does not already assert.**  Same three
-    claims, different demonstration; its value is the modal sample a person reads and the
-    naming-spread axis, not a new claim.
-
-    What it supplies is a routine about AVAILABILITY rather than a price — the semantics every
-    other ledger in the canonical set shares.  A labeller working from a memorised price
-    template names the extract spot for a price nobody mentioned, and that is exactly the
-    wrong-but-stable row the design says only a human reading one sample catches: a
-    ``current_price`` label on this routine carries no url, no digit and no capital, so
-    ``unsourced_specifics`` cannot see it either.
-
-    **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
-    re-rolls); **STORE is empty by construction** (one call, a typed result, no store).  The
-    provenance block carries only the *nothing omitted* direction, for the reason above.
-    """
-    cohort = await _run_ported_case(labeller_eval, AVAILABILITY_CASE, model)
-    # LANDED — empty, and closed upstream; see the docstring.
-    # STORE — empty by construction; see the docstring.
-    # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
-    _claim_every_spot_was_named_for_this_routine(cohort, AVAILABILITY_CASE.offered)
-    _measure_what_each_spot_was_called(cohort, AVAILABILITY_CASE.offered)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_single_turn_teach_names_every_spot_however_it_is_worded(
     labeller_eval: LabellerEval, model: str
 ) -> None:
@@ -969,7 +858,6 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
 # Every ledger, for the deterministic drift probes in ``make check`` — one place, so the
 # probes and the live runs can never be checking two different fixtures.
 FIXTURES = (
-    _AVAILABILITY,
     _TWO_SOURCES,
     _SINGLE_TURN,
     _SEARCH,

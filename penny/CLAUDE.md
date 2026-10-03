@@ -838,9 +838,9 @@ place; #2001's world-integrity probe rides along. `speak-logread-browse-results`
 contracts for the command-retirement tools), `test_email_dispatch.py`
 (NL-dispatch of the email tools that retired `/email` + `/zoho`),
 `test_skill_labelling.py` (#1828/#2058 — the run-end LEAF
-labeller's canonical set: five cohort cases (`namer-tells-two-sources-apart` ·
-`namer-names-a-search-spot-as-a-search` · `namer-names-an-availability-spot-for-this-routine` ·
-`namer-names-every-spot-from-a-single-turn-teach` · `namer-names-every-spot-in-a-longer-routine`),
+labeller's canonical set: four cohort cases (`namer-tells-two-sources-apart` ·
+`namer-names-a-search-spot-as-a-search` · `namer-names-every-spot-from-a-single-turn-teach` ·
+`namer-names-every-spot-in-a-longer-routine`),
 each one FIXTURE demonstration in five wordings over ONE ledger, so the spots and their current
 names are identical on every arm; the `labeller_eval` runner, report-only, with each ledger's
 input document pinned byte-for-byte by a drift probe in `make check`.  Their LANDED category is
@@ -851,7 +851,7 @@ belongs there, plus a distinct-names claim where the ledger supplies two things 
 collapse), all of them the *nothing omitted* direction: the *nothing invented* one has no legal
 instrument for a draw whose open fields are an identifier and generic prose),
 `test_skill_framing.py` (#1830/#2006/#2056 — the run-end skill FRAMER's decisions
-covered in ISOLATION by **seven cases**; the `framer_eval` runner, report-only, each fixture's
+covered in ISOLATION by **six cases**; the `framer_eval` runner, report-only, each fixture's
 input document — the round's user turns, one per line — pinned by a drift probe in
 `make check`. The page/url family classifies by NAME only, every other family
 name-first-then-description, and name tokenization splits digit suffixes (`site1` →
@@ -861,8 +861,6 @@ the parameter SET by equality under LANDED (one drawn parameter per piece the as
 and a COUNT claim for nothing else) and nothing else:
 `framer-mints-only-the-piece-that-varies` (the ticker — the negative direction is the cadence
 and the notification, pieces the ask already settled),
-`framer-keeps-two-of-a-kind-as-two-parameters` (two URLS, the world where run 1 measured all
-five samples folding both into one `sites — list of URLs`),
 `framer-mints-both-pieces-when-they-are-different-kinds` (a catalog page and a book looked up
 on it), the PAIR `framer-names-a-search-as-a-search` /
 `framer-names-a-page-as-a-page-and-invents-no-search` (opposite expected answers — the
@@ -870,7 +868,8 @@ search-family parameter that is correct for the first is round 8's recorded inve
 second, so neither is passable by a framer that always answers the same way),
 `framer-frames-from-a-single-turn` (the purpose and the varying piece separated out of ONE
 sentence rather than read off two turns), and
-`framer-keeps-three-of-a-kind-as-three-parameters` (the same-kind ask at three).  Their STORE
+`framer-keeps-three-of-a-kind-as-three-parameters` (three URLS of the same kind, where run 1
+measured every two-page sample folding them into one `sites — list of URLs`).  Their STORE
 category is EMPTY — one call returns a typed result, moving no machine and writing to no
 store — and their PROVENANCE category is EMPTY and says so: a framing's open fields are an
 identifier and two lines of deliberately generic prose, and `unsourced_specifics` — the

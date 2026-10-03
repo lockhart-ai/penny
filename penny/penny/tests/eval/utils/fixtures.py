@@ -118,12 +118,6 @@ def datum(page: CannedPage, old: str, new: str) -> CannedPage:
 # still match first.
 ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 
-# The browser extension is disconnected — a whole-*channel* outage, distinct from N
-# per-page failures.  Every read this cycle is doomed, so the tool must name the
-# outage once and bind the terminal move (no URL-variant flailing).  Catch-all so
-# every query the collector issues hits the outage.
-BROWSER_DISCONNECTED = CannedPage(match="", text="", channel_outage=True)
-
 
 # Six tools that mean she acted: a fetch, a write, an edit, a deletion, a job stood
 # up.  ONE definition, because two case files ask the same question of a turn — the

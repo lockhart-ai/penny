@@ -2,7 +2,7 @@
 
 Ported to the cohort structure; the contract is `docs/eval-case-design.md`.
 
-**Eight cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
+**Seven cases.**  What a user asks Penny's memory to do splits into verbs that are genuinely
 different claims rather than scenarios standing in for one — saving, recalling, forgetting and
 updating are four contracts, and a sample that is correct for one is wrong for another.  Only
 *within* a verb is there paraphrase-collapsing to do, and each case here is one ask in five
@@ -16,7 +16,6 @@ wordings against one world, with its facts held constant across the arms.
 | forget | ``memory-forget-then-list`` | the only ask that owes the report half |
 | update | ``memory-change-lands-on-the-entry-that-exists`` | the edit lands on the entry |
 | fan-out | ``memory-a-like-and-a-dislike`` | the slot's only candidate |
-| no-fire | ``memory-no-fire-narration`` | the mention with nothing in the store to match it |
 | no-fire | ``memory-no-fire-wistful`` | the mention with a matching collection sitting there |
 
 No per-variant pass rate exists for any of these slots — the file they come from scored each
@@ -44,24 +43,15 @@ entry the user names differently from the key it is stored under: the recipe is 
 that entry rather than beside it as a second fajitas recipe, and the edit adds to the recipe,
 so what the entry already held is still there afterwards.
 
-**THE NO-FIRE DIRECTION IS TWO CASES OF ITS OWN** (#2100).  The ruling: one case is one
+**THE NO-FIRE DIRECTION IS A CASE OF ITS OWN** (#2100).  The ruling: one case is one
 setup, one run, one set of assertions, and where a behaviour's positive and negative
 directions cannot both be produced from that one setup and run, they are two cases.  A
 no-fire ask expects the opposite end state from save's, so it cannot be an arm of it.
 
-Within the no-fire direction the same rule counts TWO, not one:
-
-* the WISTFUL pool needs a collection about the message's own subject sitting in the store —
-  that temptation is the entire thing it measures, and without it the case measures nothing;
-* the NARRATION pool's identity is the ABSENCE of one.  A narration ask answered against a
-  store that already holds a collection about its subject simply IS the wistful case, so the
-  two cannot be produced from one setup.
-
-They are also two ASKS rather than two wordings of one — a lasagna recipe saved in a notes
-app, and a strategy-game campaign finished last night — so folding them would put a scenario
-boundary inside one cohort, which is what §6 forbids: a different ask reaching the same end
-state is a different case with its own fifteen.  Pooled, the variance features would be
-measuring the change of subject rather than the model's own spread.
+``memory-no-fire-wistful`` is that case.  A collection about the message's own subject sits in
+the store, and that temptation is the entire thing it measures: a mention that changes nothing
+with a matching list right there is the harder form of the same behaviour, so it also stands for
+a mention with nothing in the store to match it.
 
 **QUARANTINED, not deleted** — every candidate that did not survive, with the reason it can
 come back deliberately:
@@ -84,7 +74,7 @@ come back deliberately:
 * ``memory-look-up-and-update`` — folds save's lookup into update, so a sample can fail it for
   a reason that has nothing to do with editing in place.
 
-Both no-fire pools came OUT of quarantine under #2100 and are ported below.
+The wistful no-fire pool came OUT of quarantine under #2100 and is ported below.
 
 ``memory-writes-landed-source-down`` is ported to the cohort structure as its own case under
 #2149 and is not in this file.
@@ -359,7 +349,7 @@ async def _drive(chat_eval: ChatEval, model: str, case: _VerbCase) -> Cohort:
 # ``TOOL_SEQUENCE`` reads EVERY call the turn made, keyed to no name list (#2112), so it is a
 # live measurement on every case here.  On the two recall cases a correct sample reads the
 # store, and how it reaches the answer — one aimed read, a sweep of three, a ``find`` — is the
-# spread those cases exist to watch.  On the two NO-FIRE cases it is where ACTING shows up, and
+# spread those cases exist to watch.  On the NO-FIRE case it is where ACTING shows up, and
 # it reads live there too: answering a message about the store is itself done by reading the
 # store, so a cohort that answered and moved on agrees on the calls it took to do that, and a
 # sample that went further — writing, minting a container, opening a page — is the spread beside
@@ -1011,16 +1001,16 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
 
 # ═══ no-fire ═════════════════════════════════════════════════════════════════
 #
-# The negative direction, in its own two cases (#2100).  A message that mentions a subject and
-# asks for nothing is answered in conversation, and the round ends where it began: the machine
-# back in idle, and whatever the store already held still there.  Those two — the landing, and
-# what survives — are what these cases assert.
+# The negative direction, in its own case (#2100).  A message that mentions a subject and asks
+# for nothing is answered in conversation, and the round ends where it began: the machine back
+# in idle, and whatever the store already held still there.  Those two — the landing, and what
+# survives — are what this case asserts.
 #
-# What they do NOT assert is that she refrained.  Whether a passing mention is worth keeping is
+# What it does NOT assert is that she refrained.  Whether a passing mention is worth keeping is
 # hers to decide — "I made a good recipe today" is a reasonable thing to remember and a
 # reasonable thing to let go — so a claim forbidding a write would be scoring discretion, and
 # discretion varies.  It is MEASURED instead: ``ENTRIES_STORED`` and ``TOOL_SEQUENCE`` read
-# every sample.  ``TOOL_SEQUENCE`` reads every call the turn made, so it is LIVE on these cases
+# every sample.  ``TOOL_SEQUENCE`` reads every call the turn made, so it is LIVE on this case
 # rather than blind — a sample that answers a message about the store reads the store to do it,
 # and the measured runs show exactly that: samples reading while writing nothing.  A cohort that
 # answered and moved on agrees on the calls that took, and the sample that went further is the
@@ -1029,61 +1019,6 @@ async def test_a_like_and_a_dislike_fan_out(chat_eval: ChatEval, model: str) -> 
 #
 # The same reading covers the page: whether a browse happened is a ROUTE, so the tool sequence
 # measures it and no assertion names it.
-
-_NO_FIRE_NARRATION = _VerbCase(
-    case_id="memory-no-fire-narration",
-    behaviour=(
-        "In the chat agent, when the user reports something they already did elsewhere and asks "
-        "for nothing, Penny answers in conversation and the round ends back in idle."
-    ),
-    # ``keeps``, ``excludes`` and ``answers`` are all EMPTY, and each is a report.  There are no
-    # pages, so nothing can be kept from one or excluded from one; and the message asks for no
-    # value, so requiring a token in the reply would fail a correct run for something nobody
-    # requested — "sounds like a good evening" is a complete answer to this.
-    world=World(name="empty store", pages=(), keeps=(), excludes=(), stores=()),
-    # NOTHING is seeded, and that IS this case's setup: its whole identity is that the store
-    # holds no collection the message's subject matches, which is what separates it from the
-    # wistful case below.  A turn that decides to act therefore has to stand somewhere up
-    # first, so acting is visible in both measured readings at once — a call in the sequence
-    # and an entry in the count.
-    ask="I looked up a lasagna recipe earlier and saved it in my notes app, good evening",
-    also_phrased=(
-        "found a lasagna recipe earlier and put it in my notes app — anyway, good evening",
-        "i saved a lasagna recipe to my notes app earlier today. evening!",
-        "earlier on i looked up a lasagna recipe and kept it in my notes app, good evening",
-        "good evening — i looked a lasagna recipe up earlier and it's in my notes app now",
-    ),
-    # The premise stated as a read: nothing in the store is about what the message mentions.
-    # That is what the empty seeder produces today, and stating it as a token keeps the case
-    # honest the day somebody seeds a world into it.
-    withholds=("lasagna",),
-)
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_narrating_something_already_done_fires_nothing(
-    chat_eval: ChatEval, model: str
-) -> None:
-    """The user reports what they did elsewhere and says good evening.  There is no ask in it,
-    so the turn is a conversation and the round ends where it began."""
-    cohort = await _drive(chat_eval, model, _NO_FIRE_NARRATION)
-    # LANDED — the whole of what this case can claim about where the machine went, and the
-    # sharp one here: a turn that read the message as a routine to be taught leaves idle.
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
-    # STORE — EMPTY, and that is a REPORT rather than an omission.  This world seeds nothing,
-    # so there is no entry and no list for a survival claim to be about; what the store holds
-    # afterwards is hers, and it is measured below rather than claimed.
-
-    # PROVENANCE — both halves, and the store half is the one the empty world makes sharp: a
-    # sample that DID decide the recipe was worth keeping may only have written what the user
-    # actually said, and an entry naming a dish, a source or a step nobody mentioned was
-    # invented into the store for good.
-    cohort.assert_every_value_in_the_store_is_sourced()
-    cohort.assert_every_value_in_the_reply_is_sourced()
-
-    cohort.measure(*_MEASURED)
-
 
 _NO_FIRE_WISTFUL = _VerbCase(
     case_id="memory-no-fire-wistful",
@@ -1097,8 +1032,8 @@ _NO_FIRE_WISTFUL = _VerbCase(
     ),
     # The temptation IS the setup: a games list holding a strategy game sits in the store while
     # the user muses about finishing a strategy game campaign.  Without it this case measures
-    # nothing, which is why it cannot share the narration case's world.  The ask names no game,
-    # so what it offers is a topical match and never a reference.
+    # nothing.  The ask names no game, so what it offers is a topical match and never a
+    # reference.
     ask="I finally wrapped up that long strategy game campaign last night, felt so satisfying",
     also_phrased=(
         "finally finished that long strategy game campaign last night — so satisfying",
@@ -1147,6 +1082,5 @@ VERB_CASES = (
     _FORGET,
     _UPDATE,
     _FAN_OUT,
-    _NO_FIRE_NARRATION,
     _NO_FIRE_WISTFUL,
 )

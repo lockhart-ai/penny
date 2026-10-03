@@ -186,7 +186,7 @@ correct next call from what came back). The suite spans that matrix:
 |---|---|---|
 | **chat** (`test_chat_reply.py`) | a store with nothing to answer from; a store that already holds what she is asked to record | browse→answer; the fact one link deep; every source unreachable |
 | **chat authoring** (`test_standing_collection.py`) | operating a job that already runs: broaden / silence / wake / retire, and reading back what its routine does | — |
-| **collector** (`test_watch_cycles.py`, `test_collector_honesty.py`) | first / unchanged / moved reading over a configured watch | read-failure + browser-outage honesty |
+| **collector** (`test_watch_cycles.py`, `test_collector_honesty.py`) | first / unchanged / moved reading over a configured watch | read-failure honesty |
 | **meta-collector** | *retired* — the `skills` reconcile collector (#1624) and the `quality` reviewer (#1569) both retired: skills are now structural (taught/instantiated/re-rendered) | — |
 | **routing** (`test_retrieval.py`) | two-stage recall | — |
 | **peripheral** | *retired* — the startup-announcement case was cut in the #1919 eval-test audit | — |
