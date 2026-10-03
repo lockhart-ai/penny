@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from functools import lru_cache
+from itertools import groupby
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -1599,10 +1600,45 @@ _TITLE = rf"{_LABEL_HEAD}{_TITLE_WORDS_MORE}{_LABEL_ASIDE}"
 _EMPHASIS = r"[*_]*"
 _EMPHASISED = r"[*_]+"
 _HEADING_MARKS = r"#{1,6}[ \t]+"
-_LIST_NUMBER = r"\d+[.)]"
+# A LIST NUMBER — the numeral a list counts its own items by — is layout, and a numeral read as
+# one is not a figure.  It is written two ways, and it stands in three places.
+#
+# The two ways it is written:
+#
+#   DELIMITED   the count, then `.` or `)`:  `1.`  `2)`
+#   A KEYCAP    one digit drawn as a key: the digit, an optional U+FE0F, then U+20E3
+#
+# The three places it stands, and what makes it a list number there:
+#
+#   AT THE HEAD OF A LINE   either way of writing it, then a space.  The space is whatever space
+#                           the model drew (`_GAP`), a narrow no-break one included.
+#   ANYWHERE, AS A KEYCAP   a keycap is a list number wherever it stands: it is never how a
+#                           value is written.
+#   ALONG ONE LINE          a delimited number is a list number inside a line only as part of a
+#                           SEQUENCE on that line: it opens at 1, each next marker counts one
+#                           higher, every marker carries the same delimiter, and there are at
+#                           least two of them.  Each marker stands after a space or at the head
+#                           of the line, and is followed by a space and then by something that is
+#                           not a digit — `1) what page 2) what value 3) how often`.
+#
+# Everything else is still a figure: a digit inside a sentence (`it costs 3 dollars`,
+# `open page 2`), a lone `2)` in prose, a decimal (`3.5`), a clock time (`7:30`), a date
+# (`2026-10-03`, or `1. 2. 2026` inside a line), and a delimited number inside a line whose
+# sequence does not open at 1, skips a count or changes delimiter.
+#
+# THE BLIND SPOT, STATED: a figure that ends a sentence inside a `.`-numbered line and happens
+# to be the next count (`1. open page 2. Then read it`) is that line's second marker by this
+# definition, so it is not read.  The same figure under a `)`-numbered list, or out of step
+# with the count, still is.
+_LIST_DELIMITER = r"[.)]"
+_EMOJI_PRESENTATION = "\ufe0f"
+_KEYCAP = "\u20e3"
+_DELIMITED_NUMBER = rf"\d+{_LIST_DELIMITER}"
+_KEYCAP_NUMBER = rf"\d{_EMOJI_PRESENTATION}?{_KEYCAP}"
+_LIST_NUMBER = rf"(?:{_DELIMITED_NUMBER}|{_KEYCAP_NUMBER})"
 _LIST_BULLET = r"[-*+•]"
-_LIST_MARKER = rf"(?:{_LIST_BULLET}|{_LIST_NUMBER})[ \t]+"
-_NUMBERED = rf"(?:{_LIST_NUMBER}[ \t]+)?"
+_LIST_MARKER = rf"(?:{_LIST_BULLET}|{_LIST_NUMBER}){_GAP}+"
+_NUMBERED = rf"(?:{_LIST_NUMBER}{_GAP}+)?"
 _LINE_HEAD = rf"^[ \t]*(?:{_LIST_MARKER})?(?:{_HEADING_MARKS})?"
 _LINE_END = r"[ \t]*$"
 _A_BULLET_UNDER_IT = rf"(?=\n(?:[ \t]*\n)*[ \t]*{_LIST_BULLET}[ \t])"
@@ -1611,9 +1647,17 @@ _FIELD_LABEL = re.compile(
     rf"|^[ \t]*{_HEADING_MARKS}{_EMPHASIS}{_NUMBERED}{_TITLE}{_EMPHASIS}{_LINE_END}"
     rf"|{_LINE_HEAD}{_EMPHASISED}{_NUMBERED}{_TITLE}{_EMPHASISED}{_LINE_END}"
     rf"|^[ \t]*{_NUMBERED}{_TITLE}{_LINE_END}{_A_BULLET_UNDER_IT}"
-    rf"|^[ \t]*{_EMPHASIS}{_LIST_NUMBER}(?=[ \t])",
+    rf"|^[ \t]*{_EMPHASIS}{_LIST_NUMBER}(?={_GAP})"
+    rf"|{_KEYCAP_NUMBER}",
     re.MULTILINE,
 )
+# A delimited number that MAY count a list along its line; `_sequenced` decides whether it does.
+_INLINE_NUMBER = re.compile(
+    rf"(?<!\S)(?P<count>\d+)(?P<delimiter>{_LIST_DELIMITER})(?={_GAP}+[^\s\d])"
+)
+_SEQUENCE_OPENS_AT = 1
+_SEQUENCE_MARKERS_AT_LEAST = 2
+_LINE_BREAK = "\n"
 
 # ONE folding, used by every probe on both sides of every comparison.  A semantic check defeated
 # by cosmetics is a scorer bug, and two spellings of "fold the typography" drift apart: measured,
@@ -1721,13 +1765,56 @@ def _without_possessive(folded: str) -> str:
 
 
 def _blank_field_labels(text: str) -> str:
-    """Blank out each line's field label, each title line and each list number, so none is a
-    value nor part of one."""
-    return _FIELD_LABEL.sub(_blank, text)
+    """Blank out each line's field label, each title line and each list number — at the head of
+    a line, drawn as a keycap, or counting a list along one line — so none is a value nor part
+    of one."""
+    return _FIELD_LABEL.sub(_blank, _blank_inline_list_numbers(text))
 
 
 def _blank(match: re.Match[str]) -> str:
     return " " * len(match.group())
+
+
+def _blank_inline_list_numbers(text: str) -> str:
+    """Blank out each number that counts a list written along one line.  Read before the head
+    of the line is, because a sequence usually opens there."""
+    for number in _inline_list_numbers(text):
+        text = f"{text[: number.start()]}{_blank(number)}{text[number.end() :]}"
+    return text
+
+
+def _inline_list_numbers(text: str) -> list[re.Match[str]]:
+    """Every delimited number in ``text`` that stands in a sequence on its own line."""
+    by_line = groupby(
+        _INLINE_NUMBER.finditer(text),
+        key=lambda number: text.count(_LINE_BREAK, 0, number.start()),
+    )
+    return [number for _, candidates in by_line for number in _sequenced(list(candidates))]
+
+
+def _sequenced(candidates: Sequence[re.Match[str]]) -> list[re.Match[str]]:
+    """The candidates on one line that count a list: every run that opens at 1 and is at least
+    two markers long."""
+    numbers: list[re.Match[str]] = []
+    for index, opener in enumerate(candidates):
+        if int(opener["count"]) != _SEQUENCE_OPENS_AT:
+            continue
+        run = _run_from(opener, candidates[index + 1 :])
+        if len(run) >= _SEQUENCE_MARKERS_AT_LEAST:
+            numbers += run
+    return numbers
+
+
+def _run_from(opener: re.Match[str], later: Sequence[re.Match[str]]) -> list[re.Match[str]]:
+    """The sequence ``opener`` begins: each later candidate under the opener's delimiter that
+    counts one higher than the marker before it.  A candidate that does neither is passed over
+    and stays a figure."""
+    run = [opener]
+    for candidate in later:
+        next_count = int(run[-1]["count"]) + 1
+        if candidate["delimiter"] == opener["delimiter"] and int(candidate["count"]) == next_count:
+            run.append(candidate)
+    return run
 
 
 def _blank_own_certainty(text: str) -> str:

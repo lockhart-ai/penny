@@ -587,7 +587,14 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
 
     The paired guard, in every one of those shapes: the same words in the middle of a
     sentence, after the colon, or as a list item that is not a label, are read exactly as
-    before — so a brand or a person the world never gave is still reported."""
+    before — so a brand or a person the world never gave is still reported.
+
+    A list number is layout in every form a list is counted by (#2245): drawn as a keycap,
+    wherever it stands; counting a list along one line, as a sequence that opens at 1 and counts
+    up by one under one delimiter; and at the head of a line before whatever space the model
+    drew.  The paired guard: the same digit stated as a value in the same reply is still read,
+    and a number that is not counting a list — a lone `2)`, a sequence that skips a count or
+    changes delimiter, a decimal, a clock time, a date — is a figure."""
     laid_out = "Publisher: Emberline Studios\nGenre: Turn-based strategy"
     assert specifics(laid_out) == ["Emberline", "Studios"]
     assert specifics("Release Date: March 14 2031") == ["14", "2031"]
@@ -699,6 +706,51 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
         "the pick was **Casimir Oyelaran** and then Aurelio Brandt",
     ):
         assert unsourced_specifics(listed, news) == ["Casimir", "Oyelaran"], listed
+    # A list number in each form it is written in (#2245), against a round that states no number.
+    asked = "keep an eye on the lantern listing for me and tell me when the price moves"
+    keycaps = "1\ufe0f\u20e3 Which page do I pull?\n2\ufe0f\u20e3 Which field do I read?"
+    assert unsourced_specifics(keycaps, asked) == []
+    assert unsourced_specifics("first 1\u20e3 the page, then 2\u20e3 the field", asked) == []
+    assert unsourced_specifics(f"{keycaps} All 2 of them?", asked) == ["2"]
+    along_the_line = "Just tell me 1) what page 2) what value 3) how often"
+    assert unsourced_specifics(along_the_line, asked) == []
+    assert unsourced_specifics("1) what page 2) what value 3) how often", asked) == []
+    assert unsourced_specifics("Just tell me 1. what page 2. what value", asked) == []
+    assert unsourced_specifics(f"{along_the_line}, say 3 times a day?", asked) == ["3"]
+    spaced = "1.\u202fWhich page do I pull?\n2)\u00a0Which field do I read?\n  3.\u2009How often?"
+    assert unsourced_specifics(spaced, asked) == []
+    assert unsourced_specifics(f"{spaced}\nIt costs 3 dollars, on page 2.", asked) == ["3", "2"]
+    for prose, figures in (
+        ("see step 2) for the page", ["2"]),
+        ("tell me 1) what page 3) how often", ["1", "3"]),
+        ("tell me 1) what page 2. what value", ["1", "2"]),
+        ("tell me 2) what value 3) how often", ["2", "3"]),
+        ("tell me 1) what page\nand 2) what value", ["1", "2"]),
+        ("tell me 1) whether to open page 2. and 2) what value", ["2"]),
+        ("it is rated 3.5 there, as of 7:30", ["3.5", "7:30"]),
+        ("it shipped on 1. 2. 2031 they say", ["1", "2", "2031"]),
+        ("it costs 3 dollars, open page 2", ["3", "2"]),
+    ):
+        assert unsourced_specifics(prose, asked) == figures, prose
+    # A reply that numbers its questions states no figure; one that also names a price nobody
+    # gave states exactly that price.
+    questions = (
+        "Sure thing—just tell me the exact steps I should follow once, like:\n"
+        "1\ufe0f\u20e3 What page or link do I pull?\n"
+        "2\ufe0f\u20e3 What text/price field am I looking for on that page?\n"
+        "3\ufe0f\u20e3 How should I compare it to the previous day’s value?\n"
+        "4\ufe0f\u20e3 What format should I log or email it in?\n"
+        "\n"
+        "Give me the workflow, and I’ll learn it for you. \U0001f680"
+    )
+    assert unsourced_specifics(questions, asked) == []
+    priced = (
+        "Happy to watch it. Two things first:\n"
+        "1\ufe0f\u20e3 Which page do I pull?\n"
+        "2\ufe0f\u20e3 Should I tell you when it drops below $349?\n"
+        "Or in one go: 1) the page 2) the threshold"
+    )
+    assert unsourced_specifics(priced, asked) == ["349"]
 
 
 def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
