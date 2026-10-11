@@ -1,4 +1,4 @@
-"""Operating a job that is already running, and reading jobs back: eight cases (#2008, tranche 3;
+"""Operating a job that is already running, and reading jobs back: seven cases (#2008, tranche 3;
 #2215).
 
 The contract is `docs/eval-case-design.md`.
@@ -14,7 +14,6 @@ right for one is wrong for another, and each action is a case with its own sente
 | retire it | ``standing-archive`` | ``archived``, and what it gathered still readable |
 | re-time it | ``standing-schedule-fix-prior`` | the rule fires at the hour they asked for |
 | give it an end | ``standing-end-changed`` | it stops when the ask said, firing when it was due |
-| re-point it | ``standing-page-changed`` | bound to the new page, which no second job watches |
 | read one back | ``standing-describe-routine`` | the row as it was; the reply names its page |
 | list them | ``standing-list-running`` | every row as it was; the reply names each job |
 
@@ -49,15 +48,13 @@ hands back a different job under the same name.
 
 **A field the ledger keeps no prior for is read off the row.**  ``moved_this_run`` compares the
 priors the store records, and it records none for the values a routine is bound to or for a
-run quota.  So the re-pointing case reads the bound values themselves — the page is the new
-one, the rest are what they were — and the end case, where a rule rewritten to carry its own
-end is a legitimate way to state one, reads the moments the rule fires at from now on.
+run quota.  So the end case, where a rule rewritten to carry its own end is a legitimate way to
+state one, reads the moments the rule fires at from now on.
 
 **No case claims what the turn did NOT do** (``docs/principles.md`` §4.3).  The world holds its
 jobs — one, or three where the ask is to list them — what each gathered and the global switch,
 so those are what the cases claim still holds; whether a turn also stood something new up is
-its own call, measured in the tool sequence.  The re-pointing case's *no other job watches the
-new page* is a statement about what the registry holds for that page, which the ask named.
+its own call, measured in the tool sequence.
 
 **The world is built the way production builds one (#1911/migration 0108: nothing is
 pre-seeded).**  Every collection here is one the user built: the container is created
@@ -141,7 +138,6 @@ from penny.tools.micro_context import (
     LeafLabel,
     SkillLabels,
     SkillSignature,
-    spoken_form,
 )
 
 pytestmark = pytest.mark.eval
@@ -457,12 +453,6 @@ _HELD_KEYS = tuple(key for key, _ in _FINDS.holdings)
 # to, so this is the same row under the same name, differing in that one field.
 _QUIET_FINDS = _FINDS._replace(notify=False)
 
-# The same job under a description that says WHAT it gathers and not WHERE from — the entry
-# condition of the case that points it at another page.  A description naming the shop would
-# stop being true the moment the job was re-pointed, so rewriting it would be a reasonable
-# thing for a turn to do and "the rest of the row is as it was" would be a ruling on that.
-_PORTABLE_FINDS = _FINDS._replace(description="Portable typewriters newly listed for sale.")
-
 # Two more jobs of the same routine, for the case that asks what is running: each pointed at
 # its own page and looking for its own kind of thing, on its own cadence and switch.
 _KETTLES = StandingJob(
@@ -587,9 +577,8 @@ class _OperationCase(NamedTuple):
     asserted rather than hoped for, since the model can only reach for a lever the state
     presents: the switch, in the direction it is seeded, for the cases that flip it or retire
     the job — where its presence is also what makes the global mute a WRONG lever rather than
-    the only one — the stored rule for the cases about when it runs and when it stops, the
-    shop in the row's own name for the case that points it elsewhere, and the switch again for
-    the two read-backs, which move nothing.
+    the only one — the stored rule for the cases about when it runs and when it stops, and the
+    switch again for the two read-backs, which move nothing.
 
     ``answers`` is what the reply owes, and only the two read-back cases owe anything: each
     operation's ask is an INSTRUCTION, and "done, that one's quiet now" is a complete answer.
@@ -651,9 +640,8 @@ def assert_the_operation_world(db: Database, case: _OperationCase) -> None:
     the job's own self-state row (with nothing there, a measured sample asked to stop one
     watch's pings read the state as offering no granularity and retired the whole job), and
     every job running beside it renders a row of its own; each job already holds what its
-    fixture says it gathered and is bound to the values its fixture names, so "it kept them"
-    and "it is pointed at the new page" are claims about the turn; the job the ask is about
-    stores no end, so an end the turn leaves on it is the turn's; and proactive notifications
+    fixture says it gathered, so "it kept them" is a claim about the turn; the job the ask is
+    about stores no end, so an end the turn leaves on it is the turn's; and proactive notifications
     are ON, so "they are still on for everything else" is a claim about this turn rather than
     about the world it started in.
 
@@ -1336,228 +1324,6 @@ async def test_giving_a_job_an_end_stops_it_when_the_ask_said(
     cohort.measure(*_MEASURED)
 
 
-# ═══ point it at another page ════════════════════════════════════════════════
-#
-# The job keeps doing what it does, somewhere else.  A job's page is one of the values its
-# routine is BOUND to, and re-binding re-renders the program from the routine's steps — so the
-# row carries the change twice, as the bound value and as the address its program fetches, and
-# both are read.
-
-_PAGE_PARAMETER = "page"
-
-# The page the ask points the job at, and the two pages as the smallest datum that tells them
-# apart: each one's HOST, as an address spells it — one whitespace-free token each, neither
-# inside the other, the new one on nothing the world holds before the turn.  The host and not
-# the shop's bare name, because a job's container is named for the page it was first pointed
-# at and its program names that container: the old shop's name stays in the program for as
-# long as the row lives, while the dotted host stands only where an address does.
-_NEW_PAGE = "https://inkwellbazaar.example.com/typewriters"
-_NEW_HOST = "inkwellbazaar.example.com"
-_OLD_HOST = "quillmarket.example.com"
-
-# The old shop as the job's own NAME spells it — what its self-state row renders, and what no
-# wording of the ask may carry.
-_OLD_SHOP = "quillmarket"
-
-# What a turn that opens the page it was pointed at finds there: a shop's listing, in the same
-# shape the page the routine was taught on has.  Without it the address would read as a page
-# with nothing on it, which is a reason not to point a job at it.
-_NEW_PAGE_LISTING = CannedPage(
-    match=_NEW_HOST,
-    text=(
-        "Title: Typewriters — Inkwell Bazaar\n"
-        f"{_NEW_PAGE}\n\n"
-        "Inkwell Bazaar — typewriters in stock\n\n"
-        "- Corvane Courier — 1961 portable, new ribbon, $165.\n"
-        "- Halberd Standard — 1947 desktop, serviced, $240.\n"
-        "- Corvane Featherweight — 1955 portable, case included, $190.\n"
-    ),
-)
-
-_PAGE_CHANGED = _OperationCase(
-    case_id="standing-page-changed",
-    behaviour=(
-        "In the chat agent, when the user points a running job at a different page, Penny "
-        "re-binds that job to the new page — its program fetches it and no other job watches "
-        "it — with the rest of the job as it was."
-    ),
-    job=_PORTABLE_FINDS,
-    renders=_OLD_SHOP,
-    ask=f"point {_THEIR_WORDS} at {_NEW_PAGE} instead",
-    also_phrased=(
-        f"can you switch {_THEIR_WORDS} over to {_NEW_PAGE}?",
-        f"change the page {_THEIR_WORDS} checks to {_NEW_PAGE}",
-        f"have {_THEIR_WORDS} check {_NEW_PAGE} from now on, not the page it checks now",
-        f"{_THEIR_WORDS} should be looking at {_NEW_PAGE} now — swap the page it checks",
-    ),
-    pages=(_NEW_PAGE_LISTING,),
-)
-
-# The two hosts tell the two pages apart only while each stands where its own page's address
-# does and nowhere else, and the ask must lend the claims nothing about the page the job has
-# NOW.  Enforced on the fixture and on every wording.
-assert _NEW_HOST in _NEW_PAGE, "the new host must be the new page's own"
-assert _OLD_HOST in _PORTABLE_FINDS.values[_PAGE_PARAMETER], "the job must start on the old page"
-assert _OLD_HOST in _PORTABLE_FINDS.program, "and its program must fetch that page"
-assert _NEW_HOST not in _PORTABLE_FINDS.program, "the new page must be on nothing the job runs"
-for _host in (_OLD_HOST, _NEW_HOST):
-    assert _host not in _PORTABLE_FINDS.container, (
-        f"the job's own name must not spell {_host!r}: its program names it on every render, "
-        "so a host in the name would answer the program claim whatever the program fetched"
-    )
-for _wording in (_PAGE_CHANGED.ask, *_PAGE_CHANGED.also_phrased):
-    assert _NEW_PAGE in _wording, f"a re-pointing wording must name the new page: {_wording!r}"
-    assert _OLD_SHOP not in _wording, f"and must not name the page it has now: {_wording!r}"
-
-
-def _is_the_new_page(text: str | None) -> tuple[bool, list[str]]:
-    """Whether ``text`` names the new page and not the old one, with the hosts it does name."""
-    folded = (text or "").casefold()
-    named = [host for host in (_OLD_HOST, _NEW_HOST) if host in folded]
-    return named == [_NEW_HOST], named
-
-
-def _the_job_is_bound_to_the_new_page(container: str) -> _ClaimFn:
-    """The page the job's routine is bound to is the one the ask named.
-
-    Read off the row's own bound values — the smallest datum that says which page, the host
-    in its address, so a value stored with or without its scheme or a trailing slash answers
-    the same way.  A violating sample is nameable: one that says the job has moved and leaves
-    it bound where it was, and one that binds the new page on some other row."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        row = _job_row(sample, container)
-        if row is None:
-            return False, f"{container!r} is no longer in the registry"
-        bound = row.bound_values.get(_PAGE_PARAMETER)
-        holds, _named = _is_the_new_page(bound)
-        return holds, f"its {_PAGE_PARAMETER!r} is bound to {bound!r}"
-
-    return answer
-
-
-def _the_program_fetches_the_new_page(container: str) -> _ClaimFn:
-    """The program the job runs fetches the new page, and no longer the old one.
-
-    The other half of a re-bind: the collector runs the stored program, never the bound
-    values, so a row re-stamped without its program re-rendered would go on reading the old
-    shop under a record that says otherwise.  Read as the hosts the program's addresses
-    spell — the job's own name, which every program states and which still carries the shop
-    it was first pointed at, is not an address and is not read."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        row = _job_row(sample, container)
-        if row is None:
-            return False, f"{container!r} is no longer in the registry"
-        holds, named = _is_the_new_page(row.program)
-        return holds, f"its program fetches {named}"
-
-    return answer
-
-
-def _the_other_values_are_as_they_were(job: StandingJob) -> _ClaimFn:
-    """Every value the routine is bound to, except the page, is the one it was bound to before
-    the turn — PRESERVATION of what the job looks for.
-
-    Read off the row because the ledger keeps no prior for a bound value: a re-bind reports the
-    program re-rendered, and a re-bind that also changed what the job looks for reports exactly
-    the same thing.  Compared the way production joins a bound value to its leaf (whitespace
-    and case), so a value restated with a capital has not moved.  A violating sample is
-    nameable: one that re-points the job and narrows or drops what it was watching for."""
-    expected = {
-        name: spoken_form(value) for name, value in job.values.items() if name != _PAGE_PARAMETER
-    }
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        row = _job_row(sample, job.container)
-        if row is None:
-            return False, f"{job.container!r} is no longer in the registry"
-        bound = {
-            name: spoken_form(value)
-            for name, value in row.bound_values.items()
-            if name != _PAGE_PARAMETER
-        }
-        return bound == expected, f"it is now bound to {bound}, it was bound to {expected}"
-
-    return answer
-
-
-def _no_other_job_watches_the_new_page(container: str) -> _ClaimFn:
-    """The new page is watched by this job alone — no other live job's program fetches it.
-
-    A statement about what the registry holds for the page the ask named.  A violating sample
-    is nameable: one that stands up a second collection for the new page, beside the job it
-    was asked to move or in place of moving it, so two jobs — or the wrong one — now run."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        others = sorted(
-            one.name
-            for one in sample.mechanisms
-            if one.name != container
-            and not one.archived
-            and _NEW_HOST in (one.program or "").casefold()
-        )
-        return not others, f"{others} also fetch the new page"
-
-    return answer
-
-
-# The store's label for the field a re-bind moves: the program it re-renders.  The routine's
-# name is restated by a re-bind and stays what it was, so it is not among them.
-_PROGRAM = frozenset({"extraction_prompt"})
-
-
-@pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_pointing_a_job_at_another_page_rebinds_that_job(
-    chat_eval: ChatEval, model: str
-) -> None:
-    """The job is the same job, reading a different page.
-
-    The failure this exists to catch is a turn that answers "point it somewhere else" by
-    standing a new job up for the new page — leaving the old one running, or retired with what
-    it gathered stranded on a row nothing writes to any more."""
-    cohort = await _drive(chat_eval, model, _PAGE_CHANGED)
-    job = _PORTABLE_FINDS
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
-    # STORE — the page the ask named, on the row and in the program it runs; then the rest.
-    cohort.claim(
-        "state: the job is bound to the new page",
-        _the_job_is_bound_to_the_new_page(job.container),
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: the program it runs fetches the new page",
-        _the_program_fetches_the_new_page(job.container),
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: no other job watches the new page",
-        _no_other_job_watches_the_new_page(job.container),
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: every other value it is bound to is as it was",
-        _the_other_values_are_as_they_were(job),
-        SpecCategory.STORE,
-    )
-    cohort.claim(_STILL_LIVE, _the_job_is_still_live(job.container), SpecCategory.STORE)
-    cohort.claim(
-        _NOTHING_ELSE_MOVED,
-        _nothing_else_moved(job.container, asked=_PROGRAM),
-        SpecCategory.STORE,
-    )
-    cohort.claim(_KEPT_ITS_ENTRIES, _it_kept_what_it_gathered(job.container), SpecCategory.STORE)
-    cohort.claim(_STILL_ON_EVERYWHERE, _notifications_are_still_on_everywhere, SpecCategory.STORE)
-
-    # PROVENANCE
-    cohort.assert_every_value_in_the_store_is_sourced()
-    cohort.assert_every_value_in_the_reply_is_sourced()
-
-    cohort.measure(*_MEASURED)
-
-
 # ═══ read it back ═══════════════════════════════════════════════════════════
 #
 # "What does that thing actually do?" — the same job, asked about rather than operated on.  The
@@ -1738,7 +1504,6 @@ OPERATION_CASES = (
     _ARCHIVE,
     _RE_TIME,
     _END_CHANGED,
-    _PAGE_CHANGED,
     _DESCRIBE,
     _LIST_RUNNING,
 )

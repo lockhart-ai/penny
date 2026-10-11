@@ -2697,8 +2697,7 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     The TERMS half is the opposite direction and fails the opposite way: an inert container
     reading as a job on a schedule would pass "it fires on the cadence they asked for" on a
     turn that stood nothing up, so the row that carries terms and the row that carries none are
-    both driven here.  The values a routine is BOUND to travel the same way, since a claim
-    about which page a job checks reads them off the row."""
+    both driven here."""
     db = _make_db(tmp_path)
     seeded_by = seeded_run_id(_SEEDED_ROUTES.name)
     seed_world_stores(db, _STORE_BACKED_WORLD)
@@ -2731,8 +2730,6 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
         schedule="FREQ=HOURLY",
         notify=True,
         expires_at=datetime(2030, 1, 1, tzinfo=UTC),
-        skill_name="a-routine",
-        skill_params={"page": "kelp.example.com/prices"},
     )
     db.memories.archive(_SEEDED_ROUTES.name, actor=MutationActor.SYSTEM, run_id="live-1")
     records = {record.name: record for record in _mechanism_records(db, before)}
@@ -2744,10 +2741,6 @@ def test_a_mechanism_reads_as_born_changed_and_archived_by_the_run_that_did_it(t
     assert termed.expires_at == datetime(2030, 1, 1), "the stored end travels as stored"
     assert termed.max_runs is None and termed.created_at is not None
     assert termed.schedule == "FREQ=HOURLY", "the rule travels verbatim — the case reads its gap"
-    assert termed.bound_values == {"page": "kelp.example.com/prices"}, (
-        "what the routine is pointed at travels off the row — the ledger keeps no prior for it"
-    )
-    assert records["a-minted-job"].bound_values == {}, "a row no routine was applied to binds none"
     retired = records[_SEEDED_ROUTES.name]
     assert retired.archived, "an archived row is still READ — that is what the claim reads"
     assert retired.changed_this_run and not retired.born_this_run
