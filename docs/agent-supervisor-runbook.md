@@ -38,7 +38,7 @@ If it's a mixed bag, split it: sequence the small ones and anything needing the 
 
 - **One ticket per agent**, in its own **isolated worktree** (Agent tool `isolation: "worktree"`).
 - **Most work dispatches; you may implement directly.** Dispatch is the default, and it keeps your context for orchestration, investigation, review and design. When you want certainty or more context than a brief can carry, implement the ticket yourself, in your own worktree, keeping the SOP's hard lines. That is a permission, not a rule that you must dispatch.
-- **Model: Opus for implementation subagents** (Agent tool `model: "opus"`). Mechanical chores (a rebase, a readback) run on Sonnet at low effort.
+- **Model: Sonnet or Haiku for every subagent, never Opus.** Agent tool `model: "sonnet"` for implementation and eval-case work; `model: "haiku"` for mechanical chores (a rebase, posting a finished run, a readback). Always pass `model`: a dispatch that omits it inherits the supervisor's. Opus is the supervising session's, for planning and review, so a child's brief carries the design decisions and its diff gets read before anything is relayed.
 - The child's prompt is short and defers to the SOP. Shape:
   1. "You own ticket #N end-to-end. **Read `docs/agent-task-workflow.md` FIRST and follow it end to end** — including §8 (shepherd to terminal state) and §9 (terminal cleanup)."
   2. How to read the ticket (`make token` from the primary checkout, `gh issue view N --comments`).
