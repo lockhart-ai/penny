@@ -148,7 +148,7 @@ class Collector(BackgroundAgent):
     #
     # Each line DECLARES the tools it names, and only lines whose tools are on this
     # cycle's surface render.  A cycle's surface is scoped to its program now, so a
-    # rule naming ``update_entry`` on a surface without one would be an instruction
+    # rule naming a tool the surface lacks would be an instruction
     # that cannot be followed — the same n≤1 reachability bug a result message naming
     # an absent sibling would be, and answered the same way.
     _RUNTIME_RULES_HEAD = "## Runtime rules (always apply)"
@@ -159,11 +159,11 @@ class Collector(BackgroundAgent):
             ("collection_write",),
         ),
         (
-            "- For corrections: if a recent message indicates an existing entry is wrong, "
-            "stale, closed, or otherwise no longer accurate, `update_entry(key=<key>, "
-            "content=<corrected content>)` or `collection_delete_entry(key=<key>)` rather "
-            "than appending alongside.",
-            ("update_entry", "collection_delete_entry"),
+            "- To correct an entry: `collection_write` it under the key it is stored "
+            "under — the store keeps one value per key and replaces the stored content "
+            "in place. If the entry should be removed instead: "
+            "`collection_delete_entry(key=<key>)`.",
+            ("collection_write", "collection_delete_entry"),
         ),
         (
             "- Cite only what you actually browsed this cycle.  Never invent a URL to "
@@ -1131,7 +1131,7 @@ class Collector(BackgroundAgent):
 
         The scope is the program's own calls CLOSED over :attr:`Tool.advises`, so a
         sibling a result message points at (``collection_write``'s duplicate rejection
-        naming ``update_entry``) is present to be called: a rendered instruction always
+        naming the write) is present to be called: a rendered instruction always
         resolves in one call.  ``done`` joins every scoped surface unconditionally
         (#1916): assembly injects the terminal step into every composed prompt, so the
         close has to be callable whatever the program contains — and a cycle that

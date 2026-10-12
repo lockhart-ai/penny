@@ -370,7 +370,7 @@ class Collection(Memory):
         Called from each mutating path with the rows that path has ALREADY read to do
         its work, so the record costs no extra query — and it is keyed to the MUTATION
         rather than to a tool, which is what makes ``collection_write``,
-        ``update_entry``, ``collection_delete_entry`` and the change-gate's own
+        ``collection_delete_entry`` and the change-gate's own
         ``KEY_EXISTS_CHANGED`` baseline refresh (#1633) all recorded identically.  That
         last one is the write nobody makes explicitly, and precisely the one an aborted
         cycle used to leave behind.
@@ -630,8 +630,8 @@ class Collection(Memory):
         """The exact-key hit — compared by value, not embedding.  Identical value →
         KEY_EXISTS_UNCHANGED (the watch's "no change" signal, STOP-worthy).  Different
         value → KEY_EXISTS_CHANGED: the gate **auto-refreshes the stored baseline
-        itself** in place through the shared update path (#1633), so no dangling
-        ``update_entry`` is left for the model to run.  A degenerate new value never
+        itself** in place through the shared update path (#1633), so the model runs no
+        further call.  A degenerate new value never
         reaches here — it classified DEGENERATE upstream — so the refresh only ever
         stores screened content."""
         if _content_unchanged(stored[0].content, entry.content):

@@ -1617,7 +1617,6 @@ async def test_chat_tool_surface_excludes_entry_mutations(
 
         # Entry mutations — now available to chat (user-directed edits).
         assert "collection_write" in names
-        assert "update_entry" in names
         assert "collection_delete_entry" in names
         assert "log_append" in names
 

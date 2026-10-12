@@ -41,7 +41,6 @@ from penny.tools.memory_tools import (
     MemoryMetadataTool,
     ReadRunCallsTool,
     ReadSimilarTool,
-    UpdateEntryTool,
 )
 from penny.tools.models import ToolResult
 
@@ -310,21 +309,6 @@ class TestMemoryWriteNarration:
         assert (
             CollectionWriteTool.to_result_narration(args, ToolResult(message="e", success=False))
             == "You tried to save to `likes` but it didn't work:"
-        )
-
-    def test_update_entry_three_outcomes(self):
-        args = {"memory": "likes", "key": "chess", "content": "x"}
-        assert (
-            UpdateEntryTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
-            == 'You updated "chess" in `likes`:'
-        )
-        assert (
-            UpdateEntryTool.to_result_narration(args, ToolResult(message="miss", mutated=False))
-            == 'You couldn\'t find "chess" to update in `likes`:'
-        )
-        assert (
-            UpdateEntryTool.to_result_narration(args, ToolResult(message="e", success=False))
-            == 'You tried to update "chess" in `likes` but it didn\'t work:'
         )
 
     def test_delete_entry_three_outcomes(self):

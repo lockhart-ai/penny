@@ -103,9 +103,7 @@ def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
 # passes a narrower set and drops the rules it cannot carry out (#1911).  ``done`` rides
 # every surface, scoped or not (#1916): assembly injects the terminal step into every
 # composed prompt, so the close has to be callable whatever the program contains.
-_FULL_SURFACE = frozenset(
-    {"collection_write", "update_entry", "collection_delete_entry", "browse", "done"}
-)
+_FULL_SURFACE = frozenset({"collection_write", "collection_delete_entry", "browse", "done"})
 
 
 def _get(db: Database, name: str) -> MemoryRow:
@@ -921,9 +919,9 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
-        "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
-        "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
+        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
+        "keeps one value per key and replaces the stored content in place. If the entry should "
+        "be removed instead: `collection_delete_entry(key=<key>)`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
@@ -1105,8 +1103,8 @@ def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp
     structurally unavailable rather than discouraged.
 
     The closure is TRANSITIVE, and ``collection_keys`` is the proof: the write's
-    rejection names ``update_entry``, and ``update_entry``'s own not-found message names
-    ``collection_keys`` — two hops from the program, and still reachable, because a
+    rejection names ``collection_write``'s delete sibling, whose own miss message names
+    ``collection_keys`` — reachable from the program through the advice chain, because a
     rendered instruction has to resolve however deep the chain of advice runs.
 
     ``done`` is the one member the closure did NOT put there (#1916).  It joins
@@ -1122,7 +1120,6 @@ def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp
     assert surface == {
         "browse",
         "collection_write",
-        "update_entry",
         "collection_delete_entry",
         "collection_keys",
         "done",
@@ -1134,12 +1131,11 @@ def test_every_scoped_surface_carries_the_terminator(test_config, tmp_path):
     """THE REVERSION (#1916): ``done`` is back, and it rides EVERY collector surface —
     a scoped cycle can always say it has finished.
 
-    The coverage exit it replaced fixed the route in advance: a cycle that took the
-    store's own advice (an ``update_entry`` where the program said
-    ``collection_write``) could never cover its program, and with no terminator to
-    reach for it died rerolling on an attempt to state in prose that it was done — 11
-    aborts in one measured run.  A model that has finished can always make one more
-    call; it cannot always walk a path decided before it started.
+    The coverage exit it replaced fixed the route in advance: a cycle that departed
+    from its program for a good reason could never cover it, and with no terminator
+    to reach for it died rerolling on an attempt to state in prose that it was done
+    — 11 aborts in one measured run.  A model that has finished can always make one
+    more call; it cannot always walk a path decided before it started.
 
     Asserted at four places because a terminator that exists but is not HANDED to the
     model is the same defect as no terminator: the bound cycle's surface, the SCHEMA the
@@ -1188,23 +1184,21 @@ def test_a_scoped_cycle_reads_only_the_runtime_rules_it_can_carry_out(test_confi
 
     Whole-render, both directions: a write program keeps every rule its tools support,
     and a read-only one has no rules block at all rather than a heading over nothing."""
-    write_surface = frozenset(
-        {"browse", "collection_write", "update_entry", "collection_delete_entry"}
-    )
+    write_surface = frozenset({"browse", "collection_write", "collection_delete_entry"})
     assert Collector._runtime_rules(write_surface) == (
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
-        "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
-        "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
+        "- To correct an entry: `collection_write` it under the key it is stored under — the store "
+        "keeps one value per key and replaces the stored content in place. If the entry should "
+        "be removed instead: `collection_delete_entry(key=<key>)`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
     )
     # A write program that never browses drops the browse rule and keeps the rest.
     assert "browsed this cycle" not in Collector._runtime_rules(
-        frozenset({"collection_write", "update_entry", "collection_delete_entry"})
+        frozenset({"collection_write", "collection_delete_entry"})
     )
     # A read-only program supports none of them, so the head goes too.
     assert Collector._runtime_rules(frozenset({"log_read"})) == ""
@@ -1900,7 +1894,7 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
     await collector.run_for("indie-metroidvanias")
 
     # The gate auto-refreshed the baseline in place: one row, now the new value,
-    # stamped by the writing run — via the write alone, no update_entry.
+    # stamped by the writing run.
     stored = require_memory(db, "indie-metroidvanias").get(_NOTIFY_SEED_KEY)
     assert len(stored) == 1
     assert stored[0].content == new_value

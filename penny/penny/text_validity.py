@@ -576,6 +576,8 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "log_read_recent": "log_read",
     "read_last": "collection_read_latest",
     "read_latest": "collection_read_latest",
+    # A value stored under a key is written with the collection's one write call.
+    "update_entry": "collection_write",
 }
 
 

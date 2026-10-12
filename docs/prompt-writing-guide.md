@@ -326,8 +326,8 @@ and check the failure *moved*, not just changed shape.
 The more a call forces the model to construct inline — a full replacement string, deeply nested
 args — the more gpt-oss malforms it (placeholder `?`, a missing required field, doubled nesting).
 A malformed call fails to parse, the loop nudges it, and it spirals (see the tool-call-only note).
-Measured: a bare `collection_write` (create) hit 5/5; the same task via `update_entry` with a
-full-content replacement spiralled repeatedly. Two implications: keep the model's calls small, and
+Measured: a bare `collection_write` (create) hit 5/5; the same task shaped as a
+full-content replacement through a second write verb spiralled repeatedly. Two implications: keep the model's calls small, and
 when a footgun is mechanical, fix it at the **tool boundary** rather than adding a prompt caveat
 the model will argue with — but fix it the right way:
 

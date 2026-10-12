@@ -113,7 +113,6 @@ from penny.tools.memory_args import (
     ReadRandomArgs,
     ReadRunCallsArgs,
     ReadSimilarArgs,
-    UpdateEntryArgs,
 )
 from penny.tools.models import NoArgs, ToolResult
 from penny.tools.skill_tools import SkillReadTool
@@ -342,7 +341,7 @@ def _key_did_you_mean(memory: Memory, key: str) -> str:
     or ``""`` when no existing key in the collection is close (the message then
     stays byte-identical to before — no empty artifact).
 
-    The tools that hit a key miss (``update_entry`` / ``collection_delete_entry``)
+    The tools that hit a key miss (``collection_write`` / ``collection_delete_entry``)
     carry no embedding client, so this is the string (typo) leg: a stdlib
     ``difflib`` close-match over the collection's OWN keys, gated on the same
     conservative ``DID_YOU_MEAN_STRING_CUTOFF`` the name suggestion uses.  Same
@@ -1133,7 +1132,7 @@ class CollectionGetTool(MemoryTool):
     # listed, searched for by meaning, refreshed under the key it really has, or
     # written as new — and the message names all four, so all four have to be callable
     # wherever it can render.
-    advises = ("collection_keys", "read_similar", "update_entry", "collection_write")
+    advises = ("collection_keys", "read_similar", "collection_write")
     description = (
         "Look up an entry by its exact key in a collection. Returns the entry's "
         "content if found, or a 'not found' message otherwise."
@@ -1171,10 +1170,10 @@ class CollectionGetTool(MemoryTool):
                 message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
                 f"keys with collection_keys('{args.memory}'), or search by content with "
                 f"read_similar(memory='{args.memory}', anchor=<what you're looking for>). "
-                f"If it exists under a different key, refresh that entry with "
-                f"update_entry(key=<the key you found>, content=<the new content>) — "
-                f"collection_write(memory='{args.memory}', entries=<the new key and content>) "
-                f"creates NEW keys only and rejects an existing key as a duplicate."
+                f"If it exists under a different key, write the new content there: "
+                f"collection_write(memory='{args.memory}', "
+                f"entries=[{{'key': <the key you found>, 'content': <the new content>}}]) — "
+                f"the store replaces the content of the key you name."
             )
         return ToolResult(message=format_entries(rows, source=args.memory))
 
@@ -1401,13 +1400,16 @@ _DUPLICATE_REJECTION = (
     "'{key}' was not written — this collection already holds an entry about that, stored "
     "under the key '{matched}', and what you wrote is a different value from what that "
     "entry holds. Any other key you write it under collides with that same entry again. "
-    "To land the new value: update_entry(key='{matched}', content=<the new value>)"
+    "To land the new value: collection_write(memory='{memory}', entries=[{{'key': "
+    "'{matched}', 'content': <the new value>}}]) — the store replaces the content of the "
+    "key you name."
 )
-# The matched entry has no key, so no ``update_entry`` call can address it — named as
+# The matched entry has no key, so no keyed write can address it — named as
 # such rather than dangling an imperative the model cannot act on.
 _DUPLICATE_REJECTION_KEYLESS = (
-    "'{key}' was not written — it collides with an existing entry that has no key, so no "
-    "update_entry call can reach it. Leave it out, or write content that does not collide"
+    "'{key}' was not written — it collides with an existing entry that has no key, and a "
+    "keyed write cannot replace a keyless entry. Leave it out, or write content that does "
+    "not collide"
 )
 
 # The trailing framing after the per-entry rejections.  Each one already names its own
@@ -1418,16 +1420,19 @@ _DUPLICATE_CLOSE_ALL = "Nothing in this batch landed — each one belongs on the
 _DUPLICATE_CLOSE_SOME = "The rest of the batch landed; these belong on the entries named above."
 
 
-def _format_duplicate(result: WriteResult) -> str:
+def _format_duplicate(memory: str, result: WriteResult) -> str:
     """One self-contained rejection for a rejected candidate: what this collection already
     holds it under, that no other key escapes the collision, and the exact call that lands
     the new value.
 
     Self-contained because the recovery has to be readable without the lines around it —
     the failure this addresses was the model treating the matched key as one option among
-    several and filing its value somewhere new."""
+    several and filing its value somewhere new.  ``memory`` is the write's resolved
+    target, so the recovery call is copyable verbatim whatever redirect produced it."""
     if result.matched_key:
-        return _DUPLICATE_REJECTION.format(key=result.key, matched=result.matched_key)
+        return _DUPLICATE_REJECTION.format(
+            key=result.key, matched=result.matched_key, memory=memory
+        )
     return _DUPLICATE_REJECTION_KEYLESS.format(key=result.key)
 
 
@@ -1435,9 +1440,8 @@ def _format_changed(results: list[WriteResult]) -> str:
     """The change-gate CHANGED part (#1587/#1633): the exact key already existed with
     a DIFFERENT value — the observed value changed, so the write gate auto-refreshed
     the stored baseline IN PLACE (through the shared update path, stamping the writing
-    run).  Nothing further is needed — no ``update_entry`` call (the refresh already
-    happened); naming it just keeps the next observation of the same value reading as
-    UNCHANGED."""
+    run).  Nothing further is needed — the refresh already happened; the next
+    observation of the same value reads as UNCHANGED."""
     keys = ", ".join(f"'{r.key}'" for r in results)
     noun = "entry" if len(results) == 1 else "entries"
     return f"Changed: {keys} — the stored baseline was refreshed to the new value ({noun})."
@@ -1462,8 +1466,8 @@ def _format_duplicate_unchanged(results: list[WriteResult]) -> str:
     It names the key the value is filed under rather than the one this write proposed,
     because that is the entry that holds it now; and, unlike the divergent-value
     rejection beside it, it prescribes NO call — there is nothing to do about a value
-    that is already stored, and a bound ``update_entry`` here would be an instruction to
-    rewrite an entry with what it already says."""
+    that is already stored, and landing it again would be an instruction to rewrite an
+    entry with what it already says."""
     labelled = ", ".join(f"'{r.key}' is already stored as '{r.matched_key}'" for r in results)
     noun = "entry" if len(results) == 1 else "entries"
     return f"Already recorded: {labelled} — no change since the last write ({noun})."
@@ -1527,14 +1531,11 @@ class CollectionWriteTool(MemoryTool):
     """Write entries to a collection with similarity-based dedup."""
 
     name = "collection_write"
-    # The CORRECTION SIBLINGS (#1911).  ``update_entry`` because the duplicate
-    # rejection binds an ``update_entry`` call per rejected entry — the model is told
-    # to refresh the row that already exists, so that call has to be available.
-    # ``collection_delete_entry`` because the collector's corrections runtime rule
-    # names the pair together: a routine that writes may find an entry that should be
-    # removed rather than rewritten, and offering one half of that without the other
-    # would teach a correction the surface cannot carry out.
-    advises = ("update_entry", "collection_delete_entry")
+    # ``collection_delete_entry`` rides beside the write because the collector's
+    # corrections runtime rule names the pair together: a routine that writes may find
+    # an entry that should be removed rather than rewritten, and offering one half of
+    # that without the other would teach a correction the surface cannot carry out.
+    advises = ("collection_delete_entry",)
     stores_entries = True
     destination_param = "memory"
     description = (
@@ -1738,13 +1739,17 @@ class CollectionWriteTool(MemoryTool):
             _format_changed(changed) if changed else None,
             _format_unchanged(unchanged) if unchanged else None,
             _format_duplicate_unchanged(already) if already else None,
-            self._duplicate_part(duplicates, all_duplicates=nothing_landed) if duplicates else None,
+            self._duplicate_part(memory, duplicates, all_duplicates=nothing_landed)
+            if duplicates
+            else None,
             _format_degenerate(degenerate) if degenerate else None,
             _format_unexpected(unexpected) if unexpected else None,
         ]
         return [part for part in parts if part]
 
-    def _duplicate_part(self, duplicates: list[WriteResult], *, all_duplicates: bool) -> str:
+    def _duplicate_part(
+        self, memory: str, duplicates: list[WriteResult], *, all_duplicates: bool
+    ) -> str:
         """The DUPLICATE part: one self-contained rejection per entry + the trailing close.
 
         One per LINE rather than joined into a sentence: each rejection names a key, a call
@@ -1753,7 +1758,7 @@ class CollectionWriteTool(MemoryTool):
         (#1919) — these are not duplicates, they are different values for entries that
         exist, and calling them duplicates is the framing that had the model write them
         somewhere else."""
-        rejections = "\n".join(_format_duplicate(result) for result in duplicates)
+        rejections = "\n".join(_format_duplicate(memory, result) for result in duplicates)
         return f"{rejections}\n{self._duplicate_close(all_duplicates=all_duplicates)}"
 
     def _stop_outcome(self, results: list[WriteResult]) -> WriteGateOutcome | None:
@@ -1776,94 +1781,13 @@ class CollectionWriteTool(MemoryTool):
 
     @staticmethod
     def _duplicate_close(*, all_duplicates: bool) -> str:
-        """The trailing framing after the per-entry rejections (each already names its own
-        ``update_entry`` call).  It says how much of the batch is in that position and
-        names no call of its own — the actionable one is per entry, where the key it needs
-        is."""
+        """The trailing framing after the per-entry rejections (each already names its
+        own ``collection_write`` call).  It says how much of the batch is in that
+        position and names no call of its own — the actionable one is per entry, where
+        the key it needs is."""
         if all_duplicates:
             return _DUPLICATE_CLOSE_ALL
         return _DUPLICATE_CLOSE_SOME
-
-
-class UpdateEntryTool(MemoryTool):
-    """Replace the content of an existing entry in a collection."""
-
-    name = "update_entry"
-    # A key that does not exist is either a new entry or a mistyped one, and the
-    # not-found message names both moves.
-    advises = ("collection_write", "collection_keys")
-    stores_entries = True
-    destination_param = "memory"
-    description = (
-        "Replace the content of an existing entry in a collection, identified "
-        "by key. Returns an error if the key doesn't exist."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "memory": {"type": "string", "description": "Collection name"},
-            "key": {"type": "string", "description": "Entry key within the collection"},
-            "content": {
-                "type": "string",
-                "description": "New content to replace the existing entry",
-            },
-        },
-        "required": ["memory", "key", "content"],
-    }
-    args_model = UpdateEntryArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
-        entry = _entry_label(arguments)
-        if not result.success:
-            return f"You tried to update {entry} in {memory} but it didn't work:"
-        if not result.mutated:
-            return f"You couldn't find {entry} to update in {memory}:"
-        return f"You updated {entry} in {memory}:"
-
-    def __init__(
-        self, db: Database, author: str, scope: str | None = None, run_id: str | None = None
-    ) -> None:
-        self._db = db
-        self._author = author
-        self._scope = scope
-        # The rewriting run — advances the entry's last_written_by_run_id (#1560).
-        self._run_id = run_id
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = UpdateEntryArgs(**kwargs)
-        if self._scope is not None and args.memory != self._scope:
-            return ToolResult(
-                message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
-                success=False,
-            )
-        memory = _resolve(self._db, args.memory)
-        outcome = memory.update(args.key, args.content, self._author, run_id=self._run_id)
-        if outcome == "not_found":
-            rejection = _bracket_key_rejection(memory, args.memory, args.key)
-            if rejection is not None:
-                return rejection
-            # Lead with the nearest existing key (typo leg) when one is close (#1674),
-            # else the message is byte-identical to before.
-            did_you_mean = _key_did_you_mean(memory, args.key)
-            if did_you_mean:
-                lead = (
-                    f"Key '{args.key}' not found in '{args.memory}'{did_you_mean} "
-                    f"Update only replaces existing entries."
-                )
-            else:
-                lead = (
-                    f"Key '{args.key}' not found in '{args.memory}' — update only replaces "
-                    f"existing entries."
-                )
-            return ToolResult(
-                message=f"{lead} Write it as a new entry with "
-                f"collection_write(memory='{args.memory}', entries=<the new key and content>), "
-                f"or list the current keys with collection_keys('{args.memory}') if you "
-                f"expected it to exist."
-            )
-        return ToolResult(message=f"Updated '{args.key}' in '{args.memory}'.", mutated=True)
 
 
 # ── Re-render actionable refusals (#1620) ────────────────────────────────────
@@ -3723,7 +3647,6 @@ def build_memory_tools(
     ]
     mutations: list[Tool] = [
         CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
-        UpdateEntryTool(db, agent_name, scope=scope, run_id=run_id),
         CollectionDeleteEntryTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),
     ]

@@ -2,8 +2,8 @@
 
 A collector cycle's tool surface is SCOPED to its program's own calls now, so "is the
 tool this message tells the model to call actually here?" stopped being a theoretical
-question.  A result that says ``call update_entry(key=…)`` on a surface with no
-``update_entry`` is a rendered instruction that cannot be followed — an n≤1 reachability
+question.  A result that says ``call collection_delete_entry(key=…)`` on a surface
+with no such tool is a rendered instruction that cannot be followed — an n≤1 reachability
 bug, and exactly the guessing the anchor discipline exists to remove.
 
 The resolution is a DECLARED RELATION rather than a swept-once list: each tool declares
@@ -116,8 +116,8 @@ def _rendered_text(tool: type[Tool]) -> str:
 
     The helpers matter as much as the class — ``collection_write``'s duplicate rejection
     is built by a module-level ``_format_duplicate``, which is exactly where it names
-    ``update_entry``, so a scan of the class alone would miss the reference that started
-    all this.  And a helper usually names a CONSTANT rather than carrying the text
+    ``collection_delete_entry``, so a scan of the class alone would miss the reference
+    that started all this.  And a helper usually names a CONSTANT rather than carrying the text
     inline, because that is the house style — so a scan that stopped at the helper would
     read it as having nothing to say and the invariant would quietly enforce nothing on
     exactly the messages it exists for (#1919: this went from passing to empty the moment
@@ -188,12 +188,12 @@ def test_the_scanner_reads_the_real_message_sources():
     """A guard on the guard: the scan has to actually be reading text, since a scan that
     read nothing would pass every assertion here and enforce nothing.
 
-    ``collection_write`` is the canary — its duplicate rejection is the reference that
+    ``collection_get`` is the canary — its miss guidance is the reference that
     motivated the whole relation, and it lives in a module-level helper, so seeing it
     proves the class scan, the constant scan and the helper scan are all live."""
     vocabulary = _registered_tools()
-    write = vocabulary["collection_write"]
-    assert "update_entry" in _referenced_tools(write, vocabulary)
+    get = vocabulary["collection_get"]
+    assert "collection_keys" in _referenced_tools(get, vocabulary)
     assert len(vocabulary) > 20, "the registry looks unpopulated — imports may be missing"
 
 

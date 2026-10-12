@@ -172,7 +172,7 @@ prompts/activity tabs read — one representation).
     write, send, or `done` (so `log_read`, `collection_read_*`,
     `read_published_latest`, `read_similar`, `collection_catalog`, …). Plain count
     (they don't meaningfully fail).
-  - **writes** = count of `collection_write`/`update_entry`/`collection_delete_entry`/
+  - **writes** = count of `collection_write`/`collection_delete_entry`/
     `log_append` **calls** (from responses, each once). `writes == 0` is the hard
     fact a lying summary contradicts.
   - **sends** = `send_message` call count.

@@ -6,9 +6,7 @@ from penny.agents.base import Agent
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.tests.schema_template import schema_only_db
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
-from penny.tools.memory_tools import UpdateEntryTool
 from penny.tools.models import ToolArgs, ToolCall
 
 
@@ -406,20 +404,6 @@ class TestMissingRequiredParameters:
         assert result.success is False
         assert "unknown parameter 'sumary'" in result.message
         assert "did you mean 'summary'" in result.message
-
-    @pytest.mark.asyncio
-    async def test_update_entry_error_includes_collection_and_key_descriptions(self, tmp_path):
-        """update_entry validation error names 'Collection name' and 'Entry key' so the
-        LLM understands which identifier each parameter represents."""
-
-        db = schema_only_db(str(tmp_path / "test.db"))
-        tool = UpdateEntryTool(db=db, author="test")
-
-        result = await tool.run(content="new value")
-
-        assert result.success is False
-        assert "Collection name" in result.message
-        assert "Entry key within the collection" in result.message
 
     @pytest.mark.asyncio
     async def test_agent_sends_hint_rich_error_to_model_on_missing_params(self, test_db, mock_llm):

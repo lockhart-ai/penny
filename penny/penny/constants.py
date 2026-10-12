@@ -84,7 +84,7 @@ class WriteGateOutcome(StrEnum):
     observed value changed, so the write gate **auto-refreshes the stored baseline
     itself** in place (through the update path — same validation, degeneracy screen,
     and ``last_written_by_run_id`` stamp), and the run's only remaining job is to
-    notify.  No ``update_entry`` call is needed — the refresh already happened, so
+    notify.  No further call is needed — the refresh already happened, so
     the next observation of the same value reads ``KEY_EXISTS_UNCHANGED`` (#1633) ·
     ``KEY_EXISTS_UNCHANGED`` — the exact key existed with *identical* content: the
     value has not changed, so there is nothing further to do — the watch's "no
@@ -97,7 +97,8 @@ class WriteGateOutcome(StrEnum):
     ``DUPLICATE`` — the content (or a near key) collided with a *different* existing
     key WITHOUT the content signal firing strictly: the write carries a DIFFERENT value
     for something already stored, which is news, so it keeps the recoverable rejection
-    that binds the matched key into an ``update_entry`` call and never stops the run ·
+    that binds the matched key into a ``collection_write`` call on that key and never
+    stops the run ·
     ``DEGENERATE`` — the content was rejected as degenerate (blank, punctuation
     collapse, bare URL, bail-out phrase).
 

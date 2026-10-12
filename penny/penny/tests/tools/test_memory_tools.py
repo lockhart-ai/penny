@@ -94,7 +94,6 @@ from penny.tools.memory_tools import (
     MemoryMetadataTool,
     ReadRunCallsTool,
     ReadSimilarTool,
-    UpdateEntryTool,
     _format_duplicate,
     build_memory_tools,
     collector_tool_surface,
@@ -2913,23 +2912,28 @@ class TestCollectionWritesAndReads:
         option.  The keyless arm has no key to address, so it names no call at all rather
         than dangling an imperative the model cannot act on."""
         keyed = _format_duplicate(
+            "likes",
             WriteResult(
                 key="cold brew coffee",
                 outcome=WriteGateOutcome.DUPLICATE,
                 matched_key="cold brew",
-            )
+            ),
         )
         assert "'cold brew coffee' was not written" in keyed
         assert "stored under the key 'cold brew'" in keyed
         assert "collides with that same entry again" in keyed
-        assert "update_entry(key='cold brew', content=<the new value>)" in keyed
+        assert (
+            "collection_write(memory='likes', "
+            "entries=[{'key': 'cold brew', 'content': <the new value>}])" in keyed
+        )
         # No hedge: nothing here makes landing the value conditional on anything.
         assert "if you have" not in keyed
         keyless = _format_duplicate(
-            WriteResult(key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key=None)
+            "likes",
+            WriteResult(key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key=None),
         )
-        assert "no update_entry call can reach it" in keyless
-        assert "update_entry(key=" not in keyless
+        assert "cannot replace a keyless entry" in keyless
+        assert "collection_write(" not in keyless
 
     @pytest.mark.asyncio
     async def test_write_reports_duplicate_via_tcr(self, db, mock_llm):
@@ -2953,13 +2957,16 @@ class TestCollectionWritesAndReads:
         # rejected write as "work".
         assert result.mutated is False
         # The candidate's own key is named, the existing key it collided with is
-        # named, *and* the matched key is BOUND straight into the update_entry call
+        # named, *and* the matched key is BOUND straight into the collection_write call
         # (not a <existing key> placeholder) — so the model lands the value on
         # 'dark roast' rather than re-using its own rejected 'dark roast coffee' key
         # and ping-ponging on key-not-found (#1405).
         assert "'dark roast coffee' was not written" in result.message
         assert "stored under the key 'dark roast'" in result.message
-        assert "update_entry(key='dark roast', content=<the new value>)" in result.message
+        assert (
+            "collection_write(memory='likes', "
+            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in result.message
+        )
         # Whole batch collided → the nothing-landed close fires.  This is a chat-scope
         # write (scope=None), which has no ``done`` tool, so the close must NOT name it
         # — chat and collector share this tool surface.
@@ -2987,10 +2994,13 @@ class TestCollectionWritesAndReads:
         # THE WATCHED DELETION (#1911): the whole batch collided, and the close names NO
         # call to make — no surface carries a terminator any more, so telling the model
         # to close would be an instruction it could not follow.  The per-entry rejection
-        # still binds the matched key into update_entry, which it DOES have.
+        # still binds the matched key into the write call, which it DOES have.
         assert "Nothing in this batch landed" in all_duplicates.message
         assert "done" not in all_duplicates.message
-        assert "update_entry(key='dark roast', content=<the new value>)" in all_duplicates.message
+        assert (
+            "collection_write(memory='likes', "
+            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in all_duplicates.message
+        )
         # A re-write under the SAME key with the SAME value is the change-gate's
         # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
         # such (not a generic "duplicate") AND carrying a STOP the collector loop
@@ -3013,12 +3023,15 @@ class TestCollectionWritesAndReads:
             ],
         )
         assert "Wrote 1 entry" in partial.message
-        assert "update_entry(key='dark roast', content=<the new value>)" in partial.message
+        assert (
+            "collection_write(memory='likes', "
+            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in partial.message
+        )
         assert "The rest of the batch landed" in partial.message
         assert "Nothing in this batch landed" not in partial.message
         assert partial.mutated is True
         # A batch whose entries each duplicate a DIFFERENT existing key must bind
-        # EVERY matched key into its own update_entry call — not just the first
+        # EVERY matched key into its own collection_write call — not just the first
         # (#1405: resolve a match for every rejected key in the batch).  'cold brew'
         # now exists (written above), so both entries collide on distinct keys — each
         # with its own fresher value, so both take the recoverable branch.
@@ -3029,8 +3042,14 @@ class TestCollectionWritesAndReads:
                 {"key": "cold brew coffee", "content": "steeped overnight now"},
             ],
         )
-        assert "update_entry(key='dark roast', content=<the new value>)" in multi.message
-        assert "update_entry(key='cold brew', content=<the new value>)" in multi.message
+        assert (
+            "collection_write(memory='likes', "
+            "entries=[{'key': 'dark roast', 'content': <the new value>}])" in multi.message
+        )
+        assert (
+            "collection_write(memory='likes', "
+            "entries=[{'key': 'cold brew', 'content': <the new value>}])" in multi.message
+        )
         assert multi.mutated is False
         # A collision on the VALUE under a DIFFERENT key is the other branch (#1919):
         # the same no-news the exact key reads, so it carries the STOP and its own
@@ -3047,7 +3066,7 @@ class TestCollectionWritesAndReads:
             "Already recorded: 'morning roast selection' is already stored as 'dark roast'"
             in same_value.message
         )
-        assert "update_entry(" not in same_value.message
+        assert "collection_write(" not in same_value.message
         assert "was not written" not in same_value.message
         # …and the divergent-value collision above never stops, so a change arriving
         # under a reworded key is never silenced as no-news.
@@ -3103,7 +3122,7 @@ class TestCollectionWritesAndReads:
     async def test_change_gate_changed_auto_refreshes_baseline(self, db, mock_llm):
         """The CHANGED auto-refresh result text (#1633): re-writing an EXACT key with a
         DIFFERENT value refreshes the stored baseline IN PLACE through the shared write
-        gate — the result reports the refresh with NO dangling ``update_entry``
+        gate — the result reports the refresh with no further call for the model
         instruction (the wasted call that would teach the model to redo what already
         happened), ``mutated=True`` (durable state changed), and CHANGED is never
         STOP-worthy so no loop-stop even for a collector-scoped write.  The gate is
@@ -3163,8 +3182,11 @@ class TestCollectionWritesAndReads:
         # as a duplicate — the ~1-call ping-pong this guidance removes).
         assert "collection_keys('likes')" in missing.message
         assert "read_similar(memory='likes', anchor=<what you're looking for>)" in missing.message
-        assert "update_entry(key=<the key you found>, content=<the new content>)" in missing.message
-        assert "creates NEW keys only" in missing.message
+        assert (
+            "collection_write(memory='likes', entries=[{'key': <the key you found>, "
+            "'content': <the new content>}])" in missing.message
+        )
+        assert "the store replaces the content of the key you name" in missing.message
         # A bracket-wrapped key (the model's ingrained habit from the old `[key]`
         # display form) is never silently resolved — it's rejected with a teaching
         # error that names the mistake, the current key='...' render, and the bare
@@ -3461,7 +3483,10 @@ class TestEmbedFailureRefusesWrite:
 
 class TestCollectionMutations:
     @pytest.mark.asyncio
-    async def test_update_replaces_content(self, db, mock_llm):
+    async def test_write_replaces_content_under_the_existing_key(self, db, mock_llm):
+        """A correction is the same write call under the key the entry is stored
+        under: the change gate refreshes the stored baseline in place and reports
+        the refresh — the one write, with the one check."""
         _seed_collection(
             db,
             name="likes",
@@ -3469,59 +3494,19 @@ class TestCollectionMutations:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="likes", entries=[{"key": "k", "content": "old"}]
-        )
-        result = await UpdateEntryTool(db, author="test").execute(
-            memory="likes", key="k", content="new"
-        )
-        assert "Updated 'k' in 'likes'" in result.message
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(memory="likes", entries=[{"key": "k", "content": "old"}])
+        result = await write.execute(memory="likes", entries=[{"key": "k", "content": "new"}])
+        assert "Changed: 'k' — the stored baseline was refreshed to the new value" in result.message
         fetched = await CollectionGetTool(db).execute(memory="likes", key="k")
         assert "new" in fetched.message
-        # A bracket-wrapped key (display form copied from an entry list) is
-        # rejected with a teaching error naming the bare key — never absorbed;
-        # the entry is untouched.
-        bracketed = await UpdateEntryTool(db, author="test").execute(
-            memory="likes", key="[k]", content="newer"
-        )
-        assert bracketed.success is False
-        assert "Retry with key='k'" in bracketed.message
-        assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
-        # Same teaching rejection on delete: nothing removed, bare key named.
+        # A bracket-wrapped key (display form copied from an entry list) on the
+        # delete path is rejected with a teaching error naming the bare key —
+        # never absorbed; the entry is untouched.
         rejected_delete = await CollectionDeleteEntryTool(db).execute(memory="likes", key="[k]")
         assert rejected_delete.success is False
         assert "Retry with key='k'" in rejected_delete.message
         assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
-        # A blank replacement is refused (same content bar as collection_write),
-        # leaving the existing content untouched rather than blanking the entry.
-        # The degenerate-content rule now lives on UpdateEntryArgs.content, so the
-        # refusal is produced by the pre-execute Tool.run gate.
-        blank = await UpdateEntryTool(db, author="test").run(memory="likes", key="k", content="   ")
-        assert blank.success is False
-        assert "no word tokens" in blank.message  # what went wrong
-        assert "collection_delete_entry" in blank.message  # how to correct it
-        assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
-
-    @pytest.mark.asyncio
-    async def test_update_missing_reports_not_found(self, db):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        result = await UpdateEntryTool(db, author="test").execute(
-            memory="likes", key="k", content="new"
-        )
-        assert "not found" in result.message
-        # A bracket-wrapped key whose bare form doesn't exist either gets the
-        # ordinary not-found error, not the bracket teaching rejection.
-        bracketed = await UpdateEntryTool(db, author="test").execute(
-            memory="likes", key="[k]", content="new"
-        )
-        assert "Key '[k]' not found" in bracketed.message
-        assert "Retry with" not in bracketed.message
 
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, db):
@@ -3595,41 +3580,6 @@ class TestDidYouMeanSuggestions:
             "skills (archived included) and names the exact tool for each. Or create it "
             "with collection_set(name='oil changes and tire rotations') / "
             "log_create(name='oil changes and tire rotations') if it should exist."
-        )
-
-    @pytest.mark.asyncio
-    async def test_update_entry_key_miss_leads_with_the_nearest_key(self, db, mock_llm):
-        """A mistyped entry key on update_entry leads with the nearest existing key
-        in that collection (the key typo leg), then the existing guidance."""
-        _seed_collection(db, name="notes")
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(
-            memory="notes",
-            entries=[
-                {"key": "quarterly-report", "content": "q3 numbers"},
-                {"key": "annual-summary", "content": "year in review"},
-            ],
-        )
-        result = await UpdateEntryTool(db, author="test").execute(
-            memory="notes", key="quarterly-reprot", content="q4 numbers"
-        )
-        assert result.mutated is False
-        assert result.message == (
-            "Key 'quarterly-reprot' not found in 'notes' — did you mean key "
-            "'quarterly-report'? Update only replaces existing entries. Write it as a "
-            "new entry with collection_write(memory='notes', entries=<the new key and "
-            "content>), or list the current keys with collection_keys('notes') if you "
-            "expected it to exist."
-        )
-        # No close key → byte-identical to today's message (no 'did you mean' artifact).
-        far = await UpdateEntryTool(db, author="test").execute(
-            memory="notes", key="zzzzz", content="x"
-        )
-        assert far.message == (
-            "Key 'zzzzz' not found in 'notes' — update only replaces existing entries. "
-            "Write it as a new entry with collection_write(memory='notes', "
-            "entries=<the new key and content>), or list the current keys with "
-            "collection_keys('notes') if you expected it to exist."
         )
 
     @pytest.mark.asyncio
@@ -4496,7 +4446,6 @@ class TestFactory:
         "skill_read",
         # Entry mutations (contents)
         "collection_write",
-        "update_entry",
         "collection_delete_entry",
         "log_append",
     }
@@ -4569,12 +4518,6 @@ class TestScopedFactory:
 
         assert "Wrote 1 entry" in result.message
         assert db.memory("likes").get("k")[0].content == "v"
-
-    @pytest.mark.asyncio
-    async def test_scoped_update_entry_rejects_other_collection(self, db):
-        update = UpdateEntryTool(db, author="collector:likes", scope="likes")
-        result = await update.execute(memory="dislikes", key="k", content="v")
-        assert "Refused" in result.message
 
     @pytest.mark.asyncio
     async def test_scoped_delete_rejects_other_collection(self, db):

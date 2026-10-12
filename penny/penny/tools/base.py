@@ -64,7 +64,7 @@ class Tool(ABC):
     args_model: type[ToolArgs] = NoArgs
     timeout: float | None = None  # None = use ToolExecutor's global timeout
     # The tools THIS tool's own rendered text may direct the model to (#1911).  A
-    # result message that says "call ``update_entry(key=…)``" is an ANCHOR: the n≤1
+    # result message that says "call ``collection_write(key=…)``" is an ANCHOR: the n≤1
     # discipline says a rendered instruction resolves in one call, so it must never
     # name a tool the surface does not carry.
     #

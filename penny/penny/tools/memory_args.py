@@ -514,14 +514,6 @@ class CollectionWriteArgs(ToolArgs):
     entries: Annotated[list[CollectionEntrySpec], AfterValidator(_require_write_entries)]
 
 
-class UpdateEntryArgs(ToolArgs):
-    """Replace content for an existing key in a collection."""
-
-    memory: MemoryName
-    key: str
-    content: CollectionContent
-
-
 class CollectionMergeArgs(ToolArgs):
     """Merge all entries from one collection into another, then archive the source."""
 

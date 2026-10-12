@@ -84,7 +84,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 109
+        assert count == 110
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -126,7 +126,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 109
+        assert count1 == 110
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -164,8 +164,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 108 migrations
-        assert count == 108
+        # 0001 is skipped; the rest run = 109 migrations
+        assert count == 109
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -191,7 +191,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 109  # all migrations applied
+        assert count == 110  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1291,6 +1291,108 @@ class TestMigrate:
         assert "aurora-prices" not in rendered
         assert "collection_write(memory='harbor-log'" in rendered
         assert "update_entry(memory='harbor-log'" in rendered
+        conn.close()
+
+    def test_0110_rewrites_update_entry_steps_onto_the_one_write_call(self, tmp_path):
+        """Migration 0110 (#2281): every stored ``update_entry`` step and every rendered
+        ``extraction_prompt`` line becomes the ``collection_write`` shape, since that is
+        the one call that writes a value under a key and the tool the steps name is off
+        the surface.  UNIVERSAL — selected by the step's tool, never a skill or
+        collection by name; IDEMPOTENT — a second application changes nothing;
+        NON-DESTRUCTIVE to a leaf — its substitutions, placeholders and attachment
+        marks follow it into the entries list, and rendered leaf values re-emit
+        verbatim."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "browse",
+                "arguments": {"queries": ["{url}"]},
+                "substitutions": [{"path": ["queries", 0], "kind": "hole", "parameter": "url"}],
+            },
+            {
+                "ordinal": 2,
+                "source_ordinal": 2,
+                "tool": "update_entry",
+                "arguments": {"memory": "harbor-log", "key": "depth", "content": "12m"},
+                "substitutions": [
+                    {
+                        "path": ["memory"],
+                        "kind": "placeholder",
+                        "description": "the collection this is set up on",
+                        "attachment": True,
+                    },
+                    {"path": ["content"], "kind": "hole", "parameter": "depth"},
+                ],
+            },
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            (
+                "harbor-watch",
+                "1. browse(queries=['https://faux-tide.example'])\n"
+                "2. update_entry(memory='{the collection this is set up on}', "
+                "key='depth', content='12m')",
+            ),
+        )
+        conn.commit()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0110_rewrite_update_entry_steps.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0110", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        mod.up(conn)  # idempotent — a second application changes nothing
+
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        )
+        assert stored[0] == steps[0]  # the browse step is untouched
+        rewritten = stored[1]
+        assert rewritten["tool"] == "collection_write"
+        assert rewritten["arguments"] == {
+            "memory": "harbor-log",
+            "entries": [{"key": "depth", "content": "12m"}],
+        }
+        assert rewritten["substitutions"] == [
+            {
+                "path": ["memory"],
+                "kind": "placeholder",
+                "description": "the collection this is set up on",
+                "attachment": True,
+            },
+            {"path": ["entries", 0, "content"], "kind": "hole", "parameter": "depth"},
+        ]
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'harbor-watch'"
+        ).fetchone()[0]
+        assert prompt == (
+            "1. browse(queries=['https://faux-tide.example'])\n"
+            "2. collection_write(memory='{the collection this is set up on}', "
+            "entries=[{'key': 'depth', 'content': '12m'}])"
+        )
+        assert "update_entry" not in prompt
         conn.close()
 
     def test_0104_adds_the_schedule_column_and_drops_the_trigger_union(self, tmp_path, caplog):
