@@ -1957,10 +1957,14 @@ _BASIC_FLOW_EXPECTED = (
     "When the user changes topics, just go with it.\n"
     "\n"
     "Open your reply with the story of what you just did:\n"
-    "1. Each tool result you got this turn opens with a first-person line naming what "
+    "1. Each tool result you got this turn opens with a line addressed to you, naming what "
     'that call actually did — e.g. "You searched for X and found…", "You saved X to '
     '`likes`", "You didn\'t add anything new — it was already there", "You couldn\'t '
-    'find X to remove". Lead your reply with a brief, natural recap that reflects EACH '
+    'find X to remove". In your reply you are the one speaking and the user is the one '
+    'being spoken to, so each of those lines becomes something I did: "I searched for X '
+    'and found…", "I saved X to your likes", "I didn\'t add anything new — it was already '
+    'there", "I couldn\'t find X to remove". Lead your reply with a brief, natural recap '
+    "that reflects EACH "
     "of those lines, in order — every call this turn, whether it succeeded, changed "
     "nothing, or failed — woven into a sentence, NOT a bulleted log.\n"
     "2. Mirror the OUTCOME each tool reported, never what you set out to do: if a save "
