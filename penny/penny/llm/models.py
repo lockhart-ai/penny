@@ -245,13 +245,14 @@ class LlmMessage(BaseModel):
     def to_input_message(self) -> dict[str, Any]:
         """Convert to input message format for the next request.
 
-        Carries the step's thinking as ``reasoning`` — the field Ollama's
-        OpenAI-compatible layer maps onto ``api.Message.Thinking``, which the
-        gpt-oss (Harmony) template renders into the analysis channel for every
-        assistant message after the last user message.  That is the Harmony
-        rule: the chain of thought that produced a tool call stays in context
-        until the turn's final message; the template itself drops thinking
-        from earlier turns, so nothing here leaks across turns."""
+        Carries the step's thinking as ``reasoning``, so the next step of the same turn
+        is drawn with it in view.  A plan made before the first call ("read the page,
+        then write it down") is otherwise gone by the time the result comes back, and
+        the step after a tool result is then decided without it.
+
+        It rides only on the messages of the turn in flight: the next turn's history is
+        built from the message log, which holds what was said and never what was
+        thought, so nothing here crosses turns."""
         message: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.thinking:
             message["reasoning"] = self.thinking

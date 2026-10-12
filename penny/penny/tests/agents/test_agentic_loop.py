@@ -1253,6 +1253,19 @@ class TestThinkTagStripping:
 
         await agent.close()
 
+    def test_a_steps_thinking_rides_into_the_next_request(self):
+        """A step is replayed to the model with its thinking, so the step after its
+        tool result is drawn with the plan in view; a step with none adds no field."""
+        call = LlmToolCall(
+            id="call_1",
+            function=LlmToolCallFunction(name="browse", arguments={"queries": ["x"]}),
+        )
+        planned = LlmMessage(
+            role="assistant", tool_calls=[call], thinking="read the page, then save it"
+        )
+        assert planned.to_input_message()["reasoning"] == "read the page, then save it"
+        assert "reasoning" not in LlmMessage(role="assistant", content="done").to_input_message()
+
     @pytest.mark.asyncio
     async def test_response_without_think_tags_unchanged(self, test_db, mock_llm):
         """Responses that contain no <think> tags are returned as-is."""
