@@ -206,7 +206,7 @@ class Prompt:
     REQUEST_MISSING_ITEM = "- {name} — {description}"
     REQUEST_MISSING_NAME_ONLY = "- {name}"
 
-    CONVERSATION_TAIL = (
+    CONVERSATION_TAIL_OPEN = (
         "When a 'Current Browser Page' section appears above, the user is browsing "
         "that page right now. If they say 'this page', 'this thread', 'this article', "
         "or anything ambiguous, they mean the Current Browser Page — not something "
@@ -228,9 +228,18 @@ class Prompt:
         "are no CSS selectors, XPaths, or HTML parsing anywhere in your tools; "
         "never ask the user for page structure, snippets, or selectors — "
         "reading pages is your job.\n\n"
+    )
+    # Reading is where an ANSWERING turn ends: the page has been read, so the reply is
+    # next.  A taught round is the one turn whose steps run on past the read — its write
+    # is a step the user gave — so its prompt is composed without this paragraph
+    # (``conversation_machine.compose_prompt``); beside "a step is done when its tool call
+    # has run" it told the same turn to stop after the page.
+    REPLY_AFTER_READING = (
         "After reading pages, you MUST respond with what you found. Do not make "
         "additional tool calls to re-fetch or supplement pages you already read. "
         "If a page had limited content, report what was there.\n\n"
+    )
+    CONVERSATION_TAIL_CLOSE = (
         "Do NOT answer from search snippets alone — read actual pages first.\n\n"
         "Every fact, name, and detail in your response must come from pages you "
         "read or your memory — not from search snippet summaries.\n\n"
@@ -265,6 +274,7 @@ class Prompt:
     # turn (nothing wired, or a classifier failure).  IDLE by definition — it is
     # where the machine starts and where it returns — so this is one composition
     # of the same parts, never a second definition to drift.
+    CONVERSATION_TAIL = CONVERSATION_TAIL_OPEN + REPLY_AFTER_READING + CONVERSATION_TAIL_CLOSE
     CONVERSATION_PROMPT = CONVERSATION_HEAD + IDLE_INSTRUCTION + CONVERSATION_TAIL
 
     # Search result header — injected into trimmed search results

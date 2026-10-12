@@ -1185,7 +1185,11 @@ def test_every_state_has_an_instruction_and_there_is_no_fallback():
     for state in ConversationState:
         prompt = _composed(state)
         assert prompt.startswith(Prompt.CONVERSATION_HEAD)
-        assert prompt.endswith(Prompt.CONVERSATION_TAIL)
+        assert prompt.endswith(Prompt.CONVERSATION_TAIL_CLOSE)
+        # A taught round's steps run on past the page it reads, so it alone is composed
+        # without the paragraph that ends a turn at the read.
+        ends_at_the_read = Prompt.REPLY_AFTER_READING in prompt
+        assert ends_at_the_read == (state is not ConversationState.LEARN)
         rendered = STATE_INSTRUCTIONS[state].format(
             skill=_framing().skill, container=_framing().container
         )
@@ -1307,7 +1311,8 @@ def test_a_framed_round_names_its_routine_and_its_container():
         "and `watch-rental-price-harborkayak-example` is the collection set up to hold "
         "what it produces. Where a step says to remember something, that collection is "
         "where it goes — it is already there, so there is nothing to set up.\n\n"
-        + Prompt.CONVERSATION_TAIL
+        + Prompt.CONVERSATION_TAIL_OPEN
+        + Prompt.CONVERSATION_TAIL_CLOSE
     )
 
 

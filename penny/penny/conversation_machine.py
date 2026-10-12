@@ -1094,11 +1094,16 @@ def conversation_prompt(
     left formless is the round that has no shortfall to state — the binder could not settle
     it at all, or it settled COMPLETELY on a turn the classifier still parked in request —
     and that composes the byte-identical prompt it always did."""
-    return (
-        Prompt.CONVERSATION_HEAD
-        + _instruction(state, framing, shortfall)
-        + Prompt.CONVERSATION_TAIL
-    )
+    return Prompt.CONVERSATION_HEAD + _instruction(state, framing, shortfall) + _tail(state)
+
+
+def _tail(state: ConversationState) -> str:
+    """The prompt's closing guidance as this state reads it.  A taught round's steps run
+    on past the page it reads, so it is composed without the paragraph that ends a turn at
+    the read; every other state reads the whole tail."""
+    if state is ConversationState.LEARN:
+        return Prompt.CONVERSATION_TAIL_OPEN + Prompt.CONVERSATION_TAIL_CLOSE
+    return Prompt.CONVERSATION_TAIL
 
 
 def _instruction(
