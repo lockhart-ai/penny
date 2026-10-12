@@ -160,9 +160,9 @@ class SelfStateHeader:
     POINTERS = (
         "To look deeper: memory_metadata(<name>) for a collection's full config and "
         "change history, get_event(run <id>) for one run's tool calls, "
-        "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-        "searches them all by meaning (a collection, a skill, or a stored entry), "
-        "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+        "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+        "searches them all by meaning — a collection, a skill, a stored entry, or "
+        "something said in the conversation."
     )
 
     def __init__(self, db: Database, user: str | None) -> None:

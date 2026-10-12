@@ -143,7 +143,7 @@ _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
 # reading that is answered by a model never offered a read verb scores a model miss for a
 # HARNESS failure.  It is a premise about the SURFACE and not a route the case expects — which
 # verb she reaches for is hers, and the claims below read no tool name at all.
-_READ_VERBS = ("log_read", "read_similar")
+_READ_VERBS = ("log_read", "find")
 
 # Wide enough that a world seeding a conversation window is read WHOLE: the probe's answer has
 # to be "none of them", not "none of the first few".

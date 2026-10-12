@@ -34,7 +34,6 @@ from penny.tools.memory_tools import (
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
-    ReadSimilarTool,
 )
 from penny.tools.models import ToolResult
 
@@ -224,26 +223,6 @@ class TestMemoryReadNarration:
     these pin the exact strings.
     """
 
-    def test_read_similar_narrates_search(self):
-        narration = ReadSimilarTool.to_result_narration(
-            {"memory": "user-messages", "anchor": "chess"}, ToolResult(message="entries")
-        )
-        assert narration == 'You searched `user-messages` for "chess":'
-        assert "result)" not in narration  # the tag is the seam's job
-
-    def test_read_similar_failure_narrates_honestly(self):
-        narration = ReadSimilarTool.to_result_narration(
-            {"memory": "user-messages", "anchor": "chess"},
-            ToolResult(message="transient error", success=False),
-        )
-        assert narration == "You tried to search `user-messages` but it didn't work:"
-
-    def test_read_similar_missing_anchor_falls_back(self):
-        assert (
-            ReadSimilarTool.to_result_narration({}, ToolResult(message="ok"))
-            == "You searched your memory:"
-        )
-
     def test_log_read_narrates_read(self):
         narration = LogReadTool.to_result_narration(
             {"memory": "browse-results"}, ToolResult(message="entries")
@@ -263,16 +242,14 @@ class TestMemoryReadNarration:
         assert narration == "You checked the details of `likes`:"
 
     def test_format_result_wraps_memory_read_narration(self):
-        """End-to-end through the seam: registry dispatch → read_similar override →
-        `(read_similar result)` tag → body."""
+        """End-to-end through the seam: registry dispatch → log_read override →
+        `(log_read result)` tag → body."""
         framed = Tool.format_result(
-            "read_similar",
-            {"memory": "user-messages", "anchor": "chess"},
+            "log_read",
+            {"memory": "browse-results"},
             ToolResult(message="1. really into chess"),
         )
-        assert framed == (
-            'You searched `user-messages` for "chess": (read_similar result)\n1. really into chess'
-        )
+        assert framed == ("You read `browse-results`: (log_read result)\n1. really into chess")
 
 
 class TestMemoryWriteNarration:

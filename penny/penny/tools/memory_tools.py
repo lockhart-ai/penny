@@ -45,10 +45,12 @@ from penny.database.memory import (
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
     MemoryType,
+    MessageLogMemory,
     ResolvedEntry,
     ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
+    ResolvedMessage,
     WriteResult,
     render_key,
     render_memory_not_found,
@@ -107,7 +109,6 @@ from penny.tools.memory_args import (
     ReadLatestArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
-    ReadSimilarArgs,
 )
 from penny.tools.models import NoArgs, ToolResult
 
@@ -1174,69 +1175,6 @@ class CollectionReadLatestTool(MemoryTool):
         entries = _resolve(self._db, args.memory).read_latest(args.k)
         return ToolResult(
             message=format_entries(entries, source=args.memory, ordering="most recent first")
-        )
-
-
-class ReadSimilarTool(MemoryTool):
-    """Return entries most similar to an anchor phrase (collections or logs)."""
-
-    name = "read_similar"
-    # A transient embed failure leaves meaning search unavailable, so the message
-    # names the two plain reads that still work.
-    advises = ("collection_read_latest", "log_read")
-    description = (
-        "Return entries from a memory ordered by content similarity to an "
-        "`anchor` phrase. Works for both collections and logs — use this "
-        "to find past conversations on a topic (search `user-messages` or "
-        "`penny-messages`), past browse results, related preferences or "
-        "facts, or any other historically-relevant entry."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "memory": {"type": "string"},
-            "anchor": {
-                "type": "string",
-                "description": "Text whose meaning drives the similarity search",
-            },
-            "k": {"type": "integer", "description": "Max entries; omit for all"},
-        },
-        "required": ["memory", "anchor"],
-    }
-    args_model = ReadSimilarArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "your memory")
-        anchor = arguments.get("anchor")
-        if not result.success:
-            return f"You tried to search {memory} but it didn't work:"
-        if anchor:
-            return f'You searched {memory} for "{anchor}":'
-        return f"You searched {memory}:"
-
-    def __init__(self, db: Database, llm_client: LlmClient) -> None:
-        self._db = db
-        self._llm = llm_client
-
-    async def _suggestion_embedding(self, name: str) -> list[float] | None:
-        # This tool embeds, so a name miss gets the MEANING leg too (#1674).
-        return await embed_text(self._llm, name)
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = ReadSimilarArgs(**kwargs)
-        vec = await embed_text(self._llm, args.anchor)
-        if vec is None:
-            logger.warning("%s: anchor embedding failed transiently", self.name)
-            return ToolResult(
-                message="Couldn't embed the anchor (a transient embedding error). "
-                "Retry, or read a collection with collection_read_latest(<collection>) "
-                "or a log with log_read(<log>) instead.",
-                success=False,
-            )
-        entries = _resolve(self._db, args.memory).read_similar(vec, args.k)
-        return ToolResult(
-            message=format_entries(entries, source=args.memory, ordering="most relevant first")
         )
 
 
@@ -2896,6 +2834,26 @@ _FIND_EMPTY = (
     "skill automatically."
 )
 
+# The same empty read, worded for the case where the conversation logs DID match
+# something (#2289) — "nothing of yours matched" would contradict the messages
+# listed right below it, so this leads with "nothing stored matched" instead; the
+# rest of the guidance (the state header's list, the task→skill dead end) still
+# applies, since it's still true that nothing in the STORE matched.
+_FIND_EMPTY_STORE = (
+    'Nothing stored matched "{query}" — the state at the top of this prompt '
+    "lists every collection, log, and taught routine you have (archived ones by "
+    "name). If you were looking for how to do a task and no skill matched, ask the "
+    "user to walk you through it once here in chat — you'll learn it as a new "
+    "skill automatically."
+)
+
+# The conversation logs' own share of find's result (#2289), listed AFTER the store
+# hits and under this heading — never interleaved with them.  A message surfaces
+# only when it would have ranked in the fused top FIND_MATCH_LIMIT alongside find's
+# own candidates (``MemoryStore.resolve_messages``), so a long conversation can
+# crowd out other MESSAGES at worst, never the store hits above it.
+_FIND_MESSAGES_HEADING = "From the conversation:"
+
 # Ambiguity is RETURNED, never silently resolved: several hits come back ranked
 # with how to narrow.
 _FIND_AMBIGUOUS_TAIL = (
@@ -3032,9 +2990,48 @@ def _render_find_hit(index: int, hit: ResolvedHit, db: Database) -> str:
     return _render_object_hit(index, hit, db)
 
 
+def _render_message_hit(index: int, message: ResolvedMessage) -> str:
+    """One message hit (#2289) — the message itself, read back exactly as
+    ``read_similar`` used to show it on that log: who said it (``memory_name`` names
+    which log it's from — ``user-messages`` or ``penny-messages``), when
+    (``format_log_timestamp``, the same form ``log_read`` renders), and its full
+    content, with the ``(sent by <mechanism>)`` clause already in it where the row
+    carries one (#1568).  No preview cap and no addressing line — the message IS
+    the answer."""
+    stamp = format_log_timestamp(message.created_at)
+    return f"{index}. {message.memory_name} [{stamp}]: {message.content}"
+
+
+def _render_scoped_memory(memory: Memory, entries: list[MemoryEntry]) -> str:
+    """``find(query, memory=<name>)`` (#2289) — one named memory's own entries,
+    ranked by closeness to the query (``Memory.read_similar``), read back in
+    full rather than the 120-char preview: naming the list IS the answer.  A
+    collection or log renders through the SAME ``format_entries`` every read
+    tool uses, so the empty/populated shapes match what she already reads
+    elsewhere.  A message log (``user-messages`` / ``penny-messages``) renders
+    through the SAME per-entry line find's own conversation section uses
+    (``_render_message_hit``) instead — a plain ``format_entries`` line has no
+    way to say who said it."""
+    if not isinstance(memory, MessageLogMemory):
+        return format_entries(entries, source=memory.name, ordering="closest to the query first")
+    if not entries:
+        return format_entries(entries, source=memory.name)
+    body = "\n".join(
+        _render_message_hit(
+            i,
+            ResolvedMessage(
+                memory_name=memory.name, content=entry.content, created_at=entry.created_at
+            ),
+        )
+        for i, entry in enumerate(entries, start=1)
+    )
+    noun = "entry" if len(entries) == 1 else "entries"
+    return f"{len(entries)} {noun} from `{memory.name}` (closest to the query first):\n{body}"
+
+
 class FindTool(MemoryTool):
     """Find anything of Penny's own by meaning — the guess-free fallback when the
-    exact name/key isn't ambient (#1558, #1640).
+    exact name/key isn't ambient (#1558, #1640, #2289).
 
     Embedding search (plain cosine, the #1565 explicit-search path) over every
     registry row's description anchor (collections + logs, ARCHIVED INCLUDED),
@@ -3050,6 +3047,20 @@ class FindTool(MemoryTool):
     is an honest empty naming the catalog + self-state header as the wider net.
     Dissolves the name-guessing loop and the entry-vs-collection footgun by
     answering "what is it" and "what can be done with it" in one result.
+
+    ALSO searches what the user and Penny said in conversation (#2289): the two
+    message logs are ranked in the same fused pass, but reported as a SEPARATE
+    section after the store hits (``MemoryStore.resolve_messages``) rather than
+    merged into the list above — a message is read back whole, with no addressing
+    line, since the message itself is the answer.
+
+    An optional ``memory`` (#2289) NARROWS the search to one memory she can
+    already name, instead of the whole registry: ``Memory.read_similar`` on the
+    object ``db.memory(name)`` resolves, returning just that memory's own nearest
+    entries — works uniformly on a collection, a log, the two message logs, or an
+    archived collection.  An unknown name gets the house did-you-mean refusal
+    (``_suggestion_embedding`` below gives it the meaning leg, since this tool
+    already carries an embedding client).
     """
 
     name = "find"
@@ -3060,6 +3071,7 @@ class FindTool(MemoryTool):
     # program-scoped surface carrying `find` has to carry them too or the line resolves
     # in nothing.  The gap was invisible until the coherence scanner learned to follow a
     # helper's own constants; declaring it is the fix that test's docstring prescribes.
+    # Message hits carry no addressing line (#2289), so they add no verb here.
     advises = (
         "collection_read_latest",
         "collection_set",
@@ -3069,14 +3081,18 @@ class FindTool(MemoryTool):
     )
     description = (
         "Find anything of your own by meaning, when you don't know its exact name — "
-        "a collection, a log, a taught skill, or a single stored entry (a fact you "
-        "saved).  Pass `query`, a paraphrase of what it's about (\"what I said that "
-        'product costs").  Returns the closest matches, best first: a '
-        "collection/log/skill with its exact name, whether it's active or archived, "
-        "and the exact tool call that operates on it (archived included); a stored "
-        "entry with the value it holds and how to read it back.  Use it instead of "
-        "guessing a name: a guessed name fails, this resolves the real one — and for "
-        "a short fact the returned value IS the answer."
+        "a collection, a log, a taught skill, a single stored entry (a fact you "
+        "saved), or something the user or you said earlier in the conversation.  Pass "
+        '`query`, a paraphrase of what it\'s about ("what I said that product costs", '
+        '"what they told me about the trip").  Returns the closest matches, best '
+        "first: a collection/log/skill with its exact name, whether it's active or "
+        "archived, and the exact tool call that operates on it (archived included); a "
+        "stored entry with the value it holds and how to read it back; a matching "
+        "message from the conversation, shown in full under its own heading.  Use it "
+        "instead of guessing a name: a guessed name fails, this resolves the real one "
+        "— and for a short fact or a past message, the returned value IS the answer. "
+        "Pass `memory` too to search inside one store you can already name instead of "
+        "everything — its own nearest entries come back, best first."
     )
     parameters = {
         "type": "object",
@@ -3084,7 +3100,17 @@ class FindTool(MemoryTool):
             "query": {
                 "type": "string",
                 "description": (
-                    "A paraphrase of what the thing is about — its meaning, not its exact name."
+                    "A paraphrase of what the thing is about — its meaning, not its exact "
+                    "name. Matches a collection, a log, a taught skill, a stored entry, or "
+                    "a past message from either side of the conversation."
+                ),
+            },
+            "memory": {
+                "type": "string",
+                "description": (
+                    "Optional. Leave it out to search everything she has. Given the exact "
+                    "name of one of her collections or logs, the search narrows to just "
+                    "that one, returning its own nearest entries by meaning."
                 ),
             },
         },
@@ -3104,18 +3130,57 @@ class FindTool(MemoryTool):
         self._db = db
         self._llm = llm_client
 
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        # A scoped find (`memory=`, #2289) is a name-dispatch call too, so a miss
+        # gets the MEANING leg exactly like the other embedding-capable name-dispatch
+        # tools (#1674) — this tool already carries the embedding client.
+        return await embed_text(self._llm, name)
+
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = FindArgs(**kwargs)
         vec = await embed_text(self._llm, args.query)
         if vec is None:
             logger.warning("find: query embedding failed transiently")
             return ToolResult(message=_FIND_EMBED_FAILURE, success=False)
+        if args.memory is not None:
+            return self._run_scoped(args.memory, vec)
         hits = self._db.memories.resolve_objects(vec, PennyConstants.FIND_MATCH_LIMIT)
-        return ToolResult(message=self._format(args.query, hits))
+        # The conversation logs' own share of the fused ranking (#2289) — computed
+        # independently of ``hits`` above, so a long conversation can never shrink the
+        # store's own result; see ``MemoryStore.resolve_messages``.
+        messages = self._db.memories.resolve_messages(vec, PennyConstants.FIND_MATCH_LIMIT)
+        return ToolResult(message=self._format(args.query, hits, messages))
 
-    def _format(self, query: str, hits: list[ResolvedHit]) -> str:
-        if not hits:
+    def _run_scoped(self, name: str, vec: list[float]) -> ToolResult:
+        """``find(query, memory=<name>)`` (#2289) — one memory she can already name,
+        searched by meaning alone (``Memory.read_similar``, the same ranking
+        ``resolve_objects``/``resolve_messages`` use), never the whole registry.
+        An unknown ``name`` raises ``MemoryNotFoundError``, which ``execute``
+        catches and re-renders with the did-you-mean suggestion."""
+        memory = _resolve(self._db, name)
+        entries = memory.read_similar(vec, PennyConstants.FIND_MATCH_LIMIT)
+        return ToolResult(message=_render_scoped_memory(memory, entries))
+
+    def _format(self, query: str, hits: list[ResolvedHit], messages: list[ResolvedMessage]) -> str:
+        if not hits and not messages:
             return _FIND_EMPTY.format(query=query)
+        parts = [self._format_store(query, hits)]
+        if messages:
+            message_body = "\n".join(
+                _render_message_hit(i, m) for i, m in enumerate(messages, start=1)
+            )
+            parts.append(f"{_FIND_MESSAGES_HEADING}\n{message_body}")
+        return "\n\n".join(parts)
+
+    def _format_store(self, query: str, hits: list[ResolvedHit]) -> str:
+        """The store half of find's result.  Reached with an empty ``hits`` only
+        when ``messages`` is non-empty (``_format`` returns the plain
+        ``_FIND_EMPTY`` directly for the fully-empty case) — paired with a
+        messages section below it, "nothing of yours matched" would contradict
+        what follows, so the empty case here always reads "nothing STORED
+        matched" instead (``_FIND_EMPTY_STORE``)."""
+        if not hits:
+            return _FIND_EMPTY_STORE.format(query=query)
         body = "\n".join(_render_find_hit(i, h, self._db) for i, h in enumerate(hits, start=1))
         if len(hits) == 1:
             return f'Found 1 thing matching "{query}":\n{body}'
@@ -3260,11 +3325,10 @@ def build_memory_tools(
       each entry-mutation tool).  Chat passes ``scope=None`` — its
       entry mutations are unrestricted, since edits are user-directed.
 
-    ``read_similar`` (embedding search) and ``memory_metadata`` are the
-    genuinely shape-agnostic reads — they work on either shape.  ``find``
-    (resolve-by-meaning, #1558/#1640) spans the whole registry — collections, logs,
-    taught skills, and stored entries — and returns each hit's exact identity fused
-    with how to
+    ``memory_metadata`` is the genuinely shape-agnostic read — it works on either
+    shape.  ``find`` (resolve-by-meaning, #1558/#1640/#2289) spans the whole
+    registry — collections, logs, taught skills, and stored entries — plus the two
+    conversation logs, and returns each hit's exact identity fused with how to
     address it, the guess-free fallback that every not-found error points at.
 
     There is no ``done`` and no ``send_message`` on any surface any more (#1911).
@@ -3301,7 +3365,6 @@ def build_memory_tools(
     """
     reads: list[Tool] = [
         CollectionReadLatestTool(db),
-        ReadSimilarTool(db, llm_client),
         MemoryMetadataTool(db),
         LogReadTool(db, agent_name, scope),
         ReadRunCallsTool(db, agent_name),

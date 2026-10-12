@@ -1631,14 +1631,15 @@ async def test_chat_tool_surface_excludes_entry_mutations(
 
         # Reads.
         assert "collection_read_latest" in names
-        assert "read_similar" in names
         assert "memory_metadata" in names
         # Ledger reads: read_run_calls browses a source's runs; get_event resolves
         # one run by the typed id the activity block renders (#1580).
         assert "read_run_calls" in names
         assert "get_event" in names
-        # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
+        # Resolve-by-meaning — the guess-free fallback every not-found points at
+        # (#1558) — and the sole search over the conversation logs (#2289).
         assert "find" in names
+        assert "read_similar" not in names
 
         # Fair random selection — the model is a biased chooser, so "pick one at
         # random" is a Python coin flip on the chat surface (like browse, on both).
@@ -1898,8 +1899,8 @@ _BASIC_FLOW_EXPECTED = (
     "you're looking for, what you already know, and what you'll do with the result.\n"
     "\n"
     "Search memory before browsing. Your memory tools "
-    "(`collection_read_latest(<collection>)`, `read_similar(memory=<name>, "
-    "anchor=<text>)`, `log_read(<log>)`, etc.) read everything stored — the 'Your memory' "
+    "(`collection_read_latest(<collection>)`, `find(query=<text>)`, "
+    "`log_read(<log>)`, etc.) read everything stored — the 'Your memory' "
     "list in the 'Penny's current state' section below names every store you can pull "
     "from, and the mechanisms + recent activity there are your own operational state "
     "(what you're running, what you just did). Only browse if memory doesn't have what "
@@ -2006,7 +2007,7 @@ _BASIC_FLOW_EXPECTED = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )

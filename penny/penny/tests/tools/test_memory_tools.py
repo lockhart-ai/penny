@@ -41,9 +41,11 @@ from penny.database.skills import (
     render_skill,
     retarget_writes,
 )
+from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
+from penny.llm.similarity import embed_text
 from penny.skill_extraction import SkillExtracted, SkillExtractor, _interface_parameters
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
@@ -88,7 +90,6 @@ from penny.tools.memory_tools import (
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
-    ReadSimilarTool,
     _format_duplicate,
     _render_object_hit,
     build_memory_tools,
@@ -3147,58 +3148,6 @@ class TestCollectionWritesAndReads:
         assert chat_changed.stop is None
         assert db.memory("watch").get("note")[0].content == "v2"
 
-    @pytest.mark.asyncio
-    async def test_read_similar_uses_embedding(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        client = _make_llm_client(mock_llm)
-        await CollectionWriteTool(db, client, author="test").execute(
-            memory="likes", entries=[{"key": "coffee", "content": "loves coffee"}]
-        )
-        # Anchor shares the "coffee" word with the entry — the bag-of-words
-        # mock embedding gives meaningful cosine.
-        rendered = await ReadSimilarTool(db, client).execute(memory="likes", anchor="coffee please")
-        assert "coffee" in rendered.message
-
-    @pytest.mark.asyncio
-    async def test_read_similar_returns_populated_homogeneous_collection(self, db, mock_llm):
-        """A populated but homogeneous collection (recipe-shaped entries that all
-        cluster together, like the real ``skills`` collection) must return its
-        entries for a fuzzy anchor — not "No entries" (#1565).  The old ambient
-        cluster/centrality gate on the explicit search suppressed exactly this
-        case, removing the model's fuzzy-recovery path when guessing a key."""
-        _seed_collection(
-            db,
-            name="playbooks",
-            description="reusable how-to recipes",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        client = _make_llm_client(mock_llm)
-        # Distinct keys + shared "recipe workflow step" stem: the entries cluster
-        # tightly (high centrality) yet stay well under the dedup threshold.
-        await CollectionWriteTool(db, client, author="test").execute(
-            memory="playbooks",
-            entries=[
-                {"key": "morning-briefing", "content": "recipe workflow step sunrise breakfast"},
-                {"key": "evening-recap", "content": "recipe workflow step sunset supper"},
-                {"key": "weekly-digest", "content": "recipe workflow step calendar planner"},
-                {"key": "topic-tracker", "content": "recipe workflow step magnet compass"},
-            ],
-        )
-        # A vague anchor ("recipe reminder") that only weakly matches — the shape
-        # of the model guessing at a recipe's identity.
-        rendered = await ReadSimilarTool(db, client).execute(
-            memory="playbooks", anchor="recipe reminder"
-        )
-        assert "No entries" not in rendered.message
-        assert "morning-briefing" in rendered.message
-
 
 class TestWritesLandedRender:
     """What a run actually WROTE, rendered from the ledger rows themselves (#1946).
@@ -3458,12 +3407,12 @@ class TestDidYouMeanSuggestions:
 
     @pytest.mark.asyncio
     async def test_memory_name_miss_leads_with_the_nearest_by_meaning(self, db, mock_llm):
-        """When the typo leg finds nothing, an embedding-capable tool (read_similar)
+        """When the typo leg finds nothing, an embedding-capable tool (log_append)
         falls back to the MEANING leg — the collection whose description anchor is
         closest to the missed name, clearing the reused dedup threshold."""
         _seed_collection(db, name="garage", description="tracking oil changes and tire rotations")
-        tool = ReadSimilarTool(db, _make_llm_client(mock_llm))
-        result = await tool.execute(memory="oil changes and tire rotations", anchor="my car")
+        tool = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        result = await tool.execute(memory="oil changes and tire rotations", content="my car")
         assert result.success is False
         assert result.message == (
             "Memory 'oil changes and tire rotations' not found — did you mean 'garage'? "
@@ -3831,12 +3780,14 @@ class TestLogTools:
         await LogAppendTool(db, client, author="test").execute(
             memory="events", content="coffee is great"
         )
-        # Anchor shares words with the entry so the bag-of-words mock
-        # embedding gives meaningful cosine and the entry ranks in ``read_similar``.
-        rendered = await ReadSimilarTool(db, client).execute(
-            memory="events", anchor="coffee morning"
-        )
-        assert "coffee is great" in rendered.message
+        # Anchor shares words with the entry so the bag-of-words mock embedding gives
+        # meaningful cosine and the entry ranks in `Memory.read_similar` — the store
+        # method `read_similar` (the tool) used to wrap; the tool is gone, the method
+        # stays, read by `notification.py` and by `find`'s message candidates alike.
+        vec = await embed_text(client, "coffee morning")
+        assert vec is not None
+        similar = db.memory("events").read_similar(vec)
+        assert any("coffee is great" in entry.content for entry in similar)
 
     @pytest.mark.asyncio
     async def test_read_next_returns_all_entries_when_no_cursor(self, db, mock_llm):
@@ -4115,7 +4066,6 @@ class TestFactory:
         "log_read",
         "read_run_calls",
         "get_event",
-        "read_similar",
         "find",
         # Lifecycle (shape)
         "collection_set",
@@ -4802,3 +4752,190 @@ class TestFind:
             f'1. entry #{entry_id} in `aurora-log` (log) — "aurora echo foxtrot"\n'
             f"   read it: log_read('aurora-log') — the full entry is aurora-log#{entry_id}"
         )
+
+    @pytest.mark.asyncio
+    async def test_message_from_each_log_ranks_in_its_own_section(self, db, mock_llm):
+        """A message from EITHER conversation log is returned by find when it ranks
+        in the fused top FIND_MATCH_LIMIT (#2289) — read back in full, who said it
+        (which log it's from), when, and its content — listed AFTER the store hits,
+        under their own heading, never interleaved with them.  An unrelated message
+        (cosine <= 0, same rule every other find candidate obeys) stays out."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        db.memories.create_log(PennyConstants.MEMORY_PENNY_MESSAGES_LOG, "outbound")
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "user",
+            "aurora beacon cascade delta",
+            embedding=serialize_embedding(_axis_vec("aurora beacon cascade delta")),
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "aurora beacon gamma",
+            embedding=serialize_embedding(_axis_vec("aurora beacon gamma")),
+        )
+        db.messages.log_message(
+            PennyConstants.MessageDirection.OUTGOING,
+            "penny",
+            "orbit nebula",
+            embedding=serialize_embedding(_axis_vec("orbit nebula")),
+        )
+        user_stamp = format_log_timestamp(
+            db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG).read_all()[0].created_at
+        )
+        penny_stamp = format_log_timestamp(
+            db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG).read_all()[0].created_at
+        )
+
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        assert result.success
+        assert result.message == (
+            'Found 1 thing matching "aurora beacon cascade":\n'
+            "1. aurora-watch — active collection: aurora beacon cascade\n"
+            "   how to use it: read it with collection_read_latest('aurora-watch'), "
+            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
+            "with collection_archive('aurora-watch')\n"
+            "\n"
+            "From the conversation:\n"
+            f"1. user-messages [{user_stamp}]: aurora beacon cascade delta\n"
+            f"2. penny-messages [{penny_stamp}]: aurora beacon gamma"
+        )
+        assert "orbit nebula" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_many_matching_messages_never_displace_store_hits(self, db, mock_llm):
+        """However many messages match — even several that score as strongly as
+        the collection itself — the store section is unaffected (#2289): it is
+        computed independently (`MemoryStore.resolve_objects`), and the
+        conversation section is reported separately, after it, capped at
+        FIND_MATCH_LIMIT of its own."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        # More messages than FIND_MATCH_LIMIT, every one scoring as well as the
+        # collection itself (an exact match on the query's own words).
+        for _ in range(PennyConstants.FIND_MATCH_LIMIT + 2):
+            db.messages.log_message(
+                PennyConstants.MessageDirection.INCOMING,
+                "user",
+                "aurora beacon cascade",
+                embedding=serialize_embedding(_axis_vec("aurora beacon cascade")),
+            )
+
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        assert result.success
+        assert result.message.startswith(
+            'Found 1 thing matching "aurora beacon cascade":\n'
+            "1. aurora-watch — active collection: aurora beacon cascade\n"
+            "   how to use it: read it with collection_read_latest('aurora-watch'), "
+            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
+            "with collection_archive('aurora-watch')\n"
+            "\n"
+            "From the conversation:\n"
+        )
+        assert result.message.count("user-messages [") <= PennyConstants.FIND_MATCH_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_empty_store_with_matching_messages_says_nothing_stored(self, db, mock_llm):
+        """Zero store matches beside a found message reads "nothing STORED
+        matched" rather than "nothing of yours matched" (#2289) — the wholesale
+        empty wording would contradict the conversation section listed right
+        after it."""
+        client = _axis_client(mock_llm)
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "user",
+            "aurora beacon cascade",
+            embedding=serialize_embedding(_axis_vec("aurora beacon cascade")),
+        )
+        stamp = format_log_timestamp(
+            db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG).read_all()[0].created_at
+        )
+
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        assert result.success
+        assert result.message == (
+            'Nothing stored matched "aurora beacon cascade" — the state at the top of '
+            "this prompt lists every collection, log, and taught routine you have "
+            "(archived ones by name). If you were looking for how to do a task and no "
+            "skill matched, ask the user to walk you through it once here in chat — "
+            "you'll learn it as a new skill automatically.\n\n"
+            "From the conversation:\n"
+            f"1. user-messages [{stamp}]: aurora beacon cascade"
+        )
+
+    @pytest.mark.asyncio
+    async def test_scoped_search_returns_only_that_memory_full_content(self, db, mock_llm):
+        """``find(query, memory=<name>)`` (#2289) narrows to one memory's own
+        nearest entries, full content — never the whole-registry list, and
+        never another store's hit even when it would also match the query."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        await CollectionWriteTool(db, client, author="test").execute(
+            memory="aurora-watch",
+            entries=[{"key": "aurora beacon", "content": "cascade gamma delta echo foxtrot"}],
+        )
+        # Would also match the unscoped search — proves the scope actually narrows.
+        await _create_collection(db, client, "aurora-notes", "aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            query="aurora beacon cascade", memory="aurora-watch"
+        )
+        assert result.success
+        assert "from `aurora-watch` (closest to the query first)" in result.message
+        assert "cascade gamma delta echo foxtrot" in result.message
+        assert "aurora-notes" not in result.message
+        assert "how to use it" not in result.message  # no object-hit addressing here
+
+    @pytest.mark.asyncio
+    async def test_scoped_search_on_a_message_log(self, db, mock_llm):
+        """Scoped on ``user-messages``/``penny-messages`` (#2289), the SAME
+        per-entry render find's own conversation section uses — who said it,
+        when, full content — reusing ``MessageLogMemory``'s own rendering."""
+        client = _axis_client(mock_llm)
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING,
+            "user",
+            "aurora beacon cascade delta",
+            embedding=serialize_embedding(_axis_vec("aurora beacon cascade delta")),
+        )
+        result = await FindTool(db, client).execute(
+            query="aurora beacon cascade", memory=PennyConstants.MEMORY_USER_MESSAGES_LOG
+        )
+        assert result.success
+        assert "user-messages" in result.message
+        assert "aurora beacon cascade delta" in result.message
+        assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", result.message)
+
+    @pytest.mark.asyncio
+    async def test_scoped_search_on_an_archived_collection(self, db, mock_llm):
+        """A scoped find works on an archived collection too (#2289) — the same
+        name the self-state header's archived line already names."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
+        await CollectionWriteTool(db, client, author="test").execute(
+            memory="aurora-archive",
+            entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
+        )
+        await CollectionArchiveTool(db).execute(memory="aurora-archive")
+        result = await FindTool(db, client).execute(
+            query="aurora beacon cascade", memory="aurora-archive"
+        )
+        assert result.success
+        assert "cascade gamma" in result.message
+
+    @pytest.mark.asyncio
+    async def test_scoped_search_unknown_name_leads_with_nearest_by_meaning(self, db, mock_llm):
+        """An unknown ``memory`` name gets the house did-you-mean refusal
+        (#2289) with the MEANING leg too, since ``find`` already carries an
+        embedding client (``_suggestion_embedding``)."""
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "garage", "aurora beacon cascade")
+        result = await FindTool(db, client).execute(
+            query="anything", memory="aurora beacon cascade"
+        )
+        assert result.success is False
+        assert "did you mean 'garage'?" in result.message

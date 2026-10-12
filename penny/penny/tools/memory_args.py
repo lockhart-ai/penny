@@ -129,6 +129,31 @@ OptionalSkill = Annotated[
     str | None, BeforeValidator(_reject_blank_optional), BeforeValidator(_normalize_dashes)
 ]
 
+# `find`'s own blank-`memory` refusal (#2289) — kept SEPARATE from
+# `_reject_blank_optional`/`OPTIONAL_ARG_FORMS` (the `collection_set` surface's
+# shared table, whose own test asserts it is total over that ONE tool's fields):
+# `memory` belongs to a different tool, so sharing the table would make that
+# invariant false. A blank still reads as "search everything", the one thing it
+# would be impossible to tell apart from simply omitting the argument, so it's
+# refused rather than silently taken either way.
+_BLANK_MEMORY_ARG = (
+    "an empty string sets nothing — omit memory entirely to search everything, or "
+    "pass the exact name of one collection or log"
+)
+
+
+def _reject_blank_memory(value: object) -> object:
+    if isinstance(value, str) and not value.strip():
+        raise ValueError(_BLANK_MEMORY_ARG)
+    return value
+
+
+# An optional memory name to narrow `find` to: dashes normalised first (a memory
+# name may be slug-ish), then its own blank refusal above.
+OptionalMemoryName = Annotated[
+    str | None, BeforeValidator(_reject_blank_memory), BeforeValidator(_normalize_dashes)
+]
+
 
 def _coerce_single_element_list(value: object) -> object:
     """Unwrap a single-element list bound to a skill parameter down to its element (#1666).
@@ -373,22 +398,6 @@ class ReadLatestArgs(ToolArgs):
     k: ReadCount = None
 
 
-class ReadSimilarArgs(ToolArgs):
-    """Top-k by content cosine similarity to ``anchor`` (embedded by the tool).
-
-    A plain nearest-neighbour search: entries come back ranked best-first so the
-    model can judge them.  There is no relevance floor or cluster gate — those
-    ambient-recall policies suppressed a populated but homogeneous collection
-    (e.g. ``skills``) to "No entries" and broke fuzzy recovery (#1565).  An empty
-    result therefore reflects the corpus, not an ambient "nothing matched well
-    enough" judgment.  ``k`` caps the count; omit for all.
-    """
-
-    memory: MemoryName
-    anchor: str
-    k: ReadCount = None
-
-
 # ── Log-specific reads ──────────────────────────────────────────────────────
 
 
@@ -496,17 +505,24 @@ class LogAppendArgs(ToolArgs):
 
 
 class FindArgs(ToolArgs):
-    """Find anything of Penny's own by meaning (#1558, #1640, #1643).
+    """Find anything of Penny's own by meaning (#1558, #1640, #1643, #2289).
 
     ``query`` — a paraphrase of what the thing is about (its meaning, not its
-    exact name/key) — is the tool's whole surface.  The search spans every family
-    (collection | log | skill | entry) in one fused best-first list; there is no
-    up-front family filter (a knob the model reasons about first can only encode a
-    guess, #1643), so a passed ``type`` is rejected as an unknown argument
-    (``ToolArgs`` ``extra="forbid"``).
+    exact name/key) — is the tool's whole surface when ``memory`` is omitted. The
+    search then spans every family (collection | log | skill | entry | the two
+    conversation logs) in one fused best-first list; there is no up-front family
+    filter (a knob the model reasons about first can only encode a guess, #1643),
+    so a passed ``type`` is rejected as an unknown argument (``ToolArgs``
+    ``extra="forbid"``).
+
+    ``memory`` (#2289) NARROWS the search to one named memory she can already
+    name — a collection, a log, or one of the two conversation logs — and returns
+    just that memory's own nearest entries by meaning; a blank is refused rather
+    than read as "search everything" (``_reject_blank_memory``).
     """
 
     query: str
+    memory: OptionalMemoryName = None
 
 
 # ``done`` is an argless sentinel (#1569): it just marks the cycle finished.  The

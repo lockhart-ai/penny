@@ -7,6 +7,7 @@ a cycle.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Literal, NamedTuple
 
@@ -124,8 +125,7 @@ def wrong_shape_message(name: str, actual_type: str) -> str:
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
-        f"collection_read_latest('{name}') / "
-        f"read_similar(memory='{name}', anchor=<what you're looking for>)."
+        f"collection_read_latest('{name}')."
     )
 
 
@@ -272,10 +272,32 @@ class ResolvedEntry(BaseModel):
     content: str
 
 
+class ResolvedMessage(BaseModel):
+    """One message ranked against ``find``'s own candidates (#2289) — read off the
+    two conversation logs (``user-messages`` / ``penny-messages``), in the SAME
+    embedding space ``resolve_objects`` ranks collections/logs/skills/entries in, so
+    a message never needs a second cosine pass or a second relevance scale to
+    compare against.  It is a message, not an entry: the hit carries the message's
+    own direction (``memory_name`` — which log it came from says who said it),
+    ``created_at`` (when), and ``content`` ALREADY rendered by
+    ``MessageLogMemory._render_content`` — the ``(sent by <mechanism>)`` clause
+    included where the row carries one — so it reads exactly as ``read_similar`` on
+    that log showed it, verbatim, with no preview cap and no addressing line: the
+    message IS the answer.
+    """
+
+    memory_name: str
+    content: str
+    created_at: datetime
+
+
 # The two arms of one best-first ``find`` result list (#1640): an object hit
 # (collection / log / skill) or a stored-entry hit.  The tool renders each by its
 # own house pattern but ranks them in ONE fused list — same embedding space, one
-# cosine, no second result shape.
+# cosine, no second result shape.  ``ResolvedMessage`` (#2289) rides the SAME fused
+# ranking pass for its own eligibility test but is never a member of ``ResolvedHit``
+# — a message is reported separately, after the store hits, never interleaved with
+# them (see ``MemoryStore.resolve_messages``).
 ResolvedHit = ResolvedMatch | ResolvedEntry
 
 

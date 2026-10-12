@@ -16,8 +16,9 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 from pydantic import BaseModel
@@ -42,6 +43,7 @@ from penny.database.memory.types import (
     ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
+    ResolvedMessage,
     RunWrite,
     slug,
     wrong_shape_message,
@@ -934,11 +936,79 @@ class MemoryStore:
         layer turns each hit into identity + the deterministic addressing;
         ambiguity (several hits) is returned, never silently resolved.
         """
-        candidates = self._resolution_candidates()
+        # The candidates here are always ResolvedHit (never a message), by
+        # construction — `_rank_candidates`'s Sequence parameter is covariant for
+        # the call, but its return stays the wider union it also serves
+        # `resolve_messages` with, so the narrowing back is explicit here.
+        return cast(
+            "list[ResolvedHit]", self._rank_candidates(self._resolution_candidates(), anchor, limit)
+        )
+
+    def resolve_messages(self, anchor: list[float], limit: int) -> list[ResolvedMessage]:
+        """``find``'s share of the conversation logs (#2289) — messages ranked in the
+        SAME fused pass ``resolve_objects`` ranks its own candidates in, but reported
+        SEPARATELY and never allowed to displace one of them: a message surfaces
+        only when its score would place it among the top ``limit`` of the FUSED
+        ranking (``resolve_objects``'s own candidates plus every embedded message in
+        ``user-messages`` / ``penny-messages``), so a long conversation can crowd out
+        other MESSAGES at worst — it can never shrink the store's own result, which
+        ``resolve_objects`` computes independently of this call. Bounded at ``limit``
+        by construction: the fused top-``limit`` has at most that many rows total,
+        however many of them are messages.
+
+        Messages carry no ``memory_entry`` row (#1640's own account of why they are
+        absent from ``_resolution_candidates``), so they are read here through the
+        same ``embedded_rows()`` facade ``read_similar`` ranks — one set of vectors,
+        two rankings over it, never a second embed.
+        """
+        fused: list[tuple[ResolvedHit | ResolvedMessage, bytes]] = [
+            *self._resolution_candidates(),
+            *self._message_candidates(),
+        ]
+        ranked = self._rank_candidates(fused, anchor, limit)
+        return [hit for hit in ranked if isinstance(hit, ResolvedMessage)]
+
+    def _message_candidates(self) -> list[tuple[ResolvedMessage, bytes]]:
+        """Every embedded row in the two conversation logs as a fused-ranking
+        candidate (#2289) — read through ``Memory.embedded_rows()`` on each log's own
+        ``MessageLogMemory`` facade, so a message candidate here and a
+        ``read_similar``/notify-time nearest-message hit are the identical row and
+        vector.  A log absent from the registry (a bare test database) contributes
+        nothing rather than raising."""
+        candidates: list[tuple[ResolvedMessage, bytes]] = []
+        for name in (
+            PennyConstants.MEMORY_USER_MESSAGES_LOG,
+            PennyConstants.MEMORY_PENNY_MESSAGES_LOG,
+        ):
+            log = self.memory(name)
+            if log is None:
+                continue
+            for row in log.embedded_rows():
+                if row.content_embedding is None:
+                    continue
+                hit = ResolvedMessage(
+                    memory_name=name, content=row.content, created_at=row.created_at
+                )
+                candidates.append((hit, row.content_embedding))
+        return candidates
+
+    @staticmethod
+    def _rank_candidates(
+        candidates: Sequence[tuple[ResolvedHit | ResolvedMessage, bytes]],
+        anchor: list[float],
+        limit: int,
+    ) -> list[ResolvedHit | ResolvedMessage]:
+        """The best-first walk shared by ``resolve_objects`` and ``resolve_messages``
+        (#2289) — plain cosine, positively-correlated only, capped at ``limit``,
+        deduping a ``ResolvedEntry``'s two facets (content/key) to its best-scoring
+        one (the "either signal" disjunction the write-dedup uses). A
+        ``ResolvedMessage`` carries exactly one facet, so it never needs the dedup.
+        ``Sequence`` (covariant), not ``list`` (invariant, #2289): ``resolve_objects``
+        passes a narrower ``list[tuple[ResolvedHit, bytes]]`` straight through."""
         if not candidates:
             return []
         scores = sim.cosine_scores([blob for _, blob in candidates], anchor)
-        ranked: list[ResolvedHit] = []
+        ranked: list[ResolvedHit | ResolvedMessage] = []
         seen_entries: set[int] = set()
         for index in np.argsort(-scores):
             if float(scores[index]) <= 0.0:

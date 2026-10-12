@@ -263,6 +263,16 @@ class Memory:
         ranked = [valid[i] for i in order if float(scores[i]) >= floor]
         return ranked if k is None else ranked[:k]
 
+    def embedded_rows(self) -> list[MemoryEntry]:
+        """Every entry in this memory carrying a content embedding, unranked —
+        the public hook onto the same rows ``read_similar`` ranks (``_embedded_rows``,
+        shape-specific: ``memory_entry`` for a collection/log, ``messagelog`` for a
+        message facade).  ``MemoryStore`` reads this to fuse the two message logs into
+        ``find``'s own ranking (#2289), so a message candidate and a ``read_similar``
+        hit are the identical row and vector — no second embedding, no second query
+        shape."""
+        return self._embedded_rows()
+
     # ── Row primitives (memory_entry; facades override) ───────────────────────
 
     def _all_rows(self) -> list[MemoryEntry]:

@@ -1133,9 +1133,9 @@ _KITCHEN_SINK = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _SCHEDULE_MECH = (
@@ -1165,9 +1165,9 @@ _SCHEDULE_MECH = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _EMPTY = (
@@ -1192,9 +1192,9 @@ _EMPTY = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _OVERFLOW = (
@@ -1228,9 +1228,9 @@ _OVERFLOW = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _ARCHIVED_HEAVY = (
@@ -1259,9 +1259,9 @@ _ARCHIVED_HEAVY = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _TAUGHT_SKILLS_ONLY = (
@@ -1290,9 +1290,9 @@ _TAUGHT_SKILLS_ONLY = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 
@@ -1324,9 +1324,9 @@ _RUN_OUTCOME_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _RUN_WRITES = (
@@ -1360,9 +1360,9 @@ _RUN_WRITES = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _RUN_WRITES_MULTI_COLLECTION = (
@@ -1389,9 +1389,9 @@ _RUN_WRITES_MULTI_COLLECTION = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _EXCLUSION_RENDER = (
@@ -1416,9 +1416,9 @@ _EXCLUSION_RENDER = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _MUTATION_CHANGED_FIELDS_MATRIX = (
@@ -1458,9 +1458,9 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _MUTATION_NOTE_MATRIX = (
@@ -1500,9 +1500,9 @@ _MUTATION_NOTE_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _EMISSION_MATRIX = (
@@ -1530,9 +1530,9 @@ _EMISSION_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
 
 _MUTATION_BARE_MATRIX = (
@@ -1564,7 +1564,7 @@ _MUTATION_BARE_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
-    "searches them all by meaning (a collection, a skill, or a stored entry), "
-    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
+    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "searches them all by meaning — a collection, a skill, a stored entry, or "
+    "something said in the conversation."
 )
