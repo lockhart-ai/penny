@@ -2254,12 +2254,12 @@ async def _run_samples(
 # The model a case is measured on — one cohort per id, so a case parametrized over it
 # produces one score and one threshold set per model, which is what a per-model ceiling needs.
 #
-# WHICH models exist is the ROSTER's business (`roster.py`, #1999): it is the one configured
-# list, it carries each model's pinned provider, and a remote run refuses to start unless it
-# names at least two.  Which of them a RUN measures is resolved before pytest starts and
-# arrives as `LLM_MODEL`, so this reads that rather than re-parsing `EVAL_MODELS` — the two
-# would be the same variable meaning two different things.  Two models is therefore two runs,
-# each self-describing in its own manifest.
+# WHICH models exist is the ROSTER's business (`roster.py`, #1999/#2222): it is the one
+# configured list, it carries each model's pinned provider, and a remote run refuses to start
+# unless it names at least one.  Which of them a RUN measures is resolved before pytest starts
+# and arrives as `LLM_MODEL`, so this reads that rather than re-parsing `EVAL_MODELS` — the two
+# would be the same variable meaning two different things.  A roster entry is therefore its own
+# run, each self-describing in its own manifest.
 EVAL_MODELS = [os.environ.get("LLM_MODEL", "")]
 
 # Why a sample is not counted.  The one structural completeness condition every case shares:

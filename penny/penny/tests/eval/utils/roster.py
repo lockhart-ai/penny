@@ -1,33 +1,25 @@
 """Which models the suite measures, and which upstream each is pinned to.
 
-The model a run measured used to be an ad-hoc make variable and the provider could not be
-expressed at all — so "what did this run actually run against?" was answered by shell
-history, and a run silently served by a broken member of a routing pool looked exactly
-like a run against a broken model.  Both are configuration now, in ``.env``, read through
-one Pydantic model:
+The model a run measured is configuration, in ``.env``, read through one Pydantic model —
+so "what did this run actually run against?" is a read of the roster rather than shell
+history, and a run served by a broken member of a routing pool is diagnosable from it:
 
-    EVAL_MODELS=[{"model":"vendor/model-a","provider":"SomeCloud"},
-                 {"model":"vendor/model-b","provider":"OtherCloud"}]
+    EVAL_MODELS=[{"model":"vendor/model-a","provider":"SomeCloud"}]
 
 A JSON list because that is how ``PLUGINS`` is already configured, and because an env var
 name cannot contain ``/`` — a per-model-suffixed variable scheme is unavailable, not just
 inelegant.
 
-**Two models, required.**  A suite ported and tuned against ONE model bakes that model's
-quirks into its fixtures, and then measures how much like that model the next model is.
-So the roster must name at least two, and a remote run REFUSES to start when it does not —
-the fail-fast shape ``LLM_EMBEDDING_MODEL`` already has, for the same reason: a run that
-quietly measures less than it claims to is worse than a run that does not start.  The
-minimum is a COUNT rather than two named models: naming them here would rot the day the
-pair changes, and what actually matters is that no single model's quirks can pass for the
-suite's.
+**At least one entry, required.**  A remote run REFUSES to start on an empty roster — the
+fail-fast shape ``LLM_EMBEDDING_MODEL`` already has: a run that quietly measures nothing is
+worse than a run that does not start.  The suite's own PRs and checkpoints are measured on
+the roster's first entry; a second (or further) entry stays configurable and runnable by
+name for a look, and such a run gates nothing.
 
 **The requirement binds the REMOTE profile only.**  The field that makes an entry
 load-bearing is ``provider``, and a local Ollama has none — it serves one model, on one
-GPU, from one process.  Requiring two models there would mean pulling a second model onto
-a box whose whole constraint is that it serves one at a time, and would buy no signal: the
-comparison this exists for is between models a GATEWAY serves.  ``make eval`` local keeps
-its own single configured model exactly as it was.
+GPU, from one process.  ``make eval`` local keeps its own single configured model exactly
+as it was.
 """
 
 from __future__ import annotations
@@ -41,8 +33,8 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 # and forwarded into the run.
 EVAL_MODELS_ENV = "EVAL_MODELS"
 
-# Why two: see the module docstring.  A count, never a pair of names.
-MINIMUM_MODELS = 2
+# Why one: see the module docstring.  A count, never a named model.
+MINIMUM_MODELS = 1
 
 USAGE = "usage: python -m penny.tests.eval.utils.roster [<model>]"
 
@@ -51,10 +43,7 @@ USAGE = "usage: python -m penny.tests.eval.utils.roster [<model>]"
 MODEL_LINE_PREFIX = "eval: model ="
 PINNED_PROVIDER_LINE_PREFIX = "eval: pinned provider ="
 
-_SHAPE_EXAMPLE = (
-    '    EVAL_MODELS=[{"model":"vendor/model-a","provider":"SomeCloud"},'
-    '{"model":"vendor/model-b","provider":"OtherCloud"}]'
-)
+_SHAPE_EXAMPLE = '    EVAL_MODELS=[{"model":"vendor/model-a","provider":"SomeCloud"}]'
 
 
 class RosterError(RuntimeError):
@@ -96,8 +85,7 @@ def parse_roster(raw: str | None) -> list[EvalModel]:
     if not text:
         raise RosterError(
             f"{EVAL_MODELS_ENV} is not configured. A remote run measures every case on at "
-            f"least {MINIMUM_MODELS} models, so that no single model's quirks can pass for "
-            "the suite's — set it in the primary checkout's .env, e.g.\n"
+            f"least {MINIMUM_MODELS} model — set it in the primary checkout's .env, e.g.\n"
             f"{_SHAPE_EXAMPLE}"
         )
     try:
@@ -109,12 +97,9 @@ def parse_roster(raw: str | None) -> list[EvalModel]:
             f"{error}\nExpected, e.g.\n{_SHAPE_EXAMPLE}"
         ) from error
     if len(roster) < MINIMUM_MODELS:
-        named = ", ".join(entry.render() for entry in roster) or "nothing"
         raise RosterError(
-            f"{EVAL_MODELS_ENV} names {named} — a remote run measures every case on at "
-            f"least {MINIMUM_MODELS} models, because a suite tuned against one model bakes "
-            "that model's quirks into its fixtures and then measures how much like it the "
-            f"next model is. Add another entry, e.g.\n{_SHAPE_EXAMPLE}"
+            f"{EVAL_MODELS_ENV} names nothing — a remote run measures every case on at "
+            f"least {MINIMUM_MODELS} model. Add an entry, e.g.\n{_SHAPE_EXAMPLE}"
         )
     return roster
 

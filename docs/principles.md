@@ -186,7 +186,7 @@ The eval cases are where the code owner states what Penny should do. The contrac
 
 5. **A core set of unique cases.**
    - One case per core behaviour, stated as *"In the <locus>, when <X>, Penny <Y>."*
-   - Five wordings × three samples, run on both roster models, with no pass floors.
+   - Five wordings × three samples, run on the suite's model, with no pass floors.
    - A behaviour another case already captures is a duplicate, and duplicates are deleted.
 
 6. **A check must be able to fail.** A pass from an instrument that could

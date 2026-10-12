@@ -47,13 +47,13 @@ class TestTheRosterIsRequired:
         with pytest.raises(RosterError):
             parse_roster("   ")
 
-    def test_one_model_is_not_enough_and_the_refusal_says_why(self) -> None:
-        """A suite tuned against one model measures how much like it the next one is."""
+    def test_an_empty_roster_is_refused_and_one_entry_is_accepted(self) -> None:
         with pytest.raises(RosterError) as refusal:
-            parse_roster(json.dumps([{"model": "vendor/model-a", "provider": "SomeCloud"}]))
-        message = str(refusal.value)
-        assert f"at least {MINIMUM_MODELS} models" in message
-        assert "vendor/model-a via SomeCloud" in message  # what IS configured, quoted back
+            parse_roster("[]")
+        assert f"at least {MINIMUM_MODELS} model" in str(refusal.value)
+
+        roster = parse_roster(json.dumps([{"model": "vendor/model-a", "provider": "SomeCloud"}]))
+        assert roster == [EvalModel(model="vendor/model-a", provider="SomeCloud")]
 
     def test_a_malformed_roster_is_refused_rather_than_half_read(self) -> None:
         with pytest.raises(RosterError) as refusal:
@@ -179,7 +179,7 @@ class TestTheMakefileHandsTheRosterWhatIsConfigured:
             tmp_path, EVAL_MODELS_ENV, f"{EVAL_MODELS_ENV}={_ROSTER}"
         )
         assert resolved == _ROSTER, "the Makefile mangled the roster on its way to the parser"
-        assert len(parse_roster(resolved)) == MINIMUM_MODELS, "and the parser still accepts it"
+        assert len(parse_roster(resolved)) == 2, "and the parser still accepts it"
 
     def test_a_quoted_scalar_still_arrives_unquoted(self, tmp_path) -> None:
         """The paired over-correction guard: the helper exists to unquote a credential, and a

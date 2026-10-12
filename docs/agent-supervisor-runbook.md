@@ -78,7 +78,7 @@ Before approving an internals PR (under the code owner's `gh` login, by his choi
 - The PR's head is the SHA you reviewed (`gh pr view <n> --json headRefOid`); a push after your read means reading again.
 - The merge-when-ready flag is set (`autoMergeRequest` non-null), so approval carries it through the queue.
 
-**A PR that adds or changes eval cases merges only with both roster models run and posted at its final head.** A rebase that leaves the tree byte-identical to the measured head (`git rev-parse HEAD^{tree}` equal) keeps the runs valid, and the PR says so in a comment. An approved PR with merge-when-ready set enqueues the moment it is pushed and green, so after a rebase push its flag stays off until the new reports, or that comment, are posted. SOP §8 carries the mechanics.
+**A PR that adds or changes eval cases merges only with a run on the suite's model posted at its final head.** A rebase that leaves the tree byte-identical to the measured head (`git rev-parse HEAD^{tree}` equal) keeps the run valid, and the PR says so in a comment. An approved PR with merge-when-ready set enqueues the moment it is pushed and green, so after a rebase push its flag stays off until the new report, or that comment, is posted. SOP §8 carries the mechanics.
 
 Still ask first: anything touching production (`make prod`/`up`/`kill`, the live DB), full-suite eval runs, and anything outward outside the repo.
 

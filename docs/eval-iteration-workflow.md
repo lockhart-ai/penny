@@ -90,7 +90,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 - A change to **shared seeders, shared claims, shared prompts, or anything the model reads** = a **non-regression rerun of every touched suite, baselined**.
 - When a **producing** prompt changes (the framer), the suites whose fixtures transcribe its draws need, in order: a **fresh sampling run** → the **fixture re-sample** → the **composed rerun**.
-- **The final state before merge is one composed run of the beat on the finished tree.** A PR that adds or changes eval cases merges only with **both roster models run and posted at its final head**; a rebase that leaves the tree byte-identical to the measured head keeps the runs valid, and the PR says so in a comment (`docs/agent-task-workflow.md` §8).
+- **The final state before merge is one composed run of the beat on the finished tree.** A PR that adds or changes eval cases merges only with **a run on the suite's model posted at its final head**; a rebase that leaves the tree byte-identical to the measured head keeps the run valid, and the PR says so in a comment (`docs/agent-task-workflow.md` §8).
 
 ## 10. The loop itself
 
@@ -113,5 +113,5 @@ The seeded world mirrors the **full exit state** of everything that came before,
 7. **Diagnose from the thinking and the ledger, never greps**; the model's reasoning is ground truth and presented state is the first suspect.
 8. **One lever per run; the second patch means a wholesale rewrite**; the code owner's register wins on text he hands over.
 9. **Code-owner-authored text lands verbatim, AST-verified**, and task agents run their own scoped evals.
-10. **Anything shared that changed gets a baselined non-regression rerun**, ending in one composed run of the beat on the finished tree; an eval-case PR merges with both roster models posted at its final head.
+10. **Anything shared that changed gets a baselined non-regression rerun**, ending in one composed run of the beat on the finished tree; an eval-case PR merges with a run on the suite's model posted at its final head.
 11. **The code owner's checkpoint is the eval PR review** — not each run; the full suite still waits for his go-ahead.

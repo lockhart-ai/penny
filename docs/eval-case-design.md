@@ -360,7 +360,7 @@ reference the afternoon you read it.
 ## 4 · The shape of a case
 
 ```python
-@pytest.mark.parametrize("model", EVAL_MODELS)          # every case, both models — §7
+@pytest.mark.parametrize("model", EVAL_MODELS)          # every case, the suite's model — §7
 async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) -> None:
     cohort = await chat_eval(
         case_id="<behaviour>-<what it does>",
@@ -699,19 +699,20 @@ incomparable.
 
 ---
 
-## 7 · Every case runs on BOTH models
+## 7 · Every case runs on the suite's model
 
 `@pytest.mark.parametrize("model", EVAL_MODELS)` is part of the case, not a nicety.
 
-Porting or tuning against a single model bakes that model's quirks into the fixtures and the
-assertions, and the suite then measures *how much like the incumbent* the next model is — the same
-trap that rules out golden reference sets (§9).
+Each case runs on the roster's configured model — a PR's and a checkpoint's evidence is one run
+on the suite's model (the roster's first entry). A further roster entry stays runnable by name for
+a look, and such a run gates nothing.
 
-**Thresholds are per-model and cannot be shared.** The two measured models differ ~3x on the same
+**Thresholds are per-model and cannot be shared.** Two measured models differ ~3x on the same
 features (routine-shape entropy 0.53 vs 0.18; tool-sequence 0.69 vs 0.19); one ceiling would be
-either useless for the consistent model or permanently failing for the variant one. Where a feature
-does **not** separate them — the routine name the framer invents, 0.90 on both — that is the
-signature of a *system* defect rather than a model one, and it is only visible by running both.
+either useless for the consistent model or permanently failing for the variant one. A feature that
+does **not** separate two models — the routine name the framer invents, 0.90 on both — is the
+signature of a *system* defect rather than a model one; that comparison is available whenever
+someone runs a second roster entry by name.
 
 ---
 
@@ -781,14 +782,14 @@ Two other scope rules that come from the same place:
   existing per-behaviour variants into K phrasings each. A dropped variant is recorded so it can
   return deliberately — each one probes a named temptation, so re-read its docstring rather than
   reinventing the reason it existed.
-- **Completion is not "everything is ported."** It is **two consecutive full-suite runs, on both
-  models, whose numbers agree.** One run gives ceilings that might be that run's noise.
+- **Completion is not "everything is ported."** It is **two consecutive full-suite runs, on the
+  suite's model, whose numbers agree.** One run gives ceilings that might be that run's noise.
 
 ---
 
 ## 11 · How a case is reviewed
 
-**A case is reviewed for whether the test is well formed, not for whether the models pass it.** A
+**A case is reviewed for whether the test is well formed, not for whether the model passes it.** A
 well-formed case that fails because Penny falls short is a good test (`docs/principles.md` §4, rule 8),
 and it lands as written. The review asks five things:
 

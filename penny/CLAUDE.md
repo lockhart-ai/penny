@@ -673,20 +673,19 @@ only with a measurement in hand. Every value a profile picks stays individually
 overridable — `EVAL_WORKERS=1 make eval-remote` is remote-but-serial for debugging one
 case, `EVAL_SAMPLES=N` changes the per-case sample count on either.
 
-**Which models the remote profile may measure is CONFIGURATION, and BOTH are required
-(#1996).** `EVAL_MODELS` in the primary checkout's `.env` is a JSON list of
+**Which models the remote profile may measure is CONFIGURATION, and AT LEAST ONE is
+required (#1996/#2222).** `EVAL_MODELS` in the primary checkout's `.env` is a JSON list of
 `{"model": …, "provider": …}` entries (`penny/tests/eval/utils/roster.py`), and a remote run
-**refuses to start** when it names fewer than two — the fail-fast shape `LLM_EMBEDDING_MODEL`
-already has, because a suite ported and tuned against ONE model bakes that model's quirks
-into its fixtures and then measures how much like it the next model is (#1994 §5b). The
-minimum is a COUNT, never two named models: naming them here would rot the day the pair
-changes. A JSON list because that is how `PLUGINS` is configured, and because an env var
-name cannot contain `/`. The recipe resolves this invocation's entry before anything is
-spent — the first by default, or the one `LLM_MODEL` names, and a model **outside** the
-roster is refused (it has no upstream to pin and none to record, which is the ad-hoc
-pass the variable replaces). **The requirement binds the REMOTE profile only**: the field
-that makes an entry load-bearing is `provider`, and a local Ollama has none — it serves one
-model at a time on one GPU, so `make eval` keeps its own single configured model.
+**refuses to start** on an empty roster — the fail-fast shape `LLM_EMBEDDING_MODEL` already
+has. The suite's PRs and checkpoints are measured on the roster's first entry; a further
+entry stays configurable and runnable by name for a look, and such a run gates nothing. A
+JSON list because that is how `PLUGINS` is configured, and because an env var name cannot
+contain `/`. The recipe resolves this invocation's entry before anything is spent — the
+first by default, or the one `LLM_MODEL` names, and a model **outside** the roster is
+refused (it has no upstream to pin and none to record, which is the ad-hoc pass the
+variable replaces). **The requirement binds the REMOTE profile only**: the field that makes
+an entry load-bearing is `provider`, and a local Ollama has none — it serves one model at a
+time on one GPU, so `make eval` keeps its own single configured model.
 
 **A configured provider is a hard PIN.** The resolved entry's provider becomes the run's
 `LLM_PROVIDER`, which reaches the chat client as a `ProviderPin` (`penny/llm/models.py`,

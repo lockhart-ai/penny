@@ -298,12 +298,12 @@ pytest: $(if $(LOCAL),,build)
 #   EVAL_SAMPLES=2 make eval                   fewer samples per case
 #   EVAL_PYTEST_ARGS="<node ids> -m eval -s" make eval-remote      scoped to some cases
 #   EVAL_WORKERS=1 make eval-remote            remote but SERIAL, for debugging one case
-#   LLM_MODEL=<a model EVAL_MODELS names> make eval-remote         the roster's other model
+#   LLM_MODEL=<a model EVAL_MODELS names> make eval-remote         a different roster entry
 #
 # WHICH models a remote run may measure is CONFIGURATION, not a make variable: EVAL_MODELS
 # in the primary checkout's .env is a JSON list of {"model": ..., "provider": ...} entries,
-# at least two of them, and a remote run refuses to start without it (see
-# penny.tests.eval.utils.roster for why two, and why the requirement is remote-only). The recipe
+# at least one of them, and a remote run refuses to start without it (see
+# penny.tests.eval.utils.roster for why, and why the requirement is remote-only). The recipe
 # resolves this invocation's entry — the first by default, or the one LLM_MODEL names — and
 # forwards its provider as a hard PIN with fallbacks OFF: every call goes to exactly that
 # upstream, so a run is served by the provider it names or by nobody. A pin gets only what
