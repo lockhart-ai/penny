@@ -8,10 +8,21 @@ implementation, never sees the ask (#1824).  Nothing is offered to it: it MINTS 
 parameters by reading what the user said.
 
 **Six cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each one ask
-in five wordings pooled into a cohort of fifteen and claimed against
-``docs/eval-case-design.md``.  Every one of them states its behaviour in the fixed sentence
-form, asserts the parameter SET by equality under LANDED, and reports STORE and PROVENANCE
-empty with the reason:
+in five wordings pooled into a cohort of fifteen and read against
+``docs/eval-case-design.md``.  **Code-owner ruling (#2222)**: which parameters are
+emitted, how many, and what they are named are all model OUTPUT — "the number of
+prompts and their naming is variance" — so none of that is asserted any more.  What
+production already enforces (`_mints_a_usable_signature` / `_values_were_demonstrated`
+in ``tools/micro_context.py``: every minted VALUE is a literal span of the user's own
+turns, re-rolled on violation) is exactly the provenance claim this design would
+otherwise want, and asserting it here would score 15/15 by construction and measure the
+validator rather than Penny — so it stays unasserted and stated as a reason, the way
+STORE and PROVENANCE already are.  So every case now reports LANDED, STORE and
+PROVENANCE empty with the reason, and MEASURES the parameter set instead (the
+family-multiset feature, below) — "it's okay to have eval cases that have no checks and
+only measure variance since it's still an important tool for measuring Penny's actual
+behaviour" (code owner). Every case still states its behaviour in the fixed sentence
+form:
 
 * ``framer-mints-only-the-piece-that-varies`` — the ticker ask: the symbol is the one piece
   that varies, and the share price and the notification are both settled elsewhere.
@@ -79,16 +90,15 @@ from penny.tests.eval.conftest import (
     frame_parameter_says,
     framed_parameters,
 )
-from penny.tests.eval.utils.assertions import Answer, Cohort, WorldClaim
+from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     FIELD_UNSET,
     Consequence,
+    Feature,
     SampleObservation,
-    SpecCategory,
     output_field,
 )
-from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
@@ -156,124 +166,61 @@ class PortedArms(NamedTuple):
     turns_per_arm: int = 2
 
 
-def _answers(
-    family: ParameterFamily, among: Sequence[ParameterFamily], expected: int
-) -> WorldClaim:
-    """A claim that EXACTLY ``expected`` minted parameters answer one piece the ask requires.
+def _minted_families(families: Sequence[ParameterFamily]) -> Feature:
+    """The MEASURED reading that replaces the two retired LANDED claims (#2222, code owner's
+    ruling): which parameters the framer minted, how many, and which piece each answers are
+    all model OUTPUT — "the number of [parameters] and their naming is variance" — so this
+    is a Section B feature rather than a pass/fail count.
 
-    The parameter set is a CLOSED field, so this is asserted by equality under LANDED rather
-    than traced under PROVENANCE — but it is still one half of a pair, and its other half is
-    the count below: nothing the ask requires was left out, and nothing it does not was
-    added.
+    Reuses :func:`classify_by_family`, the one classification discipline every suite that
+    asks what a drawn parameter answers reads, so the measured reading and what the retired
+    claims checked can never read the classifier two different ways.  An unclassified
+    parameter — round 8's recorded failure, a `search_term` invented for an ask that named
+    no search — reads ``invented`` rather than being dropped, so the invention still shows up
+    in the pooled distribution instead of silently not counting.  Sorted so two samples that
+    answered the same families agree whatever order the draw minted them in.
 
-    "Answers" is decided by :func:`classify_by_family`, the one classification discipline
-    every suite that asks what a drawn parameter is for reads.  That is a closed equivalence
-    class agreed with the code owner and pinned in ``make check``, not a judgement made per
-    run: the family's tokens are the breadth a piece may be named at, so ``ticker``,
-    ``symbol`` and ``stock_symbol`` are one answer and a reference name is a target rather
-    than a string to match.  Which is what makes this an assertion rather than a reading —
-    a differently-worded correct answer passes, and no correct draw can answer it twice.
+    CONSEQUENTIAL: a routine that asks for one thing is a different interface from one that
+    asks for two, or that asks for something the user never offered to re-supply.
 
-    Too few is a piece the routine can no longer be pointed at; too many is the same piece
-    asked for more times than the ask names it.
+    Declares :data:`FIELD_UNSET` absent because a draw that minted NOTHING (the production
+    floor's honest failure, #1830, re-rolled and then refused rather than accepted) leaves no
+    parameter for this axis to read — the one shape among the measured axes that can
+    genuinely read nothing, as opposed to blank."""
 
-    ``expected`` is how many parameters that piece takes.  It is ONE for a piece the ask
-    names once, and N for an ask that points the routine at N things of the SAME kind —
-    which have no type to tell them apart, so they answer one family N times rather than N
-    families once each.  Telling those N apart is the framer's own naming judgment and is
-    NOT asserted here: a lexicon of ordinal words is a guess at a label the model composes,
-    which the design's not-assertable column rules out, and the two it was tried with failed
-    correct draws twice before being widened twice.  What the behaviour needs is that N
-    re-suppliable pieces of that kind survive into the interface, which this counts.
-
-    ``among`` is the case's WHOLE family set and the classification runs over it ONCE, not
-    once per family.  Classifying against one family at a time would break the discipline it
-    is asking for: the name pass is meant to run over every family before any description is
-    read, so a name that already claimed the page would otherwise still be offered to the
-    title family's description fallback and answer that one too.  A single-family case
-    passes ``(family,)`` and reads exactly as it did."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
+    def read(sample: SampleObservation) -> str:
         drawn = framed_parameters(sample)
-        matched = [
-            name
-            for (name, _says), family_of in zip(
-                drawn, classify_by_family(drawn, among), strict=True
+        if not drawn:
+            return FIELD_UNSET
+        labels = (
+            family_of.label if family_of is not None else "invented"
+            for (_name, _says), family_of in zip(
+                drawn, classify_by_family(drawn, families), strict=True
             )
-            if family_of is not None and family_of.label == family.label
-        ]
-        return len(matched) == expected, f"{len(matched)} answer it: {matched or 'none'}"
-
-    return answer
-
-
-def _asks_for_nothing_else(required: int) -> WorldClaim:
-    """The count — the other half of the pair above, and every case's negative direction.
-
-    Anything beyond the pieces the ask requires is a piece the user would be made to
-    re-supply that their own ask already settled — the cadence, the notification, a search
-    nobody asked for, the thing the routine is FOR.  So the count IS the negative direction,
-    and it is stated here rather than as a list of timing words or a family of search words:
-    a rule keyed to the vocabulary of the clause in front of us would not fire for a clause
-    nobody enumerated, and a parameter minted for anything the ask does not require fails
-    this claim whatever it is called."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        drawn = sample.field(FRAME_PARAMETERS)
-        return drawn == str(required), f"minted {drawn}"
-
-    return answer
-
-
-def _claim_the_parameter_set(
-    cohort: Cohort, families: Sequence[ParameterFamily], answers: int = 1
-) -> None:
-    """The LANDED block every ported framing case makes, over the families its ask requires.
-
-    A framing draw has no enumerated outcome to land on — a signature came back or nothing
-    did, and nothing is the completeness gate's — so the parameter SET is what this category
-    holds for this shape, asserted by equality: a drawn parameter per piece the ask requires,
-    and no parameter for anything it does not.
-
-    The two shapes an ask has are the same statement with the multiplicity in different
-    places.  Pieces of DIFFERENT kinds are several families answered once each (a page and a
-    title).  N pieces of the SAME kind are ONE family answered ``answers`` times — they have
-    no type to tell them apart, so there is no second family for the second one to answer.
-
-    Shared rather than repeated at each case because there is more than one customer for it
-    now; what stays per-case is the family set, which is where each case's own behaviour
-    lives."""
-    for one in families:
-        cohort.claim(
-            f"state: exactly {answers} parameter(s) answer the {one.label}"
-            if answers > 1
-            else f"state: exactly one parameter answers the {one.label}",
-            _answers(one, families, answers),
-            SpecCategory.LANDED,
         )
-    cohort.claim(
-        "state: the routine asks for nothing else",
-        _asks_for_nothing_else(len(families) * answers),
-        SpecCategory.LANDED,
-    )
+        return ", ".join(sorted(labels))
+
+    return Feature("families answered", read, absent=FIELD_UNSET)
 
 
-def _measure_the_draw(cohort: Cohort, positions: int) -> None:
+def _measure_the_draw(cohort: Cohort, positions: int, families: Sequence[ParameterFamily]) -> None:
     """The axes every ported framing case measures — the draw's own structured fields.
 
-    The COUNT is consequential: a routine asking for two things is a different interface from
-    one asking for one.  The name, the description and each drawn parameter's own name and
-    line are COSMETIC — ``stock_tracker`` and ``share_price_watcher`` leave the same
-    interface behind — and the naming spread is the framer's known system-level finding (0.90
-    on both measured models), so it belongs in the variance table and never as a fact about
-    one sample.
+    **LANDED is empty for every one of these cases (#2222, code owner's ruling)**: which
+    parameters are minted, how many, and what they answer are model OUTPUT, so none of it
+    is asserted any more — ``_minted_families`` (above) is where that question now lives,
+    as a measured distribution rather than a count.  The name, the description and each
+    drawn parameter's own name and line are COSMETIC — ``stock_tracker`` and
+    ``share_price_watcher`` leave the same interface behind — and the naming spread is the
+    framer's known system-level finding (0.90 on both measured models), so it belongs in
+    the variance table and never as a fact about one sample.
 
     Only the positions the ask REQUIRES are measured: a position past them exists on a
     divergent sample alone, so its axis would read ``unset`` for the pack and score a
     disagreement as agreement.
 
-    The name, the description and the count are emitted on EVERY draw, so none of them can
-    come back ``unset`` and none declares an absent reading (#2073).  A per-parameter
+    The name, the description and the raw count are emitted on EVERY draw, so none of them
+    can come back ``unset`` and none declares an absent reading (#2073).  A per-parameter
     position CAN be omitted — a draw that folded a same-kind ask into one list emits no
     second position — and that omission IS the reading, so those axes declare
     :data:`FIELD_UNSET` and a cohort where nobody filled the position reads BLIND rather
@@ -282,6 +229,7 @@ def _measure_the_draw(cohort: Cohort, positions: int) -> None:
     No tool sequence and no reply spread: a single call makes neither."""
     cohort.measure(
         output_field(FRAME_PARAMETERS),
+        _minted_families(families),
         output_field(FRAME_NAME, consequence=Consequence.COSMETIC),
         output_field(FRAME_DESCRIPTION, consequence=Consequence.COSMETIC),
         *[
@@ -360,7 +308,8 @@ PAGE_ONLY_ARMS = PortedArms(
 
 _PAGE_ONLY_BEHAVIOUR = (
     f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when an ask names a page "
-    "and no search, Penny mints the page and nothing beside it."
+    "and nothing to search for, Penny writes the routine's interface from the user's own "
+    "words."
 )
 
 
@@ -376,23 +325,20 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
     third thing that is not one: a ``search_term`` promoted for an ask that named a page and
     no search, invented whole rather than taken from anything the user provided.
 
-    **That failure is measured by the COUNT and not by a search family**, deliberately.  A
-    claim naming the search vocabulary would be keyed to the phrasing of the one failure in
-    front of us and would not fire for an invention nobody enumerated; the count fails on a
-    parameter minted for anything the ask does not require, whatever it is called.
-
-    **STORE is EMPTY, and that is the correct report** — a micro-context is one call that
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT — "the number of [parameters] and their naming is variance" — so none
+    of it is asserted.  The provenance claim the ruling does want — that every minted VALUE
+    traces to the user's own words — is already enforced by the framer's own acceptance
+    check (`_mints_a_usable_signature` / `_values_were_demonstrated` in
+    ``tools/micro_context.py``: an invented value is re-rolled, then refused), so asserting
+    it again here would score 15/15 by construction and measure that validator rather than
+    Penny.  STORE stays empty for the usual reason too — a micro-context is one call that
     returns a typed result, so it moves no machine and writes to no store.
 
-    **PROVENANCE is EMPTY, and that needs its reason stated**: a framing's open fields are an
-    identifier and two lines of deliberately generic prose, and the suite's one instrument
-    for the invented direction does not transfer to them.  The measurement behind that is in
-    ``test_the_symbol_is_the_parameter_and_everything_else_bakes``; it is not re-derived here.
-
-    **Three claims are missing because production already validates them** — that the draw
-    minted at least one parameter, that no two share a name, and that every demonstrated
-    value is a literal span of the user's own turns are all ``_mints_a_usable_signature``'s,
-    re-rolled until they hold, so each would run 15/15 by construction.
+    What round 8's recorded failure is now caught by is the **measured** family-multiset
+    (`_minted_families`, below): a `search_term` invented for this ask reads `invented` in
+    the pooled distribution instead of failing a count claim.
     """
     cohort = await framer_eval(
         case_id=PAGE_ONLY_ARMS.case_id,
@@ -405,14 +351,15 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED
-    _claim_the_parameter_set(cohort, _AVAILABILITY.parameters)
+    # LANDED — EMPTY; see the docstring.
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=len(_AVAILABILITY.parameters))
+    _measure_the_draw(
+        cohort, positions=len(_AVAILABILITY.parameters), families=_AVAILABILITY.parameters
+    )
 
 
 # ── Case 2: cadence and notification are not signature ────────────────────────
@@ -484,9 +431,8 @@ TICKER_ARMS = PortedArms(
 # the contract, and it renders above every number in the report.
 _TICKER_BEHAVIOUR = (
     f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when a demonstrated "
-    "round is turned into a reusable routine, Penny mints one parameter for the piece a new "
-    "occasion has to supply and leaves what the user came for — and when they want telling "
-    "— in the framing rather than in the interface."
+    "round about one stock is turned into a reusable routine, Penny writes the routine's "
+    "interface from the user's own words."
 )
 
 
@@ -498,41 +444,33 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
 
     The share price is what the routine IS, so it belongs in the framing; the symbol is the
     one thing said again next time; and being told when it moves is settled where the job is
-    set running.  A framer that turns the notification into a parameter has made a delivery
-    preference into something to be re-supplied.
+    set running.  Whether the framer draws exactly that shape, or instead turns the
+    notification into something to be re-supplied, is now MEASURED rather than asserted.
 
-    **The STORE category is empty for this case, and that is the correct report.**  A
-    micro-context is one call that returns a typed result — it moves no machine and writes
-    to no store — so there is nothing for a store claim to read.  The signature this draw
-    returns is persisted later, by run-end extraction, and this case never runs it.
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT — "the number of [parameters] and their naming is variance" — so none
+    of it is asserted.  The provenance claim the ruling does want — that every minted VALUE
+    traces to the user's own words — is already enforced by the framer's own acceptance
+    check (`_mints_a_usable_signature` / `_values_were_demonstrated` in
+    ``tools/micro_context.py``: an invented value is re-rolled, then refused), so asserting
+    it again here would score 15/15 by construction and measure that validator rather than
+    Penny.
 
-    **Three claims are missing because production already validates them**, and a thin set
-    should read as closed rather than as unrun: that the draw minted at least one parameter,
-    that no two parameters share a name, and that every demonstrated value is a literal span
-    of the user's own turns are all ``_mints_a_usable_signature``'s, re-rolled until they
-    hold, so each would run 15/15 by construction.
+    STORE stays empty for the usual reason too: a micro-context is one call that returns a
+    typed result — it moves no machine and writes to no store.  And PROVENANCE's open
+    fields — the routine's `name`, `description` and each parameter's line — are an
+    identifier and two lines of deliberately GENERIC prose with no traceable value at all on
+    a correct draw, which is why the suite's one instrument for the invented direction
+    (`unsourced_specifics`) never transferred to them even when this case still asserted the
+    parameter set.
 
-    **The PROVENANCE category is empty too, and it needs its reason stated.**  Fact
-    alignment reads a draw's OPEN fields, and this draw's are the routine's ``name``, its
-    ``description``, each parameter's line, and each parameter's demonstrated ``value``.  The
-    value is closed upstream — production refuses one that is not a literal span of the
-    user's turns.  The other three are an identifier and two lines of deliberately GENERIC
-    prose, which carry no traceable value at all on a correct draw, and the suite's one
-    instrument for the invented direction (``unsourced_specifics``) does not transfer to
-    them: measured against this case's own document, it reads a Title-Cased but perfectly
-    correct framing as four inventions, while a made-up exchange in ``the Nasdaq exchange``
-    passes — capitalisation is a rendering the draw chooses, and a single-word invention is
-    the probe's declared blind spot.  A check that fails a correct run for a cosmetic reason
-    and misses the thing it is for is not an assertion, so this category is empty rather than
-    filled with it.
-
-    **And one real contract is NOT measured here, deliberately.**  That the routine's name
-    and description say the KIND of task and never THIS occasion — a framing carrying ``VLT``
-    is a routine that can only ever run once — fits none of the three assertion categories:
-    it is the CONVERSE of a provenance claim (the offending token is in the ask, so nothing
-    is invented and nothing is omitted), and inventing a category to keep one measurement is
-    how a closed list stops being closed.  It stays what the design calls wrong-but-stable —
-    read by a person opening the modal sample, where the drawn name renders verbatim.
+    **And one real contract stays unmeasured, deliberately.**  That the routine's name and
+    description say the KIND of task and never THIS occasion — a framing carrying ``VLT`` is
+    a routine that can only ever run once — fits none of the design's three assertion
+    categories and is not a feature distribution either: it stays what the design calls
+    wrong-but-stable, read by a person opening the modal sample, where the drawn name renders
+    verbatim.
     """
     cohort = await framer_eval(
         case_id=TICKER_ARMS.case_id,
@@ -545,20 +483,15 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the CLOSED field of the typed result: the parameter SET it minted, by
-    # equality.  A framing draw has no enumerated outcome to land on (a signature came back
-    # or nothing did, and nothing is the completeness gate's), so the set is what this
-    # category holds for this shape.
-    _claim_the_parameter_set(cohort, _TICKER.parameters)
+    # LANDED — EMPTY; see the docstring.
 
-    # STORE — empty by construction; see the docstring.
+    # STORE — EMPTY; see the docstring.
 
-    # PROVENANCE — EMPTY, and see the docstring: this draw has no open field a fact
-    # alignment can read.
+    # PROVENANCE — EMPTY; see the docstring.
 
     # What is MEASURED — the draw's own structured fields, at the one position this ask
     # requires.
-    _measure_the_draw(cohort, positions=len(_TICKER.parameters))
+    _measure_the_draw(cohort, positions=len(_TICKER.parameters), families=_TICKER.parameters)
 
 
 # ── Case 3: one turn is enough to frame ───────────────────────────────────────
@@ -604,8 +537,7 @@ SINGLE_TURN_ARMS = PortedArms(
 
 _SINGLE_TURN_BEHAVIOUR = (
     f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when the whole teach is a "
-    "single turn, Penny still separates what the routine is for from the piece a new occasion "
-    "has to supply."
+    "single turn, Penny writes the routine's interface from the user's own words."
 )
 
 
@@ -617,24 +549,17 @@ async def test_a_single_turn_teach_still_separates_the_piece_that_varies(
 
     The ask at its minimum still says what the routine is for.  The temperature is the
     finding and bakes into the framing; the page is the one piece a new occasion has to
-    supply.  A framer that asks what to find has made the user restate what they came for,
-    and one that asks for nothing at all has written a routine that can only repeat the
-    occasion it was shown.
+    supply.  Whether the framer separates them that way, asks what to find, or asks for
+    nothing at all, is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **The count is where both of those land**, which is why it is the negative direction
-    here rather than a rule about temperatures.
-
-    **STORE is EMPTY, and that is the correct report** — one call returns a typed result; it
-    moves no machine and writes to no store.
-
-    **PROVENANCE is EMPTY, and that needs its reason stated**: a framing's open fields are an
-    identifier and two lines of deliberately generic prose, and the suite's one instrument
-    for the invented direction does not transfer to them.  The measurement behind that is in
-    ``test_the_symbol_is_the_parameter_and_everything_else_bakes``; it is not re-derived here.
-
-    **Three claims are missing because production already validates them** — at least one
-    parameter minted, no two sharing a name, every demonstrated value a literal span of the
-    user's own turns — all ``_mints_a_usable_signature``'s, re-rolled until they hold.
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
+    — that every minted VALUE traces to the user's own words — is already enforced by the
+    framer's own acceptance check (`_mints_a_usable_signature` / `_values_were_demonstrated`
+    in ``tools/micro_context.py``), so asserting it again here would score 15/15 by
+    construction.  STORE stays empty for the usual reason: one call returns a typed result;
+    it moves no machine and writes to no store.
     """
     cohort = await framer_eval(
         case_id=SINGLE_TURN_ARMS.case_id,
@@ -647,14 +572,15 @@ async def test_a_single_turn_teach_still_separates_the_piece_that_varies(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED
-    _claim_the_parameter_set(cohort, _SINGLE_TURN.parameters)
+    # LANDED — EMPTY; see the docstring.
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=len(_SINGLE_TURN.parameters))
+    _measure_the_draw(
+        cohort, positions=len(_SINGLE_TURN.parameters), families=_SINGLE_TURN.parameters
+    )
 
 
 # ── Case 4: the look-up is a search, not a page ───────────────────────────────
@@ -719,9 +645,9 @@ SEARCH_ARMS = PortedArms(
 )
 
 _SEARCH_BEHAVIOUR = (
-    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when the look-up an ask "
-    "describes is a text search rather than an address, Penny mints one parameter for the "
-    "thing being searched for, and none for a page."
+    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when an ask names "
+    "something to search for and no page, Penny writes the routine's interface from the "
+    "user's own words."
 )
 
 
@@ -730,26 +656,22 @@ async def test_a_search_look_up_is_named_as_a_search(framer_eval: FramerEval, mo
     """One ask in five wordings: search for this event's tickets, keep the cheapest price.
 
     Nothing in this ask is an address.  What varies next time is which event is being
-    searched for, so the parameter is the search — and a routine that asked for a page would
-    be asking for something the user never gave and a later occasion could not supply.  The
-    cheapest price is what the routine IS and belongs in the framing.
+    searched for, so the parameter a correct draw mints is the search, not a page — and the
+    cheapest price is what the routine IS and belongs in the framing.  Whether the framer
+    draws that shape is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **Test 1 is what separates this from ``framer-names-a-page-as-a-page-and-invents-no-search``**:
-    the search-family parameter that is correct here is exactly the invention that case
-    exists to catch, so a framer cannot satisfy both by habit.  The two are named together
-    because either alone is passable by a framer that always answers the same way.
+    **This case pairs with ``framer-names-a-page-as-a-page-and-invents-no-search``**: the
+    search-family parameter that is correct here is exactly the invention that case exists
+    to watch for, so a framer cannot answer both by habit.
 
-    **STORE is EMPTY, and that is the correct report** — one call returns a typed result; it
-    moves no machine and writes to no store.
-
-    **PROVENANCE is EMPTY, and that needs its reason stated**: a framing's open fields are an
-    identifier and two lines of deliberately generic prose, and the suite's one instrument
-    for the invented direction does not transfer to them.  The measurement behind that is in
-    ``test_the_symbol_is_the_parameter_and_everything_else_bakes``; it is not re-derived here.
-
-    **Three claims are missing because production already validates them** — at least one
-    parameter minted, no two sharing a name, every demonstrated value a literal span of the
-    user's own turns — all ``_mints_a_usable_signature``'s, re-rolled until they hold.
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
+    — that every minted VALUE traces to the user's own words — is already enforced by the
+    framer's own acceptance check (`_mints_a_usable_signature` / `_values_were_demonstrated`
+    in ``tools/micro_context.py``), so asserting it again here would score 15/15 by
+    construction.  STORE stays empty for the usual reason: one call returns a typed result;
+    it moves no machine and writes to no store.
     """
     cohort = await framer_eval(
         case_id=SEARCH_ARMS.case_id,
@@ -762,14 +684,13 @@ async def test_a_search_look_up_is_named_as_a_search(framer_eval: FramerEval, mo
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED
-    _claim_the_parameter_set(cohort, _SEARCH.parameters)
+    # LANDED — EMPTY; see the docstring.
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=len(_SEARCH.parameters))
+    _measure_the_draw(cohort, positions=len(_SEARCH.parameters), families=_SEARCH.parameters)
 
 
 # ── Case 5: two re-suppliable pieces of DIFFERENT types ───────────────────────
@@ -836,9 +757,9 @@ PAGE_AND_TITLE_ARMS = PortedArms(
 )
 
 _PAGE_AND_TITLE_BEHAVIOUR = (
-    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when an ask names both a "
-    "place to go and a thing to look for on it, Penny mints a parameter for each rather than "
-    "baking the thing to look for into the framing."
+    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when an ask names a page "
+    "and a thing to look for on it, Penny writes the routine's interface from the user's own "
+    "words."
 )
 
 
@@ -850,24 +771,18 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
 
     Availability is what the routine IS and bakes into the framing, exactly as it does when
     the ask names one page.  What differs is that the thing being looked for is not IN the
-    address — it is looked up ON the page — so the catalog and the book are two re-suppliable
-    pieces of different kinds and both have to survive into the interface.
+    address — it is looked up ON the page — so a correct draw mints two re-suppliable
+    pieces of different kinds rather than the page alone.  Whether the framer draws that
+    shape is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **Test 1 is what separates this from a page-only ask**: a one-parameter draw is correct
-    for an ask whose finding is settled by the address alone and wrong here, where a routine
-    minting only the page can be pointed at a new catalog but never at a new book.
-
-    **STORE is EMPTY, and that is the correct report** — one call returns a typed result; it
-    moves no machine and writes to no store.
-
-    **PROVENANCE is EMPTY, and that needs its reason stated**: a framing's open fields are an
-    identifier and two lines of deliberately generic prose, and the suite's one instrument
-    for the invented direction does not transfer to them.  The measurement behind that is in
-    ``test_the_symbol_is_the_parameter_and_everything_else_bakes``; it is not re-derived here.
-
-    **Three claims are missing because production already validates them** — at least one
-    parameter minted, no two sharing a name, every demonstrated value a literal span of the
-    user's own turns — all ``_mints_a_usable_signature``'s, re-rolled until they hold.
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
+    — that every minted VALUE traces to the user's own words — is already enforced by the
+    framer's own acceptance check (`_mints_a_usable_signature` / `_values_were_demonstrated`
+    in ``tools/micro_context.py``), so asserting it again here would score 15/15 by
+    construction.  STORE stays empty for the usual reason: one call returns a typed result;
+    it moves no machine and writes to no store.
     """
     cohort = await framer_eval(
         case_id=PAGE_AND_TITLE_ARMS.case_id,
@@ -880,14 +795,15 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED
-    _claim_the_parameter_set(cohort, _PAGE_AND_TITLE.parameters)
+    # LANDED — EMPTY; see the docstring.
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=len(_PAGE_AND_TITLE.parameters))
+    _measure_the_draw(
+        cohort, positions=len(_PAGE_AND_TITLE.parameters), families=_PAGE_AND_TITLE.parameters
+    )
 
 
 # ── The ported case: three of a kind, in five wordings ────────────────────────
@@ -902,8 +818,8 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
 # The ONE family a same-kind ask is answered by, at whatever multiplicity the ask names.
 # Grounded: every arm says "read <address>, <address> and <address>", so `url`/`site`/`page`
 # are words the ask itself puts in front of the draw, and a parameter named at that breadth
-# is a piece the routine can be pointed at.  What is NOT claimed is how the draw tells the
-# several apart — see `_answers`.
+# is a piece the routine can be pointed at.  How many times it is minted, and how the draw
+# tells them apart, is now measured (`_minted_families`) rather than asserted.
 _SAME_KIND_SOURCE = _page_family("source")
 
 # THE FACTS ARE CONSTANT across the five wordings: every arm names all three front pages and
@@ -951,8 +867,8 @@ THREE_SOURCES_ARMS = PortedArms(
 
 _THREE_SOURCES_BEHAVIOUR = (
     f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when one ask points a "
-    "routine at three things of the same kind, Penny mints three distinct scalar parameters "
-    "rather than folding them into one list."
+    "routine at three things of the same kind, Penny writes the routine's interface from "
+    "the user's own words."
 )
 
 
@@ -965,25 +881,17 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
     The same-kind behaviour at three.  Every page has to be re-suppliable and they have to be
     tellable apart, so a correct draw mints three scalars distinguished by position; a single
     list parameter, or two scalars and a description that promises the rest, has lost a piece
-    the user named.
+    the user named.  Whether the framer draws three, folds them into a list, or something
+    else is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **Test 1 is what separates this from ``framer-mints-only-the-piece-that-varies``**: a
-    one-parameter draw is the correct answer there and the wrong one here.  The failure this
-    case exists to catch fails every claim at once — a single ``sites — list of URLs``
-    answers the family once where three are required — and that is several unmet contracts,
-    not one counted several times.
-
-    **STORE is EMPTY, and that is the correct report** — one call returns a typed result; it
-    moves no machine and writes to no store.
-
-    **PROVENANCE is EMPTY, and that needs its reason stated**: a framing's open fields are an
-    identifier and two lines of deliberately generic prose, and the suite's one instrument
-    for the invented direction does not transfer to them.  The measurement behind that is in
-    ``test_the_symbol_is_the_parameter_and_everything_else_bakes``; it is not re-derived here.
-
-    **Three claims are missing because production already validates them** — at least one
-    parameter minted, no two sharing a name, every demonstrated value a literal span of the
-    user's own turns — all ``_mints_a_usable_signature``'s, re-rolled until they hold.
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
+    — that every minted VALUE traces to the user's own words — is already enforced by the
+    framer's own acceptance check (`_mints_a_usable_signature` / `_values_were_demonstrated`
+    in ``tools/micro_context.py``), so asserting it again here would score 15/15 by
+    construction.  STORE stays empty for the usual reason: one call returns a typed result;
+    it moves no machine and writes to no store.
     """
     cohort = await framer_eval(
         case_id=THREE_SOURCES_ARMS.case_id,
@@ -996,14 +904,13 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED
-    _claim_the_parameter_set(cohort, (_SAME_KIND_SOURCE,), answers=3)
+    # LANDED — EMPTY; see the docstring.
 
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
 
-    _measure_the_draw(cohort, positions=3)
+    _measure_the_draw(cohort, positions=3, families=(_SAME_KIND_SOURCE,))
 
 
 # EVERY ported case's arms, for the deterministic probe in ``make check`` — one place, so the
