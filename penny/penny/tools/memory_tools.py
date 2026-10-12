@@ -1525,6 +1525,7 @@ class CollectionWriteTool(MemoryTool):
     # would teach a correction the surface cannot carry out.
     advises = ("update_entry", "collection_delete_entry")
     stores_entries = True
+    destination_param = "memory"
     description = (
         "Write one or more entries to a collection. Each entry has a short "
         "`key` (topic/identifier) and a longer `content` body. Dedup runs "
@@ -1781,6 +1782,7 @@ class UpdateEntryTool(MemoryTool):
     # not-found message names both moves.
     advises = ("collection_write", "collection_keys")
     stores_entries = True
+    destination_param = "memory"
     description = (
         "Replace the content of an existing entry in a collection, identified "
         "by key. Returns an error if the key doesn't exist."

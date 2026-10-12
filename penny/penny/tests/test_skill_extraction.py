@@ -275,9 +275,15 @@ async def test_read_write_run_qualifies_and_distils_correctly(db, emitted_write_
 
 _LOOP_NORTH = "watch-cliffwalk-trail-status-north-loop"
 _LOOP_SOUTH = "watch-cliffwalk-trail-status-south-loop"
+# The entry KEY is itself a near-match of the collection's name by token
+# containment alone ("north loop" ⊆ {watch, cliffwalk, trail, status, north,
+# loop}) — the adversarial case #2273 narrowed the widening against: a key or
+# an ``extract`` text can read as a near-match of a long collection name by
+# sheer token overlap, and must NOT be marked attachment just because it
+# happens to.
 _LOOP_WRITE_ARGS = {
     "memory": _LOOP_SOUTH,
-    "entries": [{"key": "trail status", "content": "open"}],
+    "entries": [{"key": "north loop", "content": "open"}],
 }
 _LOOP_WRITE_OK = (
     f"Note: no collection named '{_LOOP_SOUTH}' exists — '{_LOOP_NORTH}' is the same "
@@ -295,7 +301,13 @@ async def test_redirected_write_keeps_the_attachment_mark(db):
     distilled routine would carry a write step nobody could ever fill. Extraction reads
     the ledger's own entry stamp instead of the typed name, so the leaf is marked
     ``attachment=True`` on the collection the write actually resolved to, while the
-    typed value stays the verbatim ledger copy."""
+    typed value stays the verbatim ledger copy.
+
+    The widening is narrow (#2273): the entry's KEY ("north loop") is ALSO a
+    near-match of the collection's name by token containment, exactly like the
+    ``memory`` argument is — but it is not the call's declared DESTINATION
+    (``collection_write``'s ``destination_param`` names only ``memory``), so it
+    must keep its ordinary required-parameter substitution, unmarked."""
     db.memories.create_collection(_LOOP_NORTH, "trail status notes")
     _log_run(
         db, "run-loop", _UTTERANCE, [("collection_write", _LOOP_WRITE_ARGS, _LOOP_WRITE_OK, True)]
@@ -304,7 +316,7 @@ async def test_redirected_write_keeps_the_attachment_mark(db):
         session.add(
             MemoryEntry(
                 memory_name=_LOOP_NORTH,
-                key="trail status",
+                key="north loop",
                 content="open",
                 author="chat",
                 created_by_run_id="run-loop",
@@ -321,6 +333,9 @@ async def test_redirected_write_keeps_the_attachment_mark(db):
     assert subs[("memory",)].attachment is True
     # The typed name stays the verbatim ledger copy; only the mark changed.
     assert steps[0].arguments["memory"] == _LOOP_SOUTH
+    # The key is a near-match of the collection's name too, but it is not the
+    # call's declared destination — it stays an ordinary parameter, unmarked.
+    assert subs[("entries", 0, "key")].attachment is False
 
 
 @pytest.mark.asyncio

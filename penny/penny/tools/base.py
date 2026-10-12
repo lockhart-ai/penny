@@ -87,6 +87,13 @@ class Tool(ABC):
     # nothing that reads the mark ever names a tool.  Keyed entries only, because that is
     # what the landed half counts — a keyless stream append is not a save.
     stores_entries: bool = False
+    # The argument that names the collection a storing tool writes to (#2273) — set
+    # beside ``stores_entries`` on every tool that carries one, so a caller can read a
+    # call's declared DESTINATION off the tool's own declaration rather than guessing
+    # which argument or position holds it. ``None`` for a tool that stores nothing, or
+    # one whose destination is implicit (scoped to a single bound collection, with no
+    # argument naming it at all).
+    destination_param: str | None = None
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -251,6 +258,19 @@ class Tool(ABC):
         answers to (a call to nothing kept nothing, and tried to keep nothing either)."""
         tool_cls = cls._registry.get(tool_name)
         return tool_cls.stores_entries if tool_cls else False
+
+    @classmethod
+    def destination_for(cls, tool_name: str, arguments: dict) -> str | None:
+        """The collection a call to ``tool_name`` declared as its DESTINATION (#2273) —
+        read off the registered tool's own ``destination_param``, never a name or
+        position hard-coded here. ``None`` for an unknown tool, a tool that declares no
+        destination argument, or a call whose destination argument is absent or not a
+        string."""
+        tool_cls = cls._registry.get(tool_name)
+        if tool_cls is None or tool_cls.destination_param is None:
+            return None
+        value = arguments.get(tool_cls.destination_param)
+        return value if isinstance(value, str) else None
 
     @classmethod
     def format_status(cls, tool_name: str, arguments: dict) -> str:

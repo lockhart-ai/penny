@@ -81,7 +81,7 @@ from __future__ import annotations
 import logging
 import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 from similarity.embeddings import cosine_similarity, is_name_variant
@@ -108,6 +108,7 @@ from penny.database.skills import (
 )
 from penny.llm.similarity import embed_text
 from penny.text_validity import is_blank
+from penny.tools.base import Tool
 from penny.tools.micro_context import MicroContext, SkillLabels, SkillSignature
 
 if TYPE_CHECKING:
@@ -303,20 +304,6 @@ def attachment_names(db: Database) -> frozenset[str]:
     )
 
 
-def _string_leaves(value: Any) -> list[str]:
-    """Every string leaf under ``value``, recursively — collected generically so
-    the near-match check below never assumes which argument or tool a demonstrated
-    write sits on (#2270: a skill is an arbitrary tool sequence, so no leaf-finder
-    here may key to a name or a position)."""
-    if isinstance(value, dict):
-        return [leaf for sub in value.values() for leaf in _string_leaves(sub)]
-    if isinstance(value, list):
-        return [leaf for sub in value for leaf in _string_leaves(sub)]
-    if isinstance(value, str):
-        return [value]
-    return []
-
-
 def _resolved_attachment_names(
     db: Database, run_id: str, certified: list[RunProjectionStep]
 ) -> frozenset[str]:
@@ -331,20 +318,28 @@ def _resolved_attachment_names(
     fact of where the write landed is read off the LEDGER instead of that prose:
     ``entries_written_by_run`` is the entry-stamp read (#1911) that already
     answers 'what did this run write, and to which collection' tool-agnostically.
-    A demonstrated value that is not itself a collection name, but is a near-match
-    (the SAME ``is_name_variant`` predicate and the SAME two thresholds
-    ``collection_write`` redirects on — one shared rule, so the two sites cannot
-    answer the near-match question differently) of a collection this run actually
-    wrote to, is treated as naming that collection too."""
+
+    The ONLY candidate values tested are each certified step's own declared
+    DESTINATION (``Tool.destination_for``, read off the tool's ``stores_entries``
+    sibling ``destination_param``) — never any other argument a storing call
+    carries. A key or an ``extract`` instruction can read as a near-match of a
+    long collection name by sheer token overlap, and the write tool itself never
+    applies the near-match rule to anything but the one argument it resolves a
+    write against (#2273); testing every string leaf would mark leaves the write
+    tool never would. A demonstrated destination that is not itself a collection
+    name, but is a near-match (the SAME ``is_name_variant`` predicate and the SAME
+    two thresholds ``collection_write`` redirects on — one shared rule, so the two
+    sites cannot answer the near-match question differently) of a collection this
+    run actually wrote to, is treated as naming that collection too."""
     names = attachment_names(db)
     written = {entry.memory_name for entry in db.memories.entries_written_by_run(run_id)}
     if not written:
         return names
     candidates = {
-        value
+        destination
         for step in certified
-        for value in _string_leaves(step.call.arguments)
-        if value not in names
+        if (destination := Tool.destination_for(step.call.tool, step.call.arguments)) is not None
+        and destination not in names
     }
     resolved = {
         value
