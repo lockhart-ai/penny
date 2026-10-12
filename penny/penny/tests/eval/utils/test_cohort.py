@@ -24,6 +24,8 @@ from penny.tests.eval.utils.cohort import (
     FIELD_UNSET,
     JOB_TERMS,
     NO_JOB,
+    NO_NOTIFICATION_SENT,
+    NO_REPLY_RECORDED,
     REPLY_SPREAD,
     ROUTINE_NAME,
     ROUTINE_SHAPE,
@@ -1641,3 +1643,28 @@ def test_a_reply_spread_with_no_embeddings_says_so_rather_than_reading_zero():
     measured = text_spread(embedded)
     assert measured is not None and measured.cosine_measurable
     assert measured.cosine_pairs == 3
+
+
+def test_a_sample_s_final_reply_is_read_off_what_its_driver_produced() -> None:
+    """The reply the run summary shows for a case: a draw's stated fields, a chat reply, what a
+    cycle sent, or the words that say there was none."""
+    drawn = SampleObservation(
+        name="s1",
+        phrasing="p1",
+        output=[
+            OutputField(name="outcome", value="decided"),
+            OutputField(name="state", value="idle"),
+            OutputField(name="skill", value=""),
+        ],
+    )
+    assert drawn.representative_reply == "outcome: decided · state: idle"
+    replied = SampleObservation(name="s2", phrasing="p1", reply="Got it, muted.")
+    assert replied.representative_reply == "Got it, muted."
+    quiet_cycle = SampleObservation(name="s3", phrasing="p1", run_outcome="no_work")
+    assert quiet_cycle.representative_reply == NO_NOTIFICATION_SENT
+    nothing = SampleObservation(name="s4", phrasing="p1")
+    assert nothing.representative_reply == NO_REPLY_RECORDED
+    unstated = SampleObservation(
+        name="s5", phrasing="p1", output=[OutputField(name="reason", value="")]
+    )
+    assert unstated.representative_reply == NO_REPLY_RECORDED

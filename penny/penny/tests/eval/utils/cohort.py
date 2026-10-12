@@ -285,6 +285,8 @@ FIELD_UNSET = "unset"
 # a blank reply cell reads as a rendering bug rather than as the honest absence it is.
 NO_NOTIFICATION_SENT = "(sent nothing)"
 NO_REPLY_RECORDED = "(no reply)"
+# What stands between two fields of a structured output shown as a reply.
+_STATED_FIELD_GAP = " · "
 
 
 class OutputField(BaseModel):
@@ -445,15 +447,17 @@ class SampleObservation(BaseModel):
 
         The three driver shapes answer it three different ways, in priority order: a
         micro-context sample (classifier/framer/binder/labeller/extractor) answers with its
-        structured OUTPUT — the same fields a provenance claim reads (:attr:`output_text`) —
-        because it has no reply at all; a chat sample answers with its TEXT reply; a collector
+        structured OUTPUT, each field that holds a value as ``name: value`` — it has no reply at
+        all, and a field the draw left empty says nothing; a chat sample answers with its TEXT
+        reply; a collector
         sample answers with what it told the user, read off the SAME ``reply`` field (joined
         from its sent notifications), or the honest :data:`NO_NOTIFICATION_SENT` when its cycle
         queued none — told apart from a chat sample by the record fields only a cycle stamps
         (``run_outcome``/``run_reason``). A shape that left neither is :data:`NO_REPLY_RECORDED`
         rather than a guess."""
         if self.output:
-            return self.output_text
+            stated = [f"{one.name}: {one.value}" for one in self.output if one.value.strip()]
+            return _STATED_FIELD_GAP.join(stated) or NO_REPLY_RECORDED
         if self.reply.strip():
             return self.reply
         if self.run_outcome is not None or self.run_reason is not None:
