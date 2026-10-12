@@ -68,11 +68,11 @@ instead of a naming judgment.
 This module is pure (no engine, no tool imports): the step/parameter models, the
 provenance inference (:func:`distill_steps`), the load-bearing render
 (:func:`render_skill`) that turns steps + bound params into the numbered TEXT
-``extraction_prompt`` a collection runs, and the apply-time pair above.  The DB store lives in
-:mod:`penny.database.skill_store`; the run-end extractor in
-:mod:`penny.skill_extraction`; describing a job (its recipe and its routine's
-parameters together) is ``memory_metadata`` in :mod:`penny.tools.memory_tools`
-(#2287) — there is no separate skill-read tool.
+``extraction_prompt`` a collection runs, and the apply-time pair above.  The DB store
+lives in :mod:`penny.database.skill_store`; the run-end extractor in
+:mod:`penny.skill_extraction`.  Describing a skill reads :func:`render_skill` from two
+places (#2287): ``find``'s hit, for a taught routine with no job running, and a
+configured job's ``memory_metadata``, both in :mod:`penny.tools.memory_tools`.
 """
 
 from __future__ import annotations

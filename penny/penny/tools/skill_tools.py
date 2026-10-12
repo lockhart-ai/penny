@@ -1,23 +1,21 @@
 """The skill substrate's renders beyond the recipe itself (#1590/#1804/#1943).
 
-Skills are no longer model-authored: there is no ``skill_create`` tool.  A skill is
-distilled deterministically from a qualifying chat run's own ledger at run end
-(``penny.skill_extraction``), certified-by-execution with provenance-inferred
+A skill is distilled deterministically from a qualifying chat run's own ledger at run
+end (``penny.skill_extraction``), certified-by-execution with provenance-inferred
 parameters.  The model's only skill actions are resolve (``find``) and
-instantiate/attach (``collection_set(skill=…)``) — describing a job is one call to
-``memory_metadata`` (#2287), which renders a configured collection's recipe and its
-routine's parameters together, so there is no separate skill-read surface.
+instantiate/attach (``collection_set(skill=…)``).  Describing a skill is a property of
+WHERE it stands: a taught routine with no job running shows its own recipe on
+``find``'s hit (#2287, ``memory_tools._skill_recipe_block``); a configured job's
+``memory_metadata`` shows the same recipe plus the values THAT job bound.  Both read
+the one ``parameters:`` line format in ``penny.tools.collection_instantiation``
+(``render_skill_parameters``).
 
 Two renders live here, because the consumers want different things: ``render_skill_brief``
 — what a skill IS and what it NEEDS, on one line — is what the surfaces that JUDGE a
 skill read (the ambient ``### Skills and rules`` section every turn, and the run-end
 narration frame); ``render_skill_shape`` — the same steps at SHAPE altitude, one
 skimmable line — is what the learn-close narration adds beside the brief so the person
-who knows what the routine was meant to do can see what it actually captured.  The
-bare ``parameters:`` line format both renders' siblings need lives in
-``penny.tools.collection_instantiation`` (``render_skill_parameters``) — the shared
-home for a format a job's own render (``memory_metadata``) and the skill substrate
-both read.
+who knows what the routine was meant to do can see what it actually captured.
 """
 
 from __future__ import annotations
@@ -138,8 +136,9 @@ def render_skill_shape(skill: Skill) -> str:
     the reason the brief render beside it is: the two must not be able to disagree.  It is
     the same steps the stored ``extraction_prompt`` numbers out in full — one altitude up,
     with no argument VALUES and no call shape at all, so there is nothing here for the
-    reply to read aloud as a recipe (the #1799 leak) and the whole recipe stays one
-    ``memory_metadata(memory=<name>)`` away on a configured job.
+    reply to read aloud as a recipe (the #1799 leak) and the whole recipe stays one call
+    away either way: ``find`` on the routine's own hit, or ``memory_metadata`` on the
+    job once it is configured.
 
     No tool is named in LOGIC: each segment is whatever the step's own call was, so a
     routine spanning tools this module has never heard of renders exactly like one that

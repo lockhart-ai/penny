@@ -781,7 +781,8 @@ def test_the_step_shape_line_names_each_step_and_what_it_handles_more_than_one_o
     assert rendered == _BRIEFING_SHAPE
     # No argument VALUE and no call shape — the #1799 leak has no source here (a step
     # names a tool the way prose does, not the way a recipe does), and the whole recipe
-    # is reachable once the routine is running, via that job's own memory_metadata.
+    # is one call away either way: find on the routine's own hit, or memory_metadata
+    # on the job once it is running.
     assert "example-a" not in rendered and "(" not in rendered
 
 

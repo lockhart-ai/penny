@@ -34,10 +34,11 @@ one guess-free tool call from the detail). Sections:
   so instantiation costs **0 calls** — the parameters are the binding keys and
   they are in the prompt. NOT the numbered recipe (#1804): nothing on the chat
   path carries out a skill's steps any more, so on a section read every turn the
-  recipe was context cost for a decision it does not inform. Once a routine is
-  set running, its full ``parameters:`` block — required/optional, description,
-  and the value THAT job bound for each — renders on ``memory_metadata`` for the
-  job (#2287), one call away. One feed: the taught-skill registry
+  recipe was context cost for a decision it does not inform. The full recipe is
+  one call away either way (#2287): ``find`` carries a taught-skill hit's own
+  ``parameters:`` block and numbered steps, and once a routine is set running,
+  ``memory_metadata`` on the job carries the same block with the value THAT job
+  bound for each. One feed: the taught-skill registry
   (``db.skills``, #1590) — the sole skills store. (The legacy ``skills``
   collection's standing-rules feed retired with the collection, #1624/migration
   0092.)
@@ -442,11 +443,11 @@ class SelfStateHeader:
         are the binding keys and they are right here. What a row does NOT carry is
         the numbered recipe: no chat state carries out a skill's steps (the collector
         does, from the prompt rendered at instantiation), so on a section read every
-        turn it was cost against a decision it does not inform. Once the routine is
-        set running, the job's own ``memory_metadata`` names its recipe AND its
-        parameters block (#2287). The section collapses to one honest placeholder
-        when nothing has been taught. (The legacy standing-rules feed retired with
-        the ``skills`` collection, #1624.)"""
+        turn it was cost against a decision it does not inform. ``find`` names a
+        routine's own recipe AND its parameters block directly (#2287), and once it
+        is set running, so does ``memory_metadata`` on the job. The section
+        collapses to one honest placeholder when nothing has been taught. (The
+        legacy standing-rules feed retired with the ``skills`` collection, #1624.)"""
         skills = self.db.skills.list_all()
         if not skills:
             return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])

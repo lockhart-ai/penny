@@ -845,14 +845,12 @@ def render_skill_parameters(
 ) -> str:
     """The ``parameters:`` block (#1668/#2287): one ``- <name> (required|optional)[:
     <description>]`` line per SKILL-level parameter, collapsing to ``parameters: none``
-    for a parameter-less skill.  ``bound`` is the shared home this moved to so a job's
-    own render (``memory_metadata``, #2287) and the skill substrate's full-recipe render
-    don't keep two copies of the same line: with a ``bound`` dict (a configured job's
-    values, read off its own row via :func:`skill_params`) each line additionally states
-    the value THIS job supplied for it, or that nothing was — answering the same
-    required/optional/description question a job's own metadata and the bare skill
-    declaration both need, in one format.  ``None`` (the bare declaration, with no job to
-    speak of) renders the line with no value clause at all."""
+    for a parameter-less skill.  The ONE format every reader of a routine's declared
+    parameters needs, called two ways: a configured job's ``memory_metadata`` render
+    passes ``bound`` (the job's own values, read off its row via :func:`skill_params`)
+    so each line additionally states the value THIS job supplied for it, or that
+    nothing was; ``find``'s taught-skill hit reads the bare declaration (``bound=None``)
+    — no job to speak of, so the line carries no value clause at all."""
     if not parameters:
         return "parameters: none"
     lines = ["parameters:"]

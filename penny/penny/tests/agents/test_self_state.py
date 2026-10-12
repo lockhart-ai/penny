@@ -620,8 +620,9 @@ def test_self_state_taught_skills_only_render(db):
     — <clauses>`` shape the sections above it use, so several skills are a list to
     skim.  What a row does NOT carry is the numbered recipe: this is a 0-call
     INSTANTIATION surface (the parameter names are the binding keys), not a surface
-    anything is carried out from — the recipe + parameters block for a job built
-    from the routine render on that job's own ``memory_metadata`` (#2287)."""
+    anything is carried out from — the recipe + parameters block is one call away
+    either way (#2287): ``find`` on the routine's own hit, or ``memory_metadata`` on
+    the job once it is set running."""
     with Session(db.engine) as session:
         _add_skill(
             session,

@@ -22,6 +22,8 @@ from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
 from penny.database.memory import (
+    ResolvedKind,
+    ResolvedMatch,
     WriteGateOutcome,
     WriteResult,
     render_run_calls,
@@ -90,6 +92,7 @@ from penny.tools.memory_tools import (
     ReadRunCallsTool,
     ReadSimilarTool,
     _format_duplicate,
+    _render_object_hit,
     build_memory_tools,
     collector_tool_surface,
     render_nothing_landed,
@@ -4622,9 +4625,10 @@ class TestFind:
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
         "   how to use it: set it running with collection_set(name=<a name for the "
-        "job>, skill='escalate-aurora', params=…) — what it needs is in the skills "
-        "list of the state header; to change it, demonstrate it again in chat — I "
-        "relearn it automatically, replacing this one\n"
+        "job>, skill='escalate-aurora', params=…); to change it, demonstrate it "
+        "again in chat — I relearn it automatically, replacing this one\n"
+        "   parameters: none\n"
+        "   steps:\n"
         "3. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
         "entries stay readable with collection_read_latest('aurora-archive')\n"
@@ -4668,6 +4672,58 @@ class TestFind:
         result = await FindTool(db, client).execute(query="aurora beacon cascade")
         assert result.success
         assert result.message == self._KITCHEN_SINK
+
+    @pytest.mark.asyncio
+    async def test_skill_hit_carries_its_own_recipe(self, db, mock_llm):
+        """A taught-skill hit carries its own ``parameters:`` block and numbered
+        steps (#2287), indented under the addressing line — a routine with no job
+        running has nowhere else a tool call reaches its steps, since the self-state
+        header's skills section is prose and ``memory_metadata`` describes a
+        configured COLLECTION, not the bare registry row."""
+        client = _axis_client(mock_llm)
+        db.skills.upsert(
+            SkillDraft(
+                name=_SKILL_NAME,
+                intent="watch a peak's elevation and save it",
+                description="aurora beacon cascade gamma",
+                steps=_watch_skill_steps(),
+                parameters=[
+                    SkillParameter(name=_SKILL_HOLE, required=True, description="the peak to check")
+                ],
+                source_run_id="run-teach",
+            ),
+            author="chat",
+            description_embedding=_axis_vec("aurora beacon cascade gamma"),
+        )
+        result = await FindTool(db, client).execute(query="aurora beacon cascade gamma")
+        assert result.message == (
+            'Found 1 thing matching "aurora beacon cascade gamma":\n'
+            f"1. {_SKILL_NAME} — live taught skill: aurora beacon cascade gamma\n"
+            "   how to use it: set it running with collection_set(name=<a name for "
+            f"the job>, skill='{_SKILL_NAME}', params=…); to change it, demonstrate "
+            "it again in chat — I relearn it automatically, replacing this one\n"
+            "   parameters:\n"
+            "     - peak (required): the peak to check\n"
+            "   steps:\n"
+            "   1. browse(queries=[{peak}], extract='the elevation above sea level')\n"
+            "   2. collection_write(memory={the collection this is set up on}, "
+            "entries=[{'key': {peak}, 'content': the value from step 1}])"
+        )
+
+    def test_skill_hit_renders_short_form_when_the_routine_is_gone(self, db):
+        """A ``find`` hit whose routine the registry no longer holds renders exactly
+        as it does for any other object — the recipe block is simply absent, never
+        fabricated from nothing (#2287)."""
+        match = ResolvedMatch(
+            name="vanished-routine", kind=ResolvedKind.SKILL, archived=False, label=""
+        )
+        assert _render_object_hit(1, match, db) == (
+            "1. vanished-routine — live taught skill\n"
+            "   how to use it: set it running with collection_set(name=<a name for "
+            "the job>, skill='vanished-routine', params=…); to change it, "
+            "demonstrate it again in chat — I relearn it automatically, replacing "
+            "this one"
+        )
 
     @pytest.mark.asyncio
     async def test_type_argument_is_rejected(self, db, mock_llm):

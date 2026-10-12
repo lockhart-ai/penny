@@ -562,8 +562,8 @@ def _skill_provenance_line(row: MemoryRow) -> str | None:
 def _skill_parameters_block(db: Database, row: MemoryRow) -> str | None:
     """The job's ``parameters:`` block (#2287) — each parameter the routine declares,
     whether it is required or optional, its description, and the value THIS job has
-    bound for it (:func:`render_skill_parameters`, the shared format
-    ``skill_tools``'s brief/shape renders and this both need).  ``None`` for a
+    bound for it (:func:`render_skill_parameters`, the one format this and ``find``'s
+    taught-skill hit, in :func:`_skill_recipe_block`, both read).  ``None`` for a
     collection with no routine at all (``skill_name`` NULL — the render stays
     byte-identical to today), or when the registry no longer holds a skill by that
     name: the provenance line above still names it, so the block simply has nothing
@@ -3023,9 +3023,8 @@ def _find_addressing(match: ResolvedMatch) -> str:
     if match.kind == ResolvedKind.SKILL:
         return (
             f"set it running with collection_set(name=<a name for the job>, "
-            f"skill='{name}', params=…) — what it needs is in the skills list "
-            f"of the state header; to change it, demonstrate it again in chat "
-            f"— I relearn it automatically, replacing this one"
+            f"skill='{name}', params=…); to change it, demonstrate it again in "
+            f"chat — I relearn it automatically, replacing this one"
         )
     if match.kind == ResolvedKind.LOG:
         return f"read it with log_read('{name}')"
@@ -3078,21 +3077,47 @@ def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
     return f"{head}\n   read it: {_entry_addressing(entry)}"
 
 
-def _render_object_hit(index: int, match: ResolvedMatch) -> str:
+def _skill_recipe_block(db: Database, name: str) -> str | None:
+    """A taught-skill hit's own recipe (#2287): its ``parameters:`` block (no bound
+    values — this is the ambient registry row, not a configured job) and its numbered
+    steps (``render_skill`` over the stored steps, parameters shown as ``{name}``),
+    indented under the hit the same way ``how to use it:`` is.  This is the content a
+    job's own render carries minus the name/intent lines the hit's head already
+    shows.  ``find``'s render functions are module-level and have no database
+    handle, so the caller (``FindTool._format``) fetches the row and passes it down.
+    ``None`` when the registry no longer holds a skill by that name, so the hit
+    renders exactly as it does for any other object."""
+    skill = db.skills.get(name)
+    if skill is None:
+        return None
+    parameters = render_skill_parameters(parameters_from_json(skill.parameters))
+    recipe = render_skill(steps_from_json(skill.steps))
+    body = f"{parameters}\nsteps:\n{recipe}"
+    return "\n".join(f"   {line}" for line in body.splitlines())
+
+
+def _render_object_hit(index: int, match: ResolvedMatch, db: Database) -> str:
     """One object hit: ``N. <name> — <state> <type>[: <scope>]`` then the
-    verbatim-usable addressing on the next line."""
+    verbatim-usable addressing on the next line.  A taught-skill hit additionally
+    carries its own recipe (#2287), since a routine with no job running has nowhere
+    else a tool call reaches its steps."""
     head = f"{index}. {match.name} — {_find_state(match)} {_find_type_label(match)}"
     if match.label:
         head += f": {match.label}"
-    return f"{head}\n   how to use it: {_find_addressing(match)}"
+    lines = [head, f"   how to use it: {_find_addressing(match)}"]
+    if match.kind == ResolvedKind.SKILL:
+        recipe = _skill_recipe_block(db, match.name)
+        if recipe is not None:
+            lines.append(recipe)
+    return "\n".join(lines)
 
 
-def _render_find_hit(index: int, hit: ResolvedHit) -> str:
+def _render_find_hit(index: int, hit: ResolvedHit, db: Database) -> str:
     """One fused hit, best-first ranked — dispatched by family: a stored entry
     renders its value + how to read it, an object its state/type + how to use it."""
     if isinstance(hit, ResolvedEntry):
         return _render_entry_hit(index, hit)
-    return _render_object_hit(index, hit)
+    return _render_object_hit(index, hit, db)
 
 
 class FindTool(MemoryTool):
@@ -3181,7 +3206,7 @@ class FindTool(MemoryTool):
     def _format(self, query: str, hits: list[ResolvedHit]) -> str:
         if not hits:
             return _FIND_EMPTY.format(query=query)
-        body = "\n".join(_render_find_hit(i, h) for i, h in enumerate(hits, start=1))
+        body = "\n".join(_render_find_hit(i, h, self._db) for i, h in enumerate(hits, start=1))
         if len(hits) == 1:
             return f'Found 1 thing matching "{query}":\n{body}'
         return (
