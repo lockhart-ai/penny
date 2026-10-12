@@ -730,6 +730,25 @@ EXPIRES_AT_PARAM_DESCRIPTION = (
     "'2026-11-02T22:00:00'. Leave it out when there's no end date."
 )
 
+# The ``schedule`` argument's description — stated ONCE here and read by every surface
+# that declares the argument (create, update, and the ``collection_set`` front door,
+# #2222): before this, ``collection_set``'s own schema carried a bare
+# ``{"type": "string"}`` for it with no description at all, so chat never saw what
+# create/update behind it already say — measured on gemma, "check it every morning"
+# landed with no hour at all in a third of calls and a different guessed hour in the
+# rest (case ``transition-request-to-apply``, 10/15). States the hour a named part of
+# the day means when the user gives no hour of their own (code-owner ruling).
+SCHEDULE_PARAM_DESCRIPTION = (
+    "When it runs, as one recurrence rule: 'FREQ=HOURLY' (every hour), "
+    "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
+    "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
+    "9). BYHOUR is the hour on the user's own clock — write the hour "
+    "they said. When they name a part of the day instead of an hour, write BYHOUR "
+    "as morning=8, afternoon=14, evening=19, night=22. Add COUNT= to run a set "
+    "number of times, and a leading 'DTSTART:<time>' line to say when it starts; "
+    "a DTSTART stamp ending in Z is an exact moment in UTC."
+)
+
 
 class CollectionCreateTool(MemoryTool):
     """Instantiate a collection from a skill, or set up an INERT storage container —
@@ -839,15 +858,7 @@ class CollectionCreateTool(MemoryTool):
             },
             "schedule": {
                 "type": "string",
-                "description": (
-                    "When it runs, as one recurrence rule: 'FREQ=HOURLY' (every hour), "
-                    "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
-                    "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
-                    "9). BYHOUR is the hour on the user's own clock — write the hour "
-                    "they said. Add COUNT= to run a set number of times, and a "
-                    "leading 'DTSTART:<time>' line to say when it starts; a DTSTART "
-                    "stamp ending in Z is an exact moment in UTC."
-                ),
+                "description": SCHEDULE_PARAM_DESCRIPTION,
             },
             "expires_at": {
                 "type": "string",
@@ -1931,7 +1942,7 @@ class CollectionSetTool(MemoryTool):
             "description": {"type": "string"},
             "skill": {"type": "string"},
             "params": {"type": "object"},
-            "schedule": {"type": "string"},
+            "schedule": {"type": "string", "description": SCHEDULE_PARAM_DESCRIPTION},
             "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
             "notify": {"type": "boolean"},
         },
@@ -2307,12 +2318,8 @@ class CollectionUpdateTool(MemoryTool):
             "schedule": {
                 "type": "string",
                 "description": (
-                    "When the job runs, as one recurrence rule — setting it REPLACES the "
-                    "whole schedule: 'FREQ=HOURLY' (every hour), "
-                    "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
-                    "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
-                    "9). BYHOUR is the hour on the user's own clock — write the hour "
-                    "they said. Omit to leave the schedule unchanged."
+                    f"{SCHEDULE_PARAM_DESCRIPTION} Setting it REPLACES the whole schedule; "
+                    "omit to leave it unchanged."
                 ),
             },
             "expires_at": {

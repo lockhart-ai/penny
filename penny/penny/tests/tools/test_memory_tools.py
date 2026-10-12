@@ -71,6 +71,7 @@ from penny.tools.memory_tools import (
     _SAME_JOB_UPDATED,
     _SKILL_GONE,
     EXPIRES_AT_PARAM_DESCRIPTION,
+    SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
     CollectionCatalogTool,
     CollectionCreateTool,
@@ -2205,17 +2206,21 @@ class TestBlankOptionalArgsAreRefused:
     async def test_every_optional_string_names_its_own_form(self, db):
         """Uniform across the surface — each optional string refuses a blank with ITS
         accepted form, so the guard isn't special-cased to ``expires_at``.  A
-        whitespace-only value is the same miss as an empty one.  ``expires_at`` carries
-        its own schema descriptor too (#2250, the one shared across create/update/set),
-        so its line also names it; the other fields are still bare in this tool's
-        schema."""
+        whitespace-only value is the same miss as an empty one.  ``expires_at`` and
+        ``schedule`` each carry their own schema descriptor (#2250/#2222, each shared
+        across create/update/set), so their lines also name them; the remaining fields
+        are still bare in this tool's schema."""
         tool = CollectionSetTool(db, cast(Any, MockLlmClient()))
+        descriptors = {
+            "expires_at": EXPIRES_AT_PARAM_DESCRIPTION,
+            "schedule": SCHEDULE_PARAM_DESCRIPTION,
+        }
         for field, form in OPTIONAL_ARG_FORMS.items():
             result = await tool.run(name="deals-watch", **{field: "   "})
             assert result.success is False
             descriptor = (
-                f"{field} (string: {EXPIRES_AT_PARAM_DESCRIPTION})"
-                if field == "expires_at"
+                f"{field} (string: {descriptors[field]})"
+                if field in descriptors
                 else f"{field} (string)"
             )
             assert result.message == (
@@ -2236,9 +2241,10 @@ class TestBlankOptionalArgsAreRefused:
         )
         assert result.success is False
         assert result.message == (
-            "schedule (string): an empty string sets nothing — omit schedule entirely "
-            'to leave it unset, or pass one RRULE line, e.g. "FREQ=HOURLY" for hourly. '
-            "Call collection_set(<valid arguments>) again."
+            f"schedule (string: {SCHEDULE_PARAM_DESCRIPTION}): an empty string sets "
+            "nothing — omit schedule entirely to leave it unset, or pass one RRULE "
+            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_set(<valid '
+            "arguments>) again."
         )
         # The existing row is untouched — the refusal happens before execute.
         row = db.memories.get("deals-watch")
