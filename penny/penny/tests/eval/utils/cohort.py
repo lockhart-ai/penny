@@ -279,6 +279,13 @@ def distinct_worlds(arms: Sequence[Arm]) -> list[World]:
 # a blank cell there reads as a rendering bug rather than as an absence.
 FIELD_UNSET = "unset"
 
+# What ``SampleObservation.representative_reply`` answers when a sample's own driver genuinely
+# left nothing to show — a collector cycle that queued no notification, or a shape this reads
+# none of.  Rendered words rather than empty strings, for the same reason ``FIELD_UNSET`` is one:
+# a blank reply cell reads as a rendering bug rather than as the honest absence it is.
+NO_NOTIFICATION_SENT = "(sent nothing)"
+NO_REPLY_RECORDED = "(no reply)"
+
 
 class OutputField(BaseModel):
     """One field of the STRUCTURED OUTPUT a draw returned, as a string.
@@ -430,6 +437,28 @@ class SampleObservation(BaseModel):
         """Every field the draw returned, name and value together — what a provenance claim
         over a structured answer reads."""
         return " ".join(f"{one.name} {one.value}" for one in self.output)
+
+    @property
+    def representative_reply(self) -> str:
+        """What this sample's own driver produced as its FINAL reply — the cell the run
+        summary's coverage table (#2256) shows for the case's representative sample.
+
+        The three driver shapes answer it three different ways, in priority order: a
+        micro-context sample (classifier/framer/binder/labeller/extractor) answers with its
+        structured OUTPUT — the same fields a provenance claim reads (:attr:`output_text`) —
+        because it has no reply at all; a chat sample answers with its TEXT reply; a collector
+        sample answers with what it told the user, read off the SAME ``reply`` field (joined
+        from its sent notifications), or the honest :data:`NO_NOTIFICATION_SENT` when its cycle
+        queued none — told apart from a chat sample by the record fields only a cycle stamps
+        (``run_outcome``/``run_reason``). A shape that left neither is :data:`NO_REPLY_RECORDED`
+        rather than a guess."""
+        if self.output:
+            return self.output_text
+        if self.reply.strip():
+            return self.reply
+        if self.run_outcome is not None or self.run_reason is not None:
+            return NO_NOTIFICATION_SENT
+        return NO_REPLY_RECORDED
 
 
 # ── What a case claims ───────────────────────────────────────────────────────

@@ -10,7 +10,10 @@ artifacts into that directory, beside the per-case transcript reports
                        ``EVAL_LEVER``).
   ``dirty.diff``     — the working-tree diff, saved verbatim (omitted when clean).
   ``results.jsonl``  — one JSON record per case: run id, case id, family, mean,
-                       all-pass rate, per-check outcomes, N, timings.
+                       all-pass rate, per-check outcomes, N, timings, the case's
+                       behaviour sentence, and its representative sample's name,
+                       wording and reply (#2256 — what the run summary's coverage
+                       table renders).
 
 The manifest also renders as a markdown header atop each ``<case_id>.md`` report
 (commit · model · N · lever) — the #1711 PR-comment report header.
@@ -360,6 +363,20 @@ class ShareRecord(BaseModel):
     blind: bool = False
 
 
+class RepresentativeSample(BaseModel):
+    """The one sample a case's own document sends a reader to open — the same sample
+    ``cohort.standings`` marks :class:`cohort.Standing.MODAL` (#2256).
+
+    Carried on the record, additively, because the run summary's coverage table is rendered by
+    the ASSEMBLER, which runs as its own process over the report dir and has no cohort to
+    re-derive it from — the same reason :class:`VarianceReading` and :class:`ShareRecord` are
+    here rather than recomputed."""
+
+    name: str
+    wording: str
+    reply: str
+
+
 class CaseArtifact(BaseModel):
     """One case's line in ``results.jsonl`` — the mechanically-diffable record."""
 
@@ -395,6 +412,13 @@ class CaseArtifact(BaseModel):
     # The SHARES the case measured — reported, never gated.  Defaulted, so a record written
     # before this field decodes as a case that measured none.
     shares: list[ShareRecord] = Field(default_factory=list)
+    # The case's own behaviour sentence, and its representative sample's name/wording/reply
+    # (#2256) — what the run summary's coverage table renders, so a reader never has to open
+    # the case's own comment to see what it covered.  Both defaulted to ``None``, never ``""``
+    # (an absent sentence is not a real empty one): a record written before either existed
+    # decodes with neither, which the table renders as an honest "—" rather than failing to load.
+    behaviour: str | None = None
+    representative: RepresentativeSample | None = None
 
 
 class RunManifest(BaseModel):
@@ -504,6 +528,8 @@ def build_case_artifact(
     standing_counts: Mapping[str, int] | None = None,
     variance: Sequence[VarianceReading] = (),
     shares: Sequence[ShareRecord] = (),
+    behaviour: str | None = None,
+    representative: RepresentativeSample | None = None,
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -530,6 +556,8 @@ def build_case_artifact(
         standing_counts=dict(standing_counts or {}),
         variance=list(variance),
         shares=list(shares),
+        behaviour=behaviour,
+        representative=representative,
     )
 
 
@@ -759,6 +787,8 @@ def record_case(
     standing_counts: Mapping[str, int] | None = None,
     variance: Sequence[VarianceReading] = (),
     shares: Sequence[ShareRecord] = (),
+    behaviour: str | None = None,
+    representative: RepresentativeSample | None = None,
 ) -> None:
     """Append the case's ``results.jsonl`` record. No-op off-report."""
     run = active_run()
@@ -774,5 +804,7 @@ def record_case(
         standing_counts=standing_counts,
         variance=variance,
         shares=shares,
+        behaviour=behaviour,
+        representative=representative,
     )
     run.append_case(artifact)

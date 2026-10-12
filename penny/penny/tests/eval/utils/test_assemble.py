@@ -8,6 +8,9 @@ per-sample transcript where EVERY sample folds whole under its banner — the on
 (#1753/#1759 — collapsed by default, full body a click away, byte-identical to the on-disk ``.md``,
 no compact/banner-only form), the multi-family rollup + per-case headings, the diff-mode flips
 index, the local-artifacts footer, and the CLI contract.
+
+The run summary's COVERAGE table (#2256 — what each case covered: its behaviour, the
+representative sample's input and reply) gets its own section near the end of this file.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from penny.tests.eval.conftest import _expandable, _representative_sample
 from penny.tests.eval.utils import assemble, cohort, comment_split, report
 from penny.tests.eval.utils.artifacts import (
     CaseArtifact,
@@ -26,6 +30,7 @@ from penny.tests.eval.utils.artifacts import (
     CheckCell,
     CheckOutcome,
     FailureCause,
+    RepresentativeSample,
     RunManifest,
     VarianceReading,
     build_manifest,
@@ -37,6 +42,8 @@ from penny.tests.eval.utils.assemble import (
     load_manifest,
     main,
 )
+from penny.tests.eval.utils.assertions import Cohort
+from penny.tests.eval.utils.worlds import World
 
 _TIMINGS = CaseTimings(calls=19, duration_ms=148000, input_tokens=54200, output_tokens=5900)
 _P = CheckCell.PASSED
@@ -863,6 +870,13 @@ def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) ->
         "\n"
         "**108,400 in · 11,800 out** — run total, every sample driven\n"
         "\n"
+        "| # | case | behaviour | input | Penny's final reply | deterministic | variance |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| 1 | `a-case` | — | — | — | 🟢 13/14 · 93% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
+        " |\n"
+        "| 2 | `b-case` | — | — | — | 🟡 12/14 · 86% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
+        " |\n"
+        "\n"
         "| # | case | deterministic | variance | samples | tokens / sample |\n"
         "|---|---|---|---|---|---|\n"
         "| 1 | `a-case` | 🟢 13/14 · 93% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
@@ -877,6 +891,11 @@ def test_the_run_summary_splits_by_model_and_totals_its_cases(tmp_path: Path) ->
         "**⚪ variance max H 0.500** `tool sequence` in `a-case` · 1 of 1 features vary\n"
         "\n"
         "**54,200 in · 5,900 out** — run total, every sample driven\n"
+        "\n"
+        "| # | case | behaviour | input | Penny's final reply | deterministic | variance |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| 1 | `a-case` | — | — | — | 🟢 14/14 · 100% | ⚪ max H 0.500 `tool sequence` · 1/1 vary"
+        " |\n"
         "\n"
         "| # | case | deterministic | variance | samples | tokens / sample |\n"
         "|---|---|---|---|---|---|\n"
@@ -1060,3 +1079,251 @@ def test_an_oversized_fold_is_reduced_so_every_part_fits_the_cap(tmp_path: Path)
     assert "the maker was Corvander" in comment, "and the reply"
     assert "15 driven · 1 sample reduced to fit the comment cap" in comment, "the health block"
     assert len(on_disk) > len(comment), "and the artifact keeps the whole transcript regardless"
+
+
+# ── The run summary's COVERAGE table (#2256) ──────────────────────────────────
+#
+# Above the numbers table, one row per case: the behaviour sentence, the REPRESENTATIVE
+# sample's input and reply, and the SAME deterministic + variance cells the numbers table
+# renders. Read from artifacts alone — no cohort, no model — so a record written before the
+# fields existed decodes and renders its row with those three cells empty.
+
+
+def _coverage_case(
+    case_id: str,
+    *,
+    behaviour: str | None = None,
+    representative: RepresentativeSample | None = None,
+) -> CaseArtifact:
+    """One case record for the coverage-table tests: a single clean check, no variance, so the
+    coverage row's own cells (behaviour/input/reply) are the only thing under test."""
+    return CaseArtifact(
+        run_id="run-coverage",
+        case_id=case_id,
+        family="chat-idle",
+        mean=1.0,
+        all_pass_rate=1.0,
+        pathology_excluded_mean=1.0,
+        samples=1,
+        sample_scores=[1.0],
+        sample_causes=[None],
+        cause_counts=CauseCounts(),
+        checks=[CheckOutcome(label="does the thing", passed=1, total=1)],
+        timings=_TIMINGS,
+        behaviour=behaviour,
+        representative=representative,
+    )
+
+
+def _write_coverage_run(tmp_path: Path, artifacts: list[CaseArtifact]) -> Path:
+    """A run dir holding ``artifacts``, each with an (empty) transcript — the coverage table
+    reads only ``results.jsonl``, but the summary's case index reads the ``.md`` files too."""
+    manifest = build_manifest(
+        commit="abba710a03ae3555148fea6a86712e9af020499a",
+        dirty_diff="",
+        model="gpt-oss:20b",
+        embedding_model="embeddinggemma",
+        samples=1,
+        lever="coverage table",
+        now=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+    )
+    report_dir = tmp_path / "run"
+    _write_run(report_dir, manifest, artifacts, {artifact.case_id: "" for artifact in artifacts})
+    return report_dir
+
+
+def test_the_coverage_table_renders_behaviour_input_and_reply(tmp_path: Path) -> None:
+    """The run summary's SECOND table, above the numbers table: one row per case, its
+    behaviour sentence, its representative sample's input and reply, and the SAME
+    deterministic + variance cells the numbers table renders below it."""
+    cases = [
+        _coverage_case(
+            "price-watch",
+            behaviour="In chat idle, when asked the price, Penny states it.",
+            representative=RepresentativeSample(
+                name="price-watch-1",
+                wording="what's the price on the keel lantern?",
+                reply="It's $499.",
+            ),
+        ),
+        _coverage_case(
+            "mute-request",
+            behaviour="In chat idle, when asked to go quiet, Penny mutes notifications.",
+            representative=RepresentativeSample(
+                name="mute-request-1",
+                wording="stop messaging me for a while",
+                reply="Done, muted.",
+            ),
+        ),
+    ]
+    report_dir = _write_coverage_run(tmp_path, cases)
+    summary = assemble.render_run_summary([report_dir])
+    assert summary == (
+        "## Run summary\n"
+        "\n"
+        "### `gpt-oss:20b`\n"
+        "\n"
+        "**🟢 2 / 2 checks · 100%** — 2 cases\n"
+        "\n"
+        "**no features measured**\n"
+        "\n"
+        "**108,400 in · 11,800 out** — run total, every sample driven\n"
+        "\n"
+        "| # | case | behaviour | input | Penny's final reply | deterministic | variance |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| 1 | `mute-request` | In chat idle, when asked to go quiet, Penny mutes"
+        " notifications. | stop messaging me for a while | Done, muted. | 🟢 1/1 · 100% | — |\n"
+        "| 2 | `price-watch` | In chat idle, when asked the price, Penny states it."
+        " | what's the price on the keel lantern? | It's $499. | 🟢 1/1 · 100% | — |\n"
+        "\n"
+        "| # | case | deterministic | variance | samples | tokens / sample |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 1 | `mute-request` | 🟢 1/1 · 100% | — | 1 driven | 54,200 in · 5,900 out |\n"
+        "| 2 | `price-watch` | 🟢 1/1 · 100% | — | 1 driven | 54,200 in · 5,900 out |\n"
+    )
+
+
+def test_a_reply_with_a_pipe_and_a_newline_stays_one_row(tmp_path: Path) -> None:
+    """A representative reply carrying a pipe and a newline (real model output, unescaped)
+    never breaks the table: the pipe is escaped and the newline becomes ``<br>``, so the row
+    stays exactly one rendered line."""
+    case = _coverage_case(
+        "pipey-case",
+        behaviour="In chat idle, when asked for a table, Penny replies with one.",
+        representative=RepresentativeSample(
+            name="pipey-case-1",
+            wording="what's on the menu?",
+            reply="soup | salad\nand bread",
+        ),
+    )
+    report_dir = _write_coverage_run(tmp_path, [case])
+    summary = assemble.render_run_summary([report_dir])
+    assert (
+        "| 1 | `pipey-case` | In chat idle, when asked for a table, Penny replies with one."
+        " | what's on the menu? | soup \\| salad<br>and bread | 🟢 1/1 · 100% | — |"
+    ) in summary.splitlines()
+
+
+def test_a_long_reply_is_bounded_with_its_omitted_marker(tmp_path: Path) -> None:
+    """A reply past the cell budget is cut at a word boundary — never silently — and the cut
+    states how many characters it dropped. The whole reply is in the representative sample's
+    own fold, one comment up; this cell only has to let a reader tell cases apart."""
+    long_reply = "word " * 200  # 1,000 characters, well past the 400-character cell budget
+    case = _coverage_case(
+        "long-case",
+        behaviour="In chat idle, when asked for detail, Penny gives a lot.",
+        representative=RepresentativeSample(
+            name="long-case-1", wording="tell me everything", reply=long_reply
+        ),
+    )
+    report_dir = _write_coverage_run(tmp_path, [case])
+    summary = assemble.render_run_summary([report_dir])
+    [row] = [line for line in summary.splitlines() if "tell me everything" in line]
+    assert long_reply not in row, "the full reply is not shown — it is one comment up"
+    assert "… (" in row and "chars omitted)" in row, "the omission states its own size"
+    assert len(row) < len(long_reply), "the cut actually shortened the cell"
+
+
+def test_an_old_record_with_no_representative_sample_still_renders(tmp_path: Path) -> None:
+    """A ``results.jsonl`` record written before #2256 carries no behaviour and no
+    representative sample — decodes fine, and the coverage row renders an honest dash rather
+    than failing to load or inventing something."""
+    case = _coverage_case("old-case")  # behaviour="" and representative=None, the pre-#2256 shape
+    report_dir = _write_coverage_run(tmp_path, [case])
+    summary = assemble.render_run_summary([report_dir])
+    assert "| 1 | `old-case` | — | — | — | 🟢 1/1 · 100% | — |" in summary.splitlines(), (
+        "every pre-#2256 cell renders as a dash, never a crash or a guess"
+    )
+
+
+def test_the_representative_row_names_the_sample_the_case_document_sends_a_reader_to_open(
+    tmp_path: Path,
+) -> None:
+    """The coverage row's input and reply are not just ANY sample's — they are the exact
+    sample ``cohort.standings`` marks MODAL, the same one ``_expandable`` tells the case
+    document's map to open in full.  Built with a genuine OUTLIER in the pool (a different
+    tool sequence) so the modal pick is a real choice, not a vacuous one."""
+    arms = [
+        cohort.Arm(
+            label="the ask",
+            text="what's the price on the keel lantern?",
+            world=World(name="w", pages=(), keeps=(), excludes=()),
+        )
+    ]
+    samples = [
+        cohort.SampleObservation(
+            name="s1", phrasing="the ask", arm=0, tool_sequence=["browse"], reply="It's $499."
+        ),
+        cohort.SampleObservation(
+            name="s2", phrasing="the ask", arm=0, tool_sequence=["browse"], reply="It's $499."
+        ),
+        cohort.SampleObservation(
+            name="s3",
+            phrasing="the ask",
+            arm=0,
+            tool_sequence=["browse", "browse"],
+            reply="I couldn't find it.",
+        ),
+    ]
+    driven = Cohort(case_id="price-case", model="m", samples=samples, arms=arms)
+    driven.features = [cohort.TOOL_SEQUENCE]
+    standings = cohort.standings(samples, driven.features)
+    opened = _expandable(standings)
+    assert len(opened) == 1, "exactly one sample is worth opening in full"
+    representative = _representative_sample(driven, samples, standings)
+    assert representative is not None
+    assert samples[opened[0] - 1].name == representative.name, (
+        "the record's representative IS the sample the document's own map opens"
+    )
+    assert representative.wording == "what's the price on the keel lantern?"
+    assert representative.reply == "It's $499.", "the modal reply, never the outlier's"
+
+    case = _coverage_case(
+        "price-case",
+        behaviour="In chat idle, when asked the price, Penny states it.",
+        representative=representative,
+    )
+    report_dir = _write_coverage_run(tmp_path, [case])
+    summary = assemble.render_run_summary([report_dir])
+    assert "I couldn't find it." not in summary, "the outlier's reply never leaks into the row"
+    assert "It's $499." in summary
+
+
+def _coverage_run_dir(tmp_path: Path, cases: int) -> Path:
+    """A run dir with ``cases`` coverage-table-bearing case records, each with its own
+    behaviour sentence and representative sample — enough text per row that a whole-suite-sized
+    run genuinely outgrows a small packing budget."""
+    pad = "x" * 80
+    artifacts = [
+        _coverage_case(
+            f"case-{n:03d}",
+            behaviour=f"In chat idle, when asked thing {n}, Penny does thing {n}. {pad}",
+            representative=RepresentativeSample(
+                name=f"case-{n:03d}-1",
+                wording=f"can you do thing {n} for me please? {pad}",
+                reply=f"Sure, I did thing {n} for you. {pad}",
+            ),
+        )
+        for n in range(1, cases + 1)
+    ]
+    return _write_coverage_run(tmp_path, artifacts)
+
+
+def test_the_run_summary_splits_a_coverage_table_too_big_for_one_comment(tmp_path: Path) -> None:
+    """A 120-case summary's coverage table genuinely outgrows a packing budget — every part
+    stays under GitHub's hard cap, and every one of the 120 cases' coverage row appears in
+    exactly one part, never dropped and never duplicated by the split."""
+    report_dir = _coverage_run_dir(tmp_path, cases=120)
+    summary = assemble.render_run_summary([report_dir])
+    budget = 8000
+    raw_parts = comment_split.partition_on_table_rows(summary, budget=budget)
+    assert len(raw_parts) > 1, "the fixture is genuinely oversized for this budget"
+    assert all(len(part) <= budget for part in raw_parts)
+    parts = comment_split.render_parts(raw_parts)
+    comment_split.enforce_part_cap(parts)
+
+    behaviours = [f"Penny does thing {n}." for n in range(1, 121)]
+    seen = Counter(behaviour for part in parts for behaviour in behaviours if behaviour in part)
+    assert seen == Counter(dict.fromkeys(behaviours, 1)), (
+        "every case's coverage row appears exactly once across the parts"
+    )

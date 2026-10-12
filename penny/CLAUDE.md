@@ -1207,6 +1207,31 @@ on-disk `.md` and the assembled comment. There is **no compact / banner-only for
 re-normalizes each block via `report.split_sample_blocks`/`parse_sample_block`/`fold_sample`, so a
 re-assembled pre-#1753 run (unfolded `#### ` failures) folds uniformly too.
 
+**The run summary's COVERAGE table (#2256).** `assemble.render_run_summary` renders a second table,
+above its existing numbers table, in every model section: `| # | case | behaviour | input | Penny's
+final reply | deterministic | variance |`. **behaviour** is the case's own stated sentence
+(`CaseArtifact.behaviour`); **input** and **reply** come from the case's REPRESENTATIVE sample —
+the one `cohort.standings` marks `Standing.MODAL`, the same sample the case document's own map
+sends a reader to open — carried on the record as `CaseArtifact.representative`
+(`artifacts.RepresentativeSample`: name · wording · reply), computed once by `conftest.py`'s
+`_representative_sample` at case close and threaded into `eval_artifacts.record_case` alongside
+`standing_counts`, since the assembler runs over the report dir alone with no cohort to re-derive
+it from. **input** is the arm's own driven text (`cohort.arms[sample.arm].text`); **reply** is
+`SampleObservation.representative_reply` — a chat sample's text `reply`, a micro-context sample's
+structured `output_text` (it has no reply at all), or a collector sample's `reply` (what its cycle
+sent) falling back to the honest `"(sent nothing)"` when it queued none. **deterministic** and
+**variance** are the SAME cells the numbers table renders, read through the same
+`_row_checks`/`_row_variance` functions, so the two tables cannot disagree. Both new artifact fields
+are additive and default to `None`, so a `results.jsonl` record written before #2256 still decodes
+and renders its three new cells as an honest `—`. Every cell is bounded (`INPUT_CELL_BUDGET` /
+`REPLY_CELL_BUDGET`, ~200 / ~400 characters, cut at a word boundary with an `… (<n> chars
+omitted)` marker — never silent) and escaped (`report.escape_cell`), so a pipe or a newline in a
+reply can never break the table. Because the run summary carries no sample folds for
+`comment_split.py`'s existing cut to find, a whole-suite table that outgrows the comment budget
+splits on its OWN legal seam instead — a table ROW boundary
+(`comment_split.partition_on_table_rows`/`split_run_summary`): a part that resumes a table repeats
+its head + separator and states which rows it holds, so concatenating the parts loses no row.
+
 **Report format v3 — transcript-integrated (#1725).** A sample's checks render *inside* its
 transcript, in causal order (contract → thinking → action → verdict-on-action), rendered by the pure
 `penny/tests/eval/utils/report.py` from a `SampleTranscript` the `conftest.py` extractor builds off the

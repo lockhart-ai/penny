@@ -330,6 +330,7 @@ from penny.tests.eval.conftest import (
     _refuse_binding_state_mismatch,
     _registry_shortfall,
     _report_result,
+    _representative_sample,
     _require_ask,
     _require_report_only,
     _sample_db_path,
@@ -2982,16 +2983,16 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
     assert (assertions.passed, assertions.total) == (1, 2)
 
     # What the RECORD states — built exactly as `record_case` builds it, off the same results.
+    standings = eval_cohort.standings(cohort.samples, cohort.features)
     artifact = build_case_artifact(
         run_id="run-x",
         case_id=_COHORT_RECORD_CASE,
         family="chat",
         results=results,
         timings=CaseTimings(calls=0, duration_ms=0, input_tokens=0, output_tokens=0),
-        standing_counts=Counter(
-            standing.standing.value
-            for standing in eval_cohort.standings(cohort.samples, cohort.features)
-        ),
+        standing_counts=Counter(standing.standing.value for standing in standings),
+        behaviour=_COHORT_RECORD_BEHAVIOUR,
+        representative=_representative_sample(cohort, cohort.samples, standings),
     )
     assert artifact.samples == document.driven
     assert artifact.sample_scores == [1.0, 0.0, 0.0]
@@ -3005,6 +3006,14 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
     assert artifact.standing_counts["dead"] == len(document.excluded)
     pooled_scores = artifact.sample_scores[: document.pooled]
     assert sum(pooled_scores) / len(pooled_scores) == assertions.rate
+    # The record carries the case's behaviour sentence and its representative sample — the
+    # exact one the pooled samples' standings mark MODAL (s-1, the first complete sample; it
+    # alone decides the shape since the cohort declares no telling feature) — so the summary's
+    # coverage table (#2256) can name what this case covered without a cohort to re-derive it.
+    assert artifact.behaviour == _COHORT_RECORD_BEHAVIOUR
+    assert artifact.representative is not None
+    assert artifact.representative.name == "s-1"
+    assert artifact.representative.reply == "(no reply)", "this cohort's samples carry no reply"
 
     # And the console RESULT line prints that same tally.
     out = capsys.readouterr().out

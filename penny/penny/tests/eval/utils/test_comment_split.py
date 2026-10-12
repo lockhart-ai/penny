@@ -1,4 +1,4 @@
-"""Plain (non-eval) tests for the run-comment splitter (``comment_split.py``, #1808).
+"""Plain (non-eval) tests for the run-comment splitter (``comment_split.py``, #1808/#2256).
 
 They drive the pure text helpers + the CLI over a SYNTHETIC oversized document built from the real
 fold primitives (``report.fold_sample``), so they run inside ``make check``: no model, no GPU, no
@@ -6,10 +6,17 @@ container, no artifacts. The four properties the ticket names are asserted direc
 count, that no ``<details>`` straddles a boundary, that part 1 carries the run header, and that
 reassembling the parts is byte-identical to the input — plus the build-noise refusal and the
 over-the-cap INVARIANT (#2135), which is raised as a renderer bug rather than refused.
+
+The run-summary splitter (#2256, below) gets its own synthetic fixture — a bare markdown table,
+with no sample-fold machinery at all — because it cuts on a different seam (a table ROW) and
+its reassembly invariant is weaker: a continuation part repeats the table's head + separator, so
+concatenating parts does not reproduce the document byte for byte the way a sample-fold split
+does. What IS invariant: every row stays under budget and appears in exactly one part.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -23,8 +30,10 @@ from penny.tests.eval.utils.comment_split import (
     enforce_part_cap,
     main,
     partition_on_sample_folds,
+    partition_on_table_rows,
     sample_fold_segments,
     split_run_comment,
+    split_run_summary,
 )
 from penny.tests.eval.utils.report import fold_sample
 
@@ -182,3 +191,94 @@ def test_cli_refuses_bad_input(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "refusing to post" in capsys.readouterr().err
     assert main([str(empty)]) == 2
     assert capsys.readouterr().err.strip() == USAGE
+
+
+# ── The run-summary splitter: a table's ROW boundary (#2256) ─────────────────
+#
+# The run summary carries no sample folds — it's a run heading, two headline readings, and a
+# markdown table, one row per case — so these drive the splitter over a SYNTHETIC table built
+# from the same head/separator/row shape ``assemble.py`` renders, with no sample machinery at
+# all. The real integration (splitting an actual 120-case ``render_run_summary`` output) is
+# ``test_assemble.py::test_the_run_summary_splits_a_coverage_table_too_big_for_one_comment``.
+
+_ROW_RANGE_RE = re.compile(r"_\(continued — rows (\d+)–(\d+) of (\d+)\)_")
+
+
+def _bare_table(rows: int, cell_size: int) -> str:
+    """A markdown table alone — head, separator, ``rows`` data rows each padded to roughly
+    ``cell_size`` characters — with no heading or prose around it."""
+    head, sep = "| # | case | note |", "|---|---|---|"
+    body = "\n".join(f"| {n} | `case-{n}` | {'x' * cell_size} |" for n in range(1, rows + 1))
+    return f"{head}\n{sep}\n{body}\n"
+
+
+def test_table_rows_split_fit_the_budget_and_cover_every_row_once() -> None:
+    """A table too big for one part is cut only at a ROW boundary: every part fits the budget,
+    and every case id the table names appears in exactly one part, in order."""
+    document = _bare_table(rows=30, cell_size=600)
+    parts = partition_on_table_rows(document, budget=4000)
+    assert len(parts) > 1, "the fixture is genuinely oversized for this budget"
+    assert all(len(part) <= 4000 for part in parts)
+    seen = [int(n) for part in parts for n in re.findall(r"`case-(\d+)`", part)]
+    assert seen == list(range(1, 31)), "every row exactly once, in the order it was driven"
+
+
+def test_a_continuation_part_repeats_the_header_and_states_the_rows_it_holds() -> None:
+    """A part that RESUMES a table opens with the same head + separator the first part did, and
+    a note whose claimed row range matches the case ids actually present in that part. The
+    first part carries no such note — nothing came before it to be a continuation of."""
+    document = _bare_table(rows=30, cell_size=600)
+    parts = partition_on_table_rows(document, budget=4000)
+    head, sep = document.splitlines()[0], document.splitlines()[1]
+    assert parts[0].startswith(f"{head}\n{sep}\n")
+    assert "continued" not in parts[0]
+    for part in parts[1:]:
+        assert part.startswith(f"{head}\n{sep}\n")
+        match = _ROW_RANGE_RE.search(part)
+        assert match is not None, "a continuation states which rows it holds"
+        start, end, total = (int(group) for group in match.groups())
+        assert total == 30
+        case_ids = [int(n) for n in re.findall(r"`case-(\d+)`", part)]
+        assert case_ids == list(range(start, end + 1)), "the stated range matches what's there"
+
+
+def test_no_placeholder_tokens_leak_into_a_split_table() -> None:
+    """The row-range note is patched in at flush time from a placeholder token — a bug there
+    would leak the raw token into the posted text instead of the note."""
+    document = _bare_table(rows=40, cell_size=800)
+    parts = partition_on_table_rows(document, budget=3500)
+    assert len(parts) > 2, "the fixture spans more than two parts, exercising several patches"
+    assert all("\x00" not in part for part in parts)
+
+
+def test_preamble_before_the_table_is_carried_once_and_the_table_still_splits() -> None:
+    """Non-table content (the run heading, the headline readings) is plain text to the packer —
+    carried once, in the first part, never repeated — and a table after it still splits on its
+    own row boundaries."""
+    preamble = "## Run summary\n\n### `model`\n\nsome prose"
+    document = f"{preamble}\n\n{_bare_table(rows=20, cell_size=400)}"
+    parts = partition_on_table_rows(document, budget=3000)
+    assert parts[0].startswith(preamble)
+    assert sum(part.count("## Run summary") for part in parts) == 1
+    seen = [int(n) for part in parts for n in re.findall(r"`case-(\d+)`", part)]
+    assert seen == list(range(1, 21))
+
+
+def test_split_run_summary_heads_parts_like_a_sample_fold_split() -> None:
+    """The run summary's parts are headed exactly like a sample-fold split's — same wording,
+    same numbering — so a reader sees one posting convention everywhere in the suite."""
+    document = _bare_table(rows=30, cell_size=600)
+    parts = split_run_summary(document, budget=4000)
+    total = len(parts)
+    assert total > 1
+    assert [part.splitlines()[0] for part in parts] == [
+        f"(report {number} of {total} — split for GitHub's 64K comment cap; content verbatim)"
+        for number in range(1, total + 1)
+    ]
+
+
+def test_a_table_that_fits_is_one_unheaded_part() -> None:
+    """Under the budget there is no "more" to announce, so a small run summary posts exactly as
+    it did before the row splitter existed — byte-identical, no header, no repeated columns."""
+    document = _bare_table(rows=3, cell_size=20)
+    assert split_run_summary(document) == [document]

@@ -1,4 +1,5 @@
-"""Posting a run comment that exceeds GitHub's 64K cap (#1808): the sample-fold splitter.
+r"""Posting a run comment that exceeds GitHub's 64K cap (#1808): the sample-fold splitter — and,
+for the run summary, which carries no sample folds at all, the table-row splitter (#2256).
 
 ``make eval-report`` (#1757) posts a run's assembled comment (``assemble.py``) verbatim. GitHub
 refuses an issue-comment body over 65,536 characters, and the recipe had no split path, so an
@@ -31,6 +32,15 @@ honest:
 Budget is ~58K rather than the full 64K: the part header, and GitHub counting a body's length
 differently from ``wc -c``, both eat into the cap.
 
+The RUN SUMMARY (#2256) is a different document with a different legal seam: it is a run heading,
+two headline readings, and a markdown table — one row per case, and on a whole-suite run (~90
+cases) that table alone can pass the part budget. It carries no sample folds for the cut above to
+find, so ``split_run_summary``/``partition_on_table_rows`` cut it at a table's ROW boundary
+instead — always exactly one rendered line, since the cell helpers in ``report.py`` turn every
+newline into ``<br>`` and every pipe into ``\|``. A part that resumes a table repeats its head +
+separator and names which rows it holds, so concatenating the parts (headers/notes dropped)
+reproduces every row exactly once.
+
 A fold LARGER than one part used to end the whole post — a real run's 94K sample fold made an
 entire gpt-oss report unpostable (#2135). It cannot end it any more: the renderer bounds every
 sample fold to ``PART_BUDGET`` before this module sees the document, so a part over the hard cap
@@ -51,6 +61,7 @@ from __future__ import annotations
 import re
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
@@ -131,6 +142,159 @@ def render_parts(bodies: list[str]) -> list[str]:
         f"{PART_HEADER.format(number=number, total=total)}\n\n{body}"
         for number, body in enumerate(bodies, start=1)
     ]
+
+
+# ── The cut for the RUN SUMMARY: a markdown table's row boundary (#2256) ──────
+#
+# The run summary carries no sample folds at all — it is a run heading, two headline readings,
+# and a markdown table, one row per case. On a whole-suite run (~90 cases) that table alone can
+# pass the part budget, and the sample-fold cut above has nothing to find in it. A table ROW is
+# this document's own legal seam: the cell helpers in ``report.py`` turn every newline into
+# ``<br>`` and every pipe into ``\|``, so a row never spans two rendered lines, and a cut between
+# lines can therefore never land INSIDE one. A part that resumes a table repeats its head +
+# separator and names which rows it holds, so a reader opening a later part is never shown bare
+# cells with no columns — and concatenating every part (headers/notes dropped) reproduces every
+# row exactly once.
+
+_TABLE_ROW_RE = re.compile(r"^\|.*\|$")
+_TABLE_SEP_RE = re.compile(r"^\|[ \t:|-]+\|$")
+# Stated once a part RESUMES a table mid-way — never on the table's first row in a part, which
+# needs no "continued" note because nothing of it was shown before.
+ROW_RANGE_NOTE = "_(continued — rows {start}–{end} of {total})_"
+# The budget check runs BEFORE the note's real text is known (its END row is only settled once
+# the part stops filling, at flush time — see ``_TablePacker.flush``), so the placeholder padded
+# into the part for that check must be at least as long as any note this format can ever render
+# — otherwise a part that fit the PLACEHOLDER could still overflow once the real (longer) note
+# replaced it. Six-digit row numbers is a generous ceiling no real run approaches.
+_ROW_RANGE_RESERVE = len(ROW_RANGE_NOTE.format(start=999999, end=999999, total=999999))
+
+
+def _table_start(lines: Sequence[str], index: int) -> bool:
+    """Whether ``lines[index]`` opens a markdown table: itself a row, followed by its own
+    ``|---|---|`` separator."""
+    return (
+        index + 1 < len(lines)
+        and bool(_TABLE_ROW_RE.match(lines[index]))
+        and bool(_TABLE_SEP_RE.match(lines[index + 1]))
+    )
+
+
+def _table_block(lines: Sequence[str], index: int) -> tuple[str, str, list[str], int]:
+    """The table opening at ``index``: its head, its separator, every data row, and the index
+    of the first line past its last row."""
+    head, sep = lines[index], lines[index + 1]
+    end = index + 2
+    rows: list[str] = []
+    while end < len(lines) and _TABLE_ROW_RE.match(lines[end]):
+        if _TABLE_SEP_RE.match(lines[end]):
+            break
+        rows.append(lines[end])
+        end += 1
+    return head, sep, rows, end
+
+
+@dataclass
+class _TablePacker:
+    """Packs a document into parts of at most ``budget`` characters, cutting only at a table's
+    ROW boundary (above). The state is the part under construction (``current``), which table
+    (if any) is OPEN at its tail (so a row that continues it needs no repeated header), and a
+    "continued" note PENDING for the table a just-opened continuation belongs to — patched in at
+    flush time, once the part's actual last row for that table is known."""
+
+    budget: int
+    parts: list[str] = field(default_factory=list)
+    current: list[str] = field(default_factory=list)
+    open_header: tuple[str, str] | None = None
+    last_row: dict[tuple[str, str], int] = field(default_factory=dict)
+    pending_notes: list[tuple[str, tuple[str, str], int, int]] = field(default_factory=list)
+    _tokens: int = 0
+
+    def _joined(self, extra: Sequence[str] = ()) -> str:
+        return "\n".join([*self.current, *extra])
+
+    def flush(self) -> None:
+        """Close the part under construction, patching in every pending row-range note now
+        that each one's table's LAST row in this part is known."""
+        if self.current:
+            text = self._joined()
+            for token, header, start, total in self.pending_notes:
+                end = self.last_row.get(header, start)
+                note = ROW_RANGE_NOTE.format(start=start, end=end, total=total)
+                text = text.replace(token, note, 1)
+            self.parts.append(text)
+        self.current = []
+        self.open_header = None
+        self.last_row = {}
+        self.pending_notes = []
+
+    def _open_candidate(
+        self, head: str, sep: str, row_number: int, row: str
+    ) -> tuple[list[str], str | None]:
+        """The lines a row needs when it must OPEN its table's header in this part — plus the
+        placeholder token for its row-range note, for a CONTINUATION (``row_number`` > 1).
+
+        Padded with trailing NULs to :data:`_ROW_RANGE_RESERVE`, so the budget check below sees
+        the WORST CASE the real note can ever render to — never a short stand-in the final,
+        longer text could later overflow past."""
+        candidate = [head, sep]
+        token = None
+        if row_number > 1:
+            self._tokens += 1
+            token = f"\x00ROW_RANGE_{self._tokens}\x00".ljust(_ROW_RANGE_RESERVE, "\x00")
+            candidate.append(token)
+        candidate.append(row)
+        return candidate, token
+
+    def add_row(self, head: str, sep: str, row_number: int, row: str, total: int) -> None:
+        """Pack one table row, repeating the header (plus a pending note) if it opens a part."""
+        header = (head, sep)
+        if self.open_header == header:
+            candidate, token = [row], None
+        else:
+            candidate, token = self._open_candidate(head, sep, row_number, row)
+        if self.current and len(self._joined(candidate)) > self.budget:
+            self.flush()
+            candidate, token = self._open_candidate(head, sep, row_number, row)
+        self.current.extend(candidate)
+        if candidate[0] == head:
+            self.open_header = header
+            if token:
+                self.pending_notes.append((token, header, row_number, total))
+        self.last_row[header] = row_number
+
+    def add_line(self, line: str) -> None:
+        """Pack one non-table line — no header to repeat, so a cut here is a plain line cut."""
+        if self.current and len(self._joined([line])) > self.budget:
+            self.flush()
+        self.current.append(line)
+        self.open_header = None
+
+
+def partition_on_table_rows(document: str, budget: int = PART_BUDGET) -> list[str]:
+    """``document`` packed into parts of at most ``budget`` characters, cut only at a markdown
+    table's ROW boundary — the run summary's own legal seam, since it carries no sample folds.
+    ``"".join`` after dropping the injected headers/notes reproduces every row exactly once."""
+    lines = document.split("\n")
+    packer = _TablePacker(budget=budget)
+    index = 0
+    while index < len(lines):
+        if _table_start(lines, index):
+            head, sep, rows, end = _table_block(lines, index)
+            for offset, row in enumerate(rows, start=1):
+                packer.add_row(head, sep, offset, row, len(rows))
+            index = end
+            continue
+        packer.add_line(lines[index])
+        index += 1
+    packer.flush()
+    return packer.parts
+
+
+def split_run_summary(document: str, budget: int = PART_BUDGET) -> list[str]:
+    """The run summary's postable parts (the summary function): cut on table-row boundaries,
+    headed ``report N of M`` exactly like a sample-fold split. A document that fits is returned
+    unheaded — byte-identical to before this existed."""
+    return render_parts(partition_on_table_rows(document, budget))
 
 
 # ── The guards (refuse loudly, never publish) ────────────────────────────────

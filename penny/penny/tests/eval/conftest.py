@@ -2928,6 +2928,8 @@ class _PendingCase:
             standing_counts=Counter(standing.standing.value for standing in standings),
             variance=_variance_readings(observations, self.driven_cohort.features),
             shares=_share_records(observations, self.driven_cohort.shares),
+            behaviour=self.behaviour,
+            representative=_representative_sample(self.driven_cohort, observations, standings),
         )
         self.perf.report(self.case_id, self.driven)
         _report_result(self.case_id, self.results, intended=self.intended)
@@ -2999,6 +3001,39 @@ def _expandable(standings: Sequence[eval_cohort.SampleStanding]) -> list[int]:
     Only the representative: an outlier is communicated by its DIVERGENCE, which is a few rows,
     and a typical sample by the fact that it agreed.  Every sample stays whole in the artifact."""
     return [index + 1 for index, s in enumerate(standings) if s.worth_opening]
+
+
+def _sample_wording(cohort: Cohort, observation: eval_cohort.SampleObservation) -> str:
+    """The text this sample was driven with — the arm's own wording, verbatim.
+
+    Empty for a cohort with no arms (a case that drove no cohort at all), or for an
+    observation whose arm index the cohort cannot resolve — never a guess."""
+    if not cohort.arms or not 0 <= observation.arm < len(cohort.arms):
+        return ""
+    return cohort.arms[observation.arm].text
+
+
+def _representative_sample(
+    cohort: Cohort,
+    observations: Sequence[eval_cohort.SampleObservation],
+    standings: Sequence[eval_cohort.SampleStanding],
+) -> eval_artifacts.RepresentativeSample | None:
+    """The one sample the case's own document sends a reader to open — the same sample
+    ``cohort.standings`` marks MODAL (#2256), carried onto the record so the run summary's
+    coverage table can name it without a cohort to re-derive it from.
+
+    ``standings`` is aligned with ``observations`` by construction (both built from the same
+    ``samples`` sequence, in the same order), so the two are zipped rather than matched by name.
+    ``None`` for a cohort with nothing pooled — every sample dead — which has no representative
+    to name."""
+    for observation, standing in zip(observations, standings, strict=True):
+        if standing.standing is eval_cohort.Standing.MODAL:
+            return eval_artifacts.RepresentativeSample(
+                name=observation.name,
+                wording=_sample_wording(cohort, observation),
+                reply=observation.representative_reply,
+            )
+    return None
 
 
 # The one sentence a case states about itself, in the fixed form: "In <the locus>, when <X>,

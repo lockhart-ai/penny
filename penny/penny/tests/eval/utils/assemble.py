@@ -445,9 +445,9 @@ def main(argv: list[str]) -> int:
 def _write_comments(argv: list[str]) -> int:
     """Write every postable part for the runs named, in post order, into ``argv[0]``.
 
-    The SPLITTER still runs over each document, because a single case can outgrow the comment
-    cap on its own — what changes is that it is given one case at a time rather than a whole
-    run, so its one legal seam has a document it can actually cut.
+    A case document SPLITS on sample-fold boundaries (a single case can outgrow the comment cap
+    on its own); the run summary carries no folds at all, so it splits on its COVERAGE table's
+    row boundaries instead (#2256) — two different documents, two different legal seams.
 
     Build noise is checked BEFORE anything is split: it is a caller error (a hand-piped
     ``make assemble``) and refusing it is the answer, while a part over the cap is a renderer
@@ -457,20 +457,23 @@ def _write_comments(argv: list[str]) -> int:
         return 2
     out_dir, report_dirs = Path(argv[0]), [Path(one) for one in argv[1:]]
     try:
-        documents = [
+        case_documents = [
             document
             for report_dir in report_dirs
             for document in assemble_case_comments(report_dir)
         ]
-        documents.append(render_run_summary(report_dirs))
+        summary_document = render_run_summary(report_dirs)
     except FileNotFoundError as error:
         print(str(error), file=sys.stderr)
         return 1
-    refusal = _build_noise_refusal(documents)
+    refusal = _build_noise_refusal([*case_documents, summary_document])
     if refusal:
         print(f"assemble: refusing to post — {refusal}", file=sys.stderr)
         return 1
-    parts = [part for document in documents for part in comment_split.split_run_comment(document)]
+    parts = [
+        part for document in case_documents for part in comment_split.split_run_comment(document)
+    ]
+    parts += comment_split.split_run_summary(summary_document)
     comment_split.enforce_part_cap(parts)
     for name in comment_split.write_parts(parts, out_dir):
         print(name)
@@ -531,6 +534,74 @@ _ROW_VARIANCE = "{glyph} max H {entropy:.3f} `{feature}` · {varying}/{total} va
 _ROW_ABSENT = "—"
 _ROW_SAMPLES = "{pooled} pooled + {excluded} excluded"
 _ROW_SAMPLES_UNPOOLED = "{samples} driven"
+
+
+# ── The coverage table: what each case covered (#2256) ────────────────────────
+#
+# The numbers table above says what PASSED; it never says what was asked or what Penny said
+# back, so seeing that meant opening the case's own comment and then a sample.  This table
+# answers it on the summary itself, ABOVE the numbers table, one row per case: the case's own
+# behaviour sentence, the REPRESENTATIVE sample's input and reply (the same sample a reader is
+# sent to open, #1997), and the SAME deterministic + variance cells the numbers table renders —
+# read through the same two functions (``_row_checks``/``_row_variance``), so the two tables
+# cannot disagree.
+COVERAGE_TABLE_HEAD = (
+    "| # | case | behaviour | input | Penny's final reply | deterministic | variance |\n"
+    "|---|---|---|---|---|---|---|"
+)
+_COVERAGE_ROW = (
+    "| {position} | `{case_id}` | {behaviour} | {input} | {reply} | {checks} | {variance} |"
+)
+# The whole reply is in the representative sample's own fold, one comment up — this cell only
+# has to let a reader tell cases apart at a glance.  Bounded independently because an input
+# wording and a reply are different lengths of thing: a wording is one sentence, a reply can run
+# to a paragraph.
+REPLY_CELL_BUDGET = 400
+INPUT_CELL_BUDGET = 200
+# The same "…  (<n> …)" style ``report.truncate_cell`` already uses for an abridged cell —
+# stating what was cut rather than leaving a reader to guess, never a silent truncation.
+_CELL_OMITTED_MARKER = "… ({count} chars omitted)"
+_NO_REPRESENTATIVE_CELL = "—"
+
+
+def _bounded_cell(text: str, limit: int) -> str:
+    """One coverage-table cell, bounded to ``limit`` visible characters — cut at a WORD
+    boundary, the omitted count stated rather than silently dropped. Escaped ONCE, at the end
+    (``report.escape_cell``), so the cut never lands inside an escape sequence it introduces."""
+    if len(text) <= limit:
+        return report.escape_cell(text)
+    cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
+    omitted = _CELL_OMITTED_MARKER.format(count=len(text) - len(cut))
+    return report.escape_cell(f"{cut} {omitted}")
+
+
+def _representative_cell(value: str, limit: int) -> str:
+    """One representative-sample cell (input/reply) — the dash a case with no representative
+    (nothing pooled, or a pre-#2256 record) renders instead of a guess."""
+    return _bounded_cell(value, limit) if value else _NO_REPRESENTATIVE_CELL
+
+
+def _behaviour_cell(behaviour: str | None) -> str:
+    """The case's behaviour sentence, escaped — the dash a pre-#2256 record (no sentence
+    carried on the artifact) renders instead of a blank cell."""
+    return report.escape_cell(behaviour) if behaviour else _NO_REPRESENTATIVE_CELL
+
+
+def _coverage_row(position: int, artifact: CaseArtifact) -> str:
+    """One case's coverage row — read through the SAME check/variance functions the numbers
+    table's row does, so the two tables cannot disagree about either figure."""
+    representative = artifact.representative
+    wording = representative.wording if representative else ""
+    reply = representative.reply if representative else ""
+    return _COVERAGE_ROW.format(
+        position=position,
+        case_id=artifact.case_id,
+        behaviour=_behaviour_cell(artifact.behaviour),
+        input=_representative_cell(wording, INPUT_CELL_BUDGET),
+        reply=_representative_cell(reply, REPLY_CELL_BUDGET),
+        checks=_row_checks(artifact),
+        variance=_row_variance(artifact),
+    )
 
 
 def started_cases(report_dir: Path) -> list[str]:
@@ -635,13 +706,18 @@ def _ordered_artifacts(report_dir: Path) -> list[CaseArtifact]:
 
 
 def _model_section(manifest: RunManifest, artifacts: Sequence[CaseArtifact]) -> str:
-    """One model's whole run: its two headline readings, then a row per case."""
+    """One model's whole run: its two headline readings, the COVERAGE table (what each case
+    covered — behaviour, input, reply), then the numbers table, a row per case."""
     lines = [_SUMMARY_MODEL_HEADING.format(model=manifest.model), ""]
     lines += [_summary_checks(artifacts), "", _summary_variance(artifacts), ""]
     cost = _summary_cost(artifacts)
     if cost:
         lines += [cost, ""]
-    lines += [_SUMMARY_TABLE_HEAD]
+    lines += [COVERAGE_TABLE_HEAD]
+    lines += [
+        _coverage_row(position, artifact) for position, artifact in enumerate(artifacts, start=1)
+    ]
+    lines += ["", _SUMMARY_TABLE_HEAD]
     lines += [
         _SUMMARY_ROW.format(
             position=position,
