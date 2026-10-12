@@ -51,6 +51,23 @@ def format_log_timestamp(when: datetime) -> str:
     return when.strftime("%Y-%m-%d %H:%M UTC")
 
 
+def format_user_timestamp(when: datetime, timezone_name: str | None) -> str:
+    """Render an absolute instant on the USER's own wall clock — the same shape
+    ``current_datetime_line`` renders "now" in (weekday, date, time, zone
+    abbreviation) — rather than the UTC ``format_log_timestamp`` uses.
+
+    For a fact the user stated or reasons about on their own clock (today: a job's
+    ``expires_at``, #2206/#2251) the model should never have to convert a zone to
+    confirm what it set — showing it back in UTC is what made "until 10pm tonight"
+    unreadable against the "11pm" the model itself wrote. Naive datetimes are read
+    as UTC (how every timestamp column is stored); ``timezone_name=None`` falls
+    back to UTC, the same fallback ``zone_or_utc`` takes everywhere else. Entry/log
+    timestamps are deliberately NOT ported to this — they are absolute historical
+    markers (``format_log_timestamp``'s own job), not a fact on the user's clock."""
+    local = stored_as_utc(when).astimezone(zone_or_utc(timezone_name))
+    return local.strftime(PennyConstants.CURRENT_DATETIME_FORMAT)
+
+
 async def get_timezone(location: str) -> str | None:
     """
     Derive IANA timezone from natural language location.

@@ -1009,7 +1009,7 @@ _KITCHEN_SINK = (
     "2026-07-11 08:00 UTC\n"
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
     "- price-watch — active · FREQ=HOURLY;INTERVAL=6 · notify: on · "
-    "expires 2026-07-20 00:00 UTC · last run WORKED 2026-07-11 09:14 UTC\n"
+    "expires Sunday, July 19, 2026 at 08:00 PM EDT · last run WORKED 2026-07-11 09:14 UTC\n"
     "- reminder — active · DTSTART:20260711T120000Z\\nFREQ=DAILY;COUNT=1 · notify: off · "
     "one-shot · no runs yet\n"
     "\n"

@@ -70,6 +70,7 @@ from penny.tools.memory_tools import (
     _REBIND_NO_SKILL,
     _SAME_JOB_UPDATED,
     _SKILL_GONE,
+    EXPIRES_AT_PARAM_DESCRIPTION,
     CollectionArchiveTool,
     CollectionCatalogTool,
     CollectionCreateTool,
@@ -980,7 +981,7 @@ class TestCollectionCreateFrontDoor:
             "  params: peak=Cinder Peak\n"
             "  schedule: FREQ=HOURLY\n"
             "  notify: False\n"
-            "  expires: 2026-09-01 09:00 UTC\n"
+            "  expires: Tuesday, September 01, 2026 at 09:00 AM UTC\n"
             "  extraction_prompt: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
             "    2. collection_write(memory='season-watch', "
@@ -1335,12 +1336,18 @@ class TestExpiresAtGrammar:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            # ISO first — an exact time is an exact time, whatever zone the user is in.
+            # ISO carrying its OWN zone (Z or an explicit offset) is read exactly as
+            # written, whatever zone the user is in (#2206) — an explicit offset is
+            # never re-read on the user's clock.
             ("2026-09-01T09:00:00Z", datetime(2026, 9, 1, 9, 0, tzinfo=UTC)),
             ("2026-09-01T09:00:00+00:00", datetime(2026, 9, 1, 9, 0, tzinfo=UTC)),
-            # A naive ISO value is read as UTC, which is what the column holds.
-            ("2026-09-01 09:00", datetime(2026, 9, 1, 9, 0, tzinfo=UTC)),
-            ("2026-09-01", datetime(2026, 9, 1, 0, 0, tzinfo=UTC)),
+            ("2026-10-18T23:59:59-07:00", datetime(2026, 10, 19, 6, 59, 59, tzinfo=UTC)),
+            # A NAIVE ISO value is a wall-clock reading with no zone of its own, so it
+            # is read on the USER's clock (#2206) — never defaulted to UTC, which put a
+            # bounded watch's end hours away from the evening it was asked for.
+            # America/Toronto is EDT (UTC-4) on this date.
+            ("2026-09-01 09:00", datetime(2026, 9, 1, 13, 0, tzinfo=UTC)),
+            ("2026-09-01", datetime(2026, 9, 1, 4, 0, tzinfo=UTC)),
             # Words, read in the user's zone: 10pm where they are is 02:00 UTC next day.
             ("10pm today", datetime(2026, 8, 10, 2, 0, tzinfo=UTC)),
             ("tomorrow at 9am", datetime(2026, 8, 10, 13, 0, tzinfo=UTC)),
@@ -1379,6 +1386,13 @@ class TestExpiresAtGrammar:
             2026, 8, 9, 22, 0, tzinfo=UTC
         )
 
+    def test_no_profile_timezone_reads_a_naive_iso_value_in_utc_too(self):
+        """The same fallback applies to the ISO branch (#2206): with no zone to read a
+        naive value on, it falls back to UTC rather than refusing."""
+        assert parse_expires_at("2026-09-01 09:00", None, self._NOW) == datetime(
+            2026, 9, 1, 9, 0, tzinfo=UTC
+        )
+
     @pytest.mark.parametrize(
         "value",
         [
@@ -1399,9 +1413,10 @@ class TestExpiresAtGrammar:
     def test_a_distant_but_meanable_end_date_still_lands(self):
         """The over-correction guard: the rule is a horizon, not a suspicion of
         distance.  A decade out is still a date someone can point at, so it is stored as
-        one."""
+        one.  Naive, so it's read on the user's clock (#2206) — America/Toronto is EST
+        (UTC-5) in January."""
         assert parse_expires_at("2036-01-01", self._ZONE, self._NOW) == datetime(
-            2036, 1, 1, tzinfo=UTC
+            2036, 1, 1, 5, 0, tzinfo=UTC
         )
 
 
@@ -2156,9 +2171,12 @@ class TestBlankOptionalArgsAreRefused:
         )
         assert result.success is False
         assert result.message == (
-            "expires_at (string): an empty string sets nothing — omit expires_at entirely "
-            "to leave it unset, or pass when it ends, e.g. 2026-03-01T09:00:00Z or "
-            '"in two weeks". Call collection_set(<valid arguments>) again.'
+            "expires_at (string: When it ends — a date and time on your own clock, "
+            "written with no zone, like '2026-11-02T22:00:00'. Leave it out when "
+            "there's no end date.): an empty string sets nothing — omit expires_at "
+            "entirely to leave it unset, or pass when it ends, e.g. "
+            '2026-03-01T09:00:00Z or "in two weeks". Call collection_set(<valid '
+            "arguments>) again."
         )
         assert db.memories.get("deals-watch") is None
 
@@ -2187,13 +2205,21 @@ class TestBlankOptionalArgsAreRefused:
     async def test_every_optional_string_names_its_own_form(self, db):
         """Uniform across the surface — each optional string refuses a blank with ITS
         accepted form, so the guard isn't special-cased to ``expires_at``.  A
-        whitespace-only value is the same miss as an empty one."""
+        whitespace-only value is the same miss as an empty one.  ``expires_at`` carries
+        its own schema descriptor too (#2250, the one shared across create/update/set),
+        so its line also names it; the other fields are still bare in this tool's
+        schema."""
         tool = CollectionSetTool(db, cast(Any, MockLlmClient()))
         for field, form in OPTIONAL_ARG_FORMS.items():
             result = await tool.run(name="deals-watch", **{field: "   "})
             assert result.success is False
+            descriptor = (
+                f"{field} (string: {EXPIRES_AT_PARAM_DESCRIPTION})"
+                if field == "expires_at"
+                else f"{field} (string)"
+            )
             assert result.message == (
-                f"{field} (string): an empty string sets nothing — omit {field} entirely "
+                f"{descriptor}: an empty string sets nothing — omit {field} entirely "
                 f"to leave it unset, or pass {form}. "
                 f"Call collection_set(<valid arguments>) again."
             )
@@ -2665,12 +2691,14 @@ class TestCollectionUpdateScheduleAtApply:
         assert db.memories.get("watch").expires_at is None
         event = next(e for e in db.mutations.history("watch", 5) if e.run_id == "run-x")
         assert "expires_at" in mutation_change_summary(event)
-        # Whole render: this echo carries no expiry line of its own, so the note is the
-        # only thing that tells the turn what became of the value it passed.
+        # Whole render: the echo now states the expiry too (#2251) — what it was
+        # before this call, and what it came to — so the note isn't the only thing
+        # that tells the turn what became of the value it passed.
         assert result.message == (
             "Updated collection 'watch':\n"
             "  schedule: FREQ=HOURLY\n"
             "  notify: False\n"
+            "  expires: was 2099-12-31 00:00 UTC → now never\n"
             "  description: x\n"
             "  extraction_prompt: |\n"
             "    test fixture extraction prompt"
@@ -2728,6 +2756,7 @@ class TestCollectionUpdateScheduleAtApply:
             "Updated collection 'deals-watch':\n"
             "  schedule: none\n"
             "  notify: False\n"
+            "  expires: never\n"
             "  description: track the road-runner shoe deals\n"
             "  extraction_prompt: |\n    "
         )
@@ -4673,8 +4702,9 @@ class TestRegistryProvenanceAndLifecycle:
             expires_at=expiry,
         )
         result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
-        # A set end condition renders as its UTC datetime, not "never".
-        assert "expires: 2026-12-25 09:00 UTC" in result.message
+        # A set end condition renders on the user's own clock (#2206/#2251 — UTC here,
+        # since no profile is seeded), not "never".
+        assert "expires: Friday, December 25, 2026 at 09:00 AM UTC" in result.message
 
     @pytest.mark.asyncio
     async def test_schedule_renders_verbatim_in_metadata(self, db):

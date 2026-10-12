@@ -40,7 +40,12 @@ from pydantic import BaseModel
 from penny.constants import PennyConstants
 from penny.database.models import MemoryRow, Skill
 from penny.database.skills import SkillParameter
-from penny.datetime_utils import format_log_timestamp, stored_as_utc, zone_or_utc
+from penny.datetime_utils import (
+    format_log_timestamp,
+    format_user_timestamp,
+    stored_as_utc,
+    zone_or_utc,
+)
 
 # ── Skill resolution union ────────────────────────────────────────────────────
 
@@ -516,13 +521,21 @@ def parse_expires_at(value: str, timezone_name: str | None, now: datetime) -> da
     relative words count from, both passed in rather than read from ambient state.
     Text neither reading answers raises the teaching :class:`ScheduleError`.
 
+    **An end is a time on the USER'S clock (#2206).** A ``Z`` suffix or an explicit
+    offset states its own zone and is honoured exactly as written — that reading never
+    changes. A value with NO zone is a wall-clock reading with nowhere else to come
+    from, so it is resolved on the user's clock here, at the tool boundary, the same
+    place the spoken-words branch already reads from — never read as UTC by default.
+    The model never converts a zone itself; it writes the hour the user said and this
+    function is where that hour is resolved.
+
     A time past :func:`_is_sentinel_expiry`'s horizon reads as ``None`` — an unbounded
     job's end condition is the ABSENCE of one, so the sentinel is normalised here, at
     the boundary, rather than stored and then rendered back as a real end date on every
     surface that shows one.  The caller states what happened via
     :func:`sentinel_expiry_note`; it is never silent.
     """
-    parsed = _parse_iso_datetime(value)
+    parsed = _parse_iso_datetime(value, timezone_name)
     if parsed is None:
         parsed = _parse_spoken_datetime(value, timezone_name, now)
     if parsed is None:
@@ -572,14 +585,22 @@ def sentinel_expiry_note(requested: str | None, resolved: datetime | None) -> st
     return _SENTINEL_EXPIRY_NOTE.format(value=requested)
 
 
-def _parse_iso_datetime(value: str) -> datetime | None:
-    """The ISO-8601 reading, or ``None`` when the text isn't one.  A naive value is
-    read as UTC, which is what the column holds."""
+def _parse_iso_datetime(value: str, timezone_name: str | None) -> datetime | None:
+    """The ISO-8601 reading, or ``None`` when the text isn't one.
+
+    A value carrying its own zone (``Z`` or an explicit offset) is read exactly as
+    written.  A NAIVE value (#2206) is a wall-clock reading with no zone of its own,
+    so it is read on the USER's clock (``zone_or_utc``, the same resolution every
+    other wall-clock reading here takes) and converted to the absolute instant the
+    column stores — never defaulted to UTC, which put a bounded watch's end hours
+    away from the evening it was asked for."""
     try:
         parsed = datetime.fromisoformat(value.strip())
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    if parsed.tzinfo is not None:
+        return parsed
+    return parsed.replace(tzinfo=zone_or_utc(timezone_name)).astimezone(UTC)
 
 
 def _parse_spoken_datetime(value: str, timezone_name: str | None, now: datetime) -> datetime | None:
@@ -618,17 +639,19 @@ def _params_line(params: dict[str, str]) -> str:
 _NO_EXPIRY_CLAUSE = "never"
 
 
-def _expires_value(row: MemoryRow) -> str:
-    """The end condition as it renders — the stamp, or the honest ``never`` an unbounded
-    job carries.  Split out so the labelled echo line and the configured-record line
-    (which may wrap it in a before→after clause, #1946) render the same value."""
+def _expires_value(row: MemoryRow, timezone_name: str | None) -> str:
+    """The end condition as it renders — on the USER's own clock (#2206/#2251: the
+    same clock a stated end is read on, never the UTC a historical timestamp
+    renders in), or the honest ``never`` an unbounded job carries.  Split out so
+    the labelled echo line and the configured-record line (which may wrap it in a
+    before→after clause, #1946) render the same value."""
     if row.expires_at is None:
         return _NO_EXPIRY_CLAUSE
-    return format_log_timestamp(row.expires_at)
+    return format_user_timestamp(row.expires_at, timezone_name)
 
 
-def _expires_line(row: MemoryRow) -> str:
-    return f"  expires: {_expires_value(row)}"
+def _expires_line(row: MemoryRow, timezone_name: str | None) -> str:
+    return f"  expires: {_expires_value(row, timezone_name)}"
 
 
 # ── The plain-language lead line (what the collector WILL do, #1658) ───────────
@@ -668,7 +691,11 @@ def _lead_line(row: MemoryRow, skill_name: str) -> str:
 
 
 def _instantiation_echo(
-    row: MemoryRow, skill_name: str, params: dict[str, str], headline: str
+    row: MemoryRow,
+    skill_name: str,
+    params: dict[str, str],
+    headline: str,
+    timezone_name: str | None,
 ) -> str:
     """The shared instantiation confirm-shape — a plain-language LEAD line (what the
     collector will do) over a ``headline`` and skill · bound params · schedule ·
@@ -684,19 +711,29 @@ def _instantiation_echo(
         _params_line(params),
         _schedule_line(row),
         f"  notify: {row.notify}",
-        _expires_line(row),
+        _expires_line(row, timezone_name),
         "  extraction_prompt: |",
         f"    {prompt}",
     ]
     return "\n".join(lines)
 
 
-def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
+def render_creation_echo(
+    row: MemoryRow,
+    skill_name: str,
+    params: dict[str, str],
+    timezone_name: str | None = None,
+) -> str:
     """The structured creation echo — skill, bound params, schedule, notify, expiry,
     and the full rendered ``extraction_prompt`` — so the chat agent confirms back
-    exactly what landed without confabulating a field."""
+    exactly what landed without confabulating a field.  ``timezone_name`` defaults to
+    ``None`` (UTC) so a caller that predates #2206/#2251 renders byte-identically."""
     return _instantiation_echo(
-        row, skill_name, params, f"Created collection '{row.name}' from skill '{skill_name}':"
+        row,
+        skill_name,
+        params,
+        f"Created collection '{row.name}' from skill '{skill_name}':",
+        timezone_name,
     )
 
 
@@ -733,8 +770,23 @@ def _configured_value(value: str, field: str, priors: Mapping[str, str | None]) 
     return _CHANGED_VALUE.format(before=before, after=value)
 
 
+def render_expiry_update_line(
+    row: MemoryRow, timezone_name: str | None, priors: Mapping[str, str | None]
+) -> str:
+    """The end condition as a PLAIN ``collection_set`` update states it (#2251): the
+    row's own value, on the user's own clock (#2206, the ``render_applied_configuration``
+    reading above) — never absent, which is what the update's echo used to be when it
+    moved an expiry and never said so. ``was <old> → now <new>`` when this call changed it
+    (#1946's convention, ``_configured_value``), plain otherwise; ``priors`` is `{}` when
+    the call has no run id to key a recorded prior by, which renders plainly like every
+    other untracked edit."""
+    return _configured_value(_expires_value(row, timezone_name), _EXPIRES_FIELD, priors)
+
+
 def render_applied_configuration(
-    row: MemoryRow, priors: Mapping[str, str | None] | None = None
+    row: MemoryRow,
+    priors: Mapping[str, str | None] | None = None,
+    timezone_name: str | None = None,
 ) -> str | None:
     """What a collection is now CONFIGURED to do, read off the row itself (#1869) — the
     record the run-end narration frame carries.
@@ -752,6 +804,10 @@ def render_applied_configuration(
     quoted was invented; each changed line therefore carries its own before→after, so a
     was-state claim is a copy.  Omitted (the default) the render is byte-identical to what
     it always was, which is every path but the one that has a ledger to read.
+
+    ``timezone_name`` is the user's own IANA zone (#2206/#2251), read on the expiry line
+    only — the one field a fact on the user's own clock, never the UTC a historical
+    timestamp renders in; ``None`` falls back to UTC like every other clock read here.
 
     ``None`` when the collection carries no routine — an inert container has no
     configuration to state, and saying it was set up would be the claim the honest-failure
@@ -772,7 +828,7 @@ def render_applied_configuration(
             _params_line(params),
             f"  schedule: {_configured_value(render_schedule_field(row), _SCHEDULE_FIELD, moved)}",
             f"  notify: {_configured_value(str(row.notify), _NOTIFY_FIELD, moved)}",
-            f"  expires: {_configured_value(_expires_value(row), _EXPIRES_FIELD, moved)}",
+            f"  expires: {render_expiry_update_line(row, timezone_name, moved)}",
         ]
     )
 
@@ -784,13 +840,24 @@ def skill_params(row: MemoryRow) -> dict[str, str]:
     return json.loads(row.skill_params) if row.skill_params else {}
 
 
-def render_reinstantiation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
+def render_reinstantiation_echo(
+    row: MemoryRow,
+    skill_name: str,
+    params: dict[str, str],
+    timezone_name: str | None = None,
+) -> str:
     """The re-render confirm-shape (#1620) — render-at-update mirrors
     render-at-creation, so a refreshed / rebound / swapped / adopted collection
     confirms back its NEW program: the skill it now runs, the bound params, and the
-    freshly rendered routine, in the same shape the creation echo uses."""
+    freshly rendered routine, in the same shape the creation echo uses.
+    ``timezone_name`` defaults to ``None`` (UTC) so a caller that predates
+    #2206/#2251 renders byte-identically."""
     return _instantiation_echo(
-        row, skill_name, params, f"Re-rendered collection '{row.name}' from skill '{skill_name}':"
+        row,
+        skill_name,
+        params,
+        f"Re-rendered collection '{row.name}' from skill '{skill_name}':",
+        timezone_name,
     )
 
 

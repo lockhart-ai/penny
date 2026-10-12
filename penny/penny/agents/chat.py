@@ -22,7 +22,7 @@ from penny.conversation_machine import (
     RoundShortfall,
     conversation_prompt,
 )
-from penny.datetime_utils import current_datetime_line
+from penny.datetime_utils import current_datetime_line, user_timezone_name
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -353,7 +353,7 @@ class ChatAgent(Agent):
         priors = self.db.mutations.priors_for_run(
             framing.container, run_id, entity_type=MutationEntityType.COLLECTION
         )
-        configuration = render_applied_configuration(row, priors)
+        configuration = render_applied_configuration(row, priors, user_timezone_name(self.db))
         if configuration is None:
             return None
         return Prompt.CONFIGURATION_APPLIED_NARRATION.format(configuration=configuration)

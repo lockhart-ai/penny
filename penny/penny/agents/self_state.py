@@ -60,7 +60,7 @@ from typing import TYPE_CHECKING
 from penny.constants import PennyConstants
 from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
 from penny.tools.collection_instantiation import render_schedule_clause
 from penny.tools.skill_tools import render_skill_brief
 
@@ -258,12 +258,14 @@ class SelfStateHeader:
         adopted skill awaiting one), so the mechanism line drops the clause."""
         return render_schedule_clause(row)
 
-    @staticmethod
-    def _end_condition(row: MemoryRow) -> str:
-        """The mechanism's end condition — an expiry time, a one-shot / run quota,
-        or empty when it runs indefinitely."""
+    def _end_condition(self, row: MemoryRow) -> str:
+        """The mechanism's end condition — an expiry time, on the USER's own clock
+        (#2206/#2251: the same clock a stated end is read on, so Penny's own ambient
+        view of a job's end never disagrees with the clock it reads back on elsewhere),
+        a one-shot / run quota, or empty when it runs indefinitely."""
         if row.expires_at is not None:
-            return f"expires {format_log_timestamp(row.expires_at)}"
+            when = format_user_timestamp(row.expires_at, user_timezone_name(self.db))
+            return f"expires {when}"
         if row.max_runs == 1:
             return "one-shot"
         if row.max_runs is not None:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import difflib
 import logging
 from abc import abstractmethod
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -65,7 +66,7 @@ from penny.database.skills import (
     retarget_writes,
     unbound_required_parameters,
 )
-from penny.datetime_utils import format_log_timestamp, user_timezone_name
+from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
@@ -81,6 +82,7 @@ from penny.tools.collection_instantiation import (
     parse_schedule,
     render_ambiguous,
     render_creation_echo,
+    render_expiry_update_line,
     render_inert_echo,
     render_no_skill_found,
     render_reinstantiation_echo,
@@ -409,7 +411,12 @@ class MemoryTool(Tool):
         propagate to :meth:`execute`."""
 
 
-def _format_collection_echo(memory: Any, verb: str) -> str:
+def _format_collection_echo(
+    memory: Any,
+    verb: str,
+    timezone_name: str | None,
+    priors: Mapping[str, str | None],
+) -> str:
     """Render a created or updated collection as a structured echo.
 
     The chat agent uses this to confirm-back what landed without
@@ -419,11 +426,15 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
     The schedule renders via ``render_schedule_field`` — the stored rule verbatim when
     the collection has one, else ``schedule: none`` for an inert/unscheduled one, so a
     plain update on an unscheduled collection never echoes a blank clause (#1666).
+    The end condition renders too (#2251 — this echo used to carry no expiry line at
+    all, so a call that gave a job its first end had nothing confirming it landed),
+    on the user's own clock (#2206) and as ``was … → now …`` when this call moved it.
     """
     return (
         f"{verb} collection '{memory.name}':\n"
         f"  schedule: {render_schedule_field(memory)}\n"
         f"  notify: {memory.notify}\n"
+        f"  expires: {render_expiry_update_line(memory, timezone_name, priors)}\n"
         f"  description: {memory.description}\n"
         f"  extraction_prompt: |\n    "
         f"{(memory.extraction_prompt or '').replace(chr(10), chr(10) + '    ')}"
@@ -499,11 +510,12 @@ def _status_line(row: MemoryRow) -> str:
     return f"status: {_STATUS_ACTIVE}"
 
 
-def _expires_line(row: MemoryRow) -> str:
-    """``expires: <UTC datetime>`` when an end condition is set, else
+def _expires_line(row: MemoryRow, timezone_name: str | None) -> str:
+    """``expires: <datetime>`` on the USER's own clock (#2206/#2251 — the same
+    clock a stated end is read on) when an end condition is set, else
     ``expires: never``."""
     if row.expires_at is not None:
-        return f"expires: {format_log_timestamp(row.expires_at)}"
+        return f"expires: {format_user_timestamp(row.expires_at, timezone_name)}"
     return f"expires: {_EXPIRES_NEVER}"
 
 
@@ -529,7 +541,7 @@ def _lifecycle_block(db: Database, row: MemoryRow) -> list[str]:
     way."""
     return [
         _status_line(row),
-        _expires_line(row),
+        _expires_line(row, user_timezone_name(db)),
         _created_line(row, _ask_excerpt(db, row.source_message_id)),
     ]
 
@@ -707,6 +719,17 @@ _MISSING_SCHEDULE = (
     f"{SCHEDULE_EXAMPLES}"
 )
 
+# The ``expires_at`` argument description — stated ONCE here and read by every surface
+# that declares the argument (create, update, and the ``collection_set`` front door,
+# #2250): before this, ``collection_set``'s own schema carried a bare
+# ``{"type": "string"}`` for it with no description at all, so chat never saw what
+# create/update behind it already say. States plainly that the value is read on the
+# user's own clock, with no zone — the model never converts one (#2206).
+EXPIRES_AT_PARAM_DESCRIPTION = (
+    "When it ends — a date and time on your own clock, written with no zone, like "
+    "'2026-11-02T22:00:00'. Leave it out when there's no end date."
+)
+
 
 class CollectionCreateTool(MemoryTool):
     """Instantiate a collection from a skill, or set up an INERT storage container —
@@ -768,9 +791,7 @@ class CollectionCreateTool(MemoryTool):
         "so that one you do convert. Put a DTSTART line first whenever the user said when "
         "to start. A rule I can't read comes back with the grammar and, when I can work "
         "out what you meant, the exact string to send instead.\n"
-        "- `expires_at` — OPTIONAL. When the watch ends: a date and time "
-        '("2026-09-01T09:00:00Z") or when it ends in the user\'s own words '
-        '("in two weeks", "tomorrow at 9am"), read in their timezone. The collection '
+        f"- `expires_at` — OPTIONAL. {EXPIRES_AT_PARAM_DESCRIPTION} The collection "
         "archives itself once it passes, so a bounded watch needs no teardown.\n"
         "- `notify` — Set `true` when the user wants to be told about / kept posted "
         "on / alerted to new or changed entries as they're found. Leave `false` (the "
@@ -830,13 +851,7 @@ class CollectionCreateTool(MemoryTool):
             },
             "expires_at": {
                 "type": "string",
-                "description": (
-                    "When it ends. If the user gave an end, always set it: a date and "
-                    "time ('2026-09-01T09:00:00Z') or their words ('in two weeks'), read "
-                    "in their timezone. If their words are loose ('the end of the "
-                    "month'), work out the date and write that. If they gave no end, "
-                    "leave it out. The collection archives itself when it passes."
-                ),
+                "description": EXPIRES_AT_PARAM_DESCRIPTION,
             },
             "notify": {
                 "type": "boolean",
@@ -979,7 +994,7 @@ class CollectionCreateTool(MemoryTool):
             skill_params=args.params,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
-        echo = render_creation_echo(memory, skill.name, args.params)
+        echo = render_creation_echo(memory, skill.name, args.params, user_timezone_name(self._db))
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(message=f"{echo}{suffix}{expiry_note}", mutated=True)
 
@@ -1917,7 +1932,7 @@ class CollectionSetTool(MemoryTool):
             "skill": {"type": "string"},
             "params": {"type": "object"},
             "schedule": {"type": "string"},
-            "expires_at": {"type": "string"},
+            "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
             "notify": {"type": "boolean"},
         },
         "required": ["name"],
@@ -2242,10 +2257,8 @@ class CollectionUpdateTool(MemoryTool):
         "when it starts; a DTSTART stamp ending in Z is an exact moment in UTC. "
         "Setting it REPLACES the whole schedule. This is how you give an "
         "INERT collection its schedule when you adopt a skill onto it.\n"
-        "- `expires_at` — OPTIONAL end condition: a date and time "
-        '("2026-09-01T09:00:00Z") or when it ends in the user\'s own words '
-        '("in two weeks"), read in their timezone. The collection archives itself once '
-        "it passes.\n"
+        f"- `expires_at` — OPTIONAL. {EXPIRES_AT_PARAM_DESCRIPTION} The collection "
+        "archives itself once it passes.\n"
         "\n"
         "Returns a structured echo of the updated state. The echo is "
         "authoritative — if a field you tried to set isn't in it, the "
@@ -2304,13 +2317,7 @@ class CollectionUpdateTool(MemoryTool):
             },
             "expires_at": {
                 "type": "string",
-                "description": (
-                    "When it ends. If the user gave an end, always set it: a date and "
-                    "time ('2026-09-01T09:00:00Z') or their words ('in two weeks'), read "
-                    "in their timezone. If their words are loose ('the end of the "
-                    "month'), work out the date and write that. If they gave no end, "
-                    "leave it out. The collection archives itself when it passes."
-                ),
+                "description": EXPIRES_AT_PARAM_DESCRIPTION,
             },
         },
         "required": ["name"],
@@ -2385,8 +2392,20 @@ class CollectionUpdateTool(MemoryTool):
         memory = self._apply_update(args, None, None, None, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
-        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}{expiry_note}"
+        echo = _format_collection_echo(
+            memory, "Updated", user_timezone_name(self._db), self._priors(args.name)
+        )
+        message = f"{echo}{suffix}{expiry_note}"
         return ToolResult(message=message, mutated=True)
+
+    def _priors(self, name: str) -> Mapping[str, str | None]:
+        """This call's recorded before-values (#1946) — ``{}`` with no run id to key
+        the mutation event by, same as every untracked edit today."""
+        if self._run_id is None:
+            return {}
+        return self._db.mutations.priors_for_run(
+            name, self._run_id, entity_type=MutationEntityType.COLLECTION
+        )
 
     async def _reinstantiate(
         self, args: CollectionUpdateArgs, schedule: Schedule | None, expires_at: datetime | None
@@ -2412,7 +2431,7 @@ class CollectionUpdateTool(MemoryTool):
             args, prompt, skill.name, params, embedding, schedule, expires_at
         )
         suffix = _description_degraded_suffix(args.description, embedding)
-        echo = render_reinstantiation_echo(memory, skill.name, params)
+        echo = render_reinstantiation_echo(memory, skill.name, params, user_timezone_name(self._db))
         expiry_note = sentinel_expiry_note(args.expires_at, expires_at)
         return ToolResult(
             message=f"{echo}{suffix}{self._no_schedule_note(memory)}{expiry_note}",
