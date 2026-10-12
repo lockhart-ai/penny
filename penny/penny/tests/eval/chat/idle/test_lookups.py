@@ -54,11 +54,11 @@ from penny.tests.eval.utils.lookup_world import (
     SISTER_MENTION,
     SISTER_REPLY,
     TYPEWRITER_WATCH,
+    archive_after_seeding,
     assert_seeded_turns_embedded,
     seed_job_with_run_history,
     seed_long_recipe_list,
     seed_mention_out_of_window,
-    seed_then_archive,
 )
 from penny.tests.eval.utils.worlds import World
 
@@ -304,7 +304,7 @@ async def test_an_archived_list_is_reached_and_read(chat_eval: ChatEval, model: 
         ),
         area=Area.MEMORY,
         model=model,
-        seed=seed_then_archive(PRESERVE_BOX),
+        seed=archive_after_seeding(PRESERVE_BOX),
         world=_PRESERVE_WORLD,
         ask=_PRESERVE_ASK,
         also_phrased=_PRESERVE_PHRASINGS,

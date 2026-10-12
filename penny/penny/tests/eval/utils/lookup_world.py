@@ -14,11 +14,13 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any, NamedTuple
 
-from sqlalchemy import text
+from sqlalchemy import update
+from sqlmodel import col
 
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.database.models import MemoryEntry, PromptLog
 from penny.database.skills import (
     DistillInput,
     SkillDraft,
@@ -29,7 +31,7 @@ from penny.database.skills import (
 from penny.skill_extraction import _apply_leaf_labels, _interface_parameters
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.chat.idle.test_standing_collection import WATCH_ROUTINE, StandingJob
-from penny.tests.eval.conftest import Seeder, seed_collection, seeded_run_id
+from penny.tests.eval.conftest import Seeder, seeded_run_id
 from penny.tests.eval.utils.fixtures import SynthCollection
 from penny.tests.eval.utils.transition_ledger import _seeded_response, _wire_tool_call
 from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
@@ -291,12 +293,16 @@ PRESERVE_BOX = SynthCollection(
 PRESERVE_WORDS = ("quince", "fig")
 
 
-def seed_then_archive(synth: SynthCollection) -> Seeder:
-    """Lay a collection down with its entries, then archive it — the entry condition
-    case 4 reads back: a retired list that still holds what it held."""
+def archive_after_seeding(synth: SynthCollection) -> Seeder:
+    """Archive a collection the WORLD already seeded — the entry condition case 4
+    reads back: a retired list that still holds what it held.
+
+    Takes no part in laying the collection down: the case's ``World.stores`` carries
+    it, so ``chat_eval``'s own ``seed_world_stores`` has already created it (with its
+    entries) by the time this seeder runs. Seeding it a second time here would create
+    a duplicate collection of the same name and fail every sample identically."""
 
     def seed(db: Database) -> None:
-        seed_collection(db, synth)
         db.memories.archive(synth.name, run_id=seeded_run_id(f"archive-{synth.name}"))
 
     return seed
@@ -484,15 +490,19 @@ def _seed_one_run(db: Database, container: str, run_seed: _RunSeed) -> None:
 
 def _backdate_run(db: Database, run_id: str, days_ago: int) -> None:
     """Push one run's prompt rows (and the entry it wrote) back by ``days_ago`` —
-    true of the seeded world, not of anything the model did."""
-    stamp = (db.clock.now() - timedelta(days=days_ago)).isoformat()
-    with db.engine.connect() as conn:
-        conn.execute(
-            text("UPDATE promptlog SET timestamp = :ts WHERE run_id = :rid"),
-            {"ts": stamp, "rid": run_id},
+    true of the seeded world, not of anything the model did.
+
+    Written through the models, so the stamp lands in the form every other row's
+    has: a stamp bound as ISO text keeps its offset, and the state header cannot
+    order such a row against the rest."""
+    stamp = db.clock.now() - timedelta(days=days_ago)
+    with db.get_session() as session:
+        session.exec(
+            update(PromptLog).where(col(PromptLog.run_id) == run_id).values(timestamp=stamp)
         )
-        conn.execute(
-            text("UPDATE memory_entry SET created_at = :ts WHERE last_written_by_run_id = :rid"),
-            {"ts": stamp, "rid": run_id},
+        session.exec(
+            update(MemoryEntry)
+            .where(col(MemoryEntry.last_written_by_run_id) == run_id)
+            .values(created_at=stamp)
         )
-        conn.commit()
+        session.commit()
