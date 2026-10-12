@@ -1491,13 +1491,29 @@ _HYPHENS = f"-{_DRAWN_HYPHENS}"
 # admitting it is this defect.
 _URI_CHARS = rf"A-Za-z0-9._~%!$&'()*+,;=:/?#@\[\]{_DASHES}-"
 _URL = rf"https?://[{_URI_CHARS}]+"
+# THE SAME RULE, DECLARED ONCE: a word opens a sentence not only where a mark in
+# `_SENTENCE_MARKS` sits right before it (the join already fails there — `_CAPITALISED` never
+# consumes the mark) but also where the word opens its own LINE, whatever the line above ended
+# with.  Joining through `_GAP` (whitespace that is not a newline) rather than bare `\s` is what
+# makes a line's first word a sentence opener by construction.
+#
+# MEASURED (#2253): a list item ends with no closing punctuation, so the next line's opening
+# word joined it unopposed — `… Quill Market` then a blank line then `Basically, I'll let you
+# know…` read as the phantom phrase `Market Basically`, reporting `Basically` as invented.  A
+# list marker (`- `, `1. `) already blocks the join on the character before it; this closes the
+# one line-head shape with no marker to block on.
+#
+# THE BLIND SPOT, STATED: a real multi-word name split across a line break with no marker and
+# no closing punctuation above reads as separate words — and a name that opens a line is never
+# reported AT THAT POSITION, exactly as a single-word invention that opens any sentence is not
+# reported today.  The same name, stated again mid-sentence on one line, still is.
+_GAP = r"[^\S\n]"
 _CAPITALISED = r"[A-Z][A-Za-z'-]*"
-_NAME_PHRASE = rf"{_CAPITALISED}(?:\s+{_CAPITALISED})+"
+_NAME_PHRASE = rf"{_CAPITALISED}(?:{_GAP}+{_CAPITALISED})+"
 # A meridiem after a figure is part of the TIME, not a word beside it: `7 AM` is one value.
 # Read apart, the figure lost the half of the day it names and the marker glued onto whatever
 # capital followed it — MEASURED, `7 AM PDT` reported `AM` as an invented name.
 # The gap before it is whatever space the model drew, a narrow no-break one included.
-_GAP = r"[^\S\n]"
 _MERIDIEM = rf"(?:{_GAP}?[AaPp]\.?[Mm]\b)"
 # AN IDENTIFIER is a name, not a figure: a word with a number hyphenated onto it or into it
 # (`aurora-deck-2`, `seeded-trail-cycle-2`, `patch-2.3-notes`) names one thing, and its digits

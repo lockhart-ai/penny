@@ -753,6 +753,68 @@ def test_a_field_label_is_layout_and_the_value_after_it_is_still_read():
     assert unsourced_specifics(priced, asked) == ["349"]
 
 
+def test_a_word_that_opens_a_line_after_a_list_opens_a_sentence():
+    """A list item usually ends with no closing punctuation, so a name phrase's join across
+    whitespace used to carry straight through the line break: the list's last word and the
+    next line's first word glued into a phantom two-word name, which is how a reply's own
+    sentence-opening word (`Basically`) was reported as an invented name (#2253).
+
+    The join now travels through whitespace that is NOT a newline, so a line's first word
+    opens a sentence whatever the line above it ended with — a bulleted list, a numbered one,
+    or a plain line with nothing closing it. The paired guard: an invented name still reported
+    is one that stands MID-sentence, including inside a list item after its own first word."""
+    given = (
+        "watching Enamel kettles over at Brasswick, Pocket atlases from Fernhollow, and "
+        "Portable typewriters at Quill Market"
+    )
+    bulleted = (
+        "I'm currently keeping an eye on a few things for you:\n"
+        "- Enamel kettles over at Brasswick\n"
+        "- Pocket atlases from Fernhollow\n"
+        "- Portable typewriters at Quill Market\n"
+        "\n"
+        "Basically, I'll let you know as soon as anything new pops up!"
+    )
+    assert unsourced_specifics(bulleted, given) == []
+    numbered = (
+        "I'm currently keeping an eye on a few things for you:\n"
+        "1. Enamel kettles over at Brasswick\n"
+        "2. Pocket atlases from Fernhollow\n"
+        "3. Portable typewriters at Quill Market\n"
+        "\n"
+        "Basically, I'll let you know as soon as anything new pops up!"
+    )
+    assert unsourced_specifics(numbered, given) == []
+    no_closing_punctuation = (
+        "Here's everything I'm keeping an eye on for you right now at Quill Market\n"
+        "Basically, I'll let you know as soon as anything new pops up!"
+    )
+    assert unsourced_specifics(no_closing_punctuation, given) == []
+    # The guard: an invented name mid-sentence in a list item, after the item's own first word,
+    # is still read exactly as before.
+    invented_mid_item = (
+        "I'm currently keeping an eye on a few things for you:\n"
+        "- Enamel kettles over at Brasswick\n"
+        "- Pocket atlases from Fernhollow\n"
+        "- Portable typewriters over at Hollow Reach\n"
+        "\n"
+        "Basically, I'll let you know as soon as anything new pops up!"
+    )
+    assert unsourced_specifics(invented_mid_item, given) == ["Hollow", "Reach"]
+    # A name that opens a line is read exactly where a single-word invention always has been —
+    # nowhere, since nothing there pairs it into a name phrase — but the SAME name stated again
+    # MID-sentence, on one line, is still reported, and only once.
+    repeated = (
+        "I'm currently keeping an eye on a few things for you:\n"
+        "- Enamel kettles over at Brasswick\n"
+        "- Pocket atlases from Fernhollow\n"
+        "- Portable typewriters at Quill Market\n"
+        "\n"
+        "Hollow hasn't moved yet, but I'll flag it the moment Hollow Reach does."
+    )
+    assert unsourced_specifics(repeated, given) == ["Hollow", "Reach"]
+
+
 def test_a_name_used_as_a_line_label_is_the_stated_blind_spot():
     """Stated rather than discovered later: a name or short clause heading a line before a
     colon is a field label by definition, so a name written in that position is not read,
@@ -1116,13 +1178,14 @@ def test_a_contract_tag_inside_a_value_is_a_word_the_draw_was_given():
     story's missing field with the contract's own `NOT_PRESENT`.
 
     Not the tag itself — an underscore is not whitespace, so `NOT_PRESENT` matches no name
-    phrase.  It is the tag's TAIL, glued across the line break to the next story's first
-    word — two capitalised words in a row over a page carrying no `PRESENT`.  The fixture
-    reconstructs that shape on synthetic names rather than replaying the observed draw.
+    phrase.  It is the tag's TAIL, `EXTRACTED`, glued on the SAME line to the next story's own
+    headline — a name phrase the page does not carry on its own.  `PRESENT`'s tail no longer
+    glues across the line break the way it once did (#2253 closed that join at the source), so
+    this fixture now carries only the half of the shape a line break was never the fix for.
 
     Every word of it was given, in the system prompt, so a haystack that is the whole prompt
     passes it with nothing on that side keyed to either tag's spelling."""
-    assert unsourced_specifics(_TAGGED_ANSWER, _WITHOUT_THE_CONTRACT) == ["PRESENT", "EXTRACTED"]
+    assert unsourced_specifics(_TAGGED_ANSWER, _WITHOUT_THE_CONTRACT) == ["EXTRACTED"]
     assert unsourced_specifics(_TAGGED_ANSWER, _WHOLE_PROMPT) == []
 
 
