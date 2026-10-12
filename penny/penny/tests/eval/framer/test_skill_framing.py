@@ -166,34 +166,37 @@ class PortedArms(NamedTuple):
     turns_per_arm: int = 2
 
 
-def _minted_families(families: Sequence[ParameterFamily]) -> Feature:
-    """The MEASURED reading that replaces the two retired LANDED claims (#2222, code owner's
-    ruling): which parameters the framer minted, how many, and which piece each answers are
-    all model OUTPUT — "the number of [parameters] and their naming is variance" — so this
-    is a Section B feature rather than a pass/fail count.
+# What a minted parameter reads as when it answers none of the case's families.
+_OTHER_PIECE = "other"
 
-    Reuses :func:`classify_by_family`, the one classification discipline every suite that
-    asks what a drawn parameter answers reads, so the measured reading and what the retired
-    claims checked can never read the classifier two different ways.  An unclassified
-    parameter — round 8's recorded failure, a `search_term` invented for an ask that named
-    no search — reads ``invented`` rather than being dropped, so the invention still shows up
-    in the pooled distribution instead of silently not counting.  Sorted so two samples that
+
+def _minted_families(families: Sequence[ParameterFamily]) -> Feature:
+    """Which piece of the ask each minted parameter answers, as one measured reading.
+
+    Which parameters the framer mints, how many, and what each answers are model OUTPUT,
+    so they are a Section B feature and never a pass/fail count.
+
+    Reuses :func:`classify_by_family`, the one classification every suite that asks what a
+    drawn parameter answers reads.  A parameter that answers none of the case's families
+    reads ``other``: its value is still the user's own words (the framer's acceptance check
+    refuses any draw where it is not), so it is another piece of the ask the model chose to
+    lift into the interface — the thing to find, a label, a limit — and it shows up in the
+    pooled distribution instead of silently not counting.  Sorted so two samples that
     answered the same families agree whatever order the draw minted them in.
 
     CONSEQUENTIAL: a routine that asks for one thing is a different interface from one that
-    asks for two, or that asks for something the user never offered to re-supply.
+    asks for two.
 
-    Declares :data:`FIELD_UNSET` absent because a draw that minted NOTHING (the production
-    floor's honest failure, #1830, re-rolled and then refused rather than accepted) leaves no
-    parameter for this axis to read — the one shape among the measured axes that can
-    genuinely read nothing, as opposed to blank."""
+    Declares :data:`FIELD_UNSET` absent because a draw that minted NOTHING (the framer's
+    honest failure, re-rolled and then refused rather than accepted) leaves no parameter
+    for this axis to read."""
 
     def read(sample: SampleObservation) -> str:
         drawn = framed_parameters(sample)
         if not drawn:
             return FIELD_UNSET
         labels = (
-            family_of.label if family_of is not None else "invented"
+            family_of.label if family_of is not None else _OTHER_PIECE
             for (_name, _says), family_of in zip(
                 drawn, classify_by_family(drawn, families), strict=True
             )
@@ -337,7 +340,7 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
     returns a typed result, so it moves no machine and writes to no store.
 
     What round 8's recorded failure is now caught by is the **measured** family-multiset
-    (`_minted_families`, below): a `search_term` invented for this ask reads `invented` in
+    (`_minted_families`, below): a `search_term` minted for this ask reads `other` in
     the pooled distribution instead of failing a count claim.
     """
     cohort = await framer_eval(
