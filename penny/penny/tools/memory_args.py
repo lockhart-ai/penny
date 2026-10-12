@@ -49,28 +49,7 @@ def _normalize_dashes(value: object) -> object:
     return out
 
 
-def _normalize_dash_list(value: object) -> object:
-    if not isinstance(value, list):
-        return value
-    return [_normalize_dashes(item) for item in value]
-
-
-def _require_memory_names(value: list[str]) -> list[str]:
-    """Reject an empty ``memories`` list with an actionable message.
-
-    A bare ``Field(min_length=1)`` surfaces Pydantic's generic "List should have
-    at least 1 item" — true but not actionable, and inconsistent with the browse/
-    email empty-list gates.  Name what to supply."""
-    if not value:
-        raise ValueError("provide at least one collection name to check for a duplicate")
-    return value
-
-
 MemoryName = Annotated[str, BeforeValidator(_normalize_dashes)]
-# A ``memories`` list that must name at least one collection (the ``exists`` probe).
-NonEmptyMemoryNameList = Annotated[
-    list[str], BeforeValidator(_normalize_dash_list), AfterValidator(_require_memory_names)
-]
 
 
 def _reject_nonpositive_count(value: int | None) -> int | None:
@@ -300,7 +279,7 @@ class LogCreateArgs(ToolArgs):
 
 
 class MemoryNameArgs(ToolArgs):
-    """One-field args for ``archive`` / ``unarchive`` / read-all / keys."""
+    """One-field args for ``archive`` / ``unarchive`` / read-all."""
 
     memory: MemoryName
 
@@ -389,13 +368,6 @@ class CollectionUpdateArgs(ToolArgs):
 
 
 # ── Collection reads ────────────────────────────────────────────────────────
-
-
-class CollectionGetArgs(ToolArgs):
-    """Exact key lookup in a collection."""
-
-    memory: MemoryName
-    key: str
 
 
 class ReadLatestArgs(ToolArgs):
@@ -525,14 +497,6 @@ class LogAppendArgs(ToolArgs):
 
 
 # ── Introspection ───────────────────────────────────────────────────────────
-
-
-class ExistsArgs(ToolArgs):
-    """Cross-memory dedup probe used by thinking-class agents before writes."""
-
-    memories: NonEmptyMemoryNameList
-    content: str
-    key: str | None = None
 
 
 class FindArgs(ToolArgs):

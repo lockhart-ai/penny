@@ -1762,7 +1762,7 @@ class TestResolveEntries:
 
     def test_keyless_log_entry_carries_log_container(self, db):
         """A keyless log entry surfaces with ``container_kind=log`` and ``key=None`` —
-        the render addresses it by its id handle, not a collection_get key."""
+        the render addresses it by its id handle, not a collection entry's key."""
         db.memories.create_log("feed", "d", description_embedding=_unit_vec(5))
         db.memories.memory("feed").append(
             [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"

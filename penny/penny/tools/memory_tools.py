@@ -9,7 +9,7 @@ Author attribution is passed explicitly: write-capable tools take an
 ``build_memory_tools(db, embedding_client, author)`` is the factory each
 agent calls with its own ``self.name`` so writes are attributed correctly.
 
-Tools that need embeddings (writes, similarity reads, ``exists``) take an
+Tools that need embeddings (writes, similarity reads) take an
 ``LlmClient`` in ``__init__``. On a transient embed failure at write time the
 write is REFUSED, not stored without a vector (#1412): every stored entry must
 carry its similarity vector, so ``collection_write`` / ``log_append`` return an
@@ -38,7 +38,6 @@ from penny.constants import (
 from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.database.memory import (
-    DedupThresholds,
     EntryInput,
     LogEntryInput,
     Memory,
@@ -97,11 +96,9 @@ from penny.tools.memory_args import (
     CollectionCreateArgs,
     CollectionDeleteEntryArgs,
     CollectionEntrySpec,
-    CollectionGetArgs,
     CollectionSetArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
-    ExistsArgs,
     FindArgs,
     GetEventArgs,
     LogAppendArgs,
@@ -1122,60 +1119,6 @@ class CollectionUnarchiveTool(MemoryTool):
 # ── Collection reads ────────────────────────────────────────────────────────
 
 
-class CollectionGetTool(MemoryTool):
-    """Exact-key lookup in a collection."""
-
-    name = "collection_get"
-    # The densest recovery message on the surface: a key that is not there could be
-    # listed, searched for by meaning, refreshed under the key it really has, or
-    # written as new — and the message names all four, so all four have to be callable
-    # wherever it can render.
-    advises = ("collection_keys", "read_similar", "collection_write")
-    description = (
-        "Look up an entry by its exact key in a collection. Returns the entry's "
-        "content if found, or a 'not found' message otherwise."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "memory": {"type": "string"},
-            "key": {"type": "string"},
-        },
-        "required": ["memory", "key"],
-    }
-    args_model = CollectionGetArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
-        entry = _entry_label(arguments)
-        if not result.success:
-            return f"You tried to look up {entry} in {memory} but it didn't work:"
-        return f"You looked up {entry} in {memory}:"
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = CollectionGetArgs(**kwargs)
-        memory = _resolve(self._db, args.memory)
-        rows = memory.get(args.key)
-        if not rows:
-            rejection = _bracket_key_rejection(memory, args.memory, args.key)
-            if rejection is not None:
-                return rejection
-            return ToolResult(
-                message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
-                f"keys with collection_keys('{args.memory}'), or search by content with "
-                f"read_similar(memory='{args.memory}', anchor=<what you're looking for>). "
-                f"If it exists under a different key, write the new content there: "
-                f"collection_write(memory='{args.memory}', "
-                f"entries=[{{'key': <the key you found>, 'content': <the new content>}}]) — "
-                f"the store replaces the content of the key you name."
-            )
-        return ToolResult(message=format_entries(rows, source=args.memory))
-
-
 class CollectionReadLatestTool(MemoryTool):
     """Return the newest entries in a collection, newest first.
 
@@ -1280,38 +1223,6 @@ class ReadSimilarTool(MemoryTool):
         return ToolResult(
             message=format_entries(entries, source=args.memory, ordering="most relevant first")
         )
-
-
-class CollectionKeysTool(MemoryTool):
-    """List the unique keys currently in a collection."""
-
-    name = "collection_keys"
-    description = "List the unique keys in a collection (insertion order)."
-    parameters = {
-        "type": "object",
-        "properties": {"memory": {"type": "string"}},
-        "required": ["memory"],
-    }
-    args_model = MemoryNameArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
-        if not result.success:
-            return f"You tried to list the keys in {memory} but it didn't work:"
-        return f"You listed the keys in {memory}:"
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = MemoryNameArgs(**kwargs)
-        keys = _resolve(self._db, args.memory).keys()
-        if not keys:
-            return ToolResult(
-                message=f"No keys in `{args.memory}` — the collection is empty (not an error)."
-            )
-        return ToolResult(message="\n".join(f"- {key}" for key in keys))
 
 
 # ── Collection writes ───────────────────────────────────────────────────────
@@ -2590,8 +2501,8 @@ class CollectionDeleteEntryTool(MemoryTool):
     """Delete an entry from a collection by key."""
 
     name = "collection_delete_entry"
-    # A key that does not exist sends the model to the list of keys that do.
-    advises = ("collection_keys",)
+    # A key that does not exist sends the model to the list of entries that do.
+    advises = ("collection_read_latest",)
     description = (
         "Delete the entry with the given key from a collection. Returns the "
         "number of entries removed (zero if the key did not exist)."
@@ -2645,7 +2556,8 @@ class CollectionDeleteEntryTool(MemoryTool):
                 lead = f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete."
             return ToolResult(
                 message=f"{lead} "
-                f"List the current keys with collection_keys('{args.memory}') to find it."
+                f"Read the entries in collection_read_latest('{args.memory}') to find it — "
+                f"each one shows its key."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.memory}'.", mutated=True)
 
@@ -3123,13 +3035,14 @@ def _entry_identity(entry: ResolvedEntry) -> str:
 
 def _entry_addressing(entry: ResolvedEntry) -> str:
     """How to read the stored entry back — deterministic from whether it is keyed: a
-    keyed collection entry is one ``collection_get`` away (re-reads the exact value
-    the find already carried); a keyless log entry names its ``<log>#<id>`` handle
-    and the ``log_read`` that surfaces it (the entry_by_id-style retrieval, #1640)."""
+    keyed collection entry's key is already shown above (#1640), and the list it
+    lives in is one ``collection_read_latest`` away; a keyless log entry names its
+    ``<log>#<id>`` handle and the ``log_read`` that surfaces it (the entry_by_id-style
+    retrieval, #1640)."""
     if entry.key is None:
         handle = f"{entry.memory_name}{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.entry_id}"
         return f"log_read('{entry.memory_name}') — the full entry is {handle}"
-    return f"collection_get(memory='{entry.memory_name}', key='{entry.key}')"
+    return f"collection_read_latest('{entry.memory_name}')"
 
 
 def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
@@ -3188,7 +3101,6 @@ class FindTool(MemoryTool):
     advises = (
         "collection_catalog",
         "collection_read_latest",
-        "collection_get",
         "collection_set",
         "collection_archive",
         "collection_unarchive",
@@ -3254,93 +3166,6 @@ class FindTool(MemoryTool):
 
 
 # ── Introspection / lifecycle ───────────────────────────────────────────────
-
-
-_EXISTS_EMBED_DEGRADED = (
-    "inconclusive — the embedding service was unavailable this cycle, so only "
-    "exact-key matching ran and the similarity dedup was skipped; no exact-key "
-    "match was found, but a near-duplicate can't be ruled out. Re-probe next "
-    "cycle with exists(memories={memories}, content=<content>, key=<key>), or "
-    "write only if you're sure the entry is new."
-)
-
-
-class ExistsTool(MemoryTool):
-    """Probe whether an equivalent entry already exists across a set of memories."""
-
-    name = "exists"
-    # A name that is free is a name to write to.
-    advises = ("collection_write",)
-    description = (
-        "Check whether an entry equivalent to the given key/content already "
-        "exists in any of the listed memories. Uses the same similarity-based "
-        "dedup rule as `collection_write(memory=<collection>, entries=<key + "
-        "content>)`. Use this before writing to avoid duplicates that span "
-        "multiple collections."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "memories": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Names of memories to search",
-            },
-            "content": {"type": "string"},
-            "key": {"type": "string", "description": "Optional — enables exact-key shortcut"},
-        },
-        "required": ["memories", "content"],
-    }
-    args_model = ExistsArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        if not result.success:
-            return "You tried to check whether that entry already exists but it didn't work:"
-        return "You checked whether that entry already exists:"
-
-    def __init__(
-        self,
-        db: Database,
-        llm_client: LlmClient,
-        thresholds: DedupThresholds | None = None,
-    ) -> None:
-        self._db = db
-        self._llm = llm_client
-        self._thresholds = thresholds
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = ExistsArgs(**kwargs)
-        # When the model probes with content but no key, treat the content
-        # as a name-like probe — using it as both ``key`` and ``content``
-        # lets the dedup's key-TCR signal fire against existing entries
-        # whose ``key`` matches.  Without this, ``exists(content="Catan")``
-        # returned "no" against an existing ``key="Catan"`` because
-        # content-cosine alone (candidate "Catan" vs the existing entry's
-        # long description) sat below the strict threshold.
-        key = args.key if args.key else args.content
-        key_vec = await embed_text(self._llm, key)
-        content_vec = await embed_text(self._llm, args.content)
-        # ``exists`` validates every name and raises ``MemoryNotFoundError`` on
-        # an unknown one — the base ``execute`` renders that as the actionable
-        # not-found refusal, so a typo'd probe never misreports "no" and
-        # green-lights the write it was checking for.
-        found = self._db.memories.exists(
-            args.memories,
-            key,
-            key_vec,
-            content_vec,
-            thresholds=self._thresholds,
-        )
-        if found:
-            return ToolResult(message="yes")
-        # A "no" that rode a failed embed only ran the exact-key signal — the
-        # similarity dedup was skipped, so the answer is inconclusive.  Surface
-        # that instead of a confident "no" (visible degradation over a silent
-        # miss that could green-light a near-duplicate write).
-        if key_vec is None or content_vec is None:
-            return ToolResult(message=_EXISTS_EMBED_DEGRADED.format(memories=args.memories))
-        return ToolResult(message="no")
 
 
 class DoneTool(Tool):
@@ -3517,14 +3342,11 @@ def build_memory_tools(
     reads: list[Tool] = [
         CollectionReadLatestTool(db),
         ReadSimilarTool(db, llm_client),
-        CollectionGetTool(db),
-        CollectionKeysTool(db),
         MemoryMetadataTool(db),
         CollectionCatalogTool(db),
         LogReadTool(db, agent_name, scope),
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
-        ExistsTool(db, llm_client),
         FindTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [

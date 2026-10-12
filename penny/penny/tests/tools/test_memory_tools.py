@@ -76,14 +76,11 @@ from penny.tools.memory_tools import (
     CollectionCatalogTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
-    CollectionGetTool,
-    CollectionKeysTool,
     CollectionReadLatestTool,
     CollectionSetTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
-    ExistsTool,
     FindTool,
     GetEventTool,
     LogAppendTool,
@@ -3159,86 +3156,6 @@ class TestCollectionWritesAndReads:
         assert db.memory("watch").get("note")[0].content == "v2"
 
     @pytest.mark.asyncio
-    async def test_get_returns_entry_or_not_found(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="likes", entries=[{"key": "k", "content": "hello"}]
-        )
-        assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
-        missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
-        assert "not found" in missing.message
-        # The proven-win read guidance (collection_keys / read_similar; 47%→88%
-        # recovery) is intact, AND the rejection now closes the residual write-vs-
-        # update decision: once the model finds the entry under a different key it
-        # must UPDATE that entry, not collection_write it (which the dedup rejects
-        # as a duplicate — the ~1-call ping-pong this guidance removes).
-        assert "collection_keys('likes')" in missing.message
-        assert "read_similar(memory='likes', anchor=<what you're looking for>)" in missing.message
-        assert (
-            "collection_write(memory='likes', entries=[{'key': <the key you found>, "
-            "'content': <the new content>}])" in missing.message
-        )
-        assert "the store replaces the content of the key you name" in missing.message
-        # A bracket-wrapped key (the model's ingrained habit from the old `[key]`
-        # display form) is never silently resolved — it's rejected with a teaching
-        # error that names the mistake, the current key='...' render, and the bare
-        # key ready to reuse.
-        bracketed = await CollectionGetTool(db).execute(memory="likes", key="[k]")
-        assert bracketed.success is False
-        assert bracketed.message == (
-            "Key '[k]' not found in 'likes'. The enclosing [brackets] are not part "
-            "of the key — entry listings show keys as key='...' and the key is passed "
-            "bare, without brackets. This entry's key is 'k'. Retry with key='k'."
-        )
-        # A bracket-wrapped key whose bare form doesn't exist either gets the
-        # ordinary not-found error, not the bracket teaching rejection.
-        double_miss = await CollectionGetTool(db).execute(memory="likes", key="[absent]")
-        assert "Key '[absent]' not found" in double_miss.message
-        assert "Retry with" not in double_miss.message
-        # A key that genuinely contains brackets exact-matches with no rejection.
-        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="likes", entries=[{"key": "[lit]", "content": "bracket literal body"}]
-        )
-        literal = await CollectionGetTool(db).execute(memory="likes", key="[lit]")
-        assert literal.success is True
-        assert "bracket literal body" in literal.message
-
-    @pytest.mark.asyncio
-    async def test_keys_lists_unique_keys_in_order(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="likes", entries=[{"key": "first", "content": "1"}])
-        await write.execute(memory="likes", entries=[{"key": "second", "content": "2"}])
-        listing = await CollectionKeysTool(db).execute(memory="likes")
-        assert listing.message == "- first\n- second"
-
-    @pytest.mark.asyncio
-    async def test_keys_empty_collection_names_source_not_bare_sentinel(self, db):
-        """An empty collection's keys read names the source and marks absence (not an
-        error), rather than the bare "(no keys)" sentinel (house wording pass)."""
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        listing = await CollectionKeysTool(db).execute(memory="likes")
-        assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
-
-    @pytest.mark.asyncio
     async def test_read_similar_uses_embedding(self, db, mock_llm):
         _seed_collection(
             db,
@@ -3482,15 +3399,14 @@ class TestCollectionMutations:
         await write.execute(memory="likes", entries=[{"key": "k", "content": "old"}])
         result = await write.execute(memory="likes", entries=[{"key": "k", "content": "new"}])
         assert "Changed: 'k' — the stored baseline was refreshed to the new value" in result.message
-        fetched = await CollectionGetTool(db).execute(memory="likes", key="k")
-        assert "new" in fetched.message
+        assert db.memory("likes").get("k")[0].content == "new"
         # A bracket-wrapped key (display form copied from an entry list) on the
         # delete path is rejected with a teaching error naming the bare key —
         # never absorbed; the entry is untouched.
         rejected_delete = await CollectionDeleteEntryTool(db).execute(memory="likes", key="[k]")
         assert rejected_delete.success is False
         assert "Retry with key='k'" in rejected_delete.message
-        assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
+        assert db.memory("likes").get("k")[0].content == "new"
 
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, db):
@@ -3577,14 +3493,15 @@ class TestDidYouMeanSuggestions:
         assert result.mutated is False
         assert result.message == (
             "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
-            "'quarterly-report'? Nothing to delete. List the current keys with "
-            "collection_keys('notes') to find it."
+            "'quarterly-report'? Nothing to delete. Read the entries in "
+            "collection_read_latest('notes') to find it — each one shows its key."
         )
         # No close key → byte-identical to today's message.
         far = await CollectionDeleteEntryTool(db).execute(memory="notes", key="zzzzz")
         assert far.message == (
             "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
-            "List the current keys with collection_keys('notes') to find it."
+            "Read the entries in collection_read_latest('notes') to find it — "
+            "each one shows its key."
         )
 
 
@@ -4149,94 +4066,7 @@ class TestEmissionProvenanceRender:
         ]
 
 
-class TestExistsAndDone:
-    @pytest.mark.asyncio
-    async def test_exists_yes_via_exact_key(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        client = _make_llm_client(mock_llm)
-        await CollectionWriteTool(db, client, author="test").execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "body"}]
-        )
-        result = await ExistsTool(db, client).execute(
-            memories=["likes"], key="dark roast", content="body"
-        )
-        assert result.message == "yes"
-
-    @pytest.mark.asyncio
-    async def test_exists_no(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
-            memories=["likes"], key="not there", content="nothing"
-        )
-        assert result.message == "no"
-
-    @pytest.mark.asyncio
-    async def test_exists_unknown_memory_name_is_not_found(self, db, mock_llm):
-        """A misspelled memory name must not read as an empty (always-"no")
-        memory — that green-lights the write the model was probing for.  The
-        probe fails with the actionable not-found refusal naming the bad value."""
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
-            memories=["lieks"], content="dark roast"
-        )
-        assert result.success is False
-        assert "lieks" in result.message
-        assert "not found" in result.message
-        # The wrong-name miss names find as the guess-free recovery (#1558).
-        assert "find(query=" in result.message
-
-    @pytest.mark.asyncio
-    async def test_exists_empty_memories_is_actionable_not_bare_pydantic(self, db, mock_llm):
-        """An empty ``memories`` list gets a named, actionable rejection through the
-        arg-validation envelope — not Pydantic's bare "List should have at least 1
-        item" (the house wording-unification pass)."""
-        result = await ExistsTool(db, _make_llm_client(mock_llm)).run(memories=[], content="x")
-        assert result.success is False
-        assert "at least one collection name" in result.message
-        assert "List should have at least 1 item" not in result.message
-
-    @pytest.mark.asyncio
-    async def test_exists_embed_failure_is_inconclusive_not_no(self, db, mock_llm):
-        """When the embed service is down the similarity dedup is skipped, so a
-        "no" would be a silent degradation that could green-light a near-duplicate
-        write.  The probe surfaces the inconclusive state instead (visible
-        degradation)."""
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        client = _make_llm_client(mock_llm)
-
-        def _fail_embed(model: str, text: str | list[str]) -> list[list[float]]:
-            raise LlmConnectionError("embedding service unavailable")
-
-        mock_llm.set_embed_handler(_fail_embed)
-        result = await ExistsTool(db, client).execute(memories=["likes"], content="nothing")
-
-        assert result.message != "no"
-        assert "inconclusive" in result.message
-
+class TestMemoryNameNormalization:
     @pytest.mark.asyncio
     async def test_unicode_hyphen_in_memory_name_normalized(self, db, mock_llm):
         """Regression: gpt-oss occasionally emits Unicode dashes (U+2010,
@@ -4258,42 +4088,6 @@ class TestExistsAndDone:
             entries=[{"key": "k", "content": "v"}],
         )
         assert "Wrote 1 entry to 'board-games'" in result.message
-
-    @pytest.mark.asyncio
-    async def test_exists_content_only_uses_content_as_key_probe(self, db, mock_llm):
-        """Regression: ``exists(content="Catan")`` must catch an
-        existing entry with ``key="Catan"``, even when the
-        existing row's *content* is a long description that doesn't
-        cosine-match the short candidate.  The tool now copies content
-        into the key slot when the model omits it, letting key-TCR fire
-        in the dedup rule."""
-        _seed_collection(
-            db,
-            name="board-games",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        client = _make_llm_client(mock_llm)
-        # Existing entry: short key, long descriptive content.
-        await CollectionWriteTool(db, client, author="test").execute(
-            memory="board-games",
-            entries=[
-                {
-                    "key": "Catan",
-                    "content": (
-                        "Catan – A gateway strategy board game of trading and "
-                        "settlement, designed by Klaus Teuber, first published "
-                        "1995, widely credited with popularising modern hobby "
-                        "board gaming."
-                    ),
-                }
-            ],
-        )
-        # Probe with content only — what the collector usually does when
-        # checking a candidate name before writing.
-        result = await ExistsTool(db, client).execute(memories=["board-games"], content="Catan")
-        assert result.message == "yes"
 
 
 class TestAuthorAttribution:
@@ -4324,16 +4118,13 @@ class TestFactory:
 
     _FULL_SURFACE = {
         # Reads
-        "collection_get",
         "collection_read_latest",
-        "collection_keys",
         "memory_metadata",
         "collection_catalog",
         "log_read",
         "read_run_calls",
         "get_event",
         "read_similar",
-        "exists",
         "find",
         # Lifecycle (shape)
         "collection_set",
@@ -4908,9 +4699,10 @@ class TestFind:
     @pytest.mark.asyncio
     async def test_stored_entry_carries_content_and_addressing(self, db, mock_llm):
         """A fact stored in a collection is found by the meaning of its content/key —
-        the hit CARRIES the value plus the collection_get that re-reads it, so for a
-        short fact the find IS the answer (#1640).  The collection's OWN description
-        is orthogonal, so only the entry surfaces (its container was not guessed)."""
+        the hit CARRIES the value plus the key the entry lives under, and the list it's
+        in is one collection_read_latest away, so for a short fact the find IS the
+        answer (#1640).  The collection's OWN description is orthogonal, so only the
+        entry surfaces (its container was not guessed)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
         await CollectionWriteTool(db, client, author="test").execute(
@@ -4922,7 +4714,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
-            "   read it: collection_get(memory='knowledge-notes', key='aurora beacon')"
+            "   read it: collection_read_latest('knowledge-notes')"
         )
 
     @pytest.mark.asyncio
@@ -4944,7 +4736,7 @@ class TestFind:
             "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
-            "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"
+            "   read it: collection_read_latest('aurora-watch')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )
@@ -4952,7 +4744,7 @@ class TestFind:
     @pytest.mark.asyncio
     async def test_keyless_log_entry_renders_its_id_handle(self, db, mock_llm):
         """A keyless log entry renders its ``#<id>`` identity + the ``<log>#<id>``
-        handle for entry_by_id-style retrieval — a log has no key to collection_get
+        handle for entry_by_id-style retrieval — a log has no key to re-read by
         (#1640).  The log's OWN description is orthogonal, so only the entry surfaces."""
         client = _axis_client(mock_llm)
         await LogCreateTool(db, client).execute(name="aurora-log", description="orbit nebula")
