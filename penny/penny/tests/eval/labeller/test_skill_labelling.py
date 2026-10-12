@@ -10,12 +10,13 @@ The file holds the canonical set (#2004's, #2058).  Four cases, each one demonst
 five wordings pooled into a cohort of fifteen, claimed against ``docs/eval-case-design.md``:
 ``namer-tells-two-sources-apart`` · ``namer-names-a-search-spot-as-a-search`` ·
 ``namer-names-every-spot-from-a-single-turn-teach`` ·
-``namer-names-every-spot-in-a-longer-routine``.  All four make the SAME three claims on
-different demonstrations; the two-sources and longer-routine cases each add a distinctness
-claim their ledger earns, and the other two exercise rather than newly assert — each says so
-in its own docstring rather than dressing it up.  No case claims that a value filling two argument
-sites draws ONE name: a split shared spot keys a line to a name nobody offered, which the
-production validator refuses and re-rolls, so the claim would run 15/15 by construction.
+``namer-names-every-spot-in-a-longer-routine``.  All four make the SAME two claims on
+different demonstrations, plus one SHARED MEASURE (below); the two-sources and
+longer-routine cases each add a distinctness claim their ledger earns, and the other two
+exercise rather than newly assert — each says so in its own docstring rather than dressing
+it up.  No case claims that a value filling two argument sites draws ONE name: a split
+shared spot keys a line to a name nobody offered, which the production validator refuses
+and re-rolls, so the claim would run 15/15 by construction.
 
 Each case is a fixture LEDGER, and its input document is rendered from that ledger by
 the shipped ``distill_steps`` + ``build_naming_content`` — never hand-written — so the
@@ -25,8 +26,12 @@ pinned byte-for-byte by a deterministic drift probe in ``make check`` (see
 measuring nothing, and it must fail before any GPU time, not after.
 
 Every case claims, over its fifteen samples, that each offered spot's name hardens to a
-usable binding key, is not the arg name handed back, and comes with a description saying
-what belongs there.  That every spot got a line is not among them: production's
+usable binding key and comes with a description saying what belongs there.  Whether a
+spot came back named after the tool argument it fills is MEASURED rather than claimed
+(``_kept_its_own_argument_name``, a share): keeping the argument's own name is sometimes
+right — ``list_tasks(project_name=...)`` really is a project name — so a claim over it
+would assert one reading of a free choice, where a rise in the share still shows a lazy
+namer.  That every spot got a line is not among the claims either: production's
 ``_labels_every_spot`` validates it and re-rolls, so a claim over it would measure the
 validator.  Whether a name is WELL judged is read at review against the reference
 outputs on #1828; no scorer fakes that.
@@ -55,6 +60,8 @@ from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     Consequence,
     SampleObservation,
+    Share,
+    ShareReading,
     SpecCategory,
     output_field,
 )
@@ -426,7 +433,7 @@ class PortedNamingCase(NamedTuple):
 # expected of the draw.
 _NAMES_EVERY_SPOT = (
     "gives every spot its own name for what it supplies in THIS routine, with one line "
-    "saying what belongs there — never the argument's own name handed back"
+    "saying what belongs there"
 )
 
 
@@ -581,19 +588,32 @@ def _hardens_to_a_key(spots: Sequence[str]) -> WorldClaim:
     return answer
 
 
-def _not_handed_back_its_own_name(spots: Sequence[str]) -> WorldClaim:
-    """No spot came back named after the tool argument it fills.
+def _kept_its_own_argument_name(spots: Sequence[str]) -> Share:
+    """Of the offered spots, the share that came back named after the tool argument they fill.
 
-    The document offers each spot under its argument-derived name, so a draw answering
-    ``queries`` with ``queries`` has described the spot rather than named it — the answer is
-    OMITTED, and the routine is left exactly as unreadable as it was."""
+    A SHARE, not a claim (code-owner ruling): keeping the argument's own name is sometimes
+    right — ``list_tasks(project_name=...)`` is a project name under either reading — so a
+    draw that keeps it has not necessarily described the spot rather than named it, and a
+    claim over it would assert one reading of a free choice.  A rise in the share would
+    still show a lazy namer, so it is read rather than gated.
 
-    def answer(sample: SampleObservation, _world: World) -> Answer:
+    ``open_above=0.0`` names every sample with at least one echo, since any echo at all is
+    the finding a reader wants pointed at."""
+
+    def read(sample: SampleObservation) -> ShareReading | None:
         drawn = _drawn_names(sample, spots)
         echoed = [spot for spot, name in drawn.items() if _hardened(name) == _hardened(spot)]
-        return not echoed, f"echoed the argument name: {echoed}"
+        return ShareReading(value=len(echoed) / len(spots), evidence=echoed)
 
-    return answer
+    return Share(
+        "spots that kept their own argument name",
+        read,
+        open_above=0.0,
+        says=(
+            "of the offered spots, the fraction whose drawn name hardens to the same key as "
+            "the argument it fills"
+        ),
+    )
 
 
 def _says_what_belongs_there(spots: Sequence[str]) -> WorldClaim:
@@ -615,29 +635,31 @@ def _says_what_belongs_there(spots: Sequence[str]) -> WorldClaim:
     return answer
 
 
-# The three claims EVERY naming case makes, as data: the labeller is handed a set of spots and
-# asked for a name and a line for each, and these are the three ways that answer can fail to
-# arrive — nothing usable, the question handed back, or no line at all.  One table rather than
-# three spellings per case, because four cases make exactly this set and a claim edited in one
-# of four places is a claim that has stopped meaning one thing.
+# The two claims EVERY naming case makes, as data: the labeller is handed a set of spots and
+# asked for a name and a line for each, and these are the two ways that answer can fail to
+# arrive — nothing usable, or no line at all.  One table rather than two spellings per case,
+# because four cases make exactly this set and a claim edited in one of four places is a claim
+# that has stopped meaning one thing.
 #
-# All three are the *nothing omitted* direction of fact alignment.  The other direction is
-# absent from every case in this file, and each case's docstring says why.
+# Both are the *nothing omitted* direction of fact alignment.  The other direction is absent
+# from every case in this file, and each case's docstring says why.  Whether a spot was handed
+# back its own argument name is a SHARE (`_kept_its_own_argument_name`, folded into
+# `_measure_what_each_spot_was_called` below), not a claim: keeping the name is sometimes
+# right, so it can't be asserted either way.
 _NAMING_CLAIMS = (
     ("state: every spot's name hardens to a usable binding key", _hardens_to_a_key),
-    ("state: no spot was handed back its own argument name", _not_handed_back_its_own_name),
     ("state: every spot's line says what belongs there", _says_what_belongs_there),
 )
 
 
 def _claim_every_spot_was_named_for_this_routine(cohort: Cohort, spots: Sequence[str]) -> None:
-    """Make the three shared naming claims over one case's own offered spots."""
+    """Make the two shared naming claims over one case's own offered spots."""
     for label, build in _NAMING_CLAIMS:
         cohort.claim(label, build(spots), SpecCategory.PROVENANCE)
 
 
 def _measure_what_each_spot_was_called(cohort: Cohort, spots: Sequence[str]) -> None:
-    """What the draw called each spot, one axis per spot.
+    """What the draw called each spot, one axis per spot, plus the shared echo-rate share.
 
     COSMETIC, every one: ``first_front_page`` and ``citydesk_page`` leave the same routine
     behind, so a divergence is a fact about the SYSTEM's naming spread and never about one
@@ -648,9 +670,13 @@ def _measure_what_each_spot_was_called(cohort: Cohort, spots: Sequence[str]) -> 
     shape has no reply for that machinery to read, so an entropy over free text would report
     near-total disagreement on every run whatever the draw did.
 
+    ``_kept_its_own_argument_name`` rides alongside as a SHARE rather than a feature: it reads
+    a fraction of the offered spots, not a value's distinctness, so it has no entropy to pool.
+
     No tool sequence and no reply spread: a single call makes neither."""
     cohort.measure(
-        *(output_field(label_name_field(spot), consequence=Consequence.COSMETIC) for spot in spots)
+        *(output_field(label_name_field(spot), consequence=Consequence.COSMETIC) for spot in spots),
+        _kept_its_own_argument_name(spots),
     )
 
 
@@ -758,9 +784,10 @@ async def test_a_search_spot_is_named_as_a_search_however_it_is_worded(
     price.
 
     **This case asserts nothing the two-sources case does not already assert.**  It makes the
-    same three claims on a different demonstration, and that is worth saying plainly rather
+    same two claims on a different demonstration, and that is worth saying plainly rather
     than dressing up: its value is the third mechanism in the design's §9 — a person reading
-    the modal sample — plus its contribution to the naming-spread variance axis.
+    the modal sample — plus its contribution to the naming-spread variance axis and the
+    echo-rate share.
 
     What it supplies that no other ledger does is a look-up that is a SEARCH PHRASE and not a
     url, which is where the failure this slot exists for shows itself: a spot named
@@ -787,7 +814,7 @@ async def test_a_single_turn_teach_names_every_spot_however_it_is_worded(
     """One demonstration in five wordings, with NO elicit round: one direct instruction is the
     whole conversation.
 
-    **This case asserts nothing the two-sources case does not already assert.**  Same three
+    **This case asserts nothing the two-sources case does not already assert.**  Same two
     claims, different demonstration; its value is the modal sample and the naming-spread axis.
 
     What it supplies is the conversation block at its MINIMUM.  Every other ledger hands the
@@ -814,10 +841,10 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
 ) -> None:
     """One demonstration in five wordings, over a FOUR-step routine offering SEVEN spots.
 
-    **Beyond the three shared claims this case adds one, and only one.**  The three are the
-    same ones every naming case makes; the fourth is the collapse claim below, which this
-    ledger earns structurally.  Its wider value is still the modal sample and the naming-spread
-    axis rather than a new kind of assertion.
+    **Beyond the two shared claims this case adds one, and only one.**  The two are the
+    same ones every naming case makes; the third is the collapse claim below, which this
+    ledger earns structurally.  Its wider value is still the modal sample, the naming-spread
+    axis and the echo-rate share rather than a new kind of assertion.
 
     What it supplies is LENGTH, which nothing else in the set has.  Every other ledger here is
     ``browse -> collection_write`` — the shortest routine that can exist — while #1824's own

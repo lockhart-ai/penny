@@ -64,6 +64,8 @@ from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     Consequence,
     SampleObservation,
+    Share,
+    ShareReading,
     SpecCategory,
     output_field,
     unsourced_specifics,
@@ -172,25 +174,17 @@ _LISTING = (
 # holds both, since a span appearing twice would be satisfied by the wrong one.
 _ITEM_ANCHOR = "Aurora Deck 2"
 _PRICE_ANCHOR = "499"
-# The count — the part of the stock line that carries the FACT.  The word after it ("left") and
-# the clause around it are phrasing the draw chooses, exactly as the currency symbol is on the
-# price, so the anchor stops before them.
-#
-# TWO residuals sit on it, both stated rather than repaired, because repairing either changes
-# what is being measured and that is a code owner's call raised with the numbers.
-#
-# The ASK is a BOOLEAN — "whether it is in stock" — so a draw that answers "yes, in stock" has
-# answered it without ever saying how many are left, and this anchor then fails a correct run.
-# Shrinking does not reach that: the count is not a rendering of the boolean, it is a different
-# fact.  What would reach it is WIDENING the ask to request the number, which moves the
-# behaviour being measured and can move any number in either direction.
-#
-# And the page writes the count as a WORD.  `three` is not strictly identifiable the way `499`
-# is: a draw that read the page perfectly may legitimately write `3`, and that is notation, the
-# one thing an anchor must never carry.  As the page presents this field there is no small
-# unique datum to shrink to — so the honest options are to drop the stock claim, or to print the
-# count in digits AND widen the ask together, neither of which a port decides on its own.
-_STOCK_ANCHOR = "three"
+# The ASK is a BOOLEAN — "whether it is in stock" — so the anchor is the page's own phrase for
+# that boolean, never the count beside it: a draw that answers "yes, it's in stock" has answered
+# the ask in full without ever saying how many are left.  `in stock` is the smallest unique span
+# naming the state itself, compared through the same `spoken_form` fold every other anchor here
+# uses.
+_STOCK_ANCHOR = "in stock"
+# The count the page states beside the boolean — a detail the ask never requested.  How often a
+# draw volunteers it anyway is measured, not claimed (`_STOCK_COUNT_VOLUNTEERED`, below): the
+# page writes it as a word, so a draw that read the page perfectly may legitimately write `3`
+# instead, and volunteering it at all is a free choice rather than a fact the ask owes.
+_STOCK_COUNT_WORD = "three"
 
 _HEADLINE_ANCHOR = "Lantern festival"
 _LINK_ANCHOR = "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
@@ -265,6 +259,36 @@ def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
     populates ``reason`` instead is covered by the same claim."""
     invented = unsourced_specifics(sample.output_text, sample.given)
     return not invented, f"not on the page: {invented}"
+
+
+def _stock_count_volunteered(sample: SampleObservation) -> ShareReading | None:
+    """Whether the answer also states the COUNT beside the stock boolean — a detail the ask
+    never requested.
+
+    A SHARE, not a claim: keeping a value said about a single answer is a free choice, so the
+    stock question measures how often she volunteers the count beyond what was asked, never
+    whether she did — a rise would still show a lazy or over-literal reader, but it is read,
+    not gated.
+
+    ``None`` only if the sample produced nothing to read the fraction of (an absent extraction
+    outcome); this fixture's page always supplies the boolean, so that reads as every pooled
+    sample having a value to check."""
+    value = sample.field(EXTRACT_VALUE)
+    if not value:
+        return None
+    volunteered = spoken_form(_STOCK_COUNT_WORD) in spoken_form(value)
+    return ShareReading(value=1.0 if volunteered else 0.0, evidence=[value] if volunteered else [])
+
+
+_STOCK_COUNT_VOLUNTEERED = Share(
+    "stock count volunteered",
+    _stock_count_volunteered,
+    open_above=0.0,
+    says=(
+        "of the samples that answered the stock boolean, the share that also stated the count "
+        "the page supplies beside it, which the ask never requested"
+    ),
+)
 
 
 # ── Case 1: everything asked for is on the page (the control) ─────────────────
@@ -345,7 +369,7 @@ async def test_a_page_that_answers_everything_still_answers_everything(
         SpecCategory.PROVENANCE,
     )
     cohort.claim(
-        "state: the answer carries the stock count the page supplies",
+        "state: the answer carries whether the item is in stock",
         _carries(_STOCK_ANCHOR),
         SpecCategory.PROVENANCE,
     )
@@ -355,16 +379,17 @@ async def test_a_page_that_answers_everything_still_answers_everything(
         SpecCategory.PROVENANCE,
     )
 
-    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
-    # tool sequence and no reply spread: a single call makes neither.  `reason` is measured
-    # though a correct draw leaves it empty, for the reason spelled out on
-    # `extract-fields-partly-present`: an all-empty reading is flagged BLIND rather
-    # than counted as agreement, and a sample that came back NOT_PRESENT carries a reason
-    # the others do not — an outlier at finer grain than `outcome` gives.
+    # What is MEASURED — the draw's own structured fields, compared across the cohort, plus the
+    # stock-count share above.  No tool sequence and no reply spread: a single call makes
+    # neither.  `reason` is measured though a correct draw leaves it empty, for the reason
+    # spelled out on `extract-fields-partly-present`: an all-empty reading is flagged BLIND
+    # rather than counted as agreement, and a sample that came back NOT_PRESENT carries a
+    # reason the others do not — an outlier at finer grain than `outcome` gives.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
         output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        _STOCK_COUNT_VOLUNTEERED,
     )
 
 
