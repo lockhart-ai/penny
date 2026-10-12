@@ -34,8 +34,10 @@ one guess-free tool call from the detail). Sections:
   so instantiation costs **0 calls** — the parameters are the binding keys and
   they are in the prompt. NOT the numbered recipe (#1804): nothing on the chat
   path carries out a skill's steps any more, so on a section read every turn the
-  recipe was context cost for a decision it does not inform; it stays one
-  ``skill_read(name=<name>)`` away. One feed: the taught-skill registry
+  recipe was context cost for a decision it does not inform. Once a routine is
+  set running, its full ``parameters:`` block — required/optional, description,
+  and the value THAT job bound for each — renders on ``memory_metadata`` for the
+  job (#2287), one call away. One feed: the taught-skill registry
   (``db.skills``, #1590) — the sole skills store. (The legacy ``skills``
   collection's standing-rules feed retired with the collection, #1624/migration
   0092.)
@@ -133,15 +135,11 @@ class SelfStateHeader:
     NO_PROFILE = "(no profile set yet)"
 
     # The taught-skill feed renders what each skill IS and what it NEEDS (#1804), so
-    # the label says exactly that — and names the one call that reaches what it does
-    # NOT carry, the numbered recipe, in the canonical call notation so the rendered
-    # token IS the argument (n≤1, and no bare tool name to hallucinate a call from).
-    # It stays a DESCRIPTION of the rows, never an instruction: what to do with a
-    # skill this turn is the state's own instruction, and a second copy here could
-    # only contradict it.
+    # the label says exactly that.  It stays a DESCRIPTION of the rows, never an
+    # instruction: what to do with a skill this turn is the state's own instruction,
+    # and a second copy here could only contradict it.
     TAUGHT_SKILLS_LABEL = (
-        "Skills you've been taught — what each one does and what it needs from the "
-        "user to run. For one's exact steps: skill_read(name=<name>)."
+        "Skills you've been taught — what each one does and what it needs from the user to run."
     )
 
     # The overflow tail each bounded section shows when it has more rows than its
@@ -444,10 +442,11 @@ class SelfStateHeader:
         are the binding keys and they are right here. What a row does NOT carry is
         the numbered recipe: no chat state carries out a skill's steps (the collector
         does, from the prompt rendered at instantiation), so on a section read every
-        turn it was cost against a decision it does not inform — and it is one
-        ``skill_read(name=<name>)`` away, which the label names. The section
-        collapses to one honest placeholder when nothing has been taught. (The legacy
-        standing-rules feed retired with the ``skills`` collection, #1624.)"""
+        turn it was cost against a decision it does not inform. Once the routine is
+        set running, the job's own ``memory_metadata`` names its recipe AND its
+        parameters block (#2287). The section collapses to one honest placeholder
+        when nothing has been taught. (The legacy standing-rules feed retired with
+        the ``skills`` collection, #1624.)"""
         skills = self.db.skills.list_all()
         if not skills:
             return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])

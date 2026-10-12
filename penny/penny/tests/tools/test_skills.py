@@ -1,5 +1,5 @@
-"""Skill substrate tests (#1590) — the render, provenance inference, certified-by
--execution, and the seed library, driven through the tool entry points with
+"""Skill substrate tests (#1590) — the render, provenance inference, and
+certified-by-execution pieces of ``penny.database.skills``, driven directly with
 deterministic fixtures and fictional content only.
 """
 
@@ -10,14 +10,12 @@ import json
 import pytest
 
 from penny.constants import PennyConstants
-from penny.database import Database
 from penny.database.models import Skill
 from penny.database.skill_store import parameters_to_json, steps_to_json
 from penny.database.skills import (
     DERIVED_NAME_MAX_LENGTH,
     WRITE_TARGET_DESCRIPTION,
     DistillInput,
-    SkillDraft,
     SkillParameter,
     SkillStep,
     SkillSubKind,
@@ -31,7 +29,7 @@ from penny.database.skills import (
     retarget_writes,
     unbound_required_parameters,
 )
-from penny.tools.skill_tools import SkillReadTool, render_skill_shape
+from penny.tools.skill_tools import render_skill_shape
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
@@ -703,50 +701,6 @@ def test_distill_keeps_a_nested_key_named_reasoning():
     assert args["entries"][0]["reasoning"] == "nested — kept"  # the nested key is untouched
 
 
-# ── skill_read: render one / list all ─────────────────────────────────────────
-
-
-def _seed_skill(db: Database, name: str) -> None:
-    """Persist a skill directly (the extractor's post-labeller output shape) so the read
-    surface can be tested independently of the extraction path."""
-    db.skills.upsert(
-        SkillDraft(
-            name=name,
-            intent=_UTTERANCE,
-            description=_UTTERANCE,
-            steps=_elevation_steps(),
-            parameters=[
-                SkillParameter(name="queries", required=True),
-                SkillParameter(name="extract", required=True),
-            ],
-            source_run_id="run-A",
-        ),
-        author="chat",
-        description_embedding=None,
-    )
-
-
-@pytest.mark.bare_db
-@pytest.mark.asyncio
-async def test_skill_read_renders_one_and_lists_all(db):
-    """``skill_read(name)`` renders one full recipe; bare ``skill_read()`` lists
-    every skill; an unknown name is an actionable miss."""
-    _seed_skill(db, "Watch elevation")
-    read = SkillReadTool(db)
-
-    one = await read.execute(name="Watch elevation")
-    # render_skill_full indents the recipe block two spaces under `steps:` (#1668).
-    indented_recipe = "\n".join(f"  {line}" for line in _WITH_HOLES.splitlines())
-    assert one.success and "skill 'Watch elevation'" in one.message
-    assert indented_recipe in one.message
-
-    listing = await read.execute()
-    assert listing.success and "- Watch elevation:" in listing.message
-
-    missing = await read.execute(name="nope")
-    assert not missing.success and "No skill named 'nope'" in missing.message
-
-
 # ── The step-shape line (#1943): what the routine RUNS, on one line ───────────
 #
 # The learn-close reply names the routine and what it needs; this is the third render
@@ -827,7 +781,7 @@ def test_the_step_shape_line_names_each_step_and_what_it_handles_more_than_one_o
     assert rendered == _BRIEFING_SHAPE
     # No argument VALUE and no call shape — the #1799 leak has no source here (a step
     # names a tool the way prose does, not the way a recipe does), and the whole recipe
-    # stays one skill_read away.
+    # is reachable once the routine is running, via that job's own memory_metadata.
     assert "example-a" not in rendered and "(" not in rendered
 
 
@@ -888,23 +842,13 @@ def test_the_step_shape_survives_the_instantiation_seam_unchanged():
 
 # ── The empty registry: honest empty state, no seeds ──────────────────────────
 
-# Pinned literal: the honest empty-registry listing.  Migration 0084 ships the
-# skill table EMPTY (no seed library — every skill is distilled from a chat run),
-# so this is what a fresh install's skill_read() returns.
-_EMPTY_LISTING = (
-    "No skills yet — teach one by demonstrating a flow here in chat, and I'll learn it "
-    "automatically."
-)
 
-
-@pytest.mark.asyncio
-async def test_fresh_migrated_registry_is_empty_and_reads_honestly(db):
+def test_fresh_migrated_registry_is_empty(db):
     """A prod-identical DB (create_tables + migrate) has the skill table and ZERO
-    rows — no seeds — and skill_read() renders the honest empty state verbatim."""
+    rows — no seeds.  Migration 0084 ships it empty: every skill is distilled from
+    a chat run, so there is no seed library to miss.  The honest-empty render this
+    backs is the self-state header's ``EMPTY_SKILLS`` placeholder (#1804)."""
     assert db.skills.list_all() == []
-    listing = await SkillReadTool(db).execute()
-    assert listing.success
-    assert listing.message == _EMPTY_LISTING
 
 
 # ── Attachment binding at apply (#1629/#1783, pure) ────────────────────────────

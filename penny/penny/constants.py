@@ -792,8 +792,8 @@ class PennyConstants:
     # line of prose, and a demonstration longer than that is one whose whole shape no
     # single line was ever going to carry.  The overflow states its own COUNT and names
     # no fetch tool for the same reason the holdings block does not — the whole recipe is
-    # one `skill_read(name=<name>)` away either way, so the honest number is the whole job
-    # of the overflow.
+    # reachable once the routine is set running, via that job's own `memory_metadata`
+    # (#2287), so the honest number is the whole job of the overflow.
     SKILL_SHAPE_STEPS = 8
     # How many times a collection's occurrence may be re-attempted before the
     # dispatcher stamps it anyway and waits for the next one (#1935).  A cycle that

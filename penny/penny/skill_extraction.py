@@ -117,20 +117,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Registry-navigation verbs: the model uses these to ORIENT — resolve a skill or
-# collection (``find``), read a skill's params (``skill_read``), inspect a
-# collection's config (``memory_metadata``), or list the catalog
-# (``collection_catalog``) — before it acts.  They are not part of the routine a
-# skill captures (a re-run re-orients itself), and a ``find`` result ECHOES its
-# query, which manufactured a FALSE binding when captured as a step (#1665).  So
-# orientation calls are dropped from the distilled steps: what survives is the
-# routine itself (browse, log_read, collection_read_latest, read_similar,
-# entry reads, and the writes).
+# collection (``find``), inspect a collection's config and its routine's parameters
+# (``memory_metadata``), or list the catalog (``collection_catalog``) — before it
+# acts.  They are not part of the routine a skill captures (a re-run re-orients
+# itself), and a ``find`` result ECHOES its query, which manufactured a FALSE
+# binding when captured as a step (#1665).  So orientation calls are dropped from
+# the distilled steps: what survives is the routine itself (browse, log_read,
+# collection_read_latest, read_similar, entry reads, and the writes).
 # Preceding conversation turns fed to the labelling step — the user's instigating
 # ask ('can you watch …') usually sits a turn or two before the demonstration, and
 # what a spot IS is only legible against why the routine exists (#1658/#1828).
 _NAMING_CONVERSATION_TURNS = 6
 
-ORIENTATION_TOOLS = frozenset({"find", "skill_read", "memory_metadata", "collection_catalog"})
+ORIENTATION_TOOLS = frozenset({"find", "memory_metadata", "collection_catalog"})
 
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
 

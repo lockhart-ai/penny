@@ -70,8 +70,9 @@ provenance inference (:func:`distill_steps`), the load-bearing render
 (:func:`render_skill`) that turns steps + bound params into the numbered TEXT
 ``extraction_prompt`` a collection runs, and the apply-time pair above.  The DB store lives in
 :mod:`penny.database.skill_store`; the run-end extractor in
-:mod:`penny.skill_extraction`; the ``skill_read`` tool in
-:mod:`penny.tools.skill_tools`.
+:mod:`penny.skill_extraction`; describing a job (its recipe and its routine's
+parameters together) is ``memory_metadata`` in :mod:`penny.tools.memory_tools`
+(#2287) — there is no separate skill-read tool.
 """
 
 from __future__ import annotations

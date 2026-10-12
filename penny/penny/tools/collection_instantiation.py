@@ -840,6 +840,42 @@ def skill_params(row: MemoryRow) -> dict[str, str]:
     return json.loads(row.skill_params) if row.skill_params else {}
 
 
+def render_skill_parameters(
+    parameters: list[SkillParameter], bound: dict[str, str] | None = None
+) -> str:
+    """The ``parameters:`` block (#1668/#2287): one ``- <name> (required|optional)[:
+    <description>]`` line per SKILL-level parameter, collapsing to ``parameters: none``
+    for a parameter-less skill.  ``bound`` is the shared home this moved to so a job's
+    own render (``memory_metadata``, #2287) and the skill substrate's full-recipe render
+    don't keep two copies of the same line: with a ``bound`` dict (a configured job's
+    values, read off its own row via :func:`skill_params`) each line additionally states
+    the value THIS job supplied for it, or that nothing was — answering the same
+    required/optional/description question a job's own metadata and the bare skill
+    declaration both need, in one format.  ``None`` (the bare declaration, with no job to
+    speak of) renders the line with no value clause at all."""
+    if not parameters:
+        return "parameters: none"
+    lines = ["parameters:"]
+    for parameter in parameters:
+        required = "required" if parameter.required else "optional"
+        line = f"  - {parameter.name} ({required})"
+        if parameter.description:
+            line += f": {parameter.description}"
+        if bound is not None:
+            line += _bound_value_clause(parameter.name, bound)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _bound_value_clause(name: str, bound: dict[str, str]) -> str:
+    """The value THIS job has bound for a parameter — or an honest gap (a re-taught
+    routine can declare something the running job was never configured with), never a
+    blank standing in for a value."""
+    if name in bound:
+        return f" — bound to: {bound[name]}"
+    return " — nothing was supplied for this job"
+
+
 def render_reinstantiation_echo(
     row: MemoryRow,
     skill_name: str,

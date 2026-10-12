@@ -76,6 +76,7 @@ from penny.tests.conftest import LEAKED_HARMONY_TOKEN
 from penny.tests.eval.utils.transition_world import learn_to_apply_fixture_skill
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
+from penny.tools.collection_instantiation import render_skill_parameters
 from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.micro_context import (
     SKILL_FRAME_SYSTEM_PROMPT,
@@ -85,7 +86,7 @@ from penny.tools.micro_context import (
     SkillSignature,
     slug_parameter_name,
 )
-from penny.tools.skill_tools import render_skill_brief, render_skill_full, render_skill_shape
+from penny.tools.skill_tools import render_skill_brief, render_skill_shape
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
 
@@ -268,7 +269,7 @@ async def test_read_write_run_qualifies_and_distils_correctly(db, emitted_write_
     assert subs[("memory",)].attachment is True
     assert subs[("memory",)].description == WRITE_TARGET_DESCRIPTION
     assert steps[1].arguments["memory"] == _DEMO_COLLECTION
-    assert _DEMO_COLLECTION not in render_skill_full(skill)
+    assert _DEMO_COLLECTION not in render_skill(steps)
     # The framework reasoning think-aloud is stripped from every stored step.
     assert all("reasoning" not in step.arguments for step in steps)
 
@@ -954,15 +955,14 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     assert [(p.name, p.description, p.required) for p in params] == [
         ("listing_url", "the listing whose price to read", True)
     ]
-    assert render_skill_full(result.skill) == (
-        "skill 'price-watcher'\n"
-        "what it's for: keep a listing's current price up to date\n"
-        "parameters:\n"
-        "  - listing_url (required): the listing whose price to read\n"
-        "steps:\n"
-        "  1. browse(queries=[{the page whose price this routine reads}], "
+    assert render_skill_parameters(params) == (
+        "parameters:\n  - listing_url (required): the listing whose price to read"
+    )
+    steps = steps_from_json(result.skill.steps)
+    assert render_skill(steps) == (
+        "1. browse(queries=[{the page whose price this routine reads}], "
         "extract={what to pull off the page each run})\n"
-        "  2. collection_write(memory={the collection this is set up on}, entries=["
+        "2. collection_write(memory={the collection this is set up on}, entries=["
         "{'key': {the page whose price this routine reads}, "
         "'content': the value from step 1}, "
         "{'key': {what to call the note it saves}, "
@@ -1988,9 +1988,8 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     ]
     # The whole STORED recipe, verbatim — every spot says what belongs there and NOTHING
     # the round demonstrated survives into it: not the collection, not the key, not the
-    # page, not what it pulled off the page.  This is the render the ambient registry and
-    # ``skill_read`` show, where the routine is attached to nothing and pointed at
-    # nothing.
+    # page, not what it pulled off the page.  This is the shape the routine has before
+    # any job attaches it — unbound and pointed at nothing.
     assert render_skill(skill.steps) == (
         "1. browse(queries=[{the url of the page to browse}], "
         "extract={a plain text description of what information to retrieve from the page})\n"
