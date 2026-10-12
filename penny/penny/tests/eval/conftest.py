@@ -144,6 +144,16 @@ SAMPLE_READY_TIMEOUT_SECONDS = 60.0
 # finishes well inside it, and a cut here costs a sample that could have been measured.
 SAMPLE_WALL_CLOCK_SECONDS = 1800.0
 
+# How long a single-call drive (classifier, framer, namer, binder, extractor) waits for its one
+# model call.  The client's per-request deadline does not bound it: a gateway that sends
+# keep-alive bytes while the upstream reasons never trips a read timeout, so the call simply
+# runs as long as the model thinks.  Measured on the first whole-suite baseline: a seven-spot
+# namer draw averaged 38s on one roster model, and at a 60s wait 19 samples in 8 cases were cut
+# before they answered — 8 of 15 in one case — while the other model lost none.  A cut sample
+# measures the wait, not the model, so the wait is generous rather than tuned; the slowness
+# itself is read off the case's timings.
+SINGLE_CALL_WAIT_SECONDS = 180.0
+
 # How many times one sample is stood up before a failing preflight voids it (#2230), and how
 # long it waits before the first re-boot (doubling each time after).  A sample's preflight
 # probes the endpoint ONCE, so one timed-out request used to lose the sample and thin the
@@ -4435,7 +4445,7 @@ def classifier_eval(
         seed_skills: Sequence[SkillDraft] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
-        timeout: float = 60.0,
+        timeout: float = SINGLE_CALL_WAIT_SECONDS,
         family: str | None = None,
     ) -> Cohort:
         """Drive one state + message through the classification draw and return its COHORT.
@@ -4985,7 +4995,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         model: str = "",
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
-        timeout: float = 60.0,
+        timeout: float = SINGLE_CALL_WAIT_SECONDS,
         family: str | None = None,
     ) -> Cohort:
         """Drive one round's turns through the framing draw and return its COHORT.
@@ -5125,7 +5135,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
         model: str = "",
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
-        timeout: float = 60.0,
+        timeout: float = SINGLE_CALL_WAIT_SECONDS,
         family: str | None = None,
     ) -> Cohort:
         """Drive one demonstration through the labelling draw and return its COHORT."""
@@ -5400,7 +5410,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
         model: str = "",
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
-        timeout: float = 60.0,
+        timeout: float = SINGLE_CALL_WAIT_SECONDS,
         family: str | None = None,
     ) -> Cohort:
         """Drive one signature + turns through the binding draw and return its COHORT.
@@ -5631,7 +5641,7 @@ def extractor_eval(
         model: str = "",
         samples: int = SAMPLES,
         min_pass_rate: PassRate = UNSTATED,
-        timeout: float = 60.0,
+        timeout: float = SINGLE_CALL_WAIT_SECONDS,
         family: str | None = None,
     ) -> Cohort:
         """Drive one page + instruction through the extraction draw and return its COHORT.
