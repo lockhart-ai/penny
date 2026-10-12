@@ -10,14 +10,14 @@ A case declares its area and, where it covers one, the edge of the conversation 
 |---|---|
 | Conversation machine | 32 |
 | Teaching a routine | 17 |
-| Memory | 12 |
+| Memory | 17 |
 | Answering from the web | 3 |
-| Standing jobs | 8 |
+| Standing jobs | 9 |
 | Notifications | 3 |
 | Background collectors | 4 |
 | Reading a page | 4 |
 | Chat tools | 6 |
-| Total | 89 |
+| Total | 95 |
 
 ## Conversation machine
 
@@ -84,6 +84,11 @@ A case declares its area and, where it covers one, the edge of the conversation 
 |---|---|---|---|
 | `chat-reply-says-already-there` | In the chat agent, when she is asked to record something the store already holds, Penny reports that it was already there, and it is still held in the collection that had it, beside everything else the store held, unchanged. | make sure you've got that i'm into sea kayaking |  |
 | `chat-reply-says-nothing-is-stored` | In the chat agent, when the question is about something the user has told her and the store holds nothing of it, everything Penny says in her reply traces to what she was given, and the turn ends back in idle. | remind me what i told you about the marrow ridge loop — how much climb does it have? |  |
+| `lookup-archived-list-contents` | In the chat agent, when the user asks what was on a list she has since gotten rid of, Penny reaches the archived list and reads it back. | what was on that preserve box list I got rid of? |  |
+| `lookup-list-of-lists` | In the chat agent, when the user asks what lists she keeps for them, Penny names every one. | what lists do you keep for me? |  |
+| `lookup-routine-steps-unattached` | In the chat agent, when the user asks what a taught routine does while it is not running as any job, Penny reads the routine's steps and states them. | remind me how you check the harbour flag |  |
+| `lookup-search-within-a-long-list` | In the chat agent, when the user asks which entries of one named list match something, Penny searches the whole list and names them. | which of my recipes use lime? |  |
+| `lookup-user-said-out-of-window` | In the chat agent, when the user asks what they themselves said earlier and it was never saved anywhere, Penny finds it in what they said and states it. | what flight number did I give you for my sister? |  |
 | `memory-a-like-and-a-dislike` | In the chat agent, when one message carries two facts of different kinds and a fitting list already exists for each, Penny files each fact in the list that fits it and neither in the other. | jot down that I'm into bouldering, and that I can't stand instant coffee |  |
 | `memory-change-lands-on-the-entry-that-exists` | In the chat agent, when the user asks her to change a note she keeps under a key worded differently from how the user names it, Penny finds the entry that exists and records the change on it, and the list holds the same entries it started with. | add a 10-minute lime marinade to my fajitas recipe |  |
 | `memory-cold-recall` | In the chat agent, when the user asks for a fact they had her remember in an earlier session and nothing in the conversation carries it, Penny brings it back out of the store and states it, leaving the store exactly as she found it. | hey — a while back I asked you to remember what the aurora deck 2 was listed at. what was the price? |  |
@@ -107,6 +112,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 
 | Case | Behaviour | First wording | Edge |
 |---|---|---|---|
+| `lookup-job-last-finding-and-check` | In the chat agent, when the user asks what a running job last found and when it last checked, Penny reads its latest entries and its last run. | what did the typewriter watch turn up last time, and when did it last check? |  |
 | `speak-logread-collector-runs` | In the chat agent, when the user asks how her background jobs are doing and why any of them is in trouble, Penny states the reason the failing cycle's run record gives, with both jobs still running as they were. | how have your background jobs been doing lately? if any of them is having trouble i want to know why |  |
 | `standing-archive` | In the chat agent, when the user says they are done with a running job, Penny retires it as a tombstone that still holds everything it gathered, with proactive notifications still on everywhere else. | i'm done with the typewriter watch — you can retire that one |  |
 | `standing-describe-routine` | In the chat agent, when the user asks what a standing job does, Penny describes the routine from its record, and every value in her reply traces to that record. | what does the typewriter watch actually do? walk me through it. |  |
