@@ -78,9 +78,7 @@ from penny.tools.memory_tools import (
     CollectionDeleteEntryTool,
     CollectionGetTool,
     CollectionKeysTool,
-    CollectionMergeTool,
     CollectionReadLatestTool,
-    CollectionReadRandomTool,
     CollectionSetTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
@@ -3241,20 +3239,6 @@ class TestCollectionWritesAndReads:
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
-    async def test_read_random_returns_all_when_few(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="likes",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
-        rendered = await CollectionReadRandomTool(db).execute(memory="likes", k=5)
-        assert "key='a' 1" in rendered.message
-
-    @pytest.mark.asyncio
     async def test_read_similar_uses_embedding(self, db, mock_llm):
         _seed_collection(
             db,
@@ -4331,91 +4315,6 @@ class TestAuthorAttribution:
         assert rows[0].author == "preference-extractor"
 
 
-class TestCollectionMerge:
-    @pytest.mark.asyncio
-    async def test_merge_moves_entries_and_archives_source(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="src",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        _seed_collection(
-            db,
-            name="dst",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="src", entries=[{"key": "a", "content": "alpha"}])
-        await write.execute(memory="src", entries=[{"key": "b", "content": "beta"}])
-
-        result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
-
-        assert "2 moved" in result.message
-        assert "archived" in result.message
-        assert db.memories.get("src").archived is True
-        assert len(db.memory("dst").read_all()) == 2
-        assert len(db.memory("src").read_all()) == 0
-
-    @pytest.mark.asyncio
-    async def test_merge_drops_colliding_keys(self, db, mock_llm):
-        _seed_collection(
-            db,
-            name="src",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        _seed_collection(
-            db,
-            name="dst",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="src", entries=[{"key": "shared", "content": "from src"}])
-        await write.execute(memory="src", entries=[{"key": "unique", "content": "only in src"}])
-        await write.execute(memory="dst", entries=[{"key": "shared", "content": "already in dst"}])
-
-        result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
-
-        assert "1 moved" in result.message
-        assert "1 dropped" in result.message
-        # The dropped collision keys are named, not just counted.
-        assert "'shared'" in result.message
-        dst_entries = db.memory("dst").read_all()
-        assert len(dst_entries) == 2
-        contents = {e.key: e.content for e in dst_entries}
-        assert contents["shared"] == "already in dst"  # destination wins
-        assert contents["unique"] == "only in src"
-
-    @pytest.mark.asyncio
-    async def test_merge_empty_source_archives_it(self, db):
-        _seed_collection(
-            db,
-            name="src",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-        _seed_collection(
-            db,
-            name="dst",
-            description="x",
-            extraction_prompt="test fixture extraction prompt",
-            schedule="FREQ=HOURLY",
-        )
-
-        result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
-
-        assert "archived" in result.message
-        assert db.memories.get("src").archived is True
-
-
 class TestFactory:
     """One uniform surface for every agent — reads + lifecycle (shape) + entry
     mutations (contents).  Capability is no longer curated by omission; the
@@ -4427,7 +4326,6 @@ class TestFactory:
         # Reads
         "collection_get",
         "collection_read_latest",
-        "collection_read_random",
         "collection_keys",
         "memory_metadata",
         "collection_catalog",
@@ -4439,7 +4337,6 @@ class TestFactory:
         "find",
         # Lifecycle (shape)
         "collection_set",
-        "collection_merge",
         "collection_archive",
         "collection_unarchive",
         "log_create",

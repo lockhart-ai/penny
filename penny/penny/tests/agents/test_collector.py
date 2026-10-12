@@ -349,7 +349,6 @@ async def test_get_tools_raises_outside_cycle(test_config, tmp_path):
 _LIFECYCLE_TOOL_NAMES = frozenset(
     {
         "collection_set",
-        "collection_merge",
         "collection_archive",
         "collection_unarchive",
         "log_create",

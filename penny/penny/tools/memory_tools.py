@@ -98,7 +98,6 @@ from penny.tools.memory_args import (
     CollectionDeleteEntryArgs,
     CollectionEntrySpec,
     CollectionGetArgs,
-    CollectionMergeArgs,
     CollectionSetArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
@@ -110,7 +109,6 @@ from penny.tools.memory_args import (
     MemoryNameArgs,
     ReadLatestArgs,
     ReadLogArgs,
-    ReadRandomArgs,
     ReadRunCallsArgs,
     ReadSimilarArgs,
 )
@@ -1218,39 +1216,6 @@ class CollectionReadLatestTool(MemoryTool):
         entries = _resolve(self._db, args.memory).read_latest(args.k)
         return ToolResult(
             message=format_entries(entries, source=args.memory, ordering="most recent first")
-        )
-
-
-class CollectionReadRandomTool(MemoryTool):
-    """Return entries sampled uniformly at random from a collection."""
-
-    name = "collection_read_random"
-    description = "Return `k` entries sampled uniformly at random. Omit `k` to return all."
-    parameters = {
-        "type": "object",
-        "properties": {
-            "memory": {"type": "string"},
-            "k": {"type": "integer"},
-        },
-        "required": ["memory"],
-    }
-    args_model = ReadRandomArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
-        if not result.success:
-            return f"You tried to pull a random sample from {memory} but it didn't work:"
-        return f"You pulled a random sample from {memory}:"
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = ReadRandomArgs(**kwargs)
-        entries = _resolve(self._db, args.memory).read_random(args.k)
-        return ToolResult(
-            message=format_entries(entries, source=args.memory, ordering="random sample")
         )
 
 
@@ -2621,75 +2586,6 @@ class CollectionCatalogTool(MemoryTool):
         return f"extraction_prompt:\n{row.extraction_prompt}"
 
 
-class CollectionMergeTool(MemoryTool):
-    """Merge all entries from one collection into another, then archive the source."""
-
-    name = "collection_merge"
-    description = (
-        "Move every entry from `from_memory` into `to_memory`, then archive "
-        "`from_memory`.  Entries whose key already exists in `to_memory` are "
-        "dropped (destination wins).  Use this to resolve duplicate collections."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "from_memory": {
-                "type": "string",
-                "description": "Collection to merge from (will be archived)",
-            },
-            "to_memory": {"type": "string", "description": "Collection to merge into (kept)"},
-        },
-        "required": ["from_memory", "to_memory"],
-    }
-    args_model = CollectionMergeArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        from_memory = _named(arguments, "from_memory", "one collection")
-        to_memory = _named(arguments, "to_memory", "another")
-        if not result.success:
-            return f"You tried to merge {from_memory} into {to_memory} but it didn't work:"
-        return f"You merged {from_memory} into {to_memory}:"
-
-    def __init__(self, db: Database, author: str, run_id: str | None = None) -> None:
-        self._db = db
-        self._author = author
-        # The chat run merging — the source-archive mutation's cause (#1560).
-        self._run_id = run_id
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = CollectionMergeArgs(**kwargs)
-        return ToolResult(message=self._merge(args.from_memory, args.to_memory), mutated=True)
-
-    def _merge(self, from_name: str, to_name: str) -> str:
-        source = _resolve(self._db, from_name)
-        source_keys = source.keys()
-        if not source_keys:
-            self._db.memories.archive(from_name, run_id=self._run_id)
-            return f"'{from_name}' was empty — archived with nothing to move."
-        moved, dropped = self._move_entries(source, to_name, source_keys)
-        self._db.memories.archive(from_name, run_id=self._run_id)
-        return self._summary(from_name, to_name, moved, dropped)
-
-    def _move_entries(self, source: Memory, to_name: str, keys: list[str]) -> tuple[int, list[str]]:
-        moved = 0
-        dropped: list[str] = []
-        for key in keys:
-            outcome = source.move(key, to_name, author=self._author)
-            if outcome == "ok":
-                moved += 1
-            else:
-                dropped.append(key)
-        return moved, dropped
-
-    def _summary(self, from_name: str, to_name: str, moved: int, dropped: list[str]) -> str:
-        head = f"Merged '{from_name}' → '{to_name}': {moved} moved"
-        if dropped:
-            named = ", ".join(f"'{key}'" for key in dropped)
-            head += f", {len(dropped)} dropped (already in '{to_name}': {named})"
-        return f"{head}. '{from_name}' archived."
-
-
 class CollectionDeleteEntryTool(MemoryTool):
     """Delete an entry from a collection by key."""
 
@@ -3609,11 +3505,11 @@ def build_memory_tools(
     identical to what it was.
 
     ``include_lifecycle`` gates the registry-shape tier — ``collection_set`` /
-    ``collection_set`` / ``collection_merge`` / ``collection_archive`` /
+    ``collection_set`` / ``collection_archive`` /
     ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
     evolves collections through them); a cadence-fired collector run passes
     ``False`` (#1556), so those tools are structurally ABSENT from its surface — a
-    background poll cannot create, reconfigure, merge, or archive mechanisms, no
+    background poll cannot create, reconfigure, or archive mechanisms, no
     matter what its extraction_prompt says.  The declaration lives on the agent
     (``Agent._include_lifecycle_tools``, overridden by ``Collector``), not as a
     branch here.
@@ -3622,7 +3518,6 @@ def build_memory_tools(
         CollectionReadLatestTool(db),
         ReadSimilarTool(db, llm_client),
         CollectionGetTool(db),
-        CollectionReadRandomTool(db),
         CollectionKeysTool(db),
         MemoryMetadataTool(db),
         CollectionCatalogTool(db),
@@ -3634,7 +3529,6 @@ def build_memory_tools(
     ]
     lifecycle: list[Tool] = [
         CollectionSetTool(db, llm_client, run_id=run_id, round_framing=round_framing),
-        CollectionMergeTool(db, agent_name, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),

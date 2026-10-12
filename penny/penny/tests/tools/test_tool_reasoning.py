@@ -28,8 +28,6 @@ from penny.tools.memory_tools import (
     CollectionDeleteEntryTool,
     CollectionGetTool,
     CollectionKeysTool,
-    CollectionMergeTool,
-    CollectionReadRandomTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
@@ -384,17 +382,6 @@ class TestMemoryLifecycleNarration:
             == "You updated `games`'s settings:"
         )
 
-    def test_collection_merge(self):
-        args = {"from_memory": "a", "to_memory": "b"}
-        assert (
-            CollectionMergeTool.to_result_narration(args, ToolResult(message="ok"))
-            == "You merged `a` into `b`:"
-        )
-        assert (
-            CollectionMergeTool.to_result_narration(args, ToolResult(message="e", success=False))
-            == "You tried to merge `a` into `b` but it didn't work:"
-        )
-
     def test_collection_get(self):
         args = {"memory": "likes", "key": "chess"}
         assert (
@@ -402,12 +389,8 @@ class TestMemoryLifecycleNarration:
             == 'You looked up "chess" in `likes`:'
         )
 
-    def test_collection_read_random_and_keys(self):
+    def test_collection_read_keys(self):
         args = {"memory": "likes"}
-        assert (
-            CollectionReadRandomTool.to_result_narration(args, ToolResult(message="ok"))
-            == "You pulled a random sample from `likes`:"
-        )
         assert (
             CollectionKeysTool.to_result_narration(args, ToolResult(message="ok"))
             == "You listed the keys in `likes`:"

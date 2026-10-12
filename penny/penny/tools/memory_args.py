@@ -405,13 +405,6 @@ class ReadLatestArgs(ToolArgs):
     k: ReadCount = None
 
 
-class ReadRandomArgs(ToolArgs):
-    """Random sample; ``k=None`` returns all."""
-
-    memory: MemoryName
-    k: ReadCount = None
-
-
 class ReadSimilarArgs(ToolArgs):
     """Top-k by content cosine similarity to ``anchor`` (embedded by the tool).
 
@@ -512,13 +505,6 @@ class CollectionWriteArgs(ToolArgs):
 
     memory: MemoryName
     entries: Annotated[list[CollectionEntrySpec], AfterValidator(_require_write_entries)]
-
-
-class CollectionMergeArgs(ToolArgs):
-    """Merge all entries from one collection into another, then archive the source."""
-
-    from_memory: MemoryName
-    to_memory: MemoryName
 
 
 class CollectionDeleteEntryArgs(ToolArgs):
