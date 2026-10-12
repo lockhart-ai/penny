@@ -310,6 +310,24 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
     )
 
 
+def test_the_banner_names_a_turn_that_ended_on_a_model_error() -> None:
+    """``model error`` sits beside ``fragile`` on the banner tail (#2252) — and the
+    representative fold's note names what it means, the way ``fragile``'s does, only when the
+    banner actually carries it."""
+    banner = report.render_banner(passed=False, aborted=True, duration_s=5, calls=1)
+    assert banner == "❌ fail · model error · 5s · 1 calls"
+
+    noted = report.render_representative(banner=banner, number=1, prompts="", transcript="body")
+    assert report.ABORTED_NOTE in noted
+    assert report.FRAGILE_NOTE not in noted
+
+    clean_banner = report.render_banner(passed=True, duration_s=5, calls=1)
+    clean = report.render_representative(
+        banner=clean_banner, number=1, prompts="", transcript="body"
+    )
+    assert report.ABORTED_NOTE not in clean
+
+
 def test_cell_hygiene_escape_and_truncate() -> None:
     """The deterministic cell rules: ``|`` is escaped and newlines become ``<br>``; a cell over the
     limit collapses into a SINGLE ``<details>`` — its first line + ``… (<n> chars)`` in the summary,
@@ -749,6 +767,27 @@ def test_the_harness_section_names_the_dead_samples_and_their_dominant_class():
     assert "Dominant failure class: **no turn** (2 of 2)." in rendered
     assert "- `c-2 (phrasing 1)` — no turn" in rendered
     assert "- `c-3 (phrasing 1)` — no turn" in rendered
+
+
+def test_the_samples_row_states_how_many_ended_on_a_model_error():
+    """The health row names what a reader would otherwise assume the opposite of: that every
+    pooled sample's reply claims were read off a reply the model actually composed (#2252). A
+    healthy case's row omits the clause entirely rather than stating a zero."""
+    aborted = cohort.SampleObservation(
+        name="c-1 (a)", phrasing="a", landed="idle", reply="apology", aborted_on_model_error=True
+    )
+    variance = cohort.pool([aborted, _observation("c-2 (a)", "a", ["browse"])], [])
+    rendered = report.CaseSections(case_id="c", model="m", variance=variance).render()
+    assert (
+        "| **samples** | 2 pooled + 0 excluded = 2 driven · 1 sample ended on a model error |"
+        in rendered
+    )
+
+    clean = cohort.pool([_observation("c-1 (a)", "a", ["browse"])], [])
+    assert (
+        "ended on a model error"
+        not in report.CaseSections(case_id="c", model="m", variance=clean).render()
+    )
 
 
 def test_one_modal_sample_is_named_and_every_other_shape_is_an_outlier():

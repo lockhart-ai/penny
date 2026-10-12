@@ -280,6 +280,14 @@ class SampleResult:
     def passed(self) -> bool:
         return self.score >= 1.0
 
+    @property
+    def aborted_on_model_error(self) -> bool:
+        """Whether this sample's turn ended on a model error (#2252) — a straight read of its
+        observation, carried for the record: unlike the cause/fragile flags, nothing about it
+        changes when the cohort's claims settle the score, since it is a fact about how the
+        turn ended rather than about what it is scored against."""
+        return self.observation is not None and self.observation.aborted_on_model_error
+
     @classmethod
     def binary(cls, fails: list[str]) -> SampleResult:
         return cls(0.0 if fails else 1.0, list(fails), 1)
@@ -1793,6 +1801,7 @@ def _sample_banner(cost: PromptPerf, result: SampleResult) -> str:
         passed=result.passed,
         cause=_cause_word(result.cause),
         fragile=result.fragile,
+        aborted=result.aborted_on_model_error,
         duration_s=round(cost.duration_ms / 1000),
         calls=cost.calls,
     )
@@ -2690,10 +2699,23 @@ def _observe_sample(
         tool_sequence=_chat_tool_sequence(db),
         reply=reply,
         reply_embedding=reply_embedding(db, reply),
+        aborted_on_model_error=_aborted_on_model_error(reply),
         given=given_to_the_model(db),
         container=_framed_container(db),
         scheduled=_scheduled_by_this_round(db, before),
     )
+
+
+def _aborted_on_model_error(reply: str) -> bool:
+    """Whether the delivered reply IS the framework's own model-error apology (#2252) — read by
+    IDENTITY against the constant the channel sends verbatim on an aborted chat turn
+    (``PennyResponse.AGENT_MODEL_ERROR``), never a copied string or a substring match.  A chat
+    turn's abort is otherwise unrecorded (no ``run_outcome``, and ``ControllerResponse.abort`` is
+    read only by the collector), so the delivered text is the one place left to read it: the
+    channel does ``response.answer.strip()`` with nothing else, so the sent reply is byte-equal
+    to the constant exactly when the turn ended there rather than on a reply the model composed.
+    A real reply that merely QUOTES the apology's words is a reply, not an abort."""
+    return reply == PennyResponse.AGENT_MODEL_ERROR
 
 
 # The completeness gate is decided per FIXTURE, below.  ``measured_turn_ran`` is the half every

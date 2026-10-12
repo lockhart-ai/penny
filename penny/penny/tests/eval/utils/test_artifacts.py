@@ -44,6 +44,7 @@ from penny.tests.eval.utils.artifacts import (
     worker_filename,
     worker_glob,
 )
+from penny.tests.eval.utils.cohort import SampleObservation
 
 _NOW = datetime(2026, 7, 20, 0, 45, 12, tzinfo=UTC)
 _COMMIT = "abcdef1234567890abcdef1234567890abcdef12"
@@ -242,12 +243,16 @@ def test_build_case_artifact_aggregates_scores_and_checks() -> None:
         ]
     )
     fragile_sample.fragile = True
-    results = [
-        SampleResult.graded(
-            [Check("c1", ok=True), Check("c2", ok=True), Check("advice", ok=True, scored=False)]
-        ),
-        fragile_sample,
-    ]
+    # An aborted sample reads its flag off its OBSERVATION (#2252), the same seam
+    # ``sample_fragile`` reads the fragile flag off — here the clean sample, independent of
+    # which one is fragile, so the two lists are proven to vary independently.
+    clean_sample = SampleResult.graded(
+        [Check("c1", ok=True), Check("c2", ok=True), Check("advice", ok=True, scored=False)]
+    )
+    clean_sample.observation = SampleObservation(
+        name="s1", phrasing="the ask", arm=0, aborted_on_model_error=True
+    )
+    results = [clean_sample, fragile_sample]
     artifact = build_case_artifact(
         run_id="run-x", case_id="case-x", family="fam", results=results, timings=_TIMINGS
     )
@@ -256,6 +261,7 @@ def test_build_case_artifact_aggregates_scores_and_checks() -> None:
     assert artifact.samples == 2
     assert artifact.sample_scores == [1.0, 0.5]
     assert artifact.sample_fragile == [False, True]
+    assert artifact.sample_aborted == [True, False]
     assert [(c.label, c.passed, c.total) for c in artifact.checks] == [
         ("c1", 2, 2),
         ("c2", 1, 2),
@@ -271,6 +277,12 @@ def test_build_case_artifact_aggregates_scores_and_checks() -> None:
     assert by_label["c2"].scored is True
     assert by_label["advice"].scored is False
     assert artifact.timings == _TIMINGS
+
+    # A record written before #2252 carries no ``sample_aborted`` at all — decodes as a run
+    # where nothing aborted, which is exactly what every pre-#2252 run actually measured.
+    dumped = json.loads(artifact.model_dump_json())
+    pre_2252 = {key: value for key, value in dumped.items() if key != "sample_aborted"}
+    assert CaseArtifact.model_validate(pre_2252).sample_aborted == []
 
 
 def test_binary_case_records_empty_check_outcomes() -> None:

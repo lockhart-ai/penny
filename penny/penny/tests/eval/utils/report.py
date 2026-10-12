@@ -574,6 +574,11 @@ REDUCED_LINE = (
 )
 _REDUCED_NOUN = "sample"
 _SAMPLES_ROW = re.compile(rf"^\| \*\*{MEASURE_SAMPLES}\*\* \| (?P<counts>[^|]*) \|$", re.M)
+# What the samples row states when N > 0 pooled samples ended their measured turn on a model
+# error (#2252) — a reader would otherwise assume every pooled sample's reply claims were read
+# off a reply the model actually composed, which is exactly what did not happen here.
+SAMPLES_ABORTED = " · {samples} ended on a model error"
+_ABORTED_NOUN = "sample"
 
 
 def measure_table(rows: Sequence[tuple[str, str]]) -> str:
@@ -883,13 +888,21 @@ class CaseSections:
                     pooled=self.variance.pooled,
                     excluded=len(self.variance.excluded),
                     driven=self.variance.driven,
-                ),
+                )
+                + self._aborted_clause(),
             ),
         ]
         if self.cost is not None:
             rows.append(("cost / sample", self._cost_summary()))
         rows += self.run.rows()
         return measure_table(rows)
+
+    def _aborted_clause(self) -> str:
+        """What the samples row adds when N > 0 pooled samples ended on a model error (#2252) —
+        empty at zero, so a healthy case's row is byte-identical to before."""
+        if not self.variance.aborted:
+            return ""
+        return SAMPLES_ABORTED.format(samples=plural(self.variance.aborted, _ABORTED_NOUN))
 
     def glyph(self) -> str:
         """The case's worst state — what someone paging ~100 one-line entries reads.
@@ -1519,7 +1532,13 @@ def render_representative(*, banner: str, number: int, prompts: str, transcript:
     A LABEL like every other section — the banner's five pieces of metadata moved inside, where
     they are read after deciding to open it rather than instead of the heading."""
     meta = f"`{SAMPLE_ROW} {number}` · {banner}"
-    parts = [meta, FRAGILE_NOTE if "fragile" in banner else "", prompts, transcript]
+    parts = [
+        meta,
+        FRAGILE_NOTE if "fragile" in banner else "",
+        ABORTED_NOTE if "model error" in banner else "",
+        prompts,
+        transcript,
+    ]
     return "\n\n".join(part for part in parts if part)
 
 
@@ -2164,19 +2183,24 @@ def render_banner(
     passed: bool,
     cause: str | None = None,
     fragile: bool = False,
+    aborted: bool = False,
     duration_s: int,
     calls: int,
 ) -> str:
-    """The per-sample banner tail: ``verdict · fragile · cause · duration · calls``.
+    """The per-sample banner tail: ``verdict · fragile · model error · cause · duration · calls``.
 
     NO per-sample rate.  Under the cohort design a sample has no score of its own — the cohort is
     the unit of scoring, which is the entire point — so a `k/n (score)` here re-implied the
     per-sample scoring model that design replaced, and answered a question nobody could ask of it
     ("1/1 of what?").  What survives is what is true of one sample on its own: whether it reached
-    an answer, whether it got there shakily, and what it cost."""
+    an answer, whether it got there shakily, what it cost — and, since #2252, whether its turn
+    ended on a model error rather than on a reply the model composed, so a reader never mistakes
+    the framework's own apology for the model's answer."""
     parts = ["✅ pass" if passed else "❌ fail"]
     if fragile:
         parts.append("fragile")
+    if aborted:
+        parts.append("model error")
     if cause:
         parts.append(cause)
     parts += [f"{duration_s}s", f"{calls} calls"]
@@ -2209,6 +2233,11 @@ def render_rejected_draws(draws: Sequence[str]) -> str:
 FRAGILE_NOTE = (
     "_`fragile` — the sample reached its result, but only after a rejected or refused tool call "
     "or a framework recovery nudge: real, and not robust._"
+)
+ABORTED_NOTE = (
+    "_`model error` — this turn ended on an aborted model call, not a reply the model composed; "
+    "its reply is the framework's own apology, and no reply-kind claim counts it as one that "
+    "held._"
 )
 
 

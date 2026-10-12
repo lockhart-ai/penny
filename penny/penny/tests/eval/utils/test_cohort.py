@@ -16,6 +16,7 @@ from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database.models import MemoryEntry
 from penny.datetime_utils import format_log_timestamp
+from penny.responses import PennyResponse
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
 from penny.tests.eval.utils.cohort import (
@@ -192,6 +193,27 @@ def test_reply_spread_reads_the_embeddings_the_replies_already_carry():
     assert spread.pairs == 3
     assert spread.cosine_mean == 0.0
     assert spread.containment_mean > 0.0
+
+
+def test_reply_spread_excludes_a_sample_that_aborted_on_a_model_error():
+    """An aborted sample's reply is the framework's own apology, never a reply the model
+    composed, so it is excluded from the pairwise comparison entirely (#2252) — included, two
+    identical apologies would read as perfect agreement between two real replies rather than as
+    the absence of any reply to compare."""
+    samples = [
+        SampleObservation(name="s1", phrasing="p1", reply="foxes sign a goalie"),
+        SampleObservation(name="s2", phrasing="p1", reply="the foxes signed a goalie"),
+        SampleObservation(
+            name="s3",
+            phrasing="p2",
+            reply=PennyResponse.AGENT_MODEL_ERROR,
+            aborted_on_model_error=True,
+        ),
+    ]
+    spread = pool(samples, [REPLY_SPREAD]).text
+    assert spread is not None
+    # Two real replies → exactly one pair; the aborted sample contributes none.
+    assert spread.pairs == 1
 
 
 # ── Thresholds ───────────────────────────────────────────────────────────────
@@ -1269,6 +1291,63 @@ def test_a_world_naming_no_answer_makes_no_completeness_claim():
     cohort = Cohort("case", _MODEL, [_reply_sample("done — updated it.")], _one_arm(world))
     cohort.assert_the_reply_answers_the_ask()
     assert (cohort.claims[0].passed, cohort.claims[0].total) == (1, 1)
+
+
+# ── A reply claim is false of a sample that has no reply of the model's (#2252) ──────
+def test_a_reply_claim_fails_a_sample_that_aborted_on_a_model_error():
+    """The framework's own apology states no value of the model's, so a REPLY-kind claim must
+    not count it as a reply that held — one enforcement point, in ``Cohort._answer``, reached
+    whichever claim is asked.  A STATE claim about the same sample answers its structural fact
+    exactly as it always did: the turn ran, and where it landed is a fact independent of what
+    its reply said."""
+    world = World(name="base", pages=(), keeps=(), excludes=(), answers=("baikal",))
+    aborted = SampleObservation(
+        name="s0",
+        phrasing="the ask",
+        arm=0,
+        landed="idle",
+        reply=PennyResponse.AGENT_MODEL_ERROR,
+        aborted_on_model_error=True,
+    )
+    cohort = Cohort("case", _MODEL, [aborted], _one_arm(world))
+    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_the_reply_answers_the_ask()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    state_claim, answers_claim, sourced_claim = cohort.claims
+    assert (state_claim.passed, state_claim.total) == (1, 1), "the landed-state fact is untouched"
+    for reply_claim in (answers_claim, sourced_claim):
+        assert (reply_claim.passed, reply_claim.total) == (0, 1)
+        assert reply_claim.rationales == ["the turn ended on a model error — no reply to read"]
+
+
+def test_a_reply_that_merely_quotes_the_apologys_words_is_read_as_a_reply():
+    """Only the carried FLAG says a turn aborted — never a read of the reply's text.  A real
+    reply that happens to contain the apology's own words (quoting it, say) is a reply the
+    model composed, and its claims are answered normally."""
+    world = World(name="base", pages=(), keeps=(), excludes=())
+    quoting = SampleObservation(
+        name="s0",
+        phrasing="the ask",
+        arm=0,
+        landed="idle",
+        reply=f'Earlier I said "{PennyResponse.AGENT_MODEL_ERROR}" but it reconnected — done.',
+        aborted_on_model_error=False,
+    )
+    cohort = Cohort("case", _MODEL, [quoting], _one_arm(world))
+    cohort.assert_the_reply_answers_the_ask()
+    assert (cohort.claims[0].passed, cohort.claims[0].total) == (1, 1)
+
+
+def test_the_samples_row_states_how_many_ended_on_a_model_error():
+    """``CohortVariance.aborted`` counts pooled samples by the carried flag — a sample the pool
+    excluded never reaches it, since the turn never ran at all."""
+    pooled_aborted = SampleObservation(name="s0", phrasing="a", arm=0, aborted_on_model_error=True)
+    pooled_clean = SampleObservation(name="s1", phrasing="b", arm=0)
+    dead = SampleObservation(name="s2", phrasing="c", arm=0, complete=False, exclusion="timed out")
+    variance = pool([pooled_aborted, pooled_clean, dead], [])
+    assert variance.aborted == 1
+    assert variance.pooled == 2
 
 
 # ── Every deterministic check is scored, counted and coloured ────────────────

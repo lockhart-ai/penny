@@ -3315,6 +3315,11 @@ def test_a_sample_whose_classifier_or_chat_call_failed_at_the_endpoint_is_exclud
         (True, None),
     ]
     assert (answered.landed, answered.walk) == (None, "no move")
+    # The one structural read of a chat turn's abort (#2252): identity against the delivered
+    # reply, computed only for a POOLED sample — ``unreached`` carries the same apology text but
+    # is excluded for an unrelated harness reason (its chat agent never drew at all), so its flag
+    # stays the default rather than being read off a reply nothing here answers claims about.
+    assert [o.aborted_on_model_error for o in observations] == [False, False, False, True]
 
     cohort = Cohort(_COHORT_RECORD_CASE, "a-model", observations)
     cohort.assert_machine_landed(ConversationState.IDLE)
@@ -3334,6 +3339,16 @@ def test_a_sample_whose_classifier_or_chat_call_failed_at_the_endpoint_is_exclud
         (NO_CHAT_DRAW, FailureCause.HARNESS),
         (None, FailureCause.BEHAVIORAL),
     ]
+
+
+def test_a_reply_that_merely_quotes_the_apology_is_not_read_as_an_abort(tmp_path) -> None:
+    """The read is IDENTITY against the delivered reply, never a substring: a real reply the
+    model composed that happens to mention the apology's own words (recounting an earlier
+    retry, say) is a reply, not an abort (#2252)."""
+    quoting = f'Earlier I hit "{PennyResponse.AGENT_MODEL_ERROR}" but it went through — done.'
+    sample = _observed_chat_sample(tmp_path, "s-quoting", reply=quoting)
+    assert sample.aborted_on_model_error is False
+    assert sample.reply == quoting
 
 
 # ── A cohort sample's fragile flag and its banner state the SETTLED verdict (#2127) ──

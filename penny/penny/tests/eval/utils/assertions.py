@@ -63,6 +63,12 @@ _JOB_IS_THE_DERIVED_CONTAINER = (
 # never saw.
 _NO_GROUND = World(name="no arms", pages=(), keeps=(), excludes=())
 
+# What a reply-kind claim says of a sample whose turn ended on a model error (#2252): the
+# framework's own apology states no value of the model's, so a claim read off the reply is
+# false of it rather than unasked — the same "did nothing, so failed every claim about what it
+# should have done" reading ``_wrote_into_container`` already gives a sample that wrote nothing.
+_ABORTED_REPLY_RATIONALE = "the turn ended on a model error — no reply to read"
+
 # How one sample answers one claim: ``(ok, rationale)``.
 Answer = tuple[bool, str | None]
 # How one sample answers one claim, judged against the world ITS OWN ARM ran against.  The
@@ -116,7 +122,7 @@ class Cohort:
     def claims(self) -> list[Claim]:
         """Every declared claim, answered over every sample the cohort drove."""
         return [
-            Claim(label=label, kind=kind, category=category, outcomes=self._answer(answer))
+            Claim(label=label, kind=kind, category=category, outcomes=self._answer(answer, kind))
             for label, kind, category, answer in self._declared
         ]
 
@@ -145,12 +151,24 @@ class Cohort:
             )
         return self.arms[sample.arm].world
 
-    def _answer(self, answer: WorldClaim) -> list[ClaimOutcome]:
+    def _answer(self, answer: WorldClaim, kind: str) -> list[ClaimOutcome]:
+        """Answer one claim over every complete sample — the ONE place a reply-kind claim
+        reads whether the sample it is about has a reply of the model's to read at all
+        (#2252).  A sample whose chat turn ended on a model error is still pooled (the turn
+        ran, and a user would have received the apology), so it answers every OTHER claim as
+        it always did; only the claims that read the reply are affected, and they fail rather
+        than go unanswered — a claim is a statement about end state, and this sample's reply
+        genuinely never held the thing being asked for."""
         outcomes = []
         for sample in self.samples:
             # An incomplete sample answers nothing: it never ran its measured turn, so grading
             # it would report a failed contract for a contract nobody exercised.
             if not sample.complete:
+                continue
+            if kind == "reply" and sample.aborted_on_model_error:
+                outcomes.append(
+                    ClaimOutcome(sample=sample.name, ok=False, rationale=_ABORTED_REPLY_RATIONALE)
+                )
                 continue
             ok, rationale = answer(sample, self._world_for(sample))
             outcomes.append(

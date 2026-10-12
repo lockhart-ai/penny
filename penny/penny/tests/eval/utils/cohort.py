@@ -396,6 +396,17 @@ class SampleObservation(BaseModel):
     tool_sequence: list[str] = Field(default_factory=list)
     reply: str = ""
     reply_embedding: list[float] | None = None
+    # Whether the measured CHAT turn ended on an aborted model call, rather than on a reply the
+    # model composed — read by the CHAT observer alone, off the delivered reply's identity
+    # against the framework's own model-error constant (never a copied string, never a
+    # substring match: a real reply that happens to quote the apology's words is not this).  A
+    # chat turn's abort is otherwise unrecorded — ``ChatAgent`` stamps no ``run_outcome`` and the
+    # channel reads only ``ControllerResponse.answer`` — so the delivered text is the one
+    # surviving signal.  The apology states no value of the model's, so a reply-kind claim must
+    # not count it as a reply that held (#2252).  Every other driver leaves the default: a
+    # collector cycle's own run record already names an abort by its reason, and nothing here
+    # claims to read that.
+    aborted_on_model_error: bool = False
     # Everything the round was given, and which part of it was stated — see ``Given``.
     given: Given = Given()
     # The container the round was FRAMED on, read off the move that settled it — the same anchor
@@ -897,6 +908,11 @@ class CohortVariance(BaseModel):
     # ``features`` computes a headline, a ceiling or a glyph from an entropy, and a share has
     # none to give.
     shares: list[ShareSpread] = Field(default_factory=list)
+    # How many POOLED samples ended their measured turn on a model-call abort, rather than on a
+    # reply the model composed (#2252) — a sample the pool still kept (the turn ran, and a user
+    # would have received the apology), so this is counted beside ``pooled``/``excluded`` rather
+    # than folded into either.  The case document's health row states it when it is non-zero.
+    aborted: int = 0
 
     @property
     def dominant_exclusion(self) -> tuple[str, int] | None:
@@ -1058,8 +1074,12 @@ def text_spread(samples: Sequence[SampleObservation]) -> TextSpread | None:
 
     A reply carrying no embedding contributes to containment and not to cosine — the two are
     reported over the pairs each could actually be computed on, rather than dropping a reply
-    from both because one half of it is missing."""
-    replies = [sample for sample in samples if sample.reply.strip()]
+    from both because one half of it is missing.  A sample that ended on a model error reads
+    as this feature's ABSENT value (#2252) — the apology is not a reply the model composed, so
+    it neither widens nor narrows how far the real replies stand apart."""
+    replies = [
+        sample for sample in samples if sample.reply.strip() and not sample.aborted_on_model_error
+    ]
     if len(replies) < 2:
         return None
     cosines: list[float] = []
@@ -1120,6 +1140,7 @@ def pool(
         features=[feature_variance(feature, kept) for feature in structural],
         text=text_spread(kept) if REPLY_SPREAD in features else None,
         shares=[share_spread(share, kept) for share in shares],
+        aborted=sum(1 for sample in kept if sample.aborted_on_model_error),
     )
 
 

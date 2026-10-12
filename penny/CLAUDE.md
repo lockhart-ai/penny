@@ -787,8 +787,24 @@ the cancel until the task is actually down (`stop_task` in `tests/conftest.py`),
 in-flight HTTP call can absorb a single cancel when a blocked event loop has also run past its
 own deadline — which is how one sample once held a run silent for twenty minutes. Cases drive the
 real chat/collector loops and make their claims over persisted DB state + sends; the claims are
-counted and reported, never gated, and every case states `min_pass_rate=None`. **Every driver
-refuses a case that names nothing to drive** — `chat_eval` with no `ask`, `collector_cycles_eval`
+counted and reported, never gated, and every case states `min_pass_rate=None`.
+
+**A reply claim is false of a sample with no reply to read (#2252).** A CHAT turn can end on a
+model-call abort rather than on a reply the model composed, and the delivered text is then
+`PennyResponse.AGENT_MODEL_ERROR` verbatim — a framework apology stating no value of the
+model's. `SampleObservation.aborted_on_model_error` (`tests/eval/utils/cohort.py`) is the chat
+observer's own read of that: identity against the constant, never a copied string or a
+substring match, because a chat turn's abort is otherwise unrecorded (`ChatAgent` stamps no
+`run_outcome`, and `ControllerResponse.abort` is read only by the collector) — the delivered
+reply is the one surviving signal, and a real reply that merely quotes the apology's words is a
+reply, not an abort. `Cohort._answer` (`tests/eval/utils/assertions.py`) is the ONE place every
+reply-kind claim (`Claim.kind == "reply"`) is answered, and it fails such a sample there with a
+named rationale instead of scoring the apology as a reply that held; every state-kind claim, and
+every other driver, reads exactly as it did before. The case document's `samples` row states the
+count when it is non-zero, the sample's own banner carries `model error`, and `results.jsonl`
+carries the flag per sample (`sample_aborted`, aligned with `sample_scores`).
+
+**Every driver refuses a case that names nothing to drive** — `chat_eval` with no `ask`, `collector_cycles_eval`
 with no `arms`, a micro-context driver with no instruction, utterance or turns — one that states a floor
 or leaves `min_pass_rate` unstated, and one that states no behaviour, declares no `area` or names an
 `edge` the machine does not have, each with an error naming the case, before a sample runs. A

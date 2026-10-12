@@ -250,11 +250,17 @@ class ScoredSample(Protocol):
     ``cause`` is the structurally-classified failure cause the runner stamped (``None``
     for a pass, or an unstamped sample — the aggregate defaults an unstamped *failure*
     to ``behavioral``, never inventing a pathology/harness it can't observe).
+
+    ``aborted_on_model_error`` is a straight read of the sample's observation (#2252) — whether
+    its CHAT turn ended on a model error rather than on a reply the model composed; a collector
+    sample's default ``False`` is not a claim that a collector cycle cannot abort, only that
+    nothing here reads that off it.
     """
 
     score: float
     cause: FailureCause | None
     fragile: bool
+    aborted_on_model_error: bool
 
     @property
     def passed(self) -> bool: ...
@@ -390,6 +396,11 @@ class CaseArtifact(BaseModel):
     sample_scores: list[float]
     sample_causes: list[FailureCause | None]
     sample_fragile: list[bool] = Field(default_factory=list)
+    # Per-sample, aligned with ``sample_scores`` like ``sample_fragile`` (#2252) — whether this
+    # CHAT sample's turn ended on a model error rather than on a reply the model composed.
+    # Additive and defaulted, so a record written before this field decodes as a run where
+    # nothing aborted, which is exactly what every pre-#2252 run actually measured.
+    sample_aborted: list[bool] = Field(default_factory=list)
     cause_counts: CauseCounts
     checks: list[CheckOutcome]
     timings: CaseTimings
@@ -549,6 +560,7 @@ def build_case_artifact(
         sample_scores=scores,
         sample_causes=causes,
         sample_fragile=[bool(result.fragile) for result in results],
+        sample_aborted=[bool(result.aborted_on_model_error) for result in results],
         cause_counts=count_causes(causes),
         checks=aggregate_checks(results),
         timings=timings,
