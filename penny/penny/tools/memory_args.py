@@ -509,8 +509,9 @@ class FindArgs(ToolArgs):
 
     ``query`` — a paraphrase of what the thing is about (its meaning, not its
     exact name/key) — is the tool's whole surface when ``memory`` is omitted. The
-    search then spans every family (collection | log | skill | entry | the two
-    conversation logs) in one fused best-first list; there is no up-front family
+    search then spans every family (collection | log | skill | entry) in one fused
+    best-first list, with matching messages from the two conversation logs listed
+    after it; there is no up-front family
     filter (a knob the model reasons about first can only encode a guess, #1643),
     so a passed ``type`` is rejected as an unknown argument (``ToolArgs``
     ``extra="forbid"``).

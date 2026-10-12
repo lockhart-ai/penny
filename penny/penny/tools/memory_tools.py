@@ -3083,12 +3083,12 @@ class FindTool(MemoryTool):
         "Find anything of your own by meaning, when you don't know its exact name — "
         "a collection, a log, a taught skill, a single stored entry (a fact you "
         "saved), or something the user or you said earlier in the conversation.  Pass "
-        '`query`, a paraphrase of what it\'s about ("what I said that product costs", '
-        '"what they told me about the trip").  Returns the closest matches, best '
-        "first: a collection/log/skill with its exact name, whether it's active or "
-        "archived, and the exact tool call that operates on it (archived included); a "
-        "stored entry with the value it holds and how to read it back; a matching "
-        "message from the conversation, shown in full under its own heading.  Use it "
+        "`query`, a paraphrase of what it's about (\"what I said that product "
+        'costs").  Returns the closest matches, best first: a collection/log/skill '
+        "with its exact name, whether it's active or archived, and the exact tool call "
+        "that operates on it (archived included); a stored entry with the value it "
+        "holds and how to read it back; a matching message from the conversation, "
+        "shown in full under its own heading.  Use it "
         "instead of guessing a name: a guessed name fails, this resolves the real one "
         "— and for a short fact or a past message, the returned value IS the answer. "
         "Pass `memory` too to search inside one store you can already name instead of "
@@ -3108,9 +3108,9 @@ class FindTool(MemoryTool):
             "memory": {
                 "type": "string",
                 "description": (
-                    "Optional. Leave it out to search everything she has. Given the exact "
-                    "name of one of her collections or logs, the search narrows to just "
-                    "that one, returning its own nearest entries by meaning."
+                    "Optional. Leave it out to search everything you have. Given the exact "
+                    "name of one of your collections or logs, the search narrows to just "
+                    "that one and returns its nearest entries by meaning."
                 ),
             },
         },
