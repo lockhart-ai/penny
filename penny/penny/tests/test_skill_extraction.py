@@ -42,11 +42,12 @@ from typing import Any, cast
 
 import pytest
 from similarity.dedup import JobSide, is_same_job
+from sqlmodel import Session
 
 from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
-from penny.database.models import Skill
+from penny.database.models import MemoryEntry, Skill
 from penny.database.skill_store import (
     parameters_from_json,
     parameters_to_json,
@@ -270,6 +271,56 @@ async def test_read_write_run_qualifies_and_distils_correctly(db, emitted_write_
     assert _DEMO_COLLECTION not in render_skill_full(skill)
     # The framework reasoning think-aloud is stripped from every stored step.
     assert all("reasoning" not in step.arguments for step in steps)
+
+
+_LOOP_NORTH = "watch-cliffwalk-trail-status-north-loop"
+_LOOP_SOUTH = "watch-cliffwalk-trail-status-south-loop"
+_LOOP_WRITE_ARGS = {
+    "memory": _LOOP_SOUTH,
+    "entries": [{"key": "trail status", "content": "open"}],
+}
+_LOOP_WRITE_OK = (
+    f"Note: no collection named '{_LOOP_SOUTH}' exists — '{_LOOP_NORTH}' is the same "
+    f"name in a different spelling, so this write went there.\nWrote 1 entry."
+)
+
+
+@pytest.mark.asyncio
+async def test_redirected_write_keeps_the_attachment_mark(db):
+    """A write typed under a near-variant name (#2270) — ``collection_write`` REDIRECTS
+    it to the container that actually exists (the note is prose, read by nobody here)
+    and the entry LANDS there, stamped ``last_written_by_run_id`` on the real collection.
+    The demonstrated LEAF still reads the typed name, which names no collection at all
+    — the exact-membership check that marks a leaf attachment misses it, and the
+    distilled routine would carry a write step nobody could ever fill. Extraction reads
+    the ledger's own entry stamp instead of the typed name, so the leaf is marked
+    ``attachment=True`` on the collection the write actually resolved to, while the
+    typed value stays the verbatim ledger copy."""
+    db.memories.create_collection(_LOOP_NORTH, "trail status notes")
+    _log_run(
+        db, "run-loop", _UTTERANCE, [("collection_write", _LOOP_WRITE_ARGS, _LOOP_WRITE_OK, True)]
+    )
+    with Session(db.engine) as session:
+        session.add(
+            MemoryEntry(
+                memory_name=_LOOP_NORTH,
+                key="trail status",
+                content="open",
+                author="chat",
+                created_by_run_id="run-loop",
+                last_written_by_run_id="run-loop",
+            )
+        )
+        session.commit()
+
+    result = await _extractor(db).extract("run-loop", state=ConversationState.LEARN)
+
+    assert isinstance(result, SkillExtracted)
+    steps = steps_from_json(result.skill.steps)
+    subs = {tuple(s.path): s for s in steps[0].substitutions}
+    assert subs[("memory",)].attachment is True
+    # The typed name stays the verbatim ledger copy; only the mark changed.
+    assert steps[0].arguments["memory"] == _LOOP_SOUTH
 
 
 @pytest.mark.asyncio

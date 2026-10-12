@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from similarity.embeddings import token_containment_ratio
+from similarity.embeddings import is_name_variant
 
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
@@ -1361,18 +1361,17 @@ _AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '
 
 
 def _is_name_variant(asked: str, existing: str) -> bool:
-    """Near-certain 'same collection, different spelling': a high character ratio
-    (typos, hyphen joins) OR full token containment ('team-news' ⊂
-    'team-news-alerts').  Token overlap via the similarity package's TCR; the
-    char leg shares did-you-mean's stdlib measure."""
-    if (
-        difflib.SequenceMatcher(None, asked, existing).ratio()
-        >= PennyConstants.MEMORY_NAME_REDIRECT_CHAR_RATIO
-    ):
-        return True
-    return (
-        token_containment_ratio(asked.replace("-", " "), existing.replace("-", " "))
-        >= PennyConstants.MEMORY_NAME_REDIRECT_TCR
+    """Near-certain 'same collection, different spelling' (#2270: the one shared
+    predicate, over the one pair of thresholds — ``is_name_variant`` lives in the
+    dependency-light ``similarity`` package precisely so this call and skill
+    distillation's resolved-write check (``skill_extraction.py``) read the SAME
+    rule off the SAME two constants, and cannot drift into two copies answering
+    the near-match question differently)."""
+    return is_name_variant(
+        asked,
+        existing,
+        char_ratio=PennyConstants.MEMORY_NAME_REDIRECT_CHAR_RATIO,
+        tcr=PennyConstants.MEMORY_NAME_REDIRECT_TCR,
     )
 
 

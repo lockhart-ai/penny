@@ -81,10 +81,10 @@ from __future__ import annotations
 import logging
 import re
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
-from similarity.embeddings import cosine_similarity
+from similarity.embeddings import cosine_similarity, is_name_variant
 
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
@@ -303,6 +303,65 @@ def attachment_names(db: Database) -> frozenset[str]:
     )
 
 
+def _string_leaves(value: Any) -> list[str]:
+    """Every string leaf under ``value``, recursively — collected generically so
+    the near-match check below never assumes which argument or tool a demonstrated
+    write sits on (#2270: a skill is an arbitrary tool sequence, so no leaf-finder
+    here may key to a name or a position)."""
+    if isinstance(value, dict):
+        return [leaf for sub in value.values() for leaf in _string_leaves(sub)]
+    if isinstance(value, list):
+        return [leaf for sub in value for leaf in _string_leaves(sub)]
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
+def _resolved_attachment_names(
+    db: Database, run_id: str, certified: list[RunProjectionStep]
+) -> frozenset[str]:
+    """``attachment_names`` widened by the collections THIS RUN'S writes actually
+    landed in (#2270) — never any other live collection.
+
+    ``collection_write`` redirects a near-miss name to an existing collection (its
+    own ``_is_name_variant``) and narrates the redirect in prose, but the entry
+    lands there regardless of what the model typed — so the typed value never
+    becomes a member of ``attachment_names`` (it names no collection at all) and
+    the leaf loses its attachment mark on the exact round this fix is for.  The
+    fact of where the write landed is read off the LEDGER instead of that prose:
+    ``entries_written_by_run`` is the entry-stamp read (#1911) that already
+    answers 'what did this run write, and to which collection' tool-agnostically.
+    A demonstrated value that is not itself a collection name, but is a near-match
+    (the SAME ``is_name_variant`` predicate and the SAME two thresholds
+    ``collection_write`` redirects on — one shared rule, so the two sites cannot
+    answer the near-match question differently) of a collection this run actually
+    wrote to, is treated as naming that collection too."""
+    names = attachment_names(db)
+    written = {entry.memory_name for entry in db.memories.entries_written_by_run(run_id)}
+    if not written:
+        return names
+    candidates = {
+        value
+        for step in certified
+        for value in _string_leaves(step.call.arguments)
+        if value not in names
+    }
+    resolved = {
+        value
+        for value in candidates
+        if any(
+            is_name_variant(
+                value,
+                target,
+                char_ratio=PennyConstants.MEMORY_NAME_REDIRECT_CHAR_RATIO,
+                tcr=PennyConstants.MEMORY_NAME_REDIRECT_TCR,
+            )
+            for target in written
+        )
+    }
+    return names | resolved
+
+
 class SkillExtractor:
     """The run-end skill-extraction pipeline — one instance per chat agent, holding
     its DB + embedding client (threaded, never ambient state)."""
@@ -434,7 +493,8 @@ class SkillExtractor:
         drawn — the routine was named before the round ran, and this is the same routine.
         The run-end draw survives as the path for a round nothing framed."""
         steps, parameters = distill_steps(
-            self._distill_inputs(projection, certified), attachment_names(self._db)
+            self._distill_inputs(projection, certified),
+            _resolved_attachment_names(self._db, run_id, certified),
         )
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
         labels = await self._label_skill(steps, parameters, projection, conversation)

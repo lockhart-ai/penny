@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import math
 import re
 import struct
@@ -116,6 +117,18 @@ def token_containment_ratio(name_a: str, name_b: str) -> float:
     if not shorter:
         return 0.0
     return len(shorter & longer) / len(shorter)
+
+
+def is_name_variant(asked: str, existing: str, *, char_ratio: float, tcr: float) -> bool:
+    """Near-certain 'same name, different spelling': a high character ratio
+    (typos, hyphen joins) OR full token containment ('team-news' ⊂
+    'team-news-alerts'). Thresholds are the caller's own calibrated values —
+    this module stays policy-free so two callers that must agree on the
+    rule can share this one function instead of two copies drifting apart.
+    """
+    if difflib.SequenceMatcher(None, asked, existing).ratio() >= char_ratio:
+        return True
+    return token_containment_ratio(asked.replace("-", " "), existing.replace("-", " ")) >= tcr
 
 
 # ── Job-name normalisation (#1775) ───────────────────────────────────────────
