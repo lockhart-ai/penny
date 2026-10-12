@@ -41,7 +41,6 @@ from penny.database.skills import (
     render_skill,
     retarget_writes,
 )
-from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
@@ -75,7 +74,6 @@ from penny.tools.memory_tools import (
     EXPIRES_AT_PARAM_DESCRIPTION,
     SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
-    CollectionCatalogTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
     CollectionReadLatestTool,
@@ -2060,7 +2058,7 @@ def _log_demo_run(db, run_id: str, *, write_target: str) -> None:
 
 class TestInertCollections:
     """Skill-less create yields an INERT storage collection (#1629): no
-    extraction_prompt / cadence / notify, never dispatches, catalog-visible,
+    extraction_prompt / cadence / notify, never dispatches, metadata-visible,
     idempotency still applies — and a job-shaped arg alongside is refused."""
 
     @pytest.mark.asyncio
@@ -2082,24 +2080,15 @@ class TestInertCollections:
         assert row.archived is False  # a live, usable container
 
     @pytest.mark.asyncio
-    async def test_inert_collection_is_catalog_visible(self, db):
-        """An inert collection enumerates in the catalog, marked as storage with no
-        routine — not hidden for lacking a prompt (#1629).  Whole render, so the inert
-        recipe marker's position and the unchanged rest are both pinned."""
+    async def test_inert_collection_is_metadata_visible(self, db):
+        """An inert collection reads back through ``memory_metadata``, marked as
+        storage with no routine — not hidden for lacking a prompt (#1629)."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
-        row = db.memories.get("deals-watch")
-        catalog = await CollectionCatalogTool(db).execute()
-        assert catalog.message == (
-            "## deals-watch\n"
-            "status: active\n"
-            "expires: never\n"
-            f"created: {format_log_timestamp(row.created_at)}\n"
-            "description: track the trail-runner shoe deals\n"
-            "notify: False\n"
-            "extraction_prompt: (none — inert storage, no skill attached yet)"
-        )
+        result = await MemoryMetadataTool(db).execute(memory="deals-watch")
+        assert "extraction prompt: none" in result.message
+        assert "description: track the trail-runner shoe deals" in result.message
 
     @pytest.mark.asyncio
     async def test_job_arg_on_skill_less_create_is_refused(self, db):
@@ -4123,7 +4112,6 @@ class TestFactory:
         # Reads
         "collection_read_latest",
         "memory_metadata",
-        "collection_catalog",
         "log_read",
         "read_run_calls",
         "get_event",
@@ -4218,10 +4206,10 @@ class TestScopedFactory:
 
 class TestRegistryProvenanceAndLifecycle:
     """Operational registry (#1566): ``collection_set`` stamps the spawning
-    message + creating run; ``collection_catalog`` (archived-inclusive) and
-    ``memory_metadata`` render a status / expires / created-from-message block —
-    so any mechanism can state who asked for it, what created it, whether it's
-    live, and when it ends, and an archived one stays enumerable and inspectable.
+    message + creating run; ``memory_metadata`` renders a status / expires /
+    created-from-message block — so any mechanism can state who asked for it,
+    what created it, whether it's live, and when it ends, and an archived one
+    stays inspectable by its exact name.
     """
 
     async def _create(self, db, name, *, created_by_run_id=None, notify=False):
@@ -4294,22 +4282,18 @@ class TestRegistryProvenanceAndLifecycle:
         )
 
     @pytest.mark.asyncio
-    async def test_catalog_is_archived_inclusive_and_marks_status(self, db):
+    async def test_archived_collection_stays_metadata_inspectable(self, db):
+        """Archiving changes status, never reachability (#1566/#2288): a collection
+        archived by exact name still answers ``memory_metadata`` fully, clearly
+        marked, and the self-state header's compact archived line (#2288) is the
+        wider index that names it alongside every other archived store."""
         await self._create(db, "kickstarters", created_by_run_id="run-ks-01")
         message_id = self._spawn(db, "run-ks-01", "watch for new board game kickstarters")
-        await self._create(db, "trail-conditions")  # no run id (seeded-style)
-        # Archiving must change status, never visibility.
+        # Archiving must change status, never reachability by name.
         await CollectionArchiveTool(db).execute(memory="kickstarters")
-        result = await CollectionCatalogTool(db).execute()
+        result = await MemoryMetadataTool(db).execute(memory="kickstarters")
 
-        # Both collections still render — the just-archived one clearly marked.
-        assert "## kickstarters" in result.message
-        assert "## trail-conditions" in result.message
         assert "status: archived" in result.message
-        assert "status: active" in result.message
-        # A count over the inventory surface is correct wrt the DB (2 collections,
-        # one of them archived) — the archived row is not hidden.
-        assert result.message.count("## ") == 2
         # Provenance (message + ask excerpt) renders on the created line.
         assert (
             f'from message {message_id} ("watch for new board game kickstarters")' in result.message
@@ -4371,43 +4355,13 @@ class TestRegistryProvenanceAndLifecycle:
 
 class TestCollectionSkillProvenanceRender:
     """Collection→skill provenance (#1603): a skill-instantiated collection records
-    the skill it was rendered from + the params bound into its render, and the
-    catalog / metadata surfaces name them — ``from skill: <name> (<param>=<value>)``.
+    the skill it was rendered from + the params bound into its render, and
+    ``memory_metadata`` names them — ``from skill: <name> (<param>=<value>)``.
     The skill name is a live anchor (``memory_metadata`` renders the routine's own
     parameters block right below it, #2287), and the bound params are the reachable
     input a rebind/re-render consumes.  A hand-authored / seeded collection
     (``skill_name`` NULL) renders EXACTLY as before — the unmarked case is the quiet
     default, pinned byte-for-byte."""
-
-    @pytest.mark.asyncio
-    async def test_catalog_names_instantiating_skill_and_params_whole(self, db):
-        """The catalog render names the instantiating skill + its bound params on a
-        ``from skill:`` line right before the recipe it produced — asserted as a whole
-        render so the line's position and the unchanged rest are both pinned."""
-        _seed_watch_skill(db)
-        create = await CollectionCreateTool(
-            db, cast(Any, MockLlmClient()), created_by_run_id="run-cinder-01"
-        ).execute(
-            name="cinder-elevation",
-            description="watch Cinder Peak's elevation",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            schedule="FREQ=HOURLY",
-        )
-        assert create.success
-        row = db.memories.get("cinder-elevation")
-        result = await CollectionCatalogTool(db).execute()
-        expected = (
-            "## cinder-elevation\n"
-            "status: active\n"
-            "expires: never\n"
-            f"created: {format_log_timestamp(row.created_at)} by run run-cinder-01\n"
-            "description: watch Cinder Peak's elevation\n"
-            "notify: False\n"
-            "from skill: Watch elevation (peak=Cinder Peak)\n"
-            f"extraction_prompt:\n{_MONEY_LITERAL}"
-        )
-        assert result.message == expected
 
     @pytest.mark.asyncio
     async def test_metadata_names_instantiating_skill_and_params(self, db):
@@ -4472,7 +4426,7 @@ class TestCollectionSkillProvenanceRender:
     async def test_hand_authored_collection_renders_byte_identical(self, db):
         """A collection with no skill origin (``skill_name`` NULL — the seeded /
         hand-authored case) renders with NO ``from skill:`` line, byte-for-byte the
-        unmarked pre-provenance shape, on both surfaces."""
+        unmarked pre-provenance shape."""
         _seed_collection(
             db,
             name="plain-watch",
@@ -4481,19 +4435,6 @@ class TestCollectionSkillProvenanceRender:
         )
         row = db.memories.get("plain-watch")
         assert row.skill_name is None and row.skill_params is None
-        catalog = await CollectionCatalogTool(db).execute()
-        expected = (
-            "## plain-watch\n"
-            "status: active\n"
-            "expires: never\n"
-            f"created: {format_log_timestamp(row.created_at)}\n"
-            "description: plain subject\n"
-            "notify: False\n"
-            "extraction_prompt:\n1. browse(queries=['peaks']).\n"
-            "2. collection_write(memory='peaks')."
-        )
-        assert catalog.message == expected
-        assert "from skill:" not in catalog.message
         metadata = await MemoryMetadataTool(db).execute(memory="plain-watch")
         assert "from skill:" not in metadata.message
         # No routine at all (#2287) — the new parameters block is absent too, so a
@@ -4526,7 +4467,7 @@ class TestCollectionSkillProvenanceRender:
             skill="daily-digest",
             schedule="FREQ=HOURLY",
         )
-        result = await CollectionCatalogTool(db).execute()
+        result = await MemoryMetadataTool(db).execute(memory="morning-digest")
         assert "from skill: daily-digest\n" in result.message
         # No holes bound → no parenthesised params.
         assert "from skill: daily-digest (" not in result.message
@@ -4775,18 +4716,18 @@ class TestFind:
 
     @pytest.mark.asyncio
     async def test_zero_matches_is_honest_empty(self, db, mock_llm):
-        """A query unrelated to everything returns an honest empty naming the wider
-        nets (catalog + self-state header) — not an error, no dead end."""
+        """A query unrelated to everything returns an honest empty pointing at the
+        state at the top of the prompt (#2288) — not an error, no dead end."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         result = await FindTool(db, client).execute(query="orbit nebula")
         assert result.success
         assert result.message == (
-            'Nothing of yours matched "orbit nebula". Widen the net: collection_catalog() '
-            "lists every collection (archived included), and your current-state header "
-            "names your active mechanisms, logs, and recent activity. If you were looking "
-            "for how to do a task and no skill matched, ask the user to walk you through "
-            "it once here in chat — you'll learn it as a new skill automatically."
+            'Nothing of yours matched "orbit nebula" — the state at the top of this '
+            "prompt lists every collection, log, and taught routine you have (archived "
+            "ones by name). If you were looking for how to do a task and no skill "
+            "matched, ask the user to walk you through it once here in chat — you'll "
+            "learn it as a new skill automatically."
         )
 
     @pytest.mark.asyncio

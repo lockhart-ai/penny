@@ -23,7 +23,6 @@ from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
-    CollectionCatalogTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
     CollectionUnarchiveTool,
@@ -256,10 +255,6 @@ class TestMemoryReadNarration:
             {"memory": "browse-results"}, ToolResult(message="err", success=False)
         )
         assert narration == "You tried to read `browse-results` but it didn't work:"
-
-    def test_collection_catalog_narrates_review(self):
-        narration = CollectionCatalogTool.to_result_narration({}, ToolResult(message="catalog"))
-        assert narration == "You reviewed your collection catalog:"
 
     def test_memory_metadata_narrates_check(self):
         narration = MemoryMetadataTool.to_result_narration(

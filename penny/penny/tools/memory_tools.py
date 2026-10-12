@@ -93,7 +93,6 @@ from penny.tools.collection_instantiation import (
     skill_params,
 )
 from penny.tools.memory_args import (
-    CatalogArgs,
     CollectionCreateArgs,
     CollectionDeleteEntryArgs,
     CollectionEntrySpec,
@@ -465,12 +464,11 @@ def _description_degraded_suffix(description: str | None, embedding: list[float]
 
 # ── Provenance + lifecycle rendering (operational registry, #1566) ──────────
 #
-# ``collection_catalog`` (the inventory surface) and ``memory_metadata`` (the
-# single exact-name lookup) render the SAME lifecycle block, so one read answers
-# the whole "who asked for it, what run created it, is it live, when does it
-# end" question.  It's sourced structurally from the registry columns, never
-# reconstructed — so an archived mechanism stays enumerable and inspectable,
-# marked with its archive time rather than vanishing from the catalog.
+# ``memory_metadata`` (the single exact-name lookup) renders this lifecycle
+# block, so one read answers the whole "who asked for it, what run created it,
+# is it live, when does it end" question.  It's sourced structurally from the
+# registry columns, never reconstructed — so an archived mechanism stays
+# inspectable by name, marked with its archive time rather than vanishing.
 
 _STATUS_ACTIVE = "active"
 _STATUS_ARCHIVED = "archived"
@@ -1074,7 +1072,7 @@ class CollectionArchiveTool(MemoryTool):
     description = (
         "Archive a collection. The data stays intact but the collection is "
         "retired — its collector stops running and it drops out of the active "
-        "memory list (it stays in the archived-inclusive catalog as a tombstone) "
+        "memory list (it stays reachable by its exact name, as a tombstone) "
         "until unarchived."
     )
     parameters = {
@@ -2382,9 +2380,8 @@ class MemoryMetadataTool(MemoryTool):
         )
         updated = format_log_timestamp(memory.updated_at)
         # The provenance + lifecycle block (status / expires / created-from-message):
-        # the same lines collection_catalog renders, so this exact-name lookup answers
-        # the full lifecycle question — who asked for it, what run created it, whether
-        # it's live, and when it ends (#1566).
+        # this exact-name lookup answers the full lifecycle question — who asked for
+        # it, what run created it, whether it's live, and when it ends (#1566).
         lifecycle = _lifecycle_block(self._db, memory)
         # The skill-provenance line (#1603) — which skill rendered this collection's
         # recipe, and the params bound into it — sits with the description, ahead of the
@@ -2435,90 +2432,6 @@ class MemoryMetadataTool(MemoryTool):
         for a log / an inert collection with no cadence yet — so the render never emits a
         half-formed clause (#1666, via the shared ``render_schedule_field``)."""
         return f"schedule: {render_schedule_field(memory)}"
-
-
-class CollectionCatalogTool(MemoryTool):
-    """List every user collection — live AND archived — with its full recipe and
-    lifecycle.
-
-    The inventory surface: each user collection (logs and framework collectors
-    excluded) with its lifecycle block (status / expires / created-from-message),
-    description, ``notify`` flag, and full ``extraction_prompt`` — the
-    prompts that actually run.  **Archived-inclusive** (#1566): archiving a
-    mechanism changes its status, never its visibility, so a just-archived
-    collection still renders (clearly marked ``status: archived <when>``) and a
-    count over the catalog is correct with respect to the database.  (The
-    ``skills`` reconcile collector that once read this to reground on real
-    collections was retired by #1624 — skills are structural now; the catalog
-    remains the chat agent's read-only window onto what Penny collects.)
-    """
-
-    name = "collection_catalog"
-    description = (
-        "List every collection — live and archived — with its full gather "
-        "recipe and lifecycle: name, status (active / archived with when), end "
-        "condition, when and from which message it was created, description, "
-        "whether it notifies the user "
-        "(notify), and its extraction_prompt.  Use it to see what Penny "
-        "collects, how each collection is built, and which have been retired.  "
-        "Logs and framework collectors are omitted."
-    )
-    parameters = {"type": "object", "properties": {}}
-    args_model = CatalogArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        if not result.success:
-            return "You tried to review your collections but it didn't work:"
-        return "You reviewed your collection catalog:"
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        CatalogArgs(**kwargs)
-        rows = sorted(
-            (row for row in self._db.memories.list_all() if self._is_user_collection(row)),
-            key=lambda row: row.name,
-        )
-        if not rows:
-            return ToolResult(message="(no collections)")
-        return ToolResult(message="\n\n".join(self._format(row) for row in rows))
-
-    @staticmethod
-    def _is_user_collection(row: MemoryRow) -> bool:
-        """A collection rather than a log.  There is no hide-list left (#1911): with
-        nothing pre-seeded, every collection IS a user collection, so the catalog shows
-        the registry as it stands.  Includes INERT collections (no ``extraction_prompt``
-        yet, #1629): storage the user set up belongs in the inventory, marked as having
-        no routine.  Archived-inclusive (#1566): a retired collection still enumerates,
-        marked by its status."""
-        return row.type == MemoryType.COLLECTION
-
-    def _format(self, row: MemoryRow) -> str:
-        # The skill-provenance line (#1603) sits right before the recipe it produced,
-        # naming which skill rendered this collection's extraction_prompt.  It's
-        # absent for a hand-authored / seeded collection (skill_name NULL), so that
-        # render stays byte-identical to the unmarked pre-provenance shape.
-        lines = [
-            f"## {row.name}",
-            *_lifecycle_block(self._db, row),
-            f"description: {row.description}",
-            f"notify: {row.notify}",
-        ]
-        if (skill := _skill_provenance_line(row)) is not None:
-            lines.append(skill)
-        lines.append(self._recipe_line(row))
-        return "\n".join(lines)
-
-    @staticmethod
-    def _recipe_line(row: MemoryRow) -> str:
-        """The recipe render — the full ``extraction_prompt`` for a collection with a
-        job, or an honest inert marker (#1629) when the collection is storage only (no
-        skill attached yet), never a bare ``None``."""
-        if row.extraction_prompt is None:
-            return "extraction_prompt: (none — inert storage, no skill attached yet)"
-        return f"extraction_prompt:\n{row.extraction_prompt}"
 
 
 class CollectionDeleteEntryTool(MemoryTool):
@@ -2966,22 +2879,21 @@ class LogAppendTool(MemoryTool):
 
 _FIND_EMBED_FAILURE = (
     "Couldn't embed your query (a transient embedding error) — the meaning search "
-    "needs it. Retry find(query=<what the thing is about>) in a moment, or list "
-    "everything with collection_catalog()."
+    "needs it. Retry find(query=<what the thing is about>) in a moment, or check "
+    "the list in your current-state header."
 )
 
-# Zero matches is an honest empty, not an error — name the wider nets (the catalog
-# spans archived collections too; the self-state header names active mechanisms,
-# logs, and recent activity) so the model never dead-ends on a miss.  If the query
-# was a how-to/task lookup, the final clause signposts the task→skill→teach dead end
-# (#1650): no skill matched → ask the user to teach it once.
+# Zero matches is an honest empty, not an error — nothing of yours matched, and the
+# state at the top of every turn already lists every collection, log, and taught
+# routine (archived ones by name) so the model never dead-ends on a miss.  If the
+# query was a how-to/task lookup, the final clause signposts the task→skill→teach
+# dead end (#1650): no skill matched → ask the user to teach it once.
 _FIND_EMPTY = (
-    'Nothing of yours matched "{query}". Widen the net: '
-    "collection_catalog() lists every collection (archived included), and your "
-    "current-state header names your active mechanisms, logs, and recent activity. "
-    "If you were looking for how to do a task and no skill matched, ask the user to "
-    "walk you through it once here in chat — you'll learn it as a new skill "
-    "automatically."
+    'Nothing of yours matched "{query}" — the state at the top of this prompt '
+    "lists every collection, log, and taught routine you have (archived ones by "
+    "name). If you were looking for how to do a task and no skill matched, ask the "
+    "user to walk you through it once here in chat — you'll learn it as a new "
+    "skill automatically."
 )
 
 # Ambiguity is RETURNED, never silently resolved: several hits come back ranked
@@ -3148,9 +3060,7 @@ class FindTool(MemoryTool):
     # program-scoped surface carrying `find` has to carry them too or the line resolves
     # in nothing.  The gap was invisible until the coherence scanner learned to follow a
     # helper's own constants; declaring it is the fix that test's docstring prescribes.
-    # Nothing matched: the wider net is the catalog.
     advises = (
-        "collection_catalog",
         "collection_read_latest",
         "collection_set",
         "collection_archive",
@@ -3393,7 +3303,6 @@ def build_memory_tools(
         CollectionReadLatestTool(db),
         ReadSimilarTool(db, llm_client),
         MemoryMetadataTool(db),
-        CollectionCatalogTool(db),
         LogReadTool(db, agent_name, scope),
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),

@@ -284,10 +284,6 @@ class MemoryNameArgs(ToolArgs):
     memory: MemoryName
 
 
-class CatalogArgs(ToolArgs):
-    """No-field args for ``collection_catalog`` — it spans every collection."""
-
-
 class CollectionSetArgs(ToolArgs):
     """Args for ``collection_set`` — the ONE idempotent create-or-update entry
     point for a collection's existence and job config (the fusion the code owner

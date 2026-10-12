@@ -8,7 +8,8 @@ incidental mutations) so every literal is byte-stable.
 
 Cases: a kitchen-sink folding every shape (healthy + failed run, user-run +
 system-actor mutation, a mechanism nearing expiry, a one-shot, an archived
-tombstone), the sub-cases (empty deployment, activity overflow, archived-heavy),
+tombstone), the sub-cases (empty deployment, activity overflow, archived-heavy,
+past-the-old-cap mechanisms/store-map renders, the archived-names line),
 the activity-block shape matrix (every run-outcome line shape, the by-design
 exclusions, the full mutation action × actor × detail cross-product), then the
 full chat system-prompt composition around the header.
@@ -85,12 +86,15 @@ def _add_collection(
     )
 
 
-def _add_log(session: Session, name: str, description: str, *, when: datetime) -> None:
+def _add_log(
+    session: Session, name: str, description: str, *, when: datetime, archived: bool = False
+) -> None:
     session.add(
         MemoryRow(
             name=name,
             type="log",
             description=description,
+            archived=archived,
             created_at=when,
             updated_at=when,
         )
@@ -605,6 +609,87 @@ def test_self_state_archived_heavy_render(db):
     assert actual == _ARCHIVED_HEAVY
 
 
+# ── 4b. No cap — the whole registry renders, archived names index (#2288) ─
+
+
+def test_self_state_mechanisms_render_past_the_old_twelve_row_cap(db):
+    """More than the old 12-row mechanisms cap all render — nothing hidden
+    behind a count, no overflow tail (#2288, code-owner ruling: "list
+    everything in her state")."""
+    with Session(db.engine) as session:
+        for i in range(15):
+            _add_collection(
+                session,
+                f"watch-{i:02d}",
+                description=f"watch {i}",
+                extraction_prompt="1. go",
+                schedule="FREQ=HOURLY",
+                created_at=_t(6),
+                updated_at=_t(6),
+            )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    mechanisms = actual.split("### Active mechanisms\n", 1)[1].split("\n\n", 1)[0]
+    rows = [line for line in mechanisms.splitlines() if line.startswith("- ")]
+    assert len(rows) == 15
+    assert "more" not in mechanisms
+
+
+def test_self_state_store_map_renders_past_the_old_twenty_row_cap(db):
+    """More than the old 20-row store-map cap of live collections all render
+    (#2288) — no overflow tail naming a count."""
+    with Session(db.engine) as session:
+        for i in range(25):
+            _add_collection(
+                session,
+                f"box-{i:02d}",
+                description=f"box {i}",
+                created_at=_t(6),
+                updated_at=_t(6),
+            )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    store_map = actual.split("### Your memory\n", 1)[1].split("\n\n", 1)[0]
+    rows = [line for line in store_map.splitlines() if line.startswith("- ")]
+    assert len(rows) == 25
+    assert "more" not in store_map
+
+
+def test_self_state_archived_line_names_a_collection_and_a_log(db):
+    """The store map's compact archived line (#2288, "one compact line naming
+    them") names BOTH an archived collection and an archived log, by name —
+    the complete index of archived stores, not a remainder."""
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "recipe-box",
+            description="old recipes",
+            archived=True,
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_log(session, "old-trips", "old trip logs", when=_t(6), archived=True)
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert "archived: `old-trips`, `recipe-box`" in actual
+
+
+def test_self_state_no_archived_line_when_nothing_archived(db):
+    """No archived collections or logs → no archived line at all — the
+    unmarked case stays quiet, exactly like every other empty section."""
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "live-box",
+            description="still live",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert "archived:" not in actual
+
+
 # ── 4c. Skills-and-rules section — the taught-skill feed (#1471/#1624) ────
 #
 # The populated shape is pinned here and in the kitchen sink; the empty shape
@@ -1031,6 +1116,7 @@ _KITCHEN_SINK = (
     "- news-digest (collection, 0 entries) — gather headlines\n"
     "- price-watch (collection, 1 entries) — watch a product price\n"
     "- reminder (collection, 0 entries) — one-off reminder\n"
+    "archived: `old-watch`\n"
     "\n"
     "### Skills and rules\n"
     "Skills you've been taught — what each one does and what it needs from the user "
@@ -1045,12 +1131,11 @@ _KITCHEN_SINK = (
     "- timezone: America/Toronto\n"
     "- location: Toronto, Canada\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _SCHEDULE_MECH = (
@@ -1078,12 +1163,11 @@ _SCHEDULE_MECH = (
     "- timezone: America/Toronto\n"
     "- location: Toronto, Canada\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _EMPTY = (
@@ -1106,12 +1190,11 @@ _EMPTY = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _OVERFLOW = (
@@ -1143,12 +1226,11 @@ _OVERFLOW = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _ARCHIVED_HEAVY = (
@@ -1166,6 +1248,7 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Your memory\n"
     "- live-watch (collection, 0 entries) — still running\n"
+    "archived: `retired-0`, `retired-1`, `retired-2`\n"
     "\n"
     "### Skills and rules\n"
     "(no skills yet — when a task needs one, ask the user to walk you through it "
@@ -1174,12 +1257,11 @@ _ARCHIVED_HEAVY = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _TAUGHT_SKILLS_ONLY = (
@@ -1206,12 +1288,11 @@ _TAUGHT_SKILLS_ONLY = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 
@@ -1241,12 +1322,11 @@ _RUN_OUTCOME_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _RUN_WRITES = (
@@ -1278,12 +1358,11 @@ _RUN_WRITES = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _RUN_WRITES_MULTI_COLLECTION = (
@@ -1308,12 +1387,11 @@ _RUN_WRITES_MULTI_COLLECTION = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _EXCLUSION_RENDER = (
@@ -1336,12 +1414,11 @@ _EXCLUSION_RENDER = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _MUTATION_CHANGED_FIELDS_MATRIX = (
@@ -1379,12 +1456,11 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _MUTATION_NOTE_MATRIX = (
@@ -1422,12 +1498,11 @@ _MUTATION_NOTE_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _EMISSION_MATRIX = (
@@ -1453,12 +1528,11 @@ _EMISSION_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )
 
 _MUTATION_BARE_MATRIX = (
@@ -1488,10 +1562,9 @@ _MUTATION_BARE_MATRIX = (
     "### About the user\n"
     "(no profile set yet)\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )

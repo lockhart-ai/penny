@@ -1633,7 +1633,6 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_read_latest" in names
         assert "read_similar" in names
         assert "memory_metadata" in names
-        assert "collection_catalog" in names
         # Ledger reads: read_run_calls browses a source's runs; get_event resolves
         # one run by the typed id the activity block renders (#1580).
         assert "read_run_calls" in names
@@ -1994,6 +1993,7 @@ _BASIC_FLOW_EXPECTED = (
     "- secrets (collection, 1 entries) — hidden\n"
     "- tips (log, 1 entries) — useful tips\n"
     "- user-messages (log, 0 entries) — Every incoming user message\n"
+    "archived: `old-facts`\n"
     "\n"
     "### Skills and rules\n"
     "(no skills yet — when a task needs one, ask the user to walk you through it "
@@ -2004,10 +2004,9 @@ _BASIC_FLOW_EXPECTED = (
     "- timezone: America/Los_Angeles\n"
     "- location: Seattle, WA\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
+    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "change history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+    "searches them all by meaning (a collection, a skill, or a stored entry), "
+    "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
 )

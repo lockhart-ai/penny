@@ -14,8 +14,8 @@ every operational turn, which she has no anchor to fetch mid-turn), and it is th
 index into everything else (every id it names — a collection, a run's target — is
 one guess-free tool call from the detail). Sections:
 
-- **Active mechanisms** — the collectors, archived-inclusive: name, status,
-  cadence, end condition, last-run outcome. "what's running right now?"
+- **Active mechanisms** — EVERY collector, archived-inclusive, no cap (#2288): name,
+  status, cadence, end condition, last-run outcome. "what's running right now?"
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
   one run's per-call detail is one ``get_event(run <id>)`` hop away). A run line
@@ -26,8 +26,12 @@ one guess-free tool call from the detail). Sections:
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
   #1568) appear.
-- **Your memory** — the map of stores (collections + logs): names + one-line
-  scope. The index for an anchored lookup, never the content.
+- **Your memory** — the map of stores: EVERY live collection and log, no cap
+  (#2288), names + one-line scope — the index for an anchored lookup, never the
+  content. One compact trailing line names every ARCHIVED collection and log by
+  name (``archived: `<name>`, …``), omitted entirely when nothing is archived — an
+  archived row with no job has nowhere else in this header to appear, so this line
+  is the complete list, not a remainder.
 - **Skills and rules** — the taught-skill registry (#1471), one ROW per skill:
   name, what it's for, and what it needs (``render_skill_brief``, #1804).
   Rendered deterministically (all of them, wholesale, never a relevance guess),
@@ -143,20 +147,22 @@ class SelfStateHeader:
         "Skills you've been taught — what each one does and what it needs from the user to run."
     )
 
-    # The overflow tail each bounded section shows when it has more rows than its
-    # cap — the fetch tool named so the remainder is one guess-free call away
-    # (nothing is silently dropped; n≤1 holds).
-    MORE_MECHANISMS = "+{count} more — collection_catalog()"
+    # The overflow tail activity still shows past its cap — the fetch tool named so
+    # the remainder is one guess-free call away (nothing is silently dropped; n≤1
+    # holds). Mechanisms and the store map no longer cap at all (#2288): the whole
+    # registry renders, so there is no overflow tail to name for either.
     MORE_ACTIVITY = "+ older activity — read_run_calls(<target>)"
-    MORE_MAP = "+{count} more — collection_catalog()"
+
+    # The store map's compact index of archived names (#2288) — the complete list,
+    # not a remainder: an archived collection with no job appears nowhere else.
+    ARCHIVED_LABEL = "archived:"
 
     POINTERS = (
         "To look deeper: memory_metadata(<name>) for a collection's full config and "
         "change history, get_event(run <id>) for one run's tool calls, "
-        "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) "
-        "for stored entries, find(query=<text>) to find anything of yours by meaning "
-        "(a collection, a skill, or a stored entry), and collection_catalog() for "
-        "every collection."
+        "collection_read_latest(<name>) reads a store's entries, find(query=<text>) "
+        "searches them all by meaning (a collection, a skill, or a stored entry), "
+        "and read_similar(memory=<name>, anchor=<text>) for entries near one anchor."
     )
 
     def __init__(self, db: Database, user: str | None) -> None:
@@ -182,18 +188,17 @@ class SelfStateHeader:
     # ── Active mechanisms ────────────────────────────────────────────────────
 
     def _mechanisms_section(self) -> str:
-        """The collectors, recency-first and archived-inclusive, each on one line:
-        status · cadence · end condition · last-run outcome (#1566 registry)."""
+        """The collectors — EVERY one, recency-first and archived-inclusive, each on
+        one line: status · cadence · end condition · last-run outcome (#1566
+        registry). No cap (#2288, code-owner ruling: "list everything in her
+        state") — the ambient index is her own situation in full, not a sample of
+        it."""
         rows = self._mechanism_rows()
         outcomes = self.db.messages.latest_run_outcomes()
-        shown = rows[: PennyConstants.SELF_STATE_MECHANISMS_LIMIT]
         lines = [self.MECHANISMS_HEADER, self._notifications_line()]
-        lines.extend(self._mechanism_line(row, outcomes.get(row.name)) for row in shown)
-        if not shown:
+        lines.extend(self._mechanism_line(row, outcomes.get(row.name)) for row in rows)
+        if not rows:
             lines.append(self.EMPTY_MECHANISMS)
-        overflow = len(rows) - len(shown)
-        if overflow > 0:
-            lines.append(self.MORE_MECHANISMS.format(count=overflow))
         return "\n".join(lines)
 
     def _notifications_line(self) -> str:
@@ -210,13 +215,9 @@ class SelfStateHeader:
 
     def _mechanism_rows(self) -> list[MemoryRow]:
         """Every collector (a ``memory`` row with an ``extraction_prompt``), active
-        and archived, sorted by name.
-
-        Name order is deterministic regardless of seed timing (the inventory
-        convention), so the whole-render assertion is stable; the overflow tail
-        therefore drops the alphabetical tail rather than the stalest — a
-        recency-weighted overflow is a deferred refinement (the cap is generous,
-        so overflow is rare in practice)."""
+        and archived, sorted by name — ALL of them (#2288), so the order just needs
+        to be deterministic regardless of seed timing (the inventory convention),
+        which keeps the whole-render assertion stable."""
         rows = [row for row in self.db.memories.list_all() if row.extraction_prompt is not None]
         rows.sort(key=lambda row: row.name)
         return rows
@@ -412,23 +413,40 @@ class SelfStateHeader:
     # ── The map of stores ────────────────────────────────────────────────────
 
     def _memory_map_section(self) -> str:
-        """The index of readable stores — every non-archived memory (collection or
+        """The index of readable stores — EVERY non-archived memory (collection or
         log) by name, shape, entry count, and one-line scope. Names, never
-        content: any user fact is one anchored read away using a name shown here."""
-        memories = [row for row in self.db.memories.list_all() if not row.archived]
+        content: any user fact is one anchored read away using a name shown here.
+        No cap (#2288, code-owner ruling: "list everything in her state") — the
+        live rows render in full, and the archived ones get their own compact
+        line below (``_archived_line``) rather than a count that hides them."""
+        rows = self.db.memories.list_all()
+        live = [row for row in rows if not row.archived]
         counts = self.db.memories.entry_counts()
-        shown = memories[: PennyConstants.SELF_STATE_MAP_LIMIT]
         lines = [self.MAP_HEADER]
         lines.extend(
             f"- {row.name} ({row.type}, {counts.get(row.name, 0)} entries) — {row.description}"
-            for row in shown
+            for row in live
         )
-        if not shown:
+        if not live:
             lines.append(self.EMPTY_MAP)
-        overflow = len(memories) - len(shown)
-        if overflow > 0:
-            lines.append(self.MORE_MAP.format(count=overflow))
+        archived = self._archived_line(rows)
+        if archived:
+            lines.append(archived)
         return "\n".join(lines)
+
+    def _archived_line(self, rows: list[MemoryRow]) -> str:
+        """One compact line naming every archived collection and log, by name
+        (#2288, code-owner ruling: "one compact line naming them"). An archived
+        collection with no job (no mechanism row) appears nowhere else in the
+        header, so this line is the complete index of archived names — even one
+        that ALSO renders (as ``archived <when>``) in the mechanisms section
+        above, since this line's job is to be the whole list, not the
+        remainder. Empty string — no line at all — when nothing is archived."""
+        names = sorted(row.name for row in rows if row.archived)
+        if not names:
+            return ""
+        rendered = ", ".join(f"`{name}`" for name in names)
+        return f"{self.ARCHIVED_LABEL} {rendered}"
 
     # ── Skills and rules ─────────────────────────────────────────────────────
 

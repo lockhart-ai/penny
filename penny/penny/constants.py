@@ -764,16 +764,15 @@ class PennyConstants:
     AUTO_CREATED_DESCRIPTION_PREFIX = "auto-created to hold"
     # Self-state header caps (#1555).  The chat agent's system prompt opens with a
     # deterministically-rendered header of Penny's own operational situation
-    # (mechanisms · recent activity · the store map · durable user facts).  Each
-    # section is bounded to a fixed number of newest/named rows so the ambient
-    # budget stays flat as history grows; when a section overflows, a visible
-    # "+N more — <tool>" tail names the fetch tool, so nothing is silently
-    # dropped and n≤1 still holds (the overflow is one named call away).  These
-    # are prompt-budget bounds with a recoverable overflow, NOT silent
-    # truncations — deliberately generous; sizing is tunable later.
-    SELF_STATE_MECHANISMS_LIMIT = 12
+    # (mechanisms · recent activity · the store map · durable user facts).
+    # Mechanisms and the store map render EVERYTHING — every row, no cap (#2288,
+    # code-owner ruling: "list everything in her state") — since both index her
+    # own situation, which is the thing this header exists to show in full.
+    # Activity stays bounded to a fixed number of newest rows, because it is a
+    # ledger of HISTORY rather than an index of what currently exists, and a
+    # visible "+ older activity — <tool>" tail names the fetch tool so nothing is
+    # silently dropped and n≤1 still holds.
     SELF_STATE_ACTIVITY_LIMIT = 8
-    SELF_STATE_MAP_LIMIT = 20
     # How many of the bound collection's entries a collector cycle's prompt renders
     # (#1914), newest first, in the same spirit as the three above: a prompt-budget
     # bound with a VISIBLE overflow, deliberately generous, tunable later.  20 keeps a
