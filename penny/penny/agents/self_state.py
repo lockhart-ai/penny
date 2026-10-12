@@ -149,7 +149,7 @@ class SelfStateHeader:
 
     # The overflow tail activity still shows past its cap — the fetch tool named so
     # the remainder is one guess-free call away (nothing is silently dropped; n≤1
-    # holds). Mechanisms and the store map no longer cap at all (#2288): the whole
+    # holds). Mechanisms and the store map carry no cap (#2288): the whole
     # registry renders, so there is no overflow tail to name for either.
     MORE_ACTIVITY = "+ older activity — read_run_calls(<target>)"
 
@@ -190,9 +190,8 @@ class SelfStateHeader:
     def _mechanisms_section(self) -> str:
         """The collectors — EVERY one, recency-first and archived-inclusive, each on
         one line: status · cadence · end condition · last-run outcome (#1566
-        registry). No cap (#2288, code-owner ruling: "list everything in her
-        state") — the ambient index is her own situation in full, not a sample of
-        it."""
+        registry). No cap (#2288): the ambient index is her own situation in full,
+        not a sample of it."""
         rows = self._mechanism_rows()
         outcomes = self.db.messages.latest_run_outcomes()
         lines = [self.MECHANISMS_HEADER, self._notifications_line()]
@@ -416,7 +415,7 @@ class SelfStateHeader:
         """The index of readable stores — EVERY non-archived memory (collection or
         log) by name, shape, entry count, and one-line scope. Names, never
         content: any user fact is one anchored read away using a name shown here.
-        No cap (#2288, code-owner ruling: "list everything in her state") — the
+        No cap (#2288) — the
         live rows render in full, and the archived ones get their own compact
         line below (``_archived_line``) rather than a count that hides them."""
         rows = self.db.memories.list_all()
@@ -436,7 +435,7 @@ class SelfStateHeader:
 
     def _archived_line(self, rows: list[MemoryRow]) -> str:
         """One compact line naming every archived collection and log, by name
-        (#2288, code-owner ruling: "one compact line naming them"). An archived
+        (#2288). An archived
         collection with no job (no mechanism row) appears nowhere else in the
         header, so this line is the complete index of archived names — even one
         that ALSO renders (as ``archived <when>``) in the mechanisms section

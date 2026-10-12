@@ -765,9 +765,8 @@ class PennyConstants:
     # Self-state header caps (#1555).  The chat agent's system prompt opens with a
     # deterministically-rendered header of Penny's own operational situation
     # (mechanisms · recent activity · the store map · durable user facts).
-    # Mechanisms and the store map render EVERYTHING — every row, no cap (#2288,
-    # code-owner ruling: "list everything in her state") — since both index her
-    # own situation, which is the thing this header exists to show in full.
+    # Mechanisms and the store map render EVERYTHING — every row, no cap (#2288) —
+    # since both index her own situation, which is the thing this header exists to show in full.
     # Activity stays bounded to a fixed number of newest rows, because it is a
     # ledger of HISTORY rather than an index of what currently exists, and a
     # visible "+ older activity — <tool>" tail names the fetch tool so nothing is
