@@ -113,8 +113,8 @@ def datum(page: CannedPage, old: str, new: str) -> CannedPage:
 ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 
 
-# Five tools that mean she acted: a fetch, a write, a job stood up, a deletion, an
-# append.  ONE definition, because two case files ask the same question of a turn — the
+# Six tools that mean she acted: a fetch, a write, an edit, a deletion, a job stood
+# up.  ONE definition, because two case files ask the same question of a turn — the
 # state machine's elicitation edge, which must not act before it has been taught, and
 # the passing-mention guard, which must not act on something nobody asked for — and a
 # second copy would let the two drift into two policies.
@@ -128,6 +128,7 @@ ENACTING_TOOLS = (
     "browse",
     "collection_write",
     "collection_set",
+    "update_entry",
     "collection_delete_entry",
     "log_append",
 )
