@@ -2,12 +2,10 @@
 weeks ago, every list she keeps, one she archived, a search inside one long list,
 and a standing job's latest finding and last check (#2293).
 
-Ported to the cohort structure; the contract is `docs/eval-case-design.md`.  These
-six are built to be re-run unmodified at several commits around the tool-surface
-changes landing in this arc (`skill_read` retired, `find`'s object hit gaining a
-taught-skill's own recipe, `collection_get`/`collection_read_random`/`exists`
-retired) — so the SAME case measures which tools she reaches for before and after,
-rather than being re-tuned per commit.  Nothing here asserts a route or a tool name:
+Written to the cohort structure; the contract is `docs/eval-case-design.md`.  The
+six are built to run unmodified on either side of a change to the tool surface, so
+the SAME case measures which tools she reaches for before and after rather than
+being re-tuned per commit.  Nothing here asserts a route or a tool name:
 `TOOL_SEQUENCE` is measured, never claimed.
 
 **Every anchor is ONE distinctive word**, chosen so an honest wording of the real
@@ -101,9 +99,9 @@ def _the_list_is_archived(collection: str) -> Callable[[SampleObservation, World
 # signature) and is never applied to any collection — a bare registry row.  Every
 # leaf of a distilled routine is a binding or a parameter, so the literal page and
 # watch phrase never render for an unattached skill; the two anchors live in the
-# labelled descriptions, which is what both `find`'s own recipe block (HEAD) and
-# `skill_read` (before it) carry — and what the ambient "needs:" line carries too,
-# which is a real reading rather than a gap this case papers over.
+# labelled descriptions, which the routine's recipe carries wherever a tool returns
+# it — and which the ambient "needs:" line carries too, so a reply written from the
+# header alone holds both.
 
 _HARBOUR_ASK = "remind me how you check the harbour flag"
 _HARBOUR_PHRASINGS = (
@@ -217,9 +215,8 @@ async def test_an_old_mention_comes_back_out_of_what_was_said(
 
 # ═══ 3 · every list she keeps, in a world with thirty ═══════════════════════
 #
-# SELF_STATE_MAP_LIMIT is 20, so the ambient store map alone shows only 20 of the
-# 30 with an honest overflow note — a model that answers straight off the header
-# names 20 and misses 10, which is what makes "names every one" checkable at all.
+# Thirty is more than a reply lists comfortably, so "names every one" is a claim a
+# reply can miss: each list's own token has to appear, wherever she read the names.
 
 _LISTS_ASK = "what lists do you keep for me?"
 _LISTS_PHRASINGS = (
@@ -239,9 +236,8 @@ _LISTS_WORLD = World(
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_every_list_is_named_past_the_ambient_cap(chat_eval: ChatEval, model: str) -> None:
-    """Thirty lists, more than the ambient header shows at once — naming all of
-    them needs the catalog, not just a read of the header."""
+async def test_every_list_is_named_among_thirty(chat_eval: ChatEval, model: str) -> None:
+    """Thirty lists — the ask is for all of them, by name."""
     cohort = await chat_eval(
         case_id="lookup-list-of-lists",
         behaviour=(
