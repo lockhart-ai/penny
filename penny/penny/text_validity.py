@@ -592,6 +592,11 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "exists": "collection_get",
     # Reading one skill by name is skill_get (#2305).
     "skill_read": "skill_get",
+    # A source's runs are listed by run_list, one is read by run_get; the retired
+    # per-collector verb resolved through the browse it overlapped.
+    "read_run_calls": "run_list",
+    "get_event": "run_get",
+    "collector_run_history": "run_list",
 }
 
 

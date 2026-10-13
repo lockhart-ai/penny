@@ -3757,10 +3757,10 @@ class TestLogTools:
         assert "Found a new grinder, $300." in rendered.message  # the exact message, untruncated
 
     @pytest.mark.asyncio
-    async def test_read_run_calls_renders_by_target(self, db):
-        """read_run_calls is the SEQUENCE lens over runs, orthogonal to target: a
+    async def test_run_list_renders_by_source(self, db):
+        """run_list is the SEQUENCE lens over runs, orthogonal to source: a
         collector's name renders its runs as ``[target] -> tools -> done``; ``chat``
-        renders conversations as ``user -> tools -> penny``.  The valid targets are
+        renders conversations as ``user -> tools -> penny``.  The valid sources are
         discovered from the DB into its description."""
         _seed_collection(
             db,
@@ -3838,18 +3838,18 @@ class TestLogTools:
         )
 
         tool = ReadRunCallsTool(db, "quality")
-        # Targets discovered from the DB (chat + the collector) are in the description.
+        # Sources discovered from the DB (chat + the collector) are in the description.
         assert "espresso-gear" in tool.description
         assert "chat" in tool.description
 
-        collector = await tool.run(target="espresso-gear")
+        collector = await tool.run(source="espresso-gear")
         assert "[espresso-gear]" in collector.message
         assert "collection_write(collection='espresso-gear'" in collector.message
         # Argless done() → the conclusion is the run's STRUCTURAL outcome (#1569),
         # never a model summary.
         assert "done: worked" in collector.message
 
-        chat = await tool.run(target="chat")
+        chat = await tool.run(source="chat")
         assert "user: find me a grinder" in chat.message
         assert "browse(['espresso grinder'])" in chat.message
         assert "penny: Here's a good grinder." in chat.message
@@ -3857,17 +3857,17 @@ class TestLogTools:
         # can reference the run it's inspecting rather than guess it (#1560).
         assert "run chat-1" in chat.message
 
-        # An unknown/typo'd target resolves to a failed, actionable refusal that
+        # An unknown/typo'd source resolves to a failed, actionable refusal that
         # names the offending value — not a silent empty batch that reads as "this
         # collector has no runs".
-        unknown = await tool.run(target="esspreso-gear")
+        unknown = await tool.run(source="esspreso-gear")
         assert unknown.success is False
         assert "esspreso-gear" in unknown.message
 
     @staticmethod
     def _log_run(db, *, run_id: str, target: str, summary: str, write_key: str) -> None:
         """Persist one completed collector run for ``target`` (a write + its
-        ``done`` summary) — the promptlog rows ``get_event`` / ``read_run_calls``
+        ``done`` summary) — the promptlog rows ``run_get`` / ``run_list``
         render.  ``response`` is a dict (``log_prompt`` serializes it); the inner
         tool-call ``arguments`` is itself a JSON string, as the model emits it."""
         response = {
@@ -3916,16 +3916,16 @@ class TestLogTools:
         )
 
     @pytest.mark.asyncio
-    async def test_get_event_resolves_a_run_id_to_its_canonical_projection(self, db):
-        """``get_event(event_id='run <id>')`` consumes the header's typed run anchor
+    async def test_run_get_resolves_a_run_id_to_its_canonical_projection(self, db):
+        """``run_get(run='run <id>')`` consumes the header's typed run anchor
         VERBATIM and returns exactly the run's canonical tool-call projection — the
-        same ``render_run_calls`` view ``read_run_calls`` renders, but for the single
+        same ``render_run_calls`` view ``run_list`` renders, but for the single
         run the id names (#1580, the run-id ↔ target anchor unification).  The result
         leads with the run's own id, so the rendered anchor and the argument are one."""
         await self._create_collection(db, "ai-news")
         self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
-        result = await GetEventTool(db).run(event_id="run news-1")
+        result = await GetEventTool(db).run(run="run news-1")
 
         # Whole-render: the tool returns the canonical projection byte-for-byte.
         expected = render_run_calls(db.messages.get_run_prompts("news-1"))
@@ -3934,37 +3934,37 @@ class TestLogTools:
         assert "collection_write(collection='ai-news'" in result.message
 
     @pytest.mark.asyncio
-    async def test_get_event_tolerates_the_paren_framed_mutation_anchor(self, db):
+    async def test_run_get_tolerates_the_paren_framed_mutation_anchor(self, db):
         """The mutation activity line renders its causing run as ``(run <id>)``; the
         parse strips the framing so BOTH rendered forms resolve to the same run — the
         rendered token is consumable verbatim whichever line it came from (#1580)."""
         await self._create_collection(db, "ai-news")
         self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
-        bare = await GetEventTool(db).run(event_id="run news-1")
-        framed = await GetEventTool(db).run(event_id="(run news-1)")
+        bare = await GetEventTool(db).run(run="run news-1")
+        framed = await GetEventTool(db).run(run="(run news-1)")
         assert framed.message == bare.message
         assert framed.success is True
 
     @pytest.mark.asyncio
-    async def test_get_event_untyped_id_is_actionable(self, db):
+    async def test_run_get_untyped_id_is_actionable(self, db):
         """An id with no recognised type tag is refused, not silently emptied — the
         message names what IS addressable and the guess-free fallbacks (find +
         the activity block), never a bare 'not found' (#1580)."""
-        result = await GetEventTool(db).run(event_id="news-1")
+        result = await GetEventTool(db).run(run="news-1")
         assert result.success is False
         assert "news-1" in result.message
         assert "find(query=" in result.message
 
     @pytest.mark.asyncio
-    async def test_get_event_unknown_run_is_actionable(self, db):
+    async def test_run_get_unknown_run_is_actionable(self, db):
         """A well-formed run token that matched no recorded run gets a failed,
         actionable refusal naming the id + where valid ids are listed — never an
         empty read that reads as a clean, call-less run (#1580)."""
-        result = await GetEventTool(db).run(event_id="run does-not-exist")
+        result = await GetEventTool(db).run(run="run does-not-exist")
         assert result.success is False
         assert "does-not-exist" in result.message
-        assert "read_run_calls" in result.message
+        assert "run_list" in result.message
 
     @pytest.mark.asyncio
     async def test_append_to_system_log_is_refused(self, db, mock_llm):
@@ -4278,8 +4278,8 @@ class TestFactory:
         "memory_get",
         "log_read",
         "log_get",
-        "read_run_calls",
-        "get_event",
+        "run_list",
+        "run_get",
         "find",
         "skill_get",
         # Lifecycle (shape)

@@ -1013,7 +1013,7 @@ class LoggedToolCall(BaseModel):
 
     def render(self) -> str:
         """The canonical one-line ``tool(args)`` projection — call syntax, not
-        narration.  ``read_run_calls`` renders a run as this canonical projection
+        narration.  ``run_list`` renders a run as this canonical projection
         (the prose is composed by the model from the in-context trace); the
         first-person ``to_result_narration`` is a separate projection.
 

@@ -361,16 +361,16 @@ class TestMemoryLifecycleNarration:
             == "You listed the keys in `likes`:"
         )
 
-    def test_read_run_calls_and_get_event(self):
+    def test_run_list_and_run_get(self):
         assert (
-            ReadRunCallsTool.to_result_narration({"target": "chat"}, ToolResult(message="ok"))
+            ReadRunCallsTool.to_result_narration({"source": "chat"}, ToolResult(message="ok"))
             == "You reviewed `chat`'s recent runs:"
         )
         assert (
-            GetEventTool.to_result_narration({"event_id": "run 7f3a1b2c"}, ToolResult(message="ok"))
+            GetEventTool.to_result_narration({"run": "run 7f3a1b2c"}, ToolResult(message="ok"))
             == "You looked up `run 7f3a1b2c`:"
         )
         assert (
             GetEventTool.to_result_narration({}, ToolResult(message="x", success=False))
-            == "You tried to look up an event but it didn't work:"
+            == "You tried to look up a run but it didn't work:"
         )

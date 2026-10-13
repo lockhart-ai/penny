@@ -311,7 +311,7 @@ async def test_collection_configure_stamps_chat_provenance(
         assert events[0].actor == MutationActor.USER_RUN.value
         assert events[0].run_id == row.created_by_run_id
         # And that run served this live conversation, not a mechanism: a chat run is
-        # enumerable by ``read_run_calls(target="chat")`` and stamps no run_target —
+        # enumerable by ``run_list(source="chat")`` and stamps no run_target —
         # the served-entity closure that identifies it by its cause.
         chat_runs = penny.db.messages.run_call_groups(PennyConstants.CHAT_AGENT_NAME, None, 20)
         this_run = next(
@@ -1637,10 +1637,10 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_sample" in names
         assert "collection_keys" in names
         assert "memory_get" in names
-        # Ledger reads: read_run_calls browses a source's runs; get_event resolves
+        # Ledger reads: run_list browses a source's runs; run_get resolves
         # one run by the typed id the activity block renders (#1580).
-        assert "read_run_calls" in names
-        assert "get_event" in names
+        assert "run_list" in names
+        assert "run_get" in names
         # Resolve-by-meaning — the guess-free fallback every not-found points at
         # (#1558) — and the sole search over the conversation logs (#2289).
         assert "find" in names
@@ -2011,7 +2011,7 @@ _BASIC_FLOW_EXPECTED = (
     "- location: Seattle, WA\n"
     "\n"
     "To look deeper: memory_get(<name>) for a collection's full config and "
-    "change history, get_event(run <id>) for one run's tool calls, "
+    "change history, run_get(run <id>) for one run's tool calls, "
     "collection_list(<name>) reads a store's entries, and find(query=<text>) "
     "searches them all by meaning — a collection, a skill, a stored entry, or "
     "something said in the conversation."

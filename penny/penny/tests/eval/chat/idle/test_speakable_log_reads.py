@@ -67,8 +67,8 @@ world, free to drift).  A hand-authored prose prompt would be a config defect th
 cannot read (#1916's strict dialect), so a fixture seeded that way would claim jobs that could
 never have run.
 
-``read_run_calls`` is collector-internal rather than user-dispatchable — its argument is a
-collection target and "what did your last run do" is not a phrasing a user reaches for — so
+``run_list`` is collector-internal rather than user-dispatchable — its argument is a
+collection source and "what did your last run do" is not a phrasing a user reaches for — so
 neither case dispatches it.
 
 REPORT-ONLY (``min_pass_rate=None``): the ceilings these runs propose are the code owner's to

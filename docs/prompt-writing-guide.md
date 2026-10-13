@@ -93,7 +93,7 @@ Two corollaries, both measured on this codebase:
   through tool calls, that text fails to parse as a tool call, the loop nudges it, and it
   **spirals** into apologies and confabulated actions (measured: this was *the* dominant
   failure — whole cycles derailed). Fix: the numbered spine is **all tool calls**; the "plan"
-  rides inside a tool step's guidance ("1. read_run_calls() — … *in your reasoning*, note the
+  rides inside a tool step's guidance ("1. run_list() — … *in your reasoning*, note the
   intent and the observed sequence"). Add an explicit "act only through tool calls, never
   reply with plain text." *Result: 0 spirals, and the isolated case went to 5/5.*
 

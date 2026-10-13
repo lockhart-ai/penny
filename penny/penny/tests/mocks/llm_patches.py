@@ -345,7 +345,7 @@ class _FakeCompletion:
     def model_dump(self) -> dict:
         # Mirror a real OpenAI ChatCompletion dump: the message carries its
         # ``tool_calls`` (id + function name + JSON-string arguments) so the logged
-        # promptlog ``response`` is faithful — the ledger readers (``read_run_calls``,
+        # promptlog ``response`` is faithful — the ledger readers (``run_list``,
         # the run-end skill extractor, #1658) parse tool steps out of exactly this.
         message: dict[str, Any] = {"role": "assistant", "content": self._response.content}
         if self._response.message.tool_calls:

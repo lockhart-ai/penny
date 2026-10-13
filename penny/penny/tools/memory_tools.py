@@ -2800,43 +2800,43 @@ class ReadRunCallsTool(CursorReadTool):
     since this reader's committed cursor, oldest-first, pending until the cycle
     succeeds) — but a different lens: each run renders as its ``origin → the tool
     calls → conclusion`` (``render_run_calls``), the sequence-lens view of what a run
-    *did*.  Orthogonal to the target: ``"chat"`` renders conversational runs
+    *did*.  Orthogonal to the source: ``"chat"`` renders conversational runs
     (``user: <message>`` → tools → ``penny: <reply>``); a collector's name renders
     that collector's runs (``[target]`` → tools → ``done: <outcome>``).  Lets a
     reader see the tool sequence a request drove — for authoring skills, or for
     inspecting what a collector actually did.  The runs come from ``promptlog``; the
-    cursor is per-target.
+    cursor is per-source.
     """
 
-    name = "read_run_calls"
+    name = "run_list"
     args_model = ReadRunCallsArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        target = _named(arguments, "target", "a source")
+        source = _named(arguments, "source", "a source")
         if not result.success:
-            return f"You tried to review {target}'s recent runs but it didn't work:"
-        return f"You reviewed {target}'s recent runs:"
+            return f"You tried to review {source}'s recent runs but it didn't work:"
+        return f"You reviewed {source}'s recent runs:"
 
     def __init__(self, db: Database, agent_name: str) -> None:
         super().__init__(db, agent_name)
-        # Discover the valid targets from the DB so the model sees the current set —
+        # Discover the valid sources from the DB so the model sees the current set —
         # 'chat' plus every collector (a collection with an extraction_prompt).
-        targets = self._available_targets()
-        listed = ", ".join(targets)
+        sources = self._available_targets()
+        listed = ", ".join(sources)
         self.description = (
             "Return a source's recent runs as tool-call sequences — each run shows its "
             "origin (the user's message, or the collector's bound target), the tool "
             "calls made, and the outcome. Returns the next batch since you last read; "
-            f"call again for older runs. target is one of: {listed} "
+            f"call again for older runs. source is one of: {listed} "
             '("chat" for conversations, a collector name for that collector\'s runs).'
         )
         self.parameters: dict[str, Any] = {
             "type": "object",
             "properties": {
-                "target": {"type": "string", "enum": targets, "description": f"one of {listed}"}
+                "source": {"type": "string", "enum": sources, "description": f"one of {listed}"}
             },
-            "required": ["target"],
+            "required": ["source"],
         }
 
     def _available_targets(self) -> list[str]:
@@ -2855,16 +2855,16 @@ class ReadRunCallsTool(CursorReadTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadRunCallsArgs(**kwargs)
-        # Resolve the target against the valid set FIRST — 'chat' plus every live
+        # Resolve the source against the valid set FIRST — 'chat' plus every live
         # collector, exactly what the description enumerates — so a typo'd/unknown
-        # target gets the actionable memory-not-found refusal instead of a silent
+        # source gets the actionable memory-not-found refusal instead of a silent
         # empty batch that reads as "this collector has no runs".
-        if args.target not in self._available_targets():
-            raise MemoryNotFoundError(args.target)
-        key = self._cursor_key(args.target)
+        if args.source not in self._available_targets():
+            raise MemoryNotFoundError(args.source)
+        key = self._cursor_key(args.source)
         cursor = self._db.cursors.get(self._agent_name, key)
         groups = self._db.messages.run_call_groups(
-            args.target, cursor, PennyConstants.RUN_CALLS_LIMIT
+            args.source, cursor, PennyConstants.RUN_CALLS_LIMIT
         )
         entries = [
             MemoryEntry(
@@ -2879,7 +2879,7 @@ class ReadRunCallsTool(CursorReadTool):
         ]
         self._advance_pending(key, [entry.created_at for entry in entries])
         return ToolResult(
-            message=format_entries(entries, source=args.target, ordering="oldest first")
+            message=format_entries(entries, source=args.source, ordering="oldest first")
         )
 
 
@@ -2888,8 +2888,8 @@ class ReadRunCallsTool(CursorReadTool):
 # empty (the anchor discipline — a rendered id resolves in one call, a malformed
 # one recovers).
 _GET_EVENT_UNTYPED = (
-    "'{event_id}' isn't a typed event id.  Pass a run token exactly as your "
-    "current-state activity block renders it — get_event(event_id='run <id>'), "
+    "'{run}' isn't a typed run id.  Pass a run token exactly as your "
+    "current-state activity block renders it — run_get(run='run <id>'), "
     "copying the whole `run <id>` token.  (Runs are the addressable events right "
     "now; to resolve a collection or log by meaning use find(query=<text>), "
     "and your activity block names every recent event.)"
@@ -2900,21 +2900,21 @@ _GET_EVENT_UNTYPED = (
 _GET_EVENT_NO_RUN = (
     "No run found with id '{run_id}'.  It must be an id your current-state activity "
     "block rendered (a `run <id>` line, or a change's `(run <id>)` cause); "
-    "read_run_calls(target='chat') — or a collector's name — lists recent run ids "
+    "run_list(source='chat') — or a collector's name — lists recent run ids "
     "if you need to find a valid one."
 )
 
 
 class GetEventTool(Tool):
-    """Resolve ONE ledger event by the typed id the activity block renders (#1580).
+    """Resolve ONE ledger run by the typed id the activity block renders (#1580).
 
     The self-state activity block renders each background run as ``run <id>`` (and
     each config change names its ``(run <id>)`` cause) — typed anchors meant to be
-    consumed VERBATIM.  ``get_event`` is the verb that consumes them: it parses the
-    type tag and returns that event's detail.  Today the one addressable event kind
-    is a run, so ``get_event(event_id='run <id>')`` returns that run's tool-call
-    SEQUENCE — the same canonical projection ``read_run_calls`` renders, but for the
-    single run the id names (a point lookup, where ``read_run_calls`` browses a
+    consumed VERBATIM.  ``run_get`` is the verb that consumes them: it parses the
+    type tag and returns that run's detail.  Today the one addressable event kind
+    is a run, so ``run_get(run='run <id>')`` returns that run's tool-call
+    SEQUENCE — the same canonical projection ``run_list`` renders, but for the
+    single run the id names (a point lookup, where ``run_list`` browses a
     source's run history).  An id with no recognised tag, or a run nothing recorded,
     gets an actionable refusal naming what IS addressable and how to find a valid id
     (a rendered id resolves in one call; a bad one recovers, never silently empties).
@@ -2928,38 +2928,38 @@ class GetEventTool(Tool):
     verb needs a rendered id to consume — machinery follows a customer, not before).
     """
 
-    name = "get_event"
+    name = "run_get"
     # A malformed or unmatched id recovers through the lists that carry valid ones.
-    advises = ("read_run_calls", "find")
+    advises = ("run_list", "find")
     description = (
-        "Look up ONE event from your activity log by the typed id it rendered — a "
+        "Look up ONE run from your activity log by the typed id it rendered — a "
         "`run <id>` line, or a change's `(run <id>)` cause.  Pass the whole token, "
-        "get_event(event_id='run <id>'), copying the id exactly as rendered, and "
+        "run_get(run='run <id>'), copying the id exactly as rendered, and "
         "get that run's tool-call sequence: what it did, step by step.  Use it to "
         "inspect a specific run you saw in your current state; to browse a source's "
-        "run history instead use read_run_calls(target=<'chat' or a collector name>)."
+        "run history instead use run_list(source=<'chat' or a collector name>)."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "event_id": {
+            "run": {
                 "type": "string",
                 "description": (
-                    "The typed event id, verbatim as your activity block rendered "
+                    "The typed run id, verbatim as your activity block rendered "
                     "it — the whole `run <id>` token."
                 ),
             }
         },
-        "required": ["event_id"],
+        "required": ["run"],
     }
     args_model = GetEventArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        event = _named(arguments, "event_id", "an event")
+        run = _named(arguments, "run", "a run")
         if not result.success:
-            return f"You tried to look up {event} but it didn't work:"
-        return f"You looked up {event}:"
+            return f"You tried to look up {run} but it didn't work:"
+        return f"You looked up {run}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -2969,11 +2969,9 @@ class GetEventTool(Tool):
         # no memory, and raises no MemoryAccessError — both misses are enumerated
         # refusals below, so the base's except template would be inert here.
         args = GetEventArgs(**kwargs)
-        run_id = self._parse_run_id(args.event_id)
+        run_id = self._parse_run_id(args.run)
         if run_id is None:
-            return ToolResult(
-                message=_GET_EVENT_UNTYPED.format(event_id=args.event_id), success=False
-            )
+            return ToolResult(message=_GET_EVENT_UNTYPED.format(run=args.run), success=False)
         prompts = self._db.messages.get_run_prompts(run_id)
         if not prompts:
             return ToolResult(message=_GET_EVENT_NO_RUN.format(run_id=run_id), success=False)

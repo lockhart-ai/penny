@@ -323,7 +323,7 @@ class MemoryEntry(SQLModel, table=True):
     # from "who created it?").  The run id is the join key into the ledger
     # (``promptlog`` for the run + tool calls); the full write history is those
     # call records, and these two stamps are the read-path anchors that make
-    # ``read_run_calls`` one guess-free hop from wherever an entry renders.
+    # ``run_list`` one guess-free hop from wherever an entry renders.
     # Threaded as a parameter from the writing run — never ambient state.  NULL
     # for migration-seeded / pre-#1560 entries.
     created_by_run_id: str | None = Field(default=None, index=True)

@@ -82,7 +82,7 @@ class RunActivity(BaseModel):
     recent-activity block (#1555).
 
     ``run_id`` is the typed anchor the header names verbatim; ``target`` is the
-    collection it served (also the ``read_run_calls`` drill-down anchor);
+    collection it served (also the ``run_list`` drill-down anchor);
     ``outcome`` is the ``RunOutcome`` value; ``finished_at`` is the run's end
     time (its outcome-bearing last prompt); ``call_count`` is the number of tool
     calls the run made \u2014 the rollup summary in place of the per-call detail."""
@@ -935,7 +935,7 @@ class MessageStore:
         self, target: str, cursor: datetime | None, limit: int
     ) -> list[list[PromptLog]]:
         """Recent runs for ``target`` as raw prompt groups, oldest-first — the raw
-        material ``read_run_calls`` renders into tool-call sequences (``render_run_calls``
+        material ``run_list`` renders into tool-call sequences (``render_run_calls``
         does the shaping; this only selects and groups).
 
         ``target`` is either ``"chat"`` (conversational chat-agent runs — chat stamps no

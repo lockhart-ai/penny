@@ -84,7 +84,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 112
+        assert count == 113
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -126,7 +126,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 112
+        assert count1 == 113
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -164,8 +164,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 111 migrations
-        assert count == 111
+        # 0001 is skipped; the rest run = 112 migrations
+        assert count == 112
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -191,7 +191,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 112  # all migrations applied
+        assert count == 113  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1814,6 +1814,137 @@ class TestMigrate:
             "SELECT extraction_prompt FROM memory WHERE name = 'chatter-digest'"
         ).fetchone()[0]
         assert prompt == '1. log_read("user-messages")'
+        conn.close()
+
+    @staticmethod
+    def _m0113(conn: sqlite3.Connection):
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0113_rename_run_tools.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0113", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        return mod
+
+    def test_0113_renames_the_run_tools_and_their_arguments(self, tmp_path):
+        """Migration 0113 (#2306): ``read_run_calls`` -> ``run_list`` (its
+        ``target`` argument -> ``source``) and ``get_event`` -> ``run_get`` (its
+        ``event_id`` argument -> ``run``) — the tool names and argument keys move
+        together, and every substitution path head moves with its key.  UNIVERSAL
+        — selected by the step's tool, never a skill by name; IDEMPOTENT — a
+        second application changes nothing further.  Both the stored steps AND
+        the rendered ``extraction_prompt`` text are rewritten, in the one dialect
+        ``render_skill`` writes."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "read_run_calls",
+                "arguments": {"target": "chat"},
+                "substitutions": [
+                    {"path": ["target"], "kind": "hole", "parameter": "feed"},
+                ],
+            },
+            {
+                "ordinal": 2,
+                "source_ordinal": 2,
+                "tool": "get_event",
+                "arguments": {"event_id": "(run news-1)"},
+                "substitutions": [
+                    {"path": ["event_id"], "kind": "hole", "parameter": "which"},
+                ],
+            },
+            {
+                "ordinal": 3,
+                "source_ordinal": 3,
+                "tool": "collection_write",
+                "arguments": {
+                    "memory": "harbor-log",
+                    "entries": [{"key": "tide", "content": "low"}],
+                },
+                "substitutions": [
+                    {"path": ["memory"], "kind": "placeholder", "attachment": True},
+                ],
+            },
+            {
+                "ordinal": 4,
+                "source_ordinal": 4,
+                "tool": "log_read",
+                "arguments": {"log": "user-messages"},
+                "substitutions": [
+                    {"path": ["log"], "kind": "hole", "parameter": "source"},
+                ],
+            },
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            (
+                "chatter-digest",
+                "1. read_run_calls(target='chat')\n"
+                "2. get_event(event_id='run news-1')\n"
+                "3. log_read(log='user-messages')",
+            ),
+        )
+        conn.commit()
+
+        mod = self._m0113(conn)
+        before = conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        mod.up(conn)  # idempotent — a second application changes nothing
+        assert conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0] == before
+        prompt_before = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'chatter-digest'"
+        ).fetchone()[0]
+        mod.up(conn)
+        assert (
+            conn.execute(
+                "SELECT extraction_prompt FROM memory WHERE name = 'chatter-digest'"
+            ).fetchone()[0]
+            == prompt_before
+        )
+
+        stored = json.loads(before)
+        assert stored[2] == steps[2]  # the collection_write step is untouched
+        assert stored[3] == steps[3]  # the log_read step is untouched
+        renamed_list = stored[0]
+        assert renamed_list["tool"] == "run_list"
+        assert renamed_list["arguments"] == {"source": "chat"}
+        assert renamed_list["substitutions"] == [
+            {"path": ["source"], "kind": "hole", "parameter": "feed"}
+        ]
+        renamed_get = stored[1]
+        assert renamed_get["tool"] == "run_get"
+        assert renamed_get["arguments"] == {"run": "(run news-1)"}
+        assert renamed_get["substitutions"] == [
+            {"path": ["run"], "kind": "hole", "parameter": "which"}
+        ]
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'chatter-digest'"
+        ).fetchone()[0]
+        assert prompt == (
+            "1. run_list(source='chat')\n"
+            "2. run_get(run='run news-1')\n"
+            "3. log_read(log='user-messages')"
+        )
         conn.close()
 
     def test_0104_adds_the_schedule_column_and_drops_the_trigger_union(self, tmp_path, caplog):

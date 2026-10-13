@@ -114,7 +114,7 @@ def render_mutation(event: MutationEvent) -> str:
 
     ``<when> <action> by <actor> (run <id>) — <note / changed fields>``.  The run
     id is rendered so the surface is an *anchor* surface: from a change line the
-    model is one ``read_run_calls`` hop from the run that made it, never a guess.
+    model is one ``run_list`` hop from the run that made it, never a guess.
     """
     parts = [f"{format_log_timestamp(event.created_at)} {event.action} by {event.actor}"]
     if event.run_id is not None:

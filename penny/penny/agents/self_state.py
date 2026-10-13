@@ -18,7 +18,7 @@ one guess-free tool call from the detail). Sections:
   status, cadence, end condition, last-run outcome. "what's running right now?"
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
-  one run's per-call detail is one ``get_event(run <id>)`` hop away). A run line
+  one run's per-call detail is one ``run_get(run <id>)`` hop away). A run line
   that wrote carries a ``· wrote '<key>' → `<collection>``` clause naming what it
   changed (from the #1560 ``last_written_by_run_id`` stamp, #1641), so a just-
   written fact is 0 calls away and its full entry is one ``collection_list``
@@ -155,7 +155,7 @@ class SelfStateHeader:
     # the remainder is one guess-free call away (nothing is silently dropped; n≤1
     # holds). Mechanisms and the store map carry no cap (#2288): the whole
     # registry renders, so there is no overflow tail to name for either.
-    MORE_ACTIVITY = "+ older activity — read_run_calls(<target>)"
+    MORE_ACTIVITY = "+ older activity — run_list(<source>)"
 
     # The store map's compact index of archived names (#2288) — the complete list,
     # not a remainder: an archived collection with no job appears nowhere else.
@@ -163,7 +163,7 @@ class SelfStateHeader:
 
     POINTERS = (
         "To look deeper: memory_get(<name>) for a collection's full config and "
-        "change history, get_event(run <id>) for one run's tool calls, "
+        "change history, run_get(run <id>) for one run's tool calls, "
         "collection_list(<name>) reads a store's entries, and find(query=<text>) "
         "searches them all by meaning — a collection, a skill, a stored entry, or "
         "something said in the conversation."
@@ -346,7 +346,7 @@ class SelfStateHeader:
         """``run <run_id> · <when> · <target> → <OUTCOME> (<n> calls)``, then — when
         the run wrote — a ``· wrote …`` clause naming what it changed (#1641).
 
-        The run id is the typed anchor, consumed verbatim by ``get_event(run
+        The run id is the typed anchor, consumed verbatim by ``run_get(run
         <id>)`` (its drill-down); the ``run `` tag is single-sourced with that
         tool's parse (``RUN_EVENT_PREFIX``) so the rendered token IS the argument.
         The clause GROWS the line — a no-write run renders byte-identical to the
@@ -399,7 +399,7 @@ class SelfStateHeader:
     def _mutation_line(event: MutationEvent) -> str:
         """``change · <when> · <entity> <action> by <actor> (run <id>) — <detail>``
         — the causing run id (present for a user-run mutation, absent for a system
-        one) is a ``get_event(run <id>)`` anchor, single-sourced with that tool's
+        one) is a ``run_get(run <id>)`` anchor, single-sourced with that tool's
         parse (``RUN_EVENT_PREFIX``); the entity name resolves via
         ``memory_get``/``find``, and the detail carries the changed
         fields."""

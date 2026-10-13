@@ -608,7 +608,7 @@ class PennyConstants:
     MEMORY_USER_MESSAGES_LOG = "user-messages"
     MEMORY_COLLECTOR_RUNS_LOG = "collector-runs"
     # ``promptlog.agent_name`` stamped on every chat-agent prompt — the structural
-    # marker the ``read_run_calls`` tool uses to find conversational runs (a turn's
+    # marker the ``run_list`` tool uses to find conversational runs (a turn's
     # user message → the tool calls it drove).  Mirrors ``ChatAgent.name``.
     CHAT_AGENT_NAME = "chat"
     # The cycle-terminator tool's name.  Only the collector shapes carry it; the
@@ -706,12 +706,12 @@ class PennyConstants:
     NOTIFY_CALL_RESULT_CHARS = 300
     NOTIFY_RELATED_LINE_CHARS = 200
     NOTIFY_DESCRIPTION_CHARS = 300
-    # How many recent conversational runs ``read_run_calls`` returns per batch —
+    # How many recent conversational runs ``run_list`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10
     # The type tag a rendered activity-log run anchor carries — ``run <id>`` (the
     # self-state header's run/mutation lines and ``render_run_calls``'s header emit
-    # it verbatim).  ``get_event`` strips it to route the typed id to the run case,
+    # it verbatim).  ``run_get`` strips it to route the typed id to the run case,
     # so the token a surface renders IS the argument the tool takes (the n≤1 anchor
     # discipline: format and parse share this one constant, never a magic string).
     RUN_EVENT_PREFIX = "run "

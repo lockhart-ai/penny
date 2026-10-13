@@ -84,7 +84,7 @@ class GenerateImageTool(Tool):
             message=(
                 # Naming the stored media id (via the shared prefix constant) makes
                 # the drawn image an addressable part of the egress/media trace:
-                # ``read_run_calls`` reads this id back so a delivery can be inspected
+                # ``run_list`` reads this id back so a delivery can be inspected
                 # by a read, not confabulated (#1560).
                 f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: "
                 f"{args.description}.  It will be delivered to the user with your "
