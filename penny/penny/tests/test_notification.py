@@ -148,7 +148,7 @@ def test_notify_document_states_a_no_write_cycle_and_a_nothing_matched_lookup():
         collection="tide-times",
         description="the tide table for the north pier",
         calls=(
-            CycleCall(call="log_read(memory='user-messages')", result="No entries."),
+            CycleCall(call="log_read(log='user-messages')", result="No entries."),
             CycleCall(
                 call="browse(queries=['https://tides.example'])",
                 result="## browse error: unreachable",
@@ -169,7 +169,7 @@ def test_notify_document_states_a_no_write_cycle_and_a_nothing_matched_lookup():
         "It wrote nothing down this cycle.\n"
         "\n"
         "## How it got there\n"
-        "1. log_read(memory='user-messages')\n"
+        "1. log_read(log='user-messages')\n"
         "   → No entries.\n"
         "2. browse(queries=['https://tides.example'])\n"
         "   → (this call failed) ## browse error: unreachable\n"

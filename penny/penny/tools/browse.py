@@ -83,7 +83,7 @@ NARRATION_FAILURE_SUFFIX = (
 # ``NOT_PRESENT`` is a successful read of an absent fact — rendered honestly,
 # with no infrastructure-failure framing — distinct from ``EXTRACTION_FAILED``
 # (the extractor never produced a usable tagged line).
-_EXTRACT_HANDLE_CLAUSE = "Full page content saved to {handles} — read it there for anything more."
+_EXTRACT_HANDLE_CLAUSE = "Full page content saved as {handles}."
 _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
 # A SUCCESSFUL extraction renders the value WITH THE QUESTION IT ANSWERS, and no
 # handle clause.
@@ -576,9 +576,9 @@ class BrowseTool(Tool):
         return f"{header_line}\n{body}"
 
     def _handle_clause(self, stored: list[MemoryEntry]) -> str:
-        """The fetch-handle clause — the typed ``browse-results#<id>`` anchors for
-        the pages stored this call, or a note when nothing was stored (a pure
-        search has readable content but no stored page)."""
+        """The fetch-handle clause — the log and id of each page stored this
+        call, or a note when nothing was stored (a pure search has readable
+        content but no stored page)."""
         if not stored:
             return _EXTRACT_NO_HANDLE_CLAUSE
         handles = ", ".join(self._entry_handle(entry) for entry in stored)
@@ -586,11 +586,10 @@ class BrowseTool(Tool):
 
     @staticmethod
     def _entry_handle(entry: MemoryEntry) -> str:
-        """One typed entry handle: ``browse-results#<id>``."""
-        return (
-            f"{PennyConstants.MEMORY_BROWSE_RESULTS_LOG}"
-            f"{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.id}"
-        )
+        """One stored page as the two arguments that read it back: ``log='browse-results'
+        id=<id>``.  It names no tool, so the clause is true on a surface that carries
+        the read and on one that does not (a collector cycle scoped to its program)."""
+        return f"log={PennyConstants.MEMORY_BROWSE_RESULTS_LOG!r} id={entry.id}"
 
     def _build_tasks(self, queries: list[str]) -> list[tuple[str, str, Any]]:
         """One ``(header, value, coroutine)`` per query — URLs read directly, plain

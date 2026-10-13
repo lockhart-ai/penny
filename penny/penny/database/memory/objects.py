@@ -857,6 +857,17 @@ def _collection_field(fields: dict) -> Any:
     return fields.get("collection", fields.get("memory", "?"))
 
 
+def _log_field(fields: dict) -> Any:
+    """A logged call's log name, read however it was logged.
+
+    ``log_read`` / ``log_append`` name this argument ``log`` today; a call logged
+    before the rename stored it as ``memory``.  The stored row is never
+    rewritten, so a reader pulls a log's name out of a logged call's arguments
+    through this one accessor rather than re-deriving the fallback at each
+    site."""
+    return fields.get("log", fields.get("memory", "?"))
+
+
 def render_tool_call(name: str, args: object) -> str:
     """Compact, grokkable render of one tool call (the salient args only).
 
@@ -878,6 +889,8 @@ def render_tool_call(name: str, args: object) -> str:
             f"collection_write(collection={_collection_field(fields)!r}, "
             f"entries={_write_contents(fields)!r})"
         )
+    if name in ("log_read", "log_append"):
+        return f"{name}(log={_log_field(fields)!r})"
     if name == "update_entry":
         return f"update_entry(memory={fields.get('memory', '?')!r}, key={fields.get('key', '?')!r})"
     if name == "send_message":

@@ -172,7 +172,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         # A program that READS the log — the surface is scoped to its calls (#1911), so
         # the tool under test is on it because the routine names it.
         db.memories.create_collection(
-            collection, "d", extraction_prompt='1. log_read(memory="chatter")'
+            collection, "d", extraction_prompt='1. log_read(log="chatter")'
         )
         collector._bind(db.memories.get(collection))
         tool = next(t for t in collector.get_tools() if isinstance(t, LogReadTool))
@@ -180,7 +180,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         return tool
 
     alpha = _log_read_for("alpha")
-    alpha_result = await alpha.execute(memory="chatter")
+    alpha_result = await alpha.execute(log="chatter")
     assert "hello there" in alpha_result.message
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
@@ -188,7 +188,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
     beta = _log_read_for("beta")
-    assert "hello there" in (await beta.execute(memory="chatter")).message, (
+    assert "hello there" in (await beta.execute(log="chatter")).message, (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
@@ -2198,7 +2198,7 @@ async def test_a_revert_that_cannot_land_still_settles_the_rest_of_the_cycle(
 
 _LOG_DRIVEN_PROGRAM = (
     "Watch the release feed for new indie metroidvanias.\n"
-    '1. log_read(memory="release-feed")\n'
+    '1. log_read(log="release-feed")\n'
     '2. collection_write("indie-metroidvanias", entries=[{key: <the game>, '
     "content: <what is new>}])"
 )
@@ -2215,9 +2215,7 @@ def _reads_then_writes(mock_llm, *, close: bool):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return mock_llm._make_tool_call_response(
-                request, "log_read", {"memory": "release-feed"}
-            )
+            return mock_llm._make_tool_call_response(request, "log_read", {"log": "release-feed"})
         if calls == 2:
             return mock_llm._make_tool_call_response(
                 request,
@@ -3148,7 +3146,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     db.memories.create_collection(
         "test-col",
         "test",
-        extraction_prompt='Extract things.\n1. log_read(memory="user-messages")',
+        extraction_prompt='Extract things.\n1. log_read(log="user-messages")',
     )
 
     async def mock_run_cycle(run_id: str) -> CycleResult:
@@ -3157,7 +3155,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
             response=ControllerResponse(
                 answer="",
                 tool_calls=[
-                    ToolCallRecord(tool="log_read", arguments={"memory": "user-messages"}),
+                    ToolCallRecord(tool="log_read", arguments={"log": "user-messages"}),
                     ToolCallRecord(tool=DoneTool.name, arguments={}),
                 ],
             ),
@@ -3168,21 +3166,21 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     success, message = await collector.run_for("test-col")
     assert success is True
     assert message.startswith(f"Collector cycle complete: {RunOutcome.NO_WORK.value}")
-    assert "1. log_read(memory=user-messages)" in message
+    assert "1. log_read(log=user-messages)" in message
 
 
 def test_format_tool_trace_numbers_calls_and_truncates_args():
     response = ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="log_read", arguments={"memory": "user-messages"}),
+            ToolCallRecord(tool="log_read", arguments={"log": "user-messages"}),
             ToolCallRecord(tool="browse", arguments={"queries": ["board game " * 10]}),
             ToolCallRecord(tool="done", arguments={}),
         ],
     )
     trace = Collector._format_tool_trace(response)
     lines = trace.splitlines()
-    assert lines[0] == "1. log_read(memory=user-messages)"
+    assert lines[0] == "1. log_read(log=user-messages)"
     assert lines[1].startswith("2. browse(queries=")
     assert "..." in lines[1]  # long query was truncated
     assert (

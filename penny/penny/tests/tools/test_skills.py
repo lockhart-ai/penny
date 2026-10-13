@@ -496,8 +496,8 @@ _DIGEST_RESULT = (
         _digest_section(url, headline)
         for url, headline in zip(_DIGEST_URLS, _DIGEST_HEADLINES, strict=True)
     )
-    + "\nFull page content saved to browse-results#41, browse-results#42, "
-    "browse-results#43 — read it there for anything more."
+    + "\nFull page content saved as log='browse-results' id=41, "
+    "log='browse-results' id=42, log='browse-results' id=43."
 )
 _DIGEST_WRITE_OK = (
     "You saved entries to headlines: (collection_write result)\nWrote 3 entries to 'headlines'."

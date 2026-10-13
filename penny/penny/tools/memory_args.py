@@ -299,7 +299,7 @@ class LogCreateArgs(ToolArgs):
     outputs.  No interval — logs don't have a collector.
     """
 
-    name: MemoryName
+    log: MemoryName
     description: NonBlankDescription
 
 
@@ -433,7 +433,17 @@ class ReadLogArgs(ToolArgs):
     semantics (cursor batch for collectors, recent window for chat/schedule) and
     all sizes are decided in Python from the caller, never by the model."""
 
-    memory: MemoryName
+    log: MemoryName
+
+
+class LogGetArgs(ToolArgs):
+    """One entry of a log, by the id shown beside it — the ``log_get`` read.
+
+    ``log`` names the log; ``id`` is the entry id a log read renders beside the
+    entry (``format_entries(show_ids=True)``)."""
+
+    log: MemoryName
+    id: int
 
 
 class ReadRunCallsArgs(ToolArgs):
@@ -531,7 +541,7 @@ class CollectionRemoveArgs(ToolArgs):
 class LogAppendArgs(ToolArgs):
     """Append one keyless entry to a log."""
 
-    memory: AppendableLogName
+    log: AppendableLogName
     content: NonBlankLogContent
 
 

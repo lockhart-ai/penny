@@ -304,10 +304,10 @@ _MIN_BINDING_OVERLAP = 3
 # a first line ending in ``(<tool> result)`` is the narration and is dropped.
 _RESULT_TAG_LINE = re.compile(r"\([\w-]+ result\)\s*$")
 # The browse fetch-handle tail (``tools/browse.py`` ``_EXTRACT_HANDLE_CLAUSE``,
-# ``"Full page content saved to {handles} — read it there for anything more."``) —
-# anchored on its INVARIANT prefix (the ``{handles}`` and phrasing after it vary
-# structurally), so the payload isn't inflated by the pointer-to-stored-content line.
-_FETCH_HANDLE_PREFIX = "Full page content saved to "
+# ``"Full page content saved as {handles}."``) — anchored on its
+# INVARIANT prefix (the ``{handles}`` after it vary structurally), so the payload
+# isn't inflated by the pointer-to-stored-content line.
+_FETCH_HANDLE_PREFIX = "Full page content saved as "
 
 
 def _result_payload(result: str) -> str:

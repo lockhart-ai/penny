@@ -38,7 +38,9 @@ from penny.constants import (
 from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.database.memory import (
+    Collection,
     EntryInput,
+    Log,
     LogEntryInput,
     Memory,
     MemoryAccessError,
@@ -51,6 +53,7 @@ from penny.database.memory import (
     ResolvedKind,
     ResolvedMatch,
     ResolvedMessage,
+    RunLog,
     WriteResult,
     render_key,
     render_memory_not_found,
@@ -110,6 +113,7 @@ from penny.tools.memory_args import (
     GetEventArgs,
     LogAppendArgs,
     LogCreateArgs,
+    LogGetArgs,
     MemoryNameArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
@@ -134,6 +138,7 @@ def format_entries(
     *,
     source: str | None = None,
     ordering: str | None = None,
+    show_ids: bool = False,
 ) -> str:
     """Render a list of entries as a numbered string the model can read.
 
@@ -153,7 +158,10 @@ def format_entries(
     brackets: it is never passed as an argument, so bracket framing there
     carries no copy-through hazard and now reads unambiguously as display
     metadata, distinct from the copyable key.  Keyless entries (log) show just
-    content.  An empty read names the source and states it's empty (not an error),
+    content — unless ``show_ids`` is set, when each line carries ``id=<n>``
+    beside its timestamp, the invocation form ``log_get`` accepts; only the
+    reads of real stored logs pass it, so every other render is unchanged.
+    An empty read names the source and states it's empty (not an error),
     so the model doesn't confuse absence with a failure or re-read the same way.
 
     PUBLIC because the read tools are no longer its only caller (#1914): the
@@ -170,6 +178,10 @@ def format_entries(
     lines = []
     for index, entry in enumerate(entries, start=1):
         prefix = f"{render_key(entry.key)} " if entry.key else ""
+        if show_ids and entry.key is None:
+            # A keyless entry renders its id in the invocation form the id-taking
+            # read accepts — the mirror of the keyed entry's ``key=`` prefix.
+            prefix = f"id={entry.id} "
         stamp = f"[{format_log_timestamp(entry.created_at)}] "
         lines.append(f"{index}. {stamp}{prefix}{entry.content}")
     body = "\n".join(lines)
@@ -1050,19 +1062,19 @@ class LogCreateTool(MemoryTool):
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Unique log name"},
+            "log": {"type": "string", "description": "Unique log name"},
             "description": {
                 "type": "string",
                 "description": "Content-reflective one-line summary (the meaning anchor)",
             },
         },
-        "required": ["name", "description"],
+        "required": ["log", "description"],
     }
     args_model = LogCreateArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        name = _named(arguments, "name", "a new log")
+        name = _named(arguments, "log", "a new log")
         if not result.success:
             return f"You tried to set up the {name} log but it didn't work:"
         return f"You set up the {name} log:"
@@ -1075,12 +1087,12 @@ class LogCreateTool(MemoryTool):
         args = LogCreateArgs(**kwargs)
         description_embedding = await embed_text(self._llm_client, args.description)
         self._db.memories.create_log(
-            args.name,
+            args.log,
             args.description,
             description_embedding=description_embedding,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
-        message = f"Created log '{args.name}'.{suffix}"
+        message = f"Created log '{args.log}'.{suffix}"
         return ToolResult(message=message, mutated=True)
 
 
@@ -1489,7 +1501,7 @@ _EMBED_WRITE_FAILURE_COLLECTION = (
 _EMBED_WRITE_FAILURE_LOG = (
     "Couldn't embed this entry (a transient embedding error) — nothing was "
     "appended, since an entry is only stored once it has a similarity vector. "
-    "Retry log_append(memory='{memory}', content=<the same content>) in a moment."
+    "Retry log_append(log='{log}', content=<the same content>) in a moment."
 )
 
 
@@ -2647,14 +2659,14 @@ class LogReadTool(CursorReadTool):
     name = "log_read"
     parameters = {
         "type": "object",
-        "properties": {"memory": {"type": "string"}},
-        "required": ["memory"],
+        "properties": {"log": {"type": "string"}},
+        "required": ["log"],
     }
     args_model = ReadLogArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        log = _memory_name(arguments, "a log")
+        log = _named(arguments, "log", "a log")
         if not result.success:
             return f"You tried to read {log} but it didn't work:"
         return f"You read {log}:"
@@ -2668,11 +2680,25 @@ class LogReadTool(CursorReadTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadLogArgs(**kwargs)
-        memory = _resolve(self._db, args.memory)
+        memory = _resolve(self._db, args.log)
         entries = self._read_cursor(memory) if self._cursor_mode else self._read_window(memory)
         return ToolResult(
-            message=format_entries(entries, source=args.memory, ordering="oldest first")
+            message=format_entries(
+                entries,
+                source=args.log,
+                ordering="oldest first",
+                show_ids=self._shows_ids(memory),
+            )
         )
+
+    @staticmethod
+    def _shows_ids(memory: Memory) -> bool:
+        """``show_ids`` only for a REAL stored log — the entries' ids are then
+        consumable with ``log_get`` (``Memory.entry_by_id``).  The message facades
+        and the run log render other backings entirely, so an id beside their
+        lines would be an anchor nothing reads back; their renders stay
+        byte-identical."""
+        return isinstance(memory, Log) and not isinstance(memory, (MessageLogMemory, RunLog))
 
     def _read_cursor(self, memory: Memory) -> list[MemoryEntry]:
         """The next bounded batch since this agent's committed cursor.  The log
@@ -2687,6 +2713,84 @@ class LogReadTool(CursorReadTool):
 
     def _read_window(self, memory: Memory) -> list[MemoryEntry]:
         return memory.read_window(PennyConstants.LOG_READ_WINDOW_SECONDS)
+
+
+class LogGetTool(MemoryTool):
+    """Read one entry of a log in full, by the id shown beside it.
+
+    A log read renders each entry's id beside its line (``format_entries`` with
+    ``show_ids``), and that id is the anchor this tool consumes: it reads the
+    stored entry whole through ``Memory.entry_by_id``, scoped to the log the
+    call names.  The id-taking read has its own refusals for the stores that
+    aren't id-addressable logs — a collection is keyed, the two message logs
+    and the run log are read by their own verbs.
+    """
+
+    name = "log_get"
+    advises = ("log_read",)
+    description = (
+        "Return one entry of a log in full, by the id shown beside that entry. "
+        "Pass the log's name and the id from a log read."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "log": {"type": "string"},
+            "id": {"type": "integer"},
+        },
+        "required": ["log", "id"],
+    }
+    args_model = LogGetArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        log = _named(arguments, "log", "a log")
+        entry = arguments.get("id")
+        entry_label = f"entry {entry}" if entry else "an entry"
+        if not result.success:
+            return f"You tried to read {entry_label} of {log} but it didn't work:"
+        return f"You read {entry_label} of {log}:"
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = LogGetArgs(**kwargs)
+        memory = _resolve(self._db, args.log)
+        if isinstance(memory, Collection):
+            return ToolResult(message=self._collection_refusal(args.log), success=False)
+        if isinstance(memory, MessageLogMemory):
+            return ToolResult(message=self._message_log_refusal(args.log), success=False)
+        if isinstance(memory, RunLog):
+            return ToolResult(message=self._run_log_refusal(args.log), success=False)
+        entry = memory.entry_by_id(args.id)
+        if entry is None:
+            return ToolResult(
+                message=(
+                    f"No entry {args.id} in '{args.log}'. Read it with "
+                    f"log_read('{args.log}') to see its entries and their ids."
+                ),
+                success=False,
+            )
+        return ToolResult(message=format_entries([entry], source=args.log))
+
+    @staticmethod
+    def _collection_refusal(name: str) -> str:
+        return f"'{name}' is a collection, not a log: its entries are read by key, not by id."
+
+    @staticmethod
+    def _message_log_refusal(name: str) -> str:
+        return (
+            f"'{name}' holds messages, and a message is not read by id. "
+            f"Read them with log_read('{name}')."
+        )
+
+    @staticmethod
+    def _run_log_refusal(name: str) -> str:
+        return (
+            f"'{name}' holds run records, and a run is read by the `run <id>` shown beside "
+            f"it, not by an entry id. Read them with log_read('{name}')."
+        )
 
 
 class ReadRunCallsTool(CursorReadTool):
@@ -2954,19 +3058,19 @@ class LogAppendTool(MemoryTool):
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
+            "log": {"type": "string"},
             "content": {"type": "string"},
         },
-        "required": ["memory", "content"],
+        "required": ["log", "content"],
     }
     args_model = LogAppendArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a log")
+        log = _named(arguments, "log", "a log")
         if not result.success:
-            return f"You tried to add an entry to {memory} but it didn't work:"
-        return f"You added an entry to {memory}:"
+            return f"You tried to add an entry to {log} but it didn't work:"
+        return f"You added an entry to {log}:"
 
     def __init__(
         self, db: Database, llm_client: LlmClient, author: str, run_id: str | None = None
@@ -2983,19 +3087,17 @@ class LogAppendTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = LogAppendArgs(**kwargs)
-        memory = _resolve(self._db, args.memory)
+        memory = _resolve(self._db, args.log)
         vec = await embed_text(self._llm, args.content)
         if vec is None:
             logger.warning("log_append: embedding unavailable for an entry in %s", memory.name)
-            return ToolResult(
-                message=_EMBED_WRITE_FAILURE_LOG.format(memory=args.memory), success=False
-            )
+            return ToolResult(message=_EMBED_WRITE_FAILURE_LOG.format(log=args.log), success=False)
         memory.append(
             [LogEntryInput(content=args.content, content_embedding=vec)],
             author=self._author,
             run_id=self._run_id,
         )
-        return ToolResult(message=f"Appended to '{args.memory}'.", mutated=True)
+        return ToolResult(message=f"Appended to '{args.log}'.", mutated=True)
 
 
 # ── Resolve by meaning (find) ────────────────────────────────────────────────
@@ -3116,8 +3218,8 @@ def _entry_preview(content: str) -> str:
 
 def _entry_identity(entry: ResolvedEntry) -> str:
     """The entry's head identity: a keyed collection entry shows its invocation-form
-    key in its collection; a keyless log entry shows its ``#<id>`` handle in its
-    log (the two forms the entry can be read back by)."""
+    key in its collection; a keyless log entry shows its ``#<id>`` id in its log —
+    the id the addressing line below reads back with ``log_get``."""
     if entry.key is None:
         return f"entry #{entry.entry_id} in `{entry.memory_name}` ({entry.container_kind.value})"
     return f"entry {render_key(entry.key)} in `{entry.memory_name}`"
@@ -3126,11 +3228,10 @@ def _entry_identity(entry: ResolvedEntry) -> str:
 def _entry_addressing(entry: ResolvedEntry) -> str:
     """How to read the stored entry back — deterministic from whether it is keyed: a
     keyed collection entry is one ``collection_get`` away (re-reads the exact value
-    the find already carried); a keyless log entry names its ``<log>#<id>`` handle
-    and the ``log_read`` that surfaces it (the entry_by_id-style retrieval, #1640)."""
+    the find already carried); a keyless log entry is one ``log_get`` away, by the
+    id the find itself shows in its identity line (#1640)."""
     if entry.key is None:
-        handle = f"{entry.memory_name}{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.entry_id}"
-        return f"log_read('{entry.memory_name}') — the full entry is {handle}"
+        return f"log_get(log='{entry.memory_name}', id={entry.entry_id})"
     return f"collection_get(collection='{entry.memory_name}', key='{entry.key}')"
 
 
@@ -3248,6 +3349,7 @@ class FindTool(MemoryTool):
         "collection_archive",
         "collection_unarchive",
         "log_read",
+        "log_get",
         "skill_get",
     )
     description = (
@@ -3541,6 +3643,7 @@ def build_memory_tools(
         CollectionKeysTool(db),
         MemoryMetadataTool(db),
         LogReadTool(db, agent_name, scope),
+        LogGetTool(db),
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
         FindTool(db, llm_client),

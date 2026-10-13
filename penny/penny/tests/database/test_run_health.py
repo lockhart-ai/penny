@@ -265,6 +265,16 @@ def test_healthy_quiet_read_is_not_a_bail():
     assert render_run_record(run) == "[games] no_work"
 
 
+def test_logged_log_call_renders_its_log_argument_under_either_key():
+    """The trace renders a log call's log name under the CURRENT argument name,
+    however the row was logged: a call logged before the rename stored ``memory``,
+    and the read projection — never the stored row — maps it to ``log``."""
+    run = [_prompt([_call("log_read", {"memory": "user-messages"}), _DONE_OK], outcome="no_work")]
+    assert "step 1: log_read(log='user-messages')" in render_run_calls(run)
+    fresh = [_prompt([_call("log_read", {"log": "user-messages"}), _DONE_OK], outcome="no_work")]
+    assert "step 1: log_read(log='user-messages')" in render_run_calls(fresh)
+
+
 def test_no_writes_flagged_when_browses_fail_and_nothing_written():
     """The ai-news shape: the run browsed, browses failed, and it wrote nothing.
     Before #1569 the model's ``done(summary=...)`` could CLAIM "wrote 3 new entries"

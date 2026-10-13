@@ -121,7 +121,7 @@ Two corollaries, both measured on this codebase:
    The rule that makes or breaks a hard judgement must state the exact distinction and show
    it. *Measured:* the skills collector's "two different tool names are different steps even
    when the params are identical — `collection_list(collection='x')` is not
-   `log_read(memory='x')`" rule was worth **5/5 vs 0/5** on the tweak-STEPS case. Softening
+   `log_read(log='x')`" rule was worth **5/5 vs 0/5** on the tweak-STEPS case. Softening
    it to "match the tools" collapsed it. A vague rule is a dropped rule.
 
 5. **Positive spine, explicit permission, negative guards.** Default to stating what TO do, in

@@ -227,13 +227,13 @@ class TestMemoryReadNarration:
 
     def test_log_read_narrates_read(self):
         narration = LogReadTool.to_result_narration(
-            {"memory": "browse-results"}, ToolResult(message="entries")
+            {"log": "browse-results"}, ToolResult(message="entries")
         )
         assert narration == "You read `browse-results`:"
 
     def test_log_read_failure_narrates_honestly(self):
         narration = LogReadTool.to_result_narration(
-            {"memory": "browse-results"}, ToolResult(message="err", success=False)
+            {"log": "browse-results"}, ToolResult(message="err", success=False)
         )
         assert narration == "You tried to read `browse-results` but it didn't work:"
 
@@ -248,7 +248,7 @@ class TestMemoryReadNarration:
         `(log_read result)` tag → body."""
         framed = Tool.format_result(
             "log_read",
-            {"memory": "browse-results"},
+            {"log": "browse-results"},
             ToolResult(message="1. really into chess"),
         )
         assert framed == ("You read `browse-results`: (log_read result)\n1. really into chess")
@@ -296,7 +296,7 @@ class TestMemoryWriteNarration:
         )
 
     def test_log_append(self):
-        args = {"memory": "events", "content": "x"}
+        args = {"log": "events", "content": "x"}
         assert (
             LogAppendTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
             == "You added an entry to `events`:"
@@ -323,7 +323,7 @@ class TestMemoryLifecycleNarration:
         )
 
     def test_log_create(self):
-        args = {"name": "events"}
+        args = {"log": "events"}
         assert (
             LogCreateTool.to_result_narration(args, ToolResult(message="ok"))
             == "You set up the `events` log:"

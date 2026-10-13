@@ -90,6 +90,7 @@ from penny.tools.memory_tools import (
     GetEventTool,
     LogAppendTool,
     LogCreateTool,
+    LogGetTool,
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
@@ -98,6 +99,7 @@ from penny.tools.memory_tools import (
     _render_object_hit,
     build_memory_tools,
     collector_tool_surface,
+    format_entries,
     render_nothing_landed,
     render_writes_landed,
 )
@@ -1520,7 +1522,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_persists(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="user-messages", description="inbound"
+            log="user-messages", description="inbound"
         )
         memories = {m.name: m for m in db.memories.list_all()}
         assert memories["user-messages"].type == "log"
@@ -1528,10 +1530,10 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_duplicate_returns_user_friendly_message(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="first"
+            log="events", description="first"
         )
         result = await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="second"
+            log="events", description="second"
         )
         assert "already exists" in result.message
         assert "events" in result.message
@@ -1620,7 +1622,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_log_create_surfaces_description_embed_degradation(self, db):
         result = await LogCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
-            name="events", description="event stream"
+            log="events", description="event stream"
         )
         assert "Created log" in result.message
         assert "transient embedding error" in result.message
@@ -3321,13 +3323,13 @@ class TestEmbedFailureRefusesWrite:
 
     @pytest.mark.asyncio
     async def test_log_append_refuses_when_embedding_fails(self, db):
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, cast(Any, _FailingEmbedClient()), author="test")
-        result = await append.execute(memory="events", content="something happened")
+        result = await append.execute(log="events", content="something happened")
         assert result.success is False
         assert result.mutated is False
         assert "transient embedding error" in result.message
-        assert "log_append(memory='events'" in result.message
+        assert "log_append(log='events'" in result.message
         with Session(db.engine) as session:
             rows = session.exec(
                 select(MemoryEntry).where(MemoryEntry.memory_name == "events")
@@ -3499,7 +3501,7 @@ class TestDidYouMeanSuggestions:
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
             "with collection_configure(collection='aurora-deone') / "
-            "log_create(name='aurora-deone') if it should exist."
+            "log_create(log='aurora-deone') if it should exist."
         )
 
     @pytest.mark.asyncio
@@ -3514,7 +3516,7 @@ class TestDidYouMeanSuggestions:
             "it by meaning with find(query=<what it's about>) — it resolves your "
             "collections, logs, and skills (archived included) and names the exact tool "
             "for each. Or create it with collection_configure(collection='xyzzy') / "
-            "log_create(name='xyzzy') if it should exist."
+            "log_create(log='xyzzy') if it should exist."
         )
 
     @pytest.mark.asyncio
@@ -3524,7 +3526,7 @@ class TestDidYouMeanSuggestions:
         closest to the missed name, clearing the reused dedup threshold."""
         _seed_collection(db, name="garage", description="tracking oil changes and tire rotations")
         tool = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        result = await tool.execute(memory="oil changes and tire rotations", content="my car")
+        result = await tool.execute(log="oil changes and tire rotations", content="my car")
         assert result.success is False
         assert result.message == (
             "Memory 'oil changes and tire rotations' not found — did you mean 'garage'? "
@@ -3532,7 +3534,7 @@ class TestDidYouMeanSuggestions:
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
             "with collection_configure(collection='oil changes and tire rotations') / "
-            "log_create(name='oil changes and tire rotations') if it should exist."
+            "log_create(log='oil changes and tire rotations') if it should exist."
         )
 
     @pytest.mark.asyncio
@@ -3561,12 +3563,109 @@ class TestDidYouMeanSuggestions:
 
 class TestLogTools:
     @pytest.mark.asyncio
+    async def test_log_get_reads_one_entry_in_full(self, db, mock_llm):
+        """``log_get`` returns one stored entry whole, by the id a log read shows
+        beside it — the browse-results fetch-handle path, and any log the user
+        created."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        await append.execute(log="events", content="first entry")
+        await append.execute(log="events", content="second entry")
+        entry = db.memories.memory("events").read_all()[1]
+        result = await LogGetTool(db).execute(log="events", id=entry.id)
+        assert result.success is True
+        assert result.message == (
+            f"1 entry from `events`:\n1. [{format_log_timestamp(entry.created_at)}] second entry"
+        )
+
+    @pytest.mark.asyncio
+    async def test_log_get_read_shows_the_ids_its_log_renders(self, db, mock_llm):
+        """The id ``log_get`` consumes is the one a log read of a REAL stored log
+        renders beside each entry (``format_entries(show_ids=True)``) — display
+        form == invocation form, one copy away."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
+        await append.execute(log="events", content="hello")
+        entry = db.memories.memory("events").read_all()[0]
+        rendered = await LogReadTool(db, "chat", scope=None).execute(log="events")
+        assert rendered.message == (
+            f"1 entry from `events` (oldest first):\n"
+            f"1. [{format_log_timestamp(entry.created_at)}] id={entry.id} hello"
+        )
+        result = await LogGetTool(db).execute(log="events", id=entry.id)
+        assert "hello" in result.message
+
+    @pytest.mark.asyncio
+    async def test_log_get_refuses_the_non_id_addressable_stores(self, db, mock_llm):
+        """Each store that isn't an id-addressable log is refused by name, saying how
+        it IS read: a collection by key, messages and run records through
+        ``log_read``.  The refusals name no tool but ``log_read``, so a program whose
+        only route to ``log_get`` is a stored page keeps a closed surface."""
+        _seed_collection(db, name="notes", description="x")
+        db.memories.create_log(PennyConstants.MEMORY_USER_MESSAGES_LOG, "inbound")
+        db.memories.create_log(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG, "audit")
+        tool = LogGetTool(db)
+        collection = await tool.execute(log="notes", id=1)
+        assert collection.success is False
+        assert collection.message == (
+            "'notes' is a collection, not a log: its entries are read by key, not by id."
+        )
+        user_log = PennyConstants.MEMORY_USER_MESSAGES_LOG
+        messages = await tool.execute(log=user_log, id=1)
+        assert messages.success is False
+        assert messages.message == (
+            f"'{user_log}' holds messages, and a message is not read by id. "
+            f"Read them with log_read('{user_log}')."
+        )
+        run_log = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
+        runs = await tool.execute(log=run_log, id=1)
+        assert runs.success is False
+        assert runs.message == (
+            f"'{run_log}' holds run records, and a run is read by the `run <id>` shown "
+            f"beside it, not by an entry id. Read them with log_read('{run_log}')."
+        )
+
+    @pytest.mark.asyncio
+    async def test_log_get_unknown_id_names_the_log_read(self, db, mock_llm):
+        """An id the log holds no entry for is refused with the read that shows
+        the ids that DO exist."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        result = await LogGetTool(db).execute(log="events", id=99)
+        assert result.success is False
+        assert result.message == (
+            "No entry 99 in 'events'. Read it with log_read('events') to see its "
+            "entries and their ids."
+        )
+
+    @pytest.mark.asyncio
+    async def test_log_get_unknown_log_gets_the_did_you_mean_refusal(self, db, mock_llm):
+        """An unknown log name raises ``MemoryNotFoundError``, which the base turns
+        into the standard not-found message — no separate refusal here."""
+        result = await LogGetTool(db).execute(log="evnts", id=1)
+        assert result.success is False
+        assert "Memory 'evnts' not found" in result.message
+
+    @pytest.mark.asyncio
+    async def test_format_entries_show_ids_stays_off_other_renders(self, db, mock_llm):
+        """``show_ids`` renders the id only where it is passed: a message facade's
+        read (and every other entry render) stays byte-identical to before."""
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
+        await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
+            log="events", content="hello"
+        )
+        entry = db.memories.memory("events").read_all()[0]
+        plain = format_entries([entry], source="events", ordering="oldest first")
+        assert f"id={entry.id}" not in plain
+        with_ids = format_entries([entry], source="events", show_ids=True)
+        assert f"id={entry.id}" in with_ids
+
+    @pytest.mark.asyncio
     async def test_collection_list_refuses_a_log(self, db, mock_llm):
         """Collection reads error on a log instead of silently bypassing the
         cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="events", content="first"
+            log="events", content="first"
         )
         rendered = await CollectionListTool(db).execute(collection="events")
         assert "Refused" in rendered.message
@@ -3599,15 +3698,15 @@ class TestLogTools:
     async def test_log_read_window_mode(self, db, mock_llm):
         """A non-collector caller (scope=None) gets window-mode log_read: recent
         entries within the fixed look-back window — no cursor, no count arg."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(memory="events", content="hello")
-        rendered = await LogReadTool(db, "chat", scope=None).execute(memory="events")
+        await append.execute(log="events", content="hello")
+        rendered = await LogReadTool(db, "chat", scope=None).execute(log="events")
         assert "hello" in rendered.message
         # A blank append is refused (blank-only — a bare URL is still a valid log
         # entry), so nothing degenerate joins the stream.  The non-blank rule lives
         # on LogAppendArgs.content, so the refusal comes from the Tool.run gate.
-        blank = await append.run(memory="events", content="   ")
+        blank = await append.run(log="events", content="   ")
         assert blank.success is False
         assert "blank" in blank.message
 
@@ -3617,7 +3716,7 @@ class TestLogTools:
         worked run as a record (``[target] summary`` + its tool trace) — no
         stored entries, no keys, no get.  This is the quality collector's review."""
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="collector-runs", description="audit"
+            log="collector-runs", description="audit"
         )
         response = {
             "choices": [
@@ -3649,9 +3748,7 @@ class TestLogTools:
         )
         db.messages.set_run_outcome("run-42", "worked", "sent an update about a grinder")
 
-        rendered = await LogReadTool(db, "quality", scope="quality").execute(
-            memory="collector-runs"
-        )
+        rendered = await LogReadTool(db, "quality", scope="quality").execute(log="collector-runs")
 
         # collector-runs reads through the uniform log formatter now (it's a log
         # facade like any other) — framed as a fetched batch, runs as records.
@@ -3879,7 +3976,7 @@ class TestLogTools:
         # The reserved-target check is a pure constant lookup, so it lives on
         # LogAppendArgs.memory and the refusal comes from the Tool.run gate.
         for system_log in PennyConstants.SYSTEM_LOGS:
-            result = await append.run(memory=system_log, content="forged turn")
+            result = await append.run(log=system_log, content="forged turn")
             assert result.success is False
             assert system_log in result.message
             assert "system log" in result.message  # what went wrong + how to fix
@@ -3888,10 +3985,10 @@ class TestLogTools:
 
     @pytest.mark.asyncio
     async def test_log_similar_with_client(self, db, mock_llm):
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         client = _make_llm_client(mock_llm)
         await LogAppendTool(db, client, author="test").execute(
-            memory="events", content="coffee is great"
+            log="events", content="coffee is great"
         )
         # Anchor shares words with the entry so the bag-of-words mock embedding gives
         # meaningful cosine and the entry ranks in `Memory.read_similar` — the store
@@ -3905,13 +4002,13 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_read_next_returns_all_entries_when_no_cursor(self, db, mock_llm):
         """Without a stored cursor, read_next returns every entry in the log."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(memory="events", content="first")
-        await append.execute(memory="events", content="second")
+        await append.execute(log="events", content="first")
+        await append.execute(log="events", content="second")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await read_next.execute(memory="events")
+        rendered = await read_next.execute(log="events")
 
         assert "first" in rendered.message
         assert "second" in rendered.message
@@ -3919,18 +4016,18 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_commit_pending_advances_cursor_to_max_seen(self, db, mock_llm):
         """commit_pending writes the highest timestamp seen during the run."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(memory="events", content="first")
-        await append.execute(memory="events", content="second")
+        await append.execute(log="events", content="first")
+        await append.execute(log="events", content="second")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(memory="events")
+        await read_next.execute(log="events")
         read_next.commit_pending()
 
         # A new instance after commit should see no entries (cursor caught up).
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(memory="events")
+        rendered = await fresh.execute(log="events")
         # Empty read names the source and marks it as absence, not an error.
         assert (
             rendered.message
@@ -3940,17 +4037,17 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_discard_pending_leaves_cursor_unchanged(self, db, mock_llm):
         """discard_pending drops the in-memory state without touching the DB cursor."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
-        await append.execute(memory="events", content="first")
+        await append.execute(log="events", content="first")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(memory="events")
+        await read_next.execute(log="events")
         read_next.discard_pending()
 
         # Cursor still at None; a new read sees the same entries.
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(memory="events")
+        rendered = await fresh.execute(log="events")
         assert "first" in rendered.message
 
     @pytest.mark.asyncio
@@ -3964,15 +4061,15 @@ class TestLogTools:
         """
         from penny.constants import PennyConstants
 
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         # Append more entries than the bound to confirm trimming
         n_entries = PennyConstants.LOG_READ_LIMIT + 5
         for i in range(n_entries):
-            await append.execute(memory="events", content=f"entry-{i:02d}")
+            await append.execute(log="events", content=f"entry-{i:02d}")
 
         read_next = LogReadTool(db, agent_name="brand-new-collector", scope="brand-new-collector")
-        rendered = await read_next.execute(memory="events")
+        rendered = await read_next.execute(log="events")
 
         # Exactly the latest N entries — entry-(n-N) through entry-(n-1)
         # should appear; older entries should not.
@@ -3987,20 +4084,20 @@ class TestLogTools:
         """After a bounded first cycle commits, the next cycle picks up
         incrementally — even entries that the first cycle's bound excluded
         stay excluded (since they're older than the cursor)."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         for i in range(15):
-            await append.execute(memory="events", content=f"old-{i:02d}")
+            await append.execute(log="events", content=f"old-{i:02d}")
 
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await read_next.execute(memory="events")
+        await read_next.execute(log="events")
         read_next.commit_pending()
 
         # New entries arrive
-        await append.execute(memory="events", content="new-after-cursor")
+        await append.execute(log="events", content="new-after-cursor")
 
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered = await fresh.execute(memory="events")
+        rendered = await fresh.execute(log="events")
         assert "new-after-cursor" in rendered.message
         # Old entries excluded by the bound stay excluded
         assert "old-00" not in rendered.message
@@ -4013,21 +4110,21 @@ class TestLogTools:
         from penny.constants import PennyConstants
 
         limit = PennyConstants.LOG_READ_LIMIT
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
 
         # Establish a cursor, then pile up a backlog bigger than one batch.
-        await append.execute(memory="events", content="seed")
+        await append.execute(log="events", content="seed")
         seed_read = LogReadTool(db, agent_name="extractor", scope="extractor")
-        await seed_read.execute(memory="events")
+        await seed_read.execute(log="events")
         seed_read.commit_pending()
 
         backlog = limit + 3
         for i in range(backlog):
-            await append.execute(memory="events", content=f"backlog-{i:02d}")
+            await append.execute(log="events", content=f"backlog-{i:02d}")
 
         first = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered_first = await first.execute(memory="events")
+        rendered_first = await first.execute(log="events")
         first.commit_pending()
         # Exactly one batch — the oldest N of the backlog, not all of it.
         assert rendered_first.message.count("backlog-") == limit
@@ -4036,24 +4133,24 @@ class TestLogTools:
 
         # The next read picks up the remainder since the advanced cursor.
         second = LogReadTool(db, agent_name="extractor", scope="extractor")
-        rendered_second = await second.execute(memory="events")
+        rendered_second = await second.execute(log="events")
         assert f"backlog-{backlog - 1:02d}" in rendered_second.message
 
     @pytest.mark.asyncio
     async def test_per_agent_cursors_are_independent(self, db, mock_llm):
         """Two agents reading the same log have independent cursor state."""
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(log="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="events", content="hello"
+            log="events", content="hello"
         )
 
         agent_a = LogReadTool(db, agent_name="a", scope="a")
-        await agent_a.execute(memory="events")
+        await agent_a.execute(log="events")
         agent_a.commit_pending()
 
         # Agent B has its own cursor and still sees the entry.
         agent_b = LogReadTool(db, agent_name="b", scope="b")
-        rendered = await agent_b.execute(memory="events")
+        rendered = await agent_b.execute(log="events")
         assert "hello" in rendered.message
 
 
@@ -4101,7 +4198,7 @@ class TestEmissionProvenanceRender:
         mechanism-stamped line carries the inline marker."""
         self._seed(db)
         result = await LogReadTool(db, agent_name="reader", scope="reader").execute(
-            memory=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
+            log=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
         )
         assert result.message == (
             "2 entries from `penny-messages` (oldest first):\n"
@@ -4180,6 +4277,7 @@ class TestFactory:
         "collection_keys",
         "memory_get",
         "log_read",
+        "log_get",
         "read_run_calls",
         "get_event",
         "find",
@@ -4722,7 +4820,7 @@ class TestFind:
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
         await CollectionArchiveTool(db).execute(collection="aurora-archive")
         await LogCreateTool(db, client).execute(
-            name="aurora-log",
+            log="aurora-log",
             description="aurora echo foxtrot",
         )
         db.skills.upsert(
@@ -4912,14 +5010,14 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_keyless_log_entry_renders_its_id_handle(self, db, mock_llm):
-        """A keyless log entry renders its ``#<id>`` identity + the ``<log>#<id>``
-        handle for entry_by_id-style retrieval — a log has no key to re-read by
-        (#1640).  The log's OWN description is orthogonal, so only the entry surfaces."""
+    async def test_keyless_log_entry_addresses_a_read_with_log_get(self, db, mock_llm):
+        """A keyless log entry renders its ``#<id>`` identity + the ``log_get`` call
+        that reads it back by that id — a log has no key to re-read by (#1640).
+        The log's OWN description is orthogonal, so only the entry surfaces."""
         client = _axis_client(mock_llm)
-        await LogCreateTool(db, client).execute(name="aurora-log", description="orbit nebula")
+        await LogCreateTool(db, client).execute(log="aurora-log", description="orbit nebula")
         await LogAppendTool(db, client, author="test").execute(
-            memory="aurora-log", content="aurora echo foxtrot"
+            log="aurora-log", content="aurora echo foxtrot"
         )
         entry_id = db.memories.memory("aurora-log").read_all()[0].id
         result = await FindTool(db, client).execute(query="aurora echo foxtrot")
@@ -4927,7 +5025,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora echo foxtrot":\n'
             f'1. entry #{entry_id} in `aurora-log` (log) — "aurora echo foxtrot"\n'
-            f"   read it: log_read('aurora-log') — the full entry is aurora-log#{entry_id}"
+            f"   read it: log_get(log='aurora-log', id={entry_id})"
         )
 
     @pytest.mark.asyncio

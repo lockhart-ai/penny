@@ -89,7 +89,7 @@ def render_memory_not_found(name: str, suggestion: str | None = None) -> str:
         f"it by meaning with find(query=<what it's about>) — it resolves your "
         f"collections, logs, and skills (archived included) and names the exact tool "
         f"for each. Or create it with collection_configure(collection='{name}') / "
-        f"log_create(name='{name}') if it should exist."
+        f"log_create(log='{name}') if it should exist."
     )
 
 

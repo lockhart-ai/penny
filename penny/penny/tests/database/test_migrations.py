@@ -84,7 +84,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 111
+        assert count == 112
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -126,7 +126,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 111
+        assert count1 == 112
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -164,8 +164,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 110 migrations
-        assert count == 110
+        # 0001 is skipped; the rest run = 111 migrations
+        assert count == 111
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -191,7 +191,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 111  # all migrations applied
+        assert count == 112  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1674,6 +1674,146 @@ class TestMigrate:
         ).fetchone()[0]
         assert prompt == "1. find(query={topic}, memory='harbor-log')"
         assert "read_similar" not in prompt
+        conn.close()
+
+    @staticmethod
+    def _m0112(conn: sqlite3.Connection):
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0112_rename_log_tool_argument.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0112", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        return mod
+
+    def test_0112_renames_the_log_tools_argument(self, tmp_path):
+        """Migration 0112 (#2304): ``log_read`` / ``log_append`` take their log
+        name as ``log`` now, where they took ``memory`` — the arguments key and
+        every substitution path head move together, and ``content`` is untouched.
+        UNIVERSAL — selected by the step's tool, never a skill by name;
+        IDEMPOTENT — a second application changes nothing further.  Both the
+        stored steps AND the rendered ``extraction_prompt`` text are rewritten, in
+        the one dialect ``render_skill`` writes."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "collection_write",
+                "arguments": {
+                    "memory": "harbor-log",
+                    "entries": [{"key": "tide", "content": "low"}],
+                },
+                "substitutions": [
+                    {"path": ["memory"], "kind": "placeholder", "attachment": True},
+                ],
+            },
+            {
+                "ordinal": 2,
+                "source_ordinal": 2,
+                "tool": "log_read",
+                "arguments": {"memory": "user-messages"},
+                "substitutions": [
+                    {"path": ["memory"], "kind": "hole", "parameter": "feed"},
+                ],
+            },
+            {
+                "ordinal": 3,
+                "source_ordinal": 3,
+                "tool": "find",
+                "arguments": {"query": "tide tables", "memory": "harbor-log"},
+                "substitutions": [
+                    {"path": ["query"], "kind": "hole", "parameter": "topic"},
+                ],
+            },
+            {
+                "ordinal": 4,
+                "source_ordinal": 4,
+                "tool": "log_append",
+                "arguments": {"memory": "chatter", "content": "hello"},
+                "substitutions": [
+                    {"path": ["content"], "kind": "hole", "parameter": "greeting"},
+                ],
+            },
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            (
+                "chatter-digest",
+                "1. log_read(memory='user-messages')\n"
+                "2. log_append(memory='chatter', content={greeting})\n"
+                "3. find(query='tide tables', memory='harbor-log')",
+            ),
+        )
+        conn.commit()
+
+        mod = self._m0112(conn)
+        before = conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        mod.up(conn)  # idempotent — a second application changes nothing
+        assert conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0] == before
+
+        stored = json.loads(before)
+        assert stored[0] == steps[0]  # the collection_write step is untouched
+        assert stored[2] == steps[2]  # the find step is untouched
+        renamed_read = stored[1]
+        assert renamed_read["tool"] == "log_read"
+        assert renamed_read["arguments"] == {"log": "user-messages"}
+        assert renamed_read["substitutions"] == [
+            {"path": ["log"], "kind": "hole", "parameter": "feed"}
+        ]
+        renamed_append = stored[3]
+        assert renamed_append["tool"] == "log_append"
+        assert renamed_append["arguments"] == {"log": "chatter", "content": "hello"}
+        assert renamed_append["substitutions"] == [
+            {"path": ["content"], "kind": "hole", "parameter": "greeting"}
+        ]
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'chatter-digest'"
+        ).fetchone()[0]
+        assert prompt == (
+            "1. log_read(log='user-messages')\n"
+            "2. log_append(log='chatter', content={greeting})\n"
+            "3. find(query='tide tables', memory='harbor-log')"
+        )
+        conn.close()
+
+    def test_0112_leaves_a_positional_line_standing(self, tmp_path):
+        """A rendered ``log_read`` call in positional form carries no ``memory=``
+        key to rename, so the line passes through unchanged."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            ("chatter-digest", '1. log_read("user-messages")'),
+        )
+        conn.commit()
+
+        self._m0112(conn)
+
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'chatter-digest'"
+        ).fetchone()[0]
+        assert prompt == '1. log_read("user-messages")'
         conn.close()
 
     def test_0104_adds_the_schedule_column_and_drops_the_trigger_union(self, tmp_path, caplog):
