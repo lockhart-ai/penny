@@ -367,7 +367,7 @@ _FRAME_NAME_LINE = LineSpec(
 _FRAME_DESCRIPTION_LINE = LineSpec(
     tag=DESCRIPTION_TAG,
     fields=(
-        FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the routine is for>"),
+        FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the skill is for>"),
     ),
 )
 # One line per MINTED parameter, carved in two fields exactly like the labeller's
@@ -397,29 +397,29 @@ SKILL_FRAME_SHAPE = MicroContextShape(
 )
 
 SKILL_FRAME_SYSTEM_PROMPT = (
-    "You are writing the public interface of a reusable routine. You are given what "
+    "You are writing the public interface of a reusable skill. You are given what "
     "the user asked for, in their own words. Do four things:\n"
     "\n"
     "1. From what they asked for, extract the CORE USER INTENT — what they were trying "
     "to get done when they asked. Their own words are the evidence.\n"
     "\n"
-    "2. Name and describe the ROUTINE by that intent: a short generic verb-noun name "
+    "2. Name and describe the SKILL by that intent: a short generic verb-noun name "
     "for the KIND of task — never the specific instance — and one line stating what "
-    "the routine is for. Do not include any information about timing, scheduling, or "
+    "the skill is for. Do not include any information about timing, scheduling, or "
     "notifications. Do not include any parameter's value in the name or description.\n"
     "\n"
     "3. Decide the PARAMETERS, starting from what the user actually provided. First, "
     "in your reasoning, list the pieces of information the user gave you — the things "
     "they said, not things they might have said. A parameter can only be one of these "
     "pieces; never something they didn't provide. Then keep only the pieces they would "
-    "have to provide again to run this routine on a new occasion:\n"
+    "have to provide again to run this skill on a new occasion:\n"
     "   - A piece the name and description already carry is not a parameter — asking "
     "for it would be asking the user what they came to you for.\n"
     "   - Where results are kept, how often it runs, and whether to notify are never "
-    "parameters — those are settled when the routine is set running.\n"
+    "parameters — those are settled when the job is set running.\n"
     "   - There is always at least one parameter.\n"
     "   Each parameter is one line: PARAMETER <name> — <description>\n"
-    "   - name: the piece the user provided and how the routine uses it — if they "
+    "   - name: the piece the user provided and how the skill uses it — if they "
     "pointed you at a website, 'url'; if they named a topic, 'topic'. Generic "
     "snake_case, never the particular site or thing's own name.\n"
     "   - A parameter holds ONE value, of the same kind the user gave it — a url stays "
