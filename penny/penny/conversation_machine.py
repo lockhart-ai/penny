@@ -329,7 +329,7 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "result does not make it ongoing"
     ),
     (ConversationState.IDLE, ConversationState.LEARN): (
-        "the user is teaching a new routine: they say so ('let me teach you', "
+        "the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — "
         "what to read, what to look for, what to remember. When they are "
         "teaching, choose learn even if a known skill looks close — their steps "
@@ -423,7 +423,7 @@ _WAITING_MISSING_NAME_ONLY = "- {name}"
 # anchor a message's words have to be resolved against.
 _JOB_LINE = '- "{name}" — {routine} · {notify} · {schedule}'
 _JOB_ROUTINE = 'runs "{skill}"'
-_JOB_NO_ROUTINE = "no routine attached"
+_JOB_NO_ROUTINE = "no skill attached"
 _JOB_NOTIFY_ON = "notifications on"
 _JOB_NOTIFY_OFF = "notifications off"
 _JOB_NO_SCHEDULE = "no schedule"
