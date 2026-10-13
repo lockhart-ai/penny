@@ -656,7 +656,7 @@ NOTIFY_SHAPE = MicroContextShape(lines=(_MESSAGE_LINE,))
 # messages are named as BACKGROUND — the only part of the document the reported run did
 # not produce, and the part a measured composition took as its template.
 NOTIFY_SYSTEM_PROMPT = (
-    "You are writing one message to the user. A routine of theirs just ran on its own "
+    "You are writing one message to the user. A job of theirs just ran on its own "
     "and found something, and you are given everything about that run: what it wrote "
     "down, how it got there, and — as background — the closest things the two of you "
     "have said before.\n"
@@ -664,7 +664,7 @@ NOTIFY_SYSTEM_PROMPT = (
     "Write the message they will actually receive:\n"
     "1. Open with a quick greeting.\n"
     "2. Say what the run found, in plain words — the detail that matters, not a "
-    "description of the routine.\n"
+    "description of the skill.\n"
     "3. Include the source link when the run has one.\n"
     "4. Add one line calling back to an earlier message ONLY when one of them is "
     "genuinely about this. When none of them is, say nothing about them — that is the "

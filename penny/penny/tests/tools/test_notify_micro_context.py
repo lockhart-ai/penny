@@ -24,7 +24,7 @@ from penny.tools.micro_context import (
     MicroContext,
 )
 
-_DOCUMENT = "The `tide-times` routine just ran on its own.\n\n## What it wrote\n- 06:12"
+_DOCUMENT = "The `tide-times` job just ran on its own.\n\n## What it wrote\n- 06:12"
 
 
 class _Model:
@@ -71,7 +71,7 @@ def test_notify_system_prompt_is_pinned_whole():
     twice: when #1934 reordered the document, the un-reordered sentence was left
     asserting the exact order the reorder exists to overturn."""
     assert NOTIFY_SYSTEM_PROMPT == (
-        "You are writing one message to the user. A routine of theirs just ran on its "
+        "You are writing one message to the user. A job of theirs just ran on its "
         "own and found something, and you are given everything about that run: what it "
         "wrote down, how it got there, and — as background — the closest things the two "
         "of you have said before.\n"
@@ -79,7 +79,7 @@ def test_notify_system_prompt_is_pinned_whole():
         "Write the message they will actually receive:\n"
         "1. Open with a quick greeting.\n"
         "2. Say what the run found, in plain words — the detail that matters, not a "
-        "description of the routine.\n"
+        "description of the skill.\n"
         "3. Include the source link when the run has one.\n"
         "4. Add one line calling back to an earlier message ONLY when one of them is "
         "genuinely about this. When none of them is, say nothing about them — that is "
