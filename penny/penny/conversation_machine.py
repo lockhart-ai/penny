@@ -455,17 +455,18 @@ class SkillCandidate(BaseModel):
 
     def render(self) -> str:
         """The one-line candidate render: ``"name" — description`` plus a
-        ``(needs: …)`` tail naming each declared parameter with its
+        ``(parameters: …)`` tail naming each declared parameter with its
         what-to-supply — absent (byte-identical) for a parameterless skill.
 
         The name is QUOTED because a skill-gated draw has to copy it back
         verbatim, and unquoted it had no visible end: the line joins name to
         description with an em-dash and then uses em-dashes again inside the
-        ``needs`` tail, so "copy the name exactly" addressed a boundary the
-        render never drew.  A draw pasted the entire line — name, description
-        and needs — failed membership validation, rerolled, and did it again,
-        losing a turn whose state it had reasoned out correctly twice.  Quotes
-        make the token the instruction refers to the token the eye can see."""
+        ``parameters`` tail, so "copy the name exactly" addressed a boundary
+        the render never drew.  A draw pasted the entire line — name,
+        description and parameters — failed membership validation, rerolled,
+        and did it again, losing a turn whose state it had reasoned out
+        correctly twice.  Quotes make the token the instruction refers to the
+        token the eye can see."""
         line = f'"{self.name}" — {self.description}'
         if not self.parameters:
             return line
@@ -475,7 +476,7 @@ class SkillCandidate(BaseModel):
             else parameter.name
             for parameter in self.parameters
         )
-        return f"{line} (needs: {needs})"
+        return f"{line} (parameters: {needs})"
 
 
 class StandingJob(BaseModel):

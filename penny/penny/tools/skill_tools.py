@@ -45,16 +45,16 @@ _SHAPE_TOOL = "`{tool}`"
 
 
 def _needs_clause(parameters: list[SkillParameter]) -> str:
-    """The ``(needs: <parameter> — <what to supply>; …)`` tail of the brief render:
+    """The ``(parameters: <parameter> — <what to supply>; …)`` tail of the brief render:
     one entry per SKILL-level parameter, the semantic ``name`` being the binding key
     at instantiation and the description saying what to supply for it (omitted
     cleanly when None).  A parameter-less skill gets NO tail — the line renders
     byte-identically to one that never had parameters, rather than asserting an
-    empty "needs: none" the reader has to parse before ignoring.
+    empty "parameters: none" the reader has to parse before ignoring.
 
     No required/optional marking here: every parameter ``distill_steps`` produces is
-    required by construction, so "needs" is the whole truth on this surface, and the
-    ``required``/``optional`` precision stays in ``penny.tools.collection_instantiation``'s
+    required by construction, so "parameters" is the whole truth on this surface, and
+    the ``required``/``optional`` precision stays in ``penny.tools.collection_instantiation``'s
     ``render_skill_parameters`` — read via a configured job's own ``memory_metadata``
     (#2287) — where it can be honest about a shape this codebase does not yet produce."""
     if not parameters:
@@ -63,12 +63,12 @@ def _needs_clause(parameters: list[SkillParameter]) -> str:
         f"{parameter.name} — {parameter.description}" if parameter.description else parameter.name
         for parameter in parameters
     )
-    return f" (needs: {needs})"
+    return f" (parameters: {needs})"
 
 
 def render_skill_brief(skill: Skill) -> str:
     """What a skill IS and what it NEEDS, on ONE line (#1804): ``<name> — <what it's
-    for> (needs: <parameter> — <what to supply>; …)``.
+    for> (parameters: <parameter> — <what to supply>; …)``.
 
     This is what a surface JUDGING a skill wants — enough to decide whether the skill
     covers the ask and to bind its parameters — and it is deliberately all a judging
