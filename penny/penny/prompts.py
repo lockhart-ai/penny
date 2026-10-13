@@ -353,10 +353,10 @@ class Prompt:
     # It carries TOOL NAMES, which is the one thing #1799's "there is simply none to show"
     # gives up, and the cost is bounded on both sides: no call SHAPE (no parens, no
     # arguments, no brace placeholders — the recipe is still what it was, one
-    # ``find(query=<name>)`` away on the routine's own hit (#2287), and ``memory_metadata``
-    # reaches the same recipe once a job is running), and the instruction below asks
-    # for the steps in PLAIN WORDS, which the eval contract scores as a negative — a
-    # reply reading a tool name back is the leak, and it is measured rather than assumed.
+    # ``skill_get(skill=<name>)`` away (#2305), and ``memory_metadata`` reaches the
+    # same recipe once a job is running), and the instruction below asks for the
+    # steps in PLAIN WORDS, which the eval contract scores as a negative — a reply
+    # reading a tool name back is the leak, and it is measured rather than assumed.
     SKILL_LEARNED_NARRATION = (
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"

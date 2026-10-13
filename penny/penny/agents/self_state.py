@@ -140,11 +140,15 @@ class SelfStateHeader:
     NO_PROFILE = "(no profile set yet)"
 
     # The taught-skill feed renders what each skill IS and what it NEEDS (#1804), so
-    # the label says exactly that.  It stays a DESCRIPTION of the rows, never an
-    # instruction: what to do with a skill this turn is the state's own instruction,
-    # and a second copy here could only contradict it.
+    # the label says exactly that — and names the one call that reaches what it does
+    # NOT carry, its full parameters and steps, in the canonical call notation so the
+    # rendered token IS the argument (n≤1, and no bare tool name to hallucinate a call
+    # from, #2305).  It stays a DESCRIPTION of the rows, never an instruction: what to
+    # do with a skill this turn is the state's own instruction, and a second copy here
+    # could only contradict it.
     TAUGHT_SKILLS_LABEL = (
-        "Skills you've been taught — what each one does and what it needs from the user to run."
+        "Skills you've been taught — what each one does and what it needs from the user "
+        "to run. For one's full parameters and steps: skill_get('<name>')."
     )
 
     # The overflow tail activity still shows past its cap — the fetch tool named so
@@ -458,13 +462,14 @@ class SelfStateHeader:
         what HID skills), each row via ``render_skill_brief``: what the skill is for
         and what it needs. Instantiation still costs 0 calls — the parameter names
         are the binding keys and they are right here. What a row does NOT carry is
-        the numbered recipe: no chat state carries out a skill's steps (the collector
+        the numbered steps: no chat state carries out a skill's steps (the collector
         does, from the prompt rendered at instantiation), so on a section read every
-        turn it was cost against a decision it does not inform. ``find`` names a
-        routine's own recipe AND its parameters block directly (#2287), and once it
-        is set running, so does ``memory_metadata`` on the job. The section
-        collapses to one honest placeholder when nothing has been taught. (The
-        legacy standing-rules feed retired with the ``skills`` collection, #1624.)"""
+        turn it was cost against a decision it does not inform — the label names the
+        one call that reaches them, ``skill_get`` (#2305). Once a skill is set
+        running, ``memory_metadata`` on the job carries the same parameters and steps
+        with the job's own bound values. The section collapses to one honest
+        placeholder when nothing has been taught. (The legacy standing-rules feed
+        retired with the ``skills`` collection, #1624.)"""
         skills = self.db.skills.list_all()
         if not skills:
             return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])

@@ -681,9 +681,8 @@ class ChatAgent(Agent):
         skills store — the legacy ``skills`` collection retired with #1624)
         renders deterministically as one row each — what a skill is and what it
         needs (#1804) — so a taught behavior is instantiable ambiently (0 calls),
-        with its recipe and parameters one call away either way (#2287): ``find``
-        carries them on the routine's own hit, and once it is set running,
-        ``memory_metadata`` carries them on the job.
+        with its parameters and steps one ``skill_get`` call away (#2305); once
+        it is set running, ``memory_metadata`` carries them on the job.
         Background agents keep the base envelope (profile + inventory) and never
         see this header — it is the chat entry point's opening state.
         """

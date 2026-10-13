@@ -443,6 +443,13 @@ class GetEventArgs(ToolArgs):
     event_id: str
 
 
+class SkillGetArgs(ToolArgs):
+    """Read one skill by name (#2305) — ``skill`` is the exact name as it renders
+    in her state's skills section."""
+
+    skill: str
+
+
 # ── Collection writes ───────────────────────────────────────────────────────
 
 

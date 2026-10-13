@@ -229,3 +229,6 @@ def test_suggest_tool_name_falls_through_when_the_rename_target_is_absent():
     assert suggest_tool_name("collection_writ", frozenset({"collection_write"})) == (
         "collection_write"
     )
+    # skill_read (#2305) resolves to skill_get the same way.
+    assert suggest_tool_name("skill_read", frozenset({"skill_get"})) == "skill_get"
+    assert suggest_tool_name("skill_read", frozenset({"browse"})) is None

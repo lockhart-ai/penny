@@ -117,7 +117,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Registry-navigation verbs: the model uses these to ORIENT — resolve a skill or
-# collection (``find``), or inspect a collection's config and its routine's
+# collection (``find``), read a skill's own parameters and steps by name
+# (``skill_get``, #2305), or inspect a collection's config and its routine's
 # parameters (``memory_metadata``) — before it acts.  They are not part of the
 # routine a skill captures (a re-run re-orients itself), and a ``find`` result
 # ECHOES its query, which manufactured a FALSE binding when captured as a step
@@ -129,7 +130,7 @@ logger = logging.getLogger(__name__)
 # what a spot IS is only legible against why the routine exists (#1658/#1828).
 _NAMING_CONVERSATION_TURNS = 6
 
-ORIENTATION_TOOLS = frozenset({"find", "memory_metadata"})
+ORIENTATION_TOOLS = frozenset({"find", "memory_metadata", "skill_get"})
 
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
 

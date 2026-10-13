@@ -1,21 +1,22 @@
-"""The skill substrate's renders beyond the recipe itself (#1590/#1804/#1943).
+"""The skill substrate's renders (#1590/#1804/#1943/#2305).
 
 A skill is distilled deterministically from a qualifying chat run's own ledger at run
 end (``penny.skill_extraction``), certified-by-execution with provenance-inferred
-parameters.  The model's only skill actions are resolve (``find``) and
-instantiate/attach (``collection_set(skill=…)``).  Describing a skill is a property of
-WHERE it stands: a taught routine with no job running shows its own recipe on
-``find``'s hit (#2287, ``memory_tools._skill_recipe_block``); a configured job's
-``memory_metadata`` shows the same recipe plus the values THAT job bound.  Both read
-the one ``parameters:`` line format in ``penny.tools.collection_instantiation``
-(``render_skill_parameters``).
+parameters.  The model's skill actions are resolve (``find``), read one by name
+(``skill_get``, #2305), and instantiate/attach (``collection_set(skill=…)``).  Both
+``skill_get`` and a configured job's ``memory_metadata`` read the same ``parameters:``
+line format in ``penny.tools.collection_instantiation`` (``render_skill_parameters``) —
+``skill_get`` passes no bound values (the bare declaration), ``memory_metadata`` passes
+the job's own.
 
-Two renders live here, because the consumers want different things: ``render_skill_brief``
+Three renders live here, because the consumers want different things: ``render_skill_brief``
 — what a skill IS and what it NEEDS, on one line — is what the surfaces that JUDGE a
-skill read (the ambient ``### Skills and rules`` section every turn, and the run-end
+skill read (the ambient ``### Known skills`` section every turn, and the run-end
 narration frame); ``render_skill_shape`` — the same steps at SHAPE altitude, one
 skimmable line — is what the learn-close narration adds beside the brief so the person
-who knows what the routine was meant to do can see what it actually captured.
+who knows what the skill was meant to do can see what it actually captured;
+``render_skill_full`` — name, what it's for, its ``parameters:`` block, and its numbered
+``steps:`` — is what an explicit read of one skill by name (``skill_get``) returns.
 """
 
 from __future__ import annotations
@@ -25,9 +26,10 @@ from typing import Any
 from penny.constants import PennyConstants
 from penny.database.models import Skill
 from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.database.skills import SkillParameter, SkillStep
+from penny.database.skills import SkillParameter, SkillStep, render_skill
+from penny.tools.collection_instantiation import render_skill_parameters
 
-# ── The two renders: brief (what it is), shape (what it runs) ─────────────────
+# ── The three renders: brief (what it is), shape (what it runs), full (how) ──
 
 # The step-shape line's own punctuation (#1943).  The arrow is the sequence, the overflow
 # tail is the honest cut — it is deliberately NOT joined by the arrow, so the count can
@@ -55,8 +57,9 @@ def _needs_clause(parameters: list[SkillParameter]) -> str:
     No required/optional marking here: every parameter ``distill_steps`` produces is
     required by construction, so "parameters" is the whole truth on this surface, and
     the ``required``/``optional`` precision stays in ``penny.tools.collection_instantiation``'s
-    ``render_skill_parameters`` — read via a configured job's own ``memory_metadata``
-    (#2287) — where it can be honest about a shape this codebase does not yet produce."""
+    ``render_skill_parameters`` — read via ``skill_get`` on the bare skill, or a
+    configured job's own ``memory_metadata`` — where it can be honest about a shape
+    this codebase does not yet produce."""
     if not parameters:
         return ""
     needs = "; ".join(
@@ -136,9 +139,8 @@ def render_skill_shape(skill: Skill) -> str:
     the reason the brief render beside it is: the two must not be able to disagree.  It is
     the same steps the stored ``extraction_prompt`` numbers out in full — one altitude up,
     with no argument VALUES and no call shape at all, so there is nothing here for the
-    reply to read aloud as a recipe (the #1799 leak) and the whole recipe stays one call
-    away either way: ``find`` on the routine's own hit, or ``memory_metadata`` on the
-    job once it is configured.
+    reply to read aloud as a recipe (the #1799 leak) and the whole recipe stays one
+    ``skill_get(skill=<name>)`` call away.
 
     No tool is named in LOGIC: each segment is whatever the step's own call was, so a
     routine spanning tools this module has never heard of renders exactly like one that
@@ -153,3 +155,23 @@ def render_skill_shape(skill: Skill) -> str:
     if not remaining:
         return line
     return f"{line}{_SHAPE_OVERFLOW.format(count=remaining)}"
+
+
+def render_skill_full(skill: Skill) -> str:
+    """The whole skill as text, by name (#2305): its name, what it's for, the
+    ``parameters:`` block (semantic names + descriptions, no bound values — this is
+    the bare skill, not a configured job), and the numbered ``steps:`` (parameters
+    shown as ``{name}``, display form == invocation form).
+
+    ``skill_get`` returns this for the one skill it names — the read for when the
+    name is already known and the parameters and steps are what's wanted."""
+    parameters = render_skill_parameters(parameters_from_json(skill.parameters))
+    recipe = render_skill(steps_from_json(skill.steps))
+    lines = [
+        f"skill '{skill.name}'",
+        f"what it's for: {skill.intent}",
+        parameters,
+        "steps:",
+        recipe,
+    ]
+    return "\n".join(lines)

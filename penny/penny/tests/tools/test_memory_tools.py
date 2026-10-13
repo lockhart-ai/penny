@@ -93,6 +93,7 @@ from penny.tools.memory_tools import (
     LogReadTool,
     MemoryMetadataTool,
     ReadRunCallsTool,
+    SkillGetTool,
     _format_duplicate,
     _render_object_hit,
     build_memory_tools,
@@ -4172,6 +4173,7 @@ class TestFactory:
         "read_run_calls",
         "get_event",
         "find",
+        "skill_get",
         # Lifecycle (shape)
         "collection_set",
         "collection_archive",
@@ -4528,6 +4530,59 @@ class TestCollectionSkillProvenanceRender:
         assert "from skill: daily-digest (" not in result.message
 
 
+# ── skill_get: read one skill by name (#2305) ─────────────────────────────────
+
+
+class TestSkillGet:
+    """``skill_get`` reads one skill's parameters and steps by its exact name —
+    the read for when the name is already known and a job isn't running it."""
+
+    @pytest.mark.asyncio
+    async def test_reads_one_skill_by_name(self, db, mock_llm):
+        """A known name returns the skill's name, what it's for, its bare
+        ``parameters:`` block (no bound values), and its numbered ``steps:``."""
+        _seed_watch_skill(db)
+        result = await SkillGetTool(db, _make_llm_client(mock_llm)).execute(skill=_SKILL_NAME)
+        assert result.success
+        assert result.message == (
+            f"skill '{_SKILL_NAME}'\n"
+            "what it's for: watch a peak's elevation and save it\n"
+            "parameters:\n"
+            f"  - {_SKILL_HOLE} (required)\n"
+            "steps:\n"
+            "1. browse(queries=[{peak}], extract='the elevation above sea level')\n"
+            "2. collection_write(memory={the collection this is set up on}, "
+            "entries=[{'key': {peak}, 'content': the value from step 1}])"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_name_leads_with_the_nearest_typo_match(self, db, mock_llm):
+        """A near-miss name gets the string-leg did-you-mean, leading the refusal,
+        then points at where every skill is already listed (#2305) — no mention
+        of creating a skill, since nothing here does that directly."""
+        _seed_watch_skill(db)
+        result = await SkillGetTool(db, _make_llm_client(mock_llm)).execute(skill="Watch elevatoin")
+        assert not result.success
+        assert result.message == (
+            f"Skill 'Watch elevatoin' not found — did you mean '{_SKILL_NAME}'? "
+            "Check the name — your state already lists every skill you have."
+        )
+
+    @pytest.mark.asyncio
+    async def test_unrelated_name_gets_no_suggestion(self, db, mock_llm):
+        """Nothing close by spelling or meaning → the plain refusal, no empty
+        "did you mean" artifact."""
+        _seed_watch_skill(db)
+        result = await SkillGetTool(db, _make_llm_client(mock_llm)).execute(
+            skill="completely-unrelated-xyz"
+        )
+        assert not result.success
+        assert result.message == (
+            "Skill 'completely-unrelated-xyz' not found. Check the name — your "
+            "state already lists every skill you have."
+        )
+
+
 # ── find: resolve-by-meaning, identity fused with affordances (#1558, #1640) ──
 
 _FIND_VOCAB = {
@@ -4620,11 +4675,10 @@ class TestFind:
         "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
-        "   how to use it: set it running with collection_set(name=<a name for the "
-        "job>, skill='escalate-aurora', params=…); to change it, demonstrate it "
-        "again in chat — I relearn it automatically, replacing this one\n"
-        "   parameters: none\n"
-        "   steps:\n"
+        "   how to use it: read it with skill_get(skill='escalate-aurora'); set it "
+        "running with collection_set(name=<a name for the job>, "
+        "skill='escalate-aurora', params=…); to change it, demonstrate it again in "
+        "chat — I relearn it automatically, replacing this one\n"
         "3. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
         "entries stay readable with collection_read_latest('aurora-archive')\n"
@@ -4670,12 +4724,10 @@ class TestFind:
         assert result.message == self._KITCHEN_SINK
 
     @pytest.mark.asyncio
-    async def test_skill_hit_carries_its_own_recipe(self, db, mock_llm):
-        """A taught-skill hit carries its own ``parameters:`` block and numbered
-        steps (#2287), indented under the addressing line — a routine with no job
-        running has nowhere else a tool call reaches its steps, since the self-state
-        header's skills section is prose and ``memory_metadata`` describes a
-        configured COLLECTION, not the bare registry row."""
+    async def test_skill_hit_addresses_a_read_with_skill_get(self, db, mock_llm):
+        """A taught-skill hit's addressing leads with ``skill_get`` (#2305) — the
+        one way to read its parameters and steps — before how to set it running
+        and how to change it; the hit itself carries no inline block."""
         client = _axis_client(mock_llm)
         db.skills.upsert(
             SkillDraft(
@@ -4695,30 +4747,25 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade gamma":\n'
             f"1. {_SKILL_NAME} — live taught skill: aurora beacon cascade gamma\n"
-            "   how to use it: set it running with collection_set(name=<a name for "
-            f"the job>, skill='{_SKILL_NAME}', params=…); to change it, demonstrate "
-            "it again in chat — I relearn it automatically, replacing this one\n"
-            "   parameters:\n"
-            "     - peak (required): the peak to check\n"
-            "   steps:\n"
-            "   1. browse(queries=[{peak}], extract='the elevation above sea level')\n"
-            "   2. collection_write(memory={the collection this is set up on}, "
-            "entries=[{'key': {peak}, 'content': the value from step 1}])"
+            f"   how to use it: read it with skill_get(skill='{_SKILL_NAME}'); set it "
+            f"running with collection_set(name=<a name for the job>, "
+            f"skill='{_SKILL_NAME}', params=…); to change it, demonstrate it again in "
+            "chat — I relearn it automatically, replacing this one"
         )
 
-    def test_skill_hit_renders_short_form_when_the_routine_is_gone(self, db):
-        """A ``find`` hit whose routine the registry no longer holds renders exactly
-        as it does for any other object — the recipe block is simply absent, never
-        fabricated from nothing (#2287)."""
+    def test_skill_hit_names_the_same_tool_whether_or_not_the_skill_still_exists(self, db):
+        """A ``find`` hit's addressing is derived from the match's KIND alone, never
+        a database lookup — a vanished skill renders the identical addressing
+        (#2305), since the model copies the call verbatim either way."""
         match = ResolvedMatch(
-            name="vanished-routine", kind=ResolvedKind.SKILL, archived=False, label=""
+            name="vanished-skill", kind=ResolvedKind.SKILL, archived=False, label=""
         )
-        assert _render_object_hit(1, match, db) == (
-            "1. vanished-routine — live taught skill\n"
-            "   how to use it: set it running with collection_set(name=<a name for "
-            "the job>, skill='vanished-routine', params=…); to change it, "
-            "demonstrate it again in chat — I relearn it automatically, replacing "
-            "this one"
+        assert _render_object_hit(1, match) == (
+            "1. vanished-skill — live taught skill\n"
+            "   how to use it: read it with skill_get(skill='vanished-skill'); set it "
+            "running with collection_set(name=<a name for the job>, "
+            "skill='vanished-skill', params=…); to change it, demonstrate it again "
+            "in chat — I relearn it automatically, replacing this one"
         )
 
     @pytest.mark.asyncio
