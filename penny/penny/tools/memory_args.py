@@ -304,7 +304,7 @@ class LogCreateArgs(ToolArgs):
 
 
 class MemoryNameArgs(ToolArgs):
-    """One-field args for ``archive`` / ``unarchive`` / read-all."""
+    """One-field args for ``archive`` / ``unarchive`` / read-all / keys."""
 
     memory: MemoryName
 
@@ -396,6 +396,20 @@ class ReadLatestArgs(ToolArgs):
 
     memory: MemoryName
     k: ReadCount = None
+
+
+class ReadSampleArgs(ToolArgs):
+    """Random sample; ``k=None`` returns all."""
+
+    memory: MemoryName
+    k: ReadCount = None
+
+
+class CollectionGetArgs(ToolArgs):
+    """Exact key lookup in a collection."""
+
+    memory: MemoryName
+    key: str
 
 
 # ── Log-specific reads ──────────────────────────────────────────────────────

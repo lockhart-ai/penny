@@ -1100,11 +1100,10 @@ def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp
     gone, so the interjected chat-flavoured read the measured tail decayed on is
     structurally unavailable rather than discouraged.
 
-    The closure is TRANSITIVE, and ``collection_read_latest``/``log_read`` are the
-    proof: the write's rejection names ``collection_write``'s delete sibling, whose own
-    miss message names ``collection_read_latest``, which in turn sends a log target to
-    ``log_read`` — reachable from the program through two hops of the advice chain,
-    because a rendered instruction has to resolve however deep the chain of advice runs.
+    The closure is TRANSITIVE, and ``collection_keys`` is the proof: the write's
+    rejection names ``collection_write``'s delete sibling, whose own miss message names
+    ``collection_keys`` — reachable from the program through the advice chain, because a
+    rendered instruction has to resolve however deep the chain of advice runs.
 
     ``done`` is the one member the closure did NOT put there (#1916).  It joins
     unconditionally, because assembly injects the terminal step into every composed
@@ -1120,8 +1119,7 @@ def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp
         "browse",
         "collection_write",
         "collection_delete_entry",
-        "collection_read_latest",
-        "log_read",
+        "collection_keys",
         "done",
     }
     assert "read_similar" not in surface

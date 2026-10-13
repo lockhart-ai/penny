@@ -25,6 +25,8 @@ from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
+    CollectionGetTool,
+    CollectionKeysTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
@@ -349,6 +351,20 @@ class TestMemoryLifecycleNarration:
         assert (
             CollectionUpdateTool.to_result_narration(args, ToolResult(message="ok"))
             == "You updated `games`'s settings:"
+        )
+
+    def test_collection_get(self):
+        args = {"memory": "likes", "key": "chess"}
+        assert (
+            CollectionGetTool.to_result_narration(args, ToolResult(message="ok"))
+            == 'You looked up "chess" in `likes`:'
+        )
+
+    def test_collection_read_keys(self):
+        args = {"memory": "likes"}
+        assert (
+            CollectionKeysTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You listed the keys in `likes`:"
         )
 
     def test_read_run_calls_and_get_event(self):

@@ -125,7 +125,7 @@ def wrong_shape_message(name: str, actual_type: str) -> str:
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
-        f"collection_read_latest('{name}')."
+        f"collection_read_latest('{name}') / collection_get(memory='{name}', key=<key>)."
     )
 
 

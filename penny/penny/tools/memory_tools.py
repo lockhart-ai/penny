@@ -98,6 +98,7 @@ from penny.tools.memory_args import (
     CollectionCreateArgs,
     CollectionDeleteEntryArgs,
     CollectionEntrySpec,
+    CollectionGetArgs,
     CollectionSetArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
@@ -109,6 +110,7 @@ from penny.tools.memory_args import (
     ReadLatestArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
+    ReadSampleArgs,
 )
 from penny.tools.models import NoArgs, ToolResult
 
@@ -1176,6 +1178,123 @@ class CollectionReadLatestTool(MemoryTool):
         return ToolResult(
             message=format_entries(entries, source=args.memory, ordering="most recent first")
         )
+
+
+class CollectionGetTool(MemoryTool):
+    """Look up one entry by its exact key."""
+
+    name = "collection_get"
+    # A key that does not exist sends the model to the list of keys, a meaning
+    # search, or a fresh write under the key it actually has.
+    advises = ("collection_keys", "find", "collection_write")
+    description = (
+        "Look up an entry by its exact key in a collection. Returns the entry's "
+        "content if found, or a 'not found' message otherwise."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "memory": {"type": "string"},
+            "key": {"type": "string"},
+        },
+        "required": ["memory", "key"],
+    }
+    args_model = CollectionGetArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to look up {entry} in {memory} but it didn't work:"
+        return f"You looked up {entry} in {memory}:"
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = CollectionGetArgs(**kwargs)
+        memory = _resolve(self._db, args.memory)
+        rows = memory.get(args.key)
+        if not rows:
+            rejection = _bracket_key_rejection(memory, args.memory, args.key)
+            if rejection is not None:
+                return rejection
+            return ToolResult(
+                message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
+                f"keys with collection_keys('{args.memory}'), or search by meaning with "
+                f"find(query=<what you're looking for>, memory='{args.memory}'). "
+                f"If it exists under a different key, write the new content there: "
+                f"collection_write(memory='{args.memory}', "
+                f"entries=[{{'key': <the key you found>, 'content': <the new content>}}]) — "
+                f"the store replaces the content of the key you name."
+            )
+        return ToolResult(message=format_entries(rows, source=args.memory))
+
+
+class CollectionSampleTool(MemoryTool):
+    """Pick entries at random from a collection."""
+
+    name = "collection_sample"
+    description = "Return `k` entries sampled uniformly at random. Omit `k` to return all."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "memory": {"type": "string"},
+            "k": {"type": "integer"},
+        },
+        "required": ["memory"],
+    }
+    args_model = ReadSampleArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to pull a random sample from {memory} but it didn't work:"
+        return f"You pulled a random sample from {memory}:"
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = ReadSampleArgs(**kwargs)
+        entries = _resolve(self._db, args.memory).read_random(args.k)
+        return ToolResult(
+            message=format_entries(entries, source=args.memory, ordering="random sample")
+        )
+
+
+class CollectionKeysTool(MemoryTool):
+    """List the keys currently stored in a collection."""
+
+    name = "collection_keys"
+    description = "List the unique keys in a collection (insertion order)."
+    parameters = {
+        "type": "object",
+        "properties": {"memory": {"type": "string"}},
+        "required": ["memory"],
+    }
+    args_model = MemoryNameArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to list the keys in {memory} but it didn't work:"
+        return f"You listed the keys in {memory}:"
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = MemoryNameArgs(**kwargs)
+        keys = _resolve(self._db, args.memory).keys()
+        if not keys:
+            return ToolResult(
+                message=f"No keys in `{args.memory}` — the collection is empty (not an error)."
+            )
+        return ToolResult(message="\n".join(f"- {key}" for key in keys))
 
 
 # ── Collection writes ───────────────────────────────────────────────────────
@@ -2376,8 +2495,8 @@ class CollectionDeleteEntryTool(MemoryTool):
     """Delete an entry from a collection by key."""
 
     name = "collection_delete_entry"
-    # A key that does not exist sends the model to the list of entries that do.
-    advises = ("collection_read_latest",)
+    # A key that does not exist sends the model to the list of keys that do.
+    advises = ("collection_keys",)
     description = (
         "Delete the entry with the given key from a collection. Returns the "
         "number of entries removed (zero if the key did not exist)."
@@ -2431,8 +2550,7 @@ class CollectionDeleteEntryTool(MemoryTool):
                 lead = f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete."
             return ToolResult(
                 message=f"{lead} "
-                f"Read the entries in collection_read_latest('{args.memory}') to find it — "
-                f"each one shows its key."
+                f"List the current keys with collection_keys('{args.memory}') to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.memory}'.", mutated=True)
 
@@ -2930,14 +3048,13 @@ def _entry_identity(entry: ResolvedEntry) -> str:
 
 def _entry_addressing(entry: ResolvedEntry) -> str:
     """How to read the stored entry back — deterministic from whether it is keyed: a
-    keyed collection entry's key is already shown above (#1640), and the list it
-    lives in is one ``collection_read_latest`` away; a keyless log entry names its
-    ``<log>#<id>`` handle and the ``log_read`` that surfaces it (the entry_by_id-style
-    retrieval, #1640)."""
+    keyed collection entry is one ``collection_get`` away (re-reads the exact value
+    the find already carried); a keyless log entry names its ``<log>#<id>`` handle
+    and the ``log_read`` that surfaces it (the entry_by_id-style retrieval, #1640)."""
     if entry.key is None:
         handle = f"{entry.memory_name}{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.entry_id}"
         return f"log_read('{entry.memory_name}') — the full entry is {handle}"
-    return f"collection_read_latest('{entry.memory_name}')"
+    return f"collection_get(memory='{entry.memory_name}', key='{entry.key}')"
 
 
 def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
@@ -3074,6 +3191,7 @@ class FindTool(MemoryTool):
     # Message hits carry no addressing line (#2289), so they add no verb here.
     advises = (
         "collection_read_latest",
+        "collection_get",
         "collection_set",
         "collection_archive",
         "collection_unarchive",
@@ -3365,6 +3483,9 @@ def build_memory_tools(
     """
     reads: list[Tool] = [
         CollectionReadLatestTool(db),
+        CollectionGetTool(db),
+        CollectionSampleTool(db),
+        CollectionKeysTool(db),
         MemoryMetadataTool(db),
         LogReadTool(db, agent_name, scope),
         ReadRunCallsTool(db, agent_name),

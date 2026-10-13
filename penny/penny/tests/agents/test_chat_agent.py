@@ -1631,6 +1631,9 @@ async def test_chat_tool_surface_excludes_entry_mutations(
 
         # Reads.
         assert "collection_read_latest" in names
+        assert "collection_get" in names
+        assert "collection_sample" in names
+        assert "collection_keys" in names
         assert "memory_metadata" in names
         # Ledger reads: read_run_calls browses a source's runs; get_event resolves
         # one run by the typed id the activity block renders (#1580).

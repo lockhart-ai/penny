@@ -78,7 +78,10 @@ from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
+    CollectionGetTool,
+    CollectionKeysTool,
     CollectionReadLatestTool,
+    CollectionSampleTool,
     CollectionSetTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
@@ -3322,6 +3325,99 @@ class TestEmbedFailureRefusesWrite:
             ).all()
         assert rows == []
 
+    @pytest.mark.asyncio
+    async def test_get_returns_entry_or_not_found(self, db, mock_llm):
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+            memory="likes", entries=[{"key": "k", "content": "hello"}]
+        )
+        assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
+        missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
+        assert "not found" in missing.message
+        # The proven-win read guidance (collection_keys / find by meaning), AND the
+        # rejection now closes the residual write-vs-update decision: once the model
+        # finds the entry under a different key it must UPDATE that entry, not
+        # collection_write it (which the dedup rejects as a duplicate).
+        assert "collection_keys('likes')" in missing.message
+        assert "find(query=<what you're looking for>, memory='likes')" in missing.message
+        assert (
+            "collection_write(memory='likes', entries=[{'key': <the key you found>, "
+            "'content': <the new content>}])" in missing.message
+        )
+        assert "the store replaces the content of the key you name" in missing.message
+        # A bracket-wrapped key (the model's ingrained habit from the old `[key]`
+        # display form) is never silently resolved — it's rejected with a teaching
+        # error that names the mistake, the current key='...' render, and the bare
+        # key ready to reuse.
+        bracketed = await CollectionGetTool(db).execute(memory="likes", key="[k]")
+        assert bracketed.success is False
+        assert bracketed.message == (
+            "Key '[k]' not found in 'likes'. The enclosing [brackets] are not part "
+            "of the key — entry listings show keys as key='...' and the key is passed "
+            "bare, without brackets. This entry's key is 'k'. Retry with key='k'."
+        )
+        # A bracket-wrapped key whose bare form doesn't exist either gets the
+        # ordinary not-found error, not the bracket teaching rejection.
+        double_miss = await CollectionGetTool(db).execute(memory="likes", key="[absent]")
+        assert "Key '[absent]' not found" in double_miss.message
+        assert "Retry with" not in double_miss.message
+        # A key that genuinely contains brackets exact-matches with no rejection.
+        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+            memory="likes", entries=[{"key": "[lit]", "content": "bracket literal body"}]
+        )
+        literal = await CollectionGetTool(db).execute(memory="likes", key="[lit]")
+        assert literal.success is True
+        assert "bracket literal body" in literal.message
+
+    @pytest.mark.asyncio
+    async def test_keys_lists_unique_keys_in_order(self, db, mock_llm):
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(memory="likes", entries=[{"key": "first", "content": "1"}])
+        await write.execute(memory="likes", entries=[{"key": "second", "content": "2"}])
+        listing = await CollectionKeysTool(db).execute(memory="likes")
+        assert listing.message == "- first\n- second"
+
+    @pytest.mark.asyncio
+    async def test_keys_empty_collection_names_source_not_bare_sentinel(self, db):
+        """An empty collection's keys read names the source and marks absence (not an
+        error), rather than the bare "(no keys)" sentinel (house wording pass)."""
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        listing = await CollectionKeysTool(db).execute(memory="likes")
+        assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
+
+    @pytest.mark.asyncio
+    async def test_sample_returns_all_when_few(self, db, mock_llm):
+        _seed_collection(
+            db,
+            name="likes",
+            description="x",
+            extraction_prompt="test fixture extraction prompt",
+            schedule="FREQ=HOURLY",
+        )
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
+        rendered = await CollectionSampleTool(db).execute(memory="likes", k=5)
+        assert "key='a' 1" in rendered.message
+
 
 class TestCollectionMutations:
     @pytest.mark.asyncio
@@ -3434,15 +3530,14 @@ class TestDidYouMeanSuggestions:
         assert result.mutated is False
         assert result.message == (
             "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
-            "'quarterly-report'? Nothing to delete. Read the entries in "
-            "collection_read_latest('notes') to find it — each one shows its key."
+            "'quarterly-report'? Nothing to delete. List the current keys with "
+            "collection_keys('notes') to find it."
         )
         # No close key → byte-identical to today's message.
         far = await CollectionDeleteEntryTool(db).execute(memory="notes", key="zzzzz")
         assert far.message == (
             "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
-            "Read the entries in collection_read_latest('notes') to find it — "
-            "each one shows its key."
+            "List the current keys with collection_keys('notes') to find it."
         )
 
 
@@ -4062,6 +4157,9 @@ class TestFactory:
     _FULL_SURFACE = {
         # Reads
         "collection_read_latest",
+        "collection_get",
+        "collection_sample",
+        "collection_keys",
         "memory_metadata",
         "log_read",
         "read_run_calls",
@@ -4692,10 +4790,10 @@ class TestFind:
     @pytest.mark.asyncio
     async def test_stored_entry_carries_content_and_addressing(self, db, mock_llm):
         """A fact stored in a collection is found by the meaning of its content/key —
-        the hit CARRIES the value plus the key the entry lives under, and the list it's
-        in is one collection_read_latest away, so for a short fact the find IS the
-        answer (#1640).  The collection's OWN description is orthogonal, so only the
-        entry surfaces (its container was not guessed)."""
+        the hit CARRIES the value plus the key the entry lives under, and it is one
+        collection_get away, so for a short fact the find IS the answer (#1640).  The
+        collection's OWN description is orthogonal, so only the entry surfaces (its
+        container was not guessed)."""
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
         await CollectionWriteTool(db, client, author="test").execute(
@@ -4707,7 +4805,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
-            "   read it: collection_read_latest('knowledge-notes')"
+            "   read it: collection_get(memory='knowledge-notes', key='aurora beacon')"
         )
 
     @pytest.mark.asyncio
@@ -4729,7 +4827,7 @@ class TestFind:
             "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
-            "   read it: collection_read_latest('aurora-watch')\n"
+            "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )

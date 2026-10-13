@@ -578,6 +578,9 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "read_latest": "collection_read_latest",
     # A value stored under a key is written with the collection's one write call.
     "update_entry": "collection_write",
+    "collection_read_random": "collection_sample",
+    # A key either reads back something or it doesn't — collection_get answers that.
+    "exists": "collection_get",
 }
 
 
