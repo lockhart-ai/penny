@@ -488,7 +488,7 @@ async def test_a_cold_apply_binds_the_known_routine_and_builds_its_container(db)
     BINDER runs instead of the framer and the only open question is which part of the words
     fills what that routine declares.  The container is then named from a routine the
     registry actually holds, which is what makes it configurable: a name minted here would
-    name a job no ``collection_set`` could resolve."""
+    name a job no ``collection_configure`` could resolve."""
     _seed_skill(db)
 
     machine, model = await _cold_apply(db)
@@ -513,7 +513,7 @@ async def test_the_same_job_asked_again_runs_into_the_container_it_already_had(d
     second one beside it.
 
     That is what makes re-asking a RECONFIGURE — the framing points at the container
-    already carrying this job, so the turn's ``collection_set`` lands on it."""
+    already carrying this job, so the turn's ``collection_configure`` lands on it."""
     _seed_skill(db)
     await _cold_apply(db)
     require_memory(db, _CONTAINER).write([EntryInput(key="day rate", content="$45")], author="chat")

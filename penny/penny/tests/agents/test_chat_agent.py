@@ -217,7 +217,7 @@ async def test_basic_message_flow(
 
 
 @pytest.mark.asyncio
-async def test_collection_set_stamps_chat_provenance(
+async def test_collection_configure_stamps_chat_provenance(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
     """A collection created from a chat message records that message as its
@@ -225,7 +225,7 @@ async def test_collection_set_stamps_chat_provenance(
 
     Proves the provenance is threaded end-to-end — the channel logs the incoming
     message first, ``handle`` mints the run_id and passes both down to
-    ``collection_set`` — rather than reconstructed after the fact.
+    ``collection_configure`` — rather than reconstructed after the fact.
     """
     ask = "can you keep a running list of new indie platformers for me?"
 
@@ -252,9 +252,9 @@ async def test_collection_set_stamps_chat_provenance(
                     LlmToolCall(
                         id="call_0",
                         function=LlmToolCallFunction(
-                            name="collection_set",
+                            name="collection_configure",
                             arguments={
-                                "name": "indie-platformers",
+                                "collection": "indie-platformers",
                                 "description": "a running list of new indie platformers",
                                 "skill": "gather-platformers",
                                 "schedule": "FREQ=HOURLY",
@@ -1070,8 +1070,8 @@ def _terms_only_set(name: str) -> LlmResponse:
     — no skill, no params, and no description either."""
     return _tool_call(
         "c0",
-        "collection_set",
-        {"name": name, "schedule": "FREQ=HOURLY", "notify": True},
+        "collection_configure",
+        {"collection": name, "schedule": "FREQ=HOURLY", "notify": True},
     )
 
 
@@ -1080,7 +1080,7 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
     """The #1869 seam end to end: an apply turn entered with the round's framing renders
-    the container verbatim, makes ONE terms-only ``collection_set``, the framework supplies
+    the container verbatim, makes ONE terms-only ``collection_configure``, the framework supplies
     the collection + the routine + the values it is pointed at, and the turn then narrates
     what is running from the RECORD.
 
@@ -1139,8 +1139,10 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
         )
 
         # The call carried the TERMS only — the model never re-supplied the routine.
-        call = next(record for record in response.tool_calls if record.tool == "collection_set")
-        assert sorted(call.arguments) == ["name", "notify", "schedule"]
+        call = next(
+            record for record in response.tool_calls if record.tool == "collection_configure"
+        )
+        assert sorted(call.arguments) == ["collection", "notify", "schedule"]
 
         # And the row carries everything: the routine, its bound values, a rendered
         # program, and the terms the turn actually gave.
@@ -1229,7 +1231,7 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
     There is no unframed apply any more: the machine retries the framing once at apply
     entry, so reaching the turn without one means the round never settled what job it is.
     Running anyway would mean one of the two things this replaces — instructing the turn to
-    bind a routine off values it cannot see, or offering the full ``collection_set``
+    bind a routine off values it cannot see, or offering the full ``collection_configure``
     surface so it invents a collection for a job nobody settled — and both end with Penny
     telling the user something is running when nothing is.
 
@@ -1621,7 +1623,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "log_append" in names
 
         # Lifecycle / shape.
-        assert "collection_set" in names
+        assert "collection_configure" in names
         # The fused surface: the two prior lifecycle verbs are GONE.
         assert "collection_create" not in names
         assert "collection_update" not in names
@@ -1634,7 +1636,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_get" in names
         assert "collection_sample" in names
         assert "collection_keys" in names
-        assert "memory_metadata" in names
+        assert "memory_get" in names
         # Ledger reads: read_run_calls browses a source's runs; get_event resolves
         # one run by the typed id the activity block renders (#1580).
         assert "read_run_calls" in names
@@ -2008,7 +2010,7 @@ _BASIC_FLOW_EXPECTED = (
     "- timezone: America/Los_Angeles\n"
     "- location: Seattle, WA\n"
     "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and "
+    "To look deeper: memory_get(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
     "collection_list(<name>) reads a store's entries, and find(query=<text>) "
     "searches them all by meaning — a collection, a skill, a stored entry, or "

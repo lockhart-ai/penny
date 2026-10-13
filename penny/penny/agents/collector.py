@@ -266,7 +266,7 @@ class Collector(BackgroundAgent):
             return (
                 False,
                 f"Collection '{collection_name}' has no extraction_prompt — "
-                f"set one with collection_set before testing.",
+                f"set one with collection_configure before testing.",
             )
         if error := check_extraction_prompt(collection.extraction_prompt):
             return False, error
@@ -380,7 +380,7 @@ class Collector(BackgroundAgent):
             logger.warning(
                 "Collection '%s' has no readable program — its stored prompt is not a "
                 "rendered routine, so its cycles have no calls to make and no completion "
-                "to read.  Re-attach a routine with collection_set(name='%s', skill=…)",
+                "to read.  Re-attach a routine with collection_configure(collection='%s', skill=…)",
                 collection.name,
                 collection.name,
             )
@@ -893,7 +893,7 @@ class Collector(BackgroundAgent):
         """System prompt for the bound target — re-fetched each cycle.
 
         Reading from the DB instead of caching means a chat-side
-        ``collection_set`` call that changes ``extraction_prompt`` is
+        ``collection_configure`` call that changes ``extraction_prompt`` is
         picked up on the very next collector cycle, no restart needed.
 
         The routine's own row is read alongside it, for the same reason: what the
@@ -1011,7 +1011,7 @@ class Collector(BackgroundAgent):
         Penny when she authors the extraction_prompt.  This guarantees the
         rules apply on every cycle regardless of how the prompt was written
         (or whether Penny remembered to include them).  The chat-facing
-        ``collection_set`` description only carries authoring-shape
+        ``collection_configure`` description only carries authoring-shape
         guidance; the runtime invariants live here.
 
         **The program is now ONLY the skill (#1911).**  Assembly appends no steps at
@@ -1187,7 +1187,7 @@ class Collector(BackgroundAgent):
         if check_extraction_prompt(memory.extraction_prompt) is not None:
             logger.warning(
                 "Skipping collection '%s': extraction_prompt too short (%d chars, minimum 25) "
-                "— update it via collection_set to enable collection",
+                "— update it via collection_configure to enable collection",
                 memory.name,
                 len(memory.extraction_prompt),
             )
@@ -1195,7 +1195,7 @@ class Collector(BackgroundAgent):
         schedule = memory.schedule
         if schedule is None:
             logger.warning(
-                "Skipping collection '%s': no schedule set — set one via collection_set "
+                "Skipping collection '%s': no schedule set — set one via collection_configure "
                 "to enable collection",
                 memory.name,
             )
@@ -1246,7 +1246,7 @@ class Collector(BackgroundAgent):
         except (ValueError, TypeError) as exc:
             logger.warning(
                 "Skipping collection '%s': schedule %r isn't a readable rule (%s) — "
-                "set a valid one via collection_set",
+                "set a valid one via collection_configure",
                 memory.name,
                 schedule,
                 exc,

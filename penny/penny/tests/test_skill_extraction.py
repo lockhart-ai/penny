@@ -1846,18 +1846,20 @@ def test_labelling_system_prompt_whole_render():
 
 # ── #1668: a skill captures ONLY collector-runnable steps ──────────────────────
 
-_CREATE_OK = "You set up a collection: (collection_set result)\nCreated collection 'widget-prices'."
+_CREATE_OK = (
+    "You set up a collection: (collection_configure result)\nCreated collection 'widget-prices'."
+)
 
 
 @pytest.mark.asyncio
 async def test_lifecycle_call_is_dropped_from_the_recipe(db):
-    """A demo that sets up a container mid-run (collection_set — a lifecycle call
+    """A demo that sets up a container mid-run (collection_configure — a lifecycle call
     a collector can never run) has that step DROPPED from the captured skill (#1668):
     a skill renders into a collector prompt, so only collector-runnable steps belong
-    in it.  The create's args (name/description) never become nonsense parameters."""
+    in it.  The create's args (collection/description) never become nonsense parameters."""
     create = (
-        "collection_set",
-        {"name": "widget-prices", "description": "watch the widget price"},
+        "collection_configure",
+        {"collection": "widget-prices", "description": "watch the widget price"},
         _CREATE_OK,
         True,
     )
@@ -1869,7 +1871,7 @@ async def test_lifecycle_call_is_dropped_from_the_recipe(db):
     steps = steps_from_json(result.skill.steps)
     assert [step.tool for step in steps] == ["browse", "collection_write"]
     names = [p.name for p in parameters_from_json(result.skill.parameters)]
-    assert "name" not in names and "description" not in names and "skill" not in names
+    assert "collection" not in names and "description" not in names and "skill" not in names
 
 
 # ── #1665/#1804: the run-end narration frame (whole-render literal) ────────────

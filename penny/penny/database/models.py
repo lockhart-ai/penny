@@ -244,7 +244,7 @@ class MemoryRow(SQLModel, table=True):
     # (NULL until backfilled at startup).
     description_embedding: bytes | None = None
     archived: bool = Field(default=False, index=True)
-    # Emission-as-property (#1557, exposed by #1591's ``collection_set``): when
+    # Emission-as-property (#1557, exposed by #1591's ``collection_configure``): when
     # true the collection notifies the user of new/changed entries — assembly
     # appends the run-time notify steps (``Prompt.COLLECTOR_NOTIFY_STEPS``) to the
     # collector's composed prompt, numbered continuously before the injected
@@ -385,7 +385,7 @@ class Skill(SQLModel, table=True):
     tool it sits on (#1783); one whose value named a collection additionally carries the
     attachment mark, so unless the labeller says the user chose it, instantiation binds
     it to the collection the routine is attached to (the demonstrated name stays in
-    ``steps`` as the verbatim ledger copy but never renders).  #1591's ``collection_set``
+    ``steps`` as the verbatim ledger copy but never renders).  #1591's ``collection_configure``
     renders ``steps`` + bound params into the collection's numbered TEXT
     ``extraction_prompt`` at creation.
 

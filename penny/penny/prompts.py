@@ -149,7 +149,7 @@ class Prompt:
     APPLY_INSTRUCTION = (
         "A collection has been set up for this task from what the user asked. It is "
         "named `{container}`, it runs the skill `{skill}`, and it is already pointed "
-        "at what they gave. Configure its schedule now, in one `collection_set` call on "
+        "at what they gave. Configure its schedule now, in one `collection_configure` call on "
         "`{container}`: when it runs, when it stops if they gave an end, and whether to "
         "tell them — all from the user's own words.\n\n"
         "Configuring it is the whole turn — you are not carrying the skill out "
@@ -353,7 +353,7 @@ class Prompt:
     # It carries TOOL NAMES, which is the one thing #1799's "there is simply none to show"
     # gives up, and the cost is bounded on both sides: no call SHAPE (no parens, no
     # arguments, no brace placeholders — the recipe is still what it was, one
-    # ``skill_get(skill=<name>)`` away (#2305), and ``memory_metadata`` reaches the
+    # ``skill_get(skill=<name>)`` away (#2305), and ``memory_get`` reaches the
     # same recipe once a job is running), and the instruction below asks for the
     # steps in PLAIN WORDS, which the eval contract scores as a negative — a reply
     # reading a tool name back is the leak, and it is measured rather than assumed.

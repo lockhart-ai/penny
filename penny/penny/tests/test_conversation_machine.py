@@ -1360,7 +1360,7 @@ def test_an_apply_turn_enters_with_the_container_already_known():
         + "A collection has been set up for this task from what the user asked. It is "
         "named `watch-rental-price-harborkayak-example`, it runs the skill "
         "`watch-rental-price`, and it is already pointed at what they gave. Configure "
-        "its schedule now, in one `collection_set` call on "
+        "its schedule now, in one `collection_configure` call on "
         "`watch-rental-price-harborkayak-example`: when it runs, when it stops if they "
         "gave an end, and whether to tell them — all from the user's own words.\n\n"
         "Configuring it is the whole turn — you are not carrying the skill out "
@@ -1408,7 +1408,7 @@ def test_apply_instruction_whole_render():
     assert Prompt.APPLY_INSTRUCTION == (
         "A collection has been set up for this task from what the user asked. It is "
         "named `{container}`, it runs the skill `{skill}`, and it is already pointed "
-        "at what they gave. Configure its schedule now, in one `collection_set` call on "
+        "at what they gave. Configure its schedule now, in one `collection_configure` call on "
         "`{container}`: when it runs, when it stops if they gave an end, and whether to "
         "tell them — all from the user's own words.\n\n"
         "Configuring it is the whole turn — you are not carrying the skill out "

@@ -72,7 +72,7 @@ provenance inference (:func:`distill_steps`), the load-bearing render
 lives in :mod:`penny.database.skill_store`; the run-end extractor in
 :mod:`penny.skill_extraction`.  Reading a skill by name is ``skill_get`` (#2305,
 :func:`penny.tools.skill_tools.render_skill_full` over :func:`render_skill`); a
-configured job's ``memory_metadata`` renders the same steps with the job's own
+configured job's ``memory_get`` renders the same steps with the job's own
 bound values, both in :mod:`penny.tools.memory_tools`.
 """
 
@@ -673,7 +673,7 @@ def render_skill(steps: list[SkillStep], params: dict[str, str] | None = None) -
     """Render a skill's steps + bound ``params`` into a numbered TEXT recipe — the
     same numbered-tool-call dialect production ``extraction_prompt``s use.
 
-    The load-bearing deliverable (#1590): #1591's ``collection_set`` calls this
+    The load-bearing deliverable (#1590): #1591's ``collection_configure`` calls this
     to stamp the collection's ``extraction_prompt`` at creation.  Parameters present
     in ``params`` are substituted with their value verbatim; parameters NOT in
     ``params`` render as ``{name}`` (the with-params form the read surface shows);
@@ -706,7 +706,7 @@ def unbound_required_parameters(
     parameters: list[SkillParameter], params: dict[str, str]
 ) -> list[SkillParameter]:
     """The required parameters ``params`` doesn't bind — the validation #1591's
-    ``collection_set`` runs before rendering (an unbound required parameter is an
+    ``collection_configure`` runs before rendering (an unbound required parameter is an
     error).  Returns the whole :class:`SkillParameter` (name + description) so the
     refusal can name each parameter AND what to supply (#1668).  Shipped here so the
     rule lives with the skill, tested standalone."""
@@ -734,7 +734,7 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
     user named are two parameters and stay distinct.
 
     Runs at the render/instantiation seam (``render_skill_prompt``), on BOTH the one-call
-    ``collection_set(skill=…)`` and the adopt path, so the rendered ``extraction_prompt``
+    ``collection_configure(skill=…)`` and the adopt path, so the rendered ``extraction_prompt``
     never lies about the collection it acts on.  Pure — the skill's STORED steps keep
     their verbatim ledger arguments (a skill is target-agnostic at rest); only the
     rendered-into-a-collection copy is bound.  A step with no marked leaf passes through

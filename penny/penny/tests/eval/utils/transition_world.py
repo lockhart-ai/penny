@@ -793,7 +793,7 @@ def _fixture_skill(
     re-states: an ALL-PLACEHOLDER recipe (every spot named by the labeller, the write
     target still carrying its attachment mark) over the SKILL-level parameters the framer
     minted from the ask.  Nothing joins those parameters to a leaf yet — that is the
-    runtime-join beat — so it is the registry row, ``collection_set``'s
+    runtime-join beat — so it is the registry row, ``collection_configure``'s
     unbound-parameter check, and job identity that carry them, which is exactly what the
     apply turn under test has to satisfy."""
     # The registry as this fixture's round saw it — #1783 marks a leaf whose
@@ -2074,7 +2074,7 @@ def _seed_apply_turn(
     """The turn that finished a journey, with everything it left behind: the acceptance
     INCOMING, the skill-gated draw that decided apply and named the routine it bound, the
     collection ADOPTING that routine (its program rendered, its schedule and notify set,
-    a mutation event citing this run), the chat run carrying the ``collection_set`` call
+    a mutation event citing this run), the chat run carrying the ``collection_configure`` call
     and its echoed result, Penny's confirmation OUTGOING, and the apply move itself.
 
     This footprint is what the earlier beats had no need of: their world stops where
@@ -2120,7 +2120,7 @@ def _log_apply_draw(
 
 
 def _adopt_the_taught_routine(db: Database, journey: _Journey) -> MemoryRow:
-    """The apply turn's durable half, written the way ``collection_set`` writes it: the
+    """The apply turn's durable half, written the way ``collection_configure`` writes it: the
     round's own CONTAINER adopts the routine — the skill's steps rendered into its
     ``extraction_prompt`` with the attachment bound to the collection's own name, the
     acceptance's rule as its schedule, notify on, and the skill plus its bound params
@@ -2169,7 +2169,7 @@ def _end_condition(db: Database, applied: _AppliedJob) -> datetime | None:
 
 
 def _seed_apply_run(db: Database, journey: _Journey, row: MemoryRow) -> None:
-    """The apply turn's chat run: the one ``collection_set`` call it made, the result
+    """The apply turn's chat run: the one ``collection_configure`` call it made, the result
     that came back, and the confirmation it closed on."""
     case = journey.round
     conversation: list[dict] = [{"role": "user", "content": case.acceptance}]
@@ -2185,7 +2185,7 @@ def _seed_apply_run(db: Database, journey: _Journey, row: MemoryRow) -> None:
 
 
 def _set_step(journey: _Journey, row: MemoryRow) -> DistillInput:
-    """The ``collection_set`` call that stood the job up — the arguments it was made with
+    """The ``collection_configure`` call that stood the job up — the arguments it was made with
     and the result it came back with, framed by the PRODUCTION framer over the production
     echo, so the seeded ledger carries the text a real turn would have read rather than
     an approximation of it.
@@ -2198,7 +2198,7 @@ def _set_step(journey: _Journey, row: MemoryRow) -> DistillInput:
     applied = journey.applied
     skill_name = slug_skill_name(journey.round.skill.name)
     arguments: dict = {
-        "name": row.name,
+        "collection": row.name,
         "schedule": applied.schedule,
         "notify": True,
     }
@@ -2359,7 +2359,7 @@ def _assert_live_job(journey: _Journey, row: MemoryRow) -> None:
 
 def _assert_every_round_is_in_the_ledger(db: Database, journeys: tuple[_Journey, ...]) -> None:
     """Each journey is READABLE as the turns it really was: its demonstrated calls under
-    its own learn run, its apply turn's one ``collection_set`` call under its own apply
+    its own learn run, its apply turn's one ``collection_configure`` call under its own apply
     run, and everything it produced citing the run that produced it — plus the one page
     each of those rounds read, in browse-results."""
     for journey in journeys:

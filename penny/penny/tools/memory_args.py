@@ -130,7 +130,7 @@ OptionalSkill = Annotated[
 ]
 
 # `find`'s own blank-`memory` refusal (#2289) — kept SEPARATE from
-# `_reject_blank_optional`/`OPTIONAL_ARG_FORMS` (the `collection_set` surface's
+# `_reject_blank_optional`/`OPTIONAL_ARG_FORMS` (the `collection_configure` surface's
 # shared table, whose own test asserts it is total over that ONE tool's fields):
 # `memory` belongs to a different tool, so sharing the table would make that
 # invariant false. A blank still reads as "search everything", the one thing it
@@ -162,17 +162,17 @@ def _coerce_single_element_list(value: object) -> object:
     leaf frequently sits INSIDE a list: a browse step's ``queries[0]`` (distilled from
     ``browse(queries=[<url>])``) becomes a parameter.  The model, following the browse
     tool's real argument shape, then routinely binds that parameter with a one-element
-    LIST — ``params={"url": ["https://…"]}`` — rather than the bare string the leaf holds.
-    The ``dict[str, str]`` param type refuses it (``params.url: Input should be a valid
-    string``), punishing the model for matching the tool's type.
+    LIST — ``parameters={"url": ["https://…"]}`` — rather than the bare string the leaf
+    holds.  The ``dict[str, str]`` param type refuses it (``parameters.url: Input should
+    be a valid string``), punishing the model for matching the tool's type.
 
     Since the bound value is a single leaf, unwrap the one element deterministically: the
     render substitutes it straight back into the list position, so a list-bound param
     renders byte-identically to the string-bound form (only the params-value TYPE
     validation was wrong).  A multi-element list is a genuine over-binding — a parameter
     takes exactly one value — so it stays a refusal, made actionable: the error ``loc``
-    names the offending parameter (``params.<parameter>``) and the message names the count
-    and the expected one-value shape.
+    names the offending parameter (``parameters.<parameter>``) and the message names the
+    count and the expected one-value shape.
     """
     if not isinstance(value, list):
         return value
@@ -181,7 +181,7 @@ def _coerce_single_element_list(value: object) -> object:
     raise ValueError(
         f"a skill parameter binds one value, but got a list of {len(value)} — pass a "
         "single value per parameter (a one-item list is unwrapped for you; more than one "
-        "isn't). Expected shape: params={'<parameter>': '<value>'}"
+        "isn't). Expected shape: parameters={'<parameter>': '<value>'}"
     )
 
 
@@ -230,7 +230,7 @@ NonBlankLogContent = Annotated[str, AfterValidator(require_non_blank_log_content
 
 
 class CollectionCreateArgs(ToolArgs):
-    """Args for ``collection_set`` — the skill-instantiation front door (#1591),
+    """Args for ``collection_configure`` — the skill-instantiation front door (#1591),
     or a skill-less INERT container (#1629).
 
     A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
@@ -238,7 +238,7 @@ class CollectionCreateArgs(ToolArgs):
     ``extraction_prompt``, ``params`` binds the skill's parameters, and a
     ``schedule`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
     — no ``extraction_prompt``, no schedule, no ``notify`` — so nothing runs against it
-    until a skill is attached later via ``collection_set`` (the two-step teach
+    until a skill is attached later via ``collection_configure`` (the two-step teach
     bootstrap).  A job-shaped arg (a ``schedule`` / ``notify`` / ``expires_at``) alongside
     a skill-less create is refused, since an inert container has no job to describe.
 
@@ -304,20 +304,27 @@ class LogCreateArgs(ToolArgs):
 
 
 class MemoryNameArgs(ToolArgs):
-    """One-field args for ``archive`` / ``unarchive`` / read-all / keys."""
+    """One-field args for ``memory_get`` — the shape-agnostic metadata lookup."""
 
     memory: MemoryName
 
 
+class CollectionNameArgs(ToolArgs):
+    """One-field args for ``collection_archive`` / ``collection_unarchive`` — the
+    archive pair names its target with the collection-surface argument."""
+
+    collection: MemoryName
+
+
 class CollectionSetArgs(ToolArgs):
-    """Args for ``collection_set`` — the ONE idempotent create-or-update entry
+    """Args for ``collection_configure`` — the ONE idempotent create-or-update entry
     point for a collection's existence and job config (the fusion the code owner
     specified: "a single entry point the model can call idempotently for all
     create/update cases").
 
-    ``name`` missing → the collection comes into being with this config (the
+    ``collection`` missing → the collection comes into being with this config (the
     create path, all its validation intact: birth idempotency-dedup unless
-    skill resolution, the inert/job-arg refusal).  ``name``
+    skill resolution, the inert/job-arg refusal).  ``collection``
     exists → only the fields explicitly set change (the update path: adopt /
     rebind / swap / refresh re-render, atomic schedule replace, raw
     ``extraction_prompt`` edit).  The model never reasons about which case it is.
@@ -333,10 +340,10 @@ class CollectionSetArgs(ToolArgs):
     passing ``""`` for it are different calls, and only the first means "leave this
     alone" — the second is a half-expressed intention, corrected at the gate."""
 
-    name: MemoryName
+    collection: MemoryName
     description: OptionalText = None
     skill: OptionalSkill = None
-    params: dict[str, SkillParamValue] | None = None
+    parameters: dict[str, SkillParamValue] | None = None
     schedule: OptionalText = None
     expires_at: OptionalText = None
     notify: bool | None = None
@@ -364,7 +371,7 @@ class CollectionUpdateArgs(ToolArgs):
     an arg model is a claim about the model surface, so it is corrected here.)
 
     The **schedule** is the apply-time job axis — the SAME one-arg RRULE
-    ``collection_set`` accepts (``parse_schedule``, #1857).  Present → the schedule is
+    ``collection_configure`` accepts (``parse_schedule``, #1857).  Present → the schedule is
     replaced atomically, run quota and all, so a new rule never inherits the old rule's
     ``COUNT=``; absent → the schedule is left untouched.  So a collection's schedule is
     updatable post-create and an inert collection's job is set when a skill is adopted.
@@ -379,7 +386,7 @@ class CollectionUpdateArgs(ToolArgs):
     # Rebind the skill's parameters; None = reuse current.  A single-element list value is
     # unwrapped to its element (#1666, SkillParamValue), mirroring create.
     params: dict[str, SkillParamValue] | None = None
-    # Schedule — one arg, one grammar (parse_schedule, #1857), mirroring collection_set.
+    # Schedule — one arg, one grammar (parse_schedule, #1857), mirroring collection_configure.
     # Present → replaces the whole schedule atomically; OMITTED → schedule untouched (a
     # blank is refused, #1776).
     schedule: OptionalText = None

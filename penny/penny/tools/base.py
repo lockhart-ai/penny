@@ -460,8 +460,8 @@ class ToolExecutor:
 
         The suggestion goes through ``suggest_tool_name`` (#1944), which reads a
         retired name through the rename table before falling back to string distance —
-        a guessed ``collection_metadata`` names ``memory_metadata`` rather than the
-        character-nearest ``collection_set``."""
+        a guessed ``collection_metadata`` names ``memory_get`` rather than the
+        character-nearest ``collection_configure``."""
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]
         available_list = ", ".join(available_tools) if available_tools else "none"

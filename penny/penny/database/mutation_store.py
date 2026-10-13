@@ -103,7 +103,7 @@ def cancelled_sends_note(count: int) -> str:
 
     Folded into the archive event's ``MutationDetail.note`` so the teardown's
     silence is VISIBLE wherever a mutation renders (the self-state activity block,
-    ``memory_metadata``'s "Recent changes") — "cancelled N pending send(s)" reads
+    ``memory_get``'s "Recent changes") — "cancelled N pending send(s)" reads
     as the human cause the row carries, beside any policy reason a system archive
     already notes."""
     return f"cancelled {count} pending send{'' if count == 1 else 's'}"

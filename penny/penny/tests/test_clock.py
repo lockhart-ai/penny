@@ -329,7 +329,7 @@ def _a_turn_that_stood_a_job_up(
     """One apply turn on a sample's clock, read back through the chat observer.
 
     The classifier draws, the machine lands in apply, and the job is stood up on ``rule``
-    with the end ``ends`` says — resolved by the function ``collection_set`` resolves it
+    with the end ``ends`` says — resolved by the function ``collection_configure`` resolves it
     with, against the same database, so the instant the words are counted from is the one
     production counts them from."""
     db = migrated_db(str(tmp_path / f"{name}.db"), clock=_pinned_at(starts_at))

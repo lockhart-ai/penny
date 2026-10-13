@@ -3,10 +3,10 @@
 A skill is distilled deterministically from a qualifying chat run's own ledger at run
 end (``penny.skill_extraction``), certified-by-execution with provenance-inferred
 parameters.  The model's skill actions are resolve (``find``), read one by name
-(``skill_get``, #2305), and instantiate/attach (``collection_set(skill=…)``).  Both
-``skill_get`` and a configured job's ``memory_metadata`` read the same ``parameters:``
+(``skill_get``, #2305), and instantiate/attach (``collection_configure(skill=…)``).  Both
+``skill_get`` and a configured job's ``memory_get`` read the same ``parameters:``
 line format in ``penny.tools.collection_instantiation`` (``render_skill_parameters``) —
-``skill_get`` passes no bound values (the bare declaration), ``memory_metadata`` passes
+``skill_get`` passes no bound values (the bare declaration), ``memory_get`` passes
 the job's own.
 
 Three renders live here, because the consumers want different things: ``render_skill_brief``
@@ -58,7 +58,7 @@ def _needs_clause(parameters: list[SkillParameter]) -> str:
     required by construction, so "parameters" is the whole truth on this surface, and
     the ``required``/``optional`` precision stays in ``penny.tools.collection_instantiation``'s
     ``render_skill_parameters`` — read via ``skill_get`` on the bare skill, or a
-    configured job's own ``memory_metadata`` — where it can be honest about a shape
+    configured job's own ``memory_get`` — where it can be honest about a shape
     this codebase does not yet produce."""
     if not parameters:
         return ""

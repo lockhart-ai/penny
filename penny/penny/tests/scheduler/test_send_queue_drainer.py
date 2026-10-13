@@ -282,7 +282,7 @@ async def test_archiving_collection_cancels_pending_sends(tmp_path):
     assert rows[0].sent_at is None
 
     # The archive's mutation event names the count — the legible surface the
-    # cancellation renders on (self-state activity, memory_metadata).
+    # cancellation renders on (self-state activity, memory_get).
     events = db.mutations.history("hedgehog-watch", limit=10)
     archive_event = next(e for e in events if e.action == MutationAction.ARCHIVED.value)
     assert archive_event.detail is not None

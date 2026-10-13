@@ -1289,13 +1289,13 @@ REPLY_ANCHOR = "__reply__"
 
 
 def _anchor_hits(needle: str, content: str) -> bool:
-    """Does this tool-call row satisfy the anchor? A tool-name anchor (``memory_metadata(``)
+    """Does this tool-call row satisfy the anchor? A tool-name anchor (``memory_get(``)
     matches that call; a keyword anchor (``designer``, ``"published": false``) must live inside
-    a ``collection_set`` call — the row that made the edit — never another tool's reasoning
+    a ``collection_configure`` call — the row that made the edit — never another tool's reasoning
     field that merely mentions the word."""
     if needle.endswith("("):
         return needle in content
-    return "collection_set(" in content and needle in content
+    return "collection_configure(" in content and needle in content
 
 
 def _place_checks(

@@ -196,10 +196,10 @@ class StubReadLatestTool(Tool):
         return "entries"
 
 
-class StubMemoryMetadataTool(Tool):
-    """Stub for memory_metadata — the tool the retired ``collection_metadata`` became."""
+class StubMemoryGetTool(Tool):
+    """Stub for memory_get — the tool the retired ``collection_metadata`` became."""
 
-    name = "memory_metadata"
+    name = "memory_get"
     description = "Return the metadata fields for a single memory"
     parameters = {
         "type": "object",
@@ -211,12 +211,12 @@ class StubMemoryMetadataTool(Tool):
         return "metadata"
 
 
-class StubCollectionSetTool(Tool):
-    """Stub for collection_set — registered alongside ``memory_metadata`` because it is
+class StubCollectionConfigureTool(Tool):
+    """Stub for collection_configure — registered alongside ``memory_get`` because it is
     the character-NEAREST name to the retired ``collection_metadata`` and therefore the
     wrong answer the string leg gives on its own (#1944)."""
 
-    name = "collection_set"
+    name = "collection_configure"
     description = "Create or reconfigure a collection"
     parameters = {
         "type": "object",
@@ -274,13 +274,13 @@ class TestToolNotFoundSuggestion:
         character distance (#1944).
 
         The measured miss: a chat turn guessed ``collection_metadata`` — retired by
-        migration 0059 — and the string leg answered ``collection_set``, which shares the
-        longer prefix but is a different tool entirely, while the one it wanted was
-        ``memory_metadata``.  Both are registered here, so the string leg's wrong answer
-        is available and the assertion is that meaning wins."""
+        migration 0059 — and the string leg answered the character-nearest name, which
+        shares the longer prefix but is a different tool entirely, while the one it
+        wanted was ``memory_get``.  Both are registered here, so the string leg's wrong
+        answer is available and the assertion is that meaning wins."""
         registry = ToolRegistry()
-        registry.register(StubMemoryMetadataTool())
-        registry.register(StubCollectionSetTool())
+        registry.register(StubMemoryGetTool())
+        registry.register(StubCollectionConfigureTool())
         executor = ToolExecutor(registry, timeout=30.0)
 
         result = await executor.execute(ToolCall(tool="collection_metadata", arguments={}))
@@ -292,8 +292,8 @@ class TestToolNotFoundSuggestion:
         # Whole render: the suggestion leads the body, and the available list still names
         # both tools — the wrong answer is present as a choice and was not taken.
         assert result.message == (
-            "Did you mean 'memory_metadata'? "
-            "Available tools: memory_metadata, collection_set. "
+            "Did you mean 'memory_get'? "
+            "Available tools: memory_get, collection_configure. "
             "You must ONLY use the tools listed above."
         )
 
@@ -318,15 +318,15 @@ class TestToolNotFoundSuggestion:
         """The rename table is a first leg, not a replacement: a name nobody retired —
         an ordinary typo — still gets the nearest spelling (#1944)."""
         registry = ToolRegistry()
-        registry.register(StubMemoryMetadataTool())
+        registry.register(StubMemoryGetTool())
         executor = ToolExecutor(registry, timeout=30.0)
 
-        result = await executor.execute(ToolCall(tool="memory_metadta", arguments={}))
+        result = await executor.execute(ToolCall(tool="memory_gt", arguments={}))
 
         assert result.success is False
         assert result.message == (
-            "Did you mean 'memory_metadata'? "
-            "Available tools: memory_metadata. "
+            "Did you mean 'memory_get'? "
+            "Available tools: memory_get. "
             "You must ONLY use the tools listed above."
         )
 

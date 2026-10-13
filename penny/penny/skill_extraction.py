@@ -22,7 +22,7 @@ steps (house style: the summary method reads like a table of contents):
   that only read and a learn run that only wrote are both routines the user just
   taught, and a routine's shape is not the framework's to judge.  Failed calls are
   FILTERED, so a run whose only write failed extracts the read that worked.
-  Lifecycle calls a demo made (e.g. ``collection_set`` to set up the container) are
+  Lifecycle calls a demo made (e.g. ``collection_configure`` to set up the container) are
   dropped like orientation calls — a skill renders into a collector prompt, so only
   collector-runnable steps belong in it (#1668).  There is no health gate any more
   (#1839): the call-shaped-text bails it keyed on are discarded and re-rolled by the
@@ -60,7 +60,7 @@ steps (house style: the summary method reads like a table of contents):
   parameter fills.  ``bind_parameters`` reads it at the instantiation seam, so a
   configured collection's recipe carries the page it fetches instead of a description
   of one — while the parameters still live at SKILL level (rendered in the registry,
-  enforced at ``collection_set``, decisive for job identity).
+  enforced at ``collection_configure``, decisive for job identity).
 * **dedup (REPLACE semantics)** — a round carrying a FRAMING writes under the name that
   framing PINNED, and nothing else is consulted (#1902): the round's second run replaces
   its own routine rather than registering a sibling, and no same-shaped skill can capture
@@ -119,7 +119,7 @@ logger = logging.getLogger(__name__)
 # Registry-navigation verbs: the model uses these to ORIENT — resolve a skill or
 # collection (``find``), read a skill's own parameters and steps by name
 # (``skill_get``, #2305), or inspect a collection's config and its routine's
-# parameters (``memory_metadata``) — before it acts.  They are not part of the
+# parameters (``memory_get``) — before it acts.  They are not part of the
 # routine a skill captures (a re-run re-orients itself), and a ``find`` result
 # ECHOES its query, which manufactured a FALSE binding when captured as a step
 # (#1665).  So orientation calls are dropped from the distilled steps: what
@@ -130,7 +130,7 @@ logger = logging.getLogger(__name__)
 # what a spot IS is only legible against why the routine exists (#1658/#1828).
 _NAMING_CONVERSATION_TURNS = 6
 
-ORIENTATION_TOOLS = frozenset({"find", "memory_metadata", "skill_get"})
+ORIENTATION_TOOLS = frozenset({"find", "memory_get", "skill_get"})
 
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
 
@@ -203,7 +203,7 @@ def _certified_steps(
     it is not a registry-navigation verb (``ORIENTATION_TOOLS`` — a re-run re-orients
     itself, so orientation is not part of the routine), AND its tool is one a COLLECTOR
     can run (``collector_surface`` — a skill renders into a collector prompt, so a
-    lifecycle call the demo made mid-run, e.g. ``collection_set`` to set up the
+    lifecycle call the demo made mid-run, e.g. ``collection_configure`` to set up the
     container, is dropped from the recipe; it's not a step a collector could run).  So
     certified-by-execution + routine-only + runnable hold by construction.
 
@@ -263,7 +263,7 @@ def _interface_parameters(
     labeller share no inputs and no outputs, so the demonstrated value is the one thing
     that can say WHICH leaf of the program a parameter fills, and
     ``bind_parameters`` reads it at the instantiation seam.  The parameters still live
-    at SKILL level — the registry row renders them, ``collection_set`` enforces that
+    at SKILL level — the registry row renders them, ``collection_configure`` enforces that
     each one is bound, job identity (``is_same_job`` tier 1) reads them — and now the
     rendered program does too.
 

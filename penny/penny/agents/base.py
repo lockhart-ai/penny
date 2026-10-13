@@ -1149,7 +1149,7 @@ class Agent:
 
         Default: none — a collector cycle configures nothing, and neither does an
         ordinary chat turn.  ``ChatAgent`` overrides it to return the round's framing on
-        the turn the machine landed in apply, which is what lets ``collection_set``
+        the turn the machine landed in apply, which is what lets ``collection_configure``
         supply the container, the routine and its bound values itself.  A template method
         on the agent (the run type decides), never a branch inside the tool builder.
         """
@@ -1166,7 +1166,7 @@ class Agent:
 
         ``run_id`` is the id of the run building this surface — the chat turn's or
         the collector cycle's — threaded to every write/mutation-capable tool as
-        the executing run (#1560): entry writes stamp it, ``collection_set``
+        the executing run (#1560): entry writes stamp it, ``collection_configure``
         records it as the new mechanism's creating run (#1566), and each registry
         mutation records it as the change's cause.  Passed as an explicit
         parameter, never ambient state.

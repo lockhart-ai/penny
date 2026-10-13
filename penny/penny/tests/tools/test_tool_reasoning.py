@@ -237,7 +237,7 @@ class TestMemoryReadNarration:
         )
         assert narration == "You tried to read `browse-results` but it didn't work:"
 
-    def test_memory_metadata_narrates_check(self):
+    def test_memory_get_narrates_check(self):
         narration = MemoryMetadataTool.to_result_narration(
             {"memory": "likes"}, ToolResult(message="metadata")
         )
@@ -311,8 +311,8 @@ class TestMemoryLifecycleNarration:
     """Success + failure narration for the collection/log-lifecycle and
     introspection tools — every registered tool speaks (epic #1478)."""
 
-    def test_collection_set(self):
-        args = {"name": "games"}
+    def test_collection_configure(self):
+        args = {"collection": "games"}
         assert (
             CollectionCreateTool.to_result_narration(args, ToolResult(message="ok"))
             == "You set up the `games` collection:"
@@ -330,7 +330,7 @@ class TestMemoryLifecycleNarration:
         )
 
     def test_archive_unarchive(self):
-        args = {"memory": "games"}
+        args = {"collection": "games"}
         assert (
             CollectionArchiveTool.to_result_narration(args, ToolResult(message="ok"))
             == "You archived `games`:"
@@ -340,8 +340,8 @@ class TestMemoryLifecycleNarration:
             == "You restored `games` from the archive:"
         )
 
-    def test_collection_set_settings(self):
-        args = {"name": "games"}
+    def test_collection_configure_settings(self):
+        args = {"collection": "games"}
         assert (
             CollectionUpdateTool.to_result_narration(args, ToolResult(message="ok"))
             == "You updated `games`'s settings:"
