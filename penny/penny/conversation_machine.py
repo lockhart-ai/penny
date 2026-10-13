@@ -424,8 +424,8 @@ _WAITING_MISSING_NAME_ONLY = "- {name}"
 _JOB_LINE = '- "{name}" — {routine} · {notify} · {schedule}'
 _JOB_ROUTINE = 'runs "{skill}"'
 _JOB_NO_ROUTINE = "no skill attached"
-_JOB_NOTIFY_ON = "notifications on"
-_JOB_NOTIFY_OFF = "notifications off"
+_JOB_NOTIFY_ON = "notify: on"
+_JOB_NOTIFY_OFF = "notify: off"
 _JOB_NO_SCHEDULE = "no schedule"
 
 
