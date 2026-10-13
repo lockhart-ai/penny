@@ -3423,7 +3423,7 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     write — a read-shaped step) and an ``extraction_prompt`` naming it is not rejected
     at authoring time.  ``include_lifecycle=False`` mirrors the collector's masked
     surface (#1556): the registry-shape tools are absent from a cadence run, so an
-    ``extraction_prompt`` that names ``collection_configure`` / ``collection_configure`` /
+    ``extraction_prompt`` that names ``collection_configure`` /
     archive / merge is rejected at authoring time rather than persisted into a prompt
     the collector could never run.
 
