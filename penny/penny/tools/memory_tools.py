@@ -1128,8 +1128,8 @@ class CollectionUnarchiveTool(MemoryTool):
     description = "Unarchive a previously archived collection."
     parameters = {
         "type": "object",
-        "properties": {"memory": {"type": "string"}},
-        "required": ["memory"],
+        "properties": {"collection": {"type": "string"}},
+        "required": ["collection"],
     }
     args_model = CollectionNameArgs
 

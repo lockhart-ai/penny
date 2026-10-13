@@ -4195,6 +4195,19 @@ class TestFactory:
         "log_append",
     }
 
+    def test_every_tool_advertises_the_arguments_it_validates(self, db, mock_llm):
+        """A tool's schema is what the model is shown; its args model is what the call
+        is validated against.  They must name the same arguments, or the model is told
+        to pass one name and refused for not passing another."""
+        tools = build_memory_tools(db, _make_llm_client(mock_llm), agent_name="chat")
+        for tool in tools:
+            advertised = set(tool.parameters.get("properties", {}))
+            validated = set(tool.args_model.model_fields)
+            assert advertised == validated, (
+                f"{tool.name}: schema names {sorted(advertised)}, "
+                f"args model validates {sorted(validated)}"
+            )
+
     def test_chat_surface_is_the_full_set(self, db, mock_llm):
         """Chat (scope=None) gets every memory tool — entry mutations included,
         unrestricted, since edits are user-directed."""
