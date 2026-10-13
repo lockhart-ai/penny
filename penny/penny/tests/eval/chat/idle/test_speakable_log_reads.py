@@ -458,7 +458,10 @@ def _write_step(cycle: _SeededCycle, key: str, content: str) -> DistillInput:
     return DistillInput(
         source_ordinal=2,
         tool=_WRITE,
-        arguments={"memory": cycle.job.container, "entries": [{"key": key, "content": content}]},
+        arguments={
+            "collection": cycle.job.container,
+            "entries": [{"key": key, "content": content}],
+        },
         result=f"You saved an entry to {cycle.job.container}: ({_WRITE} result)\nWrote 1 entry.",
     )
 

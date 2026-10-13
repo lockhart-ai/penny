@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 # control tokens like ``<|channel|>commentary``.  Local Ollama strips these
 # before returning the tool call, but some remote OpenAI-compatible backends
 # (e.g. OpenRouter serving gpt-oss) leak them, so the raw name arrives as
-# e.g. ``done<|channel|>commentary`` or ``collection_read_latest<|channel|>``.
+# e.g. ``done<|channel|>commentary`` or ``collection_list<|channel|>``.
 # The real tool name is always the leading identifier before the first control
 # token, so everything from the first ``<|`` marker onward is stripped.  A
 # legitimate tool name is a plain identifier and never contains ``<|``.

@@ -74,7 +74,7 @@ from penny.database.memory.types import (
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.database.mutation_store import EnumeratedDecision
 from penny.llm.models import strip_harmony_control_tokens
-from penny.text_validity import degenerate_reason, half_formed_send_reason
+from penny.text_validity import LEGACY_TOOL_RENAMES, degenerate_reason, half_formed_send_reason
 from penny.validation.conditions import ConditionKey, run_flag_conditions
 
 logger = logging.getLogger(__name__)
@@ -208,7 +208,7 @@ class Memory:
     ) -> list[MemoryEntry]:
         """Newest-first entries — the shape-independent internal read used by
         the log cursor's first read and send_message's cooldown probe.  The
-        model-facing ``collection_read_latest`` is the ``Collection.read_latest``
+        model-facing ``collection_list`` is the ``Collection.read_latest``
         wrapper over this; logs reach it only through ``read_batch``."""
         return self._newest_rows(k, offset, search)
 
@@ -380,7 +380,7 @@ class Collection(Memory):
         Called from each mutating path with the rows that path has ALREADY read to do
         its work, so the record costs no extra query — and it is keyed to the MUTATION
         rather than to a tool, which is what makes ``collection_write``,
-        ``collection_delete_entry`` and the change-gate's own
+        ``collection_remove`` and the change-gate's own
         ``KEY_EXISTS_CHANGED`` baseline refresh (#1633) all recorded identically.  That
         last one is the write nobody makes explicitly, and precisely the one an aborted
         cycle used to leave behind.
@@ -391,7 +391,7 @@ class Collection(Memory):
     def read_latest(
         self, k: int | None = None, offset: int = 0, search: str | None = None
     ) -> list[MemoryEntry]:
-        """The model-facing newest-first collection read (``collection_read_latest``).
+        """The model-facing newest-first collection read (``collection_list``).
         Logs don't expose this — the base refuses it so a log read can't bypass
         its cursor."""
         return self.newest_entries(k, offset, search)
@@ -846,6 +846,17 @@ class MessageLogMemory(Log):
         return [self._to_entry(row) for row in rows]
 
 
+def _collection_field(fields: dict) -> Any:
+    """A logged call's collection name, read however it was logged.
+
+    The six entry tools name this argument ``collection`` today; a call logged
+    before the rename stored it as ``memory``.  The stored row is never
+    rewritten, so a reader pulls a collection's name out of a logged call's
+    arguments through this one accessor rather than re-deriving the fallback at
+    each site."""
+    return fields.get("collection", fields.get("memory", "?"))
+
+
 def render_tool_call(name: str, args: object) -> str:
     """Compact, grokkable render of one tool call (the salient args only).
 
@@ -855,15 +866,16 @@ def render_tool_call(name: str, args: object) -> str:
     prompt writes a call in (``docs/prompt-writing-guide.md`` → "The canonical call
     notation", point 6), so what the model reads of its past matches how it's told
     to act, and a wrong-shape or hallucinated sibling name is identifiable against
-    the real one.  kwargs form (``memory=…, key=…``) when a call carries more than
-    one argument; a single obvious argument stays positional.  Kept compact (the
-    salient args only, content never truncated) — the aliases these replaced saved
-    a few tokens per line; the real names cost them back, and nothing else is added.
+    the real one.  kwargs form (``collection=…, key=…``) when a call carries more
+    than one argument; a single obvious argument stays positional.  Kept compact
+    (the salient args only, content never truncated) — the aliases these replaced
+    saved a few tokens per line; the real names cost them back, and nothing else
+    is added.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
     if name == "collection_write":
         return (
-            f"collection_write(memory={fields.get('memory', '?')!r}, "
+            f"collection_write(collection={_collection_field(fields)!r}, "
             f"entries={_write_contents(fields)!r})"
         )
     if name == "update_entry":
@@ -915,6 +927,20 @@ def _decode_arguments(raw: object) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _resolve_logged_tool_name(name: str) -> str:
+    """The dispatchable identifier for a logged/wire tool NAME (#2307): strip a
+    leaked Harmony control token, then resolve a retired name to the one it was
+    renamed to (:data:`LEGACY_TOOL_RENAMES`) — so every reader that compares a
+    logged call's tool against a current surface or a name set (``_WRITE_TOOLS``
+    and its kin) compares CURRENT names only, whether the row was logged before
+    or after the rename.  The stored row is never rewritten; only the read
+    projection resolves it.  Shared by ``LoggedToolCall.tool`` and
+    ``_run_tool_calls`` so the two readers cannot drift onto two answers for the
+    same logged name."""
+    stripped = strip_harmony_control_tokens(name)
+    return LEGACY_TOOL_RENAMES.get(stripped, stripped)
+
+
 class LoggedToolCall(BaseModel):
     """The canonical, round-trippable shape of one logged tool call (#1560).
 
@@ -951,8 +977,12 @@ class LoggedToolCall(BaseModel):
         3 of 18 measured samples.  So the repair lives here rather than in storage:
         the record keeps the leak (it is a real diagnostic signal), and anything
         asking *which tool was this* reads ``tool``.  Uses the production strip, so
-        the live object and the log agree on the answer by construction."""
-        return strip_harmony_control_tokens(self.name)
+        the live object and the log agree on the answer by construction.  Since
+        #2307 it also resolves a retired name through ``LEGACY_TOOL_RENAMES``
+        (:func:`_resolve_logged_tool_name`), so a call logged under an old name
+        (``collection_read_latest``, ``collection_delete_entry``, …) compares equal
+        to its current one wherever ``.tool`` is read."""
+        return _resolve_logged_tool_name(self.name)
 
     @classmethod
     def from_function(cls, function: dict) -> LoggedToolCall:
@@ -1014,8 +1044,11 @@ def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
 
     The name is the DISPATCHABLE identifier, not the verbatim one — every caller
     below tallies, classifies or renders by tool, and a leaked Harmony control token
-    on the logged name matches none of them (#2013).  ``?`` stands in when the call
-    named no tool at all, so a nameless call still occupies its place in the run."""
+    on the logged name matches none of them (#2013), and nor would a name a later
+    rename retired (#2307) — both repaired by the same ``_resolve_logged_tool_name``
+    ``LoggedToolCall.tool`` reads, so the two readers cannot disagree.  ``?`` stands
+    in when the call named no tool at all, so a nameless call still occupies its
+    place in the run."""
     calls: list[tuple[str, object]] = []
     for prompt in prompts:
         response = json.loads(prompt.response) if prompt.response else {}
@@ -1023,7 +1056,7 @@ def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
             message = choice.get("message") or {}
             for tool_call in message.get("tool_calls") or []:
                 function = tool_call.get("function") or {}
-                tool = strip_harmony_control_tokens(function.get("name") or "")
+                tool = _resolve_logged_tool_name(function.get("name") or "")
                 calls.append((tool or "?", _parse_tool_args(function)))
     return calls
 
@@ -1055,9 +1088,7 @@ def _run_tool_failures(prompts: list[PromptLog]) -> int:
     return 0
 
 
-_WRITE_TOOLS = frozenset(
-    {"collection_write", "update_entry", "collection_delete_entry", "log_append"}
-)
+_WRITE_TOOLS = frozenset({"collection_write", "collection_remove", "log_append"})
 
 _ROLE_TOOL = "tool"
 
@@ -1100,7 +1131,7 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
       ``success=False`` (and so does add to ``tool_failures``); the header count still
       captures it, so ``no_writes`` is unaffected either way.
     - **reads** — internal collection/log reads (``log_read``,
-      ``collection_read_*``, ``read_similar``, ``memory_metadata``, …): every
+      ``collection_list``, ``read_similar``, ``memory_metadata``, …): every
       tool call that isn't a browse, write, send,
       or ``done()``.  These don't meaningfully fail, so they're a plain call count.
 

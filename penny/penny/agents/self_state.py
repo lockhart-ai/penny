@@ -21,7 +21,7 @@ one guess-free tool call from the detail). Sections:
   one run's per-call detail is one ``get_event(run <id>)`` hop away). A run line
   that wrote carries a ``· wrote '<key>' → `<collection>``` clause naming what it
   changed (from the #1560 ``last_written_by_run_id`` stamp, #1641), so a just-
-  written fact is 0 calls away and its full entry is one ``collection_read_latest``
+  written fact is 0 calls away and its full entry is one ``collection_list``
   hop. The *complement* of the
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
@@ -164,7 +164,7 @@ class SelfStateHeader:
     POINTERS = (
         "To look deeper: memory_metadata(<name>) for a collection's full config and "
         "change history, get_event(run <id>) for one run's tool calls, "
-        "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+        "collection_list(<name>) reads a store's entries, and find(query=<text>) "
         "searches them all by meaning — a collection, a skill, a stored entry, or "
         "something said in the conversation."
     )

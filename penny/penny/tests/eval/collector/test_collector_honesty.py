@@ -217,7 +217,7 @@ def _skill(instruction: str) -> SkillDraft:
                 source_ordinal=2,
                 tool=_WRITE,
                 arguments={
-                    "memory": _CONTAINER,
+                    "collection": _CONTAINER,
                     "entries": [
                         {
                             "key": "Acme ships an edge vector database",
@@ -231,7 +231,7 @@ def _skill(instruction: str) -> SkillDraft:
                 },
                 substitutions=[
                     SkillSubstitution(
-                        path=["memory"],
+                        path=["collection"],
                         kind=SkillSubKind.PLACEHOLDER,
                         description="the collection this is set up on",
                         attachment=True,

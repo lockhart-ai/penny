@@ -103,7 +103,7 @@ def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
 # passes a narrower set and drops the rules it cannot carry out (#1911).  ``done`` rides
 # every surface, scoped or not (#1916): assembly injects the terminal step into every
 # composed prompt, so the close has to be callable whatever the program contains.
-_FULL_SURFACE = frozenset({"collection_write", "collection_delete_entry", "browse", "done"})
+_FULL_SURFACE = frozenset({"collection_write", "collection_remove", "browse", "done"})
 
 
 def _get(db: Database, name: str) -> MemoryRow:
@@ -377,7 +377,7 @@ def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
     # It keeps its actual job: reads, scoped entry writes, browse, choose.  ``choose``
     # rides the collector surface so a demonstrated random-pick step renders into a
     # runnable collector program (skill capture).
-    assert {"collection_write", "collection_read_latest", "browse", "choose"} <= names
+    assert {"collection_write", "collection_list", "browse", "choose"} <= names
 
 
 def test_choose_is_capture_eligible_on_the_collector_surface(test_config, tmp_path):
@@ -402,7 +402,7 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
     assert chat_names >= _LIFECYCLE_TOOL_NAMES
     assert collector_names.isdisjoint(_LIFECYCLE_TOOL_NAMES)
     # Reads + entry mutations are present in BOTH — only the lifecycle tier differs.
-    assert {"collection_write", "collection_read_latest"} <= collector_names <= chat_names
+    assert {"collection_write", "collection_list"} <= collector_names <= chat_names
 
 
 # ── Schedule gating: the RRULE decides when a collection is due (#1857) ──────
@@ -824,7 +824,10 @@ async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_confi
             return mock_llm._make_tool_call_response(
                 request,
                 "collection_write",
-                {"memory": "expiring-watch", "entries": [{"key": "today", "content": "a fact"}]},
+                {
+                    "collection": "expiring-watch",
+                    "entries": [{"key": "today", "content": "a fact"}],
+                },
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {})
 
@@ -919,7 +922,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
         "- To correct an entry: `collection_write` it under the key it is stored under — the store "
         "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_delete_entry(key=<key>)`.\n"
+        "be removed instead: `collection_remove(key=<key>)`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
@@ -1073,7 +1076,7 @@ def test_send_message_is_not_on_the_collector_surface(test_config, tmp_path):
 # siblings ``collection_write``'s own rejection text points at — and nothing else.
 _SCOPED_PROGRAM = (
     "1. browse(queries=['https://northpier.example/departures'], extract='the dawn sailing')\n"
-    "2. collection_write(memory='ferry-departures', entries=[{'key': 'x', 'content': 'y'}])"
+    "2. collection_write(collection='ferry-departures', entries=[{'key': 'x', 'content': 'y'}])"
 )
 
 # NOT a program: prose whose steps do not open with a call, which since #1911's strict
@@ -1118,7 +1121,7 @@ def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp
     assert surface == {
         "browse",
         "collection_write",
-        "collection_delete_entry",
+        "collection_remove",
         "collection_keys",
         "done",
     }
@@ -1182,21 +1185,21 @@ def test_a_scoped_cycle_reads_only_the_runtime_rules_it_can_carry_out(test_confi
 
     Whole-render, both directions: a write program keeps every rule its tools support,
     and a read-only one has no rules block at all rather than a heading over nothing."""
-    write_surface = frozenset({"browse", "collection_write", "collection_delete_entry"})
+    write_surface = frozenset({"browse", "collection_write", "collection_remove"})
     assert Collector._runtime_rules(write_surface) == (
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
         "- To correct an entry: `collection_write` it under the key it is stored under — the store "
         "keeps one value per key and replaces the stored content in place. If the entry should "
-        "be removed instead: `collection_delete_entry(key=<key>)`.\n"
+        "be removed instead: `collection_remove(key=<key>)`.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
     )
     # A write program that never browses drops the browse rule and keeps the rest.
     assert "browsed this cycle" not in Collector._runtime_rules(
-        frozenset({"collection_write", "collection_delete_entry"})
+        frozenset({"collection_write", "collection_remove"})
     )
     # A read-only program supports none of them, so the head goes too.
     assert Collector._runtime_rules(frozenset({"log_read"})) == ""
@@ -1298,7 +1301,7 @@ async def test_configured_collection_cycle_reads_routine_values_and_joined_progr
         "\n"
         "1. browse(queries=['https://northpier.example/departures'], "
         "extract='the dawn sailing')\n"
-        "2. collection_write(memory='ferry-departures', "
+        "2. collection_write(collection='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
         "3. done()\n"
@@ -1353,7 +1356,7 @@ async def test_a_term_the_collection_was_never_given_reads_as_a_named_gap(test_c
         "\n"
         "1. browse(queries=['https://northpier.example/departures'], "
         "extract='the dawn sailing')\n"
-        "2. collection_write(memory='ferry-departures', "
+        "2. collection_write(collection='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
         "3. done()\n"
@@ -1410,7 +1413,7 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "\n"
         "1. browse(queries=['https://northpier.example/departures'], "
         "extract='the dawn sailing')\n"
-        "2. collection_write(memory='ferry-departures', "
+        "2. collection_write(collection='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
         "3. done()\n"
@@ -1505,7 +1508,7 @@ _NOTIFY_SEED_CONTENT = "Hollow Verge — a hand-drawn metroidvania. https://ex.e
 # anywhere else.
 _NOTIFY_PROGRAM = (
     "Keep the user posted on new indie metroidvania releases.\n"
-    '1. collection_read_latest(memory="indie-metroidvanias")\n'
+    '1. collection_list(collection="indie-metroidvanias")\n'
     '2. collection_write("indie-metroidvanias", entries=[{key: <release name>, '
     "content: <name + hook + URL>}])"
 )
@@ -1583,13 +1586,16 @@ def _program_handler(mock_llm, *, key: str = "Cinder Drift", content: str, drawn
         results = _results_so_far(request)
         if results == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_read_latest", {"memory": "indie-metroidvanias"}
+                request, "collection_list", {"collection": "indie-metroidvanias"}
             )
         if results == 1:
             return mock_llm._make_tool_call_response(
                 request,
                 "collection_write",
-                {"memory": "indie-metroidvanias", "entries": [{"key": key, "content": content}]},
+                {
+                    "collection": "indie-metroidvanias",
+                    "entries": [{"key": key, "content": content}],
+                },
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {})
 
@@ -1691,7 +1697,7 @@ async def test_a_done_closed_cycle_without_notify_stays_quiet(mock_llm, test_con
 # notification the framework queued afterwards.
 _READ_ONLY_PROGRAM = (
     "Look in on what the collection already holds and tell the user about it.\n"
-    '1. collection_read_latest(memory="indie-metroidvanias")'
+    '1. collection_list(collection="indie-metroidvanias")'
 )
 
 
@@ -1705,7 +1711,7 @@ def _read_only_handler(mock_llm, *, drawn: str):
             return mock_llm._make_text_response(request, drawn)
         if _results_so_far(request) == 0:
             return mock_llm._make_tool_call_response(
-                request, "collection_read_latest", {"memory": "indie-metroidvanias"}
+                request, "collection_list", {"collection": "indie-metroidvanias"}
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {})
 
@@ -1947,7 +1953,10 @@ def _writes_then_dies(mock_llm, *, key: str, content: str):
             return mock_llm._make_tool_call_response(
                 request,
                 "collection_write",
-                {"memory": "indie-metroidvanias", "entries": [{"key": key, "content": content}]},
+                {
+                    "collection": "indie-metroidvanias",
+                    "entries": [{"key": key, "content": content}],
+                },
             )
         raise LlmConnectionError("Connection refused")
 
@@ -2047,7 +2056,7 @@ async def test_a_cycle_cut_short_leaves_nothing_behind_either(mock_llm, test_con
                 request,
                 "collection_write",
                 {
-                    "memory": "indie-metroidvanias",
+                    "collection": "indie-metroidvanias",
                     "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — out now."}],
                 },
             )
@@ -2113,7 +2122,7 @@ async def test_a_write_gate_stop_keeps_what_the_cycle_wrote_before_it(
             else {"key": _NOTIFY_SEED_KEY, "content": _NOTIFY_SEED_CONTENT}
         )
         return mock_llm._make_tool_call_response(
-            request, "collection_write", {"memory": "indie-metroidvanias", "entries": [entry]}
+            request, "collection_write", {"collection": "indie-metroidvanias", "entries": [entry]}
         )
 
     mock_llm.set_response_handler(writes_then_stops)
@@ -2214,7 +2223,7 @@ def _reads_then_writes(mock_llm, *, close: bool):
                 request,
                 "collection_write",
                 {
-                    "memory": "indie-metroidvanias",
+                    "collection": "indie-metroidvanias",
                     "entries": [{"key": "Cinder Drift", "content": "Cinder Drift — next spring."}],
                 },
             )
@@ -2716,7 +2725,7 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     def handler(request: dict, count: int) -> LlmResponse:
         if count == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_read_latest", {"memory": "indie-metroidvanias"}
+                request, "collection_list", {"collection": "indie-metroidvanias"}
             )
         raise LlmConnectionError("Connection refused")
 
@@ -2728,8 +2737,7 @@ async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_co
     assert len(runs) == 1
     assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
     assert runs[0]["run_reason"] == (
-        "model call failed at step 2 after collection_read_latest: "
-        "LlmConnectionError: Connection refused"
+        "model call failed at step 2 after collection_list: LlmConnectionError: Connection refused"
     )
 
 
@@ -2740,7 +2748,7 @@ _A_DAY_AND_AN_HOUR = 25 * 60
 
 _BRIEFING_PROGRAM = (
     "Write the morning briefing each day.\n"
-    '1. collection_read_latest(memory="morning-briefing")\n'
+    '1. collection_list(collection="morning-briefing")\n'
     '2. collection_write("morning-briefing", entries=[{key: <the day>, '
     "content: <the briefing>}])"
 )
@@ -2792,7 +2800,7 @@ def _writes_then_closes(mock_llm) -> Callable[[dict, int], LlmResponse]:
                 request,
                 "collection_write",
                 {
-                    "memory": "morning-briefing",
+                    "collection": "morning-briefing",
                     "entries": [{"key": "today", "content": "the ferries are running"}],
                 },
             )
@@ -2920,7 +2928,7 @@ async def test_a_quiet_completed_cycle_still_consumes_its_occurrence(
     def reads_then_closes(request: dict, count: int) -> LlmResponse:
         if count == 1:
             return mock_llm._make_tool_call_response(
-                request, "collection_read_latest", {"memory": "morning-briefing"}
+                request, "collection_list", {"collection": "morning-briefing"}
             )
         return mock_llm._make_tool_call_response(request, DoneTool.name, {})
 
@@ -3276,7 +3284,7 @@ def _idle_response() -> ControllerResponse:
     return ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="collection_read_latest", arguments={}, failed=False),
+            ToolCallRecord(tool="collection_list", arguments={}, failed=False),
             ToolCallRecord(tool="done", arguments={}, failed=False),
         ],
     )

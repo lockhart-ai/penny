@@ -265,11 +265,18 @@ class Tool(ABC):
         read off the registered tool's own ``destination_param``, never a name or
         position hard-coded here. ``None`` for an unknown tool, a tool that declares no
         destination argument, or a call whose destination argument is absent or not a
-        string."""
+        string.
+
+        ``arguments`` may be a LOGGED call's — one made before #2307 renamed
+        ``collection_write``'s first argument from ``memory`` to ``collection`` — so a
+        miss on the CURRENT ``destination_param`` falls back to ``memory`` rather than
+        reading an old call as having named no destination at all."""
         tool_cls = cls._registry.get(tool_name)
         if tool_cls is None or tool_cls.destination_param is None:
             return None
         value = arguments.get(tool_cls.destination_param)
+        if value is None and tool_cls.destination_param == "collection":
+            value = arguments.get("memory")
         return value if isinstance(value, str) else None
 
     @classmethod

@@ -187,7 +187,7 @@ def _demonstrated_ledger(demonstration: _Demonstration) -> list[DistillInput]:
             source_ordinal=2,
             tool=_WRITE,
             arguments={
-                "memory": demonstration.collection,
+                "collection": demonstration.collection,
                 "entries": [{"key": demonstration.entry_key, "content": demonstration.entry_value}],
             },
             result=(

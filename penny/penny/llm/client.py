@@ -650,7 +650,7 @@ class LlmClient:
         r'"key"\s*:\s*"([^"]*)".*?"content"\s*:\s*"([^"]*)"',
         re.DOTALL,
     )
-    _MEMORY_FIELD_PATTERN = re.compile(r'"memory"\s*:\s*"([^"]+)"')
+    _COLLECTION_FIELD_PATTERN = re.compile(r'"collection"\s*:\s*"([^"]+)"')
 
     @staticmethod
     def _extract_malformed_arguments(raw: str) -> dict[str, Any]:
@@ -678,9 +678,9 @@ class LlmClient:
             entries = [{"key": k, "content": c} for k, c in pairs]
             if entries:
                 result: dict[str, Any] = {"entries": entries}
-                memory_match = LlmClient._MEMORY_FIELD_PATTERN.search(raw)
-                if memory_match:
-                    result["memory"] = memory_match.group(1)
+                collection_match = LlmClient._COLLECTION_FIELD_PATTERN.search(raw)
+                if collection_match:
+                    result["collection"] = collection_match.group(1)
                 return result
 
         return {}

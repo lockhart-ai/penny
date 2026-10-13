@@ -560,6 +560,8 @@ def extract_tool_call_names(prompt: str) -> list[str]:
 # and names that were never tools at all, recurring enough for a migration to sweep them:
 #   0039/0059  read_last → read_latest → collection_read_latest
 #   0040/0057  log_read_log → log_read_next → log_read
+#   0111       collection_read_latest → collection_list,
+#              collection_delete_entry → collection_remove
 # Why a table rather than more string distance: what a name became is a fact about this
 # project's history, and the two names need not look alike.  ``collection_metadata`` is
 # the measured case — the model guessed the retired name, and the string leg answered
@@ -574,8 +576,13 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "log_read_log": "log_read",
     "log_read_next": "log_read",
     "log_read_recent": "log_read",
-    "read_last": "collection_read_latest",
-    "read_latest": "collection_read_latest",
+    # Each of these two once pointed at collection_read_latest; #2307 renamed THAT
+    # tool too, so both are repointed straight at the name it ended up with —
+    # resolution is one hop, never a chain.
+    "read_last": "collection_list",
+    "read_latest": "collection_list",
+    "collection_read_latest": "collection_list",
+    "collection_delete_entry": "collection_remove",
     # A value stored under a key is written with the collection's one write call.
     "update_entry": "collection_write",
     "collection_read_random": "collection_sample",
@@ -660,12 +667,12 @@ def require_non_degenerate_content(value: str) -> str:
     degenerate (blank, bare URL, or a known bail-out phrase).
 
     Mirrors the corpus write filter (:func:`degenerate_reason`) at the tool
-    surface, pointing the model at ``collection_delete_entry`` if removal was the
+    surface, pointing the model at ``collection_remove`` if removal was the
     intent rather than a replacement.
     """
     if reason := degenerate_reason(value):
         raise ValueError(
             f"replacement content rejected — {reason}. Provide the full replacement "
-            f"text, or use collection_delete_entry if you meant to remove the entry."
+            f"text, or use collection_remove if you meant to remove the entry."
         )
     return value

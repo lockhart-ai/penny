@@ -34,7 +34,7 @@ from penny.program import ProgramCall, program_calls
 pytestmark = pytest.mark.bare_db
 
 
-_SURFACE = frozenset({"browse", "collection_write", "collection_read_latest", "log_read", "done"})
+_SURFACE = frozenset({"browse", "collection_write", "collection_list", "log_read", "done"})
 
 
 # ── The program's calls (#1911) ───────────────────────────────────────────────
@@ -52,7 +52,7 @@ def test_program_calls_read_the_rendered_dialect_only():
     rendered = (
         "Watch the timetable.\n"
         "1. browse(queries=['https://ex.example/t'], extract='the dawn sailing')\n"
-        "2. collection_write(memory='ferry', entries=[{'key': 'x', 'content': 'y'}])"
+        "2. collection_write(collection='ferry', entries=[{'key': 'x', 'content': 'y'}])"
     )
     assert program_calls(rendered, _SURFACE) == (
         ProgramCall(ordinal=1, tool="browse"),
@@ -86,7 +86,7 @@ _DOCUMENT = NotificationInput(
             result="EXTRACTED: 06:12",
         ),
         CycleCall(
-            call="collection_write(memory='ferry-departures', entries=['06:12'])",
+            call="collection_write(collection='ferry-departures', entries=['06:12'])",
             result="Wrote 1 entry.",
         ),
     ),
@@ -124,7 +124,7 @@ def test_notify_document_renders_whole():
         "## How it got there\n"
         "1. browse(queries=['https://northpier.example/departures'])\n"
         "   → EXTRACTED: 06:12\n"
-        "2. collection_write(memory='ferry-departures', entries=['06:12'])\n"
+        "2. collection_write(collection='ferry-departures', entries=['06:12'])\n"
         "   → Wrote 1 entry.\n"
         "\n"
         "## Background: earlier messages\n"
@@ -192,7 +192,7 @@ _PAGE = "## browse: https://harbour.example/\n" + "\n".join(
 )
 _DIGEST = " ".join(f"pier {n} dark;" for n in range(1, 900))
 _WRITE_CALL = (
-    "collection_write(memory='harbour-watch', "
+    "collection_write(collection='harbour-watch', "
     f"entries=[{{'key': 'lanterns', 'content': '{_DIGEST}'}}])"
 )
 _LONG_MESSAGE = "1. [2026-01-02 07:03 UTC] " + " ".join(
@@ -211,7 +211,7 @@ _OVERSIZED = NotificationInput(
         CycleCall(call=_WRITE_CALL, result="Wrote 10 entries to 'harbour-watch'."),
         *(
             CycleCall(
-                call=f"collection_read_latest(memory='harbour-watch', k={n})",
+                call=f"collection_list(collection='harbour-watch', k={n})",
                 result="No entries.",
             )
             for n in range(3, 12)
@@ -295,21 +295,21 @@ def test_an_oversized_cycle_assembles_under_the_declared_bound():
         f"   → {_PAGE[:300]}… [{len(_PAGE) - 300} characters omitted]\n"
         f"2. {_WRITE_CALL[:150]}… [{len(_WRITE_CALL) - 150} characters omitted]\n"
         "   → Wrote 10 entries to 'harbour-watch'.\n"
-        "3. collection_read_latest(memory='harbour-watch', k=3)\n"
+        "3. collection_list(collection='harbour-watch', k=3)\n"
         "   → No entries.\n"
-        "4. collection_read_latest(memory='harbour-watch', k=4)\n"
+        "4. collection_list(collection='harbour-watch', k=4)\n"
         "   → No entries.\n"
-        "5. collection_read_latest(memory='harbour-watch', k=5)\n"
+        "5. collection_list(collection='harbour-watch', k=5)\n"
         "   → No entries.\n"
-        "6. collection_read_latest(memory='harbour-watch', k=6)\n"
+        "6. collection_list(collection='harbour-watch', k=6)\n"
         "   → No entries.\n"
-        "7. collection_read_latest(memory='harbour-watch', k=7)\n"
+        "7. collection_list(collection='harbour-watch', k=7)\n"
         "   → No entries.\n"
-        "8. collection_read_latest(memory='harbour-watch', k=8)\n"
+        "8. collection_list(collection='harbour-watch', k=8)\n"
         "   → No entries.\n"
-        "9. collection_read_latest(memory='harbour-watch', k=9)\n"
+        "9. collection_list(collection='harbour-watch', k=9)\n"
         "   → No entries.\n"
-        "10. collection_read_latest(memory='harbour-watch', k=10)\n"
+        "10. collection_list(collection='harbour-watch', k=10)\n"
         "   → No entries.\n"
         "1 more call not shown.\n"
         "\n"

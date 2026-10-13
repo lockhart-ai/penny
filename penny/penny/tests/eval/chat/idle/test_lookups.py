@@ -332,7 +332,7 @@ async def test_an_archived_list_is_reached_and_read(chat_eval: ChatEval, model: 
 # ═══ 5 · which entries of one long list match something ═════════════════════
 #
 # ~40 entries, two of them carrying "lime" — written FIRST, so they are the oldest
-# in the list rather than among the newest.  `collection_read_latest` returns every
+# in the list rather than among the newest.  `collection_list` returns every
 # entry when `k` is omitted, so the honest wrong answer is a model that leans on a
 # ranked similarity search, or a habitual small `k`, instead of reading the list
 # whole.

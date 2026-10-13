@@ -498,7 +498,7 @@ class TestRepeatCallGuard:
             if tool_call.tool == "collection_write":
                 state["written"] = True
                 return ToolResult(message="Wrote entry to widget-log", mutated=True)
-            if tool_call.tool == "collection_read_latest":
+            if tool_call.tool == "collection_list":
                 if state["written"]:
                     return ToolResult(message="1 entry: the value")
                 return ToolResult(
@@ -514,7 +514,7 @@ class TestRepeatCallGuard:
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(
-                    request, "collection_read_latest", dict(read_args)
+                    request, "collection_list", dict(read_args)
                 )
             if count == 2:
                 return mock_llm._make_tool_call_response(
@@ -524,7 +524,7 @@ class TestRepeatCallGuard:
                 # Byte-identical to count 1 — the write mutated since, clearing the cache,
                 # so the re-read RUNS instead of being blocked.
                 return mock_llm._make_tool_call_response(
-                    request, "collection_read_latest", dict(read_args)
+                    request, "collection_list", dict(read_args)
                 )
             return mock_llm._make_text_response(request, "done")
 
@@ -533,7 +533,7 @@ class TestRepeatCallGuard:
         response = await agent.run("test", max_steps=max_steps)
         assert response.answer == "done"
 
-        reads = [r for r in response.tool_calls if r.tool == "collection_read_latest"]
+        reads = [r for r in response.tool_calls if r.tool == "collection_list"]
         # The re-read EXECUTED (two read records), rather than being blocked (one).
         assert len(reads) == 2
         assert reads[0].failed is True

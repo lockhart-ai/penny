@@ -162,8 +162,8 @@ class Collector(BackgroundAgent):
             "- To correct an entry: `collection_write` it under the key it is stored "
             "under — the store keeps one value per key and replaces the stored content "
             "in place. If the entry should be removed instead: "
-            "`collection_delete_entry(key=<key>)`.",
-            ("collection_write", "collection_delete_entry"),
+            "`collection_remove(key=<key>)`.",
+            ("collection_write", "collection_remove"),
         ),
         (
             "- Cite only what you actually browsed this cycle.  Never invent a URL to "

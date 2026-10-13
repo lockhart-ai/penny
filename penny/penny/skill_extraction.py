@@ -123,7 +123,7 @@ logger = logging.getLogger(__name__)
 # routine a skill captures (a re-run re-orients itself), and a ``find`` result
 # ECHOES its query, which manufactured a FALSE binding when captured as a step
 # (#1665).  So orientation calls are dropped from the distilled steps: what
-# survives is the routine itself (browse, log_read, collection_read_latest,
+# survives is the routine itself (browse, log_read, collection_list,
 # entry reads, and the writes).
 # Preceding conversation turns fed to the labelling step — the user's instigating
 # ask ('can you watch …') usually sits a turn or two before the demonstration, and

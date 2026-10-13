@@ -43,7 +43,7 @@ from pydantic import BaseModel
 _STEP_RE = re.compile(r"^(\d+)\.\s*(.*)$", re.MULTILINE)
 
 # The step's call, which must OPEN the step — the rendered dialect exactly, as
-# ``render_skill`` writes it (``4. collection_write(memory='x', …)``).  Anchored rather
+# ``render_skill`` writes it (``4. collection_write(collection='x', …)``).  Anchored rather
 # than searched (#1911): a program is a render now, so a step that does not open with
 # its call is not a step this framework wrote, and reading one leniently would be
 # inventing a program out of prose.

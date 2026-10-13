@@ -131,7 +131,7 @@ def test_incomplete_run_is_flagged_and_shows_trace():
 writes: 1
 ⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
 the cycle never finished cleanly
-collection_write(memory='games', entries='x')"""
+collection_write(collection='games', entries='x')"""
     )
 
 
@@ -170,19 +170,18 @@ def test_aborted_run_record_names_the_failed_model_call():
     header IS the whole story, which is exactly what the flags could not say."""
     abort = RunAbort(
         step=4,
-        after_tool="collection_read_latest",
+        after_tool="collection_list",
         error=ModelCallError(error_class="LlmTimeoutError", message="Request timed out."),
     )
     run = [
-        _prompt([_call("collection_read_latest", {"memory": "games"})]),
+        _prompt([_call("collection_list", {"collection": "games"})]),
         _prompt([], outcome="failed", reason=abort.render()),
     ]
     health = classify_run(run)
     assert health.bailed is False
     assert health.flags == []
     assert (
-        render_run_record(run)
-        == "[games] model call failed at step 4 after collection_read_latest: "
+        render_run_record(run) == "[games] model call failed at step 4 after collection_list: "
         "LlmTimeoutError: Request timed out."
     )
 
@@ -201,7 +200,7 @@ def test_tool_failure_count_is_flagged():
 [games] worked
 writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
-collection_write(memory='games', entries='x')"""
+collection_write(collection='games', entries='x')"""
     )
 
 
@@ -248,7 +247,7 @@ def test_healthy_worked_run_has_no_flags():
         == """\
 [games] worked
 writes: 1
-collection_write(memory='games', entries='x')"""
+collection_write(collection='games', entries='x')"""
     )
 
 
@@ -357,7 +356,7 @@ def test_browse_failures_but_wrote_is_not_no_writes(emitted_suffix):
 [games] worked
 browses: 1 ok, 1 failed · writes: 1
 browse(['a', 'b'])
-collection_write(memory='games', entries='x')"""
+collection_write(collection='games', entries='x')"""
     )
     assert (
         render_run_calls(run)
@@ -365,7 +364,7 @@ collection_write(memory='games', entries='x')"""
 run wrote-fixed
 [games]
     step 1: browse(['a', 'b'])
-    step 2: collection_write(memory='games', entries='x')
+    step 2: collection_write(collection='games', entries='x')
 done: worked"""
     )
 
@@ -414,7 +413,7 @@ def test_write_gate_stop_ended_run_shows_trace_and_reason():
         == """\
 [games] the value was unchanged since the last observation
 writes: 1
-collection_write(memory='games', entries='$42')"""
+collection_write(collection='games', entries='$42')"""
     )
 
 
@@ -519,7 +518,7 @@ def _chat_kitchen_sink_run() -> list[PromptLog]:
     third = _prompt(
         [
             _call("generate_image", {"description": "a cartoon fox"}, call_id="g1"),
-            _call("collection_get", {"memory": "old-shelf", "key": "fox tales"}, call_id="r1"),
+            _call("collection_get", {"collection": "old-shelf", "key": "fox tales"}, call_id="r1"),
             _call(
                 "collection_write",
                 {
@@ -573,18 +572,21 @@ def test_render_run_calls_chat_kitchen_sink_full_literal():
     gate outcomes (written / duplicate-rejected) and the failed call render
     honestly, and the egress trace names the delivered media by typed id — so a
     delivery is inspected by a read, not confabulated."""
-    assert (
-        render_run_calls(_chat_kitchen_sink_run())
-        == """\
-run run-fixed
-user: draw me a cartoon fox and log any new fox shows
-    step 1: browse(['new fox cartoons']) => ## browse: https://example.com/fox-cartoons
-    step 2: collection_write(memory='shows', entries='Fox Tales S2') => Wrote 1 entry: fox-tales.
-    step 4: generate_image(description='a cartoon fox') => Generated image #7 of: a cartoon fox.
-    step 5: collection_get(memory='old-shelf', key='fox tales') => Memory 'old-shelf' not found.
-    step 6: collection_write(memory='shows', entries='Fox Tales again') => Duplicate of fox-tales.
-penny: Done — logged the new season and drew your fox!
-    attached: image #7"""
+    assert render_run_calls(_chat_kitchen_sink_run()) == (
+        "run run-fixed\n"
+        "user: draw me a cartoon fox and log any new fox shows\n"
+        "    step 1: browse(['new fox cartoons']) => "
+        "## browse: https://example.com/fox-cartoons\n"
+        "    step 2: collection_write(collection='shows', entries='Fox Tales S2') => "
+        "Wrote 1 entry: fox-tales.\n"
+        "    step 4: generate_image(description='a cartoon fox') => "
+        "Generated image #7 of: a cartoon fox.\n"
+        "    step 5: collection_get(collection='old-shelf', key='fox tales') => "
+        "Memory 'old-shelf' not found.\n"
+        "    step 6: collection_write(collection='shows', entries='Fox Tales again') => "
+        "Duplicate of fox-tales.\n"
+        "penny: Done — logged the new season and drew your fox!\n"
+        "    attached: image #7"
     )
 
 
@@ -620,14 +622,13 @@ def test_render_run_calls_collector_run_full_literal():
             ),
         ),
     ]
-    assert (
-        render_run_calls(run)
-        == """\
-run coll-fixed
-[games]
-    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget
-    step 2: collection_write(memory='games', entries='Pocket Go pick') => Wrote 1 entry: pocket-go.
-done: worked"""
+    assert render_run_calls(run) == (
+        "run coll-fixed\n"
+        "[games]\n"
+        "    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget\n"
+        "    step 2: collection_write(collection='games', entries='Pocket Go pick') => "
+        "Wrote 1 entry: pocket-go.\n"
+        "done: worked"
     )
 
 
@@ -664,7 +665,7 @@ def test_render_run_calls_write_gate_stop_conclusion_full_literal():
         == """\
 run stop-fixed
 [games]
-    step 1: collection_write(memory='games', entries='$42') => Unchanged: 'price' \
+    step 1: collection_write(collection='games', entries='$42') => Unchanged: 'price' \
 already holds the same value — no change since the last write (entry).
 stopped: the value was unchanged since the last observation"""
     )
@@ -816,7 +817,7 @@ def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
         == """\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write(memory='shelf', entries='$42') => Memory 'shelf' not found \
+    step 1: collection_write(collection='shelf', entries='$42') => Memory 'shelf' not found \
 — did you mean 'shelves'?"""
     )
     # The projection the skill extractor reads is complete too: the terminal call now
@@ -832,7 +833,7 @@ user: log the new shelf price
         == """\
 run tail-fixed
 user: log the new shelf price
-    step 1: collection_write(memory='shelf', entries='$42')"""
+    step 1: collection_write(collection='shelf', entries='$42')"""
     )
 
 

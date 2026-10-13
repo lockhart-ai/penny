@@ -94,7 +94,7 @@ def _demonstrated_ledger(demo: _Demonstration) -> list[DistillInput]:
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": demo.collection,
+                "collection": demo.collection,
                 "entries": [{"key": demo.entry_key, "content": demo.entry_value}],
             },
             result=(
@@ -464,7 +464,7 @@ def _seed_one_run(db: Database, container: str, run_seed: _RunSeed) -> None:
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": container,
+                "collection": container,
                 "entries": [{"key": run_seed.entry_key, "content": run_seed.entry_value}],
             },
             result=f"You saved an entry to {container}: (collection_write result)\nWrote 1 entry.",

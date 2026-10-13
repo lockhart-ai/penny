@@ -140,7 +140,7 @@ _TWO_SOURCES = LabellingFixture(
         (
             "collection_write",
             {
-                "memory": "headlines",
+                "collection": "headlines",
                 "entries": [{"key": "morning headlines", "content": "harbour vote passes"}],
             },
             "You saved an entry to headlines: (collection_write result)\nWrote 1 entry.",
@@ -165,14 +165,14 @@ _TWO_SOURCES = LabellingFixture(
         "\n"
         "The skill's steps:\n"
         "1. browse(queries=[{queries}, {queries-2}], extract={extract})\n"
-        "2. collection_write(memory={memory}, entries=["
+        "2. collection_write(collection={collection}, entries=["
         "{'key': {key}, 'content': the value from step 1}])\n"
         "\n"
         f"{_PLACEHOLDER_HEADING}\n"
         "- queries: fills browse.queries[0]; demonstrated value: 'citydesk.example/front'\n"
         "- queries-2: fills browse.queries[1]; demonstrated value: 'harborpost.example/front'\n"
         "- extract: fills browse.extract; demonstrated value: 'the top headline'\n"
-        "- memory: fills collection_write.memory; demonstrated value: 'headlines'\n"
+        "- collection: fills collection_write.collection; demonstrated value: 'headlines'\n"
         "- key: fills collection_write.entries[0].key; demonstrated value: 'morning headlines'"
     ),
 )
@@ -194,7 +194,7 @@ _SINGLE_TURN = LabellingFixture(
         (
             "collection_write",
             {
-                "memory": "weather",
+                "collection": "weather",
                 "entries": [{"key": "lisbon high temperature", "content": "24 degrees"}],
             },
             "You saved an entry to weather: (collection_write result)\nWrote 1 entry.",
@@ -214,13 +214,13 @@ _SINGLE_TURN = LabellingFixture(
         "\n"
         "The skill's steps:\n"
         "1. browse(queries=[{queries}], extract={extract})\n"
-        "2. collection_write(memory={memory}, entries=["
+        "2. collection_write(collection={collection}, entries=["
         "{'key': {key}, 'content': the value from step 1}])\n"
         "\n"
         f"{_PLACEHOLDER_HEADING}\n"
         "- queries: fills browse.queries[0]; demonstrated value: 'weather.example/lisbon'\n"
         '- extract: fills browse.extract; demonstrated value: "today\'s high temperature"\n'
-        "- memory: fills collection_write.memory; demonstrated value: 'weather'\n"
+        "- collection: fills collection_write.collection; demonstrated value: 'weather'\n"
         "- key: fills collection_write.entries[0].key; "
         "demonstrated value: 'lisbon high temperature'"
     ),
@@ -249,7 +249,7 @@ _SEARCH = LabellingFixture(
         (
             "collection_write",
             {
-                "memory": "ticket-prices",
+                "collection": "ticket-prices",
                 "entries": [{"key": "aurora fest ticket price", "content": "$42"}],
             },
             "You saved an entry to ticket-prices: (collection_write result)\nWrote 1 entry.",
@@ -273,13 +273,13 @@ _SEARCH = LabellingFixture(
         "\n"
         "The skill's steps:\n"
         "1. browse(queries=[{queries}], extract={extract})\n"
-        "2. collection_write(memory={memory}, entries=["
+        "2. collection_write(collection={collection}, entries=["
         "{'key': {key}, 'content': the value from step 1}])\n"
         "\n"
         f"{_PLACEHOLDER_HEADING}\n"
         "- queries: fills browse.queries[0]; demonstrated value: 'aurora fest tickets'\n"
         "- extract: fills browse.extract; demonstrated value: 'the cheapest ticket price'\n"
-        "- memory: fills collection_write.memory; demonstrated value: 'ticket-prices'\n"
+        "- collection: fills collection_write.collection; demonstrated value: 'ticket-prices'\n"
         "- key: fills collection_write.entries[0].key; "
         "demonstrated value: 'aurora fest ticket price'"
     ),
@@ -464,7 +464,7 @@ TWO_SOURCES_CASE = PortedNamingCase(
         "go to citydesk.example/front and harborpost.example/front and note down the top "
         "headline on each one",
     ),
-    offered=(_FIRST_SOURCE, _SECOND_SOURCE, "extract", "memory", "key"),
+    offered=(_FIRST_SOURCE, _SECOND_SOURCE, "extract", "collection", "key"),
     anchors=("citydesk.example/front", "harborpost.example/front"),
 )
 
@@ -479,7 +479,7 @@ SEARCH_CASE = PortedNamingCase(
         "run a search for aurora fest tickets, work out the cheapest ticket price, and remember it",
         "search for aurora fest tickets, find the cheapest ticket price there, and note it down",
     ),
-    offered=("queries", "extract", "memory", "key"),
+    offered=("queries", "extract", "collection", "key"),
     anchors=("aurora fest tickets", "cheapest ticket price"),
 )
 
@@ -497,7 +497,7 @@ SINGLE_TURN_CASE = PortedNamingCase(
         "have a look at weather.example/lisbon, work out today's high temperature, and "
         "remember that",
     ),
-    offered=("queries", "extract", "memory", "key"),
+    offered=("queries", "extract", "collection", "key"),
     anchors=("weather.example/lisbon", "high temperature"),
 )
 
