@@ -348,7 +348,7 @@ async def test_get_tools_raises_outside_cycle(test_config, tmp_path):
 
 _LIFECYCLE_TOOL_NAMES = frozenset(
     {
-        "collection_set",
+        "collection_configure",
         "collection_archive",
         "collection_unarchive",
         "log_create",
@@ -1249,10 +1249,10 @@ async def _configure_timetable_collection(db: Database) -> None:
     through the real front door with the values the job is pointed at."""
     seed_timetable_skill(db)
     result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-        name="ferry-departures",
+        collection="ferry-departures",
         description="the dawn sailing on the north pier timetable",
         skill="check_timetable",
-        params={"url": "https://northpier.example/departures", "line": "the dawn sailing"},
+        parameters={"url": "https://northpier.example/departures", "line": "the dawn sailing"},
         schedule="FREQ=HOURLY",
     )
     assert result.success, result.message
@@ -3091,7 +3091,7 @@ async def test_run_for_collection_not_found(test_config, tmp_path):
     assert "does-not-exist" in message
     assert "not found" in message
     # matches the house memory-not-found wording (str(MemoryNotFoundError))
-    assert "collection_set" in message
+    assert "collection_configure" in message
 
 
 @pytest.mark.asyncio
@@ -3113,7 +3113,7 @@ async def test_run_for_no_extraction_prompt(test_config, tmp_path):
     success, message = await collector.run_for("bare-col")
     assert success is False
     assert "extraction_prompt" in message
-    assert "collection_set" in message
+    assert "collection_configure" in message
 
 
 @pytest.mark.asyncio

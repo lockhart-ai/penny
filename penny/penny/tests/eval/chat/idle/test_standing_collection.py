@@ -31,7 +31,7 @@ is idle by the machine's own boundary (#1927) — the state definitions say so i
 so ``idle`` is the contract rather than a hope, and a sample that lands in ``request`` or
 ``apply`` is the residual that ticket records, showing up as a number instead of as a note.
 
-**What is NOT claimed, and why.**  That she called ``collection_set`` is a ROUTE — many routes
+**What is NOT claimed, and why.**  That she called ``collection_configure`` is a ROUTE — many routes
 reach one end state, and a rule keyed to that name would simply not fire for a verb nobody
 enumerated — so it is measured in the tool sequence and never asserted, where a divergence reads
 as a sample worth opening rather than as a claim about which verb was right.
@@ -744,7 +744,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 # Every one is a read of what the turn LEFT BEHIND — the job's own row, what it holds, the
 # registry around it, the global switch.  None reads a tool NAME: a job cannot change its own
 # configuration by accident, so the row already says whether the edit happened, and a rule
-# keyed to ``collection_set`` would simply not fire for a plugin verb nobody enumerated.
+# keyed to ``collection_configure`` would simply not fire for a plugin verb nobody enumerated.
 #
 # They stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the
 # second CUSTOMER, and the cases below are one behaviour family in one file: a second

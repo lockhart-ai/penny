@@ -258,7 +258,7 @@ class TestMemoryMetadata:
         assert set(replaced) <= set(_FIELD_PRIORS)
 
     def test_metadata_full_render_with_change_history(self, db):
-        """The memory_metadata render contract, whole-output (#1560): one literal
+        """The memory_get render contract, whole-output (#1560): one literal
         of everything the model reads — identity, recipe, operational settings,
         the lifecycle block, and the mutation ledger's "Recent changes" section,
         each change naming its run id (the anchor invariant), so "when was this

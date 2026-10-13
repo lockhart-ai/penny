@@ -78,7 +78,7 @@ _FAMILY = "state-transitions"
 
 # The one call that stands a job up — named once, since three sections read it (the
 # learn → apply scorer, the seeded apply turn's ledger, and the idle → apply scorer).
-_SET_TOOL = "collection_set"
+_SET_TOOL = "collection_configure"
 
 # The call every edge here must NOT make: going and looking instead of asking, teaching or
 # setting up.  Named once for the same reason — five sections check for its absence.

@@ -2883,14 +2883,17 @@ def test_report_renders_the_terminal_call_and_result_from_the_run_tail(
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     db = _make_db(tmp_path)
     arguments = {"memory": "shelf"}
-    call = {"id": "s1", "function": {"name": "collection_set", "arguments": json.dumps(arguments)}}
+    call = {
+        "id": "s1",
+        "function": {"name": "collection_configure", "arguments": json.dumps(arguments)},
+    }
     _log_prompt(
         db,
         messages=[{"role": "user", "content": "attach the skill"}],
         response={"choices": [{"message": {"tool_calls": [call]}}]},
     )
     frame = Tool.format_result(
-        "collection_set",
+        "collection_configure",
         arguments,
         ToolResult(message="Memory 'shelf' not found.", success=False),
     )
@@ -2901,10 +2904,12 @@ def test_report_renders_the_terminal_call_and_result_from_the_run_tail(
             {"role": "tool", "tool_call_id": "s1", "content": frame},
         ],
     )
-    result = SampleResult.graded([Check("attached the skill", ok=False, anchor="collection_set(")])
+    result = SampleResult.graded(
+        [Check("attached the skill", ok=False, anchor="collection_configure(")]
+    )
     _write_sample_report(db, "tail-case", 0, result=result, reply="")
     text = _sample_report_text(tmp_path, "tail-case")
-    assert '| actual | 🔧 collection_set({"memory": "shelf"}) | ❌ C1 |' in text
+    assert '| actual | 🔧 collection_configure({"memory": "shelf"}) | ❌ C1 |' in text
     assert f"| actual | 📥 {report.escape_cell(frame)} |" in text
     assert sample_is_fragile(db)
 
@@ -3842,9 +3847,9 @@ _BIND_DOCUMENT = build_binding_content(
     [SkillParameter(name="url", description="The URL of the listing to watch")],
 )
 _BIND_DRAW = f"{VALUE_TAG} url: https://example.test/lantern"
-_SET_ARGS = '{"name": "monitor-price-lantern", "schedule": "FREQ=HOURLY", "notify": true}'
-_SET_CALL = {"function": {"name": "collection_set", "arguments": _SET_ARGS}}
-_SET_RESULT = "You updated `monitor-price-lantern`'s settings: (collection_set result)"
+_SET_ARGS = '{"collection": "monitor-price-lantern", "schedule": "FREQ=HOURLY", "notify": true}'
+_SET_CALL = {"function": {"name": "collection_configure", "arguments": _SET_ARGS}}
+_SET_RESULT = "You updated `monitor-price-lantern`'s settings: (collection_configure result)"
 _APPLY_REPLY = "Set — I'll check that listing hourly and message you when the price moves."
 
 
@@ -3919,7 +3924,7 @@ def test_the_binder_renders_between_the_classifier_and_the_chat_agent(
     db = _make_db(tmp_path)
     _apply_turn_ledger(db)
     result = SampleResult.graded(
-        [Check("configured the job", ok=True, anchor="collection_set(", kind="spine")]
+        [Check("configured the job", ok=True, anchor="collection_configure(", kind="spine")]
     )
     _case_prompts.pop("binder-order", None)
     _write_sample_report(db, "binder-order", 0, result=result, reply=_APPLY_REPLY)
@@ -3946,10 +3951,10 @@ def test_the_binder_renders_between_the_classifier_and_the_chat_agent(
         "| actual | 🧩 skill-binder → VALUE url: https://example.test/lantern |  |\n"
         "| 💭 | <details><summary>thinking — 42 chars</summary>"
         "set the schedule and turn notifications on</details> |  |\n"
-        '| actual | 🔧 collection_set({"name": "monitor-price-lantern", '
+        '| actual | 🔧 collection_configure({"collection": "monitor-price-lantern", '
         '"schedule": "FREQ=HOURLY", "notify": true}) | ✅ C1 |\n'
         "| actual | 📥 You updated `monitor-price-lantern`'s settings: "
-        "(collection_set result) |  |\n"
+        "(collection_configure result) |  |\n"
         "| 💭 | <details><summary>thinking — 24 chars</summary>"
         "say back what it will do</details> |  |\n"
         "| actual | 🤖 \"Set — I'll check that listing hourly and message you when the "

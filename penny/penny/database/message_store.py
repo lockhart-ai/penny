@@ -108,7 +108,7 @@ class EmissionActivity(BaseModel):
     header's recent-activity block (#1568).
 
     ``mechanism`` is the bound collection whose cycle produced it (the
-    ``memory_metadata`` anchor); ``sent_at`` is when it went out; ``snippet`` is a
+    ``memory_get`` anchor); ``sent_at`` is when it went out; ``snippet`` is a
     short, whitespace-collapsed excerpt of the content so the model sees *what* it
     autonomously said, not only that it did.  Direct replies (``mechanism`` NULL)
     are excluded \u2014 they are the conversation, not its complement."""

@@ -41,7 +41,7 @@ one guess-free tool call from the detail). Sections:
   recipe was context cost for a decision it does not inform. The full recipe is
   one call away either way (#2287): ``find`` carries a taught-skill hit's own
   ``parameters:`` block and numbered steps, and once a routine is set running,
-  ``memory_metadata`` on the job carries the same block with the value THAT job
+  ``memory_get`` on the job carries the same block with the value THAT job
   bound for each. One feed: the taught-skill registry
   (``db.skills``, #1590) — the sole skills store. (The legacy ``skills``
   collection's standing-rules feed retired with the collection, #1624/migration
@@ -55,7 +55,7 @@ Autonomous-send (emission) rows join the recent-activity block (#1568): each
 delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
 line, interleaved by time with the runs and mutations, so Penny sees her own
 background emissions ambiently; older sends carry the same provenance inline on
-every ``penny-messages`` read, and ``memory_metadata(<mechanism>)`` is the hop to
+every ``penny-messages`` read, and ``memory_get(<mechanism>)`` is the hop to
 the creating request (#1566).
 """
 
@@ -115,7 +115,7 @@ class SelfStateHeader:
     # Whether ONE mechanism tells the user what it finds — a clause on its own row, in the
     # same both-directions-always shape as the global line above (#1919).
     #
-    # Named by its PARAMETER: `notify` is the exact `collection_set` argument that flips
+    # Named by its PARAMETER: `notify` is the exact `collection_configure` argument that flips
     # this row, so display form == invocation form and the anchor is copied rather than
     # translated.  Human wording was measured and is worse HERE — "tells you" read as the
     # `notifications_*` tool family, and a sample asked to silence ONE watch reached for
@@ -124,7 +124,7 @@ class SelfStateHeader:
     #
     # This clause is HALF of a mechanism; on its own it moved nothing (measured: silence
     # 0.92 → 0.80 → 0.68 across two wordings, restored here with the other half — the
-    # `collection_set` description that says the argument turns a collection's
+    # `collection_configure` description that says the argument turns a collection's
     # notifications on or off).  A state that shows a switch and a tool that never
     # mentions it are two ways of saying the same thing badly.
     MECHANISM_NOTIFIES = "notify: on"
@@ -162,7 +162,7 @@ class SelfStateHeader:
     ARCHIVED_LABEL = "archived:"
 
     POINTERS = (
-        "To look deeper: memory_metadata(<name>) for a collection's full config and "
+        "To look deeper: memory_get(<name>) for a collection's full config and "
         "change history, get_event(run <id>) for one run's tool calls, "
         "collection_list(<name>) reads a store's entries, and find(query=<text>) "
         "searches them all by meaning — a collection, a skill, a stored entry, or "
@@ -333,7 +333,7 @@ class SelfStateHeader:
     @staticmethod
     def _emission_line(emission: EmissionActivity) -> str:
         """``sent · <when> · <mechanism> — "<snippet>"`` — a delivered autonomous
-        send (#1568). The mechanism is the ``memory_metadata`` anchor (its #1566
+        send (#1568). The mechanism is the ``memory_get`` anchor (its #1566
         block names the creating request); the snippet is what Penny autonomously
         said, at rollup altitude."""
         return (
@@ -401,7 +401,7 @@ class SelfStateHeader:
         — the causing run id (present for a user-run mutation, absent for a system
         one) is a ``get_event(run <id>)`` anchor, single-sourced with that tool's
         parse (``RUN_EVENT_PREFIX``); the entity name resolves via
-        ``memory_metadata``/``find``, and the detail carries the changed
+        ``memory_get``/``find``, and the detail carries the changed
         fields."""
         parts = [
             f"change · {format_log_timestamp(event.created_at)} · "
@@ -466,7 +466,7 @@ class SelfStateHeader:
         does, from the prompt rendered at instantiation), so on a section read every
         turn it was cost against a decision it does not inform — the label names the
         one call that reaches them, ``skill_get`` (#2305). Once a skill is set
-        running, ``memory_metadata`` on the job carries the same parameters and steps
+        running, ``memory_get`` on the job carries the same parameters and steps
         with the job's own bound values. The section collapses to one honest
         placeholder when nothing has been taught. (The legacy standing-rules feed
         retired with the ``skills`` collection, #1624.)"""

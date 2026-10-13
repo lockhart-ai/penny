@@ -186,7 +186,7 @@ class _KeyOnlyFailingEmbedClient:
 
 # ── Seeding helpers ───────────────────────────────────────────────────────────
 #
-# ``collection_set`` is now the skill-instantiation front door (#1591): it no
+# ``collection_configure`` is now the skill-instantiation front door (#1591): it no
 # longer takes an ``extraction_prompt`` and refuses a near-duplicate.  Tests that
 # only need a collection to EXIST (to exercise writes/reads/mutations/etc.) seed it
 # directly through the store (``_seed_collection``) — the honest, idempotency-free
@@ -416,8 +416,8 @@ class TestCollectionCreateFrontDoor:
         assert result.message == (
             "params.peak: a skill parameter binds one value, but got a list of 2 — pass a "
             "single value per parameter (a one-item list is unwrapped for you; more than "
-            "one isn't). Expected shape: params={'<parameter>': '<value>'}. "
-            "Call collection_set(<valid arguments>) again."
+            "one isn't). Expected shape: parameters={'<parameter>': '<value>'}. "
+            "Call collection_configure(<valid arguments>) again."
         )
         assert db.memories.get("multi-peak") is None
 
@@ -437,8 +437,8 @@ class TestCollectionCreateFrontDoor:
         assert result.message == (
             "Can't instantiate 'Watch elevation': these required parameters aren't bound:\n"
             "  - peak\n"
-            "Pass them in params (e.g. params={'peak': <value>}), then call "
-            "collection_set again."
+            "Pass them in parameters (e.g. parameters={'peak': <value>}), then call "
+            "collection_configure again."
         )
         assert db.memories.get("no-peak") is None
 
@@ -447,7 +447,7 @@ class TestCollectionCreateFrontDoor:
         """A skill query matching nothing returns the reshaped #1471/#1629/#1631
         elicitation — it NARRATES the two-step teach bootstrap (set up the container →
         walk me through once, extracting ONE value → learned automatically → attach
-        via collection_set), asserted whole."""
+        via collection_configure), asserted whole."""
         _seed_watch_skill(db)  # exists, but shares no words with the query
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="mystery",
@@ -474,7 +474,7 @@ class TestCollectionCreateFrontDoor:
             "that round "
             "— a learned notice will tell you the moment it exists; then attach it and "
             "set any schedule or notify they asked for in ONE call: "
-            "collection_set(name=<the collection>, skill=<its name>, schedule=..., "
+            "collection_configure(collection=<the collection>, skill=<its name>, schedule=..., "
             "notify=...)."
         )
         assert db.memories.get("mystery") is None
@@ -495,7 +495,7 @@ class TestCollectionCreateFrontDoor:
             'I know a few skills close to "watch elevation save" — I won\'t guess which '
             "you mean:\n"
             "1. Watch elevation — watch a peak's elevation and save it\n"
-            "To use one, call collection_set again with skill='<its exact name>'. If "
+            "To use one, call collection_configure again with skill='<its exact name>'. If "
             "none of these is the process you mean, walk me through it once and I'll learn "
             "it as a new skill."
         )
@@ -513,10 +513,10 @@ class TestCollectionCreateFrontDoor:
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
             # A role-affix twin: 'monitor' is a job word, so both names normalise to
             # {jacket} ⊆ {jacket, price} — the same job under an invented name.
-            name="jacket-monitor",
+            collection="jacket-monitor",
             description="watch the blue jacket price",
             skill=_SKILL_NAME,
-            params={"peak": "jacket"},
+            parameters={"peak": "jacket"},
             schedule="FREQ=HOURLY",
         )
         assert result.success and result.mutated
@@ -538,10 +538,10 @@ class TestCollectionCreateFrontDoor:
         _seed_watch_skill(db)
         _seed_collection(db, name="aurora-deck-2-price", description="watch a listing price")
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="aurora-deck-3-price",
+            collection="aurora-deck-3-price",
             description="watch a listing price",
             skill=_SKILL_NAME,
-            params={"peak": "aurora deck 3"},
+            parameters={"peak": "aurora deck 3"},
             schedule="FREQ=HOURLY",
         )
         assert result.success and result.mutated
@@ -576,7 +576,7 @@ class TestCollectionCreateFrontDoor:
 
         result = await CollectionSetTool(
             db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(name=framing.container, schedule="FREQ=HOURLY", notify=True)
+        ).execute(collection=framing.container, schedule="FREQ=HOURLY", notify=True)
 
         assert result.success and result.mutated
         row = db.memories.get(framing.container)
@@ -608,7 +608,7 @@ class TestCollectionCreateFrontDoor:
 
         result = await CollectionSetTool(
             db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(name="cinder-peak-watch", schedule="FREQ=HOURLY", notify=True)
+        ).execute(collection="cinder-peak-watch", schedule="FREQ=HOURLY", notify=True)
 
         assert result.success
         assert db.memories.get("cinder-peak-watch") is None
@@ -617,7 +617,7 @@ class TestCollectionCreateFrontDoor:
             "'watch-elevation-cinder-peak' is, so this landed on "
             "'watch-elevation-cinder-peak'. It's 'watch-elevation-cinder-peak' from here "
             "on: read it with collection_list('watch-elevation-cinder-peak') or "
-            "adjust it with collection_set(name='watch-elevation-cinder-peak', ...).\n"
+            "adjust it with collection_configure(collection='watch-elevation-cinder-peak', ...).\n"
         )
 
     @pytest.mark.asyncio
@@ -647,7 +647,7 @@ class TestCollectionCreateFrontDoor:
 
         result = await CollectionSetTool(
             db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(name=framing.container, schedule="FREQ=HOURLY", notify=True)
+        ).execute(collection=framing.container, schedule="FREQ=HOURLY", notify=True)
 
         assert result.success is False and not result.mutated
         assert result.message == (
@@ -681,7 +681,7 @@ class TestCollectionCreateFrontDoor:
 
         result = await CollectionSetTool(
             db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(name=framing.container, schedule="FREQ=HOURLY", notify=True)
+        ).execute(collection=framing.container, schedule="FREQ=HOURLY", notify=True)
 
         assert result.success is False and not result.mutated
         assert result.message == (
@@ -715,7 +715,7 @@ class TestCollectionCreateFrontDoor:
 
         result = await CollectionSetTool(
             db, cast(Any, MockLlmClient()), round_framing=framing
-        ).execute(name="cinder-peak-watch", schedule="every 2 hours please")
+        ).execute(collection="cinder-peak-watch", schedule="every 2 hours please")
 
         assert result.success is False
         assert result.message.startswith(
@@ -735,7 +735,7 @@ class TestCollectionCreateFrontDoor:
         db.memories.create_collection("cinder-peak", "watch a peak's elevation and save it")
 
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="cinder-peak", schedule="FREQ=HOURLY", notify=True
+            collection="cinder-peak", schedule="FREQ=HOURLY", notify=True
         )
 
         assert result.success
@@ -851,10 +851,10 @@ class TestCollectionCreateFrontDoor:
             archived=True,
         )
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="jacket-monitor",
+            collection="jacket-monitor",
             description="watch the blue jacket price",
             skill=_SKILL_NAME,
-            params={"peak": "jacket"},
+            parameters={"peak": "jacket"},
             schedule="FREQ=HOURLY",
         )
         assert result.success is False
@@ -927,7 +927,7 @@ class TestCollectionCreateFrontDoor:
         The live failure: the apply turn invented ``expires_at = 2099-12-31`` for a job
         meant to run indefinitely; the sentinel then rendered as the mechanism's end
         condition in the self-state header and was copied back on every later
-        ``collection_set``, so invented config became sticky.  Whole render, so both
+        ``collection_configure``, so invented config became sticky.  Whole render, so both
         halves are pinned at once — the echo states the resulting end condition
         (``expires: never``) and the tail note says what became of the value passed and
         what to pass instead."""
@@ -1184,7 +1184,7 @@ class TestMinimalSurfaceCensus:
 
         This is the one live claim `tests/eval/test_extraction_tool_recovery.py` still
         made, and it turned out to be about a surface that no longer exists: that case
-        forced a `collection_set` carrying a hallucinated tool inside an
+        forced a `collection_configure` carrying a hallucinated tool inside an
         `extraction_prompt`, expecting the write-time tool gate to teach the model a
         rewrite.  Since #1658/#1631 the argument is not on the model surface at all, so
         `ToolArgs`' ``extra="forbid"`` refuses the call at ARG VALIDATION and the gate
@@ -1196,7 +1196,7 @@ class TestMinimalSurfaceCensus:
         what the model reads: the refusal has to NAME the unknown parameter and list the
         ones that exist, or it is a dead end rather than a correction."""
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
-            name="board-games",
+            collection="board-games",
             extraction_prompt="1. extract_text(url)\n2. done()",
         )
         assert result.success is False
@@ -1565,7 +1565,7 @@ class TestCreateAndList:
             "Keep it an accurate summary of the subject matter.): an empty string sets "
             "nothing — omit description entirely to leave it unset, or pass what the "
             "collection is for, in the user's own words. "
-            "Call collection_set(<valid arguments>) again."
+            "Call collection_configure(<valid arguments>) again."
         )
         untouched = db.memories.get("notes")
         assert untouched.extraction_prompt == original_prompt
@@ -1945,7 +1945,7 @@ class TestCollectionUpdateReinstantiation:
 
     @pytest.mark.asyncio
     async def test_plain_update_never_touches_the_prompt_or_provenance(self, db):
-        """The pinned invariant: a plain collection_set (no skill/params/prompt)
+        """The pinned invariant: a plain collection_configure (no skill/params/prompt)
         changes only the metadata it names — the routine and skill provenance are
         untouched."""
         original = "test fixture extraction prompt that is long enough"
@@ -2090,7 +2090,7 @@ class TestInertCollections:
 
     @pytest.mark.asyncio
     async def test_inert_collection_is_metadata_visible(self, db):
-        """An inert collection reads back through ``memory_metadata``, marked as
+        """An inert collection reads back through ``memory_get``, marked as
         storage with no routine — not hidden for lacking a prompt (#1629)."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
@@ -2124,7 +2124,7 @@ class TestInertCollections:
             description="track the trail-runner shoe deals",
         )
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            collection="deals-watch", description="track the trail-runner shoe deals"
         )
         assert result.success and result.mutated
         assert db.memories.get("deals-watch") is None
@@ -2158,10 +2158,10 @@ class TestBlankOptionalArgsAreRefused:
         (omit it, or pass the accepted form), and no collection is created."""
         _seed_watch_skill(db)
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
-            name="deals-watch",
+            collection="deals-watch",
             description="track the trail-runner shoe deals",
             skill=_SKILL_NAME,
-            params={"peak": "trail-runner shoes"},
+            parameters={"peak": "trail-runner shoes"},
             schedule="FREQ=HOURLY",
             expires_at="",
         )
@@ -2171,7 +2171,7 @@ class TestBlankOptionalArgsAreRefused:
             "written with no zone, like '2026-11-02T22:00:00'. Leave it out when "
             "there's no end date.): an empty string sets nothing — omit expires_at "
             "entirely to leave it unset, or pass when it ends, e.g. "
-            '2026-03-01T09:00:00Z or "in two weeks". Call collection_set(<valid '
+            '2026-03-01T09:00:00Z or "in two weeks". Call collection_configure(<valid '
             "arguments>) again."
         )
         assert db.memories.get("deals-watch") is None
@@ -2211,7 +2211,7 @@ class TestBlankOptionalArgsAreRefused:
             "schedule": SCHEDULE_PARAM_DESCRIPTION,
         }
         for field, form in OPTIONAL_ARG_FORMS.items():
-            result = await tool.run(name="deals-watch", **{field: "   "})
+            result = await tool.run(collection="deals-watch", **{field: "   "})
             assert result.success is False
             descriptor = (
                 f"{field} (string: {descriptors[field]})"
@@ -2221,7 +2221,7 @@ class TestBlankOptionalArgsAreRefused:
             assert result.message == (
                 f"{descriptor}: an empty string sets nothing — omit {field} entirely "
                 f"to leave it unset, or pass {form}. "
-                f"Call collection_set(<valid arguments>) again."
+                f"Call collection_configure(<valid arguments>) again."
             )
         assert db.memories.get("deals-watch") is None
 
@@ -2232,13 +2232,13 @@ class TestBlankOptionalArgsAreRefused:
         blank can never quietly leave an existing job's field alone either."""
         _seed_collection(db, name="deals-watch", description="track the shoe deals")
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
-            name="deals-watch", schedule=""
+            collection="deals-watch", schedule=""
         )
         assert result.success is False
         assert result.message == (
             f"schedule (string: {SCHEDULE_PARAM_DESCRIPTION}): an empty string sets "
             "nothing — omit schedule entirely to leave it unset, or pass one RRULE "
-            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_set(<valid '
+            'line, e.g. "FREQ=HOURLY" for hourly. Call collection_configure(<valid '
             "arguments>) again."
         )
         # The existing row is untouched — the refusal happens before execute.
@@ -2261,14 +2261,14 @@ class TestBlankOptionalArgsAreRefused:
         )
 
         created = await CollectionSetTool(create_db, cast(Any, MockLlmClient())).run(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            collection="deals-watch", description="track the trail-runner shoe deals"
         )
         assert created.success and created.mutated
         assert created.message == _INERT_ECHO_LITERAL
 
         _seed_collection(update_db, name="deals-watch", description="track the shoe deals")
         updated = await CollectionSetTool(update_db, cast(Any, MockLlmClient())).run(
-            name="deals-watch", description="track the trail-runner shoe deals"
+            collection="deals-watch", description="track the trail-runner shoe deals"
         )
         assert updated.success
         row = update_db.memories.get("deals-watch")
@@ -2449,10 +2449,10 @@ class TestRuntimeParameterJoin:
         page to browse each run" and nothing it could read named the page at all."""
         seed_timetable_skill(db)
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="ferry-departures",
+            collection="ferry-departures",
             description="the dawn sailing on the north pier timetable",
             skill=_TIMETABLE_SKILL,
-            params=_TIMETABLE_PARAMS,
+            parameters=_TIMETABLE_PARAMS,
             schedule="FREQ=HOURLY",
         )
 
@@ -2472,10 +2472,10 @@ class TestRuntimeParameterJoin:
         demonstrated values rather than a link frozen at first instantiation."""
         seed_timetable_skill(db)
         await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="ferry-departures",
+            collection="ferry-departures",
             description="the dawn sailing on the north pier timetable",
             skill=_TIMETABLE_SKILL,
-            params=_TIMETABLE_PARAMS,
+            parameters=_TIMETABLE_PARAMS,
             schedule="FREQ=HOURLY",
         )
 
@@ -2486,7 +2486,7 @@ class TestRuntimeParameterJoin:
             key_description="the key this reading is filed under",
         )
         refreshed = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="ferry-departures", skill=_TIMETABLE_SKILL
+            collection="ferry-departures", skill=_TIMETABLE_SKILL
         )
 
         assert refreshed.success
@@ -2511,10 +2511,10 @@ class TestRuntimeParameterJoin:
             ],
         )
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
-            name="ferry-departures",
+            collection="ferry-departures",
             description="the dawn sailing on the north pier timetable",
             skill=_TIMETABLE_SKILL,
-            params=_TIMETABLE_PARAMS,
+            parameters=_TIMETABLE_PARAMS,
             schedule="FREQ=HOURLY",
         )
 
@@ -2601,7 +2601,7 @@ class TestTwoStepTeachBootstrap:
 
 
 class TestCollectionUpdateScheduleAtApply:
-    """Schedule + notify are apply-time properties on collection_set (#1629/#1857: one
+    """Schedule + notify are apply-time properties on collection_configure (#1629/#1857: one
     RRULE ``schedule``, plus ``expires_at`` and ``notify``) — recorded in the mutation
     event's changed fields."""
 
@@ -2674,7 +2674,7 @@ class TestCollectionUpdateScheduleAtApply:
     async def test_far_future_expiry_at_apply_takes_a_stored_sentinel_off(self, db):
         """The apply-time half of the sentinel rule (#1944) — the door the live failure
         came through, since the invented ``2099-12-31`` rendered as the mechanism's end
-        condition and was copied back on every later ``collection_set``.
+        condition and was copied back on every later ``collection_configure``.
 
         The collection is seeded ALREADY CARRYING the sentinel, so the call has something
         to remove: normalising the argument alone would leave the stored date exactly
@@ -2791,7 +2791,7 @@ class TestCollectionWritesAndReads:
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
 
     @pytest.mark.asyncio
-    async def test_collection_set_dispatches_on_existence(self, db, mock_llm):
+    async def test_collection_configure_dispatches_on_existence(self, db, mock_llm):
         """The ONE idempotent entry point (the code-owner fusion): a missing name
         CREATES with full birth validation; an existing name UPDATES only the set
         fields — the model never reasons about which case applies.  Birth without
@@ -2799,22 +2799,24 @@ class TestCollectionWritesAndReads:
         actionable refusals."""
         tool = CollectionSetTool(db, _make_llm_client(mock_llm), run_id="run-set")
         # Birth needs a description.
-        result = await tool.execute(name="trip-plans")
+        result = await tool.execute(collection="trip-plans")
         assert result.success is False and "needs a `description`" in result.message
         # extraction_prompt is not a model argument AT ALL (#1570): unknown-parameter
         # rejection through the arg envelope, on the set tool like everywhere else.
         result = await tool.run(
-            name="trip-plans", description="trip planning notes", extraction_prompt="1. x" * 10
+            collection="trip-plans",
+            description="trip planning notes",
+            extraction_prompt="1. x" * 10,
         )
         assert result.success is False and "extraction_prompt" in result.message
         # Create path: inert storage, provenance stamped.
-        result = await tool.execute(name="trip-plans", description="trip planning notes")
+        result = await tool.execute(collection="trip-plans", description="trip planning notes")
         assert result.success is True
         row = db.memories.get("trip-plans")
         assert row is not None and row.created_by_run_id == "run-set"
         assert row.extraction_prompt is None and row.notify is False
         # Update path: same verb, only the set field changes.
-        result = await tool.execute(name="trip-plans", notify=True)
+        result = await tool.execute(collection="trip-plans", notify=True)
         assert result.success is True
         row = db.memories.get("trip-plans")
         assert row.notify is True and row.description == "trip planning notes"
@@ -3468,11 +3470,12 @@ class TestCollectionMutations:
             schedule="FREQ=HOURLY",
         )
         assert (
-            "Archived 'likes'" in (await CollectionArchiveTool(db).execute(memory="likes")).message
+            "Archived 'likes'"
+            in (await CollectionArchiveTool(db).execute(collection="likes")).message
         )
         assert (
             "Unarchived 'likes'"
-            in (await CollectionUnarchiveTool(db).execute(memory="likes")).message
+            in (await CollectionUnarchiveTool(db).execute(collection="likes")).message
         )
 
 
@@ -3495,7 +3498,7 @@ class TestDidYouMeanSuggestions:
             "name (it may be misspelled), or find it by meaning with "
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_set(name='aurora-deone') / "
+            "with collection_configure(collection='aurora-deone') / "
             "log_create(name='aurora-deone') if it should exist."
         )
 
@@ -3510,7 +3513,7 @@ class TestDidYouMeanSuggestions:
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
             "it by meaning with find(query=<what it's about>) — it resolves your "
             "collections, logs, and skills (archived included) and names the exact tool "
-            "for each. Or create it with collection_set(name='xyzzy') / "
+            "for each. Or create it with collection_configure(collection='xyzzy') / "
             "log_create(name='xyzzy') if it should exist."
         )
 
@@ -3528,7 +3531,7 @@ class TestDidYouMeanSuggestions:
             "Check the name (it may be misspelled), or find it by meaning with "
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_set(name='oil changes and tire rotations') / "
+            "with collection_configure(collection='oil changes and tire rotations') / "
             "log_create(name='oil changes and tire rotations') if it should exist."
         )
 
@@ -4175,14 +4178,14 @@ class TestFactory:
         "collection_get",
         "collection_sample",
         "collection_keys",
-        "memory_metadata",
+        "memory_get",
         "log_read",
         "read_run_calls",
         "get_event",
         "find",
         "skill_get",
         # Lifecycle (shape)
-        "collection_set",
+        "collection_configure",
         "collection_archive",
         "collection_unarchive",
         "log_create",
@@ -4191,6 +4194,19 @@ class TestFactory:
         "collection_remove",
         "log_append",
     }
+
+    def test_every_tool_advertises_the_arguments_it_validates(self, db, mock_llm):
+        """A tool's schema is what the model is shown; its args model is what the call
+        is validated against.  They must name the same arguments, or the model is told
+        to pass one name and refused for not passing another."""
+        tools = build_memory_tools(db, _make_llm_client(mock_llm), agent_name="chat")
+        for tool in tools:
+            advertised = set(tool.parameters.get("properties", {}))
+            validated = set(tool.args_model.model_fields)
+            assert advertised == validated, (
+                f"{tool.name}: schema names {sorted(advertised)}, "
+                f"args model validates {sorted(validated)}"
+            )
 
     def test_chat_surface_is_the_full_set(self, db, mock_llm):
         """Chat (scope=None) gets every memory tool — entry mutations included,
@@ -4269,8 +4285,8 @@ class TestScopedFactory:
 
 
 class TestRegistryProvenanceAndLifecycle:
-    """Operational registry (#1566): ``collection_set`` stamps the spawning
-    message + creating run; ``memory_metadata`` renders a status / expires /
+    """Operational registry (#1566): ``collection_configure`` stamps the spawning
+    message + creating run; ``memory_get`` renders a status / expires /
     created-from-message block — so any mechanism can state who asked for it,
     what created it, whether it's live, and when it ends, and an archived one
     stays inspectable by its exact name.
@@ -4317,7 +4333,7 @@ class TestRegistryProvenanceAndLifecycle:
 
     @pytest.mark.asyncio
     async def test_create_stamps_run_then_channel_links_message(self, db):
-        # collection_set stamps only the creating run — the spawning message
+        # collection_configure stamps only the creating run — the spawning message
         # isn't known until the run returns, and there's no end condition.
         await self._create(db, "espresso-reviews", created_by_run_id="run-espresso-01")
         row = db.memories.get("espresso-reviews")
@@ -4348,13 +4364,13 @@ class TestRegistryProvenanceAndLifecycle:
     @pytest.mark.asyncio
     async def test_archived_collection_stays_metadata_inspectable(self, db):
         """Archiving changes status, never reachability (#1566/#2288): a collection
-        archived by exact name still answers ``memory_metadata`` fully, clearly
+        archived by exact name still answers ``memory_get`` fully, clearly
         marked, and the self-state header's compact archived line (#2288) is the
         wider index that names it alongside every other archived store."""
         await self._create(db, "kickstarters", created_by_run_id="run-ks-01")
         message_id = self._spawn(db, "run-ks-01", "watch for new board game kickstarters")
         # Archiving must change status, never reachability by name.
-        await CollectionArchiveTool(db).execute(memory="kickstarters")
+        await CollectionArchiveTool(db).execute(collection="kickstarters")
         result = await MemoryMetadataTool(db).execute(memory="kickstarters")
 
         assert "status: archived" in result.message
@@ -4420,8 +4436,8 @@ class TestRegistryProvenanceAndLifecycle:
 class TestCollectionSkillProvenanceRender:
     """Collection→skill provenance (#1603): a skill-instantiated collection records
     the skill it was rendered from + the params bound into its render, and
-    ``memory_metadata`` names them — ``from skill: <name> (<param>=<value>)``.
-    The skill name is a live anchor (``memory_metadata`` renders the routine's own
+    ``memory_get`` names them — ``from skill: <name> (<param>=<value>)``.
+    The skill name is a live anchor (``memory_get`` renders the routine's own
     parameters block right below it, #2287), and the bound params are the reachable
     input a rebind/re-render consumes.  A hand-authored / seeded collection
     (``skill_name`` NULL) renders EXACTLY as before — the unmarked case is the quiet
@@ -4429,7 +4445,7 @@ class TestCollectionSkillProvenanceRender:
 
     @pytest.mark.asyncio
     async def test_metadata_names_instantiating_skill_and_params(self, db):
-        """``memory_metadata`` names the skill + bound params, positioned ahead of the
+        """``memory_get`` names the skill + bound params, positioned ahead of the
         extraction prompt it produced — so "which skill made this, and with what?" is
         the same call that reads the collection.  It also renders the routine's own
         ``parameters:`` block (#2287) right below that line, before the recipe: each
@@ -4641,7 +4657,7 @@ def _axis_client(mock_llm) -> LlmClient:
 async def _create_collection(db, client: LlmClient, name: str, description: str) -> None:
     """Instantiate a collection whose intent/description anchor is ``description``
     (what ``find`` resolves over).  A hole-less skill supplies the rendered
-    prompt; going through ``CollectionCreateTool`` rather than the ``collection_set``
+    prompt; going through ``CollectionCreateTool`` rather than the ``collection_configure``
     front door skips the same-job check (#1775), so these tests can stand up several
     deliberately-similar collections.  The helper skill is seeded
     UNEMBEDDED (``embed=False``) — it's resolved by exact name, and an anchor in
@@ -4681,12 +4697,12 @@ class TestFind:
         'Found 4 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
         "   how to use it: read it with collection_list('aurora-watch'), "
-        "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
+        "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
         "   how to use it: read it with skill_get(skill='escalate-aurora'); set it "
-        "running with collection_set(name=<a name for the job>, "
-        "skill='escalate-aurora', params=…); to change it, demonstrate it again in "
+        "running with collection_configure(collection=<a name for the job>, "
+        "skill='escalate-aurora', parameters=…); to change it, demonstrate it again in "
         "chat — I relearn it automatically, replacing this one\n"
         "3. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
@@ -4704,7 +4720,7 @@ class TestFind:
         (seeded straight into the ``skill`` table with an axis-geometry anchor)."""
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
-        await CollectionArchiveTool(db).execute(memory="aurora-archive")
+        await CollectionArchiveTool(db).execute(collection="aurora-archive")
         await LogCreateTool(db, client).execute(
             name="aurora-log",
             description="aurora echo foxtrot",
@@ -4757,8 +4773,8 @@ class TestFind:
             'Found 1 thing matching "aurora beacon cascade gamma":\n'
             f"1. {_SKILL_NAME} — live taught skill: aurora beacon cascade gamma\n"
             f"   how to use it: read it with skill_get(skill='{_SKILL_NAME}'); set it "
-            f"running with collection_set(name=<a name for the job>, "
-            f"skill='{_SKILL_NAME}', params=…); to change it, demonstrate it again in "
+            f"running with collection_configure(collection=<a name for the job>, "
+            f"skill='{_SKILL_NAME}', parameters=…); to change it, demonstrate it again in "
             "chat — I relearn it automatically, replacing this one"
         )
 
@@ -4772,8 +4788,8 @@ class TestFind:
         assert _render_object_hit(1, match) == (
             "1. vanished-skill — live taught skill\n"
             "   how to use it: read it with skill_get(skill='vanished-skill'); set it "
-            "running with collection_set(name=<a name for the job>, "
-            "skill='vanished-skill', params=…); to change it, demonstrate it again "
+            "running with collection_configure(collection=<a name for the job>, "
+            "skill='vanished-skill', parameters=…); to change it, demonstrate it again "
             "in chat — I relearn it automatically, replacing this one"
         )
 
@@ -4799,7 +4815,7 @@ class TestFind:
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('solo-watch'), "
-            "reconfigure it with collection_set(name='solo-watch', ...), archive it "
+            "reconfigure it with collection_configure(collection='solo-watch', ...), archive it "
             "with collection_archive('solo-watch')"
         )
 
@@ -4814,12 +4830,12 @@ class TestFind:
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_list('watch-primary'), "
-            "reconfigure it with collection_set(name='watch-primary', ...), archive it "
+            "   how to use it: read it with collection_list('watch-primary'), reconfigure "
+            "it with collection_configure(collection='watch-primary', ...), archive it "
             "with collection_archive('watch-primary')\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
-            "   how to use it: read it with collection_list('watch-secondary'), "
-            "reconfigure it with collection_set(name='watch-secondary', ...), archive it "
+            "   how to use it: read it with collection_list('watch-secondary'), reconfigure "
+            "it with collection_configure(collection='watch-secondary', ...), archive it "
             "with collection_archive('watch-secondary')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
@@ -4887,7 +4903,7 @@ class TestFind:
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('aurora-watch'), "
-            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
+            "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
             "   read it: collection_get(collection='aurora-watch', key='aurora beacon')\n"
@@ -4956,7 +4972,7 @@ class TestFind:
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('aurora-watch'), "
-            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
+            "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "\n"
             "From the conversation:\n"
@@ -4991,7 +5007,7 @@ class TestFind:
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_list('aurora-watch'), "
-            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
+            "reconfigure it with collection_configure(collection='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "\n"
             "From the conversation:\n"
@@ -5081,7 +5097,7 @@ class TestFind:
             collection="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
-        await CollectionArchiveTool(db).execute(memory="aurora-archive")
+        await CollectionArchiveTool(db).execute(collection="aurora-archive")
         result = await FindTool(db, client).execute(
             query="aurora beacon cascade", memory="aurora-archive"
         )

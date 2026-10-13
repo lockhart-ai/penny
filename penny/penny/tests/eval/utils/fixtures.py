@@ -127,7 +127,7 @@ ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
 ENACTING_TOOLS = (
     "browse",
     "collection_write",
-    "collection_set",
+    "collection_configure",
     "update_entry",
     "collection_remove",
     "log_append",

@@ -497,7 +497,7 @@ def check_extraction_prompt(prompt: str | None) -> str | None:
     return (
         f"extraction_prompt is too short ({len(prompt)} chars — minimum "
         f"{EXTRACTION_PROMPT_MIN_CHARS}).  Provide a full numbered-step prompt "
-        f"(see the collection_set description for the required shape)."
+        f"(see the collection_configure description for the required shape)."
     )
 
 
@@ -571,8 +571,10 @@ def extract_tool_call_names(prompt: str) -> list[str]:
 # name is actually on the surface being suggested from, so an entry whose target that
 # surface lacks falls through to the string leg like any other miss.
 LEGACY_TOOL_RENAMES: dict[str, str] = {
-    "collection_metadata": "memory_metadata",
-    "collection_update": "collection_set",
+    "collection_metadata": "memory_get",
+    "collection_update": "collection_configure",
+    "collection_set": "collection_configure",
+    "memory_metadata": "memory_get",
     "log_read_log": "log_read",
     "log_read_next": "log_read",
     "log_read_recent": "log_read",

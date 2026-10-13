@@ -723,7 +723,7 @@ class PennyConstants:
     # bounded batches across cycles instead of flooding one agentic loop with
     # hundreds of entries it can't reason over.
     LOG_READ_LIMIT = 10
-    # How many recent registry-change events ``memory_metadata`` renders in its
+    # How many recent registry-change events ``memory_get`` renders in its
     # "Recent changes" block (``db.mutations.history``) — bounded like every other
     # history read so a config-change trail stays readable without flooding.
     RUN_HISTORY_RECORDS = 8
@@ -807,7 +807,7 @@ class PennyConstants:
     # date-shaped way of writing "forever" (#1944).  An apply turn asked to set up a
     # job that runs indefinitely wrote ``expires_at = 2099-12-31``; the sentinel then
     # rendered in the self-state header as the job's end condition and was faithfully
-    # copied back on every later ``collection_set``, so invented config became sticky.
+    # copied back on every later ``collection_configure``, so invented config became sticky.
     # The threshold is a HORIZON measured from now, never a fixed calendar date — a
     # fixed one is itself a sentinel that rots as the clock passes it.  It is a
     # WHOLESALE bound, not a calibrated one (there is no corpus of end dates to

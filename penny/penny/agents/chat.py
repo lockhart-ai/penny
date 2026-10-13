@@ -219,7 +219,7 @@ class ChatAgent(Agent):
         """The round this turn is CONFIGURING (#1869) — the framing on an APPLY turn.
 
         Keyed to the state for the same reason the prompt's own round line is: apply is
-        the state that stands the routine up, so it is the state whose ``collection_set``
+        the state that stands the routine up, so it is the state whose ``collection_configure``
         carries only the terms.  The framing is carried past learn (a learn turn holds one
         too), and a learn turn that configured anything would be a learn turn doing the
         next turn's job — so what it holds is not what this hook is about.
@@ -329,7 +329,7 @@ class ChatAgent(Agent):
         (#1869) — ``None`` when the turn configured nothing.
 
         Two things have to be true, and both are READS rather than judgments: the turn was
-        standing this round's routine up, and a ``collection_set`` call actually landed
+        standing this round's routine up, and a ``collection_configure`` call actually landed
         this run.  The record itself is the container's own row, which is where the
         routine, its bound values and the job's terms were written — so a turn that
         supplied only the terms narrates the whole configuration from the store rather
@@ -360,7 +360,7 @@ class ChatAgent(Agent):
 
     @staticmethod
     def _set_a_collection(ctx: LoopContext) -> bool:
-        """Whether a ``collection_set`` call succeeded this run — the structural "did this
+        """Whether a ``collection_configure`` call succeeded this run — the structural "did this
         turn configure anything" read, off the run's own call records rather than off the
         durable row (which would also read TRUE for a job configured on some earlier
         turn)."""
@@ -533,7 +533,7 @@ class ChatAgent(Agent):
 
         The two things it must NOT do are what makes this a failure rather than a
         fallback: instructing the turn as though it were binding the routine itself would
-        have it re-derive values it cannot see, and offering the full ``collection_set``
+        have it re-derive values it cannot see, and offering the full ``collection_configure``
         surface would have it invent a collection for a job the round never settled.  The
         machine is left where it stands, so the user's retry is an ordinary next message.
 
@@ -682,7 +682,7 @@ class ChatAgent(Agent):
         renders deterministically as one row each — what a skill is and what it
         needs (#1804) — so a taught behavior is instantiable ambiently (0 calls),
         with its parameters and steps one ``skill_get`` call away (#2305); once
-        it is set running, ``memory_metadata`` carries them on the job.
+        it is set running, ``memory_get`` carries them on the job.
         Background agents keep the base envelope (profile + inventory) and never
         see this header — it is the chat entry point's opening state.
         """

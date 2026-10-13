@@ -101,6 +101,7 @@ from penny.tools.memory_args import (
     CollectionGetArgs,
     CollectionKeysArgs,
     CollectionListArgs,
+    CollectionNameArgs,
     CollectionRemoveArgs,
     CollectionSetArgs,
     CollectionUpdateArgs,
@@ -481,7 +482,7 @@ def _description_degraded_suffix(description: str | None, embedding: list[float]
 
 # ── Provenance + lifecycle rendering (operational registry, #1566) ──────────
 #
-# ``memory_metadata`` (the single exact-name lookup) renders this lifecycle
+# ``memory_get`` (the single exact-name lookup) renders this lifecycle
 # block, so one read answers the whole "who asked for it, what run created it,
 # is it live, when does it end" question.  It's sourced structurally from the
 # registry columns, never reconstructed — so an archived mechanism stays
@@ -559,7 +560,7 @@ def _skill_provenance_line(row: MemoryRow) -> str | None:
     """``from skill: <name> (<param>=<value>, …)`` — the skill this collection was
     instantiated from (#1591's front door) and the params bound into its render, so
     the render names the recipe's origin.  The skill name is a live anchor: this same
-    ``memory_metadata`` call carries the routine's parameters block right below it
+    ``memory_get`` call carries the routine's parameters block right below it
     (#2287), and ``find`` reaches the skill row itself (n≤1).  Params are omitted when
     the skill had no parameters (``from skill: <name>``).  Returns ``None`` for a
     hand-authored / seeded collection (``skill_name`` NULL), so its render stays
@@ -669,7 +670,7 @@ def render_skill_prompt(
     An unbound required parameter → the actionable naming error; a rendered prompt that is
     too short or names an unrunnable tool → the same authoring-time rejection.  The
     re-render preserves the steps-1..A / no-stored-``done()`` invariant by construction — it
-    is the same render fn ``collection_set`` stamps at birth.
+    is the same render fn ``collection_configure`` stamps at birth.
 
     Every ATTACHMENT-MARKED leaf is bound to ``target_name`` at this seam (#1629/#1783):
     applying a routine to a collection is what DECIDES a leaf that named a collection
@@ -734,7 +735,7 @@ _INERT_JOB_ARGS_REFUSAL = (
     "Can't set a schedule, notify, or expiry on '{name}' without a skill — those describe "
     "a JOB, and a skill-less collection is inert storage with no job to run. Create it as "
     "storage now (name + description only), then once you've taught the skill attach it "
-    "with collection_set(name='{name}', skill=<title>, schedule=<recurrence rule>, "
+    "with collection_configure(collection='{name}', skill=<title>, schedule=<recurrence rule>, "
     "notify=<true/false>)."
 )
 
@@ -747,8 +748,8 @@ _MISSING_SCHEDULE = (
 )
 
 # The ``expires_at`` argument description — stated ONCE here and read by every surface
-# that declares the argument (create, update, and the ``collection_set`` front door,
-# #2250): before this, ``collection_set``'s own schema carried a bare
+# that declares the argument (create, update, and the ``collection_configure`` front door,
+# #2250): before this, ``collection_configure``'s own schema carried a bare
 # ``{"type": "string"}`` for it with no description at all, so chat never saw what
 # create/update behind it already say. States plainly that the value is read on the
 # user's own clock, with no zone — the model never converts one (#2206).
@@ -758,8 +759,8 @@ EXPIRES_AT_PARAM_DESCRIPTION = (
 )
 
 # The ``schedule`` argument's description — stated ONCE here and read by every surface
-# that declares the argument (create, update, and the ``collection_set`` front door,
-# #2222): before this, ``collection_set``'s own schema carried a bare
+# that declares the argument (create, update, and the ``collection_configure`` front door,
+# #2222): before this, ``collection_configure``'s own schema carried a bare
 # ``{"type": "string"}`` for it with no description at all, so chat never saw what
 # create/update behind it already say — measured on gemma, "check it every morning"
 # landed with no hour at all in a third of calls and a different guessed hour in the
@@ -795,9 +796,9 @@ class CollectionCreateTool(MemoryTool):
     class runs, the target is known to be a new job.
     """
 
-    name = "collection_set"
+    name = "collection_configure"
     # The creation / re-render echo points at the metadata read for what was configured.
-    advises = ("memory_metadata",)
+    advises = ("memory_get",)
     description = (
         "Set up a background collection. A collection is storage plus an OPTIONAL job.\n"
         "\n"
@@ -809,12 +810,12 @@ class CollectionCreateTool(MemoryTool):
         "runs against it yet. Use this to set up the collection first when you're about "
         "to TEACH a skill: create it (name + description only), demonstrate it "
         "once here in chat — you learn it automatically as a skill — then attach that "
-        "skill with collection_set to make it do the job. Don't pass a schedule / "
+        "skill with collection_configure to make it do the job. Don't pass a schedule / "
         "notify / expiry with a skill-less create — an inert collection has no job to "
         "run.\n"
         "\n"
         "Fields:\n"
-        "- `name` — unique slug for the collection (lowercase, hyphens).\n"
+        "- `collection` — unique slug for the collection (lowercase, hyphens).\n"
         "- `description` — REQUIRED. What this collection is for, in the user's own words "
         '("keep an eye on the price of that jacket"). It is the collection\'s meaning '
         "anchor (how find resolves it), so get it right and confirm it back.\n"
@@ -822,7 +823,7 @@ class CollectionCreateTool(MemoryTool):
         'paraphrase of what it does ("watch a page for a change"). Omit it for an inert '
         "storage collection. If your paraphrase matches several skills I'll list them to "
         "choose from; if it matches none I'll walk you through teaching one.\n"
-        "- `params` — a map binding the skill's parameters to values "
+        "- `parameters` — a map binding the skill's parameters to values "
         '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED parameter '
         "must be bound or the call is refused naming what's missing.\n"
         "- `schedule` — when it runs, as ONE recurrence rule (RRULE). Say how often "
@@ -843,14 +844,14 @@ class CollectionCreateTool(MemoryTool):
         "on / alerted to new or changed entries as they're found. Leave `false` (the "
         "default) for a silent collection they'll ask about later.\n"
         "\n"
-        "Returns a structured echo of what landed (description, skill, bound params, "
+        "Returns a structured echo of what landed (description, skill, bound parameters, "
         "schedule, notify, expiry, and the rendered steps). Confirm it back — don't "
         "invent fields it didn't return."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "name": {
+            "collection": {
                 "type": "string",
                 "description": (
                     "Unique collection name (slug-style: lowercase, hyphens). Build it "
@@ -876,7 +877,7 @@ class CollectionCreateTool(MemoryTool):
                     "walks you through teaching one."
                 ),
             },
-            "params": {
+            "parameters": {
                 "type": "object",
                 "description": (
                     "Bindings for the skill's fill-in-the-blank parameters: "
@@ -899,13 +900,13 @@ class CollectionCreateTool(MemoryTool):
                 ),
             },
         },
-        "required": ["name", "description"],
+        "required": ["collection", "description"],
     }
     args_model = CollectionCreateArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        name = _named(arguments, "name", "a new collection")
+        name = _named(arguments, "collection", "a new collection")
         if not result.success:
             return f"You tried to set up the {name} collection but it didn't work:"
         return f"You set up the {name} collection:"
@@ -978,7 +979,7 @@ class CollectionCreateTool(MemoryTool):
     def _reject_job_args(args: CollectionCreateArgs) -> ToolResult | None:
         """A skill-less (inert) create describes storage, not a job — a schedule /
         notify / expiry passed alongside has nothing to attach to, so it's refused
-        naming the fix (attach a skill via collection_set once one's taught) rather
+        naming the fix (attach a skill via collection_configure once one's taught) rather
         than silently dropped (visible degradation over silent success)."""
         has_job = any((args.schedule is not None, args.expires_at is not None, args.notify))
         if not has_job:
@@ -1095,14 +1096,14 @@ class CollectionArchiveTool(MemoryTool):
     )
     parameters = {
         "type": "object",
-        "properties": {"memory": {"type": "string"}},
-        "required": ["memory"],
+        "properties": {"collection": {"type": "string"}},
+        "required": ["collection"],
     }
-    args_model = MemoryNameArgs
+    args_model = CollectionNameArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        memory = _named(arguments, "collection", "a collection")
         if not result.success:
             return f"You tried to archive {memory} but it didn't work:"
         return f"You archived {memory}:"
@@ -1115,9 +1116,9 @@ class CollectionArchiveTool(MemoryTool):
         self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = MemoryNameArgs(**kwargs)
-        self._db.memories.archive(args.memory, run_id=self._run_id)
-        return ToolResult(message=f"Archived '{args.memory}'.", mutated=True)
+        args = CollectionNameArgs(**kwargs)
+        self._db.memories.archive(args.collection, run_id=self._run_id)
+        return ToolResult(message=f"Archived '{args.collection}'.", mutated=True)
 
 
 class CollectionUnarchiveTool(MemoryTool):
@@ -1127,14 +1128,14 @@ class CollectionUnarchiveTool(MemoryTool):
     description = "Unarchive a previously archived collection."
     parameters = {
         "type": "object",
-        "properties": {"memory": {"type": "string"}},
-        "required": ["memory"],
+        "properties": {"collection": {"type": "string"}},
+        "required": ["collection"],
     }
-    args_model = MemoryNameArgs
+    args_model = CollectionNameArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        memory = _named(arguments, "collection", "a collection")
         if not result.success:
             return f"You tried to restore {memory} from the archive but it didn't work:"
         return f"You restored {memory} from the archive:"
@@ -1144,9 +1145,9 @@ class CollectionUnarchiveTool(MemoryTool):
         self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = MemoryNameArgs(**kwargs)
-        self._db.memories.unarchive(args.memory, run_id=self._run_id)
-        return ToolResult(message=f"Unarchived '{args.memory}'.", mutated=True)
+        args = CollectionNameArgs(**kwargs)
+        self._db.memories.unarchive(args.collection, run_id=self._run_id)
+        return ToolResult(message=f"Unarchived '{args.collection}'.", mutated=True)
 
 
 # ── Collection reads ────────────────────────────────────────────────────────
@@ -1783,7 +1784,7 @@ _SKILL_GONE = (
 # silent).
 _NO_SCHEDULE_NOTE = (
     "\n\nHeads up: this collection now has a skill but no schedule, so it won't run "
-    "yet. Set one with collection_set(name='{name}', schedule=<recurrence rule>) — the "
+    "yet. Set one with collection_configure(collection='{name}', schedule=<recurrence rule>) — the "
     "rule for the cadence the user asked for, e.g. FREQ=HOURLY or FREQ=DAILY;BYHOUR=8."
 )
 
@@ -1796,7 +1797,7 @@ class CollectionSetTool(MemoryTool):
     Three cases, in order.  The name EXISTS → the update path (adopt/rebind/swap/
     refresh re-render, atomic schedule replace).  The name is new but names a job we
     ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → the same update
-    path, aimed at the collection we have, because ``collection_set`` dispatching on
+    path, aimed at the collection we have, because ``collection_configure`` dispatching on
     the name alone is exactly what lets an invented name become a second copy of one
     job.  Otherwise → the create path.  Both inner paths keep their full validation —
     this class is a dispatcher, not a re-implementation.
@@ -1810,15 +1811,15 @@ class CollectionSetTool(MemoryTool):
     holds by construction instead of depending on the model rebinding the same values it
     bound last time.  With no framing this class is byte-identical to what it was."""
 
-    name = "collection_set"
+    name = "collection_configure"
     # The creation echo points at the metadata read for what was configured.
-    advises = ("memory_metadata",)
+    advises = ("memory_get",)
     description = (
-        "Create or reconfigure a collection in ONE idempotent call. If `name` "
+        "Create or reconfigure a collection in ONE idempotent call. If `collection` "
         "doesn't exist it comes into being with this config; if it does, only "
         "the fields you set change — you never need to know which. "
         "`description` = what it's for, in the user's words (required the first "
-        "time). `skill` (+ `params`) attaches a learned skill — its steps become "
+        "time). `skill` (+ `parameters`) attaches a learned skill — its steps become "
         "what the collection runs. `schedule` says when it runs, as one recurrence "
         'rule: "FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
         '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify` turns THIS '
@@ -1827,26 +1828,26 @@ class CollectionSetTool(MemoryTool):
         "running. It is the per-collection switch: turning it off silences this "
         "one collection and nothing else, and leaves the collection itself in "
         "place. Plain storage needs no call at all — collection_write creates "
-        "storage automatically; use collection_set for jobs and config."
+        "storage automatically; use collection_configure for jobs and config."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string"},
+            "collection": {"type": "string"},
             "description": {"type": "string"},
             "skill": {"type": "string"},
-            "params": {"type": "object"},
+            "parameters": {"type": "object"},
             "schedule": {"type": "string", "description": SCHEDULE_PARAM_DESCRIPTION},
             "expires_at": {"type": "string", "description": EXPIRES_AT_PARAM_DESCRIPTION},
             "notify": {"type": "boolean"},
         },
-        "required": ["name"],
+        "required": ["collection"],
     }
     args_model = CollectionSetArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        name = _memory_name(arguments, "a collection")
+        name = _named(arguments, "collection", "a collection")
         if not result.success:
             return f"You tried to set up {name} but it didn't work:"
         return f"You set up {name}:"
@@ -1880,10 +1881,10 @@ class CollectionSetTool(MemoryTool):
         args = CollectionSetArgs(**kwargs)
         if (broken := self._unrunnable_round()) is not None:
             return broken
-        requested = args.name
+        requested = args.collection
         args = self._with_the_rounds_routine(args)
         result = await self._dispatch(args)
-        return self._note_retarget(result, requested=requested, landed=args.name)
+        return self._note_retarget(result, requested=requested, landed=args.collection)
 
     def _unrunnable_round(self) -> ToolResult | None:
         """The round's routine is not something this call can stand up — refused HERE,
@@ -1941,20 +1942,20 @@ class CollectionSetTool(MemoryTool):
         framing = self._round_framing
         if framing is None:
             return args
-        if slug(args.name) != slug(framing.container):
+        if slug(args.collection) != slug(framing.container):
             logger.info(
                 "Configuring the round's container %r — the call named %r",
                 framing.container,
-                args.name,
+                args.collection,
             )
         description = (
             args.description if args.description is not None else self._round_description(framing)
         )
         return args.model_copy(
             update={
-                "name": framing.container,
+                "collection": framing.container,
                 "skill": framing.skill,
-                "params": framing.bound_values(),
+                "parameters": framing.bound_values(),
                 "description": description,
             }
         )
@@ -1992,22 +1993,22 @@ class CollectionSetTool(MemoryTool):
     async def _dispatch(self, args: CollectionSetArgs) -> ToolResult:
         """Dispatch on IDENTITY, not on the name alone: the collection this call
         names, else the one it duplicates, else a new one."""
-        if self._db.memories.get(args.name) is not None:
-            return await self._apply_to(args, args.name)
+        if self._db.memories.get(args.collection) is not None:
+            return await self._apply_to(args, args.collection)
         duplicate = self._db.memories.find_duplicate_collection(
-            args.name, skill_name=args.skill, skill_params=args.params
+            args.collection, skill_name=args.skill, skill_params=args.parameters
         )
         if duplicate is not None:
             return await self._same_job(args, duplicate)
         if args.description is None:
             return ToolResult(
-                message=_SET_BIRTH_NEEDS_DESCRIPTION.format(name=args.name), success=False
+                message=_SET_BIRTH_NEEDS_DESCRIPTION.format(name=args.collection), success=False
             )
         return await self._create._run(
-            name=args.name,
+            name=args.collection,
             description=args.description,
             skill=args.skill,
-            params=args.params or {},
+            params=args.parameters or {},
             schedule=args.schedule,
             expires_at=args.expires_at,
             notify=bool(args.notify),
@@ -2021,7 +2022,7 @@ class CollectionSetTool(MemoryTool):
             description=args.description,
             notify=args.notify,
             skill=args.skill,
-            params=args.params,
+            params=args.parameters,
             schedule=args.schedule,
             expires_at=args.expires_at,
         )
@@ -2038,7 +2039,7 @@ class CollectionSetTool(MemoryTool):
             return ToolResult(message=render_tombstone_duplicate(duplicate), success=False)
         result = await self._apply_to(args, duplicate.name)
         template = _SAME_JOB_UPDATED if result.success else _SAME_JOB_TARGETED
-        note = template.format(requested=args.name, existing=duplicate.name)
+        note = template.format(requested=args.collection, existing=duplicate.name)
         return result.model_copy(update={"message": f"{note}{result.message}"})
 
 
@@ -2050,7 +2051,7 @@ _ROUND_CONTAINER_RETARGETED = (
     "'{requested}' isn't the collection this round set up — '{container}' is, so this "
     "landed on '{container}'. It's '{container}' from here on: read it with "
     "collection_list('{container}') or adjust it with "
-    "collection_set(name='{container}', ...).\n"
+    "collection_configure(collection='{container}', ...).\n"
 )
 
 # The same redirect when the call itself FAILED — the target is still named (the error
@@ -2084,7 +2085,7 @@ _ROUND_ROUTINE_UNBOUND = (
 _SET_BIRTH_NEEDS_DESCRIPTION = (
     "'{name}' doesn't exist yet, so this call would create it — but a new "
     "collection needs a `description` (what it's for, in the user's words; it's "
-    "how the collection is found by meaning later). Call collection_set again "
+    "how the collection is found by meaning later). Call collection_configure again "
     "with description=<what it holds>."
 )
 
@@ -2096,7 +2097,7 @@ _SAME_JOB_UPDATED = (
     "'{requested}' is the same job as '{existing}', which already exists — so I "
     "updated '{existing}' instead of creating a second collection for it. It's "
     "'{existing}' from here on: read it with collection_list('{existing}') or "
-    "adjust it with collection_set(name='{existing}', ...). If this really is a "
+    "adjust it with collection_configure(collection='{existing}', ...). If this really is a "
     "separate task, set it up again with a name that carries what makes it "
     "different.\n"
 )
@@ -2123,15 +2124,15 @@ class CollectionUpdateTool(MemoryTool):
     and records a mutation event); omitting both leaves the prompt untouched.
     """
 
-    name = "collection_set"
+    name = "collection_configure"
     # The creation / re-render echo points at the metadata read for what was configured.
-    advises = ("memory_metadata",)
+    advises = ("memory_get",)
     description = (
         "Update an existing collection's metadata. Only supplied fields "
         "are changed.\n"
         "\n"
         "Fields:\n"
-        "- `name` (required) — the collection to update.\n"
+        "- `collection` (required) — the collection to update.\n"
         "- `description` — content-reflective one-line summary AND the "
         "meaning anchor (find / resolve-by-meaning). Changing it "
         "re-embeds it, so keep it an accurate summary of the subject "
@@ -2143,14 +2144,14 @@ class CollectionUpdateTool(MemoryTool):
         "unchanged.\n"
         "- `extraction_prompt` — FULL replacement body, not a diff. "
         "Drives what the collector actually does. Read the current body "
-        "via `memory_metadata(<collection>)` first if you need to preserve any "
-        "of it. Don't combine with `skill`/`params` — a re-render owns the prompt.\n"
+        "via `memory_get(<collection>)` first if you need to preserve any "
+        "of it. Don't combine with `skill`/`parameters` — a re-render owns the prompt.\n"
         "- `skill` — re-render what the collection runs from the skill's CURRENT "
         "steps (by exact name or a paraphrase, resolved the same way as "
-        "`collection_set`). Use the SAME skill name to refresh after re-teaching "
+        "`collection_configure`). Use the SAME skill name to refresh after re-teaching "
         "it, or a DIFFERENT skill to swap. On a legacy hand-authored collection this "
         "adopts a skill for the first time (its old text is replaced by the render).\n"
-        "- `params` — rebind the skill's fill-in-the-blank parameters to new values and "
+        "- `parameters` — rebind the skill's fill-in-the-blank parameters to new values and "
         "re-render, keeping the same skill. Omit to keep the current bindings. Every "
         "required parameter must be bound or the call is refused naming what's missing.\n"
         "- `schedule` — when the job runs, as ONE recurrence rule (set it to change the "
@@ -2171,12 +2172,12 @@ class CollectionUpdateTool(MemoryTool):
         "\n"
         "IMPORTANT: `extraction_prompt` is a FULL replacement — the whole "
         "prompt body, never a diff or a fragment; read the current body via "
-        "`memory_metadata(<collection>)` first if you need to keep any of it."
+        "`memory_get(<collection>)` first if you need to keep any of it."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Collection name to update"},
+            "collection": {"type": "string", "description": "Collection name to update"},
             "description": {
                 "type": "string",
                 "description": (
@@ -2202,7 +2203,7 @@ class CollectionUpdateTool(MemoryTool):
                     "a different skill = swap; on a hand-authored collection = adopt."
                 ),
             },
-            "params": {
+            "parameters": {
                 "type": "object",
                 "description": (
                     "Rebind the skill's parameters to new values and re-render, same skill. "
@@ -2221,13 +2222,13 @@ class CollectionUpdateTool(MemoryTool):
                 "description": EXPIRES_AT_PARAM_DESCRIPTION,
             },
         },
-        "required": ["name"],
+        "required": ["collection"],
     }
     args_model = CollectionUpdateArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        name = _named(arguments, "name", "a collection")
+        name = _named(arguments, "collection", "a collection")
         if not result.success:
             return f"You tried to update {name}'s settings but it didn't work:"
         return f"You updated {name}'s settings:"
@@ -2261,7 +2262,7 @@ class CollectionUpdateTool(MemoryTool):
         self, args: CollectionUpdateArgs
     ) -> ToolResult | tuple[Schedule | None, datetime | None]:
         """Parse the optional ``schedule`` arg + end condition at apply time (#1857, the
-        same one-arg RRULE ``collection_set`` uses).  Returns ``(None, expires)`` when no
+        same one-arg RRULE ``collection_configure`` uses).  Returns ``(None, expires)`` when no
         schedule is set (the stored one is untouched) or the parsed
         ``(Schedule, expires)``; an unreadable schedule surfaces ``parse_schedule``'s
         teaching rejection verbatim."""
@@ -2418,10 +2419,10 @@ class MemoryMetadataTool(MemoryTool):
     """Return the metadata fields for a single memory (collection or log).
 
     Genuinely shape-agnostic — metadata describes the memory itself, not its
-    contents — so it's named ``memory_metadata`` and applies to either shape.
+    contents — so it's named ``memory_get`` and applies to either shape.
     """
 
-    name = "memory_metadata"
+    name = "memory_get"
     description = (
         "Return metadata for a memory: description, notify flag, schedule, last "
         "collected timestamp, archived state, and extraction prompt.  Works for both "
@@ -2818,7 +2819,7 @@ class GetEventTool(Tool):
     *render* — an autonomous send's provenance appears inline wherever the message
     renders (``penny-messages`` reads, the header's sent lines), so it's a read, not
     an event lookup (#1568/#1608); and a mutation carries its detail inline in
-    ``memory_metadata``'s change history and names its causing ``run <id>`` here, so
+    ``memory_get``'s change history and names its causing ``run <id>`` here, so
     no ``mut``-tagged arm is built until a surface actually renders that anchor (a
     verb needs a rendered id to consume — machinery follows a customer, not before).
     """
@@ -2899,7 +2900,7 @@ class SkillGetTool(Tool):
     """
 
     name = "skill_get"
-    advises = ("find", "collection_set")
+    advises = ("find", "collection_configure")
     description = (
         "Read one skill by name: its parameters and its numbered steps. Pass "
         "`skill`, the exact name as it renders in your state's skills section. "
@@ -3086,7 +3087,7 @@ def _find_addressing(match: ResolvedMatch) -> str:
     if match.kind == ResolvedKind.SKILL:
         return (
             f"read it with skill_get(skill='{name}'); set it running with "
-            f"collection_set(name=<a name for the job>, skill='{name}', params=…); "
+            f"collection_configure(collection=<a name for the job>, skill='{name}', parameters=…); "
             f"to change it, demonstrate it again in chat — I relearn it "
             f"automatically, replacing this one"
         )
@@ -3099,7 +3100,7 @@ def _find_addressing(match: ResolvedMatch) -> str:
         )
     return (
         f"read it with collection_list('{name}'), reconfigure it with "
-        f"collection_set(name='{name}', ...), archive it with "
+        f"collection_configure(collection='{name}', ...), archive it with "
         f"collection_archive('{name}')"
     )
 
@@ -3243,7 +3244,7 @@ class FindTool(MemoryTool):
     advises = (
         "collection_list",
         "collection_get",
-        "collection_set",
+        "collection_configure",
         "collection_archive",
         "collection_unarchive",
         "log_read",
@@ -3422,7 +3423,7 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     write — a read-shaped step) and an ``extraction_prompt`` naming it is not rejected
     at authoring time.  ``include_lifecycle=False`` mirrors the collector's masked
     surface (#1556): the registry-shape tools are absent from a cadence run, so an
-    ``extraction_prompt`` that names ``collection_set`` / ``collection_set`` /
+    ``extraction_prompt`` that names ``collection_configure`` /
     archive / merge is rejected at authoring time rather than persisted into a prompt
     the collector could never run.
 
@@ -3450,8 +3451,8 @@ def _reject_unknown_extraction_tools(
 ) -> ToolResult | None:
     """A failed ``ToolResult`` if ``extraction_prompt`` names a tool no collector can
     run (a hallucinated ``extract_text``), else ``None``.  A ``None`` prompt — an
-    update leaving it unchanged — is nothing to check.  Runs at ``collection_set`` /
-    ``collection_set`` time so a fictitious call is never persisted into a prompt the
+    update leaving it unchanged — is nothing to check.  Runs at ``collection_configure`` /
+    ``collection_configure`` time so a fictitious call is never persisted into a prompt the
     collector would then fail to run every cycle."""
     if extraction_prompt is None:
         return None
@@ -3495,7 +3496,7 @@ def build_memory_tools(
       each entry-mutation tool).  Chat passes ``scope=None`` — its
       entry mutations are unrestricted, since edits are user-directed.
 
-    ``memory_metadata`` is the genuinely shape-agnostic read — it works on either
+    ``memory_get`` is the genuinely shape-agnostic read — it works on either
     shape.  ``find`` (resolve-by-meaning, #1558/#1640/#2289) spans the whole
     registry — collections, logs, taught skills, and stored entries — plus the two
     conversation logs, and returns each hit's exact identity fused with how to
@@ -3510,7 +3511,7 @@ def build_memory_tools(
     or the collector cycle's — passed as an explicit parameter, never ambient state
     (#1560).  It threads to every write- and mutation-capable tool as the executing
     run: entry writes stamp it as ``created_by_run_id`` / ``last_written_by_run_id``
-    on the rows they add or rewrite; ``collection_set`` records it as the new
+    on the rows they add or rewrite; ``collection_configure`` records it as the new
     mechanism's ``created_by_run_id`` (#1566); and create / update / archive /
     unarchive record it on the durable mutation event they emit (the ledger's
     provenance closure).  ``None`` for a non-run caller, which leaves the columns
@@ -3518,13 +3519,13 @@ def build_memory_tools(
     since the message id isn't known until the run returns.)
 
     ``round_framing`` is the round this turn CONFIGURES (#1869), threaded down the same
-    way ``run_id`` is: with one, ``collection_set`` supplies the round's container, its
+    way ``run_id`` is: with one, ``collection_configure`` supplies the round's container, its
     routine and its bound values itself, so the turn's call carries only the job's terms.
     ``None`` — every collector cycle, every unframed turn — leaves the surface byte-
     identical to what it was.
 
-    ``include_lifecycle`` gates the registry-shape tier — ``collection_set`` /
-    ``collection_set`` / ``collection_archive`` /
+    ``include_lifecycle`` gates the registry-shape tier — ``collection_configure`` /
+    ``collection_configure`` / ``collection_archive`` /
     ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
     evolves collections through them); a cadence-fired collector run passes
     ``False`` (#1556), so those tools are structurally ABSENT from its surface — a

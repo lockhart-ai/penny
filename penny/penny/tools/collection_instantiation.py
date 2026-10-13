@@ -1,8 +1,8 @@
 """The front door of collector creation (#1591, stage ⑤ of #1562 / epic #1554).
 
 A collection is never authored with an inline procedure any more — it is an
-*instantiation of a skill*: ``collection_set`` takes a ``skill`` (resolved by
-name or meaning), binds its parameters from ``params``, renders the skill's
+*instantiation of a skill*: ``collection_configure`` takes a ``skill`` (resolved by
+name or meaning), binds its parameters from ``parameters``, renders the skill's
 steps into the numbered TEXT ``extraction_prompt`` the collector runs, and stamps
 it at creation.  This module holds the pure, DB-free pieces of that flow so they
 are whole-render tested in isolation:
@@ -75,7 +75,7 @@ class SkillResolution(BaseModel):
 
 _AMBIGUOUS_HEADER = 'I know a few skills close to "{query}" — I won\'t guess which you mean:'
 _AMBIGUOUS_TAIL = (
-    "To use one, call collection_set again with skill='<its exact name>'. If none of "
+    "To use one, call collection_configure again with skill='<its exact name>'. If none of "
     "these is the process you mean, walk me through it once and I'll learn it as a new skill."
 )
 
@@ -95,7 +95,7 @@ _NO_SKILL_FOUND = (
     "from what they already said. When it arrives, run case a.\n"
     "Either way what you demonstrate is learned automatically as a skill from that round — a "
     "learned notice will tell you the moment it exists; then attach it and set any "
-    "schedule or notify they asked for in ONE call: collection_set(name=<the "
+    "schedule or notify they asked for in ONE call: collection_configure(collection=<the "
     "collection>, skill=<its name>, schedule=..., notify=...)."
 )
 
@@ -119,7 +119,7 @@ def render_no_skill_found(query: str) -> str:
 
 _UNBOUND_PARAMETERS = (
     "Can't instantiate '{skill}': these required parameters aren't bound:\n{listed}\n"
-    "Pass them in params (e.g. params={{{example}}}), then call collection_set again."
+    "Pass them in parameters (e.g. parameters={{{example}}}), then call collection_configure again."
 )
 
 
@@ -455,7 +455,7 @@ def _rule_clock(when: datetime, first: datetime, zone: tzinfo) -> datetime:
 def render_schedule_clause(row: MemoryRow) -> str:
     """The mechanism's schedule rendered back VERBATIM — display form == invocation
     form (#1857): what a surface shows (the self-state mechanisms line,
-    ``memory_metadata``, the creation echo) is the stored rule itself, so it copies
+    ``memory_get``, the creation echo) is the stored rule itself, so it copies
     straight back as the ``schedule`` arg and round-trips to the same stored config.
     With one grammar there is nothing to re-derive at the render, which is the whole
     point of collapsing the union.  A two-line rule renders on ONE line with its
@@ -469,7 +469,7 @@ def render_schedule_clause(row: MemoryRow) -> str:
 
 
 # The honest labelled-schedule fallback for a row with no schedule (#1666) — matching
-# ``memory_metadata``'s ``schedule: none`` convention, so no surface emits a blank.
+# ``memory_get``'s ``schedule: none`` convention, so no surface emits a blank.
 _NO_SCHEDULE_CLAUSE = "none"
 
 
@@ -773,7 +773,7 @@ def _configured_value(value: str, field: str, priors: Mapping[str, str | None]) 
 def render_expiry_update_line(
     row: MemoryRow, timezone_name: str | None, priors: Mapping[str, str | None]
 ) -> str:
-    """The end condition as a PLAIN ``collection_set`` update states it (#2251): the
+    """The end condition as a PLAIN ``collection_configure`` update states it (#2251): the
     row's own value, on the user's own clock (#2206, the ``render_applied_configuration``
     reading above) — never absent, which is what the update's echo used to be when it
     moved an expiry and never said so. ``was <old> → now <new>`` when this call changed it
@@ -846,7 +846,7 @@ def render_skill_parameters(
     """The ``parameters:`` block (#1668/#2287): one ``- <name> (required|optional)[:
     <description>]`` line per SKILL-level parameter, collapsing to ``parameters: none``
     for a parameter-less skill.  The ONE format every reader of a routine's declared
-    parameters needs, called two ways: a configured job's ``memory_metadata`` render
+    parameters needs, called two ways: a configured job's ``memory_get`` render
     passes ``bound`` (the job's own values, read off its row via :func:`skill_params`)
     so each line additionally states the value THIS job supplied for it, or that
     nothing was; ``find``'s taught-skill hit reads the bare declaration (``bound=None``)
@@ -913,7 +913,7 @@ def render_inert_echo(row: MemoryRow) -> str:
     """The skill-less creation echo (#1629): a collection with no ``extraction_prompt``
     is INERT — a container that holds entries but has no job, so it never dispatches.
     The echo is honest about that (storage only, no skill) and names the two-step
-    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_set``)
+    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_configure``)
     — never claiming a routine that doesn't exist (visible degradation over silent
     success)."""
     return _INERT_ECHO.format(name=row.name, description=row.description)

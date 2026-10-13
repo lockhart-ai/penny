@@ -234,7 +234,7 @@ def test_diff_mode_regressed_flip_with_baseline_row() -> None:
             cause="behavioral",
             anchor_index=1,
             regressed=True,
-            baseline_event='🔧 collection_set({"notify":false}) → confirmed',
+            baseline_event='🔧 collection_configure({"notify":false}) → confirmed',
             baseline_ok=True,
         ),
     ]
@@ -253,7 +253,8 @@ def test_diff_mode_regressed_flip_with_baseline_row() -> None:
         '| step 1 · 👤 | "stop notifying me" | ✅→❌ |\n'
         "|---|---|---|\n"
         "| expected | C8 [state]⚖ notify off |  |\n"
-        '| baseline | 🔧 collection_set({"notify":false}) → confirmed | ✅ C8 *(prior run)* |\n'
+        '| baseline | 🔧 collection_configure({"notify":false}) → confirmed | '
+        "✅ C8 *(prior run)* |\n"
         "| 💭 | defer |  |\n"
         "| actual | 🤖 Turning it off | ✅→❌ **REGRESSED** C8 — notify still on · behavioral |\n"
         "\n"

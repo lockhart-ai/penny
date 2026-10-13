@@ -138,8 +138,8 @@ def test_a_stamp_is_a_moment_wherever_the_framework_rendered_it() -> None:
     document = f"{_TOLD_LINE}\n\nSubject: the quote\nDate: 2026-09-22T15:10:00Z"
     turns = [
         {"role": "user", "content": document},
-        _call("call-1", "memory_metadata"),
-        _result("call-1", "memory_metadata", f"created: {stamp} by run seeded-setup\nruns: 2"),
+        _call("call-1", "memory_get"),
+        _result("call-1", "memory_get", f"created: {stamp} by run seeded-setup\nruns: 2"),
         {"role": "user", "content": "it said 2026-13-45 99:99 UTC, which is no time at all"},
     ]
 
