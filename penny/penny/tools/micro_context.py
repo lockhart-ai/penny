@@ -257,27 +257,27 @@ _LABEL_LINE = LineSpec(
 SKILL_NAMING_SHAPE = MicroContextShape(lines=(_LABEL_LINE,))
 
 SKILL_NAMING_SYSTEM_PROMPT = (
-    "You are a naming step. A routine has just been demonstrated once, and every "
+    "You are a naming step. A skill has just been demonstrated once, and every "
     "spot in it that gets filled in again each time it runs has been pulled out for "
     "you to name. Naming those spots is your whole job: they are all placeholders "
-    "already, so nothing here asks where a value came from or what the routine as a "
+    "already, so nothing here asks where a value came from or what the skill as a "
     "whole should be called.\n"
     "You are given:\n"
-    "- The conversation that led to the routine — the last user turn is the one that "
+    "- The conversation that led to the skill — the last user turn is the one that "
     "demonstrated it\n"
-    "- The routine's numbered steps, each spot shown as {its current name}\n"
+    "- The skill's numbered steps, each spot shown as {its current name}\n"
     "- The placeholders — every spot, with the argument site(s) it fills and the "
     "value it was demonstrated with\n"
     "Do this for EVERY placeholder you are given:\n"
-    "1. Work out what that spot IS — the conversation says what the routine is for, "
+    "1. Work out what that spot IS — the conversation says what the skill is for, "
     "its step says what the value is used to do, and the demonstrated value says what "
     "kind of thing goes there.\n"
-    "2. Name it for what it is in this routine (e.g. listing_page, entry_key), NOT "
+    "2. Name it for what it is in this skill (e.g. listing_page, entry_key), NOT "
     "for the tool argument it happens to fill and NOT for the one value it was "
     "demonstrated with — a new value goes there every run.\n"
-    "3. Describe in one line what belongs in that spot each time the routine runs.\n"
+    "3. Describe in one line what belongs in that spot each time the skill runs.\n"
     "A spot that holds an INSTRUCTION rather than a value — what to look for wherever "
-    "the routine reads, e.g. the spot filling browse.extract with the current price — "
+    "the skill reads, e.g. the spot filling browse.extract with the current price — "
     "is PLAIN LANGUAGE: there is no CSS-selector, XPath, or pattern machinery in this "
     "system, so NEVER name or describe one that way.\n"
     "Respond with one LABEL line per placeholder and nothing else:\n"
@@ -287,7 +287,7 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "spot: give each its own name. Use a single lowercase word or snake_case for "
     "<semantic_name>.\n"
     "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
-    "routine."
+    "skill."
 )
 
 # ── The VALUE line: ONE grammar, two customers (#1867/#1868) ──────────────────
@@ -367,7 +367,7 @@ _FRAME_NAME_LINE = LineSpec(
 _FRAME_DESCRIPTION_LINE = LineSpec(
     tag=DESCRIPTION_TAG,
     fields=(
-        FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the routine is for>"),
+        FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the skill is for>"),
     ),
 )
 # One line per MINTED parameter, carved in two fields exactly like the labeller's
@@ -397,29 +397,29 @@ SKILL_FRAME_SHAPE = MicroContextShape(
 )
 
 SKILL_FRAME_SYSTEM_PROMPT = (
-    "You are writing the public interface of a reusable routine. You are given what "
+    "You are writing the public interface of a reusable skill. You are given what "
     "the user asked for, in their own words. Do four things:\n"
     "\n"
     "1. From what they asked for, extract the CORE USER INTENT — what they were trying "
     "to get done when they asked. Their own words are the evidence.\n"
     "\n"
-    "2. Name and describe the ROUTINE by that intent: a short generic verb-noun name "
+    "2. Name and describe the SKILL by that intent: a short generic verb-noun name "
     "for the KIND of task — never the specific instance — and one line stating what "
-    "the routine is for. Do not include any information about timing, scheduling, or "
+    "the skill is for. Do not include any information about timing, scheduling, or "
     "notifications. Do not include any parameter's value in the name or description.\n"
     "\n"
     "3. Decide the PARAMETERS, starting from what the user actually provided. First, "
     "in your reasoning, list the pieces of information the user gave you — the things "
     "they said, not things they might have said. A parameter can only be one of these "
     "pieces; never something they didn't provide. Then keep only the pieces they would "
-    "have to provide again to run this routine on a new occasion:\n"
+    "have to provide again to run this skill on a new occasion:\n"
     "   - A piece the name and description already carry is not a parameter — asking "
     "for it would be asking the user what they came to you for.\n"
     "   - Where results are kept, how often it runs, and whether to notify are never "
-    "parameters — those are settled when the routine is set running.\n"
+    "parameters — those are settled when the job is set running.\n"
     "   - There is always at least one parameter.\n"
     "   Each parameter is one line: PARAMETER <name> — <description>\n"
-    "   - name: the piece the user provided and how the routine uses it — if they "
+    "   - name: the piece the user provided and how the skill uses it — if they "
     "pointed you at a website, 'url'; if they named a topic, 'topic'. Generic "
     "snake_case, never the particular site or thing's own name.\n"
     "   - A parameter holds ONE value, of the same kind the user gave it — a url stays "
@@ -575,12 +575,12 @@ _MISSING_LINE = LineSpec(
 SKILL_BIND_SHAPE = MicroContextShape(lines=(_VALUE_LINE, _MISSING_LINE))
 
 BIND_SKILL_SYSTEM_PROMPT = (
-    "You are a filling-in step. A routine already exists, and someone has just asked "
-    "for it to be run on a new occasion. You are given the routine — what it is called, "
+    "You are a filling-in step. A skill already exists, and someone has just asked "
+    "for it to be run on a new occasion. You are given the skill — what it is called, "
     "what it is for, and each thing it needs — and the user's own words, exactly as "
     "they wrote them.\n"
     "\n"
-    "Fill in each thing the routine needs, from those words:\n"
+    "Fill in each thing the skill needs, from those words:\n"
     "1. Take the list of things it needs as it stands. Never add anything to that list, "
     "and never leave anything out.\n"
     "2. For each one, find the part of the user's words that supplies it, and copy that "
@@ -589,14 +589,14 @@ BIND_SKILL_SYSTEM_PROMPT = (
     "3. When their words supply nothing for one of them, say it is missing. That is a "
     "real answer, and it is the right one whenever the alternative is a guess.\n"
     "\n"
-    "How often the routine runs, when it should stop, and whether to tell the user are "
-    "settled when it is set running. They are never things the routine needs, so they "
+    "How often it runs, when it should stop, and whether to tell the user are "
+    "settled when it is set running. They are never things it needs, so they "
     "are never a value here.\n"
     "\n"
-    "Write one line for each thing the routine needs, and nothing else:\n"
+    "Write one line for each thing the skill needs, and nothing else:\n"
     f"{render_line(_VALUE_LINE)}\n"
     f"{render_line(_MISSING_LINE)}\n"
-    "Write the name exactly as the routine lists it. Write nothing else — no preamble, "
+    "Write the name exactly as the skill lists it. Write nothing else — no preamble, "
     "no explanation, no restating the ask."
 )
 
@@ -656,7 +656,7 @@ NOTIFY_SHAPE = MicroContextShape(lines=(_MESSAGE_LINE,))
 # messages are named as BACKGROUND — the only part of the document the reported run did
 # not produce, and the part a measured composition took as its template.
 NOTIFY_SYSTEM_PROMPT = (
-    "You are writing one message to the user. A routine of theirs just ran on its own "
+    "You are writing one message to the user. A job of theirs just ran on its own "
     "and found something, and you are given everything about that run: what it wrote "
     "down, how it got there, and — as background — the closest things the two of you "
     "have said before.\n"
@@ -664,7 +664,7 @@ NOTIFY_SYSTEM_PROMPT = (
     "Write the message they will actually receive:\n"
     "1. Open with a quick greeting.\n"
     "2. Say what the run found, in plain words — the detail that matters, not a "
-    "description of the routine.\n"
+    "description of the skill.\n"
     "3. Include the source link when the run has one.\n"
     "4. Add one line calling back to an earlier message ONLY when one of them is "
     "genuinely about this. When none of them is, say nothing about them — that is the "

@@ -3935,10 +3935,10 @@ def test_the_binder_renders_between_the_classifier_and_the_chat_agent(
         "watch https://example.test/lantern and tell me when the price moves |  |\n"
         "| 💭 | thinking (state-classifier) — 21 chars: the routine covers it |  |\n"
         "| actual | 🧩 state-classifier → STATE: apply<br>SKILL: monitor_price |  |\n"
-        "| actual | 🧩 skill-binder ← user turn: The routine that has been asked for:<br>"
+        "| actual | 🧩 skill-binder ← user turn: The skill that has been asked for:<br>"
         "name: monitor_price<br>"
         "what it is for: Monitors a web listing and reports when its price changes.<br><br>"
-        "What it needs, one line each:<br>"
+        "Its parameters, one line each:<br>"
         "- url: The URL of the listing to watch<br><br>"
         "What the user said, in their own words:<br>"
         "watch https://example.test/lantern and tell me when the price moves |  |\n"
@@ -4152,13 +4152,13 @@ def test_labelling_input_renders_the_routine_and_maps_spots_home() -> None:
     )
 
     assert content == (
-        "Conversation that led to the construction of this routine "
+        "Conversation that led to the construction of this skill "
         "(the LAST user turn is the one that demonstrated it):\n"
         "user: can you keep an eye on the aurora deck 2 price for me?\n"
         "penny: sure — walk me through it once? what should i read and what should i save?\n"
         "user: read the aurora deck 2 listing, find the current price, and remember it\n"
         "\n"
-        "Routine steps:\n"
+        "The skill's steps:\n"
         "1. browse(queries=[{queries}], extract={extract})\n"
         "2. collection_write(memory={memory}, entries=["
         "{'key': {queries}, 'content': the value from step 1}, "

@@ -869,7 +869,7 @@ async def test_the_two_run_end_draws_are_shown_different_evidence(db):
     assert isinstance(result, SkillExtracted)
     assert result.origin_message == _UTTERANCE
     naming_content = _user_turn(_last_request(model, SKILL_NAMING_SYSTEM_PROMPT))
-    assert "Conversation that led to the construction of this routine" in naming_content
+    assert "Conversation that led to the construction of this skill" in naming_content
     assert f"user: {ask}" in naming_content
     assert f"penny: {elicit}" in naming_content
     assert f"user: {_UTTERANCE}" in naming_content, "the demonstrating turn is the user's"
@@ -1724,29 +1724,29 @@ def test_framing_system_prompt_whole_render():
     tags and separators the model is told to write remain literally the ones the parse
     splits on."""
     assert SKILL_FRAME_SYSTEM_PROMPT == (
-        "You are writing the public interface of a reusable routine. You are given what "
+        "You are writing the public interface of a reusable skill. You are given what "
         "the user asked for, in their own words. Do four things:\n"
         "\n"
         "1. From what they asked for, extract the CORE USER INTENT — what they were trying "
         "to get done when they asked. Their own words are the evidence.\n"
         "\n"
-        "2. Name and describe the ROUTINE by that intent: a short generic verb-noun name "
+        "2. Name and describe the SKILL by that intent: a short generic verb-noun name "
         "for the KIND of task — never the specific instance — and one line stating what "
-        "the routine is for. Do not include any information about timing, scheduling, or "
+        "the skill is for. Do not include any information about timing, scheduling, or "
         "notifications. Do not include any parameter's value in the name or description.\n"
         "\n"
         "3. Decide the PARAMETERS, starting from what the user actually provided. First, "
         "in your reasoning, list the pieces of information the user gave you — the things "
         "they said, not things they might have said. A parameter can only be one of these "
         "pieces; never something they didn't provide. Then keep only the pieces they would "
-        "have to provide again to run this routine on a new occasion:\n"
+        "have to provide again to run this skill on a new occasion:\n"
         "   - A piece the name and description already carry is not a parameter — asking "
         "for it would be asking the user what they came to you for.\n"
         "   - Where results are kept, how often it runs, and whether to notify are never "
-        "parameters — those are settled when the routine is set running.\n"
+        "parameters — those are settled when the job is set running.\n"
         "   - There is always at least one parameter.\n"
         "   Each parameter is one line: PARAMETER <name> — <description>\n"
-        "   - name: the piece the user provided and how the routine uses it — if they "
+        "   - name: the piece the user provided and how the skill uses it — if they "
         "pointed you at a website, 'url'; if they named a topic, 'topic'. Generic "
         "snake_case, never the particular site or thing's own name.\n"
         "   - A parameter holds ONE value, of the same kind the user gave it — a url stays "
@@ -1763,7 +1763,7 @@ def test_framing_system_prompt_whole_render():
         "\n"
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
-        "DESCRIPTION: <one line: what the routine is for>\n"
+        "DESCRIPTION: <one line: what the skill is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
         "VALUE <parameter_name>: <the value, in the user's own words>\n"
         "Write all four kinds of line: the NAME line, the DESCRIPTION line, then the "
@@ -1804,27 +1804,27 @@ def test_labelling_system_prompt_whole_render():
     themselves perfect.  The ruling was to change the WORD, not to loosen the match: a
     literal the model has to spell is a literal it can misspell."""
     assert SKILL_NAMING_SYSTEM_PROMPT == (
-        "You are a naming step. A routine has just been demonstrated once, and every "
+        "You are a naming step. A skill has just been demonstrated once, and every "
         "spot in it that gets filled in again each time it runs has been pulled out for "
         "you to name. Naming those spots is your whole job: they are all placeholders "
-        "already, so nothing here asks where a value came from or what the routine as a "
+        "already, so nothing here asks where a value came from or what the skill as a "
         "whole should be called.\n"
         "You are given:\n"
-        "- The conversation that led to the routine — the last user turn is the one "
+        "- The conversation that led to the skill — the last user turn is the one "
         "that demonstrated it\n"
-        "- The routine's numbered steps, each spot shown as {its current name}\n"
+        "- The skill's numbered steps, each spot shown as {its current name}\n"
         "- The placeholders — every spot, with the argument site(s) it fills and the "
         "value it was demonstrated with\n"
         "Do this for EVERY placeholder you are given:\n"
-        "1. Work out what that spot IS — the conversation says what the routine is for, "
+        "1. Work out what that spot IS — the conversation says what the skill is for, "
         "its step says what the value is used to do, and the demonstrated value says "
         "what kind of thing goes there.\n"
-        "2. Name it for what it is in this routine (e.g. listing_page, entry_key), NOT "
+        "2. Name it for what it is in this skill (e.g. listing_page, entry_key), NOT "
         "for the tool argument it happens to fill and NOT for the one value it was "
         "demonstrated with — a new value goes there every run.\n"
-        "3. Describe in one line what belongs in that spot each time the routine runs.\n"
+        "3. Describe in one line what belongs in that spot each time the skill runs.\n"
         "A spot that holds an INSTRUCTION rather than a value — what to look for "
-        "wherever the routine reads, e.g. the spot filling browse.extract with the "
+        "wherever the skill reads, e.g. the spot filling browse.extract with the "
         "current price — is PLAIN LANGUAGE: there is no CSS-selector, XPath, or pattern "
         "machinery in this system, so NEVER name or describe one that way.\n"
         "Respond with one LABEL line per placeholder and nothing else:\n"
@@ -1835,7 +1835,7 @@ def test_labelling_system_prompt_whole_render():
         "are never the same spot: give each its own name. Use a single lowercase word or "
         "snake_case for <semantic_name>.\n"
         "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
-        "routine."
+        "skill."
     )
 
 

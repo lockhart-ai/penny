@@ -1157,11 +1157,11 @@ def test_build_binding_content_renders_the_signature_then_the_users_words():
     )
 
     assert content == (
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: check_sailing_board\n"
         "what it is for: read a sailing board and report the status of one entry\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- url: the URL of the board to read each run\n"
         "- keyword: which entry to look for on it\n"
         "\n"
@@ -1182,9 +1182,9 @@ def test_build_binding_content_renders_a_parameter_that_carries_no_description()
     described = build_binding_content(
         "do the thing", "run_it", "runs it", [SkillParameter(name="url")]
     )
-    assert "What it needs, one line each:\n- url\n" in described
+    assert "Its parameters, one line each:\n- url\n" in described
 
-    assert "What it needs, one line each:\n(nothing)\n" in build_binding_content(
+    assert "Its parameters, one line each:\n(nothing)\n" in build_binding_content(
         "do the thing", "run_it", "runs it", []
     )
 
