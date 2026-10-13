@@ -44,7 +44,9 @@ def _made(call_id: str, tool: str) -> dict:
 
 
 def _result(call_id: str, tool: str, message: str, *, success: bool = True) -> dict:
-    framed = Tool.format_result(tool, {"memory": "recipe-box"}, _answer(message, success))
+    framed = Tool.format_result(
+        tool, {"memory": "recipe-box", "collection": "recipe-box"}, _answer(message, success)
+    )
     return {"role": "tool", "tool_call_id": call_id, "content": framed}
 
 
@@ -74,8 +76,8 @@ def test_content_is_what_was_stated_and_the_frame_around_it_is_not() -> None:
     turns = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": _ASK},
-        _call("call-1", "collection_read_latest"),
-        _result("call-1", "collection_read_latest", read),
+        _call("call-1", "collection_list"),
+        _result("call-1", "collection_list", read),
         _call("call-2", "collection_get"),
         _result("call-2", "collection_get", one),
         _call("call-3", "log_read"),

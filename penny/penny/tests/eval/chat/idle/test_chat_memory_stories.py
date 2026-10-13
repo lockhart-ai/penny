@@ -397,7 +397,7 @@ _MEASURED = (TOOL_SEQUENCE, ENTRIES_STORED, TRANSITIONS, REPLY_SPREAD)
 # Every one is a read of what the turn LEFT BEHIND — the collections, the entries and their run
 # stamps, the registry rows, the message it sent.  None reads a tool NAME: an entry cannot leave
 # a collection by accident, so the end state already says whether the edit happened, and a rule
-# keyed to ``collection_delete_entry`` would simply not fire for a plugin verb nobody enumerated.
+# keyed to ``collection_remove`` would simply not fire for a plugin verb nobody enumerated.
 #
 # They stay LOCAL rather than graduating into ``assertions.py``.  A claim graduates at the second
 # CUSTOMER, and the cases below are one behaviour family in one file: a second FILE asking

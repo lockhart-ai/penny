@@ -41,7 +41,7 @@ class Prompt:
         "Explain what you're looking for, what you already know, "
         "and what you'll do with the result.\n\n"
         "Search memory before browsing. Your memory tools "
-        "(`collection_read_latest(<collection>)`, `find(query=<text>)`, "
+        "(`collection_list(<collection>)`, `find(query=<text>)`, "
         "`log_read(<log>)`, etc.) read everything stored — the 'Your memory' list "
         "in the 'Penny's current state' section below names every store you can "
         "pull from, and the mechanisms + recent activity there are your own "
@@ -442,7 +442,7 @@ class Prompt:
         "conclude the cycle without first reading your inputs — a `done()` with no "
         "prior tool call is a no-op bail, not a real quiet cycle.  Make at least "
         "one real tool call first (read the log / collection the prompt names, e.g. "
-        "`log_read(<log>)` or `collection_read_latest(<collection>)`), THEN decide: "
+        "`log_read(<log>)` or `collection_list(<collection>)`), THEN decide: "
         "write what you found, or call `done()` only after a read confirms there is "
         "genuinely nothing new."
     )

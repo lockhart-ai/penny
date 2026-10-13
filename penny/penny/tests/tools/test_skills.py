@@ -57,7 +57,7 @@ _REASONING = "because the user asked me to save it"
 
 _BROWSE_ARGS = {"queries": ["Zephyr Ridge elevation"], "extract": "the elevation above sea level"}
 _WRITE_ARGS = {
-    "memory": "elevations",
+    "collection": "elevations",
     "entries": [{"key": "Zephyr Ridge elevation", "content": _EXTRACTED_VALUE}],
 }
 
@@ -96,7 +96,7 @@ def _elevation_steps() -> list[SkillStep]:
             arguments=json.loads(json.dumps(_WRITE_ARGS)),
             substitutions=[
                 SkillSubstitution(
-                    path=["memory"],
+                    path=["collection"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
                     attachment=True,
@@ -116,7 +116,7 @@ def _elevation_steps() -> list[SkillStep]:
 
 _WITH_HOLES = (
     "1. browse(queries=[{queries}], extract={extract})\n"
-    "2. collection_write(memory={the collection this is set up on}, "
+    "2. collection_write(collection={the collection this is set up on}, "
     "entries=[{'key': {queries}, 'content': the value from step 1}])"
 )
 
@@ -127,7 +127,7 @@ _WITH_HOLES = (
 # collection.  The prompt a collection actually runs adds ``retarget_writes`` (below).
 _MONEY_LITERAL = (
     "1. browse(queries=['Cinder Peak elevation'], extract='the elevation above sea level')\n"
-    "2. collection_write(memory={the collection this is set up on}, "
+    "2. collection_write(collection={the collection this is set up on}, "
     "entries=[{'key': 'Cinder Peak elevation', 'content': the value from step 1}])"
 )
 
@@ -209,7 +209,7 @@ def test_distill_classifies_every_leaf_the_same_way_and_marks_by_value():
     assert parameters == [
         SkillParameter(name="queries", required=True),
         SkillParameter(name="extract", required=True),
-        SkillParameter(name="memory", required=True),
+        SkillParameter(name="collection", required=True),
     ]
     # Every candidate is required, so an unbound instantiation refuses naming each one
     # (the refusal carries the whole SkillParameter — name + description); binding them
@@ -217,10 +217,10 @@ def test_distill_classifies_every_leaf_the_same_way_and_marks_by_value():
     assert [p.name for p in unbound_required_parameters(parameters, {})] == [
         "queries",
         "extract",
-        "memory",
+        "collection",
     ]
     assert unbound_required_parameters(parameters, {"queries": "x", "extract": "y"}) == [
-        SkillParameter(name="memory", required=True)
+        SkillParameter(name="collection", required=True)
     ]
 
     # Step 1: the query and the extract instruction are both candidates, neither marked
@@ -240,16 +240,16 @@ def test_distill_classifies_every_leaf_the_same_way_and_marks_by_value():
     assert step2[("entries", 0, "key")].attachment is False
     assert step2[("entries", 0, "content")].kind == SkillSubKind.BINDING
     assert step2[("entries", 0, "content")].step == 1
-    assert step2[("memory",)].kind == SkillSubKind.HOLE
-    assert step2[("memory",)].parameter == "memory"
-    assert step2[("memory",)].attachment is True
+    assert step2[("collection",)].kind == SkillSubKind.HOLE
+    assert step2[("collection",)].parameter == "collection"
+    assert step2[("collection",)].attachment is True
     # The demonstrated collection survives as the verbatim ledger copy (provenance),
-    # and never as a rendered literal — pre-labeller it is a {memory} hole, and the
+    # and never as a rendered literal — pre-labeller it is a {collection} hole, and the
     # instantiation seam binds it to the collection the routine is attached to.
-    assert steps[1].arguments["memory"] == "elevations"
+    assert steps[1].arguments["collection"] == "elevations"
     assert "elevations" not in render_skill(steps)
-    assert "collection_write(memory={memory}" in render_skill(steps)
-    assert "collection_write(memory='peak-notes'" in render_skill(
+    assert "collection_write(collection={collection}" in render_skill(steps)
+    assert "collection_write(collection='peak-notes'" in render_skill(
         retarget_writes(steps, "peak-notes")
     )
 
@@ -264,9 +264,9 @@ def test_distill_marks_by_value_across_arbitrary_tools():
     inputs = [
         DistillInput(
             source_ordinal=1,
-            tool="collection_read_latest",
-            arguments={"memory": "notes", "limit": 5},
-            result="You read notes: (collection_read_latest result)\n1 entry",
+            tool="collection_list",
+            arguments={"collection": "notes", "limit": 5},
+            result="You read notes: (collection_list result)\n1 entry",
         ),
         DistillInput(
             source_ordinal=2,
@@ -283,7 +283,7 @@ def test_distill_marks_by_value_across_arbitrary_tools():
         DistillInput(
             source_ordinal=4,
             tool="collection_write",
-            arguments={"memory": "notes", "entries": [{"key": "k", "content": "c"}]},
+            arguments={"collection": "notes", "entries": [{"key": "k", "content": "c"}]},
             result=_WRITE_OK,
         ),
     ]
@@ -296,15 +296,15 @@ def test_distill_marks_by_value_across_arbitrary_tools():
     }
     # 'notes' is a collection, so BOTH the read and the write carry the mark; the log
     # name and the calendar id are values the mark knows nothing about.
-    assert marked == {("collection_read_latest", ("memory",)), ("collection_write", ("memory",))}
+    assert marked == {("collection_list", ("collection",)), ("collection_write", ("collection",))}
     assert {p.name for p in parameters} >= {"calendar_id", "title", "memory"}
     # Applying the routine to a collection binds every marked leaf and NOTHING else —
     # the log stays the log, the calendar id stays the calendar id.
     retargeted = retarget_writes(steps, "ridge-notes")
-    assert retargeted[0].arguments["memory"] == "ridge-notes"
+    assert retargeted[0].arguments["collection"] == "ridge-notes"
     assert retargeted[1].arguments == {"calendar_id": "cal-77", "title": "Ridge survey"}
     assert retargeted[2].arguments["memory"] == "survey-log"
-    assert retargeted[3].arguments["memory"] == "ridge-notes"
+    assert retargeted[3].arguments["collection"] == "ridge-notes"
 
 
 def test_a_bound_leaf_is_never_marked_even_when_its_value_names_a_collection():
@@ -323,7 +323,7 @@ def test_a_bound_leaf_is_never_marked_even_when_its_value_names_a_collection():
         DistillInput(
             source_ordinal=2,
             tool="collection_write",
-            arguments={"memory": "notes", "entries": [{"key": "k", "content": "elevations"}]},
+            arguments={"collection": "notes", "entries": [{"key": "k", "content": "elevations"}]},
             result=_WRITE_OK,
         ),
     ]
@@ -334,7 +334,7 @@ def test_a_bound_leaf_is_never_marked_even_when_its_value_names_a_collection():
     assert bound.attachment is False  # 'elevations' is a collection, but it BOUND
     # Only the write's own unexplained collection leaf is rebound; the binding survives.
     retargeted = retarget_writes(steps, "ridge-notes")
-    assert retargeted[1].arguments["memory"] == "ridge-notes"
+    assert retargeted[1].arguments["collection"] == "ridge-notes"
     assert retargeted[1].arguments["entries"][0]["content"] == "elevations"
     assert "'content': the value from step 1" in render_skill(retargeted)
 
@@ -350,7 +350,7 @@ def test_distill_binds_a_wrapped_prior_result():
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": "prices",
+                "collection": "prices",
                 "entries": [{"key": "gadget", "content": "Price: $499 today"}],
             },
             result=_WRITE_OK,
@@ -369,7 +369,7 @@ def test_distill_does_not_bind_a_trivial_overlap():
         DistillInput(
             source_ordinal=2,
             tool="collection_write",
-            arguments={"memory": "fruits", "entries": [{"key": "k", "content": "banana"}]},
+            arguments={"collection": "fruits", "entries": [{"key": "k", "content": "banana"}]},
             result=_WRITE_OK,
         ),
     ]
@@ -400,7 +400,7 @@ _FAUX_LISTING_PAGE = (
 # for the two keys IT chose, the fetched values for the two contents it copied.
 _LISTING_RECIPE = (
     "1. browse(queries=[{queries}])\n"
-    "2. collection_write(memory={memory}, entries=["
+    "2. collection_write(collection={collection}, entries=["
     "{'key': {key}, 'content': the value from step 1}, "
     "{'key': {key-2}, 'content': the value from step 1}])"
 )
@@ -433,7 +433,7 @@ def test_a_write_key_inside_the_pages_url_is_not_a_binding(write_key):
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": "prices",
+                "collection": "prices",
                 "entries": [
                     {"key": write_key, "content": "$499"},
                     {"key": "listing-title", "content": "Aurora Deck 2"},
@@ -446,7 +446,7 @@ def test_a_write_key_inside_the_pages_url_is_not_a_binding(write_key):
     subs = {tuple(s.path): s for s in steps[1].substitutions}
 
     assert subs[("entries", 0, "key")].kind == SkillSubKind.HOLE
-    assert {parameter.name for parameter in parameters} == {"queries", "memory", "key", "key-2"}
+    assert {parameter.name for parameter in parameters} == {"queries", "collection", "key", "key-2"}
     # Both copied values bind despite their punctuation margins — the price to the
     # figure the page states, the title to the quoted heading.
     for path in (("entries", 0, "content"), ("entries", 1, "content")):
@@ -507,7 +507,7 @@ _DIGEST_WRITE_OK = (
 # fetched, and the re-read pointed at the SAME page as the first fetch.
 _DIGEST_RECIPE = (
     "1. browse(queries=[{queries}, {queries-2}, {queries-3}], extract={extract})\n"
-    "2. collection_write(memory={memory}, entries=["
+    "2. collection_write(collection={collection}, entries=["
     "{'key': {key}, 'content': the value from step 1}, "
     "{'key': {key-2}, 'content': the value from step 1}, "
     "{'key': {key-3}, 'content': the value from step 1}])\n"
@@ -538,7 +538,7 @@ def test_a_repeat_of_an_earlier_argument_joins_its_parameter():
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": "headlines",
+                "collection": "headlines",
                 "entries": [
                     {"key": "alpha-top-headline", "content": _DIGEST_HEADLINES[0]},
                     {"key": "beta-top-headline", "content": _DIGEST_HEADLINES[1]},
@@ -571,7 +571,7 @@ def test_a_repeat_of_an_earlier_argument_joins_its_parameter():
         "queries-2",
         "queries-3",
         "extract",
-        "memory",
+        "collection",
         "key",
         "key-2",
         "key-3",
@@ -668,7 +668,7 @@ def test_an_argument_word_inside_a_fetched_value_keeps_its_binding():
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": "prices",
+                "collection": "prices",
                 "entries": [{"key": "keel lantern price", "content": "$499 for the keel lantern"}],
             },
             result=_WRITE_OK,
@@ -707,7 +707,7 @@ def test_distill_strips_the_top_level_reasoning_thinkaloud():
     assert holes == [
         SkillParameter(name="queries", required=True),
         SkillParameter(name="extract", required=True),
-        SkillParameter(name="memory", required=True),
+        SkillParameter(name="collection", required=True),
     ]
     assert all("reasoning" not in step.arguments for step in steps)
     assert "reasoning=" not in render_skill(steps)
@@ -722,7 +722,7 @@ def test_distill_keeps_a_nested_key_named_reasoning():
             source_ordinal=1,
             tool="collection_write",
             arguments={
-                "memory": "notes",
+                "collection": "notes",
                 "reasoning": "top-level narration — stripped",
                 "entries": [{"key": "k", "content": "c", "reasoning": "nested — kept"}],
             },
@@ -784,7 +784,7 @@ _BRIEFING_STEPS = [
         2,
         "collection_write",
         {
-            "memory": "morning-briefing",
+            "collection": "morning-briefing",
             "entries": [
                 {"key": "example-a", "content": "a headline"},
                 {"key": "example-b", "content": "another headline"},
@@ -888,22 +888,22 @@ def test_fresh_migrated_registry_is_empty(db):
 # ── Attachment binding at apply (#1629/#1783, pure) ────────────────────────────
 
 
-def test_retarget_writes_binds_the_write_memory_to_the_target():
-    """The attachment-marked ``memory`` placeholder is BOUND to the target
+def test_retarget_writes_binds_the_write_collection_to_the_target():
+    """The attachment-marked ``collection`` placeholder is BOUND to the target
     collection's name, and the render reflects it — a skill demoed against
     'elevations' renders its write to the collection it's applied to."""
-    steps = _elevation_steps()  # step 2's memory leaf is the #1777 placeholder
+    steps = _elevation_steps()  # step 2's collection leaf is the #1777 placeholder
     retargeted = retarget_writes(steps, "cinder-elevation")
     rendered = render_skill(
         retargeted, {"queries": "Cinder Peak", "extract": "the elevation above sea level"}
     )
     assert rendered == (
         "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-        "2. collection_write(memory='cinder-elevation', "
+        "2. collection_write(collection='cinder-elevation', "
         "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
     )
     # Pure: the source steps are untouched (a skill is target-agnostic at rest).
-    assert steps[1].arguments["memory"] == "elevations"
+    assert steps[1].arguments["collection"] == "elevations"
     assert steps[1].substitutions[0].kind == SkillSubKind.PLACEHOLDER
 
 
@@ -916,10 +916,10 @@ def test_retarget_writes_binds_a_migrated_legacy_write_target():
         ordinal=1,
         source_ordinal=1,
         tool="collection_write",
-        arguments={"memory": "elevations", "entries": [{"key": "k", "content": "c"}]},
+        arguments={"collection": "elevations", "entries": [{"key": "k", "content": "c"}]},
         substitutions=[
             SkillSubstitution(
-                path=["memory"],
+                path=["collection"],
                 kind=SkillSubKind.PLACEHOLDER,
                 description=WRITE_TARGET_DESCRIPTION,
                 attachment=True,
@@ -928,7 +928,7 @@ def test_retarget_writes_binds_a_migrated_legacy_write_target():
     )
     retargeted = retarget_writes([migrated], "peak-notes")
     assert render_skill(retargeted) == (
-        "1. collection_write(memory='peak-notes', entries=[{'key': 'k', 'content': 'c'}])"
+        "1. collection_write(collection='peak-notes', entries=[{'key': 'k', 'content': 'c'}])"
     )
 
 
@@ -941,7 +941,7 @@ def test_retarget_writes_binds_only_what_carries_the_mark():
         ordinal=1,
         source_ordinal=1,
         tool="collection_write",
-        arguments={"memory": "elevations", "entries": [{"key": "k", "content": "c"}]},
+        arguments={"collection": "elevations", "entries": [{"key": "k", "content": "c"}]},
         substitutions=[],
     )
     assert retarget_writes([unmarked], "peak-notes") == [unmarked]
@@ -956,14 +956,14 @@ def test_a_user_named_destination_stays_a_parameter():
         ordinal=1,
         source_ordinal=1,
         tool="collection_write",
-        arguments={"memory": "reading-list", "entries": [{"key": "k", "content": "c"}]},
+        arguments={"collection": "reading-list", "entries": [{"key": "k", "content": "c"}]},
         substitutions=[
-            SkillSubstitution(path=["memory"], kind=SkillSubKind.HOLE, parameter="destination")
+            SkillSubstitution(path=["collection"], kind=SkillSubKind.HOLE, parameter="destination")
         ],
     )
     assert retarget_writes([step], "somewhere-else") == [step]
     assert render_skill([step], {"destination": "weekend-reading"}) == (
-        "1. collection_write(memory='weekend-reading', entries=[{'key': 'k', 'content': 'c'}])"
+        "1. collection_write(collection='weekend-reading', entries=[{'key': 'k', 'content': 'c'}])"
     )
 
 
@@ -975,17 +975,17 @@ def test_retarget_writes_binds_a_marked_hole_and_drops_its_substitution():
         ordinal=1,
         source_ordinal=1,
         tool="collection_write",
-        arguments={"memory": "elevations", "entries": [{"key": "k", "content": "c"}]},
+        arguments={"collection": "elevations", "entries": [{"key": "k", "content": "c"}]},
         substitutions=[
             SkillSubstitution(
-                path=["memory"], kind=SkillSubKind.HOLE, parameter="memory", attachment=True
+                path=["collection"], kind=SkillSubKind.HOLE, parameter="collection", attachment=True
             )
         ],
     )
     retargeted = retarget_writes([step], "target-b")
-    assert retargeted[0].arguments["memory"] == "target-b"
-    assert all(sub.path != ["memory"] for sub in retargeted[0].substitutions)
-    assert "memory='target-b'" in render_skill(retargeted, {})
+    assert retargeted[0].arguments["collection"] == "target-b"
+    assert all(sub.path != ["collection"] for sub in retargeted[0].substitutions)
+    assert "collection='target-b'" in render_skill(retargeted, {})
 
 
 def test_retarget_writes_leaves_unmarked_steps_untouched():
@@ -1032,12 +1032,12 @@ def _timetable_steps() -> list[SkillStep]:
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": "sailings",
+                "collection": "sailings",
                 "entries": [{"key": "first sailing", "content": "07:10"}],
             },
             substitutions=[
                 SkillSubstitution(
-                    path=["memory"],
+                    path=["collection"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
                     attachment=True,
@@ -1089,7 +1089,7 @@ def test_bind_parameters_writes_the_bound_values_into_the_leaves_they_fill():
     assert render_skill(steps) == (
         "1. browse(queries=['https://northpier.example/departures'], "
         "extract='the dawn sailing')\n"
-        "2. collection_write(memory='ferry-departures', "
+        "2. collection_write(collection='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])"
     )
@@ -1112,7 +1112,7 @@ def test_bind_parameters_says_so_by_name_when_a_parameter_got_no_value():
     assert render_skill(steps) == (
         "1. browse(queries=[{no value was supplied for the parameter 'url'}], "
         "extract='the dawn sailing')\n"
-        "2. collection_write(memory='ferry-departures', "
+        "2. collection_write(collection='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])"
     )
@@ -1157,7 +1157,9 @@ def test_bind_parameters_never_claims_the_attachment_marked_leaf():
     bound = bind_parameters(steps, impostor, {"destination": "somewhere-else"})
     assert "somewhere-else" not in render_skill(bound)
     assert (
-        render_skill(retarget_writes(bound, "ferry-departures")).count("memory='ferry-departures'")
+        render_skill(retarget_writes(bound, "ferry-departures")).count(
+            "collection='ferry-departures'"
+        )
         == 1
     )
 

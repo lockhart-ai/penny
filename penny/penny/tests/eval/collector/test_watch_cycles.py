@@ -412,12 +412,12 @@ def _skill(reading: Reading) -> SkillDraft:
                 source_ordinal=2,
                 tool="collection_write",
                 arguments={
-                    "memory": _CONTAINER,
+                    "collection": _CONTAINER,
                     "entries": [{"key": _KEY, "content": _BASELINE_PRICE}],
                 },
                 substitutions=[
                     SkillSubstitution(
-                        path=["memory"],
+                        path=["collection"],
                         kind=SkillSubKind.PLACEHOLDER,
                         description="the collection this is set up on",
                         attachment=True,

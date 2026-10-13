@@ -24,9 +24,9 @@ from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
-    CollectionDeleteEntryTool,
     CollectionGetTool,
     CollectionKeysTool,
+    CollectionRemoveTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
@@ -260,44 +260,38 @@ class TestMemoryWriteNarration:
     call says so, never a false "saved"), and a failure."""
 
     def test_collection_write_saved(self):
-        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
         assert (
             CollectionWriteTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
             == 'You saved "chess" to `likes`:'
         )
 
     def test_collection_write_already_there(self):
-        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
         assert (
             CollectionWriteTool.to_result_narration(args, ToolResult(message="dup", mutated=False))
             == "You didn't add anything new to `likes` — it was already there:"
         )
 
     def test_collection_write_failure(self):
-        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        args = {"collection": "likes", "entries": [{"key": "chess", "content": "x"}]}
         assert (
             CollectionWriteTool.to_result_narration(args, ToolResult(message="e", success=False))
             == "You tried to save to `likes` but it didn't work:"
         )
 
     def test_delete_entry_three_outcomes(self):
-        args = {"memory": "likes", "key": "chess"}
+        args = {"collection": "likes", "key": "chess"}
         assert (
-            CollectionDeleteEntryTool.to_result_narration(
-                args, ToolResult(message="", mutated=True)
-            )
+            CollectionRemoveTool.to_result_narration(args, ToolResult(message="", mutated=True))
             == 'You removed "chess" from `likes`:'
         )
         assert (
-            CollectionDeleteEntryTool.to_result_narration(
-                args, ToolResult(message="", mutated=False)
-            )
+            CollectionRemoveTool.to_result_narration(args, ToolResult(message="", mutated=False))
             == 'You couldn\'t find "chess" to remove from `likes`:'
         )
         assert (
-            CollectionDeleteEntryTool.to_result_narration(
-                args, ToolResult(message="", success=False)
-            )
+            CollectionRemoveTool.to_result_narration(args, ToolResult(message="", success=False))
             == 'You tried to remove "chess" from `likes` but it didn\'t work:'
         )
 
@@ -354,14 +348,14 @@ class TestMemoryLifecycleNarration:
         )
 
     def test_collection_get(self):
-        args = {"memory": "likes", "key": "chess"}
+        args = {"collection": "likes", "key": "chess"}
         assert (
             CollectionGetTool.to_result_narration(args, ToolResult(message="ok"))
             == 'You looked up "chess" in `likes`:'
         )
 
     def test_collection_read_keys(self):
-        args = {"memory": "likes"}
+        args = {"collection": "likes"}
         assert (
             CollectionKeysTool.to_result_narration(args, ToolResult(message="ok"))
             == "You listed the keys in `likes`:"

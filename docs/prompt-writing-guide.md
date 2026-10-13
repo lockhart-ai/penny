@@ -104,7 +104,7 @@ Two corollaries, both measured on this codebase:
    task as `1. … 2. … 3. …`, one action per step.
 
 2. **Name every tool call explicitly, in ONE consistent format:** `N. tool(args) — description`.
-   e.g. `2. collection_read_latest("skills") — every existing skill, with its key, STEPS, and TRIGGER.`
+   e.g. `2. collection_list("skills") — every existing skill, with its key, STEPS, and TRIGGER.`
    Do **not** let some steps name their call crisply while an important one is demoted to a
    vague parenthetical ("…, then send a message about it"). *Measured:* a `send_message`
    buried as a parenthetical was skipped **~40%** of cycles; rewritten as a first-class step
@@ -120,7 +120,7 @@ Two corollaries, both measured on this codebase:
 4. **Keep load-bearing discriminating rules SPECIFIC and CONCRETE — with a worked example.**
    The rule that makes or breaks a hard judgement must state the exact distinction and show
    it. *Measured:* the skills collector's "two different tool names are different steps even
-   when the params are identical — `collection_read_latest(memory='x')` is not
+   when the params are identical — `collection_list(collection='x')` is not
    `log_read(memory='x')`" rule was worth **5/5 vs 0/5** on the tweak-STEPS case. Softening
    it to "match the tools" collapsed it. A vague rule is a dropped rule.
 
@@ -224,7 +224,7 @@ highest-leverage rule, and it's counter-intuitive:
 **3. Argument style — kwargs when it's non-obvious, positional only for one obvious arg.**
 Use `tool(name=<x>, k=5)` keyword form whenever a call has more than one argument or any
 optional one, so which value is which is unambiguous. A single, obvious argument may be
-positional (`collection_read_latest("<collection>")`). Don't show a bare positional list of
+positional (`collection_list("<collection>")`). Don't show a bare positional list of
 two-plus values — the model mis-slots them.
 
 **4. Never put these in a written example:** the auto-injected `reasoning` param (it's added

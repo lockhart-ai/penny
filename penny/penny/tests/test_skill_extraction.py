@@ -94,12 +94,12 @@ _UTTERANCE = "read the aurora deck 2 listing, find the current price, and rememb
 _PRICE = "$499"
 _BROWSE_ARGS = {"queries": ["aurora deck 2 price"], "extract": "the current price"}
 _WRITE_ARGS = {
-    "memory": "aurora-prices",
+    "collection": "aurora-prices",
     "entries": [{"key": "aurora deck 2 price", "content": _PRICE}],
 }
 _BROWSE_OK = f"You used `browse` and here's the result: (browse result)\nEXTRACTED: {_PRICE}"
 _WRITE_OK = "You saved an entry to aurora-prices: (collection_write result)\nWrote 1 entry."
-_READ_OK = "You looked up your notes: (collection_read_latest result)\n(empty)"
+_READ_OK = "You looked up your notes: (collection_list result)\n(empty)"
 
 _BROWSE = ("browse", _BROWSE_ARGS, _BROWSE_OK, True)
 _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
@@ -265,10 +265,10 @@ async def test_read_write_run_qualifies_and_distils_correctly(db, emitted_write_
     # describe it — a placeholder on the fallback string rather than a required
     # parameter nobody could bind.  The demonstrated collection stays in ``arguments``
     # as the ledger copy and never reaches the recipe.
-    assert subs[("memory",)].kind == SkillSubKind.PLACEHOLDER
-    assert subs[("memory",)].attachment is True
-    assert subs[("memory",)].description == WRITE_TARGET_DESCRIPTION
-    assert steps[1].arguments["memory"] == _DEMO_COLLECTION
+    assert subs[("collection",)].kind == SkillSubKind.PLACEHOLDER
+    assert subs[("collection",)].attachment is True
+    assert subs[("collection",)].description == WRITE_TARGET_DESCRIPTION
+    assert steps[1].arguments["collection"] == _DEMO_COLLECTION
     assert _DEMO_COLLECTION not in render_skill(steps)
     # The framework reasoning think-aloud is stripped from every stored step.
     assert all("reasoning" not in step.arguments for step in steps)
@@ -283,7 +283,7 @@ _LOOP_SOUTH = "watch-cliffwalk-trail-status-south-loop"
 # sheer token overlap, and must NOT be marked attachment just because it
 # happens to.
 _LOOP_WRITE_ARGS = {
-    "memory": _LOOP_SOUTH,
+    "collection": _LOOP_SOUTH,
     "entries": [{"key": "north loop", "content": "open"}],
 }
 _LOOP_WRITE_OK = (
@@ -306,8 +306,8 @@ async def test_redirected_write_keeps_the_attachment_mark(db):
 
     The widening is narrow (#2273): the entry's KEY ("north loop") is ALSO a
     near-match of the collection's name by token containment, exactly like the
-    ``memory`` argument is — but it is not the call's declared DESTINATION
-    (``collection_write``'s ``destination_param`` names only ``memory``), so it
+    ``collection`` argument is — but it is not the call's declared DESTINATION
+    (``collection_write``'s ``destination_param`` names only ``collection``), so it
     must keep its ordinary required-parameter substitution, unmarked."""
     db.memories.create_collection(_LOOP_NORTH, "trail status notes")
     _log_run(
@@ -331,9 +331,9 @@ async def test_redirected_write_keeps_the_attachment_mark(db):
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
     subs = {tuple(s.path): s for s in steps[0].substitutions}
-    assert subs[("memory",)].attachment is True
+    assert subs[("collection",)].attachment is True
     # The typed name stays the verbatim ledger copy; only the mark changed.
-    assert steps[0].arguments["memory"] == _LOOP_SOUTH
+    assert steps[0].arguments["collection"] == _LOOP_SOUTH
     # The key is a near-match of the collection's name too, but it is not the
     # call's declared destination — it stays an ordinary parameter, unmarked.
     assert subs[("entries", 0, "key")].attachment is False
@@ -510,7 +510,7 @@ async def test_run_with_no_certified_steps_is_excluded(db):
 async def test_failed_step_is_filtered_from_the_routine(db):
     """A failed exploratory read is DROPPED (#1659 filter-not-refuse); the surviving
     browse + write still qualify and the extracted skill omits the failed call."""
-    failed_read = ("collection_read_latest", {"memory": "notes"}, "read failed", False)
+    failed_read = ("collection_list", {"collection": "notes"}, "read failed", False)
     _log_run(db, "run-A", _UTTERANCE, [failed_read, _BROWSE, _WRITE])
 
     result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
@@ -660,7 +660,7 @@ _REAL_BROWSE_FRAME = "You opened the Aurora Deck 2 listing (browse result)\n$499
 # A write whose content WRAPS the browse payload ('$499') and whose key is a topic
 # name (a real parameter that must NOT false-bind to the payload).
 _WRAP_WRITE_ARGS = {
-    "memory": "aurora-prices",
+    "collection": "aurora-prices",
     "entries": [
         {"key": "aurora deck 2 price", "content": "Current price of Aurora Deck 2 is $499."}
     ],
@@ -686,7 +686,7 @@ _WATCH_PARAMS = parameters_to_json([SkillParameter(name="url", required=True)])
 # entry came from the user, so neither can be a required parameter.
 _INVENTED_LABEL = "Page source for Aurora Deck 2"
 _INVENTED_WRITE_ARGS = {
-    "memory": "aurora-prices",
+    "collection": "aurora-prices",
     "entries": [
         {"key": "aurora deck 2 price", "content": _PRICE},
         {"key": "aurora deck 2 source", "content": _INVENTED_LABEL},
@@ -851,7 +851,7 @@ async def test_the_two_run_end_draws_are_shown_different_evidence(db):
     labels = (
         "LABEL queries: listing_page — the page this routine reads\n"
         "LABEL extract: value_to_find — what to pull off the page each run\n"
-        "LABEL memory: storage_collection — the collection this is set up on"
+        "LABEL collection: storage_collection — the collection this is set up on"
     )
     model = _run_end_model(labels=labels)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
@@ -912,7 +912,7 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
 _LABELLED_ROUND = (
     "LABEL queries: listing_page — the page whose price this routine reads\n"
     "LABEL extract: value_to_find — what to pull off the page each run\n"
-    "LABEL memory: storage_collection — the collection this is set up on\n"
+    "LABEL collection: storage_collection — the collection this is set up on\n"
     "LABEL key: note_key — what to call the note it saves\n"
     "LABEL content: note_text — the note it writes about the page"
 )
@@ -962,7 +962,7 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     assert render_skill(steps) == (
         "1. browse(queries=[{the page whose price this routine reads}], "
         "extract={what to pull off the page each run})\n"
-        "2. collection_write(memory={the collection this is set up on}, entries=["
+        "2. collection_write(collection={the collection this is set up on}, entries=["
         "{'key': {the page whose price this routine reads}, "
         "'content': the value from step 1}, "
         "{'key': {what to call the note it saves}, "
@@ -1153,7 +1153,7 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     decayed = _run_end_model(
         labels="LABLE queries: listing_page — the page this routine reads\n"
         "LABEL extract: value_to_find — what to pull off the page\n"
-        "LABEL memory: storage_collection — where the reading is kept"
+        "LABEL collection: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
 
@@ -1175,7 +1175,7 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
         labels="LABEL queries: listing_page — the page this routine reads\n"
         "LABEL extract: value_to_find — what to pull off the page\n"
         "LABEL extract: detail_to_check — something else entirely\n"
-        "LABEL memory: storage_collection — where the reading is kept"
+        "LABEL collection: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1199,7 +1199,7 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     model = _run_end_model(
         labels="LABEL queries: listing_page — the page this routine reads\n"
         "LABEL extract: value_to_find — what to pull off the page\n"
-        "LABEL memory: storage_collection — where the reading is kept\n"
+        "LABEL collection: storage_collection — where the reading is kept\n"
         "LABEL nowhere: invented_spot — a spot nobody offered"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
@@ -1228,7 +1228,7 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
     model = _run_end_model(
         labels="LABEL queries: listing_page\n"
         "LABEL extract: value_to_find — what to pull off the page\n"
-        "LABEL memory: storage_collection — where the reading is kept"
+        "LABEL collection: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1279,7 +1279,7 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     model = _run_end_model(
         labels="- LABEL queries: listing_page – the page this routine reads\n"
         "* **LABEL extract: value_to_find — what to pull off the page**\n"
-        'LABEL memory: "storage_collection" — where the reading is kept'
+        'LABEL collection: "storage_collection" — where the reading is kept'
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1294,7 +1294,7 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     # The EN-dash split the name from its description, and the decoration came off.
     assert "queries=[{the page this routine reads}]" in rendered
     assert "extract={what to pull off the page}" in rendered
-    assert "memory={where the reading is kept}" in rendered
+    assert "collection={where the reading is kept}" in rendered
 
 
 @pytest.mark.asyncio
@@ -1311,7 +1311,7 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     model = _run_end_model(
         labels="LABEL queries: listing_page — the page this routine reads\n"
         'LABEL extract: what_to_find | the content descriptor to look for (e.g., "price")\n'
-        "LABELS memory: storage_collection — not a label line"
+        "LABELS collection: storage_collection — not a label line"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1327,7 +1327,7 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
         ("extract", None, True),
     ]
     steps = steps_from_json(result.skill.steps)
-    target = {tuple(s.path): s for s in steps[1].substitutions}[("memory",)]
+    target = {tuple(s.path): s for s in steps[1].substitutions}[("collection",)]
     assert target.kind == SkillSubKind.PLACEHOLDER
     assert target.description == WRITE_TARGET_DESCRIPTION  # nothing labelled it
     assert target.attachment is True  # and the mark stands, for the render seam
@@ -1575,7 +1575,7 @@ async def test_the_destination_is_filled_by_the_attachment_under_its_drawn_name(
     model = _run_end_model(
         labels="LABEL queries: listing_page — the page this routine reads\n"
         "LABEL extract: value_to_find — what to pull off the page\n"
-        "LABEL memory: storage_collection — wherever this routine keeps its readings"
+        "LABEL collection: storage_collection — wherever this routine keeps its readings"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1584,12 +1584,12 @@ async def test_the_destination_is_filled_by_the_attachment_under_its_drawn_name(
     assert isinstance(result, SkillExtracted)
     assert parameters_from_json(result.skill.parameters) == []
     steps = steps_from_json(result.skill.steps)
-    target = {tuple(s.path): s for s in steps[1].substitutions}[("memory",)]
+    target = {tuple(s.path): s for s in steps[1].substitutions}[("collection",)]
     assert target.kind == SkillSubKind.PLACEHOLDER and target.attachment is True
     # The wording is the labeller's, not the fixed fallback.
     assert target.description == "wherever this routine keeps its readings"
-    assert "memory={wherever this routine keeps its readings}" in render_skill(steps)
-    assert "memory='aurora-watch'" in render_skill(retarget_writes(steps, "aurora-watch"))
+    assert "collection={wherever this routine keeps its readings}" in render_skill(steps)
+    assert "collection='aurora-watch'" in render_skill(retarget_writes(steps, "aurora-watch"))
 
 
 @pytest.mark.asyncio
@@ -1606,15 +1606,18 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
     db.memories.create_collection("aurora-archive", "older readings")
     second_write = (
         "collection_write",
-        {"memory": "aurora-archive", "entries": [{"key": "aurora deck 2 price", "content": "old"}]},
+        {
+            "collection": "aurora-archive",
+            "entries": [{"key": "aurora deck 2 price", "content": "old"}],
+        },
         "You saved an entry to aurora-archive: (collection_write result)\nWrote 1 entry.",
         True,
     )
     model = _run_end_model(
         labels="LABEL queries: listing_page — the page this routine reads\n"
         "LABEL extract: value_to_find — what to pull off the page\n"
-        "LABEL memory: live_list — where the current reading is kept\n"
-        "LABEL memory-2: archive — where past readings are kept\n"
+        "LABEL collection: live_list — where the current reading is kept\n"
+        "LABEL collection-2: archive — where past readings are kept\n"
         "LABEL content: previous_reading — the value filed in the archive"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE, second_write])
@@ -1624,7 +1627,9 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
     assert isinstance(result, SkillExtracted)
     assert parameters_from_json(result.skill.parameters) == []
     steps = steps_from_json(result.skill.steps)
-    targets = [{tuple(s.path): s for s in step.substitutions}[("memory",)] for step in steps[1:]]
+    targets = [
+        {tuple(s.path): s for s in step.substitutions}[("collection",)] for step in steps[1:]
+    ]
     assert [t.description for t in targets] == [
         "where the current reading is kept",
         "where past readings are kept",
@@ -1635,7 +1640,7 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
     rendered = render_skill(steps)
     assert _DEMO_COLLECTION not in rendered and "aurora-archive" not in rendered
     bound = render_skill(retarget_writes(steps, "current-prices"))
-    assert bound.count("collection_write(memory='current-prices'") == 2
+    assert bound.count("collection_write(collection='current-prices'") == 2
 
 
 def test_framing_system_prompt_whole_render():
@@ -1993,7 +1998,7 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     assert render_skill(skill.steps) == (
         "1. browse(queries=[{the url of the page to browse}], "
         "extract={a plain text description of what information to retrieve from the page})\n"
-        "2. collection_write(memory={the identifier for the storage area where scraped "
+        "2. collection_write(collection={the identifier for the storage area where scraped "
         "data will be saved}, entries=[{'key': {the key under which the extracted value "
         "is stored within that collection}, 'content': the value from step 1}])"
     )
@@ -2010,7 +2015,7 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     ) == (
         "1. browse(queries=['https://example.test/listing'], "
         "extract={a plain text description of what information to retrieve from the page})\n"
-        "2. collection_write(memory='watch-a-listing-price', "
+        "2. collection_write(collection='watch-a-listing-price', "
         "entries=[{'key': {the key under which the extracted value "
         "is stored within that collection}, 'content': the value from step 1}])"
     )

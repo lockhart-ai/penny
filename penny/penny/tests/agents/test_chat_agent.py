@@ -438,13 +438,13 @@ async def test_run_end_extracts_and_narrates_a_skill(
             return _text("nice — i learned that routine! 🌟")
         tool_turns = [m for m in messages if m.get("role") == "tool"]
         if not tool_turns:  # a read (senses) — the first half of the routine
-            return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+            return _tool_call("c0", "collection_list", {"collection": "aurora-prices"})
         if len(tool_turns) == 1:  # a write (acts) — the second half
             return _tool_call(
                 "c1",
                 "collection_write",
                 {
-                    "memory": "aurora-prices",
+                    "collection": "aurora-prices",
                     "entries": [{"key": "aurora deck 2 price", "content": "$499"}],
                 },
             )
@@ -469,7 +469,7 @@ async def test_run_end_extracts_and_narrates_a_skill(
         skill = penny.db.skills.list_all()[0]
         assert skill.name == "watch-the-aurora-deck-2-price"
         assert [s.tool for s in steps_from_json(skill.steps)] == [
-            "collection_read_latest",
+            "collection_list",
             "collection_write",
         ]
         assert skill.description == ask
@@ -489,7 +489,7 @@ async def test_run_end_extracts_and_narrates_a_skill(
         # The shape it carries is the RECORD's own two steps, in the order the run made
         # them — so a step this turn picked up that the user never asked for reaches the
         # reply that is the one moment they are there to see it.
-        assert render_skill_shape(skill) == "`collection_read_latest` → `collection_write`"
+        assert render_skill_shape(skill) == "`collection_list` → `collection_write`"
 
         # A demonstration turn has TWO records, and each is narrated exactly once (#1946):
         # the round's own reply used to report the writes from memory, which is what
@@ -562,7 +562,7 @@ async def test_a_teach_round_is_framed_on_entry_and_filed_under_that_name(
             return _tool_call(
                 "c0",
                 "collection_write",
-                {"memory": _ENTRY_CONTAINER, "entries": [{"key": "price", "content": "$499"}]},
+                {"collection": _ENTRY_CONTAINER, "entries": [{"key": "price", "content": "$499"}]},
             )
         return _text("saved $499 for you")
 
@@ -671,13 +671,13 @@ async def test_an_idle_turn_that_reads_and_writes_learns_nothing(
             return _text("(this should never be reached)")
         tool_turns = [m for m in messages if m.get("role") == "tool"]
         if not tool_turns:  # a read …
-            return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+            return _tool_call("c0", "collection_list", {"collection": "aurora-prices"})
         if len(tool_turns) == 1:  # … and a write: the shape that used to qualify
             return _tool_call(
                 "c1",
                 "collection_write",
                 {
-                    "memory": "aurora-prices",
+                    "collection": "aurora-prices",
                     "entries": [{"key": "aurora deck 2", "content": "$499"}],
                 },
             )
@@ -740,7 +740,7 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
                 "c0",
                 "collection_write",
                 {
-                    "memory": "lantern-prices",
+                    "collection": "lantern-prices",
                     "entries": [{"key": "keel lantern", "content": "$18"}],
                 },
             )
@@ -753,7 +753,7 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
                 "c1",
                 "collection_write",
                 {
-                    "memory": "lantern-prices",
+                    "collection": "lantern-prices",
                     "entries": [{"key": "aurora lantern", "content": _COLLAPSE}],
                 },
             )
@@ -816,7 +816,7 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
                 "c0",
                 "collection_write",
                 {
-                    "memory": "lantern-prices",
+                    "collection": "lantern-prices",
                     "entries": [{"key": "keel lantern", "content": "$18"}],
                 },
             )
@@ -869,7 +869,7 @@ async def test_a_turn_that_wrote_nothing_narrates_nothing(
             saw_writes["hit"] = True
             return _text("(this should never be reached)")
         if not [m for m in messages if m.get("role") == "tool"]:
-            return _tool_call("c0", "collection_read_latest", {"memory": "weather-notes"})
+            return _tool_call("c0", "collection_list", {"collection": "weather-notes"})
         return _text("grey and stubborn about it, same as yesterday 🌫️")
 
     mock_llm.set_response_handler(handler)
@@ -925,7 +925,7 @@ async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
             # Nothing survived certification (the read failed), so the extractor
             # declines — even though the model happily narrates success.
             return _text("all set! i've learned that routine — want me to run it daily?")
-        return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+        return _tool_call("c0", "collection_list", {"collection": "aurora-prices"})
 
     mock_llm.set_response_handler(handler)
 
@@ -950,7 +950,7 @@ async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
         assert penny.db.skills.list_all() == []
         # Everything the turn did still travels with the failure (the run record stays
         # complete).
-        assert [record.tool for record in response.tool_calls] == ["collection_read_latest"]
+        assert [record.tool for record in response.tool_calls] == ["collection_list"]
         # The machine stayed exactly where it was — parked in learn, same anchor.
         parked = penny.db.machine.latest_transition()
         assert parked is not None
@@ -975,13 +975,13 @@ async def test_learn_turn_that_learns_a_skill_keeps_todays_reply(
             return _text(reply)
         tool_turns = [m for m in messages if m.get("role") == "tool"]
         if not tool_turns:
-            return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+            return _tool_call("c0", "collection_list", {"collection": "aurora-prices"})
         if len(tool_turns) == 1:
             return _tool_call(
                 "c1",
                 "collection_write",
                 {
-                    "memory": "aurora-prices",
+                    "collection": "aurora-prices",
                     "entries": [{"key": "aurora deck 2 price", "content": "$499"}],
                 },
             )
@@ -1323,7 +1323,7 @@ async def test_a_non_learn_turn_that_learns_nothing_is_untouched(
         messages = request.get("messages") or []
         if any(m.get("role") == "tool" for m in messages):
             return _text(reply)
-        return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+        return _tool_call("c0", "collection_list", {"collection": "aurora-prices"})
 
     mock_llm.set_response_handler(handler)
 
@@ -1617,7 +1617,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
 
         # Entry mutations — now available to chat (user-directed edits).
         assert "collection_write" in names
-        assert "collection_delete_entry" in names
+        assert "collection_remove" in names
         assert "log_append" in names
 
         # Lifecycle / shape.
@@ -1630,7 +1630,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_unarchive" in names
 
         # Reads.
-        assert "collection_read_latest" in names
+        assert "collection_list" in names
         assert "collection_get" in names
         assert "collection_sample" in names
         assert "collection_keys" in names
@@ -1902,7 +1902,7 @@ _BASIC_FLOW_EXPECTED = (
     "you're looking for, what you already know, and what you'll do with the result.\n"
     "\n"
     "Search memory before browsing. Your memory tools "
-    "(`collection_read_latest(<collection>)`, `find(query=<text>)`, "
+    "(`collection_list(<collection>)`, `find(query=<text>)`, "
     "`log_read(<log>)`, etc.) read everything stored — the 'Your memory' "
     "list in the 'Penny's current state' section below names every store you can pull "
     "from, and the mechanisms + recent activity there are your own operational state "
@@ -2010,7 +2010,7 @@ _BASIC_FLOW_EXPECTED = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and "
     "change history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) reads a store's entries, and find(query=<text>) "
+    "collection_list(<name>) reads a store's entries, and find(query=<text>) "
     "searches them all by meaning — a collection, a skill, a stored entry, or "
     "something said in the conversation."
 )

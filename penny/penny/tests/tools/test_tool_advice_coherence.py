@@ -2,7 +2,7 @@
 
 A collector cycle's tool surface is SCOPED to its program's own calls now, so "is the
 tool this message tells the model to call actually here?" stopped being a theoretical
-question.  A result that says ``call collection_delete_entry(key=…)`` on a surface
+question.  A result that says ``call collection_remove(key=…)`` on a surface
 with no such tool is a rendered instruction that cannot be followed — an n≤1 reachability
 bug, and exactly the guessing the anchor discipline exists to remove.
 
@@ -43,8 +43,8 @@ from penny.tools.memory_tools import build_memory_tools  # noqa: F401  (register
 # A call reference in rendered text: a registered tool's name followed by ``(``, or the
 # name in backticks.  Both are how these messages name a tool the model should call.
 #
-# Matched on a WORD BOUNDARY, because tool names nest: ``collection_read_latest(``
-# contains ``read_latest(``, and a plain substring test reads one call as two.  The
+# Matched on a WORD BOUNDARY, because tool names nest: ``collection_list(``
+# contains ``list(``, and a plain substring test reads one call as two.  The
 # paren is ATTACHED, because a call is written ``tool(`` and never ``tool (`` — the
 # space-separated form is ordinary prose ("search (the meaning leg)") and reading it as
 # a call would make the invariant fail on sentences.
@@ -116,7 +116,7 @@ def _rendered_text(tool: type[Tool]) -> str:
 
     The helpers matter as much as the class — ``collection_write``'s duplicate rejection
     is built by a module-level ``_format_duplicate``, which is exactly where it names
-    ``collection_delete_entry``, so a scan of the class alone would miss the reference
+    ``collection_remove``, so a scan of the class alone would miss the reference
     that started all this.  And a helper usually names a CONSTANT rather than carrying the text
     inline, because that is the house style — so a scan that stopped at the helper would
     read it as having nothing to say and the invariant would quietly enforce nothing on

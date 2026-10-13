@@ -129,7 +129,7 @@ ENACTING_TOOLS = (
     "collection_write",
     "collection_set",
     "update_entry",
-    "collection_delete_entry",
+    "collection_remove",
     "log_append",
 )
 

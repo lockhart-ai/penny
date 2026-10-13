@@ -77,10 +77,10 @@ from penny.tools.memory_tools import (
     SCHEDULE_PARAM_DESCRIPTION,
     CollectionArchiveTool,
     CollectionCreateTool,
-    CollectionDeleteEntryTool,
     CollectionGetTool,
     CollectionKeysTool,
-    CollectionReadLatestTool,
+    CollectionListTool,
+    CollectionRemoveTool,
     CollectionSampleTool,
     CollectionSetTool,
     CollectionUnarchiveTool,
@@ -244,10 +244,13 @@ def _watch_skill_steps() -> list[SkillStep]:
             ordinal=2,
             source_ordinal=2,
             tool="collection_write",
-            arguments={"memory": "elevations", "entries": [{"key": _SKILL_HOLE, "content": "x"}]},
+            arguments={
+                "collection": "elevations",
+                "entries": [{"key": _SKILL_HOLE, "content": "x"}],
+            },
             substitutions=[
                 SkillSubstitution(
-                    path=["memory"],
+                    path=["collection"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
                     attachment=True,
@@ -298,7 +301,7 @@ def _seed_watch_skill(
 # RETARGETED to the collection's own name (#1629 — the demo wrote to 'elevations').
 _MONEY_LITERAL = (
     "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "2. collection_write(memory='cinder-elevation', "
+    "2. collection_write(collection='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -317,7 +320,7 @@ _ONE_SHOT_ECHO_LITERAL = (
     "  expires: never\n"
     "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='one-shot', "
+    "    2. collection_write(collection='one-shot', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -335,7 +338,7 @@ _CREATE_ECHO_LITERAL = (
     "  expires: never\n"
     "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='cinder-elevation', "
+    "    2. collection_write(collection='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -613,7 +616,7 @@ class TestCollectionCreateFrontDoor:
             "'cinder-peak-watch' isn't the collection this round set up — "
             "'watch-elevation-cinder-peak' is, so this landed on "
             "'watch-elevation-cinder-peak'. It's 'watch-elevation-cinder-peak' from here "
-            "on: read it with collection_read_latest('watch-elevation-cinder-peak') or "
+            "on: read it with collection_list('watch-elevation-cinder-peak') or "
             "adjust it with collection_set(name='watch-elevation-cinder-peak', ...).\n"
         )
 
@@ -951,7 +954,7 @@ class TestCollectionCreateFrontDoor:
             "  expires: never\n"
             "  steps: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "    2. collection_write(memory='forever-watch', "
+            "    2. collection_write(collection='forever-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
             "\n(Note: expires_at='2099-12-31' is further ahead than an end date anyone "
             "means, so I read it as no end date — the expiry is unset and this runs until "
@@ -986,7 +989,7 @@ class TestCollectionCreateFrontDoor:
             "  expires: Tuesday, September 01, 2026 at 09:00 AM UTC\n"
             "  steps: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "    2. collection_write(memory='season-watch', "
+            "    2. collection_write(collection='season-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
         )
 
@@ -1688,10 +1691,10 @@ def _river_skill_steps() -> list[SkillStep]:
             ordinal=2,
             source_ordinal=2,
             tool="collection_write",
-            arguments={"memory": "flows", "entries": [{"key": _RIVER_HOLE, "content": "x"}]},
+            arguments={"collection": "flows", "entries": [{"key": _RIVER_HOLE, "content": "x"}]},
             substitutions=[
                 SkillSubstitution(
-                    path=["memory"],
+                    path=["collection"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
                     attachment=True,
@@ -1736,7 +1739,7 @@ _REFRESH_ECHO_LITERAL = (
     "  expires: never\n"
     "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the summit elevation in metres')\n"
-    "    2. collection_write(memory='cinder-elevation', "
+    "    2. collection_write(collection='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -1753,7 +1756,7 @@ _REBIND_ECHO_LITERAL = (
     "  expires: never\n"
     "  steps: |\n"
     "    1. browse(queries=['Ashfall Ridge'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='cinder-elevation', "
+    "    2. collection_write(collection='cinder-elevation', "
     "entries=[{'key': 'Ashfall Ridge', 'content': the value from step 1}])"
 )
 
@@ -1771,7 +1774,7 @@ _SWAP_ECHO_LITERAL = (
     "  expires: never\n"
     "  steps: |\n"
     "    1. browse(queries=['Silt River'], extract='the current flow rate')\n"
-    "    2. collection_write(memory='cinder-elevation', "
+    "    2. collection_write(collection='cinder-elevation', "
     "entries=[{'key': 'Silt River', 'content': the value from step 1}])"
 )
 
@@ -1789,7 +1792,7 @@ _ADOPT_ECHO_LITERAL = (
     "  expires: never\n"
     "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='legacy-notes', "
+    "    2. collection_write(collection='legacy-notes', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -2026,7 +2029,7 @@ def _log_demo_run(db, run_id: str, *, write_target: str) -> None:
         (
             "collection_write",
             {
-                "memory": write_target,
+                "collection": write_target,
                 "entries": [{"key": "Meridian Trail 3", "content": _BOOTSTRAP_PRICE}],
             },
             f"You saved an entry to {write_target}: (collection_write result)\n"
@@ -2298,7 +2301,7 @@ class TestWriteRetargetAtApply:
         stored = db.memories.get("target-b")
         assert stored.extraction_prompt == (
             "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "2. collection_write(memory='target-b', "
+            "2. collection_write(collection='target-b', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
         )
 
@@ -2319,7 +2322,7 @@ class TestWriteRetargetAtApply:
         stored = db.memories.get("target-b")
         assert stored.extraction_prompt == (
             "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "2. collection_write(memory='target-b', "
+            "2. collection_write(collection='target-b', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
         )
 
@@ -2367,12 +2370,12 @@ def _timetable_steps(url: str, line: str, key_description: str) -> list[SkillSte
             source_ordinal=2,
             tool="collection_write",
             arguments={
-                "memory": "sailings",
+                "collection": "sailings",
                 "entries": [{"key": "first sailing", "content": "07:10"}],
             },
             substitutions=[
                 SkillSubstitution(
-                    path=["memory"],
+                    path=["collection"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
                     attachment=True,
@@ -2428,7 +2431,7 @@ def seed_timetable_skill(
 # value, not a term of the job) and the write target is the attachment's.
 _JOINED_PROGRAM = (
     "1. browse(queries=['https://northpier.example/departures'], extract='the dawn sailing')\n"
-    "2. collection_write(memory='ferry-departures', "
+    "2. collection_write(collection='ferry-departures', "
     "entries=[{'key': {the key the extracted value is stored under}, "
     "'content': the value from step 1}])"
 )
@@ -2490,7 +2493,7 @@ class TestRuntimeParameterJoin:
         assert db.memories.get("ferry-departures").extraction_prompt == (
             "1. browse(queries=['https://northpier.example/departures'], "
             "extract='the dawn sailing')\n"
-            "2. collection_write(memory='ferry-departures', "
+            "2. collection_write(collection='ferry-departures', "
             "entries=[{'key': {the key this reading is filed under}, "
             "'content': the value from step 1}])"
         )
@@ -2519,7 +2522,7 @@ class TestRuntimeParameterJoin:
         assert db.memories.get("ferry-departures").extraction_prompt == (
             "1. browse(queries=[{the url of the timetable page to browse each run}], "
             "extract={the text or line to look for on that page})\n"
-            "2. collection_write(memory='ferry-departures', "
+            "2. collection_write(collection='ferry-departures', "
             "entries=[{'key': {the key the extracted value is stored under}, "
             "'content': the value from step 1}])"
         )
@@ -2566,7 +2569,7 @@ class TestTwoStepTeachBootstrap:
         # fires from ambiently, where no instantiation retargets anything.
         recipe = render_skill(steps_from_json(db.skills.get(taught_name).steps))
         assert "deals-watch" not in recipe
-        assert f"collection_write(memory={{{WRITE_TARGET_DESCRIPTION}}}" in recipe
+        assert f"collection_write(collection={{{WRITE_TARGET_DESCRIPTION}}}" in recipe
 
         # 4. Adopt the skill onto the inert collection with a schedule + notify.
         adopted = await CollectionUpdateTool(
@@ -2732,7 +2735,7 @@ class TestCollectionUpdateScheduleAtApply:
             "  expires: never\n"
             "  steps: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-            "    2. collection_write(memory='deals-watch', "
+            "    2. collection_write(collection='deals-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
         )
         assert result.message == expected_echo + _NO_SCHEDULE_NOTE.format(name="deals-watch")
@@ -2772,7 +2775,7 @@ class TestCollectionWritesAndReads:
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[
                 {"key": "dark roast", "content": "loves dark roast"},
                 {"key": "cold brew", "content": "enjoys cold brew"},
@@ -2780,7 +2783,7 @@ class TestCollectionWritesAndReads:
         )
         assert "Wrote 2 entries to 'likes'" in result.message
         assert result.mutated is True
-        latest = await CollectionReadLatestTool(db).execute(memory="likes")
+        latest = await CollectionListTool(db).execute(collection="likes")
         assert "dark roast" in latest.message
         assert "cold brew" in latest.message
         # Each rendered entry carries an absolute UTC timestamp so the model can
@@ -2830,7 +2833,7 @@ class TestCollectionWritesAndReads:
         )
         # Typo (char leg): 'gear-ntoes' → 'gear-notes'.
         result = await write.execute(
-            memory="gear-ntoes", entries=[{"key": "tent", "content": "3kg tent"}]
+            collection="gear-ntoes", entries=[{"key": "tent", "content": "3kg tent"}]
         )
         assert result.mutated is True
         assert result.message.startswith(
@@ -2838,16 +2841,16 @@ class TestCollectionWritesAndReads:
             "name in a different spelling, so this write went there.\n"
         )
         assert db.memories.get("gear-ntoes") is None
-        assert "tent" in (await CollectionReadLatestTool(db).execute(memory="gear-notes")).message
+        assert "tent" in (await CollectionListTool(db).execute(collection="gear-notes")).message
         # Same-intent extension (TCR leg): 'gear' ⊂ 'gear-notes'.
         result = await write.execute(
-            memory="gear", entries=[{"key": "stove", "content": "canister stove"}]
+            collection="gear", entries=[{"key": "stove", "content": "canister stove"}]
         )
         assert result.mutated is True and "'gear-notes'" in result.message
         assert db.memories.get("gear") is None
         # Nothing close → auto-create, narrated, provenance stamped.
         result = await write.execute(
-            memory="trail-recipes", entries=[{"key": "oats", "content": "overnight oats"}]
+            collection="trail-recipes", entries=[{"key": "oats", "content": "overnight oats"}]
         )
         assert result.mutated is True
         assert result.message.startswith(
@@ -2864,7 +2867,7 @@ class TestCollectionWritesAndReads:
             db, _make_llm_client(mock_llm), author="collector", scope="gear-notes"
         )
         result = await scoped.execute(
-            memory="something-else", entries=[{"key": "x", "content": "y"}]
+            collection="something-else", entries=[{"key": "x", "content": "y"}]
         )
         assert result.success is False
         assert db.memories.get("something-else") is None
@@ -2875,7 +2878,7 @@ class TestCollectionWritesAndReads:
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        result = await write.run(memory="likes", entries=[])
+        result = await write.run(collection="likes", entries=[])
         assert result.success is False
         assert "at least one entry" in result.message
         assert "List should have at least 1 item" not in result.message
@@ -2887,7 +2890,7 @@ class TestCollectionWritesAndReads:
         mis-rendered as the whole ``entries`` field (#1416)."""
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.run(
-            memory="likes",
+            collection="likes",
             entries=[{"key": "k", "content": "v", "contnt": "typo"}],
         )
         assert result.success is False
@@ -2916,7 +2919,7 @@ class TestCollectionWritesAndReads:
         assert "stored under the key 'cold brew'" in keyed
         assert "collides with that same entry again" in keyed
         assert (
-            "collection_write(memory='likes', "
+            "collection_write(collection='likes', "
             "entries=[{'key': 'cold brew', 'content': <the new value>}])" in keyed
         )
         # No hedge: nothing here makes landing the value conditional on anything.
@@ -2939,10 +2942,10 @@ class TestCollectionWritesAndReads:
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         result = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
         # A fully rejected batch wrote nothing — it must read as a no-op so the
@@ -2957,7 +2960,7 @@ class TestCollectionWritesAndReads:
         assert "'dark roast coffee' was not written" in result.message
         assert "stored under the key 'dark roast'" in result.message
         assert (
-            "collection_write(memory='likes', "
+            "collection_write(collection='likes', "
             "entries=[{'key': 'dark roast', 'content': <the new value>}])" in result.message
         )
         # Whole batch collided → the nothing-landed close fires.  This is a chat-scope
@@ -2978,10 +2981,10 @@ class TestCollectionWritesAndReads:
         # A collector binds its writes to one collection via ``scope``.
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
         await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         all_duplicates = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
         # THE WATCHED DELETION (#1911): the whole batch collided, and the close names NO
@@ -2991,7 +2994,7 @@ class TestCollectionWritesAndReads:
         assert "Nothing in this batch landed" in all_duplicates.message
         assert "done" not in all_duplicates.message
         assert (
-            "collection_write(memory='likes', "
+            "collection_write(collection='likes', "
             "entries=[{'key': 'dark roast', 'content': <the new value>}])" in all_duplicates.message
         )
         # A re-write under the SAME key with the SAME value is the change-gate's
@@ -2999,7 +3002,7 @@ class TestCollectionWritesAndReads:
         # such (not a generic "duplicate") AND carrying a STOP the collector loop
         # honors (this is a collector-scoped write).
         same_key = await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
         assert same_key.mutated is False
@@ -3009,7 +3012,7 @@ class TestCollectionWritesAndReads:
         # The colliding half carries a DIFFERENT value (#1919) — a same-value collision
         # is the no-news branch below and prescribes no call at all.
         partial = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[
                 {"key": "cold brew", "content": "a brand new distinct entry"},
                 {"key": "dark roast blend", "content": "roasted longer this season"},
@@ -3017,7 +3020,7 @@ class TestCollectionWritesAndReads:
         )
         assert "Wrote 1 entry" in partial.message
         assert (
-            "collection_write(memory='likes', "
+            "collection_write(collection='likes', "
             "entries=[{'key': 'dark roast', 'content': <the new value>}])" in partial.message
         )
         assert "The rest of the batch landed" in partial.message
@@ -3029,18 +3032,18 @@ class TestCollectionWritesAndReads:
         # now exists (written above), so both entries collide on distinct keys — each
         # with its own fresher value, so both take the recoverable branch.
         multi = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[
                 {"key": "dark roast blend", "content": "roasted longer this season"},
                 {"key": "cold brew coffee", "content": "steeped overnight now"},
             ],
         )
         assert (
-            "collection_write(memory='likes', "
+            "collection_write(collection='likes', "
             "entries=[{'key': 'dark roast', 'content': <the new value>}])" in multi.message
         )
         assert (
-            "collection_write(memory='likes', "
+            "collection_write(collection='likes', "
             "entries=[{'key': 'cold brew', 'content': <the new value>}])" in multi.message
         )
         assert multi.mutated is False
@@ -3050,7 +3053,7 @@ class TestCollectionWritesAndReads:
         # is already stored.  The mock embeds bag-of-words, so re-writing 'first body'
         # verbatim under a fresh key matches on content while the key does not.
         same_value = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
         assert same_value.stop == WriteGateOutcome.DUPLICATE_UNCHANGED
@@ -3079,10 +3082,10 @@ class TestCollectionWritesAndReads:
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         already = await write.execute(
-            memory="likes",
+            collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
         assert "Already recorded: 'morning roast selection'" in already.message
@@ -3103,10 +3106,10 @@ class TestCollectionWritesAndReads:
         # No scope → chat surface.
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         unchanged = await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         assert "Unchanged: 'dark roast' already holds the same value" in unchanged.message
         assert unchanged.stop is None
@@ -3129,8 +3132,10 @@ class TestCollectionWritesAndReads:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="watch")
-        await write.execute(memory="watch", entries=[{"key": "price", "content": "$42"}])
-        changed = await write.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
+        await write.execute(collection="watch", entries=[{"key": "price", "content": "$42"}])
+        changed = await write.execute(
+            collection="watch", entries=[{"key": "price", "content": "$40"}]
+        )
         assert changed.message == (
             "Changed: 'price' — the stored baseline was refreshed to the new value (entry)."
         )
@@ -3142,9 +3147,9 @@ class TestCollectionWritesAndReads:
         assert refreshed[0].content == "$40"
         # The gate is shared: a chat-surface write auto-refreshes identically, never STOPs.
         chat_write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
-        await chat_write.execute(memory="watch", entries=[{"key": "note", "content": "v1"}])
+        await chat_write.execute(collection="watch", entries=[{"key": "note", "content": "v1"}])
         chat_changed = await chat_write.execute(
-            memory="watch", entries=[{"key": "note", "content": "v2"}]
+            collection="watch", entries=[{"key": "note", "content": "v2"}]
         )
         assert chat_changed.message == (
             "Changed: 'note' — the stored baseline was refreshed to the new value (entry)."
@@ -3278,7 +3283,7 @@ class TestEmbedFailureRefusesWrite:
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(db, cast(Any, _FailingEmbedClient()), author="test")
         result = await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
         )
         # Fail-hard: actionable failure naming the transient cause and binding the
         # retry, and no work reported (so the collector throttle sees no-op).
@@ -3286,7 +3291,7 @@ class TestEmbedFailureRefusesWrite:
         assert result.mutated is False
         assert "transient embedding error" in result.message
         assert "'dark roast'" in result.message
-        assert "collection_write(memory='likes'" in result.message
+        assert "collection_write(collection='likes'" in result.message
         # Nothing persisted — the invariant "every stored entry has a vector" holds.
         with Session(db.engine) as session:
             rows = session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == "likes")).all()
@@ -3303,7 +3308,7 @@ class TestEmbedFailureRefusesWrite:
             db, cast(Any, _KeyOnlyFailingEmbedClient("dark roast")), author="test"
         )
         result = await write.execute(
-            memory="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
+            collection="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
         )
         assert result.success is False
         assert result.mutated is False
@@ -3337,16 +3342,16 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="likes", entries=[{"key": "k", "content": "hello"}]
+            collection="likes", entries=[{"key": "k", "content": "hello"}]
         )
-        assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
-        missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
+        assert "hello" in (await CollectionGetTool(db).execute(collection="likes", key="k")).message
+        missing = await CollectionGetTool(db).execute(collection="likes", key="absent")
         assert "not found" in missing.message
         # A key one typo away from a stored one is named in the miss, so the retry is a copy.
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="likes", entries=[{"key": "sea kayaking", "content": "weekends"}]
+            collection="likes", entries=[{"key": "sea kayaking", "content": "weekends"}]
         )
-        near = await CollectionGetTool(db).execute(memory="likes", key="sea kayakng")
+        near = await CollectionGetTool(db).execute(collection="likes", key="sea kayakng")
         assert "did you mean key 'sea kayaking'?" in near.message
         # The proven-win read guidance (collection_keys / find by meaning), AND the
         # rejection now closes the residual write-vs-update decision: once the model
@@ -3355,7 +3360,7 @@ class TestEmbedFailureRefusesWrite:
         assert "collection_keys('likes')" in missing.message
         assert "find(query=<what you're looking for>, memory='likes')" in missing.message
         assert (
-            "collection_write(memory='likes', entries=[{'key': <the key you found>, "
+            "collection_write(collection='likes', entries=[{'key': <the key you found>, "
             "'content': <the new content>}])" in missing.message
         )
         assert "the store replaces the content of the key you name" in missing.message
@@ -3363,7 +3368,7 @@ class TestEmbedFailureRefusesWrite:
         # display form) is never silently resolved — it's rejected with a teaching
         # error that names the mistake, the current key='...' render, and the bare
         # key ready to reuse.
-        bracketed = await CollectionGetTool(db).execute(memory="likes", key="[k]")
+        bracketed = await CollectionGetTool(db).execute(collection="likes", key="[k]")
         assert bracketed.success is False
         assert bracketed.message == (
             "Key '[k]' not found in 'likes'. The enclosing [brackets] are not part "
@@ -3372,14 +3377,14 @@ class TestEmbedFailureRefusesWrite:
         )
         # A bracket-wrapped key whose bare form doesn't exist either gets the
         # ordinary not-found error, not the bracket teaching rejection.
-        double_miss = await CollectionGetTool(db).execute(memory="likes", key="[absent]")
+        double_miss = await CollectionGetTool(db).execute(collection="likes", key="[absent]")
         assert "Key '[absent]' not found" in double_miss.message
         assert "Retry with" not in double_miss.message
         # A key that genuinely contains brackets exact-matches with no rejection.
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="likes", entries=[{"key": "[lit]", "content": "bracket literal body"}]
+            collection="likes", entries=[{"key": "[lit]", "content": "bracket literal body"}]
         )
-        literal = await CollectionGetTool(db).execute(memory="likes", key="[lit]")
+        literal = await CollectionGetTool(db).execute(collection="likes", key="[lit]")
         assert literal.success is True
         assert "bracket literal body" in literal.message
 
@@ -3393,9 +3398,9 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="likes", entries=[{"key": "first", "content": "1"}])
-        await write.execute(memory="likes", entries=[{"key": "second", "content": "2"}])
-        listing = await CollectionKeysTool(db).execute(memory="likes")
+        await write.execute(collection="likes", entries=[{"key": "first", "content": "1"}])
+        await write.execute(collection="likes", entries=[{"key": "second", "content": "2"}])
+        listing = await CollectionKeysTool(db).execute(collection="likes")
         assert listing.message == "- first\n- second"
 
     @pytest.mark.asyncio
@@ -3409,7 +3414,7 @@ class TestEmbedFailureRefusesWrite:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        listing = await CollectionKeysTool(db).execute(memory="likes")
+        listing = await CollectionKeysTool(db).execute(collection="likes")
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
@@ -3422,8 +3427,8 @@ class TestEmbedFailureRefusesWrite:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
-        rendered = await CollectionSampleTool(db).execute(memory="likes", k=5)
+        await write.execute(collection="likes", entries=[{"key": "a", "content": "1"}])
+        rendered = await CollectionSampleTool(db).execute(collection="likes", k=5)
         assert "key='a' 1" in rendered.message
 
 
@@ -3441,14 +3446,14 @@ class TestCollectionMutations:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="likes", entries=[{"key": "k", "content": "old"}])
-        result = await write.execute(memory="likes", entries=[{"key": "k", "content": "new"}])
+        await write.execute(collection="likes", entries=[{"key": "k", "content": "old"}])
+        result = await write.execute(collection="likes", entries=[{"key": "k", "content": "new"}])
         assert "Changed: 'k' — the stored baseline was refreshed to the new value" in result.message
         assert db.memory("likes").get("k")[0].content == "new"
         # A bracket-wrapped key (display form copied from an entry list) on the
         # delete path is rejected with a teaching error naming the bare key —
         # never absorbed; the entry is untouched.
-        rejected_delete = await CollectionDeleteEntryTool(db).execute(memory="likes", key="[k]")
+        rejected_delete = await CollectionRemoveTool(db).execute(collection="likes", key="[k]")
         assert rejected_delete.success is False
         assert "Retry with key='k'" in rejected_delete.message
         assert db.memory("likes").get("k")[0].content == "new"
@@ -3483,7 +3488,7 @@ class TestDidYouMeanSuggestions:
         leads the not-found render with the nearest existing name — the string
         (typo) leg, universal because it needs no embedding client."""
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
-        result = await CollectionReadLatestTool(db).execute(memory="aurora-deone")
+        result = await CollectionListTool(db).execute(collection="aurora-deone")
         assert result.success is False
         assert result.message == (
             "Memory 'aurora-deone' not found — did you mean 'aurora-deck-2'? Check the "
@@ -3499,7 +3504,7 @@ class TestDidYouMeanSuggestions:
         """A miss with nothing close renders EXACTLY today's message — no empty
         'did you mean' artifact, no changed punctuation."""
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
-        result = await CollectionReadLatestTool(db).execute(memory="xyzzy")
+        result = await CollectionListTool(db).execute(collection="xyzzy")
         assert result.success is False
         assert result.message == (
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
@@ -3529,12 +3534,14 @@ class TestDidYouMeanSuggestions:
 
     @pytest.mark.asyncio
     async def test_delete_entry_key_miss_leads_with_the_nearest_key(self, db, mock_llm):
-        """Same key suggestion on collection_delete_entry — the nearest key leads,
+        """Same key suggestion on collection_remove — the nearest key leads,
         the existing 'nothing to delete' guidance follows."""
         _seed_collection(db, name="notes")
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        await write.execute(memory="notes", entries=[{"key": "quarterly-report", "content": "x"}])
-        result = await CollectionDeleteEntryTool(db).execute(memory="notes", key="quarterly-reprot")
+        await write.execute(
+            collection="notes", entries=[{"key": "quarterly-report", "content": "x"}]
+        )
+        result = await CollectionRemoveTool(db).execute(collection="notes", key="quarterly-reprot")
         assert result.mutated is False
         assert result.message == (
             "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
@@ -3542,7 +3549,7 @@ class TestDidYouMeanSuggestions:
             "collection_keys('notes') to find it."
         )
         # No close key → byte-identical to today's message.
-        far = await CollectionDeleteEntryTool(db).execute(memory="notes", key="zzzzz")
+        far = await CollectionRemoveTool(db).execute(collection="notes", key="zzzzz")
         assert far.message == (
             "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
             "List the current keys with collection_keys('notes') to find it."
@@ -3551,14 +3558,14 @@ class TestDidYouMeanSuggestions:
 
 class TestLogTools:
     @pytest.mark.asyncio
-    async def test_collection_read_latest_refuses_a_log(self, db, mock_llm):
+    async def test_collection_list_refuses_a_log(self, db, mock_llm):
         """Collection reads error on a log instead of silently bypassing the
         cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="events", content="first"
         )
-        rendered = await CollectionReadLatestTool(db).execute(memory="events")
+        rendered = await CollectionListTool(db).execute(collection="events")
         assert "Refused" in rendered.message
         assert "log_read" in rendered.message
 
@@ -3575,14 +3582,14 @@ class TestLogTools:
             schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
-            memory="notes", entries=[{"key": "a", "content": "first"}]
+            collection="notes", entries=[{"key": "a", "content": "first"}]
         )
-        rejected = await CollectionReadLatestTool(db).run(memory="notes", k=0)
+        rejected = await CollectionListTool(db).run(collection="notes", k=0)
         assert rejected.success is False
         assert "at least 1" in rejected.message
         assert "Omit k" in rejected.message
         # A valid read still returns the entry (the guard only rejects k < 1).
-        ok = await CollectionReadLatestTool(db).run(memory="notes")
+        ok = await CollectionListTool(db).run(collection="notes")
         assert "first" in ok.message
 
     @pytest.mark.asyncio
@@ -3737,7 +3744,7 @@ class TestLogTools:
 
         collector = await tool.run(target="espresso-gear")
         assert "[espresso-gear]" in collector.message
-        assert "collection_write(memory='espresso-gear'" in collector.message
+        assert "collection_write(collection='espresso-gear'" in collector.message
         # Argless done() → the conclusion is the run's STRUCTURAL outcome (#1569),
         # never a model summary.
         assert "done: worked" in collector.message
@@ -3824,7 +3831,7 @@ class TestLogTools:
         expected = render_run_calls(db.messages.get_run_prompts("news-1"))
         assert result.message == expected
         assert result.message.startswith("run news-1")
-        assert "collection_write(memory='ai-news'" in result.message
+        assert "collection_write(collection='ai-news'" in result.message
 
     @pytest.mark.asyncio
     async def test_get_event_tolerates_the_paren_framed_mutation_anchor(self, db):
@@ -4127,10 +4134,10 @@ class TestMemoryNameNormalization:
             schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
-        # Non-breaking hyphen U+2011 in the memory name — model output
+        # Non-breaking hyphen U+2011 in the collection name — model output
         # observed in the wild.
         result = await write.execute(
-            memory="board‑games",
+            collection="board‑games",
             entries=[{"key": "k", "content": "v"}],
         )
         assert "Wrote 1 entry to 'board-games'" in result.message
@@ -4149,7 +4156,7 @@ class TestAuthorAttribution:
         )
         await CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="preference-extractor"
-        ).execute(memory="likes", entries=[{"key": "k", "content": "v"}])
+        ).execute(collection="likes", entries=[{"key": "k", "content": "v"}])
 
         rows = db.memory("likes").get("k")
         assert rows[0].author == "preference-extractor"
@@ -4164,7 +4171,7 @@ class TestFactory:
 
     _FULL_SURFACE = {
         # Reads
-        "collection_read_latest",
+        "collection_list",
         "collection_get",
         "collection_sample",
         "collection_keys",
@@ -4181,7 +4188,7 @@ class TestFactory:
         "log_create",
         # Entry mutations (contents)
         "collection_write",
-        "collection_delete_entry",
+        "collection_remove",
         "log_append",
     }
 
@@ -4228,7 +4235,7 @@ class TestScopedFactory:
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
         )
-        result = await write.execute(memory="dislikes", entries=[{"key": "k", "content": "v"}])
+        result = await write.execute(collection="dislikes", entries=[{"key": "k", "content": "v"}])
 
         assert (
             result.message == "Refused: this collector can only write to 'likes', not 'dislikes'."
@@ -4249,15 +4256,15 @@ class TestScopedFactory:
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
         )
-        result = await write.execute(memory="likes", entries=[{"key": "k", "content": "v"}])
+        result = await write.execute(collection="likes", entries=[{"key": "k", "content": "v"}])
 
         assert "Wrote 1 entry" in result.message
         assert db.memory("likes").get("k")[0].content == "v"
 
     @pytest.mark.asyncio
     async def test_scoped_delete_rejects_other_collection(self, db):
-        delete = CollectionDeleteEntryTool(db, scope="likes")
-        result = await delete.execute(memory="dislikes", key="k")
+        delete = CollectionRemoveTool(db, scope="likes")
+        result = await delete.execute(collection="dislikes", key="k")
         assert "Refused" in result.message
 
 
@@ -4488,7 +4495,9 @@ class TestCollectionSkillProvenanceRender:
             db,
             name="plain-watch",
             description="plain subject",
-            extraction_prompt="1. browse(queries=['peaks']).\n2. collection_write(memory='peaks').",
+            extraction_prompt=(
+                "1. browse(queries=['peaks']).\n2. collection_write(collection='peaks')."
+            ),
         )
         row = db.memories.get("plain-watch")
         assert row.skill_name is None and row.skill_params is None
@@ -4551,7 +4560,7 @@ class TestSkillGet:
             f"  - {_SKILL_HOLE} (required)\n"
             "steps:\n"
             "1. browse(queries=[{peak}], extract='the elevation above sea level')\n"
-            "2. collection_write(memory={the collection this is set up on}, "
+            "2. collection_write(collection={the collection this is set up on}, "
             "entries=[{'key': {peak}, 'content': the value from step 1}])"
         )
 
@@ -4671,7 +4680,7 @@ class TestFind:
     _KITCHEN_SINK = (
         'Found 4 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
-        "   how to use it: read it with collection_read_latest('aurora-watch'), "
+        "   how to use it: read it with collection_list('aurora-watch'), "
         "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
@@ -4681,7 +4690,7 @@ class TestFind:
         "chat — I relearn it automatically, replacing this one\n"
         "3. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
-        "entries stay readable with collection_read_latest('aurora-archive')\n"
+        "entries stay readable with collection_list('aurora-archive')\n"
         "4. aurora-log — active log: aurora echo foxtrot\n"
         "   how to use it: read it with log_read('aurora-log')\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
@@ -4789,7 +4798,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_read_latest('solo-watch'), "
+            "   how to use it: read it with collection_list('solo-watch'), "
             "reconfigure it with collection_set(name='solo-watch', ...), archive it "
             "with collection_archive('solo-watch')"
         )
@@ -4805,11 +4814,11 @@ class TestFind:
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_read_latest('watch-primary'), "
+            "   how to use it: read it with collection_list('watch-primary'), "
             "reconfigure it with collection_set(name='watch-primary', ...), archive it "
             "with collection_archive('watch-primary')\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
-            "   how to use it: read it with collection_read_latest('watch-secondary'), "
+            "   how to use it: read it with collection_list('watch-secondary'), "
             "reconfigure it with collection_set(name='watch-secondary', ...), archive it "
             "with collection_archive('watch-secondary')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
@@ -4851,7 +4860,7 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
         await CollectionWriteTool(db, client, author="test").execute(
-            memory="knowledge-notes",
+            collection="knowledge-notes",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
         )
         result = await FindTool(db, client).execute(query="aurora beacon cascade")
@@ -4859,7 +4868,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
-            "   read it: collection_get(memory='knowledge-notes', key='aurora beacon')"
+            "   read it: collection_get(collection='knowledge-notes', key='aurora beacon')"
         )
 
     @pytest.mark.asyncio
@@ -4870,18 +4879,18 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await CollectionWriteTool(db, client, author="test").execute(
-            memory="aurora-watch",
+            collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
         result = await FindTool(db, client).execute(query="aurora beacon cascade")
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_read_latest('aurora-watch'), "
+            "   how to use it: read it with collection_list('aurora-watch'), "
             "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
-            "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"
+            "   read it: collection_get(collection='aurora-watch', key='aurora beacon')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
         )
@@ -4946,7 +4955,7 @@ class TestFind:
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_read_latest('aurora-watch'), "
+            "   how to use it: read it with collection_list('aurora-watch'), "
             "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "\n"
@@ -4981,7 +4990,7 @@ class TestFind:
         assert result.message.startswith(
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
-            "   how to use it: read it with collection_read_latest('aurora-watch'), "
+            "   how to use it: read it with collection_list('aurora-watch'), "
             "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "\n"
@@ -5027,7 +5036,7 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await CollectionWriteTool(db, client, author="test").execute(
-            memory="aurora-watch",
+            collection="aurora-watch",
             entries=[{"key": "aurora beacon", "content": "cascade gamma delta echo foxtrot"}],
         )
         # Would also match the unscoped search — proves the scope actually narrows.
@@ -5069,7 +5078,7 @@ class TestFind:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
         await CollectionWriteTool(db, client, author="test").execute(
-            memory="aurora-archive",
+            collection="aurora-archive",
             entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
         )
         await CollectionArchiveTool(db).execute(memory="aurora-archive")

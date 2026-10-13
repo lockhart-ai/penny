@@ -79,7 +79,7 @@ class TestLlmToolCallStripsHarmonyControlTokens:
         [
             ("done<|channel|>commentary", "done"),
             ("collection_write<|channel|>commentary", "collection_write"),
-            ("collection_read_latest<|channel|>", "collection_read_latest"),
+            ("collection_list<|channel|>", "collection_list"),
             ("done", "done"),  # a clean name is untouched
         ],
     )
@@ -112,7 +112,7 @@ class TestCollectionEntrySpecCoercesStringifiedObjects:
     def test_collection_write_args_mixed_entries(self) -> None:
         args = CollectionWriteArgs.model_validate(
             {
-                "memory": "knowledge",
+                "collection": "knowledge",
                 "entries": [
                     {"key": "Putin visit", "content": "https://url1"},
                     json.dumps({"key": "Tea diplomacy", "content": "https://url2"}),
@@ -142,10 +142,10 @@ class TestExtractMalformedArguments:
     def test_entries_array_with_valid_objects(self) -> None:
         raw = (
             '{"entries": [{"key": "k1", "content": "c1"}, {"key": "k2", "content": "c2"}],'
-            ' "memory": "knowledge"}'
+            ' "collection": "knowledge"}'
         )
         result = LlmClient._extract_malformed_arguments(raw)
-        assert result.get("memory") == "knowledge"
+        assert result.get("collection") == "knowledge"
         assert result.get("entries") == [
             {"key": "k1", "content": "c1"},
             {"key": "k2", "content": "c2"},
@@ -159,10 +159,10 @@ class TestExtractMalformedArguments:
             '{"entries": [{"key": "Putin visit", "content": "https://url1"}, '
             '"{"key": "Tea diplomacy", "content": "https://url2"}", '
             '"{"key": "Samsung news", "content": "https://url3"}"], '
-            '"memory": "knowledge"}'
+            '"collection": "knowledge"}'
         )
         result = LlmClient._extract_malformed_arguments(raw)
-        assert result.get("memory") == "knowledge"
+        assert result.get("collection") == "knowledge"
         entries = result.get("entries", [])
         assert len(entries) == 3
         assert entries[0]["key"] == "Putin visit"

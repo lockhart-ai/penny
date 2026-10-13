@@ -84,7 +84,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 110
+        assert count == 111
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -126,7 +126,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 110
+        assert count1 == 111
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -164,8 +164,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 109 migrations
-        assert count == 109
+        # 0001 is skipped; the rest run = 110 migrations
+        assert count == 110
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -191,7 +191,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 110  # all migrations applied
+        assert count == 111  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1393,6 +1393,287 @@ class TestMigrate:
             "entries=[{'key': 'depth', 'content': '12m'}])"
         )
         assert "update_entry" not in prompt
+        conn.close()
+
+    @staticmethod
+    def _m0111(conn: sqlite3.Connection):
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0111_rename_entry_tools.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0111", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        return mod
+
+    def test_0111_renames_entry_tools_and_the_memory_argument(self, tmp_path):
+        """Migration 0111 (#2307): three tool renames (``collection_read_latest`` ->
+        ``collection_list``, ``collection_delete_entry`` -> ``collection_remove``,
+        ``collection_read_random`` -> ``collection_sample``) and one argument rename
+        on all six entry tools — ``memory`` becomes ``collection``, carrying its
+        substitution path with it.  UNIVERSAL — selected by the step's (possibly
+        just-renamed) tool, never a skill by name; IDEMPOTENT — a second application
+        changes nothing further.  Both the stored steps AND the rendered
+        ``extraction_prompt`` text are rewritten, in the one dialect ``render_skill``
+        writes."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "browse",
+                "arguments": {"queries": ["{url}"]},
+                "substitutions": [{"path": ["queries", 0], "kind": "hole", "parameter": "url"}],
+            },
+            {
+                "ordinal": 2,
+                "source_ordinal": 2,
+                "tool": "collection_read_latest",
+                "arguments": {"memory": "harbor-log", "k": 5},
+                "substitutions": [
+                    {
+                        "path": ["memory"],
+                        "kind": "placeholder",
+                        "description": "the collection this is set up on",
+                        "attachment": True,
+                    }
+                ],
+            },
+            {
+                "ordinal": 3,
+                "source_ordinal": 3,
+                "tool": "collection_delete_entry",
+                "arguments": {"memory": "harbor-log", "key": "stale"},
+                "substitutions": [
+                    {
+                        "path": ["memory"],
+                        "kind": "placeholder",
+                        "description": "the collection this is set up on",
+                        "attachment": True,
+                    },
+                    {"path": ["key"], "kind": "hole", "parameter": "key"},
+                ],
+            },
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            (
+                "harbor-watch",
+                "1. browse(queries=['https://faux-tide.example'])\n"
+                "2. collection_read_latest(memory='{the collection this is set up on}', k=5)",
+            ),
+        )
+        conn.commit()
+
+        mod = self._m0111(conn)
+        mod.up(conn)  # idempotent — a second application changes nothing
+
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        )
+        assert stored[0] == steps[0]  # the browse step is untouched
+        renamed_read = stored[1]
+        assert renamed_read["tool"] == "collection_list"
+        assert renamed_read["arguments"] == {"collection": "harbor-log", "k": 5}
+        assert renamed_read["substitutions"] == [
+            {
+                "path": ["collection"],
+                "kind": "placeholder",
+                "description": "the collection this is set up on",
+                "attachment": True,
+            }
+        ]
+        renamed_delete = stored[2]
+        assert renamed_delete["tool"] == "collection_remove"
+        assert renamed_delete["arguments"] == {"collection": "harbor-log", "key": "stale"}
+        assert renamed_delete["substitutions"] == [
+            {
+                "path": ["collection"],
+                "kind": "placeholder",
+                "description": "the collection this is set up on",
+                "attachment": True,
+            },
+            {"path": ["key"], "kind": "hole", "parameter": "key"},
+        ]
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'harbor-watch'"
+        ).fetchone()[0]
+        assert prompt == (
+            "1. browse(queries=['https://faux-tide.example'])\n"
+            "2. collection_list(collection='{the collection this is set up on}', k=5)"
+        )
+        assert "collection_read_latest" not in prompt
+        conn.close()
+
+    def test_0111_rewrites_exists_into_collection_get(self, tmp_path):
+        """``exists(memories=[X], content=C)`` -> ``collection_get(collection=X,
+        key=C)`` (#2290/#2302) on both a stored step and its rendered line, when the
+        memory is unambiguous and no field would be silently dropped."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "exists",
+                "arguments": {"memories": ["harbor-log"], "content": "depth"},
+                "substitutions": [
+                    {
+                        "path": ["memories", 0],
+                        "kind": "placeholder",
+                        "description": "the collection this is set up on",
+                        "attachment": True,
+                    },
+                    {"path": ["content"], "kind": "hole", "parameter": "key"},
+                ],
+            }
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            ("harbor-watch", "1. exists(memories=['harbor-log'], content={key})"),
+        )
+        conn.commit()
+
+        self._m0111(conn)
+
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        )[0]
+        assert stored["tool"] == "collection_get"
+        assert stored["arguments"] == {"collection": "harbor-log", "key": "depth"}
+        assert stored["substitutions"] == [
+            {
+                "path": ["collection"],
+                "kind": "placeholder",
+                "description": "the collection this is set up on",
+                "attachment": True,
+            },
+            {"path": ["key"], "kind": "hole", "parameter": "key"},
+        ]
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'harbor-watch'"
+        ).fetchone()[0]
+        assert prompt == "1. collection_get(collection='harbor-log', key={key})"
+        conn.close()
+
+    def test_0111_leaves_an_ambiguous_exists_standing_and_logs_it(self, tmp_path, caplog):
+        """An ``exists`` whose ``memories`` list is not exactly one name is genuinely
+        ambiguous — which collection it meant can't be guessed, so the step is left
+        standing, unrewritten, and the ambiguity is logged loudly rather than mangled
+        silently."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "exists",
+                "arguments": {"memories": ["harbor-log", "tide-log"], "content": "depth"},
+                "substitutions": [],
+            }
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('ambiguous', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.commit()
+
+        with caplog.at_level(logging.WARNING):
+            self._m0111(conn)
+
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'ambiguous'").fetchone()[0]
+        )
+        assert stored == steps  # left standing, byte-identical
+        assert any("ambiguous" in record.message for record in caplog.records)
+        conn.close()
+
+    def test_0111_rewrites_read_similar_into_find(self, tmp_path):
+        """``read_similar(memory=M, anchor=A, k=K)`` -> ``find(query=A, memory=M)``
+        (#2290): ``find`` keeps ``memory`` as its own scoping argument untouched —
+        only ``anchor`` moves, to ``query``, and ``k`` has no home in ``find`` so it
+        and its substitution are dropped."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "read_similar",
+                "arguments": {"memory": "harbor-log", "anchor": "low tide", "k": 3},
+                "substitutions": [
+                    {"path": ["anchor"], "kind": "hole", "parameter": "topic"},
+                    {"path": ["k"], "kind": "hole", "parameter": "count"},
+                ],
+            }
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            ("harbor-watch", "1. read_similar(memory='harbor-log', anchor={topic}, k=3)"),
+        )
+        conn.commit()
+
+        self._m0111(conn)
+
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        )[0]
+        assert stored["tool"] == "find"
+        assert stored["arguments"] == {"query": "low tide", "memory": "harbor-log"}
+        assert stored["substitutions"] == [
+            {"path": ["query"], "kind": "hole", "parameter": "topic"}
+        ]
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'harbor-watch'"
+        ).fetchone()[0]
+        assert prompt == "1. find(query={topic}, memory='harbor-log')"
+        assert "read_similar" not in prompt
         conn.close()
 
     def test_0104_adds_the_schedule_column_and_drops_the_trigger_union(self, tmp_path, caplog):

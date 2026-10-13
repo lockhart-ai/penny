@@ -59,7 +59,7 @@ def _reject_nonpositive_count(value: int | None) -> int | None:
     wants *all* entries sometimes guesses ``k=0`` (reading it as "unlimited"),
     but ``.limit(0)`` returns **zero** rows — so the model sees an empty memory
     and wrongly concludes it's empty (observed: the skills collector read
-    ``collection_read_latest(k=0)``, saw no skills, and wrote a duplicate instead
+    ``collection_list(k=0)``, saw no skills, and wrote a duplicate instead
     of updating the existing one).  Fail loudly with the fix rather than silently
     return nothing."""
     if value is not None and value < 1:
@@ -391,25 +391,31 @@ class CollectionUpdateArgs(ToolArgs):
 # ── Collection reads ────────────────────────────────────────────────────────
 
 
-class ReadLatestArgs(ToolArgs):
+class CollectionListArgs(ToolArgs):
     """Newest-first; ``k=None`` returns all."""
 
-    memory: MemoryName
+    collection: MemoryName
     k: ReadCount = None
 
 
 class ReadSampleArgs(ToolArgs):
     """Random sample; ``k=None`` returns all."""
 
-    memory: MemoryName
+    collection: MemoryName
     k: ReadCount = None
 
 
 class CollectionGetArgs(ToolArgs):
     """Exact key lookup in a collection."""
 
-    memory: MemoryName
+    collection: MemoryName
     key: str
+
+
+class CollectionKeysArgs(ToolArgs):
+    """One-field args for ``collection_keys``."""
+
+    collection: MemoryName
 
 
 # ── Log-specific reads ──────────────────────────────────────────────────────
@@ -501,14 +507,14 @@ def _require_write_entries(value: list[CollectionEntrySpec]) -> list[CollectionE
 class CollectionWriteArgs(ToolArgs):
     """Batched write to a collection with dedup applied per entry."""
 
-    memory: MemoryName
+    collection: MemoryName
     entries: Annotated[list[CollectionEntrySpec], AfterValidator(_require_write_entries)]
 
 
-class CollectionDeleteEntryArgs(ToolArgs):
-    """Delete an entry from a collection by key."""
+class CollectionRemoveArgs(ToolArgs):
+    """Remove an entry from a collection by key."""
 
-    memory: MemoryName
+    collection: MemoryName
     key: str
 
 

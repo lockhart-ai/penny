@@ -125,7 +125,7 @@ def wrong_shape_message(name: str, actual_type: str) -> str:
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
-        f"collection_read_latest('{name}') / collection_get(memory='{name}', key=<key>)."
+        f"collection_list('{name}') / collection_get(collection='{name}', key=<key>)."
     )
 
 
@@ -313,7 +313,7 @@ def render_key_value(key: str) -> str:
     Used where a key renders inside prose that already fixes the field position,
     so the label would be redundant: the self-state activity block's writes
     clause (``wrote '<key>' → `<collection>```, #1641), where the quoted token
-    pastes straight into a ``collection_read_latest`` / ``read_similar`` ``key=``
+    pastes straight into a ``collection_list`` / ``read_similar`` ``key=``
     argument.  ``render_key`` composes this with the ``key=`` label, so the
     quoting is single-sourced — the two forms can't drift apart.
     """

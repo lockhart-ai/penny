@@ -251,7 +251,7 @@ class TestToolNotFoundSuggestion:
         """'read_last' produces a 'Did you mean read_latest?' suggestion.
 
         Also the fall-through guard on the rename leg (#1944): ``read_last`` IS a
-        renamed name, but it resolves to ``collection_read_latest``, which this registry
+        renamed name, but it resolves to ``collection_list``, which this registry
         does not carry — so the suggestion must come from the string leg and name a tool
         that actually exists rather than one the table remembers."""
         registry = ToolRegistry()

@@ -97,9 +97,11 @@ from penny.tools.collection_instantiation import (
 )
 from penny.tools.memory_args import (
     CollectionCreateArgs,
-    CollectionDeleteEntryArgs,
     CollectionEntrySpec,
     CollectionGetArgs,
+    CollectionKeysArgs,
+    CollectionListArgs,
+    CollectionRemoveArgs,
     CollectionSetArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
@@ -108,7 +110,6 @@ from penny.tools.memory_args import (
     LogAppendArgs,
     LogCreateArgs,
     MemoryNameArgs,
-    ReadLatestArgs,
     ReadLogArgs,
     ReadRunCallsArgs,
     ReadSampleArgs,
@@ -293,6 +294,15 @@ def _memory_name(arguments: dict, fallback: str) -> str:
     return _named(arguments, "memory", fallback)
 
 
+def _collection_name(arguments: dict, fallback: str) -> str:
+    """Backtick-quoted ``collection`` argument for narration — the six entry
+    tools (``collection_get`` / ``collection_keys`` / ``collection_list`` /
+    ``collection_sample`` / ``collection_write`` / ``collection_remove``) name
+    their target this way; every other memory-keyed tool still reads ``memory``
+    (``_memory_name``)."""
+    return _named(arguments, "collection", fallback)
+
+
 def _entry_label(arguments: dict) -> str:
     """Quoted entry key for narration, or a generic noun when the call omitted it."""
     key = arguments.get("key")
@@ -342,7 +352,7 @@ def _key_did_you_mean(memory: Memory, key: str) -> str:
     stays byte-identical to before — no empty artifact).
 
     The tools that hit a key miss (``collection_get`` / ``collection_write`` /
-    ``collection_delete_entry``)
+    ``collection_remove``)
     carry no embedding client, so this is the string (typo) leg: a stdlib
     ``difflib`` close-match over the collection's OWN keys, gated on the same
     conservative ``DID_YOU_MEAN_STRING_CUTOFF`` the name suggestion uses.  Same
@@ -1142,7 +1152,7 @@ class CollectionUnarchiveTool(MemoryTool):
 # ── Collection reads ────────────────────────────────────────────────────────
 
 
-class CollectionReadLatestTool(MemoryTool):
+class CollectionListTool(MemoryTool):
     """Return the newest entries in a collection, newest first.
 
     Collection-only: logs are read through the cursored ``log_read``, never
@@ -1150,7 +1160,7 @@ class CollectionReadLatestTool(MemoryTool):
     entries).  A log target gets a readable refusal.
     """
 
-    name = "collection_read_latest"
+    name = "collection_list"
     # Collections only — the description sends a log read to the cursored reader.
     advises = ("log_read",)
     description = (
@@ -1160,28 +1170,28 @@ class CollectionReadLatestTool(MemoryTool):
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
+            "collection": {"type": "string"},
             "k": {"type": "integer", "description": "Max entries; omit for all"},
         },
-        "required": ["memory"],
+        "required": ["collection"],
     }
-    args_model = ReadLatestArgs
+    args_model = CollectionListArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "collection")
+        collection = _collection_name(arguments, "collection")
         if not result.success:
-            return f"You tried to look up your {memory} but it didn't work:"
-        return f"You looked up your {memory}:"
+            return f"You tried to look up your {collection} but it didn't work:"
+        return f"You looked up your {collection}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = ReadLatestArgs(**kwargs)
-        entries = _resolve(self._db, args.memory).read_latest(args.k)
+        args = CollectionListArgs(**kwargs)
+        entries = _resolve(self._db, args.collection).read_latest(args.k)
         return ToolResult(
-            message=format_entries(entries, source=args.memory, ordering="most recent first")
+            message=format_entries(entries, source=args.collection, ordering="most recent first")
         )
 
 
@@ -1199,44 +1209,44 @@ class CollectionGetTool(MemoryTool):
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
+            "collection": {"type": "string"},
             "key": {"type": "string"},
         },
-        "required": ["memory", "key"],
+        "required": ["collection", "key"],
     }
     args_model = CollectionGetArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        collection = _collection_name(arguments, "a collection")
         entry = _entry_label(arguments)
         if not result.success:
-            return f"You tried to look up {entry} in {memory} but it didn't work:"
-        return f"You looked up {entry} in {memory}:"
+            return f"You tried to look up {entry} in {collection} but it didn't work:"
+        return f"You looked up {entry} in {collection}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionGetArgs(**kwargs)
-        memory = _resolve(self._db, args.memory)
-        rows = memory.get(args.key)
+        collection = _resolve(self._db, args.collection)
+        rows = collection.get(args.key)
         if not rows:
-            rejection = _bracket_key_rejection(memory, args.memory, args.key)
+            rejection = _bracket_key_rejection(collection, args.collection, args.key)
             if rejection is not None:
                 return rejection
-            did_you_mean = _key_did_you_mean(memory, args.key)
+            did_you_mean = _key_did_you_mean(collection, args.key)
             return ToolResult(
-                message=f"Key '{args.key}' not found in '{args.memory}'{did_you_mean or '.'} "
+                message=f"Key '{args.key}' not found in '{args.collection}'{did_you_mean or '.'} "
                 f"List the available "
-                f"keys with collection_keys('{args.memory}'), or search by meaning with "
-                f"find(query=<what you're looking for>, memory='{args.memory}'). "
+                f"keys with collection_keys('{args.collection}'), or search by meaning with "
+                f"find(query=<what you're looking for>, memory='{args.collection}'). "
                 f"If it exists under a different key, write the new content there: "
-                f"collection_write(memory='{args.memory}', "
+                f"collection_write(collection='{args.collection}', "
                 f"entries=[{{'key': <the key you found>, 'content': <the new content>}}]) — "
                 f"the store replaces the content of the key you name."
             )
-        return ToolResult(message=format_entries(rows, source=args.memory))
+        return ToolResult(message=format_entries(rows, source=args.collection))
 
 
 class CollectionSampleTool(MemoryTool):
@@ -1247,28 +1257,28 @@ class CollectionSampleTool(MemoryTool):
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
+            "collection": {"type": "string"},
             "k": {"type": "integer"},
         },
-        "required": ["memory"],
+        "required": ["collection"],
     }
     args_model = ReadSampleArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        collection = _collection_name(arguments, "a collection")
         if not result.success:
-            return f"You tried to pull a random sample from {memory} but it didn't work:"
-        return f"You pulled a random sample from {memory}:"
+            return f"You tried to pull a random sample from {collection} but it didn't work:"
+        return f"You pulled a random sample from {collection}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadSampleArgs(**kwargs)
-        entries = _resolve(self._db, args.memory).read_random(args.k)
+        entries = _resolve(self._db, args.collection).read_random(args.k)
         return ToolResult(
-            message=format_entries(entries, source=args.memory, ordering="random sample")
+            message=format_entries(entries, source=args.collection, ordering="random sample")
         )
 
 
@@ -1279,27 +1289,27 @@ class CollectionKeysTool(MemoryTool):
     description = "List the unique keys in a collection (insertion order)."
     parameters = {
         "type": "object",
-        "properties": {"memory": {"type": "string"}},
-        "required": ["memory"],
+        "properties": {"collection": {"type": "string"}},
+        "required": ["collection"],
     }
-    args_model = MemoryNameArgs
+    args_model = CollectionKeysArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        collection = _collection_name(arguments, "a collection")
         if not result.success:
-            return f"You tried to list the keys in {memory} but it didn't work:"
-        return f"You listed the keys in {memory}:"
+            return f"You tried to list the keys in {collection} but it didn't work:"
+        return f"You listed the keys in {collection}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = MemoryNameArgs(**kwargs)
-        keys = _resolve(self._db, args.memory).keys()
+        args = CollectionKeysArgs(**kwargs)
+        keys = _resolve(self._db, args.collection).keys()
         if not keys:
             return ToolResult(
-                message=f"No keys in `{args.memory}` — the collection is empty (not an error)."
+                message=f"No keys in `{args.collection}` — the collection is empty (not an error)."
             )
         return ToolResult(message="\n".join(f"- {key}" for key in keys))
 
@@ -1307,7 +1317,7 @@ class CollectionKeysTool(MemoryTool):
 # ── Collection writes ───────────────────────────────────────────────────────
 
 
-_SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{memory}'."
+_SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{collection}'."
 
 # Write-target materialization (#1570): a chat write never dies on a name miss.
 # A near-certain name variant REDIRECTS (narrated, never silent); nothing close
@@ -1355,7 +1365,7 @@ _DUPLICATE_REJECTION = (
     "'{key}' was not written — this collection already holds an entry about that, stored "
     "under the key '{matched}', and what you wrote is a different value from what that "
     "entry holds. Any other key you write it under collides with that same entry again. "
-    "To land the new value: collection_write(memory='{memory}', entries=[{{'key': "
+    "To land the new value: collection_write(collection='{collection}', entries=[{{'key': "
     "'{matched}', 'content': <the new value>}}]) — the store replaces the content of the "
     "key you name."
 )
@@ -1375,18 +1385,18 @@ _DUPLICATE_CLOSE_ALL = "Nothing in this batch landed — each one belongs on the
 _DUPLICATE_CLOSE_SOME = "The rest of the batch landed; these belong on the entries named above."
 
 
-def _format_duplicate(memory: str, result: WriteResult) -> str:
+def _format_duplicate(collection: str, result: WriteResult) -> str:
     """One self-contained rejection for a rejected candidate: what this collection already
     holds it under, that no other key escapes the collision, and the exact call that lands
     the new value.
 
     Self-contained because the recovery has to be readable without the lines around it —
     the failure this addresses was the model treating the matched key as one option among
-    several and filing its value somewhere new.  ``memory`` is the write's resolved
+    several and filing its value somewhere new.  ``collection`` is the write's resolved
     target, so the recovery call is copyable verbatim whatever redirect produced it."""
     if result.matched_key:
         return _DUPLICATE_REJECTION.format(
-            key=result.key, matched=result.matched_key, memory=memory
+            key=result.key, matched=result.matched_key, collection=collection
         )
     return _DUPLICATE_REJECTION_KEYLESS.format(key=result.key)
 
@@ -1473,7 +1483,7 @@ def _format_unexpected(results: list[WriteResult]) -> str:
 _EMBED_WRITE_FAILURE_COLLECTION = (
     "Couldn't embed {keys} (a transient embedding error) — nothing was written, "
     "since an entry is only stored once it has a similarity vector. Retry "
-    "collection_write(memory='{memory}', entries=<the same entries>) in a moment."
+    "collection_write(collection='{collection}', entries=<the same entries>) in a moment."
 )
 _EMBED_WRITE_FAILURE_LOG = (
     "Couldn't embed this entry (a transient embedding error) — nothing was "
@@ -1486,13 +1496,13 @@ class CollectionWriteTool(MemoryTool):
     """Write entries to a collection with similarity-based dedup."""
 
     name = "collection_write"
-    # ``collection_delete_entry`` rides beside the write because the collector's
+    # ``collection_remove`` rides beside the write because the collector's
     # corrections runtime rule names the pair together: a routine that writes may find
     # an entry that should be removed rather than rewritten, and offering one half of
     # that without the other would teach a correction the surface cannot carry out.
-    advises = ("collection_delete_entry",)
+    advises = ("collection_remove",)
     stores_entries = True
-    destination_param = "memory"
+    destination_param = "collection"
     description = (
         "Write one or more entries to a collection. Each entry has a short "
         "`key` (topic/identifier) and a longer `content` body. Dedup runs "
@@ -1501,7 +1511,7 @@ class CollectionWriteTool(MemoryTool):
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
+            "collection": {"type": "string"},
             "entries": {
                 "type": "array",
                 "items": {
@@ -1514,18 +1524,18 @@ class CollectionWriteTool(MemoryTool):
                 },
             },
         },
-        "required": ["memory", "entries"],
+        "required": ["collection", "entries"],
     }
     args_model = CollectionWriteArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        collection = _collection_name(arguments, "a collection")
         if not result.success:
-            return f"You tried to save to {memory} but it didn't work:"
+            return f"You tried to save to {collection} but it didn't work:"
         if not result.mutated:
-            return f"You didn't add anything new to {memory} — it was already there:"
-        return f"You saved {_written_label(arguments)} to {memory}:"
+            return f"You didn't add anything new to {collection} — it was already there:"
+        return f"You saved {_written_label(arguments)} to {collection}:"
 
     def __init__(
         self,
@@ -1550,18 +1560,20 @@ class CollectionWriteTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionWriteArgs(**kwargs)
-        if self._scope is not None and args.memory != self._scope:
+        if self._scope is not None and args.collection != self._scope:
             return ToolResult(
-                message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
+                message=_SCOPE_REFUSAL_MESSAGE.format(
+                    scope=self._scope, collection=args.collection
+                ),
                 success=False,
             )
         target, note = await self._materialize_target(args)
-        memory = _resolve(self._db, target)
+        collection = _resolve(self._db, target)
         entries = [await self._build_entry(spec) for spec in args.entries]
         embed_failure = self._embed_failure(target, entries)
         if embed_failure is not None:
             return embed_failure
-        results = memory.write(entries, author=self._author, run_id=self._run_id)
+        results = collection.write(entries, author=self._author, run_id=self._run_id)
         result = self._format_results(target, results)
         if note:
             return result.model_copy(update={"message": note + result.message})
@@ -1573,33 +1585,35 @@ class CollectionWriteTool(MemoryTool):
         close AUTO-CREATES it (chat surface only — a scoped write is pinned to a
         collection that exists).  Both narrate; the middle band re-raises into
         the did-you-mean refusal.  Returns (actual target, note-or-empty)."""
-        if self._scope is not None or self._db.memories.get(args.memory) is not None:
-            return args.memory, ""
+        if self._scope is not None or self._db.memories.get(args.collection) is not None:
+            return args.collection, ""
         variants = [
             row.name
             for row in self._db.memories.list_all()
             if row.type == MemoryType.COLLECTION.value
             and not row.archived
-            and _is_name_variant(args.memory, row.name)
+            and _is_name_variant(args.collection, row.name)
         ]
         if len(variants) == 1:
-            logger.info("collection_write: redirected '%s' → '%s'", args.memory, variants[0])
-            return variants[0], _WRITE_REDIRECT_NOTE.format(asked=args.memory, match=variants[0])
+            logger.info("collection_write: redirected '%s' → '%s'", args.collection, variants[0])
+            return variants[0], _WRITE_REDIRECT_NOTE.format(
+                asked=args.collection, match=variants[0]
+            )
         if variants:
             # Two-plus near-variants is genuine ambiguity — the did-you-mean
             # refusal (raised by _resolve on the original name) owns it.
-            return args.memory, ""
+            return args.collection, ""
         description = _AUTO_CREATED_DESCRIPTION.format(key=args.entries[0].key)
         self._db.memories.create_collection(
-            args.memory,
+            args.collection,
             description,
             description_embedding=await embed_text(self._llm, description),
             created_by_run_id=self._run_id,
         )
-        logger.info("collection_write: auto-created collection '%s'", args.memory)
-        return args.memory, _WRITE_AUTOCREATE_NOTE.format(name=args.memory)
+        logger.info("collection_write: auto-created collection '%s'", args.collection)
+        return args.collection, _WRITE_AUTOCREATE_NOTE.format(name=args.collection)
 
-    def _embed_failure(self, memory: str, entries: list[EntryInput]) -> ToolResult | None:
+    def _embed_failure(self, collection: str, entries: list[EntryInput]) -> ToolResult | None:
         """Refuse the write, atomically, if any entry lost a vector to a transient
         embed failure — a vectorless entry is invisible to read_similar and
         dedup-weakening, so nothing is persisted and the model retries once embedding
@@ -1613,9 +1627,9 @@ class CollectionWriteTool(MemoryTool):
         if not missing:
             return None
         keys = ", ".join(f"'{key}'" for key in missing)
-        logger.warning("collection_write: embedding unavailable for %s in %s", keys, memory)
+        logger.warning("collection_write: embedding unavailable for %s in %s", keys, collection)
         return ToolResult(
-            message=_EMBED_WRITE_FAILURE_COLLECTION.format(keys=keys, memory=memory),
+            message=_EMBED_WRITE_FAILURE_COLLECTION.format(keys=keys, collection=collection),
             success=False,
         )
 
@@ -2035,7 +2049,7 @@ class CollectionSetTool(MemoryTool):
 _ROUND_CONTAINER_RETARGETED = (
     "'{requested}' isn't the collection this round set up — '{container}' is, so this "
     "landed on '{container}'. It's '{container}' from here on: read it with "
-    "collection_read_latest('{container}') or adjust it with "
+    "collection_list('{container}') or adjust it with "
     "collection_set(name='{container}', ...).\n"
 )
 
@@ -2081,7 +2095,7 @@ _SET_BIRTH_NEEDS_DESCRIPTION = (
 _SAME_JOB_UPDATED = (
     "'{requested}' is the same job as '{existing}', which already exists — so I "
     "updated '{existing}' instead of creating a second collection for it. It's "
-    "'{existing}' from here on: read it with collection_read_latest('{existing}') or "
+    "'{existing}' from here on: read it with collection_list('{existing}') or "
     "adjust it with collection_set(name='{existing}', ...). If this really is a "
     "separate task, set it up again with a name that carries what makes it "
     "different.\n"
@@ -2498,68 +2512,70 @@ class MemoryMetadataTool(MemoryTool):
         return f"schedule: {render_schedule_field(memory)}"
 
 
-class CollectionDeleteEntryTool(MemoryTool):
-    """Delete an entry from a collection by key."""
+class CollectionRemoveTool(MemoryTool):
+    """Remove an entry from a collection by key."""
 
-    name = "collection_delete_entry"
+    name = "collection_remove"
     # A key that does not exist sends the model to the list of keys that do.
     advises = ("collection_keys",)
     description = (
-        "Delete the entry with the given key from a collection. Returns the "
+        "Remove the entry with the given key from a collection. Returns the "
         "number of entries removed (zero if the key did not exist)."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
+            "collection": {"type": "string"},
             "key": {"type": "string"},
         },
-        "required": ["memory", "key"],
+        "required": ["collection", "key"],
     }
-    args_model = CollectionDeleteEntryArgs
+    args_model = CollectionRemoveArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
+        collection = _collection_name(arguments, "a collection")
         entry = _entry_label(arguments)
         if not result.success:
-            return f"You tried to remove {entry} from {memory} but it didn't work:"
+            return f"You tried to remove {entry} from {collection} but it didn't work:"
         if not result.mutated:
-            return f"You couldn't find {entry} to remove from {memory}:"
-        return f"You removed {entry} from {memory}:"
+            return f"You couldn't find {entry} to remove from {collection}:"
+        return f"You removed {entry} from {collection}:"
 
     def __init__(self, db: Database, scope: str | None = None) -> None:
         self._db = db
         self._scope = scope
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = CollectionDeleteEntryArgs(**kwargs)
-        if self._scope is not None and args.memory != self._scope:
+        args = CollectionRemoveArgs(**kwargs)
+        if self._scope is not None and args.collection != self._scope:
             return ToolResult(
-                message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
+                message=_SCOPE_REFUSAL_MESSAGE.format(
+                    scope=self._scope, collection=args.collection
+                ),
                 success=False,
             )
-        memory = _resolve(self._db, args.memory)
-        removed = memory.delete(args.key)
+        collection = _resolve(self._db, args.collection)
+        removed = collection.delete(args.key)
         if removed == 0:
-            rejection = _bracket_key_rejection(memory, args.memory, args.key)
+            rejection = _bracket_key_rejection(collection, args.collection, args.key)
             if rejection is not None:
                 return rejection
             # Lead with the nearest existing key (typo leg) when one is close (#1674),
             # else the message is byte-identical to before.
-            did_you_mean = _key_did_you_mean(memory, args.key)
+            did_you_mean = _key_did_you_mean(collection, args.key)
             if did_you_mean:
                 lead = (
-                    f"No entry with key '{args.key}' in '{args.memory}'{did_you_mean} "
+                    f"No entry with key '{args.key}' in '{args.collection}'{did_you_mean} "
                     f"Nothing to delete."
                 )
             else:
-                lead = f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete."
+                lead = f"No entry with key '{args.key}' in '{args.collection}' — nothing to delete."
             return ToolResult(
                 message=f"{lead} "
-                f"List the current keys with collection_keys('{args.memory}') to find it."
+                f"List the current keys with collection_keys('{args.collection}') to find it."
             )
-        return ToolResult(message=f"Deleted '{args.key}' from '{args.memory}'.", mutated=True)
+        return ToolResult(message=f"Deleted '{args.key}' from '{args.collection}'.", mutated=True)
 
 
 # ── Log reads ───────────────────────────────────────────────────────────────
@@ -3079,10 +3095,10 @@ def _find_addressing(match: ResolvedMatch) -> str:
     if match.archived:
         return (
             f"restore it with collection_unarchive('{name}'); its entries stay readable "
-            f"with collection_read_latest('{name}')"
+            f"with collection_list('{name}')"
         )
     return (
-        f"read it with collection_read_latest('{name}'), reconfigure it with "
+        f"read it with collection_list('{name}'), reconfigure it with "
         f"collection_set(name='{name}', ...), archive it with "
         f"collection_archive('{name}')"
     )
@@ -3114,7 +3130,7 @@ def _entry_addressing(entry: ResolvedEntry) -> str:
     if entry.key is None:
         handle = f"{entry.memory_name}{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.entry_id}"
         return f"log_read('{entry.memory_name}') — the full entry is {handle}"
-    return f"collection_get(memory='{entry.memory_name}', key='{entry.key}')"
+    return f"collection_get(collection='{entry.memory_name}', key='{entry.key}')"
 
 
 def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
@@ -3225,7 +3241,7 @@ class FindTool(MemoryTool):
     # helper's own constants; declaring it is the fix that test's docstring prescribes.
     # Message hits carry no addressing line (#2289), so they add no verb here.
     advises = (
-        "collection_read_latest",
+        "collection_list",
         "collection_get",
         "collection_set",
         "collection_archive",
@@ -3468,7 +3484,7 @@ def build_memory_tools(
 
     * **Wrong shape.** A keyed read/write on a log (or a cursored ``log_read``
       on a collection) hits a base no-op that raises ``WrongShapeError``.  This
-      is what stops a newest-first ``collection_read_latest`` from bypassing a
+      is what stops a newest-first ``collection_list`` from bypassing a
       log's cursor.
     * **Read-only facades.** ``log_append`` to ``user-messages`` /
       ``penny-messages`` / ``collector-runs`` is refused up front
@@ -3518,7 +3534,7 @@ def build_memory_tools(
     branch here.
     """
     reads: list[Tool] = [
-        CollectionReadLatestTool(db),
+        CollectionListTool(db),
         CollectionGetTool(db),
         CollectionSampleTool(db),
         CollectionKeysTool(db),
@@ -3537,7 +3553,7 @@ def build_memory_tools(
     ]
     mutations: list[Tool] = [
         CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
-        CollectionDeleteEntryTool(db, scope=scope),
+        CollectionRemoveTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),
     ]
     return reads + (lifecycle if include_lifecycle else []) + mutations
