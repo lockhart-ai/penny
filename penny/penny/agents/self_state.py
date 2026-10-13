@@ -89,10 +89,10 @@ class SelfStateHeader:
     """
 
     HEADER = "## Penny's current state"
-    MECHANISMS_HEADER = "### Active mechanisms"
+    MECHANISMS_HEADER = "### Jobs"
     ACTIVITY_HEADER = "### Recent activity"
     MAP_HEADER = "### Your memory"
-    SKILLS_HEADER = "### Skills and rules"
+    SKILLS_HEADER = "### Known skills"
     DURABLE_HEADER = "### About the user"
 
     # Whether proactive notifications are going out, rendered in BOTH directions and
@@ -130,7 +130,7 @@ class SelfStateHeader:
     MECHANISM_NOTIFIES = "notify: on"
     MECHANISM_QUIET = "notify: off"
 
-    EMPTY_MECHANISMS = "(no mechanisms yet)"
+    EMPTY_MECHANISMS = "(no jobs yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
     EMPTY_MAP = "(no stores yet)"
     EMPTY_SKILLS = (

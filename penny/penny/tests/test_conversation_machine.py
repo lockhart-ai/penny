@@ -1307,7 +1307,7 @@ def test_a_framed_round_names_its_routine_and_its_container():
     assert framed == (
         Prompt.CONVERSATION_HEAD
         + Prompt.LEARN_INSTRUCTION
-        + "The routine you are being taught this round is called `watch-rental-price`, "
+        + "The skill you are being taught this round is called `watch-rental-price`, "
         "and `watch-rental-price-harborkayak-example` is the collection set up to hold "
         "what it produces. Where a step says to remember something, that collection is "
         "where it goes — it is already there, so there is nothing to set up.\n\n"
@@ -1357,12 +1357,12 @@ def test_an_apply_turn_enters_with_the_container_already_known():
     assert framed == (
         Prompt.CONVERSATION_HEAD
         + "A collection has been set up for this task from what the user asked. It is "
-        "named `watch-rental-price-harborkayak-example`, it runs the routine "
+        "named `watch-rental-price-harborkayak-example`, it runs the skill "
         "`watch-rental-price`, and it is already pointed at what they gave. Configure "
         "its schedule now, in one `collection_set` call on "
         "`watch-rental-price-harborkayak-example`: when it runs, when it stops if they "
         "gave an end, and whether to tell them — all from the user's own words.\n\n"
-        "Configuring it is the whole turn — you are not carrying the routine out "
+        "Configuring it is the whole turn — you are not carrying the skill out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"
         "Then tell them what you set up and what will happen. Say it is running "
@@ -1406,11 +1406,11 @@ def test_apply_instruction_whole_render():
     works, each in one place."""
     assert Prompt.APPLY_INSTRUCTION == (
         "A collection has been set up for this task from what the user asked. It is "
-        "named `{container}`, it runs the routine `{skill}`, and it is already pointed "
+        "named `{container}`, it runs the skill `{skill}`, and it is already pointed "
         "at what they gave. Configure its schedule now, in one `collection_set` call on "
         "`{container}`: when it runs, when it stops if they gave an end, and whether to "
         "tell them — all from the user's own words.\n\n"
-        "Configuring it is the whole turn — you are not carrying the routine out "
+        "Configuring it is the whole turn — you are not carrying the skill out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"
         "Then tell them what you set up and what will happen. Say it is running "
@@ -1457,7 +1457,7 @@ def test_a_request_turn_names_the_routine_and_what_is_still_missing():
     assert composed == (
         Prompt.CONVERSATION_HEAD
         + Prompt.REQUEST_INSTRUCTION
-        + "The routine for this is `watch-rental-price` — keep a rental page's current "
+        + "The skill for this is `watch-rental-price` — keep a rental page's current "
         "day rate up to date\n\n"
         "What they have already given you, which you must not ask for again:\n"
         "- keyword: the weekend rate\n\n"
@@ -1482,7 +1482,7 @@ def test_a_request_turn_that_has_none_of_it_yet_says_so():
     assert composed == (
         Prompt.CONVERSATION_HEAD
         + Prompt.REQUEST_INSTRUCTION
-        + "The routine for this is `watch-rental-price` — keep a rental page's current "
+        + "The skill for this is `watch-rental-price` — keep a rental page's current "
         "day rate up to date\n\n"
         "What they have already given you, which you must not ask for again:\n"
         "- nothing yet — they have given you none of it\n\n"
@@ -1555,7 +1555,7 @@ def test_the_applied_configuration_narration_whole_render():
     to say, so the frame names that shape: a turn asked to FIX a running job is asked
     about two states, and the row it reads holds only the one that won."""
     assert Prompt.CONFIGURATION_APPLIED_NARRATION == (
-        "The routine is now set up, and here is exactly what was configured:\n\n"
+        "The job is now set up, and here is exactly what was configured:\n\n"
         "{configuration}\n\n"
         "Reply to the user now. Tell them in your own words what is running: what it "
         "watches, how often it runs, when it stops if it stops, and whether they will "

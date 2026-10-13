@@ -24,7 +24,7 @@ from penny.tools.micro_context import (
     MicroContext,
 )
 
-_DOCUMENT = "The `tide-times` routine just ran on its own.\n\n## What it wrote\n- 06:12"
+_DOCUMENT = "The `tide-times` job just ran on its own.\n\n## What it wrote\n- 06:12"
 
 
 class _Model:

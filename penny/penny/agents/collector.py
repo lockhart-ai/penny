@@ -97,10 +97,10 @@ logger = logging.getLogger(__name__)
 # Both are read off the collection's own row and the routine's, so nothing here is a
 # claim the framework has to remember; a term with no value says so rather than
 # rendering an empty slot, and a routine the registry no longer holds says that too.
-_ROUTINE_HEAD = "The routine you run:"
-_ROUTINE_GONE = f"{_ROUTINE_HEAD} {{name}} — it is no longer in the routine registry."
+_ROUTINE_HEAD = "The skill you run:"
+_ROUTINE_GONE = f"{_ROUTINE_HEAD} {{name}} — it is no longer in the skill registry."
 _VALUES_HEAD = "The values it is pointed at:"
-_VALUES_NONE = f"{_VALUES_HEAD} none — this routine takes none."
+_VALUES_NONE = f"{_VALUES_HEAD} none — this skill takes none."
 _NO_VALUE = "nothing was supplied for this"
 
 # The composed prompt's holdings block (#1914) — WHAT THE COLLECTION HOLDS at the moment

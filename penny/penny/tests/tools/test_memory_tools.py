@@ -311,7 +311,7 @@ _ONE_SHOT_ECHO_LITERAL = (
     "  schedule: DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1\n"
     "  notify: False\n"
     "  expires: never\n"
-    "  extraction_prompt: |\n"
+    "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
     "    2. collection_write(memory='one-shot', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -329,7 +329,7 @@ _CREATE_ECHO_LITERAL = (
     "  schedule: FREQ=HOURLY\n"
     "  notify: True\n"
     "  expires: never\n"
-    "  extraction_prompt: |\n"
+    "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
     "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -452,7 +452,7 @@ class TestCollectionCreateFrontDoor:
         assert result.message == (
             "I don't know how to \"xyzzy flibbertigibbet quux\" yet — there's no skill for "
             "it, so there's nothing to instantiate. No schedule can be set up before the "
-            "routine is learned. Two cases:\n"
+            "skill is learned. Two cases:\n"
             "a. The user already told you what one round needs — where to look, what to "
             "pull out, what to keep — then DO IT NOW, in this turn: browse, extract just "
             "the ONE value they want watched (only the price, not a whole name+hook+price blob — "
@@ -460,10 +460,11 @@ class TestCollectionCreateFrontDoor:
             "cycle), and collection_write what you actually found — storage is created "
             "for you if it doesn't exist.\n"
             "b. They haven't — reply to the user now, no more tool calls this turn: tell "
-            "them you'll learn it from one complete pass, and ask for the whole routine "
+            "them you'll learn it from one complete pass, and ask for the whole thing "
             "in ONE message (where to look, what to pull out, what to keep), modelling "
             "the example from what they already said. When it arrives, run case a.\n"
-            "Either way the routine is learned automatically as a skill from that round "
+            "Either way what you demonstrate is learned automatically as a skill from "
+            "that round "
             "— a learned notice will tell you the moment it exists; then attach it and "
             "set any schedule or notify they asked for in ONE call: "
             "collection_set(name=<the collection>, skill=<its name>, schedule=..., "
@@ -643,8 +644,8 @@ class TestCollectionCreateFrontDoor:
 
         assert result.success is False and not result.mutated
         assert result.message == (
-            "The routine this round taught, 'Watch nothing', isn't in the registry, so "
-            "there's nothing to set running. Which routine this is was settled by the "
+            "The skill this round taught, 'Watch nothing', isn't in the registry, so "
+            "there's nothing to set running. Which skill this is was settled by the "
             "round, so naming a different one here won't help. Tell the user the round "
             "didn't stick, and ask them to walk you through it once more."
         )
@@ -677,8 +678,8 @@ class TestCollectionCreateFrontDoor:
 
         assert result.success is False and not result.mutated
         assert result.message == (
-            "The routine 'Watch elevation' needs peak, which this round never supplied, "
-            "so there's nothing to set running. What this routine is pointed at was "
+            "The skill 'Watch elevation' needs peak, which this round never supplied, "
+            "so there's nothing to set running. What this skill is pointed at was "
             "settled by the round, so passing values here won't help. Tell the user "
             "what it's missing, and ask them to walk you through it once more."
         )
@@ -944,7 +945,7 @@ class TestCollectionCreateFrontDoor:
             "  schedule: FREQ=HOURLY\n"
             "  notify: False\n"
             "  expires: never\n"
-            "  extraction_prompt: |\n"
+            "  steps: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
             "    2. collection_write(memory='forever-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -979,7 +980,7 @@ class TestCollectionCreateFrontDoor:
             "  schedule: FREQ=HOURLY\n"
             "  notify: False\n"
             "  expires: Tuesday, September 01, 2026 at 09:00 AM UTC\n"
-            "  extraction_prompt: |\n"
+            "  steps: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
             "    2. collection_write(memory='season-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -1729,7 +1730,7 @@ _REFRESH_ECHO_LITERAL = (
     "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
-    "  extraction_prompt: |\n"
+    "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the summit elevation in metres')\n"
     "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -1746,7 +1747,7 @@ _REBIND_ECHO_LITERAL = (
     "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
-    "  extraction_prompt: |\n"
+    "  steps: |\n"
     "    1. browse(queries=['Ashfall Ridge'], extract='the elevation above sea level')\n"
     "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Ashfall Ridge', 'content': the value from step 1}])"
@@ -1764,7 +1765,7 @@ _SWAP_ECHO_LITERAL = (
     "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
-    "  extraction_prompt: |\n"
+    "  steps: |\n"
     "    1. browse(queries=['Silt River'], extract='the current flow rate')\n"
     "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Silt River', 'content': the value from step 1}])"
@@ -1782,7 +1783,7 @@ _ADOPT_ECHO_LITERAL = (
     "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
-    "  extraction_prompt: |\n"
+    "  steps: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
     "    2. collection_write(memory='legacy-notes', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -1991,9 +1992,9 @@ _INERT_ECHO_LITERAL = (
     "  status: inert (no skill attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until it has a "
     "skill. Next: run one round into it — read the source, then collection_write what "
-    "you actually find into 'deals-watch'; the routine is learned automatically as a "
-    "skill from that round. If you don't have the routine yet, reply and ask the user "
-    "for it in one message — don't guess."
+    "you actually find into 'deals-watch'; what you demonstrate is learned automatically "
+    "as a skill from that round. If you haven't demonstrated it yet, reply and ask the "
+    "user for it in one message — don't guess."
 )
 
 # The demo run's utterance — the {peak} value ('Meridian Trail 3') appears verbatim, so it
@@ -2088,7 +2089,7 @@ class TestInertCollections:
             name="deals-watch", description="track the trail-runner shoe deals"
         )
         result = await MemoryMetadataTool(db).execute(memory="deals-watch")
-        assert "extraction prompt: none" in result.message
+        assert "steps: none" in result.message
         assert "description: track the trail-runner shoe deals" in result.message
 
     @pytest.mark.asyncio
@@ -2693,7 +2694,7 @@ class TestCollectionUpdateScheduleAtApply:
             "  notify: False\n"
             "  expires: was 2099-12-31 00:00 UTC → now never\n"
             "  description: x\n"
-            "  extraction_prompt: |\n"
+            "  steps: |\n"
             "    test fixture extraction prompt"
             "\n(Note: expires_at='2099-12-31T00:00:00Z' is further ahead than an end date "
             "anyone means, so I read it as no end date — the expiry is unset and this runs "
@@ -2725,7 +2726,7 @@ class TestCollectionUpdateScheduleAtApply:
             "  schedule: none\n"
             "  notify: False\n"
             "  expires: never\n"
-            "  extraction_prompt: |\n"
+            "  steps: |\n"
             "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
             "    2. collection_write(memory='deals-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
@@ -2751,7 +2752,7 @@ class TestCollectionUpdateScheduleAtApply:
             "  notify: False\n"
             "  expires: never\n"
             "  description: track the road-runner shoe deals\n"
-            "  extraction_prompt: |\n    "
+            "  steps: |\n    "
         )
 
 
@@ -4351,7 +4352,7 @@ class TestCollectionSkillProvenanceRender:
         assert (
             result.message.index("from skill:")
             < result.message.index("parameters:")
-            < result.message.index("extraction prompt:")
+            < result.message.index("steps:")
         )
 
     @pytest.mark.asyncio
@@ -4674,7 +4675,7 @@ class TestFind:
         assert result.success
         assert result.message == (
             'Nothing of yours matched "orbit nebula" — the state at the top of this '
-            "prompt lists every collection, log, and taught routine you have (archived "
+            "prompt lists every collection, log, and taught skill you have (archived "
             "ones by name). If you were looking for how to do a task and no skill "
             "matched, ask the user to walk you through it once here in chat — you'll "
             "learn it as a new skill automatically."
@@ -4859,7 +4860,7 @@ class TestFind:
         assert result.success
         assert result.message == (
             'Nothing stored matched "aurora beacon cascade" — the state at the top of '
-            "this prompt lists every collection, log, and taught routine you have "
+            "this prompt lists every collection, log, and taught skill you have "
             "(archived ones by name). If you were looking for how to do a task and no "
             "skill matched, ask the user to walk you through it once here in chat — "
             "you'll learn it as a new skill automatically.\n\n"

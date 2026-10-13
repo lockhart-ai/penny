@@ -159,9 +159,9 @@ class NotificationInput(BaseModel):
     related: tuple[RelatedMessages, ...] = ()
 
 
-_LEAD = "The `{collection}` routine just ran on its own, and it is time to tell the user."
+_LEAD = "The `{collection}` job just ran on its own, and it is time to tell the user."
 _ABOUT = "What this collection is for: {description}"
-_ROUTINE = "The routine it runs: {routine}"
+_ROUTINE = "The skill it runs: {routine}"
 _WROTE_HEAD = "## What it wrote this cycle"
 _WROTE_NONE = "It wrote nothing down this cycle."
 _DID_HEAD = "## How it got there"
