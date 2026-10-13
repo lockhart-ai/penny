@@ -513,7 +513,7 @@ STATE_CLASSIFIER_SYSTEM_PROMPT = (
     "You are given:\n"
     "- The assistant's last message\n"
     "- The task being worked on (when there is one)\n"
-    "- Known skills — the assistant's existing routines ((none) when it has none)\n"
+    "- Known skills — the assistant's existing skills ((none) when it has none)\n"
     "- The user's newest message\n"
     "- Current state — where the conversation stands right now\n"
     "- Transitions — the states you may move to, each with the condition that "

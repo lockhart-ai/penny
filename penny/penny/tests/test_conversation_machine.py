@@ -169,7 +169,7 @@ def test_system_prompt_whole_render():
         "You are given:\n"
         "- The assistant's last message\n"
         "- The task being worked on (when there is one)\n"
-        "- Known skills — the assistant's existing routines ((none) when it has none)\n"
+        "- Known skills — the assistant's existing skills ((none) when it has none)\n"
         "- The user's newest message\n"
         "- Current state — where the conversation stands right now\n"
         "- Transitions — the states you may move to, each with the condition that "
@@ -225,7 +225,7 @@ def test_render_idle_slice_whole():
         "tasks that keep running on their own\n"
         "\n"
         "## Transitions\n"
-        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "- learn — the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
         "even if a known skill looks close — their steps are the new way to do it.\n"
@@ -461,7 +461,7 @@ def test_render_idle_with_candidates_whole():
         "something already set up behaves — its notifications, when it runs, what it "
         "covers — is not asking to start it. Add a second line naming that skill: "
         "SKILL: <its name, exactly as quoted in Known skills>\n"
-        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "- learn — the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
         "even if a known skill looks close — their steps are the new way to do it.\n"
@@ -515,7 +515,7 @@ def test_render_standing_jobs_section_whole():
         "## Jobs already running\n"
         '- "watch-a-listing-price-for-changes-harborkayak-example-rentals" — runs "watch '
         'a listing price for changes" · notifications off · FREQ=DAILY;BYHOUR=8\n'
-        '- "a-container-the-user-built" — no routine attached · notifications off · no '
+        '- "a-container-the-user-built" — no skill attached · notifications off · no '
         "schedule\n"
         "\n"
         "## The user's newest message\n"
@@ -539,7 +539,7 @@ def test_render_standing_jobs_section_whole():
         "something already set up behaves — its notifications, when it runs, what it "
         "covers — is not asking to start it. Add a second line naming that skill: "
         "SKILL: <its name, exactly as quoted in Known skills>\n"
-        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "- learn — the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
         "even if a known skill looks close — their steps are the new way to do it.\n"
