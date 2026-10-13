@@ -581,6 +581,8 @@ LEGACY_TOOL_RENAMES: dict[str, str] = {
     "collection_read_random": "collection_sample",
     # A key either reads back something or it doesn't — collection_get answers that.
     "exists": "collection_get",
+    # Reading one skill by name is skill_get (#2305).
+    "skill_read": "skill_get",
 }
 
 

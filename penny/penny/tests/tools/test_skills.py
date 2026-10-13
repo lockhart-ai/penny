@@ -29,7 +29,7 @@ from penny.database.skills import (
     retarget_writes,
     unbound_required_parameters,
 )
-from penny.tools.skill_tools import render_skill_shape
+from penny.tools.skill_tools import render_skill_full, render_skill_shape
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
@@ -148,6 +148,40 @@ def test_render_skill_bound_is_the_money_literal():
     )
     assert rendered == _MONEY_LITERAL
     assert "elevations" not in rendered  # the demonstrated collection is never named
+
+
+# ── render_skill_full: the whole skill as text, by name (#2305) ───────────────
+
+_FULL_RENDER = (
+    "skill 'Watch elevation'\n"
+    "what it's for: Save the Zephyr Ridge elevation to my notes\n"
+    "parameters:\n"
+    "  - queries (required): what to search for\n"
+    "  - extract (required): what to pull off the page\n"
+    "steps:\n"
+    f"{_WITH_HOLES}"
+)
+
+
+def test_render_skill_full_names_the_skill_its_parameters_and_its_steps():
+    """``render_skill_full`` (#2305) — what ``skill_get`` returns for one skill by
+    name: its name, what it's for, its declared ``parameters:`` block (no bound
+    values — this is the bare skill, not a configured job), and its numbered
+    ``steps:``, with-holes exactly as ``render_skill`` renders them unbound."""
+    parameters = [
+        SkillParameter(name="queries", required=True, description="what to search for"),
+        SkillParameter(name="extract", required=True, description="what to pull off the page"),
+    ]
+    skill = Skill(
+        name="Watch elevation",
+        steps=steps_to_json(_elevation_steps()),
+        parameters=parameters_to_json(parameters),
+        intent=_UTTERANCE,
+        description=_UTTERANCE,
+        author="chat",
+    )
+
+    assert render_skill_full(skill) == _FULL_RENDER
 
 
 # ── Provenance inference: binding / candidate / attachment mark in one run ─────
@@ -781,8 +815,7 @@ def test_the_step_shape_line_names_each_step_and_what_it_handles_more_than_one_o
     assert rendered == _BRIEFING_SHAPE
     # No argument VALUE and no call shape — the #1799 leak has no source here (a step
     # names a tool the way prose does, not the way a recipe does), and the whole recipe
-    # is one call away either way: find on the routine's own hit, or memory_metadata
-    # on the job once it is running.
+    # is one skill_get(skill=<name>) call away.
     assert "example-a" not in rendered and "(" not in rendered
 
 

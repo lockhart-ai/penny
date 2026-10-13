@@ -9,6 +9,7 @@ back hydrated :class:`SkillStep` / :class:`SkillParameter` objects, never raw JS
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 
@@ -16,6 +17,8 @@ import numpy as np
 from sqlmodel import Session, select
 
 from penny.clock import Clock
+from penny.config_params import RuntimeParams
+from penny.constants import PennyConstants
 from penny.database.memory import _similarity as sim
 from penny.database.models import Skill
 from penny.database.skills import SkillDraft, SkillParameter, SkillStep, slug_skill_name
@@ -157,3 +160,45 @@ class SkillStore:
         scores = sim.cosine_scores(blobs, anchor)
         order = list(np.argsort(-scores))
         return [scored[i] for i in order if float(scores[i]) > 0.0][:limit]
+
+    def nearest_skill_name(self, name: str, embedding: list[float] | None = None) -> str | None:
+        """The closest EXISTING skill name to a missed ``name`` — the did-you-mean
+        candidate ``skill_get``'s not-found error leads with (#2305), mirroring
+        ``MemoryStore.nearest_memory_name``.
+
+        Two legs, string first: a stdlib ``difflib`` close-match over every skill
+        name, gated on the conservative ``DID_YOU_MEAN_STRING_CUTOFF``.  When the
+        string leg finds nothing AND an ``embedding`` of the missed name is
+        supplied, the MEANING leg ranks skills' description anchors by plain
+        cosine and takes the best clearing ``MEMORY_DEDUP_CONTENT_SIM_RELAXED``.
+        The candidate excludes ``name`` itself.  ``None`` when nothing is close."""
+        others = [s for s in self.list_all() if slug_skill_name(s.name) != slug_skill_name(name)]
+        typo = self._nearest_name_by_string(name, others)
+        if typo is not None:
+            return typo
+        if embedding is not None:
+            return self._nearest_name_by_meaning(embedding, others)
+        return None
+
+    @staticmethod
+    def _nearest_name_by_string(name: str, skills: list[Skill]) -> str | None:
+        """The string (typo) leg of :meth:`nearest_skill_name`."""
+        names = [s.name for s in skills]
+        matches = difflib.get_close_matches(
+            name, names, n=1, cutoff=PennyConstants.DID_YOU_MEAN_STRING_CUTOFF
+        )
+        return matches[0] if matches else None
+
+    def _nearest_name_by_meaning(self, embedding: list[float], skills: list[Skill]) -> str | None:
+        """The meaning leg of :meth:`nearest_skill_name`: the skill whose description
+        anchor is closest (plain cosine) to the missed name's ``embedding``, when it
+        clears ``MEMORY_DEDUP_CONTENT_SIM_RELAXED`` — else ``None``."""
+        candidates = [(s.name, s.description_embedding) for s in skills if s.description_embedding]
+        if not candidates:
+            return None
+        scores = sim.cosine_scores([blob for _, blob in candidates], embedding)
+        best = int(np.argmax(scores))
+        threshold = RuntimeParams().MEMORY_DEDUP_CONTENT_SIM_RELAXED
+        if float(scores[best]) >= threshold:
+            return candidates[best][0]
+        return None

@@ -70,9 +70,10 @@ provenance inference (:func:`distill_steps`), the load-bearing render
 (:func:`render_skill`) that turns steps + bound params into the numbered TEXT
 ``extraction_prompt`` a collection runs, and the apply-time pair above.  The DB store
 lives in :mod:`penny.database.skill_store`; the run-end extractor in
-:mod:`penny.skill_extraction`.  Describing a skill reads :func:`render_skill` from two
-places (#2287): ``find``'s hit, for a taught routine with no job running, and a
-configured job's ``memory_metadata``, both in :mod:`penny.tools.memory_tools`.
+:mod:`penny.skill_extraction`.  Reading a skill by name is ``skill_get`` (#2305,
+:func:`penny.tools.skill_tools.render_skill_full` over :func:`render_skill`); a
+configured job's ``memory_metadata`` renders the same steps with the job's own
+bound values, both in :mod:`penny.tools.memory_tools`.
 """
 
 from __future__ import annotations
@@ -684,6 +685,21 @@ def render_skill(steps: list[SkillStep], params: dict[str, str] | None = None) -
     """
     params = params or {}
     return "\n".join(_render_step(step, params) for step in steps)
+
+
+def render_skill_not_found(name: str, suggestion: str | None = None) -> str:
+    """The single model-facing message for a skill-name miss on ``skill_get``
+    (#2305) — the house did-you-mean shape, mirroring ``render_memory_not_found``.
+
+    When ``suggestion`` names the nearest existing skill (a typo of it, or a
+    semantically-close-but-differently-worded name), the message LEADS with it;
+    either way it points at where every skill is already listed, since nothing
+    here creates a skill directly."""
+    if suggestion is not None:
+        lead = f"Skill '{name}' not found — did you mean '{suggestion}'?"
+    else:
+        lead = f"Skill '{name}' not found."
+    return f"{lead} Check the name — your state already lists every skill you have."
 
 
 def unbound_required_parameters(

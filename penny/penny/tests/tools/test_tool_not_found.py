@@ -228,6 +228,21 @@ class StubCollectionSetTool(Tool):
         return "set"
 
 
+class StubSkillGetTool(Tool):
+    """Stub for skill_get — the tool the retired ``skill_read`` became (#2305)."""
+
+    name = "skill_get"
+    description = "Read one skill by name"
+    parameters = {
+        "type": "object",
+        "properties": {"skill": {"type": "string", "description": "Skill name."}},
+        "required": ["skill"],
+    }
+
+    async def execute(self, **kwargs):
+        return "skill"
+
+
 class TestToolNotFoundSuggestion:
     """Error message includes a 'did you mean' suggestion for close tool names."""
 
@@ -279,6 +294,22 @@ class TestToolNotFoundSuggestion:
         assert result.message == (
             "Did you mean 'memory_metadata'? "
             "Available tools: memory_metadata, collection_set. "
+            "You must ONLY use the tools listed above."
+        )
+
+    @pytest.mark.asyncio
+    async def test_retired_skill_read_suggests_skill_get(self):
+        """``skill_read`` resolves through the rename table to ``skill_get`` (#2305),
+        the tool that replaced it."""
+        registry = ToolRegistry()
+        registry.register(StubSkillGetTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        result = await executor.execute(ToolCall(tool="skill_read", arguments={}))
+
+        assert result.success is False
+        assert result.message == (
+            "Did you mean 'skill_get'? Available tools: skill_get. "
             "You must ONLY use the tools listed above."
         )
 

@@ -64,6 +64,7 @@ from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
     bind_parameters,
     render_skill,
+    render_skill_not_found,
     retarget_writes,
     unbound_required_parameters,
 )
@@ -111,8 +112,10 @@ from penny.tools.memory_args import (
     ReadLogArgs,
     ReadRunCallsArgs,
     ReadSampleArgs,
+    SkillGetArgs,
 )
 from penny.tools.models import NoArgs, ToolResult
+from penny.tools.skill_tools import render_skill_full
 
 if TYPE_CHECKING:
     from penny.agents.models import ToolCallRecord
@@ -562,14 +565,15 @@ def _skill_provenance_line(row: MemoryRow) -> str | None:
 
 
 def _skill_parameters_block(db: Database, row: MemoryRow) -> str | None:
-    """The job's ``parameters:`` block (#2287) — each parameter the routine declares,
+    """The job's ``parameters:`` block (#2287) — each parameter the skill declares,
     whether it is required or optional, its description, and the value THIS job has
-    bound for it (:func:`render_skill_parameters`, the one format this and ``find``'s
-    taught-skill hit, in :func:`_skill_recipe_block`, both read).  ``None`` for a
-    collection with no routine at all (``skill_name`` NULL — the render stays
-    byte-identical to today), or when the registry no longer holds a skill by that
-    name: the provenance line above still names it, so the block simply has nothing
-    further to add rather than asserting a routine's shape from nothing."""
+    bound for it (:func:`render_skill_parameters`, the one format this and
+    ``skill_get`` (#2305) both read — ``skill_get`` with no bound values, since the
+    bare skill names no job).  ``None`` for a collection with no skill at all
+    (``skill_name`` NULL — the render stays byte-identical to today), or when the
+    registry no longer holds a skill by that name: the provenance line above still
+    names it, so the block simply has nothing further to add rather than asserting
+    a skill's shape from nothing."""
     if row.skill_name is None:
         return None
     skill = db.skills.get(row.skill_name)
@@ -2870,6 +2874,58 @@ class GetEventTool(Tool):
         return run_id or None
 
 
+class SkillGetTool(Tool):
+    """Read one skill's parameters and steps by name (#2305).
+
+    The right read when the skill's name is already known — from her state's
+    skills section, or a ``find`` hit — and what's needed is its full parameters
+    and steps, not just what it is for and what it needs.
+    """
+
+    name = "skill_get"
+    advises = ("find", "collection_set")
+    description = (
+        "Read one skill by name: its parameters and its numbered steps. Pass "
+        "`skill`, the exact name as it renders in your state's skills section. "
+        "Use it when you know the skill's name and want its full parameters and "
+        "steps, not just what it's for and what it needs."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "skill": {
+                "type": "string",
+                "description": "The skill's exact name, as it renders in your state.",
+            }
+        },
+        "required": ["skill"],
+    }
+    args_model = SkillGetArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        skill = _named(arguments, "skill", "a skill")
+        if not result.success:
+            return f"You tried to look up {skill} but it didn't work:"
+        return f"You looked up {skill}:"
+
+    def __init__(self, db: Database, llm_client: LlmClient) -> None:
+        self._db = db
+        self._llm = llm_client
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        # Plain ``Tool``, not ``MemoryTool``: a skill isn't a memory, and the
+        # not-found case needs the skill registry's own did-you-mean, not the
+        # memory registry's.
+        args = SkillGetArgs(**kwargs)
+        skill = self._db.skills.get(args.skill)
+        if skill is not None:
+            return ToolResult(message=render_skill_full(skill))
+        embedding = await embed_text(self._llm, args.skill)
+        suggestion = self._db.skills.nearest_skill_name(args.skill, embedding)
+        return ToolResult(message=render_skill_not_found(args.skill, suggestion), success=False)
+
+
 # ── Log writes ──────────────────────────────────────────────────────────────
 
 
@@ -3013,9 +3069,10 @@ def _find_addressing(match: ResolvedMatch) -> str:
     name = match.name
     if match.kind == ResolvedKind.SKILL:
         return (
-            f"set it running with collection_set(name=<a name for the job>, "
-            f"skill='{name}', params=…); to change it, demonstrate it again in "
-            f"chat — I relearn it automatically, replacing this one"
+            f"read it with skill_get(skill='{name}'); set it running with "
+            f"collection_set(name=<a name for the job>, skill='{name}', params=…); "
+            f"to change it, demonstrate it again in chat — I relearn it "
+            f"automatically, replacing this one"
         )
     if match.kind == ResolvedKind.LOG:
         return f"read it with log_read('{name}')"
@@ -3067,47 +3124,22 @@ def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
     return f"{head}\n   read it: {_entry_addressing(entry)}"
 
 
-def _skill_recipe_block(db: Database, name: str) -> str | None:
-    """A taught-skill hit's own recipe (#2287): its ``parameters:`` block (no bound
-    values — this is the ambient registry row, not a configured job) and its numbered
-    steps (``render_skill`` over the stored steps, parameters shown as ``{name}``),
-    indented under the hit the same way ``how to use it:`` is.  This is the content a
-    job's own render carries minus the name/intent lines the hit's head already
-    shows.  ``find``'s render functions are module-level and have no database
-    handle, so the caller (``FindTool._format``) fetches the row and passes it down.
-    ``None`` when the registry no longer holds a skill by that name, so the hit
-    renders exactly as it does for any other object."""
-    skill = db.skills.get(name)
-    if skill is None:
-        return None
-    parameters = render_skill_parameters(parameters_from_json(skill.parameters))
-    recipe = render_skill(steps_from_json(skill.steps))
-    body = f"{parameters}\nsteps:\n{recipe}"
-    return "\n".join(f"   {line}" for line in body.splitlines())
-
-
-def _render_object_hit(index: int, match: ResolvedMatch, db: Database) -> str:
+def _render_object_hit(index: int, match: ResolvedMatch) -> str:
     """One object hit: ``N. <name> — <state> <type>[: <scope>]`` then the
-    verbatim-usable addressing on the next line.  A taught-skill hit additionally
-    carries its own recipe (#2287), since a routine with no job running has nowhere
-    else a tool call reaches its steps."""
+    verbatim-usable addressing on the next line — a taught-skill hit's addressing
+    leads with ``skill_get``, the one way to read its steps (#2305)."""
     head = f"{index}. {match.name} — {_find_state(match)} {_find_type_label(match)}"
     if match.label:
         head += f": {match.label}"
-    lines = [head, f"   how to use it: {_find_addressing(match)}"]
-    if match.kind == ResolvedKind.SKILL:
-        recipe = _skill_recipe_block(db, match.name)
-        if recipe is not None:
-            lines.append(recipe)
-    return "\n".join(lines)
+    return "\n".join([head, f"   how to use it: {_find_addressing(match)}"])
 
 
-def _render_find_hit(index: int, hit: ResolvedHit, db: Database) -> str:
+def _render_find_hit(index: int, hit: ResolvedHit) -> str:
     """One fused hit, best-first ranked — dispatched by family: a stored entry
     renders its value + how to read it, an object its state/type + how to use it."""
     if isinstance(hit, ResolvedEntry):
         return _render_entry_hit(index, hit)
-    return _render_object_hit(index, hit, db)
+    return _render_object_hit(index, hit)
 
 
 def _render_message_hit(index: int, message: ResolvedMessage) -> str:
@@ -3199,6 +3231,7 @@ class FindTool(MemoryTool):
         "collection_archive",
         "collection_unarchive",
         "log_read",
+        "skill_get",
     )
     description = (
         "Find anything of your own by meaning, when you don't know its exact name — "
@@ -3302,7 +3335,7 @@ class FindTool(MemoryTool):
         matched" instead (``_FIND_EMPTY_STORE``)."""
         if not hits:
             return _FIND_EMPTY_STORE.format(query=query)
-        body = "\n".join(_render_find_hit(i, h, self._db) for i, h in enumerate(hits, start=1))
+        body = "\n".join(_render_find_hit(i, h) for i, h in enumerate(hits, start=1))
         if len(hits) == 1:
             return f'Found 1 thing matching "{query}":\n{body}'
         return (
@@ -3494,6 +3527,7 @@ def build_memory_tools(
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
         FindTool(db, llm_client),
+        SkillGetTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
         CollectionSetTool(db, llm_client, run_id=run_id, round_framing=round_framing),
