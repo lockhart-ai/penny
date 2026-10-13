@@ -892,8 +892,8 @@ def render_spoken_turns(turns: Sequence[str]) -> str:
     return "\n".join(turns)
 
 
-_ROUTINE_BLOCK_HEAD = "The routine that has been asked for:"
-_NEEDS_BLOCK_HEAD = "What it needs, one line each:"
+_ROUTINE_BLOCK_HEAD = "The skill that has been asked for:"
+_NEEDS_BLOCK_HEAD = "Its parameters, one line each:"
 _SPOKEN_BLOCK_HEAD = "What the user said, in their own words:"
 _NEEDS_NOTHING = "(nothing)"
 

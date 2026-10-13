@@ -131,11 +131,11 @@ _LISTING = BindingFixture(
         "https://faux-market.example/keel-lantern — every hour until sunday night is fine",
     ),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: monitor_price\n"
         "what it is for: Monitors a web listing and reports when its price changes.\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- url: The URL of the listing to watch\n"
         "\n"
         "What the user said, in their own words:\n"
@@ -162,12 +162,12 @@ _TWO_PARAMETERS = BindingFixture(
         "https://northpier.example/departures and let me know when they add the dawn sailing?",
     ),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: check_ferry_timetable\n"
         "what it is for: Check a ferry timetable page for updates and report the status "
         "of a specified line\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- url: the URL of the timetable page to fetch\n"
         "- keyword: text indicating which timetable entry to look for\n"
         "\n"
@@ -197,11 +197,11 @@ _COUNT = BindingFixture(
         "and let me know if it drops",
     ),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: monitor_webpage_number\n"
         "what it is for: track a numeric value on a webpage over time to detect changes\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- url: the webpage to monitor\n"
         "\n"
         "What the user said, in their own words:\n"
@@ -227,11 +227,11 @@ _MISSING_PAGE = BindingFixture(
         "tell me when it changes? every hour is fine",
     ),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: monitor_price\n"
         "what it is for: Monitors a web listing and reports when its price changes.\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- url: The URL of the listing to watch\n"
         "\n"
         "What the user said, in their own words:\n"
@@ -258,12 +258,12 @@ _MISSING_KEYWORD = BindingFixture(
         "morning and keep me posted?",
     ),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: check_ferry_timetable\n"
         "what it is for: Check a ferry timetable page for updates and report the status "
         "of a specified line\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- url: the URL of the timetable page to fetch\n"
         "- keyword: text indicating which timetable entry to look for\n"
         "\n"
@@ -970,12 +970,12 @@ _CROSSING = BindingFixture(
         "which is cheaper?",
     ),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: compare_crossing_fares\n"
         "what it is for: Compares the fares for the outbound and return legs of a "
         "crossing and reports which costs more\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- outbound_url: the URL of the page listing the outbound crossing\n"
         "- return_url: the URL of the page listing the return crossing\n"
         "\n"
@@ -1193,12 +1193,12 @@ _ARRIVING_KEYWORD = BindingFixture(
     parameters=(_TIMETABLE_PARAMETERS[1],),
     turns=(*_MISSING_KEYWORD.turns, "the dawn sailing — that's the one i'm after"),
     rendered_input=(
-        "The routine that has been asked for:\n"
+        "The skill that has been asked for:\n"
         "name: check_ferry_timetable\n"
         "what it is for: Check a ferry timetable page for updates and report the status "
         "of a specified line\n"
         "\n"
-        "What it needs, one line each:\n"
+        "Its parameters, one line each:\n"
         "- keyword: text indicating which timetable entry to look for\n"
         "\n"
         "What the user said, in their own words:\n"

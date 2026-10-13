@@ -575,12 +575,12 @@ _MISSING_LINE = LineSpec(
 SKILL_BIND_SHAPE = MicroContextShape(lines=(_VALUE_LINE, _MISSING_LINE))
 
 BIND_SKILL_SYSTEM_PROMPT = (
-    "You are a filling-in step. A routine already exists, and someone has just asked "
-    "for it to be run on a new occasion. You are given the routine — what it is called, "
+    "You are a filling-in step. A skill already exists, and someone has just asked "
+    "for it to be run on a new occasion. You are given the skill — what it is called, "
     "what it is for, and each thing it needs — and the user's own words, exactly as "
     "they wrote them.\n"
     "\n"
-    "Fill in each thing the routine needs, from those words:\n"
+    "Fill in each thing the skill needs, from those words:\n"
     "1. Take the list of things it needs as it stands. Never add anything to that list, "
     "and never leave anything out.\n"
     "2. For each one, find the part of the user's words that supplies it, and copy that "
@@ -589,14 +589,14 @@ BIND_SKILL_SYSTEM_PROMPT = (
     "3. When their words supply nothing for one of them, say it is missing. That is a "
     "real answer, and it is the right one whenever the alternative is a guess.\n"
     "\n"
-    "How often the routine runs, when it should stop, and whether to tell the user are "
-    "settled when it is set running. They are never things the routine needs, so they "
+    "How often it runs, when it should stop, and whether to tell the user are "
+    "settled when it is set running. They are never things it needs, so they "
     "are never a value here.\n"
     "\n"
-    "Write one line for each thing the routine needs, and nothing else:\n"
+    "Write one line for each thing the skill needs, and nothing else:\n"
     f"{render_line(_VALUE_LINE)}\n"
     f"{render_line(_MISSING_LINE)}\n"
-    "Write the name exactly as the routine lists it. Write nothing else — no preamble, "
+    "Write the name exactly as the skill lists it. Write nothing else — no preamble, "
     "no explanation, no restating the ask."
 )
 
