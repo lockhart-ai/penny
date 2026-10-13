@@ -514,8 +514,8 @@ def test_render_standing_jobs_section_whole():
         "\n"
         "## Jobs already running\n"
         '- "watch-a-listing-price-for-changes-harborkayak-example-rentals" — runs "watch '
-        'a listing price for changes" · notifications off · FREQ=DAILY;BYHOUR=8\n'
-        '- "a-container-the-user-built" — no skill attached · notifications off · no '
+        'a listing price for changes" · notify: off · FREQ=DAILY;BYHOUR=8\n'
+        '- "a-container-the-user-built" — no skill attached · notify: off · no '
         "schedule\n"
         "\n"
         "## The user's newest message\n"
@@ -553,7 +553,7 @@ def test_render_standing_jobs_section_whole():
     # The notify clause the other way, and the empty world stated rather than absent.
     assert (
         StandingJob(name="j", skill_name="s", notify=True, schedule="FREQ=HOURLY").render()
-        == '- "j" — runs "s" · notifications on · FREQ=HOURLY'
+        == '- "j" — runs "s" · notify: on · FREQ=HOURLY'
     )
     assert "## Jobs already running\n(none)\n" in render_classifier_content(_IDLE_SNAPSHOT, _ASK)
 
