@@ -114,9 +114,9 @@ def test_notify_document_renders_whole():
     conversation is labelled background and comes last.  A log that matched nothing
     renders no section of its own; only a document where NEITHER matched says so."""
     assert render_notification(_DOCUMENT) == (
-        "The `ferry-departures` routine just ran on its own, and it is time to tell the user.\n"
+        "The `ferry-departures` job just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the dawn sailing on the north pier timetable\n"
-        "The routine it runs: check_timetable\n"
+        "The skill it runs: check_timetable\n"
         "\n"
         "## What it wrote this cycle\n"
         "- into `ferry-departures`, under `dawn sailing`: 06:12 from the pier\n"
@@ -162,7 +162,7 @@ def test_notify_document_states_a_no_write_cycle_and_a_nothing_matched_lookup():
     )
 
     assert render_notification(document) == (
-        "The `tide-times` routine just ran on its own, and it is time to tell the user.\n"
+        "The `tide-times` job just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the tide table for the north pier\n"
         "\n"
         "## What it wrote this cycle\n"
@@ -273,9 +273,9 @@ def test_an_oversized_cycle_assembles_under_the_declared_bound():
     rendered = render_notification(_OVERSIZED)
 
     assert rendered == (
-        "The `harbour-watch` routine just ran on its own, and it is time to tell the user.\n"
+        "The `harbour-watch` job just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the pier lanterns on the harbour front\n"
-        "The routine it runs: watch_lanterns\n"
+        "The skill it runs: watch_lanterns\n"
         "\n"
         "## What it wrote this cycle\n"
         f"- into `harbour-watch`, under `{_LONG_KEY[:120]}"
@@ -361,7 +361,7 @@ def test_a_prior_notification_cannot_displace_this_cycles_writes():
 
     rendered = render_notification(document)
     assert rendered == (
-        "The `harbour-watch` routine just ran on its own, and it is time to tell the user.\n"
+        "The `harbour-watch` job just ran on its own, and it is time to tell the user.\n"
         "What this collection is for: the pier lanterns on the harbour front\n"
         "\n"
         "## What it wrote this cycle\n"

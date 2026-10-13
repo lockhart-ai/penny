@@ -126,7 +126,7 @@ class Prompt:
     # would key the sentence to one way of keeping a result, and a routine is an arbitrary
     # sequence of tool calls.
     ROUND_FRAMING_LINE = (
-        "The routine you are being taught this round is called `{skill}`, and "
+        "The skill you are being taught this round is called `{skill}`, and "
         "`{container}` is the collection set up to hold what it produces. Where a step "
         "says to remember something, that collection is where it goes — it is already "
         "there, so there is nothing to set up.\n\n"
@@ -148,11 +148,11 @@ class Prompt:
     # lives with the field it governs, on `expires_at`'s own description.
     APPLY_INSTRUCTION = (
         "A collection has been set up for this task from what the user asked. It is "
-        "named `{container}`, it runs the routine `{skill}`, and it is already pointed "
+        "named `{container}`, it runs the skill `{skill}`, and it is already pointed "
         "at what they gave. Configure its schedule now, in one `collection_set` call on "
         "`{container}`: when it runs, when it stops if they gave an end, and whether to "
         "tell them — all from the user's own words.\n\n"
-        "Configuring it is the whole turn — you are not carrying the routine out "
+        "Configuring it is the whole turn — you are not carrying the skill out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"
         "Then tell them what you set up and what will happen. Say it is running "
@@ -187,7 +187,7 @@ class Prompt:
     # binding key and the description is the plain-words form of the same thing, so the
     # sentence says to ask with the description.
     ROUND_SHORTFALL_LINE = (
-        "The routine for this is `{skill}` — {description}\n\n"
+        "The skill for this is `{skill}` — {description}\n\n"
         "What they have already given you, which you must not ask for again:\n"
         "{bound}\n\n"
         "What is still missing, which is what to ask them for:\n"
@@ -366,13 +366,13 @@ class Prompt:
         "Reply to the user now. FIRST answer what they actually asked: report the "
         "outcome of this round — the value you found and where you stored it — since "
         "this reply is the only one they receive. THEN tell them, in your own words, "
-        "that you've learned this routine: name it by what it does generally (not "
+        "that you've learned this skill: name it by what it does generally (not "
         "just this one instance), say plainly what it does, and name what you'd need "
         "from them to run it again. Give them the steps too — one short line, in "
         "everyday words rather than the tool names above, in that same order, every "
         "step it captured and no step it didn't — because they are the only one who "
-        "knows what this routine was for, so a step that doesn't belong is a step only "
-        "they can spot. If one is wrong, they can walk you through the routine again "
+        "knows what this skill was for, so a step that doesn't belong is a step only "
+        "they can spot. If one is wrong, they can walk you through the skill again "
         "and you'll learn it fresh. Then offer to set it running on a schedule if "
         "they'd like."
     )
@@ -394,7 +394,7 @@ class Prompt:
     # beside an invented prior value.  The instruction names the shape rather than the
     # fields, since which line carries one is decided by what the turn moved.
     CONFIGURATION_APPLIED_NARRATION = (
-        "The routine is now set up, and here is exactly what was configured:\n\n"
+        "The job is now set up, and here is exactly what was configured:\n\n"
         "{configuration}\n\n"
         "Reply to the user now. Tell them in your own words what is running: what it "
         "watches, how often it runs, when it stops if it stops, and whether they will "

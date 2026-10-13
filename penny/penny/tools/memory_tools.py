@@ -433,7 +433,7 @@ def _format_collection_echo(
         f"  notify: {memory.notify}\n"
         f"  expires: {render_expiry_update_line(memory, timezone_name, priors)}\n"
         f"  description: {memory.description}\n"
-        f"  extraction_prompt: |\n    "
+        f"  steps: |\n    "
         f"{(memory.extraction_prompt or '').replace(chr(10), chr(10) + '    ')}"
     )
 
@@ -788,12 +788,12 @@ class CollectionCreateTool(MemoryTool):
         "Set up a background collection. A collection is storage plus an OPTIONAL job.\n"
         "\n"
         "TWO ways to call it:\n"
-        "- WITH a `skill`: instantiate that skill — its recipe becomes the collection's "
-        "routine, run on the `schedule` you set. You don't write steps here; the skill "
+        "- WITH a `skill`: instantiate that skill — its steps become what the collection "
+        "runs, on the `schedule` you set. You don't write steps here; the skill "
         "supplies them.\n"
         "- WITHOUT a `skill`: an INERT storage collection — it holds entries but nothing "
-        "runs against it yet. Use this to set up the container first when you're about "
-        "to TEACH a skill: create it (name + description only), demonstrate the routine "
+        "runs against it yet. Use this to set up the collection first when you're about "
+        "to TEACH a skill: create it (name + description only), demonstrate it "
         "once here in chat — you learn it automatically as a skill — then attach that "
         "skill with collection_set to make it do the job. Don't pass a schedule / "
         "notify / expiry with a skill-less create — an inert collection has no job to "
@@ -830,7 +830,7 @@ class CollectionCreateTool(MemoryTool):
         "default) for a silent collection they'll ask about later.\n"
         "\n"
         "Returns a structured echo of what landed (description, skill, bound params, "
-        "schedule, notify, expiry, and the rendered routine). Confirm it back — don't "
+        "schedule, notify, expiry, and the rendered steps). Confirm it back — don't "
         "invent fields it didn't return."
     )
     parameters = {
@@ -1748,7 +1748,7 @@ class CollectionWriteTool(MemoryTool):
 _REBIND_NO_SKILL = (
     "Can't rebind params on '{name}': it wasn't instantiated from a skill (it's "
     "hand-authored), so it has no parameters to bind. Pass skill=<name> to adopt a "
-    "skill onto it — demonstrate the routine once in chat if no skill exists yet; "
+    "skill onto it — demonstrate it once in chat if no skill exists yet; "
     "it's learned automatically."
 )
 
@@ -1764,7 +1764,7 @@ _SKILL_GONE = (
 # nothing to run it on, so it won't dispatch until one is set (#1629 — visible over
 # silent).
 _NO_SCHEDULE_NOTE = (
-    "\n\nHeads up: this collection now has a routine but no schedule, so it won't run "
+    "\n\nHeads up: this collection now has a skill but no schedule, so it won't run "
     "yet. Set one with collection_set(name='{name}', schedule=<recurrence rule>) — the "
     "rule for the cadence the user asked for, e.g. FREQ=HOURLY or FREQ=DAILY;BYHOUR=8."
 )
@@ -1801,7 +1801,7 @@ class CollectionSetTool(MemoryTool):
         "the fields you set change — you never need to know which. "
         "`description` = what it's for, in the user's words (required the first "
         "time). `skill` (+ `params`) attaches a learned skill — its steps become "
-        "the collection's routine. `schedule` says when it runs, as one recurrence "
+        "what the collection runs. `schedule` says when it runs, as one recurrence "
         'rule: "FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
         '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify` turns THIS '
         "collection's notifications on or off — true tells the user about "
@@ -2047,8 +2047,8 @@ _ROUND_CONTAINER_TARGETED = (
 # the ROUND as the broken half on purpose: which routine this is was settled by the round,
 # so "name a different skill" would be a remedy this call cannot carry out.
 _ROUND_ROUTINE_MISSING = (
-    "The routine this round taught, '{skill}', isn't in the registry, so there's nothing "
-    "to set running. Which routine this is was settled by the round, so naming a different "
+    "The skill this round taught, '{skill}', isn't in the registry, so there's nothing "
+    "to set running. Which skill this is was settled by the round, so naming a different "
     "one here won't help. Tell the user the round didn't stick, and ask them to walk you "
     "through it once more."
 )
@@ -2056,8 +2056,8 @@ _ROUND_ROUTINE_MISSING = (
 # The same shape for a routine that now asks for something the round never supplied — a
 # re-teach can change what a routine declares while an older round's values stay put.
 _ROUND_ROUTINE_UNBOUND = (
-    "The routine '{skill}' needs {missing}, which this round never supplied, so there's "
-    "nothing to set running. What this routine is pointed at was settled by the round, so "
+    "The skill '{skill}' needs {missing}, which this round never supplied, so there's "
+    "nothing to set running. What this skill is pointed at was settled by the round, so "
     "passing values here won't help. Tell the user what it's missing, and ask them to walk "
     "you through it once more."
 )
@@ -2127,7 +2127,7 @@ class CollectionUpdateTool(MemoryTool):
         "Drives what the collector actually does. Read the current body "
         "via `memory_metadata(<collection>)` first if you need to preserve any "
         "of it. Don't combine with `skill`/`params` — a re-render owns the prompt.\n"
-        "- `skill` — re-render the collection's routine from a skill's CURRENT "
+        "- `skill` — re-render what the collection runs from the skill's CURRENT "
         "steps (by exact name or a paraphrase, resolved the same way as "
         "`collection_set`). Use the SAME skill name to refresh after re-teaching "
         "it, or a DIFFERENT skill to swap. On a legacy hand-authored collection this "
@@ -2179,7 +2179,7 @@ class CollectionUpdateTool(MemoryTool):
             "skill": {
                 "type": "string",
                 "description": (
-                    "Re-render the collection's routine from a skill's current steps "
+                    "Re-render what the collection runs from the skill's current steps "
                     "(exact name or paraphrase). Same name = refresh after re-teaching; "
                     "a different skill = swap; on a hand-authored collection = adopt."
                 ),
@@ -2470,7 +2470,7 @@ class MemoryMetadataTool(MemoryTool):
             "What it does each cycle — the recipe below is the collection's actual "
             "behaviour.  When explaining the collection, walk through THESE steps, not the "
             "operational settings.",
-            f"extraction prompt: {memory.extraction_prompt or 'none'}",
+            f"steps: {memory.extraction_prompt or 'none'}",
             "",
             "Operational settings (cadence — secondary):",
             f"notify: {memory.notify}",
@@ -2949,7 +2949,7 @@ _FIND_EMBED_FAILURE = (
 # dead end (#1650): no skill matched → ask the user to teach it once.
 _FIND_EMPTY = (
     'Nothing of yours matched "{query}" — the state at the top of this prompt '
-    "lists every collection, log, and taught routine you have (archived ones by "
+    "lists every collection, log, and taught skill you have (archived ones by "
     "name). If you were looking for how to do a task and no skill matched, ask the "
     "user to walk you through it once here in chat — you'll learn it as a new "
     "skill automatically."
@@ -2962,7 +2962,7 @@ _FIND_EMPTY = (
 # applies, since it's still true that nothing in the STORE matched.
 _FIND_EMPTY_STORE = (
     'Nothing stored matched "{query}" — the state at the top of this prompt '
-    "lists every collection, log, and taught routine you have (archived ones by "
+    "lists every collection, log, and taught skill you have (archived ones by "
     "name). If you were looking for how to do a task and no skill matched, ask the "
     "user to walk you through it once here in chat — you'll learn it as a new "
     "skill automatically."

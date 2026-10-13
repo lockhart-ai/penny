@@ -288,7 +288,7 @@ description: neighbourhood hedgehog sightings
 
 What it does each cycle — the recipe below is the collection's actual behaviour.  \
 When explaining the collection, walk through THESE steps, not the operational settings.
-extraction prompt: 1. browse for hedgehog news. 2. done().
+steps: 1. browse for hedgehog news. 2. done().
 
 Operational settings (cadence — secondary):
 notify: False
@@ -406,7 +406,7 @@ Recent changes (newest first):
         db.memories.create_collection("plain", "no collector")
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
-        assert "extraction prompt: none" in result.message
+        assert "steps: none" in result.message
         # notify is opt-in: a collection created without it defaults to silent.
         assert "notify: False" in result.message
 

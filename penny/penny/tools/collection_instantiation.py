@@ -81,7 +81,7 @@ _AMBIGUOUS_TAIL = (
 
 _NO_SKILL_FOUND = (
     "I don't know how to \"{query}\" yet — there's no skill for it, so there's nothing to "
-    "instantiate. No schedule can be set up before the routine is learned. Two cases:\n"
+    "instantiate. No schedule can be set up before the skill is learned. Two cases:\n"
     "a. The user already told you what one round needs — where to look, what to pull "
     "out, what to keep — then DO IT NOW, in this turn: browse, extract just the "
     "ONE value they want "
@@ -90,10 +90,10 @@ _NO_SKILL_FOUND = (
     "collection_write what you actually found — storage is created for you if it "
     "doesn't exist.\n"
     "b. They haven't — reply to the user now, no more tool calls this turn: tell them "
-    "you'll learn it from one complete pass, and ask for the whole routine in ONE "
+    "you'll learn it from one complete pass, and ask for the whole thing in ONE "
     "message (where to look, what to pull out, what to keep), modelling the example "
     "from what they already said. When it arrives, run case a.\n"
-    "Either way the routine is learned automatically as a skill from that round — a "
+    "Either way what you demonstrate is learned automatically as a skill from that round — a "
     "learned notice will tell you the moment it exists; then attach it and set any "
     "schedule or notify they asked for in ONE call: collection_set(name=<the "
     "collection>, skill=<its name>, schedule=..., notify=...)."
@@ -712,7 +712,7 @@ def _instantiation_echo(
         _schedule_line(row),
         f"  notify: {row.notify}",
         _expires_line(row, timezone_name),
-        "  extraction_prompt: |",
+        "  steps: |",
         f"    {prompt}",
     ]
     return "\n".join(lines)
@@ -903,9 +903,9 @@ _INERT_ECHO = (
     "  status: inert (no skill attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until it has a "
     "skill. Next: run one round into it — read the source, then collection_write what "
-    "you actually find into '{name}'; the routine is learned automatically as a skill "
-    "from that round. If you don't have the routine yet, reply and ask the user for it "
-    "in one message — don't guess."
+    "you actually find into '{name}'; what you demonstrate is learned automatically as a "
+    "skill from that round. If you haven't demonstrated it yet, reply and ask the user "
+    "for it in one message — don't guess."
 )
 
 

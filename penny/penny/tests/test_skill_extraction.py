@@ -1904,14 +1904,14 @@ def test_skill_learned_narration_frame_renders_generic_name_shape_and_demonstrat
         "Reply to the user now. FIRST answer what they actually asked: report the "
         "outcome of this round — the value you found and where you stored it — since "
         "this reply is the only one they receive. THEN tell them, in your own words, "
-        "that you've learned this routine: name it "
+        "that you've learned this skill: name it "
         "by what it does generally (not just this one instance), say plainly what it "
         "does, and name what you'd need from them to run it again. Give them the steps "
         "too — one short line, in everyday words rather than the tool names above, in "
         "that same order, every step it captured and no step it didn't — because they "
-        "are the only one who knows what this routine was for, so a step that doesn't "
+        "are the only one who knows what this skill was for, so a step that doesn't "
         "belong is a step only they can spot. If one is wrong, they can walk you "
-        "through the routine again and you'll learn it fresh. Then offer to set it "
+        "through the skill again and you'll learn it fresh. Then offer to set it "
         "running on a schedule if they'd like."
     )
     # The leak #1799 recorded — `browse(queries=[{url}])` read aloud to the user — still
