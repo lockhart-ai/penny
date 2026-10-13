@@ -255,7 +255,7 @@ def _interface_parameters(
 
     The framer owns the interface, so its parameters ARE the skill's: minted from the
     ask, they name pieces of the user's own request rather than tool arguments, and
-    they carry the one-line what-to-supply the ambient ``needs:`` row renders.
+    they carry the one-line what-to-supply the ambient ``parameters:`` row renders.
 
     Each one also carries the VALUE this round demonstrated it with, which is what
     closes the interim this function used to declare (#1907): the framer and the

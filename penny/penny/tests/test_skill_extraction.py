@@ -970,11 +970,11 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     )
 
     # The BRIEF render (#1804) — the same skill as the ambient section and the
-    # narration frame see it.  The framed parameter is what makes the needs tail say
-    # something a user could act on, which is what instantiation reads.
+    # narration frame see it.  The framed parameter is what makes the parameters tail
+    # say something a user could act on, which is what instantiation reads.
     assert render_skill_brief(result.skill) == (
         "price-watcher — keep a listing's current price up to date "
-        "(needs: listing_url — the listing whose price to read)"
+        "(parameters: listing_url — the listing whose price to read)"
     )
 
     # And job identity is decidable again (#1775 tier 1): the same skill bound to the
@@ -1897,7 +1897,7 @@ def test_skill_learned_narration_frame_renders_generic_name_shape_and_demonstrat
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"
         "watch-a-listing-price — Watch a listing page's price and record it. "
-        "(needs: url)\n\n"
+        "(parameters: url)\n\n"
         "The steps it will run each time, in order: `browse` → `collection_write` "
         "2 entries\n\n"
         "You demonstrated it on: watch the aurora deck 2 price and remember it\n\n"
@@ -1923,10 +1923,10 @@ def test_skill_learned_narration_frame_renders_generic_name_shape_and_demonstrat
 
 def test_skill_brief_render_omits_the_needs_tail_when_a_routine_needs_nothing():
     """A skill is an ARBITRARY tool sequence (#1783), so the brief render must hold
-    at both extremes: a routine with no parameters carries no ``(needs: …)`` tail at
-    all — the line reads as a plain ``name — what it's for``, not an empty "needs:
-    none" a reader has to parse before ignoring — and step count never shows,
-    however many tools the routine spans."""
+    at both extremes: a routine with no parameters carries no ``(parameters: …)``
+    tail at all — the line reads as a plain ``name — what it's for``, not an empty
+    "parameters: none" a reader has to parse before ignoring — and step count never
+    shows, however many tools the routine spans."""
     skill = Skill(
         name="tidy-the-receipts-folder",
         steps=_WATCH_STEPS,

@@ -374,7 +374,7 @@ _FRAME_DESCRIPTION_LINE = LineSpec(
 # placeholder line: the name declares ``FieldShape.NAME`` because it IS the binding key
 # at instantiation (``params={<name>: …}``), so a "name" carrying its own description is
 # a malformed line rather than a 60-character key; the description is REQUIRED because
-# it is what the routine's `needs:` row renders — a parameter nobody can be told what to
+# it is what the routine's `parameters:` row renders — a parameter nobody can be told what to
 # supply for is not an interface.
 _PARAMETER_LINE = LineSpec(
     tag=PARAMETER_TAG,

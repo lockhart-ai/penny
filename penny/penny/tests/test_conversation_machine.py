@@ -359,7 +359,7 @@ def test_render_parked_learn_with_candidates_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
@@ -391,7 +391,7 @@ def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: full skill
     metadata in Known skills, and the apply transition joining the list with
     its coverage condition + the SKILL: directive.  A parameterless candidate
-    renders without the needs tail, byte-identical.
+    renders without the parameters tail, byte-identical.
 
     Both skill-gated conditions are keyed to STARTING a task (#1927, code-owner ruling),
     and both carry the same boundary word for word: changing how something already set up
@@ -435,7 +435,7 @@ def test_render_idle_with_candidates_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
@@ -510,7 +510,7 @@ def test_render_standing_jobs_section_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         '- "watch-a-listing-price-for-changes-harborkayak-example-rentals" — runs "watch '
@@ -596,7 +596,7 @@ def test_render_parked_request_slice_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
@@ -693,7 +693,7 @@ def test_a_round_with_no_binding_renders_no_waiting_section():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
