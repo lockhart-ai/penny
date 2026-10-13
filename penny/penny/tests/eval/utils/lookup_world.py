@@ -315,7 +315,7 @@ LIME_ENTRIES = (
     "Grilled corn salad — corn, lime, cilantro, 15 min.",
     "Key lime bars — graham crust, lime curd, 1 hr.",
 )
-LIME_WORDS = ("cilantro", "bars")
+LIME_WORDS = ("corn", "bars")
 _FILLER_DISHES = (
     "Roast chicken",
     "Baked salmon",
