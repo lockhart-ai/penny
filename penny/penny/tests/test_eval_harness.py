@@ -4152,13 +4152,13 @@ def test_labelling_input_renders_the_routine_and_maps_spots_home() -> None:
     )
 
     assert content == (
-        "Conversation that led to the construction of this routine "
+        "Conversation that led to the construction of this skill "
         "(the LAST user turn is the one that demonstrated it):\n"
         "user: can you keep an eye on the aurora deck 2 price for me?\n"
         "penny: sure — walk me through it once? what should i read and what should i save?\n"
         "user: read the aurora deck 2 listing, find the current price, and remember it\n"
         "\n"
-        "Routine steps:\n"
+        "The skill's steps:\n"
         "1. browse(queries=[{queries}], extract={extract})\n"
         "2. collection_write(memory={memory}, entries=["
         "{'key': {queries}, 'content': the value from step 1}, "

@@ -699,10 +699,10 @@ def build_naming_content(
             for direction, content in turns
         )
         parts.append(
-            "Conversation that led to the construction of this routine "
+            "Conversation that led to the construction of this skill "
             f"(the LAST user turn is the one that demonstrated it):\n{rendered}"
         )
-    parts.append(f"Routine steps:\n{render_skill(steps)}")
+    parts.append(f"The skill's steps:\n{render_skill(steps)}")
     placeholder_lines = _placeholder_lines(steps, parameters)
     if placeholder_lines:
         parts.append(
