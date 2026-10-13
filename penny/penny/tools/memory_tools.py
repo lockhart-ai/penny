@@ -338,7 +338,8 @@ def _key_did_you_mean(memory: Memory, key: str) -> str:
     or ``""`` when no existing key in the collection is close (the message then
     stays byte-identical to before — no empty artifact).
 
-    The tools that hit a key miss (``collection_write`` / ``collection_delete_entry``)
+    The tools that hit a key miss (``collection_get`` / ``collection_write`` /
+    ``collection_delete_entry``)
     carry no embedding client, so this is the string (typo) leg: a stdlib
     ``difflib`` close-match over the collection's OWN keys, gated on the same
     conservative ``DID_YOU_MEAN_STRING_CUTOFF`` the name suggestion uses.  Same
@@ -1220,8 +1221,10 @@ class CollectionGetTool(MemoryTool):
             rejection = _bracket_key_rejection(memory, args.memory, args.key)
             if rejection is not None:
                 return rejection
+            did_you_mean = _key_did_you_mean(memory, args.key)
             return ToolResult(
-                message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
+                message=f"Key '{args.key}' not found in '{args.memory}'{did_you_mean or '.'} "
+                f"List the available "
                 f"keys with collection_keys('{args.memory}'), or search by meaning with "
                 f"find(query=<what you're looking for>, memory='{args.memory}'). "
                 f"If it exists under a different key, write the new content there: "

@@ -3340,6 +3340,12 @@ class TestEmbedFailureRefusesWrite:
         assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
         assert "not found" in missing.message
+        # A key one typo away from a stored one is named in the miss, so the retry is a copy.
+        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+            memory="likes", entries=[{"key": "sea kayaking", "content": "weekends"}]
+        )
+        near = await CollectionGetTool(db).execute(memory="likes", key="sea kayakng")
+        assert "did you mean key 'sea kayaking'?" in near.message
         # The proven-win read guidance (collection_keys / find by meaning), AND the
         # rejection now closes the residual write-vs-update decision: once the model
         # finds the entry under a different key it must UPDATE that entry, not
