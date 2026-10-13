@@ -70,6 +70,17 @@ EMBEDDING_ENCODING_FORMAT = "float"
 # Fallback when an error response carries no content-type header.
 _UNKNOWN_CONTENT_TYPE = "unknown"
 
+# Joins a provider's tool-call id to the position of a call split out of it.
+_SPLIT_CALL_ID_SEPARATOR = "_"
+
+# The fields of a dumped completion that hold its tool calls.
+_CHOICES_FIELD = "choices"
+_MESSAGE_FIELD = "message"
+_TOOL_CALLS_FIELD = "tool_calls"
+_FUNCTION_FIELD = "function"
+_ARGUMENTS_FIELD = "arguments"
+_ID_FIELD = "id"
+
 
 def _summarize_llm_error(error: Exception) -> str:
     """Summarize an LLM API error for logging without dumping the raw body.
@@ -595,7 +606,7 @@ class LlmClient:
 
         tool_calls = None
         if message.tool_calls:
-            tool_calls = [self._parse_tool_call(tc) for tc in message.tool_calls]
+            tool_calls = [call for tc in message.tool_calls for call in self._parse_tool_calls(tc)]
 
         # Reasoning fields are non-standard extensions (Ollama uses
         # ``reasoning_content``, newer OpenAI ``reasoning``). They land in
@@ -616,27 +627,34 @@ class LlmClient:
         )
 
     @staticmethod
-    def _parse_tool_call(tool_call: openai.types.chat.ChatCompletionMessageToolCall) -> LlmToolCall:
-        """Parse a single OpenAI tool call, deserializing JSON arguments."""
-        arguments = {}
-        if tool_call.function.arguments:
-            logger.debug("Tool call raw arguments: %.500s", tool_call.function.arguments)
-            try:
-                arguments = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                logger.warning(
-                    "Malformed tool call arguments, extracting via regex: %s",
-                    tool_call.function.arguments[:200],
-                )
-                arguments = LlmClient._extract_malformed_arguments(tool_call.function.arguments)
+    def _parse_tool_calls(
+        tool_call: openai.types.chat.ChatCompletionMessageToolCall,
+    ) -> list[LlmToolCall]:
+        """The calls ONE OpenAI tool call carries — see ``_split_parallel_call``."""
+        name = tool_call.function.name
+        calls = _split_parallel_call(tool_call.id, tool_call.function.arguments)
+        if len(calls) > 1:
+            logger.warning(
+                "Tool call %s to %s carried %d argument objects — dispatching each as its own call",
+                tool_call.id,
+                name,
+                len(calls),
+            )
+        return [LlmClient._parse_tool_call(call_id, name, raw) for call_id, raw in calls]
 
-        return LlmToolCall(
-            id=tool_call.id,
-            function=LlmToolCallFunction(
-                name=tool_call.function.name,
-                arguments=arguments,
-            ),
-        )
+    @staticmethod
+    def _parse_tool_call(call_id: str, name: str, raw: str) -> LlmToolCall:
+        """Parse a single tool call, deserializing JSON arguments."""
+        arguments = {}
+        if raw:
+            logger.debug("Tool call raw arguments: %.500s", raw)
+            try:
+                arguments = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Malformed tool call arguments, extracting via regex: %s", raw[:200])
+                arguments = LlmClient._extract_malformed_arguments(raw)
+
+        return LlmToolCall(id=call_id, function=LlmToolCallFunction(name=name, arguments=arguments))
 
     # Regex to extract quoted strings from a queries array (browse tool)
     _QUERY_PATTERN = re.compile(r'"queries"\s*:\s*\[([^\]]*)', re.DOTALL)
@@ -714,7 +732,7 @@ class LlmClient:
         self.db.messages.log_prompt(
             model=self.model,
             messages=messages_snapshot,
-            response=raw.model_dump(),
+            response=_dispatched_response(raw.model_dump()),
             tools=tools,
             thinking=thinking,
             duration_ms=duration_ms,
@@ -723,6 +741,90 @@ class LlmClient:
             run_id=run_id,
             run_target=run_target,
         )
+
+
+def _split_parallel_call(call_id: str, arguments: str | None) -> list[tuple[str, str]]:
+    """The calls ONE provider tool call carries, as ``(id, arguments)`` pairs.
+
+    A provider can return parallel calls to one tool as a SINGLE call whose
+    arguments are several JSON objects back to back (``{…}{…}``). That string is
+    not one JSON value, so read whole it either reached the tool as no arguments
+    at all or was salvaged by a regex that paired a key from one object with the
+    content of the next — a write the model never made. Each complete leading
+    object is its own call; whatever follows the last one is a call too, so a
+    malformed tail is salvaged, or refused, on its own text alone.
+
+    One object — or arguments that open with no complete object — is one call,
+    returned untouched. The first call keeps the provider's id and each later one
+    takes it with its position appended, so every tool result still answers
+    exactly one call.
+    """
+    raw = arguments or ""
+    pieces = _argument_objects(raw)
+    if len(pieces) < 2:
+        return [(call_id, raw)]
+    return [
+        (call_id if position == 1 else f"{call_id}{_SPLIT_CALL_ID_SEPARATOR}{position}", piece)
+        for position, piece in enumerate(pieces, start=1)
+    ]
+
+
+def _argument_objects(raw: str) -> list[str]:
+    """Each complete JSON object opening ``raw``, in order, then any text left over."""
+    decoder = json.JSONDecoder()
+    pieces: list[str] = []
+    start = _after_whitespace(raw, 0)
+    while start < len(raw):
+        try:
+            value, end = decoder.raw_decode(raw, start)
+        except json.JSONDecodeError:
+            break
+        if not isinstance(value, dict):
+            break
+        pieces.append(raw[start:end])
+        start = _after_whitespace(raw, end)
+    if pieces and start < len(raw):
+        pieces.append(raw[start:])
+    return pieces
+
+
+def _after_whitespace(raw: str, position: int) -> int:
+    """The index of the first non-whitespace character at or after ``position``."""
+    while position < len(raw) and raw[position].isspace():
+        position += 1
+    return position
+
+
+def _dispatched_response(response: dict) -> dict:
+    """A dumped completion as the prompt log records it: the calls that were dispatched.
+
+    Every reader of a run — its rendered calls, the skill extractor, the eval
+    harness — takes a run's tool calls from this record and pairs them with the
+    tool results that follow, so a provider call that was dispatched as several
+    is recorded as those several, under the ids their results answer. A call
+    that was not split is recorded exactly as the provider sent it.
+    """
+    for choice in response.get(_CHOICES_FIELD) or []:
+        message = choice.get(_MESSAGE_FIELD) or {}
+        if message.get(_TOOL_CALLS_FIELD):
+            message[_TOOL_CALLS_FIELD] = [
+                dispatched
+                for call in message[_TOOL_CALLS_FIELD]
+                for dispatched in _dispatched_calls(call)
+            ]
+    return response
+
+
+def _dispatched_calls(call: dict) -> list[dict]:
+    """One dumped tool call as the call(s) it was dispatched as."""
+    function = call.get(_FUNCTION_FIELD) or {}
+    calls = _split_parallel_call(call.get(_ID_FIELD) or "", function.get(_ARGUMENTS_FIELD))
+    if len(calls) < 2:
+        return [call]
+    return [
+        {**call, _ID_FIELD: call_id, _FUNCTION_FIELD: {**function, _ARGUMENTS_FIELD: arguments}}
+        for call_id, arguments in calls
+    ]
 
 
 def _translate_vision_message(message: dict) -> dict:
