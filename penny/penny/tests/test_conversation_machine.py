@@ -169,7 +169,7 @@ def test_system_prompt_whole_render():
         "You are given:\n"
         "- The assistant's last message\n"
         "- The task being worked on (when there is one)\n"
-        "- Known skills — the assistant's existing routines ((none) when it has none)\n"
+        "- Known skills — the assistant's existing skills ((none) when it has none)\n"
         "- The user's newest message\n"
         "- Current state — where the conversation stands right now\n"
         "- Transitions — the states you may move to, each with the condition that "
@@ -225,7 +225,7 @@ def test_render_idle_slice_whole():
         "tasks that keep running on their own\n"
         "\n"
         "## Transitions\n"
-        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "- learn — the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
         "even if a known skill looks close — their steps are the new way to do it.\n"
@@ -359,7 +359,7 @@ def test_render_parked_learn_with_candidates_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
@@ -391,7 +391,7 @@ def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: full skill
     metadata in Known skills, and the apply transition joining the list with
     its coverage condition + the SKILL: directive.  A parameterless candidate
-    renders without the needs tail, byte-identical.
+    renders without the parameters tail, byte-identical.
 
     Both skill-gated conditions are keyed to STARTING a task (#1927, code-owner ruling),
     and both carry the same boundary word for word: changing how something already set up
@@ -435,7 +435,7 @@ def test_render_idle_with_candidates_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
@@ -461,7 +461,7 @@ def test_render_idle_with_candidates_whole():
         "something already set up behaves — its notifications, when it runs, what it "
         "covers — is not asking to start it. Add a second line naming that skill: "
         "SKILL: <its name, exactly as quoted in Known skills>\n"
-        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "- learn — the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
         "even if a known skill looks close — their steps are the new way to do it.\n"
@@ -510,12 +510,12 @@ def test_render_standing_jobs_section_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         '- "watch-a-listing-price-for-changes-harborkayak-example-rentals" — runs "watch '
-        'a listing price for changes" · notifications off · FREQ=DAILY;BYHOUR=8\n'
-        '- "a-container-the-user-built" — no routine attached · notifications off · no '
+        'a listing price for changes" · notify: off · FREQ=DAILY;BYHOUR=8\n'
+        '- "a-container-the-user-built" — no skill attached · notify: off · no '
         "schedule\n"
         "\n"
         "## The user's newest message\n"
@@ -539,7 +539,7 @@ def test_render_standing_jobs_section_whole():
         "something already set up behaves — its notifications, when it runs, what it "
         "covers — is not asking to start it. Add a second line naming that skill: "
         "SKILL: <its name, exactly as quoted in Known skills>\n"
-        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "- learn — the user is teaching a new skill: they say so ('let me teach you', "
         "'here's how', 'new job for you') and their message carries the steps — what to "
         "read, what to look for, what to remember. When they are teaching, choose learn "
         "even if a known skill looks close — their steps are the new way to do it.\n"
@@ -553,7 +553,7 @@ def test_render_standing_jobs_section_whole():
     # The notify clause the other way, and the empty world stated rather than absent.
     assert (
         StandingJob(name="j", skill_name="s", notify=True, schedule="FREQ=HOURLY").render()
-        == '- "j" — runs "s" · notifications on · FREQ=HOURLY'
+        == '- "j" — runs "s" · notify: on · FREQ=HOURLY'
     )
     assert "## Jobs already running\n(none)\n" in render_classifier_content(_IDLE_SNAPSHOT, _ASK)
 
@@ -596,7 +596,7 @@ def test_render_parked_request_slice_whole():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
@@ -693,7 +693,7 @@ def test_a_round_with_no_binding_renders_no_waiting_section():
         "\n"
         "## Known skills\n"
         '- "watch a listing price for changes" — checks a page and records the current '
-        "price (needs: url — the listing page to watch)\n"
+        "price (parameters: url — the listing page to watch)\n"
         "\n"
         "## Jobs already running\n"
         "(none)\n"
