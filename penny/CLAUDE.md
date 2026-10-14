@@ -371,7 +371,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **Browse micro-contexts (#1588 — bulk content never enters the main run context)**: `browse` takes an optional `extract` micro-instruction (`browse(queries, extract="pull out X")`). When set (the collector/script path; chat never sets it, so chat's browse is unchanged), the fetched page content goes into a FRESH single-shot `MicroContext` (`tools/micro_context.py`) — content + instruction, one model call, no tools — and only the small typed result returns to the main loop: the extracted value (byte-identical to the micro-context's return, never re-transcribed by the parent) plus the stored page's log and id (`log='browse-results' id=<id>`, the two arguments `log_get` takes; the clause names no tool, so it is true on a collector's scoped surface too), which is still stored whole in the browse-results log and retrievable by that id (`Memory.entry_by_id`). The micro-context's output contract is enumerated on BOTH sides of the interface (the enumerated-cases doctrine): the prompt names the two tagged forms (`EXTRACTED: <value>` / `NOT_PRESENT: <reason>`) and classification is a deterministic tag parse — a not-present apology can never be promoted to an extracted value; untagged output is re-drawn on the unchanged context for the whole budget, then an honest failure. **Where the boundary between the two tags falls is STATED (#1942)**: an instruction routinely names several things at once and a real page carries some of them, so the prompt says the state the content is in — content carrying SOME of what was asked for is an `EXTRACTED:` read that gives whatever it has for each thing and leaves out the rest, and `NOT_PRESENT:` is for content carrying NONE of it. Unstated, it was decided per draw: one draw over a page holding titles and links but no summaries answered NOT_PRESENT — losing the titles and links with it — while a later draw over the SAME content extracted. The rule is keyed to what the page holds and never to whether the instruction hedged ("summaries when present"), because what a page carries is not a property of how the ask was worded. `browse`'s own `extract` description states the same thing from the caller's side, replacing #1838's warning that an extra detail "makes the read come back empty" — true then, false now. Contract: `tests/eval/extractor/test_browse_extract_fields.py` (all-present control · partly-present on a link index · partly-present on a prose page · none-present honesty guard). Output is also screened by the same degeneracy / leaked-Harmony-envelope detectors as the agent-loop reroll guard (poison discarded + re-drawn on the unchanged context up to `DEGENERATE_REROLL_ATTEMPTS`). The outcome set is closed (`MicroExtractOutcome`: extracted / not-present / extraction-failed / poison-reroll-failed — not-present is a *successful read of an absent fact*, distinct from the extraction-failed escape), never a silent empty. A micro-context is structurally incapable of confabulating a stored value it has never seen. It is a ledger-visible model call — its own `agent_name="browse-extract"` / `prompt_type="browse_micro_context"` (`PennyConstants`) so run traces attribute it (run_target = the browse's author) — but it never inflates the parent run's context. **Per-page extraction in batches (#1682/#1941)**: a multi-query `extract` browse runs ONE micro-context PER successfully-fetched page (never one call over the concatenated pages), each result rendered UNDER that page's own `## browse …:` section header — so a multi-source digest keeps items attributed to their source, and a NOT_PRESENT page renders honestly in its own section without masking another page's extracted value. Each stored page-read carries its OWN `log='browse-results' id=<id>` in the failure/unavailable renders (a search section carries none). Read-failure signals (`## browse error:` sections) stay visible in place; a total-failure browse returns its error sections directly (no micro-context). **A SEARCH section is never extracted from, and a FAILED page extraction hands back the page's links (#2141)**: `_page_section` prepends `Prompt.SEARCH_RESULT_HEADER` to a search's trimmed links — an instruction addressed to the CHAT model telling it to pick a URL — and handing that to the extractor had it obey the instruction meant for the other reader, answering with a bare URL that violates the declared `EXTRACTED:`/`NOT_PRESENT:` shape three times over (one measured sample logged 13 violations; every one of fifteen logged between 1 and 39). So `_extract_batch` plans page reads ALONE and a search comes back verbatim, which is also what the header says it is: titles and links, to be picked from. The other half is the same defect's second door — the page body never enters the conversation, so a failure saying only that it failed left the chat model nothing to open, and it re-searched onto the same page until the pathology gate stopped it. `_links_clause` appends the page's own standalone markdown links (`_LINK_RE`, capped at `MAX_SEARCH_LINKS`) under `Links on the page:` to every failure render — `EXTRACTION_FAILED`, poison, and the no-model degradation — restoring the n≤1 path from a failure to the next call. NOT_PRESENT carries none: the page was read and the fact is absent, which is a finding rather than something to recover from. `success` therefore reads "did anything readable come back" (`_read_anything`), since a search-only extract browse now has no draw to speak for it. N batched pages → N attributed ledger rows. The run trace renders the step as `browse(queries=[…], extract='…')`. **The batch is drawn CONCURRENTLY (#1941)** — one `asyncio.gather` over the page batch, because the per-page contexts are independent by construction (a fresh single-shot context, its own document, its own ledger row, its own poison/reroll budget), so no draw reads anything the draw before it produced and running them one after another spent the whole batch's latency serially (~45-60s for three pages; a measured on-demand cycle spent ~2 minutes across six extracts). **Attribution is unaffected because the batch is PLANNED before it runs**: `_extract_batch` binds each page's render slot AND its own fetch handle in section order up front — the handle iterator is consumed sequentially there, so a search section (readable, never stored) and a read failure (no content section at all) cannot slide a page's handle onto its neighbour — and `_merge_extracted` writes each result back into its own slot, so sections render in page order whatever order the draws finish in. Purely a concurrency change: same calls, same renders, same per-draw reroll machinery (a poison draw re-rolls only ITS context). A draw that RAISES (a transport failure the client surfaces once its retries are spent) still ends the whole call with that error exactly as the sequential loop did — the batch is collected with `return_exceptions=True` and the EARLIEST failing page re-raised (`_drawn_pages`), because `asyncio.gather` does not cancel a raising child's siblings and they would otherwise keep spending the backend, and writing their own ledger rows, against a call that had already failed. The wall-clock win depends on the backend's parallelism (`OLLAMA_NUM_PARALLEL`) — a single-slot backend serializes the draws itself and the batch costs what it always did
 - **URL fallback**: If the model's final response doesn't contain any URL, the agent appends the first source URL
 - **Duplicate tool blocking**: Agent tracks called tools per run (a seen-calls cache) to prevent LLM tool-call loops. A byte-identical repeat of a still-cached call is blocked — but any successful MUTATING call (`ToolResult.mutated=True`) **clears the cache** (`_process_tool_calls`), because an identical call is only pointless against an UNCHANGED world and a mutation means the world changed (#1673). So a legitimate repeat RUNS in BOTH directions once a mutation intervenes: retry-after-remediation (a failed write retried after its collection was created — the failed write's own error told the model to create it first) and re-read-after-write (verifying the entry just written). Loop-safe by construction: a repeat with no mutation since its prior occurrence never clears the cache, so it stays blocked (a failing retry adds no mutation). When a repeat IS blocked, the rejection frame states the prior call's OUTCOME (`_duplicate_rejection_frame`) — succeeded → reuse its result; FAILED → the failure quoted + fix the precondition (never "use its result", which read as success and made the model narrate a write that never happened)
-- **Tool-result framing (tagged first-person narration)**: every tool result is wrapped by `Tool.format_result(name, arguments, result)` (applied once in `Agent._collect_tool_results`) into a **tagged first-person** header — a narration line + a retained `(<tool> result)` machine tag — then the body: `You used \`<tool>\` and here's the result: (<tool> result)\n<body>` on success, `You tried to use \`<tool>\` but it didn't work: (<tool> result)\n<body>` on failure. The narration is resolved by `Tool._resolve_narration` in priority order: an explicit `ToolResult.narration` frame wins, else the registry-dispatched `Tool.to_result_narration(cls, arguments, result)` — the *result* twin of `to_action_str` (the pre-call status string), branching on `result.success` — else the generic default for an unregistered tool. **`BrowseTool` overrides `to_result_narration` (#1480)**: one first-person line for the whole call summarising search-vs-read from the `queries` arg and the outcome (`You searched for "…"` / `You opened <url>` / on a total failure `… but couldn't read anything — no page was read, so there's nothing current to quote`, which states the CONSEQUENCE of the failure and not only the failure, since a run that says only what happened to the call leaves what follows from it to be worked out — measured, 3 of 5 replies to an all-sources-failed lookup volunteered an invented figure) — the per-page `## browse ...:` section headers stay in the body, so the batch is narrated once, not per section. The call `arguments` + the whole `ToolResult` are threaded from `_execute_single_tool` (which returns the `ToolResult`) → `_collect_tool_results`. **Framework-synthesised failures narrate their own frame (#1482).** The failures a tool can't report itself — tool-not-found (which has NO registered class to dispatch from), timeout, uncaught exception, and arg-validation — set `ToolResult.narration` to a specific first-person frame (`FRAMEWORK_NARRATION_NOT_FOUND` "…but there's no such tool.", `_TIMEOUT` "…but it timed out.", `_EXCEPTION` "…but it errored: `<e>`.", `_INVALID_ARGS` "…but the arguments were wrong:") so `format_result` leads with it instead of the generic line and doesn't double-frame the no-class case; the actionable **remedy** (the #1414 house template's diagnosis + how-to-fix tail — did-you-mean + available list, timeout guidance, "try a different approach", the per-field reasons) stays verbatim in `ToolResult.message`. Remaining per-tool narration overrides land in #1481 (memory/lifecycle). **The tag is load-bearing, not decorative.** The OpenAI `role: "tool"` + `tool_call_id` envelope is the standard "this is a tool result" signal, but gpt-oss:20b doesn't reliably honour it when the body reads like prose — it can mistake fetched data (e.g. a returned user message that itself reads like an instruction) for a fresh directive (#1332's #1 failure class). The terse `Result of your \`<tool>\` call:` header used to carry that disambiguation; a live-model probe showed pure-prose narration with no tag RAISED the call-as-text bail rate (5/6 vs. 3/6 tagged), so the `(<tool> result)` tag stays even as the header reads naturally (see `docs/tool-narration-plan.md`). Read tools additionally lead their body with a `N entries from \`<source>\` (ordering):` header via `format_entries` (public since #1914 — the collector's composed prompt renders the bound collection's current entries through the same function, so an ambiently-read key and a tool-result key are one form). Framing happens after `record.failed` is computed (on the raw result) so failure detection is unaffected. The three tool-*shaped* injections that don't flow through `_collect_tool_results` carry the same tagged envelope at their own sites — but with **bespoke, context-specific narration** (#1485), supplied at the call site (they aren't real registered tool calls, so nothing to registry-dispatch) and composed by the shared `Agent._frame_injected_result(tool_name, narration, body)` helper (`{narration} (<tool> result)\n{body}`, single-sourcing the `RESULT_TAG` so the machine-tag invariant holds uniformly). The narrations live on `Prompt` beside the bodies they frame: the synthetic page-context browse pair (`ChatAgent._inject_page_context`, standard `tool_call_id` envelope via `ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID`) → `PAGE_CONTEXT_NARRATION` ("You looked at the page the user is currently viewing…") — deliberately NOT BrowseTool's `You opened <url>` (#1480): a page-context injection is the page the user is viewing, not a browse Penny ran; the duplicate-tool-call rejection (`Agent._dedup_tool_calls`) → an OUTCOME-FIRST narration + body pair selected from the prior matching `ToolCallRecord.failed` (#1673): `DUPLICATE_CALL_NARRATION_FAILED` + `DUPLICATE_CALL_REJECTION_FAILED` (leads with the failure, quotes its first line, prescribes fixing the precondition — never "use its result") vs `DUPLICATE_CALL_NARRATION_SUCCEEDED` + `DUPLICATE_CALL_REJECTION_SUCCEEDED` (the reuse-the-result guidance); a successful mutating call clears the seen-calls cache (`_process_tool_calls`) so a legitimate retry-after-remediation or re-read-after-write runs, loop-safe; the rejected-tool-calls path (`Agent._append_rejected_tool_calls`, e.g. a premature first-move `done()`) → `REJECTED_CALL_NARRATION` + the preserved rejection body. Each frames — never replaces — the actionable rejection/page body the model must still read. Since bespoke narration is now supplied per site, these sites no longer construct a throwaway `ToolResult` (its only consumer was `format_result`'s generic success/failure branch)
+- **Tool-result framing (tagged first-person narration)**: every tool result is wrapped by `Tool.format_result(name, arguments, result)` (applied once in `Agent._collect_tool_results`) into a **tagged first-person** header — a narration line + a retained `(<tool> result)` machine tag — then the body: `You used \`<tool>\` and here's the result: (<tool> result)\n<body>` on success, `You tried to use \`<tool>\` but it didn't work: (<tool> result)\n<body>` on failure. The narration is resolved by `Tool._resolve_narration` in priority order: an explicit `ToolResult.narration` frame wins, else the registry-dispatched `Tool.to_result_narration(cls, arguments, result)` — the *result* twin of `to_action_str` (the pre-call status string), branching on `result.success` — else the generic default for an unregistered tool. **`BrowseTool` overrides `to_result_narration` (#1480)**: one first-person line for the whole call summarising search-vs-read from the `queries` arg and the outcome (`You searched for "…"` / `You opened <url>` / on a total failure `… but couldn't read anything — no page was read, so there's nothing current to quote`, which states the CONSEQUENCE of the failure and not only the failure, since a run that says only what happened to the call leaves what follows from it to be worked out — measured, 3 of 5 replies to an all-sources-failed lookup volunteered an invented figure) — the per-page `## browse ...:` section headers stay in the body, so the batch is narrated once, not per section. The call `arguments` + the whole `ToolResult` are threaded from `_execute_single_tool` (which returns the `ToolResult`) → `_collect_tool_results`. **Framework-synthesised failures narrate their own frame (#1482).** The failures a tool can't report itself — tool-not-found (which has NO registered class to dispatch from), timeout, uncaught exception, and arg-validation — set `ToolResult.narration` to a specific first-person frame (`FRAMEWORK_NARRATION_NOT_FOUND` "…but there's no such tool.", `_TIMEOUT` "…but it timed out.", `_EXCEPTION` "…but it errored: `<e>`.", `_INVALID_ARGS` "…but the arguments were wrong:") so `format_result` leads with it instead of the generic line and doesn't double-frame the no-class case; the actionable **remedy** (the #1414 house template's diagnosis + how-to-fix tail — did-you-mean + available list, timeout guidance, "try a different approach", the per-field reasons) stays verbatim in `ToolResult.message`. Remaining per-tool narration overrides land in #1481 (memory/lifecycle). **The tag is load-bearing, not decorative.** The OpenAI `role: "tool"` + `tool_call_id` envelope is the standard "this is a tool result" signal, but gpt-oss:20b doesn't reliably honour it when the body reads like prose — it can mistake fetched data (e.g. a returned user message that itself reads like an instruction) for a fresh directive (#1332's #1 failure class). The terse `Result of your \`<tool>\` call:` header used to carry that disambiguation; a live-model probe showed pure-prose narration with no tag RAISED the call-as-text bail rate (5/6 vs. 3/6 tagged), so the `(<tool> result)` tag stays even as the header reads naturally (see `docs/archive/tool-narration-plan.md`). Read tools additionally lead their body with a `N entries from \`<source>\` (ordering):` header via `format_entries` (public since #1914 — the collector's composed prompt renders the bound collection's current entries through the same function, so an ambiently-read key and a tool-result key are one form). Framing happens after `record.failed` is computed (on the raw result) so failure detection is unaffected. The three tool-*shaped* injections that don't flow through `_collect_tool_results` carry the same tagged envelope at their own sites — but with **bespoke, context-specific narration** (#1485), supplied at the call site (they aren't real registered tool calls, so nothing to registry-dispatch) and composed by the shared `Agent._frame_injected_result(tool_name, narration, body)` helper (`{narration} (<tool> result)\n{body}`, single-sourcing the `RESULT_TAG` so the machine-tag invariant holds uniformly). The narrations live on `Prompt` beside the bodies they frame: the synthetic page-context browse pair (`ChatAgent._inject_page_context`, standard `tool_call_id` envelope via `ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID`) → `PAGE_CONTEXT_NARRATION` ("You looked at the page the user is currently viewing…") — deliberately NOT BrowseTool's `You opened <url>` (#1480): a page-context injection is the page the user is viewing, not a browse Penny ran; the duplicate-tool-call rejection (`Agent._dedup_tool_calls`) → an OUTCOME-FIRST narration + body pair selected from the prior matching `ToolCallRecord.failed` (#1673): `DUPLICATE_CALL_NARRATION_FAILED` + `DUPLICATE_CALL_REJECTION_FAILED` (leads with the failure, quotes its first line, prescribes fixing the precondition — never "use its result") vs `DUPLICATE_CALL_NARRATION_SUCCEEDED` + `DUPLICATE_CALL_REJECTION_SUCCEEDED` (the reuse-the-result guidance); a successful mutating call clears the seen-calls cache (`_process_tool_calls`) so a legitimate retry-after-remediation or re-read-after-write runs, loop-safe; the rejected-tool-calls path (`Agent._append_rejected_tool_calls`, e.g. a premature first-move `done()`) → `REJECTED_CALL_NARRATION` + the preserved rejection body. Each frames — never replaces — the actionable rejection/page body the model must still read. Since bespoke narration is now supplied per site, these sites no longer construct a throwaway `ToolResult` (its only consumer was `format_result`'s generic success/failure branch)
 - **Tool argument validation (Django-form pattern)**: every `Tool` declares an `args_model` — the Pydantic model that validates its call arguments — and a base `Tool.run(**kwargs)` constructs/validates it *before* `execute` is ever called (the `ToolExecutor` drives `run`, not `execute`). A `ValidationError` becomes an **actionable error tool response** (`success=False`, naming each bad field with the type+description hint from `parameters` plus any custom-validator message), so `execute` only ever sees valid args and concerns itself with the work + runtime/availability decisions. Validity criteria — required fields, types, and content rules (e.g. `SendMessageArgs`' half-formed-body check, which the notify path now validates through) — live as field/model validators **on the model**, never ad-hoc inside `execute`. Argless tools default to `NoArgs`. Non-existent tools still return a clear tool-not-found error from the executor. This is the single, uniform pre-execute gate; the premature-`done` guard is the one exception that can't be arg-validation (it depends on run state, so it lives in the loop — see *A coherent but WRONG tool call still gets an error tool response*)
 - **Model-I/O validation (one behaviour taxonomy)**: where tool-arg validation gates a tool call's *static* arguments, this gates the model's *dynamic* I/O — the response (text + tool calls). The keystone is `penny/validation/conditions.py`: **one catalog** (`BehaviorCondition` in `CATALOG`, keyed by `ConditionKey`) of every condition we classify Penny's behaviour through, so the user, Penny (her ambient view of her own runs in the self-state header), and a maintainer share a single coherent view rather than a check that means one thing in the loop and another in the run log. Each condition declares *where it applies* as data — `live` (caught during the run, by one of three mechanisms: the loop's **discard-and-reroll guard**, where the draw never enters the run at all; a `ResponseValidator` disposition, which repairs a usable draw, re-draws it once, or answers it; or the outbound-message content gate), `run_flag` (surfaces post-hoc as a `⚠` line on the run record), `collector_only`. A condition can be both: `no_work_done` is refused live as a premature `done()` **and** flagged post-hoc as a bail; `half_formed_send` is gated live at the notify draw's acceptance rule + the `SendMessageArgs` validator **and** flagged post-hoc. This catalog supersedes the old split between `ValidationReason` (live) and `RunHealthFlag` (post-hoc); `RunOutcome` (the run's terminal state) stays a separate concern. The live machinery is in `penny/validation/outcomes.py`: a `ResponseValidator` is `check(response, ctx: LoopContext) -> ValidationOutcome`, pure (reads, returns a disposition, mutates nothing); the disposition union is `Proceed` / `Retry(condition)` / `Repair(response)` / `RejectToolCall(message)` / `NudgeContinue(message)` / `RedrawWithRecord(record)` / `Stop(response)` (a typed return, not an exception — the loop reshapes into control flow immediately). **`Retry` re-draws from the unchanged conversation (#2160)**: it records its condition, discards the draft and re-calls on the same messages, so a retry re-samples the state the draft was drawn from — the same re-roll `_invoke_nondegenerate` does for unusable draws, one layer up. Nothing is written into the conversation, neither the draft nor a note about it. For the three conditions the chain retries — markup, a refusal, an ungrounded URL — a fresh draw usually does not repeat them; when it does, the second draw proceeds because its condition is spent. On exhaustion the call returns the last draw, tool calls stripped when none were offered. `run_validators` runs an agent's chain in order (repairs thread through; first non-proceed short-circuits). Validators are composed per-agent as class attributes (`Agent.response_validators` — chat's and the base's; `BackgroundAgent.run_shape_validators` — the premature-`done` guard; `ChatAgent.run_shape_validators` — the run-end skill narration) that read like a table of contents — **a new guard is a new validator in the list, not a new branch in the loop.** Beside them each shape declares its `invalid_draw_conditions` (#1839), the family the loop rejects outright rather than dispositions over; a collector composes no response-shape chain at all, since every call-less draw of its shape is discarded upstream. This replaced base.py's inline `_check_response` if-ladder + the `handle_text_step`/`handle_premature_terminator` guards. The post-hoc `classify_run`/`render_run_record` (`database/memory/objects.py`) source their `⚠` marker/detail strings from the same catalog, so what we enforce live and what we flag after a run are one definition — the strings are **frozen** (the addon TS type mirrors them). **Import-cycle gotcha**: `validation/__init__.py` re-exports only the database-free leaves (`conditions`, `outcomes`); it must NOT import `response_validators` (which pulls `tools.memory_tools` → `penny.database`), because the database layer imports the `conditions` leaf and importing any `penny.validation` submodule runs `__init__` first — eagerly importing `response_validators` there closes a cycle through `penny.database`. Import validators directly from `penny.validation.response_validators`. Design: `docs/model-io-validation.md`
 - **Actionable tool failures**: Every tool failure (validation error, rejected/degenerate input, refused operation, missing key, external error) MUST return a `ToolResult` whose message tells the model two things: (1) *what went wrong* — the specific reason, naming the offending field/value — and (2) *how to correct it* — the concrete next action (provide a non-empty value, supply the full replacement text, call the right alternative tool, etc.). The tool result is the model's only feedback channel: a bare "rejected" or a silent no-op gives it nothing to recover from, so it retries the same mistake or gives up. A diagnosis without a remedy is a half-failure. Examples: `check_extraction_prompt` quotes the length and the minimum and points at the prompt shape; `collection_write`'s divergent-value rejection names the reason *and* the exact `collection_write` call that lands the new value. This is a hard rule, enforced in review — see the error-handling section of `docs/pr-review-guide.md`
@@ -399,7 +399,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **Pydantic everywhere**: All external data validated with Pydantic models
 - **Table-to-bullets**: Markdown tables converted to bullet points in Python (saves model tokens vs. prompting "no tables")
 - **Normal casing**: All user-facing strings (status messages, error messages, acknowledgments) use standard sentence casing — not all lowercase
-- **Memory framework (Stages 1–5, 9, 10)**: A unified data primitive — *memory* — with two shapes (collection and log) and one access class `MemoryStore`. Collections dedup on write via a three-signal disjunction (key TCR, key cosine, content cosine — each with strict and relaxed thresholds in `PennyConstants`). Any strict hit, or any two relaxed hits, rejects the write. Logs append without dedup. Stage 2a added 21 model-facing memory tools (`memory_tools.py`). Stage 3 added `build_recall_block` (`recall.py`) — assembles ambient recall context for the chat agent's system prompt by dispatching each active memory by recall mode (`recent`/`relevant`/`all`); paired logs (`user-messages` + `penny-messages`) merge chronologically into a single Conversation section. **Polymorphic `Memory` objects + system-log facades**: the memory layer is a class per shape/backing (`penny/database/memory/`). `db.memory(name)` is the single dispatch — it returns a `Collection` or `Log` (both `memory_entry`-backed, the native store on the base) or a read-only facade, and every tool/recall/addon caller operates on that object polymorphically (wrong-shape ops refuse via base no-ops; nothing branches on a name or shape). `user-messages`/`penny-messages` are `MessageLogMemory` facades over `messagelog` (the object overrides the row primitives to read by direction, synthesizing `MemoryEntry`; a message has two authors — the user/incoming or Penny/outgoing; `append` refuses) and `collector-runs` is a `RunLog` facade over `promptlog` (renders each completed run as a record; `append` refuses) — no duplicated `memory_entry` rows, and the facade marker rows are seeded by migration so dispatch finds them. The cursor *read* logic lives on the `Log` base, uniform across backings; the reader's pending/commit cursor lifecycle stays in `LogReadTool`. `browse-results` is the one remaining real memory log (the browse tool writes it; it has no canonical table behind it). `messagelog.embedding` (for `read_similar` over messages) is filled by the startup backfill, which vectorizes any embedding-bearing table — nothing is copied between tables. Author is passed explicitly as a constructor argument or method parameter — write-capable tools take `author: str` at construction (`build_memory_tools(db, embedding_client, author)`), `BrowseTool(..., author=...)` is built per-agent with `author=self.name`, and `channel.send_response(..., author=...)` requires callers to pass it. No ambient/contextvar state. Embeddings are computed at write time (not lazily) so similarity reads work the moment a memory is reconfigured. `db.memories` replaces the per-domain stores that agents will be ported onto in subsequent stages. See `docs/task-framework-plan.md` (design) and `docs/memory-implementation-plan.md` (staged rollout)
+- **Memory framework (Stages 1–5, 9, 10)**: A unified data primitive — *memory* — with two shapes (collection and log) and one access class `MemoryStore`. Collections dedup on write via a three-signal disjunction (key TCR, key cosine, content cosine — each with strict and relaxed thresholds in `PennyConstants`). Any strict hit, or any two relaxed hits, rejects the write. Logs append without dedup. Stage 2a added 21 model-facing memory tools (`memory_tools.py`). Stage 3 added `build_recall_block` (`recall.py`) — assembles ambient recall context for the chat agent's system prompt by dispatching each active memory by recall mode (`recent`/`relevant`/`all`); paired logs (`user-messages` + `penny-messages`) merge chronologically into a single Conversation section. **Polymorphic `Memory` objects + system-log facades**: the memory layer is a class per shape/backing (`penny/database/memory/`). `db.memory(name)` is the single dispatch — it returns a `Collection` or `Log` (both `memory_entry`-backed, the native store on the base) or a read-only facade, and every tool/recall/addon caller operates on that object polymorphically (wrong-shape ops refuse via base no-ops; nothing branches on a name or shape). `user-messages`/`penny-messages` are `MessageLogMemory` facades over `messagelog` (the object overrides the row primitives to read by direction, synthesizing `MemoryEntry`; a message has two authors — the user/incoming or Penny/outgoing; `append` refuses) and `collector-runs` is a `RunLog` facade over `promptlog` (renders each completed run as a record; `append` refuses) — no duplicated `memory_entry` rows, and the facade marker rows are seeded by migration so dispatch finds them. The cursor *read* logic lives on the `Log` base, uniform across backings; the reader's pending/commit cursor lifecycle stays in `LogReadTool`. `browse-results` is the one remaining real memory log (the browse tool writes it; it has no canonical table behind it). `messagelog.embedding` (for `read_similar` over messages) is filled by the startup backfill, which vectorizes any embedding-bearing table — nothing is copied between tables. Author is passed explicitly as a constructor argument or method parameter — write-capable tools take `author: str` at construction (`build_memory_tools(db, embedding_client, author)`), `BrowseTool(..., author=...)` is built per-agent with `author=self.name`, and `channel.send_response(..., author=...)` requires callers to pass it. No ambient/contextvar state. Embeddings are computed at write time (not lazily) so similarity reads work the moment a memory is reconfigured. `db.memories` replaces the per-domain stores that agents will be ported onto in subsequent stages. See `docs/archive/task-framework-plan.md` (design) and `docs/archive/memory-implementation-plan.md` (staged rollout)
 
 ## Dependencies
 
@@ -419,106 +419,7 @@ File-based migration system in `database/migrations/` (currently 0001–0025):
 - Rebase-only policy: if two PRs create the same migration number, the second must rebase and renumber
 - Run standalone: `python -m penny.database.migrate [--test] [--validate] [db_path]`
 
-Notable migrations:
-- 0001: Initial schema (all core tables)
-- 0002: `thought.notified_at` column
-- 0003: Preference deduplication
-- 0004: Drop `entity` and `fact` tables (old knowledge system removed)
-- 0005: `preference.last_thought_at` column
-- 0006: `messagelog.thought_id` FK (links messages to notification thoughts)
-- 0007: `thought.preference_id` FK (links thoughts to seed preferences)
-- 0008: `preference.source` + `preference.mention_count` (mention threshold gating)
-- 0009: Drop `searchlog.extracted` column
-- 0010: Reset reaction `processed` state
-- 0011: Drop `preference.source_period_start/end` columns
-- 0012: Fix `is_reaction` flag on historical reaction rows
-- 0013: Reset conversation history watermarks
-- 0014: Add embedding columns (preference, knowledge, etc.)
-- 0015: `thought.title` column
-- 0016: `device` table (multi-device routing)
-- 0017: `thought.image_url` column
-- 0018: `thought.valence` column
-- 0019: `domain_permission` table (browser extension allowlist)
-- 0020: Rename `thought.image_url` → `thought.image`
-- 0021: `promptlog.agent_name` + `promptlog.run_id` columns
-- 0022: `promptlog.outcome` + `thought.run_id` columns
-- 0023: Add `knowledge` table, drop `conversationhistory` (replaced by knowledge + related messages)
-- 0024: Drop legacy `searchlog` table (never written to since browser-based search)
-- 0025: Add `memory`, `memory_entry`, `agent_cursor`, `media` tables (task/memory framework Stage 1)
-- 0026: Seed system log memories — `user-messages`, `penny-messages`, `browse-results` (Stage 9)
-- 0027: Backfill memory framework from existing tables — `messagelog` → user/penny logs, `preference` → likes/dislikes, `thought` → notified/unnotified-thoughts, `knowledge` → knowledge collection (Stage 10)
-- 0028: Disable ambient recall for `penny-messages` — duplicates the conversation turns array
-- 0029: Re-enable ambient recall for `penny-messages` — chat-turn duplication is now handled by the self-match exclusion (#1006) and short-anchor noise by the low-info filter, so historical Penny replies should surface again
-- 0030–0042: extraction-prompt fixes and incremental collector/collection tweaks (see individual files)
-- 0043: Seed the `skills` collection — workflow patterns (TRIGGER + STEPS) the chat agent follows via recall, plus a collector that extracts/refines/removes skills from chat over time
-- 0044: Split the single `recall` flag into two-stage recall — add `inclusion` (`always`/`relevant`/`never`, stage-1 routing) and `description_embedding` columns, derive inclusion from the old recall value (off→never, recent/all→always, relevant→relevant), collapse `recall=off`→`recent`, and force `skills`/`user-messages`/`penny-messages`/`user-profile`/`likes`/`dislikes`/`knowledge` to `inclusion=always`
-- 0045: Rewrite the seeded skills that taught the old single-flag model (`recall: "off"` for silent — now an invalid enum) to the inclusion/recall split; nulls their content embeddings so the startup backfill re-vectorizes
-- 0046: Add `title` and `embedding` columns to the `media` table (image side-channel: stores title+URL embedding for nearest-image egress matching)
-- 0047: Add composite `(run_id, timestamp)` index on `promptlog` (serves the addon's run-pagination GROUP BY + run-outcome lookups); drop the redundant single-column `run_id` index from 0021
-- 0048: Add composite `(agent_name, run_id, timestamp)` index on `promptlog` (serves the addon's per-agent prompt-log filter — without it the filtered GROUP BY full-scans and freezes the asyncio loop)
-- 0049: Partition collector read-cursors per collection — seed `(collection, log)` cursors from the old shared `(collector, log)` value, then drop the dead `collector`/`knowledge-extractor`/`preference-extractor` rows (companion to keying the cursor on the bound collection in `get_tools`)
-- 0050: Add `memory.intent` — the user's stated goal for a collection, set once at create (immutable by the agent's `collection_update` tool; editable only via the user/UI path). `collection_update` **accepts** an `intent` argument but does not apply it — it's serialized in the metadata the model reads, so the model naturally passes it back on an edit; rather than reject the whole call over the immutable field (which made the model give up mid-edit), the tool applies everything else and explains that `intent` was left unchanged
-- 0051: Add `promptlog_fts` FTS5 full-text index (over `response`+`thinking`) + sync triggers for the addon's prompt search — a leading-wildcard LIKE can't use a B-tree index
-- 0052: Rebuild `promptlog_fts` to drop the `messages` column for instances that applied the original 3-column 0051 (input scaffolding is shared across runs and made search match boilerplate)
-- 0053: Add `memory.base_interval_seconds` (snap-back cadence, backfilled from `collector_interval_seconds`) + `memory.consecutive_idle_runs` for collector auto-throttle
-- 0054: Replace `promptlog.run_success` (bool) with `run_outcome` (tri-state `RunOutcome`: failed | no_work | worked | cancelled) — backfilled best-effort (success→worked, failure→failed); the work/no-work split isn't recoverable for old rows
-- 0055: Seed the `quality` self-correcting collector (inclusion=never, 1h base interval) + its extraction_prompt — graduates the prototype so every instance gets it
-- 0056: Switch the quality collector to cursor-based log reads (so the auto-throttle can't widen its window past unread entries)
-- 0057: Unify `log_read_next`/`log_read_recent` into one caller-dispatched `log_read` across all seeded extraction_prompts; drop the notify collector's `penny-messages` read (structural dedup via `collection_move`); quality reviews the whole batch
-- 0058: Rework the quality prompt around run inspection — read the `collector-runs` index, `log_get` the suspicious runs for their full trace, judge behaviour-vs-intent; drop the `penny-messages` read (cursor drift); skip `❌` run failures as capacity, not drift
-- 0059: System-log facades (one migration for the refactor) — rename read tools in stored prompts (`read_latest(`→`collection_read_latest(`, `collection_metadata(`→`memory_metadata(`); rewrite the `quality` prompt to review runs via plain `log_read("collector-runs")` (a `promptlog` facade; no `log_get`/`penny-messages`) and `notify` to pick with `collection_read_random`; drop the dead `memory_entry` rows for `collector-runs`/`user-messages`/`penny-messages` (now facades over `promptlog`/`messagelog`; marker rows stay); add the `ix_promptlog_completed_runs` partial index for bounded run-index reads
-- 0061: Add the `send_queue` table — durable outbound message queue (`content`, `collection`, `created_at`, nullable `sent_at`) with a partial index on the pending tail (`WHERE sent_at IS NULL`). Backs `send_message`'s enqueue + the `SendQueueDrainer`
-- 0062: Add the `ix_promptlog_target_runs` partial index on `promptlog (run_target, timestamp) WHERE run_outcome IS NOT NULL` — the addon's per-collection collector-runs panel filters by `run_target`, which the `timestamp`-only 0059 index couldn't seek; a sparse collection scanned the whole completed-run history (multi-second freeze on memory click). The 0059 index stays for the unscoped `collector-runs` log
-- 0065: Add the `published` pub/sub flag to `memory` (opt-in, default 0) — a collection's new entries are a consumable stream a consumer drains via `read_published_latest`; orthogonal to `inclusion`/`recall`
-- 0066: Rewrite the seeded research/notify skills for the `published` flag — notify = set `published=true` (no `send_message` step in the producer body), flip = toggle the flag, scope = broaden the prompt; collapses the old notify/silent skill duplication
-- 0067: Seed the `notifier` consumer collection — drains the published stream (`read_published_latest` → ground → send), once-only by cursor; the prompt is the eval's validated `notifier-delivers-published` contract
-- 0068: Unify the thoughts pipeline onto pub/sub — collapse `unnotified-thoughts`/`notified-thoughts` into one published `thoughts` producer the notifier drains; move existing thoughts in, seed the notifier cursor to head (no backlog re-send), archive the old pair. The `collection_move` tool is removed with it
-- 0069: Reground the `skills` collector on the real collections — rewrite its `extraction_prompt` to read `collection_catalog` and reconcile skills against the collections that exist (distil the kind, fold generalizable recipe improvements into the matching skill, leave collection-specific quirks, never delete) instead of reading chat. Also cleans the skill set: scrub the chat-derived `author='skills'` one-offs (generic) + the orphan `Scheduled digest` seed, and rewrite the surviving seeded skills into the one clean shape (positive TRIGGER + numbered tool-call STEPS — dropping legacy `send_message` negatives and the redundant `[key]` self-title prefix). Touches only universal data (seeded skills by key + generic criteria), never deployment-specific chat-created entries — those the reconcile loop fixes at runtime. Adds the `collection_catalog` read tool + `PennyConstants.SYSTEM_COLLECTIONS` (built-in collectors the catalog hides)
-- 0071: Add `promptlog.tool_failures` (nullable INTEGER) — the per-run count of failed tool calls (`ToolCallRecord.failed`), stamped on the run's last prompt by `set_run_outcome`.  Persists the otherwise-lost failure signal so the run-health classifier reads it structurally instead of parsing tool-result text
-- 0072: Teach the `quality` collector the new run-health flags, conservatively — the shared run record now also carries `⚠ INCOMPLETE` / `⚠ TOOL FAILURES` / `⚠ HALF-FORMED SEND`, so the quality prompt is rewritten to act on `⚠ HALF-FORMED SEND` (tier 1: the collector sent the user junk; the fix composes the complete message before the one send) while explicitly IGNORING `⚠ INCOMPLETE` and `⚠ TOOL FAILURES` as capacity/transience (never a rewrite — avoids over-correcting healthy collectors).  Validated by eval contracts in `tests/eval/test_quality_correction.py` (a half-formed-send repair + two over-correction guards)
-- 0073: Switch the `quality` collector from applying `collection_update` to **suggesting** a fix via `send_message` for user approval (it had made destructive edits to a healthy collection); detection stays structural, the edit moves to the chat agent after the user OKs it
-- 0074: Delete `memory_entry` rows corrupted by a gpt-oss **degeneration collapse** — a run of `.`/`…`/`?` ("...??…?..") the model emits mid-generation on a large context, which before the loop guard could land in a stored entry.  A one-time *generic content-shape* cleanup (frozen copy of `is_degenerate_run`, applied in Python over each row); fresh installs match nothing.  Going forward the agent-loop reroll guard + the corpus write gate keep new poison out
-- 0076: Seed the "Mute or unmute notifications" skill — a TRIGGER + numbered STEPS recipe teaching the chat agent to dispatch a pause/resume request onto the `notifications_mute` / `notifications_unmute` tools (the retired `/mute` + `/unmute` commands).  Operate-the-system skill (`author='system'`, no source collection), so the skills reconcile loop leaves it alone.  Lifts the NL-dispatch reliability the `tests/eval/chat/idle/test_notifications.py` contract gates
-- 0077: Seed the schedule-dispatch skills — TRIGGER + numbered STEPS teaching the chat agent to route "every morning send me X" → `schedule_create`, "you can stop the morning summaries" → `schedule_delete` (by meaning), and "what's scheduled?" → `schedule_list`. Retires the `/schedule` + `/unschedule` commands onto the chat tool surface (epic #1445). Operate-the-system skills (no source collection), `author='system'`, idempotent
-- 0078: Seed the "Look up email" skill — TRIGGER + numbered STEPS teaching the chat agent to route email questions ("did I get an email from X?", "check my email for Y") onto `search_emails` → `read_emails` → answer (with `list_emails`/`list_folders`/`draft_email` when available), and to stay quiet on a casual grumble about email volume. Retires the `/email` + `/zoho` commands onto the chat tool surface (epic #1445). Operate-the-system skill, `author='system'`, idempotent. NL-dispatch contract: `tests/eval/chat/idle/test_email_dispatch.py`
-- 0079: Seed the likes/dislikes-dispatch skills — TRIGGER + numbered STEPS teaching the chat agent to route "I'm really into X" → `collection_write("likes"|"dislikes")`, "forget about X" → `collection_delete_entry` (matched by meaning, never index/exact text), and "what am I into?" → `collection_read_latest`. Retires the `/like` + `/unlike` + `/dislike` + `/undislike` commands onto the `likes` / `dislikes` memory collections (epic #1445, issue #1451). The legacy `preference` table is untouched (its fate is #1301). Operate-the-system skills (no source collection), `author='system'`, idempotent.
-- 0081: Add the operational-registry provenance + lifecycle columns to `memory` (epic #1554, issue #1566) — three nullable columns: `source_message_id` (FK → `messagelog.id`, the spawning user message), `created_by_run_id` (the `promptlog.run_id` of the creating run), and `expires_at` (the end condition, consumed by #1562's lifecycle axis). Schema only, no deployment-specific rows. `collection_create` stamps `created_by_run_id` at creation (threaded as a parameter from the chat turn's run id — no ambient state); the channel logs the incoming message after the run and then calls `db.memories.link_source_message(run_id, message_id)` to link the spawning message structurally (the id isn't known until the run returns). `collection_catalog` becomes **archived-inclusive** and both it and `memory_metadata` render a shared lifecycle block (`status: active | archived <when>` · `expires: <datetime | never>` · `created: <datetime> by run <id> from message <id> ("<first ~80 chars of the ask>")`) — so a mechanism can state who asked for it, what created it, whether it's live, and when it ends, and an archived one stays enumerable
-- 0082: Retire the `schedule` mechanism (epic #1554, issue #1556, Wave 1) — DROP the `schedule` table (existing rows are dropped, NOT migrated to collectors; the drop logs the count + cadence labels so it's diagnosable, never silent), DELETE the 0077-seeded schedule-dispatch skills by their known keys (they taught the model to call the now-removed `schedule_create`/`_delete`/`_list` tools; re-teaching deferred to #1471), and ADD the once-shaped-trigger columns `memory.run_at` + `memory.max_runs` (nullable; store-level, no model-facing create args — #1562). The schedule executor (which replayed a stored `prompt_text` as a synthetic user turn) is deleted with it, leaving exactly two run entry points: a chat turn and a collector cycle
-- 0083: Ledger provenance closure (epic #1554, issue #1560, Wave 1) — the event half of the operational spine. ADD `memory_entry.created_by_run_id` + `memory_entry.last_written_by_run_id` (entry run-id stamps) and CREATE the `mutation_event` table (one durable row per collection create/update/archive/unarchive: entity, run, actor, what changed, when) with a `(entity_name, created_at)` index. Schema only. The ledger is a *property* over existing stores, not an event-sourcing supertable: a run is a `promptlog` group (`run_target` already records the entity it served), a tool call is stored verbatim in `promptlog.response` (`raw.model_dump()` — round-trippable, proven by the `LoggedToolCall` shape, not changed), and `mutation_event` is the one table with no other home (system archives run no model, log no prompt). `read_run_calls` generalizes to chat runs and renders the canonical projection (numbered steps + compact results + egress/media trace), every id named with its type
-- 0084: Skill substrate table (epic #1554, issue #1590, stage ④ of #1562) — CREATE the versionless `skill` table (one row per name; `steps`/`holes` JSON, `intent`/`description`/`description_embedding`, `source_run_id`, `author`). **Table only, no seeded rows** (code-owner decision on the #1599 revision): every skill enters through the real `skill_create` teaching flow, so the certified-by-execution invariant holds universally with no hand-authored exception, and a fresh install starts with an honestly-empty registry (`skill_read()` says so). Schema idempotent (`CREATE TABLE IF NOT EXISTS`). Backs `db.skills`, the `skill_create`/`skill_read` chat tools, and #1591's `collection_create` render
-- 0085: Add `memory.notify` (epic #1554, issues #1591/#1557, stage ⑤ of #1562) — the emission-as-property flag (default 0), seeded from `published` (a column-wide copy) so a collection that already notified keeps notifying. `notify` supersedes the `published` pub/sub side-channel; they coexisted in the interim until 0086
-- 0086: Retire the notifier consumer + the `published` pub/sub side-channel (epic #1554, issue #1557) — archives the migration-seeded `notifier` collection (a visible tombstone), DROPs the `published` column (`notify` is the sole emission flag now, driving the run-time notify steps), and rewrites the seeded skills that taught `published` (the 0069 research-notify/silent/flip recipes + the skills collector's own prompt) to teach `notify`. Removes `read_published_latest`, the collector's consumer gates (`_is_consumer`/`_published_pending`), and `PUBLISHED_COLDSTART_LOOKBACK_SECONDS`; `collection_create`'s `notify→published` mirror is gone and `collection_update`'s `published` arg becomes `notify`. Universal (seeded rows by known key + a column drop)
-- 0088: Emission provenance (epic #1554, issue #1568) — `messagelog.mechanism` (the mechanism that sent an autonomous message; NULL for a direct reply) plus the partial `ix_messagelog_emission_time` index over emission rows (the self-state hot-path scan). Schema only, universal, idempotent. Backs the reverse index — emission → mechanism — so "make it stop" is a lookup: the drainer's provenance stamping, the inline `(sent by <mechanism>)` render on `penny-messages` reads, and the self-state activity block's `sent · …` lines
-- 0089: Argless `done()` seeded-prompt cleanup + retire the `quality` collector (epic #1554, issue #1569) — `done()` is now an argless sentinel (the run record is GENERATED from the ledger, no model `success`/`summary`), so (1) the live `skills` collector prompt's two compound `done(success=…, summary=…)` conditionals (survivors of 0087's strip) are surgically rewritten to `done()` — else they'd tell the model to pass forbidden args; and (2) the `quality` collection is ARCHIVED (visible tombstone, same pattern as 0086's notifier): the prose-generation channel it reviewed is gone (a collector's prompt is now a taught-skill render; a wrong prompt is fixed by re-teaching), so the model-judgment reviewer retires with the failure mode. `render_run_record`/`classify_run` stay (self-state header + addon consume them). Universal, idempotent over seeded data
-- 0087: Strip the terminal bare-`done()` step from stored `extraction_prompt`s (epic #1554, issue #1557 revision) — the terminal `done()` is assembly's now (injected as the composed prompt's final numbered step, after the notify steps when the collection notifies), so a stored prompt is steps `1..A` with no terminal. Generic content-shape match, not known keys: a numbered step line that is *nothing but* a done call (`N. done().` / `N. Call done().` / with args) with no numbered step after it. Strips likes/dislikes/knowledge/quality/thoughts (+ the archived notifier/unnotified-thoughts shells); compound terminal steps (`skills` step 8, `notified-thoughts` step 4) and prose *descriptions* of done behaviour survive (zero-false-positive). Universal, idempotent over seeded data
-- 0090: Add the collection→skill provenance columns to `memory` (epic #1554, mini-epic #1562, issue #1603) — two nullable columns: `skill_name` (a by-name reference to `skill.name`, the skill #1591's front door instantiated the collection from) + `skill_params` (the params bound into that skill's render, as JSON). `collection_create` stamps both at instantiation; `collection_catalog` and `memory_metadata` render them as a `from skill: <name> (<param>=<value>, …)` line (params omitted for a hole-less skill; the whole line absent — byte-identical render — for a hand-authored/seeded collection where `skill_name` is NULL). So "which skill made this, and with what?" is a read off the collection's own row, and the rebind/re-render substrate (#1603's follow-on) has the current bindings as reachable input. Schema only, universal, idempotent
-- 0091: Add `memory.source_log` (epic #1554, issue #1604) — the on_advance trigger's declared source LOG, completing the trigger union (`interval` | `run_at`+`max_runs` | `on_advance`). Nullable; NULL for every recurring/once-shaped collection. Schema only, universal, idempotent. The collector gates readiness on the source's high-water mark passing the collection's cursor (a pure Python frontier read, reusing `AgentCursor` and the existing cursor gate — the declared-input variant of the inferred log-driven gate)
-- 0092: Retire the `skills` collection ENTIRELY — one skills store, the `skill` table (epic #1554, issue #1624 as amended) — ARCHIVES the `skills` collection (visible tombstone, the 0086/0089 pattern: never dispatched, hidden from the catalog via `SYSTEM_COLLECTIONS`, out of the store map; its `extraction_prompt` left intact as the tombstone's historical record) and DELETEs every migration-seeded rule entry by known key (the 0043 originals as amended by 0066/0069/0086, plus the 0070/0076/0078/0079 operate-the-system seeds) + the reconcile loop's own `author='skills'` output (generic criteria, 0069 precedent). The seeded rules were never demonstrated, so they cannot move into the certified-by-execution `skill` table (no-seeds invariant, 0084); needed behaviors are re-taught live as real table skills. The self-state `### Skills and rules` section's standing-rules feed dies with the collection — the taught-skill registry is its sole feed. Skills are structural now (taught #1590, instantiated #1591, fired ambiently #1621, re-rendered #1620) — same cure as `quality` (0089) and `notifier` (0086). Universal (seeded row + seeded entries by known key), idempotent
-- 0095: Drop `memory.intent` (epic #1554, issue #1631) — the minimal collection surface absorbs it into `description` (which it duplicated byte-for-byte at birth). Guarded column drop; no fresh-DB re-provisioning needed (unlike 0093's recall drop) because migration 0050's own guarded `ADD COLUMN intent` re-adds it on the `create_tables`-first path before this removes it. Removes the `collection_create` arg (`description` is the required descriptor now), `collection_update`'s accept-but-ignore ceremony (migration 0050's protection dance), and every `intent:` render line. Universal, idempotent
-- 0093: Drop the dead recall substrate (epic #1554, issue #1583) — DROP the `memory.inclusion` + `memory.recall` columns (guarded), the schema half of retiring the two-stage recall machinery that #1555 unwired and #1471 re-homed (it had no remaining consumer). Also rewrites the 0069-seeded research skill recipes to strip their `- inclusion: "relevant", recall: "relevant"` line (a dropped flag can't be taught). `description_embedding` (resolve-by-meaning, #1558) and `notify` (#1557) stay. Companion: migration 0025 gained a guarded ALTER re-provisioning the two columns on the `create_tables`-first path, so the intervening recall-era migrations still run on a fresh DB before this drop removes them. Universal, idempotent
-- 0096: Rename `skill.holes` → `skill.parameters` (epic #1554, issue #1668) — parameters are SKILL-level (semantic names + descriptions), so the internal identifier 'hole' (PL jargon that leaked into the design; #1665 already swapped the model-facing vocabulary) renames too. Guarded column rename (`ALTER TABLE skill RENAME COLUMN holes TO parameters`, only when `holes` exists and `parameters` doesn't — a no-op on a fresh DB where `create_tables` materialises `parameters` from the model first), PLUS a generic column-wide rewrite of each stored skill's `steps` JSON renaming every `SkillSubstitution`'s `hole` key to `parameter` (the field rename carried through the serialized shape, so a skill demonstrated before the rename keeps rendering its parameter names). Universal, idempotent
-- 0097: Nuke the generic catch-all seeded collections ENTIRELY + drop the legacy `thought`/`preference` tables (epic #1554 / #1570, issue #1676) — code-owner decision: "those were all seeded to automate the discovery of new information without the user's explicit direction because we didn't have a good way for the user to direct the collection of information, but now we do [the skills/teach loop] and so those generic catch-alls only get in the way." Removes eight collections — `likes`, `knowledge`, `thoughts`, `notifier`, `quality`, `unnotified-thoughts`, `notified-thoughts`, `skills` — with **NO tombstone** (supersedes the archived-shell retirements of 0086/0089/0092; "no tombstones even" applies to the archived shells too). One module-level constant `REMOVED_COLLECTIONS` drives three per-table deletes: `memory_entry` (entries), `agent_cursor` (the read cursors these collections OWN into the logs, matched on either side of the `(agent_name, memory_name)` pair), and `memory` (the rows). **Scope extension (code owner: "let's add thought and preference to the deletion")**: the legacy `thought` + `preference` TABLES drop too (row counts logged before each drop), along with `messagelog.thought_id` (the FK into `thought`; its 0006 index first — historical rows lose only that link) — the nuked pipeline was their last real consumer, resolving the #1301 legacy-table question. Their models, stores (`db.thoughts`/`db.preferences`), the startup preference-embedding backfill, and the profile onboarding preference check are deleted with them. Per-table counts are logged (diagnosable, never silent). **`dislikes` deliberately STAYS** (code owner: "very narrow and specific — still holds water"), along with its collector and all four logs (`user-messages`/`penny-messages`/`browse-results`/`collector-runs`); `messagelog` (beyond the column drop)/`mutation_event`/`send_queue` are untouched. `SYSTEM_COLLECTIONS` trims to just `dislikes`; `MEMORY_NOTIFIER_COLLECTION` is retained only to classify historical notifier-sent `messagelog` rows on the iOS surface. Every touched name is a migration-seeded row/table by known key, so universal + idempotent
-- 0098: Add `memory.cron_expression` (epic #1554 / #1570, issue #1684) — the cron trigger's 5-field schedule, the fourth trigger-union member (`interval` | `run_at`+`max_runs` | `on_advance` | `cron`). Nullable; NULL for every other form. Schema only, universal, idempotent. The MODEL maps a stated time-of-day recurrence ("morning and evening") onto cron; `croniter` (restored dependency, removed with the schedule teardown in PR #1577) computes the next fire time. `Collector._is_ready` gates readiness on `now >= croniter(expr, last_collected_at or created).get_next()`, and auto-throttle EXEMPTS cron collections (a stated schedule must never widen from idleness)
-- 0099: Drop `email_rule.user_id` (#1737) — single-user Penny never needed the multi-user scaffolding (every rule carried the same `signal_number or "default"`). Guarded (table? column? then `DROP INDEX IF EXISTS ix_email_rule_user_id` + `ALTER TABLE email_rule DROP COLUMN user_id`) so it is a no-op on a fresh `create_tables`-first DB (the `EmailRule` model no longer declares the column) and drops it on an upgraded prod DB. The `provider` column stays. Universal, idempotent
-- 0100: Conversation state machine persistence (#1706) — CREATE `state_transition`, the machine's ONE table: an append-only move log (from/to · `cause` · `outcome` · `anchor_message_id` · `message_id` · `run_id` · `skill_name` · `created_at`, indexed on `created_at`/`cause`/`run_id`) whose newest row IS the machine's whole state. The classifier decided one transition per message and nothing held it — a decision that evaporates with the turn is a function, not a machine; every parked state exists to be READ by the NEXT message's classification. No materialized current-state row (it would carry nothing underivable and would mean two writes per move that can disagree). Schema only, universal, idempotent, and **seeds nothing**: the cold start is the ABSENCE of history, never a value frozen into DDL that a later rename could strand
-- 0101: Back-fill the scoped-write target's placeholder substitution onto stored skills (#1777) — a skill taught before the write target became a `SkillSubKind.PLACEHOLDER` carries it as a bare literal, so its recipe still renders the demonstrated collection's name (the leak #1777 removes, on the 0-call ambient firing surface where nothing retargets). Adds the missing substitution to every scoped-write step whose `memory` leaf has none. UNIVERSAL — a generic content-shape rewrite over the whole `skill` table (the 0096 precedent), never a skill by name; NON-DESTRUCTIVE — the demonstrated name stays in `arguments` as the verbatim ledger copy, only the presentation changes; IDEMPOTENT — a leaf already carrying a substitution (a post-#1777 skill, or the stray parameter/binding `retarget_writes` tolerates) is left alone. Tool set + description are FROZEN COPIES of the live constants, since a migration must not change behaviour when a constant is later edited
-- 0102: Add `promptlog.trailing_messages` — the run tail no model call carried (#1778). A tool RESULT is never written as a record of its own: it is persisted only as a side effect of being fed back, as a `role:"tool"` turn inside the NEXT call's `messages`. A run that ends immediately after executing a tool (a write-gate STOP, `max_steps` reached on a tool step, a reroll abort, an exception) has no next call, so its terminal call's outcome was written nowhere and the run record systematically omitted it — biased toward exactly the runs that explain why something went wrong, and enough to make an eval transcript render a call and then stop, indistinguishable from one where nothing happened. One nullable column holding that tail in the same wire shape `messages` uses; NULL for a run that ended on a text reply, for every row that isn't its run's last, and for every historical row — so pre-existing runs render byte-identically. Schema only, universal, idempotent
-- 0103: Carry the attachment mark onto every stored skill's scoped-write target (#1783) — instantiation binds what carries the per-leaf ATTACHMENT MARK, not what a tool whitelist calls a write, so a skill taught before the mark existed would render `{the collection this is set up on}` where the collection's own name belongs and stop stating where it acts. Marks the 0101 placeholder in place; a leaf that reached this migration with no substitution at all gets a marked one. UNIVERSAL — a generic content-shape rewrite over the whole `skill` table (the 0096/0101 precedent), never a skill by name; NON-DESTRUCTIVE — only the mark changes, the demonstrated name stays in `arguments`; IDEMPOTENT. Tool set + description are FROZEN COPIES: the live path names no tools at all, and this enumeration exists only to describe skills taught while it did
-- 0104: Collapse the trigger union onto one `memory.schedule` RRULE column (#1857) — ADD `schedule` (TEXT, nullable: one RRULE line with an optional leading `DTSTART:` line) and DROP the six columns it replaces: `collector_interval_seconds` (the cadence), `run_at` (folded into `DTSTART`), `source_log` (the dropped `on advance of` form), `cron_expression` (the cron form the rule subsumes), and the auto-throttle pair `base_interval_seconds` / `consecutive_idle_runs` (the mechanism is deleted — schedules run as stated, and rate protection lives in the send cooldown). `max_runs` / `expires_at` STAY: they are what the rule's `COUNT=` / `UNTIL=` are lifted into at parse. **Existing trigger data is NOT converted** — code-owner ruling: deployments reset their databases after this arc, so a conversion would be guesswork. The drop is mechanical but NOT silent: every collection that held a trigger is logged by name with what it carried, plus a summary warning naming the fix (`collection_set(name=…, schedule=…)`), so a collector that stops dispatching is diagnosable. Universal + idempotent: on the `create_tables`-first path the model already carries `schedule` and none of the six, and the earlier guarded ADD migrations (0032/0053/0082/0091/0098) re-provision them for the intervening migrations that read them, so both paths converge on the same schema.
-
-- 0105: Add `state_transition.skill_frame` (#1868) — the round's FRAMING on the move that settled it: one nullable TEXT column holding serialized `RoundFraming` JSON (the framer's signature plus the container's name). Entering learn now frames the round before the turn runs, and a draw varies — so the decision is recorded rather than re-drawn: the turn's own instruction renders it, run-end extraction reuses it instead of drawing again AND keys its write by it (#1902), and a correction re-entering learn carries it rather than re-drawing — so the round has one identity for its whole life. It lives beside `skill_name` because it answers the same kind of question about the transition for a routine that does not exist yet, and carries the anchor's lifecycle (set on entry to learn, carried while parked, NULL once idle). Schema only, universal, idempotent, seeds nothing — every existing row keeps a NULL framing, which is exactly the unframed round the deployment has been running.
-
-- 0106: Add `state_transition.round_shortfall` (#1894) — the round's PARTIAL binding on the move that settled it: one nullable TEXT column holding serialized `RoundShortfall` JSON (the routine the ask is covered by, the values the user's words already settled, and the parameters that got none). The binder now runs at REQUEST entry as well as apply entry, so a round parked waiting for a detail knows what it is waiting on — and that answer has to outlive the turn that drew it: the next message is classified against a NAMED gap, and the apply draw completes the binding from these settled values plus the arriving message rather than re-reading the whole conversation. It lives beside `skill_frame` because it is the same kind of round state for the other half of the entry, carried by the state that can read it (set entering request, carried while parked there, dropped by any move that leaves). Schema only, universal, idempotent, seeds nothing — every existing row keeps a NULL binding, which is exactly the un-bound request round the deployment has been running.
-
-- 0107: Add `state_transition.round_provenance` (#1902) — the round's PROVENANCE on the move that MINTS its routine: one nullable TEXT column holding serialized `RoundProvenance` JSON (what the round's own registry write replaced — the whole pre-round `skill` row when there was one). A round's run-end extraction writes under its pinned name either way, so from the registry alone a round TEACHING a new job and one RE-TEACHING an existing one are the same write — and the difference is what a bail has to act on. Three states, three answers: NULL = the round minted nothing (a skill-gated round binds a routine the user already had, so a bail leaves it alone), present-and-empty = minted over nothing (a bail deletes it), present-carrying-a-row = re-teaching (a bail restores that row). The re-teach case carries the WHOLE row rather than a marker because skipping the delete is not enough: by bail time the round's own extraction has already replaced what the canonical routine DOES, so leaving it standing would leave an abandoned, half-corrected program live under a name existing jobs still run. Beside `skill_frame` and `round_shortfall` because it is the same kind of round state, settled at the moment the routine is minted and carried the framing's way. Schema only, universal, idempotent, seeds nothing — every existing row keeps a NULL provenance, which is exactly the un-tracked round the deployment has been running.
-
-- 0108: Drop the last migration-seeded collection — no pre-seeded collections remain (#1911). Code-owner ruling: "i don't wanna even leave any intermediate legacy structures around since everyone's just gonna reset their db so just drop any pre seeded collections for the time being and we can add new ones later if we want. this is kind of a soft reboot of penny." 0097 removed eight generic catch-alls and kept `dislikes` as the one deliberate survivor; this is its tail — the same three deletes (entries, the read cursors the collection owns into the logs, then the row), the same idempotence, the same logged counts. DROPPED, not archived: an archived shell is exactly the intermediate legacy structure the ruling names. The four logs, `messagelog`/`mutation_event`/`send_queue`, and anything the USER created are untouched. What falls out in code: `SYSTEM_COLLECTIONS` + `MEMORY_DISLIKES_COLLECTION` are gone (with the catalog hide-list and the duplicate-check skip-list that read them), the program parser tightens to the rendered `N. tool(args)` dialect only (the prose rows it tolerated no longer exist), the full-surface fallback becomes an EMPTY surface + an honest config-defect run reason, and `done` is deleted whole — the `DoneTool`, `terminator_tool`/`_surface_terminator`/`build_memory_tools(terminator=…)`, `PrematureDoneValidator`, the crash envelope's finish clause, and the all-duplicates close's terminator interpolation. `PennyConstants.DONE_TOOL_NAME` survives as the name of a shape rather than a tool: the `{"name": "done"}` envelope the model still emits from prior (which the invalid-draw guard discards by name) and the ledger rows written before the retirement, which the run renders and the skill extractor still have to recognise.
-
-- 0109: Add `send_queue.origin` — which delivery lane a queued message is in (#1939). Every queued message rode one lane, the 600s autonomous-send cooldown, which is the right rule for a message nobody asked for and the wrong one for a message the user is sitting in front of waiting for: observed live, an on-demand "run this now" finished and its notification then waited ~10.5 minutes because an unrelated chat reply seconds earlier had started the cooldown. The column carries the `CycleTrigger` that set the queuing cycle running (`cadence` | `on_demand`) and the drainer reads it to pick the lane. One NOT NULL column defaulting to `cadence`: every existing row WAS queued by a scheduled cycle, so the backfill is the truth rather than a guess, and an unstamped row lands in the conservative lane. Plus `ix_send_queue_pending_lane` — the partial index over the pending tail LEADING with `origin`, since the lane-scoped read's filter is an equality on a sparse value and the 0061 index serves only the ORDER BY (declared on the model too, so a fresh DB carries it). Schema only, universal, idempotent
-
-- 0111: Rename the collection-entry tools and their first argument (#2307) — three tool renames (`collection_read_latest`→`collection_list`, `collection_delete_entry`→`collection_remove`, `collection_read_random`→`collection_sample`) and one argument rename on all six entry tools (`collection_get` / `collection_keys` / `collection_list` / `collection_sample` / `collection_write` / `collection_remove`): the first argument becomes `collection` wherever it was `memory`. Two exact swaps carried from #2290/#2302: a stored `exists` step becomes `collection_get`, and a stored `read_similar` step becomes `find` (which keeps `memory` as its own scoping argument — only `anchor` moves, to `query`, and `k` is dropped). UNIVERSAL — a generic content-shape rewrite over every `skill.steps` row and every `memory.extraction_prompt`, never a skill or collection by name; IDEMPOTENT. A step or rendered line this migration cannot map unambiguously is left standing and logged rather than guessed at. Prompt-log rows are never touched; the live readers' own seam for an old logged tool name is `LoggedToolCall.tool`, resolved through `LEGACY_TOOL_RENAMES`
-
-- 0112: Rename the log tools' first argument to `log` (#2304) — `log_read` and `log_append` (the two log tools a skill can hold as a stored step) take their log name as `log` where they took `memory`; `log_create` takes `log` where it took `name`, but no stored step or rendered line can carry it (a lifecycle tool is filtered out of every recipe). The same two-part rewrite as 0111, over every `skill.steps` row (the arguments key and every substitution path head move together; `content` untouched) and every `memory.extraction_prompt` line (`memory=` → `log=` inside that line's own call only; a positional `log_read('x')` line carries no key and passes through). UNIVERSAL — never a skill or log by name; IDEMPOTENT. Prompt-log rows are never touched: a logged call's old key is read at the read projection (`render_tool_call`) through the `log`-or-`memory` fallback, the sibling of `_collection_field`
+Migration-by-migration history (every numbered migration, why it shipped): `docs/migration-log.md`.
 
 ## Plugin System
 
@@ -665,16 +566,18 @@ request is refused, and so is a REQUEST case that declares none, because a bindi
 present exactly while a round is parked in request — so the next REQUEST case cannot be
 written lean.
 
-**Two profiles, because they are two different machines** (`EVAL_PROFILE`, resolved in the
-Makefile's `eval` recipe): **`make eval`** runs `local` — the GPU on this box, one sample
-at a time, since the GPU serialises them anyway and asking for more only adds contention.
-**`make eval-remote`** runs `remote` — an OpenAI-compatible provider at 8 xdist workers x 5
+**`make eval-remote` is how the suite runs** (`EVAL_PROFILE=remote`, resolved in the
+Makefile's `eval` recipe): an OpenAI-compatible provider at 8 xdist workers x 5
 samples in flight, which the provider serves concurrently. That 40 is MEASURED, not
 chosen: 80 in flight on a 10-core box was both slower and dirtier (samples began missing
 their channel-readiness window), so raise `EVAL_REMOTE_WORKERS`/`EVAL_REMOTE_CONCURRENCY`
-only with a measurement in hand. Every value a profile picks stays individually
-overridable — `EVAL_WORKERS=1 make eval-remote` is remote-but-serial for debugging one
-case, `EVAL_SAMPLES=N` changes the per-case sample count on either.
+only with a measurement in hand. Every value stays individually overridable —
+`EVAL_WORKERS=1 make eval-remote` is serial for debugging one case, `EVAL_SAMPLES=N`
+changes the per-case sample count. The suite's model is gemma
+(`google/gemma-4-26b-a4b-it`), pinned to Cloudflare; name a different roster entry with
+`LLM_MODEL=<name> make eval-remote` (below). **`make eval` still exists against the local
+GPU, one sample at a time, but it is not offered as a way to run the suite** — the
+embedding model is the one piece that stays local either way (below).
 
 **Which models the remote profile may measure is CONFIGURATION, and AT LEAST ONE is
 required (#1996/#2222).** `EVAL_MODELS` in the primary checkout's `.env` is a JSON list of
@@ -812,238 +715,9 @@ or leaves `min_pass_rate` unstated, and one that states no behaviour, declares n
 `edge` the machine does not have, each with an error naming the case, before a sample runs. A
 case is one ask in its wordings and the claims its body makes against the cohort that comes back;
 no driver takes a per-sample scorer, and a structural pin in `make check` reads that off the
-drivers' own AST. The coverage matrix is the two
-agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_reply.py`
-(#1919, ported to the cohort structure by #2008 — the chat REPLY on an idle turn, as FIVE
-cohorts of fifteen: two behaviours, one case per ENTRY CONDITION. Browse-and-answer is two
-(the fact posted on the page she reaches, and the fact one link deep, which needs its own
-sentence because the index's answer-bearing line is what carries the next address); nothing
-to answer from is three (every source unreachable, a store with nothing in it, a store that
-already holds what she is asked to record) — on the first two the claims are that the turn
-ends back in idle and that every specific value stored or said traces to what she was given,
-and whether the reply says the lookup failed is measured as reply spread. Answering out of
-what the store already holds is `memory-cold-recall`'s, in `test_chat_memory_stories.py`. One
-A/B PAIR shares an ask — the same five wordings against a readable page and against a world
-where every source errors — so the negative direction is expressed as the WORLD rather than
-as a clause. Every watched value is INVENTED and is ONE whitespace-free token (a posted
-admission, a maker's surname), because `fold_typography` folds a
-declared set of space characters rather than the whole category and a multi-word token can be
-failed by a space nobody has met. Report-only throughout. What did NOT port: every
-`tool_was_called` / `tool_not_called` / pages-served check (a ROUTE, and three of them keyed
-to a tool NAME — measured as `TOOL_SEQUENCE` instead), five reply vocabularies somebody
-guessed in advance, the price-SHAPED reply regex (subsumed by
-`assert_every_value_in_the_reply_is_sourced`, which fails any number the reply supplies in a
-world where nothing was read), the emoji voice advisory (prose, and section B has no shape for
-a binary voice flag), and the `chat-reply-reflects-every-call` case whole — a message carrying
-a save, a lookup and a recall is three behaviours in one turn. The duplicate case's entry
-condition is now SEEDED rather than driven as a first turn, because a case is one entry
-condition and ONE model run. It replaced `test_chat_response.py` + `test_narration_survival.py`,
-whose `likes`-collection seed migration 0097 had left crashing at seed time and whose chitchat
-case the canonical `transition-idle-to-idle` already covers on a stronger world),
-`test_standing_collection.py` (a job that is already running, on the cohort structure
-(#2008, tranche 3; #2215): SEVEN cases on one seeded world — `standing-notify-off` (the job's
-own switch off), `standing-notify-on` (the same job seeded quiet, its switch back on),
-`standing-archive` (retired as a tombstone that still holds what it gathered),
-`standing-schedule-fix-prior` (re-timed, and every clock time the reply names is one the job
-has had — any third hour is invented, since the ask supplies one and the seed the other, #1946),
-`standing-end-changed` (given an end: the job stops when the ask said, read on the sample's
-pinned clock through `utils/job_end.py`, and every time it fires until then is a time it was
-already due), `standing-describe-routine` (read back: the reply names the page the routine
-fetches, a token only the job's record carries, and every value it states traces to that record)
-and `standing-list-running` (three jobs running: the reply carries one token per job that only
-that job's record holds, with every job and everything each gathered as it was). Each claims
-the job's own ROW as the turn left it — the
-field the ask named moved, and PRESERVATION of everything else, read as the row's END STATE
-through the ledger (`MechanismRecord.moved_this_run`: each field whose value now differs from
-the prior the mutation ledger recorded for it, so a field a call merely restated has not moved)
-— plus what the job gathered still being there and notifications still on for everything else.
-No case claims what the turn did NOT do (`docs/principles.md` §4.3); which verb she used is a
-route, measured in the tool sequence. Every case lands in `idle` — changing how a running job
-behaves is idle by the machine's own boundary (#1927). The re-timing case reads the hour the
-stored RULE fires at through production's own `next_occurrence`. The two directions of the
-notification switch are two cases, each on a job seeded with the switch the other way.
-Broadening a job's scope is NOT
-here — that is a re-teach of the routine (code-owner ruling). Its seeded world is a taught
-routine stood up through the production instantiation seam, which `test_speakable_log_reads.py`
-reuses for the jobs its collector-runs case reads about),
-`test_chat_memory_stories.py` (the memory verbs — save, recall, forget, update, fan-out, no-fire
-— and `memory-delete-a-whole-list` (#2215): four plain lists, storage only, and an ask to get
-rid of one by name; the claims are that the named list is ARCHIVED and still holds every entry
-it held, and that each other list is still the live list it was with its entries. It is not
-`memory-forget-then-list`, which names one NOTE and claims the list is still live — a correct
-sample for either is wrong for the other),
-`test_half_the_sources_landed.py` (#2149 — `memory-save-with-a-source-down`, the cohort-form
-port of #1946's writes-landed case and the only live-model coverage that frame has: the user
-names two pages and one list, ONE page answers and the other cannot be read, and what is
-claimed is that the named list holds an entry this turn wrote from the page that answered,
-that every entry this turn wrote to that list is from that page — the claim that reads an
-entry invented in plain prose, which names nothing for store provenance to trace —
-that nothing stored or said traces outside what the round was given — the dead page's own
-names exist in nothing the model saw — and that the reply carries a token only the readable
-page owns, the fact the save came from. No count of saved things is asserted: a count of saves
-is a count of tool calls. Whether the reply admits the read failed is variance, never a claim —
-that branch belongs to `test_chat_reply.py`),
-`test_collector_honesty.py`, `test_retrieval.py`,
-`test_browse_extract_fields.py` (#1942/#2059 — the browse EXTRACTION micro-context in
-isolation, driven directly by the `extractor_eval` runner with no browse in the loop:
-FOUR cases on the cohort structure over the THREE states a page can be in relative to its
-instruction — it carries ALL of what was named, SOME of it, or NONE — with the middle
-state reached on two page shapes: a listing that answers everything (the control), a
-homepage read as a link index carrying titles and links and no summaries, a prose section
-front carrying a byline under each headline and no timestamp, and a page carrying none of
-what was asked for, which must still say so. The last two of those are a PAIR whose
-members are separate cases because their EXPECTED OUTCOMES differ: a behaviour that always
-answered `EXTRACTED:` passes the partly-present one and fails the none-present one. A
-negative direction is stated inside its own case only where it shares the expected
-outcome; where it has its own, it is a case of its own and the pair is named together.
-Each case is five wordings of its `extract` instruction over ONE fixed page — the arm is
-PENNY's own text, written upstream at the browse call site, so the cohort measures how
-stable the read is against how the calling draw happened to word it — and hedged and
-unhedged wordings pool into one cohort, since what the page carries is not a property of
-how the ask was worded. LANDED is the outcome enum by equality, STORE is empty (one call
-writes to no store), PROVENANCE is fact alignment in both directions: one claim per thing
-the page supplies, plus `unsourced_specifics` over the whole structured answer. The
-none-present case is the one place the omitted direction has no instrument — the page
-supplies nothing an answer could carry — and it says so rather than making a vacuous
-claim.
-The page each case is given is what the content script returns for it, so the two halves
-of #1942 meet in the fixtures; a coherence probe in `make check` holds every anchor against
-its own page, exactly once),
-`test_notifications.py` (the muting contract that retired `/mute` + `/unmute`, on the
-cohort structure (#2008, tranche 3; #2215): `explicit-mute-request-mutes` (the user asks
-for notifications to be muted, against the production cold start — the user is muted afterwards),
-`explicit-unmute-request-unmutes` (the same ask in the other direction, on a world SEEDED muted —
-the user is not muted afterwards) and
-`notifications-no-fire` (a remark that names notifications and asks nothing — the turn stays in
-idle with notifications still on, PRESERVATION of the one prior state that world holds). That
-the header carries the switch (#1919) is a prepare-time PREMISE rather than a claim, and the
-unmute case's premise also holds its seed: not being muted is true of a world nobody muted, so
-its probe asserts the mute row and the header's muted line before the turn runs),
-`test_choose_dispatch.py` (the fair pick, PORTED (#2008, tranche 3): ONE case,
-`choose-dispatch-fires` — the option the reply reports is the one the run's own record chose,
-read off the tool's shipped result template. A question about which option she prefers is not
-a case: it has no fact to assert),
-`test_speakable_log_reads.py` (looking back at her own logs, PORTED (#2008, tranche 3, folding
-#2001): `speak-logread-penny-messages-recall` and `speak-logread-collector-runs`, each over a
-world where the answer token exists in exactly ONE place — an out-of-window turn of hers, and a
-failed cycle's stamped reason the header never carries — so the reply stating it cites that
-place; #2001's world-integrity probe rides along. `speak-logread-browse-results` and
-`speak-logread-user-messages-act` are not cases),
-`test_image_dispatch.py` (the `generate_image` tool that retired `/draw`, PORTED (#2208): TWO
-cases — `image-request-draws` (five wordings of one request for a picture, "draw me" and "make a
-picture of" among them; the media store holds an image drawn this turn whose description names
-both things the ask put in it) and `image-no-fire` (a remark about a painting asks for nothing;
-the turn lands in idle and the reply invents nothing). The image backend is a canned stub in front
-of the real tool, and the chat observer reads the media store as `SampleObservation.images`, a
-drawn image being one with no source page), `test_email_dispatch.py`
-(#2209/#2215 — the email tools that retired `/email` + `/zoho`, PORTED to the cohort structure:
-THREE cases over one canned mailbox. `email-answers-from-the-message-asked-about` names a sender AND
-a subject that only one message shares — asking by sender and asking by subject are one
-behaviour, since a correct sample for either is correct for the other, and which field she
-searches on is a route measured in the tool sequence — and claims the reply carries that
-message's figure and none of the figures its neighbours carry (the sender's other mail, and
-another sender's mail on the same subject). `email-absent-message` is a near miss: it names that
-same sender, whose two messages each carry an amount, and a subject no message carries, in five
-wordings that each say "email" or "inbox" — pinned in `make check`: a sender search returns the
-two messages, the subject matches none. It claims idle, the newsletters collection unchanged, and
-every stored and said value sourced. What the reply does with the amounts it was handed is
-MEASURED, by a feature declared beside the case (`mailbox figure in the reply`: names a mailbox
-figure / names none), and whether the reply says nothing was found is reply spread.
-`email-remark-stays-idle` is a remark about the
-volume of email: idle, the seeded newsletters collection unchanged, and every stored value
-sourced — the reply is advice in her own words, measured as reply spread and never read for
-provenance.
-The mailbox is declared on the world (`World.mailbox`, `utils/mailbox.py`'s `CannedMailbox`,
-whose deliberately lenient search rules are stated once there) and installed by the chat
-driver behind production's own Fastmail tool builder, so only the backend is canned),
-`test_skill_labelling.py` (#1828/#2058 — the run-end LEAF
-labeller's canonical set: four cohort cases (`namer-tells-two-sources-apart` ·
-`namer-names-a-search-spot-as-a-search` · `namer-names-every-spot-from-a-single-turn-teach` ·
-`namer-names-every-spot-in-a-longer-routine`),
-each one FIXTURE demonstration in five wordings over ONE ledger, so the spots and their current
-names are identical on every arm; the `labeller_eval` runner, report-only, with each ledger's
-input document pinned byte-for-byte by a drift probe in `make check`.  Their LANDED category is
-empty and CLOSED UPSTREAM — coverage is `_labels_every_spot`'s and would run 15/15 by
-construction — so every claim is about what the drawn lines SAY (a name that hardens to a
-binding key, is not the argument's own name handed back, and comes with a line saying what
-belongs there, plus a distinct-names claim where the ledger supplies two things one name could
-collapse), all of them the *nothing omitted* direction: the *nothing invented* one has no legal
-instrument for a draw whose open fields are an identifier and generic prose),
-`test_skill_framing.py` (#1830/#2006/#2056 — the run-end skill FRAMER's decisions
-covered in ISOLATION by **six cases**; the `framer_eval` runner, report-only, each fixture's
-input document — the round's user turns, one per line — pinned by a drift probe in
-`make check`. The page/url family classifies by NAME only, every other family
-name-first-then-description, and name tokenization splits digit suffixes (`site1` →
-`site` + `1`) so an ordinal pair written that way matches.  Each case is one ask in five
-wordings pooled into a cohort of fifteen, claiming
-the parameter SET by equality under LANDED (one drawn parameter per piece the ask requires,
-and a COUNT claim for nothing else) and nothing else:
-`framer-mints-only-the-piece-that-varies` (the ticker — the negative direction is the cadence
-and the notification, pieces the ask already settled),
-`framer-mints-both-pieces-when-they-are-different-kinds` (a catalog page and a book looked up
-on it), the PAIR `framer-names-a-search-as-a-search` /
-`framer-names-a-page-as-a-page-and-invents-no-search` (opposite expected answers — the
-search-family parameter that is correct for the first is round 8's recorded invention for the
-second, so neither is passable by a framer that always answers the same way),
-`framer-frames-from-a-single-turn` (the purpose and the varying piece separated out of ONE
-sentence rather than read off two turns), and
-`framer-keeps-three-of-a-kind-as-three-parameters` (three URLS of the same kind, where run 1
-measured every two-page sample folding them into one `sites — list of URLs`).  Their STORE
-category is EMPTY — one call returns a typed result, moving no machine and writing to no
-store — and their PROVENANCE category is EMPTY and says so: a framing's open fields are an
-identifier and two lines of deliberately generic prose, and `unsourced_specifics` — the
-suite's one instrument for the invented direction — reads a Title-Cased correct framing as
-four inventions while passing a made-up exchange, so it does not transfer to them.  What they
-deliberately do NOT claim is genericity: that the name says the KIND of task and never THIS
-occasion fits none of the design's three assertion categories, being the converse of a
-provenance claim, so it stays a reading of the modal sample.  Nor do they claim what
-`_mints_a_usable_signature` already validates (a parameter minted at all, unique names, every
-value a literal span), which would run 15/15 by construction.  Each ported case's five
-wordings and the facts every one of them must carry are declared together as `PortedArms`,
-held by a `make check` probe that renders each arm through the shipped
-`build_framing_content` — `carries` for a fact spelled the same way on every arm, `any_of`
-for one that survives being REWORDED (being told when it moves / changes / shifts), which is
-otherwise the fact class that goes missing from one arm unnoticed), `test_skill_binding.py` (#1867/#2006/#2057 — the skill BINDER; the `binder_eval` runner,
-report-only, each fixture's input document — the signature as it stands, then the user's
-turns — pinned by a drift probe in `make check`. Membership, coverage and "is this even in
-the user's words" are the PRODUCTION validator's, so an accepted draw never carries an
-invented value; what the cases measure is whether it picked the RIGHT span and whether it
-knew when to decline.  The slot's CANONICAL SET — SEVEN cohort cases, one ask in five
-wordings each, claimed against `docs/eval-case-design.md` — covers the binder's whole decision space, {complete bind,
-shortfall} × {single slot, multi slot} plus the completion draw: the page bound with
-neither the cadence nor the end date riding in; a threshold condition the signature has
-nowhere to put; two parameters of different kinds out of one message; TWO OF THE SAME KIND,
-where nothing but the word the ask puts beside each says which is which, and a swap points
-the job at the right pages in the wrong roles with every downstream check reading it as
-correct; the shortfall on an ask that names an object and no page; the shortfall beside a
-successful bind; and the COMPLETION DRAW — `bind_entry(…, settled=…)`'s warm shape, whose
-document is the two turns a parked round has now heard with the settled parameter absent
-from the offered signature, so the page it settled is in the words and no longer in the
-question.  Every claim is an outcome enum under LANDED or a bound value under PROVENANCE
-read in both directions; STORE is empty on all seven and says so, and three claims are
-deliberately not made because production already validates them.  Each case declares the
-terms its claims FORBID and derives the facts its arms must state from them, so a fact
-nobody measures cannot be written down — the defect that shape closes is a claim label
-promising to catch a padded condition while the terms it read forbade only the cadence),
-`test_watch_cycles.py` (#2017/#2007 — the BACKGROUND half of the north star: whether the
-COLLECTOR runs what chat built. Three cohort cases over one price watch, each ONE real collector
-cycle whose behaviour is selected by its ENTRY CONDITION — what the collection already holds —
-rather than by a script of cycles: the first reading (empty collection, the reading written and the
-user told once), the unchanged reading (the write-gate STOP `KEY_EXISTS_UNCHANGED` ends the cycle,
-nothing written, the send queue empty) and the moved reading (the standing key rewritten, the user
-told once). The arms are five wordings of the job's `extract` instruction, rendered through the
-shipped instantiation seam (retarget → `bind_parameters` → render) over one constant set of facts.
-A watch over a different page, datum or routine is another program of the same behaviour, so it is
-not a separate case. Driven by the `collector_cycles_eval` runner (the one collector driver there
-is — each cycle's footprint kept apart as a `CycleObservation`), report-only, with the program and
-the page variants pinned in `make check`). Browse is stubbed; a case supplies realistic pages on
-its `World` — or, for a collector, on each `CycleArm` — which the driver installs as the
-query-aware register (`install_browse` / `CannedPage` in `conftest.py`), so the claims a case makes
-rest on a page the model had to read. A `CannedPage(fails=True)` makes a matched read
-*error* (renders `## browse error:` without the real retry backoff), and the
-shared `ALL_BROWSES_FAIL` catch-all makes every source unreachable — the way to
-exercise read-failure honesty (a cycle that browsed a lot, read nothing, and must
-not confabulate a write/success at `done()`). See `docs/self-improvement-loop.md`.
+drivers' own AST.
+
+Case-by-case, file-by-file history of how the suite's cases and reporting mechanics came to be: `docs/eval-suite-history.md`.
 
 **A sample's score is its cohort's claims, dealt back out.** A case makes its claims over the
 whole cohort, after every sample has run; at case close each claim's answers are redistributed to
@@ -1107,18 +781,6 @@ the lever is what makes a score shift attributable to the change that caused it.
 SHA + dirty diff are computed **host-side** in the Makefile (`EVAL_COMMIT`/`EVAL_DIRTY_DIFF`)
 because `.git` is not mounted in the eval container. The `family` tag defaults from the test
 module name (`test_<x>` → `<x>`) or is set explicitly via a `family=` arg on a runner call.
-
-**A driven turn is over when Penny has finished handling it, not when its reply was seen (#2195).**
-The mock Signal server holds a reply the moment its send ARRIVES, which is before Penny has heard
-back about it, and a message is handled on its own task that teardown does not wait for. A sample
-that moved on from the first sight of its reply could close its channel under that send: the send
-failed, and Penny logged `PennyResponse.DELIVERY_FAILURE` into the sample's database as a second
-message the user received. So `_drive_turns` waits, after each reply, for
-`BackgroundScheduler.foreground_active` to clear — the flag the channel drops as the last act of
-handling a message, after the reply's send has come back and its row carries its external id.
-What a sample's claims read was never the apology (the observation is taken before teardown, and
-`reply` is the message the server captured); what it corrupted was the sample's `.db` artifact.
-Pinned in `make check` by a server that holds the send unanswered.
 
 **A sample runs on its own clock, which starts at one declared instant (#2207).** An ask that
 names a time relative to now is a different ask on the machine's clock at every run: "until 10pm
@@ -1196,25 +858,6 @@ so the PR-comment renderer renders one shape). Deterministic contracts (no live 
 scan + stamping + render in `tests/test_eval_harness.py`, the artifact fields + pure classifier in
 `tests/eval/utils/test_artifacts.py`.
 
-**The nudge-loop / bare-`{}` boundary (#1732).** A #1731 spiral — a chat browse-extract run that
-looped on parse-failure recovery nudges (re-browsing the same page each cycle) and died at the turn
-timeout with a bare `{}` reply — was tagged **harness** (a `TimeoutError` ended it) but the *loop*,
-not the clock, was the event. Two boundary questions, resolved to the narrowest honest rule:
-- **The terminal `{}` IS pathology.** `is_call_fragment_reply` (in `text_validity.py`, the *shared*
-  detector the live reroll guard and the scan both use) was widened to catch a reply that is nothing
-  but an empty JSON object (`{}` / `{ }` / `{}\n`, `_EMPTY_OBJECT_REPLY_RE`) — the degenerate tail of
-  a forced tool-call attempt leaked into the text channel. The old `{"`-prefix gate missed it (an
-  empty object has no string key). Anchored to the whole stripped reply → zero-false-positive (a reply
-  *about* `{}` carries prose; Penny never SENDS a bare `{}`), and the full call envelope
-  `{"name":…,"arguments":…}` stays excluded (its teaching validators own it). Widening the *shared*
-  detector — not just the scan — keeps #1695's "same detectors live and post-hoc" invariant: the live
-  chat guard now discards+rerolls a `{}` reply too (a strict improvement — it was being delivered).
-- **Nudge frames are NOT counted.** Repeated recovery nudges are *input* messages; counting them would
-  read the model's input rather than its output and would need an arbitrary threshold. The nudge
-  loop is a *symptom* whose *cause* is the model's own fragment OUTPUT — the terminal `{}` the widened
-  detector now catches — so classifying on that output tags the spiral at the root. Cause ordering
-  is unchanged: pathology still outranks the timeout, so the spiral reads pathology, not harness.
-
 **Regression-aware reports + thinking at failed turns (#1693).** When `EVAL_BASELINE` names a
 prior run's report directory (or its `results.jsonl`), the per-sample report diffs each
 check against that prior run and marks a NOW-FAILING check **REGRESSED** (`❌ 🔻 REGRESSED`) when
@@ -1248,89 +891,6 @@ on-disk `.md` and the assembled comment. There is **no compact / banner-only for
 re-normalizes each block via `report.split_sample_blocks`/`parse_sample_block`/`fold_sample`, so a
 re-assembled pre-#1753 run (unfolded `#### ` failures) folds uniformly too.
 
-**The run summary's COVERAGE table (#2256).** `assemble.render_run_summary` renders a second table,
-above its existing numbers table, in every model section: `| # | case | behaviour | input | Penny's
-final reply | deterministic | variance |`. **behaviour** is the case's own stated sentence
-(`CaseArtifact.behaviour`); **input** and **reply** come from the case's REPRESENTATIVE sample —
-the one `cohort.standings` marks `Standing.MODAL`, the same sample the case document's own map
-sends a reader to open — carried on the record as `CaseArtifact.representative`
-(`artifacts.RepresentativeSample`: name · wording · reply), computed once by `conftest.py`'s
-`_representative_sample` at case close and threaded into `eval_artifacts.record_case` alongside
-`standing_counts`, since the assembler runs over the report dir alone with no cohort to re-derive
-it from. **input** is the arm's own driven text (`cohort.arms[sample.arm].text`); **reply** is
-`SampleObservation.representative_reply` — a chat sample's text `reply`, a micro-context sample's
-structured `output_text` (it has no reply at all), or a collector sample's `reply` (what its cycle
-sent) falling back to the honest `"(sent nothing)"` when it queued none. **deterministic** and
-**variance** are the SAME cells the numbers table renders, read through the same
-`_row_checks`/`_row_variance` functions, so the two tables cannot disagree. Both new artifact fields
-are additive and default to `None`, so a `results.jsonl` record written before #2256 still decodes
-and renders its three new cells as an honest `—`. Every cell is bounded (`INPUT_CELL_BUDGET` /
-`REPLY_CELL_BUDGET`, ~200 / ~400 characters, cut at a word boundary with an `… (<n> chars
-omitted)` marker — never silent) and escaped (`report.escape_cell`), so a pipe or a newline in a
-reply can never break the table. Because the run summary carries no sample folds for
-`comment_split.py`'s existing cut to find, a whole-suite table that outgrows the comment budget
-splits on its OWN legal seam instead — a table ROW boundary
-(`comment_split.partition_on_table_rows`/`split_run_summary`): a part that resumes a table repeats
-its head + separator and states which rows it holds, so concatenating the parts loses no row.
-
-**Report format v3 — transcript-integrated (#1725).** A sample's checks render *inside* its
-transcript, in causal order (contract → thinking → action → verdict-on-action), rendered by the pure
-`penny/tests/eval/utils/report.py` from a `SampleTranscript` the `conftest.py` extractor builds off the
-persisted promptlog. Each sample is a series of **per-step tables** (a user turn opens each step):
-one `expected` row per check (`Cn [class]⚖/ℹ label`), an ALWAYS-collapsed `💭 <details>` directly
-above **every** model action (thinking for every call now, not only failed turns; `💭 (empty)` when
-none), and an `actual` row per transcript event (`🔧`/`📥`/`🤖`/`👤 nudge`/`🧩 <context> ← user
-turn:` in / `🧩 <context> →` out — **every** micro-context sub-model is an official actor with its
-USER turn explicitly labelled, #1759/#1773) with the check verdict on its anchor row. Whole-run /
-missing-action checks fall to a trailing **run-close** table. **A sample renders only its OWN
-sequence (#1997)** — the turns it was given, the calls it made, what came back, what it replied.
-Its per-context system prompts moved OFF the sample and onto the case document, which states each
-distinct one once (see the case-document entry below); a micro-context's real system prompt is
-still visible and still never mistaken for its user turn, just not restated under every sample.
-An over-long `actual` cell collapses into a
-**single** `<details>` (first line + `… (<n> chars)` summary, full text inside — one copy, no
-visible head; #1759). Each sample opens with a **banner**
-(`verdict · k/n (score) · fragile · cause · duration · calls`); **every** sample block folds whole
-under its banner — the ONE and only rendering (uniform collapse, #1753/#1759: collapsed by default,
-full body always a click away, identical in the `.md` and the comment; no compact/banner-only form,
-no `--full`/`EVAL_FULL` — removed in #1759), and a harness-timeout sample gets an honest placeholder
-(F2) inside its fold. The **run
-header** carries, in diff mode, a **flips** index (`flips: <label> ✅→❌ (s…)`, one entry per
-check fully green in the baseline that failed a sample here). The flips index resolves its baseline
-from the run's **durable manifest reference** (`RunManifest.baseline`, recorded from `EVAL_BASELINE`
-at eval time, #1752) — NOT from a re-read of the volatile env at assemble time — so `make assemble`
-renders the same flips the per-row REGRESSED badges were baked from, even when it carries no
-`EVAL_BASELINE` (an explicit `EVAL_BASELINE` at assemble time still overrides, for an ad-hoc re-diff).
-Additive artifact fields carry it:
-`CheckOutcome` gained `scored`/`cells[]`, `Check` gained `kind`, `CaseArtifact` gained
-`sample_fragile[]`; `RunManifest` gained `baseline` (#1752). **No artifact is committed** — the PR comment is
-the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
-`EVAL_BASELINE` diffs those local paths (#1725 policy). The format is pinned by whole-render tests
-in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`) rather than by a
-document.
-
-**Every micro-context renders as its own actor (#1773).** The v3 transcript admitted only
-`browse-extract` rows, so the state classifier's draw (#1706) and the run-end skill labeller's
-adjudication (#1770) were invisible — their system prompts rendered, the calls made against them did
-not — and, being main-agent rows to the turn walk, their scoped slices surfaced as PHANTOM
-`👤 user` steps ahead of the real one. Now the extractor (`conftest.py`) admits every micro-context
-by its ledger identity and each 🧩 row is labelled with it (`🧩 state-classifier → STATE: apply`),
-matching that context's system-prompt row. Where a batch splices is a declared **`MicroPlacement`** —
-the causal relationship, not the agent: `DURING_CALL` (browse-extract → after the `extract=` browse
-call that spawned it, the unchanged FIFO pairing) · `TURN_HEAD` (state-classifier, skill-framer and
-skill-binder → right after the user turn they decide, all three drawing before the chat agent; the
-classifier names the routine and the binder fills what that routine declares from the same words, so
-the two render in ledger order) · `RUN_CLOSE` (skill-namer, and the notify composer closing a
-collector cycle → after the run's last action). One generic walk drains the ledger-ordered batch
-queue at those anchors, so a new customer is a row in `MICRO_CONTEXT_PLACEMENTS`, not new code; a
-batch left unmatched renders at the end rather than vanishing (collapsed never means dropped, #1753).
-**Completeness is pinned structurally (#2133)**: the binder shipped without joining the map and its
-draw simply never rendered — nothing raised, no batch was dropped, and every apply/request transcript
-showed the classifier's decision followed straight by the chat agent's first call, its reply
-reporting a bound value the reader was never shown being bound. A test now reads every agent name
-`micro_context.py` stamps on a draw, off that module's own AST, and fails when one is not in the map.
-Deterministic — proven by whole-render tests over fixture promptlog rows, no GPU.
-
 **A case reports THREE SECTIONS, and states what its samples SHARE exactly once (#1997).**
 `report.py` was organised around `Verdict` — one pass/fail per check, rendered per sample as
 `expected`/`actual` rows — a shape that cannot express variance at all and reads the harness
@@ -1349,26 +909,6 @@ harness section names its **dominant failure class**, computed from the cohort's
 rather than from `run_health`'s run-level tally, which is per process and cannot say which case a
 fault landed in.
 
-**The RECORD is the same scored object, not a second scoring of it (#2125).** `_PendingCase._grade`
-is the one seam where a cohort's claims meet per-sample grading, so it settles everything the
-`results.jsonl` record reports: a pooled sample `adopt`s the claims answered about it, and a sample
-the pool refused is `exclude`d — score 0.0, the document's own exclusion reason where a failure's
-labels go, and the `harness` cause an infrastructure loss earns. It used to be skipped, and an
-excluded sample answers no claim, so `graded([])` scored it a vacuous **1.0**: a case whose document
-said `14 pooled + 1 excluded` recorded fifteen passes and no causes — while its own
-`standing_counts` said `dead: 1` — and a later run diffed against that record saw no regression.
-The exclusion reason itself comes from `cohort.exclusion_reason` on both sides, so the document and
-the record cannot name one lost sample two ways.
-
-**A sample's BANNER states the verdict its case settled on, so the block is rendered LATE (#2127).**
-The banner is the one line a reader sees before opening anything, and it was built while the
-sample's database was live — where a sample has no verdict, so it read `✅ pass` above a
-sample the claims failed or the pooler excluded. A sample's transcript is still ASSEMBLED at that
-moment (its promptlog exists nowhere else), but it is held as a `_HeldSample` — the transcript, the
-result, and the cost read off the live database — and RENDERED at the flush, which runs where the
-case's scores settle: `_PendingCase.finish`, right after `_grade`. So `_sample_banner` stays the
-one and only place a banner is made, and there is no second rendering to disagree with the first.
-
 Around the sections, `report.render_case_document` states what every sample shares: **the ask in
 its K wordings** (listed once — a sample names which it used), **the seeded world**
 (`World.render`), **the system prompts**, and a **map saying which samples to open**. That map is
@@ -1378,27 +918,6 @@ reader), every sample whose whole shape differs an OUTLIER, the rest TYPICAL, an
 DEAD. Standing reads the sample's WHOLE shape across every structural feature, so a sample
 agreeing on tool sequence while minting its own routine shape is an outlier rather than being
 folded away. Nothing is dropped — every sample still folds under its banner, one click deep.
-
-**Sharing is DECLARED, not discovered — the line-diffing machinery is GONE.**
-`hoist_shared_prompt_blocks` / `shared_lines` / `unique_lines` / `shared_block_text` /
-`_worth_hoisting` computed which LINES happened to be common across a case's prompts and rendered
-each sample as a diff against a synthesized block, because samples could not be assumed to share
-anything. Under the pooled cohort they do — one world, one seed set, K wordings of one ask — so
-prompts are grouped by **exact text** (`report.prompt_variants`) and each distinct one renders
-ONCE, verbatim, naming the samples that read it. Measured on the reference port's own 18-sample
-run: four of five contexts (state-classifier, skill-framer, skill-namer, browse-extract) are
-byte-identical across every sample, 125,586 characters collapsing to 6,977. The fifth is the
-finding the diff was hiding — `chat` had **18 distinct texts**, differing in 3–4 lines of 83,
-because the self-state header feeds each sample its own minted collection and routine names back
-into its prompt. That is the cohort's `container name` variance showing up in the prompt, and the
-old marker (`_[shared block — see above]_`) rendered it as an absence. The rule this keeps that a
-diff could not: **every prompt renders verbatim**, so a reader opening one reads what the model
-read rather than a reconstruction. A sample's own block therefore carries only its own sequence —
-inputs, tool calls, tool results, reply — and `SampleTranscript` no longer has a `system_prompts`
-field at all; `conftest` deposits each sample's prompts into the case accumulator while its
-database is live, and the case document groups them at close.
-`comment_split.py` is untouched — GitHub's cap has not moved, and a sample fold is still the only
-legal seam.
 
 **Durable local artifact home (#1734).** "Stays local" means the **primary checkout's
 `data/eval-artifacts/`**, not the running worktree's `data/`. The `./data` bind mount is relative
@@ -1474,30 +993,6 @@ byte-identical to before); the run header opens the document so it lands on part
 64K (the header, and GitHub counting differently from `wc -c`). One loud refusal guards what is posted:
 a body **opening with build noise** (`docker compose`, `GIT_COMMIT=`, `#1 [internal]` — what a hand-piped
 `make assemble` publishes; it happened, and eight comments had to be deleted).
-
-**A fold bigger than one comment is REDUCED, not refused (#2135).** The seam rule means a single sample
-fold over the hard cap has no legal cut inside it, and that used to end the whole post: one
-`chat-answer-one-link-deep` sample thrashed for its whole step budget, rendered ONE step table of 78,258
-characters inside a 94K fold, and its entire gpt-oss report went unposted while the gemma sibling's posted
-normally. The measurement was correct (the thrashing itself is the filed Penny defect #2123) — it was the
-posting route that could not carry it, and both remedies the refusal implied were wrong: a lower
-`EVAL_SAMPLES` changes the N a ceiling is keyed to, and re-rolling for a smaller fold spends money to hide
-a finding. So `report.reduce_sample_body` is the ONE reduction, deterministic, and what it gives up is
-ORDERED so a fold barely over budget loses almost nothing: first every cell that folded a second copy of
-its own text collapses to the summary `truncate_cell` already built for it (the first line and the length
-— on the real fold that alone was 58,161 characters and no row went), then rows go **from the middle
-outward** in two tiers, what came BACK and what was thought (results, micro-context draws, thinking,
-baselines) before what was DONE and CLAIMED (tool calls with their arguments, expected rows, the reply).
-A structural row — a step header, a divider, the run-close header — is never given up, and fenced text is
-never read as a row, so the reduction can never edit the model's own quoted words. ONE marker stands at
-the first gap saying what was elided, how much, and that the whole transcript is in the run artifact; the
-case document's **health row** (`samples`) gains `· N reduced to fit the comment cap`, because an abridged
-transcript is exactly the kind of fact a reader would otherwise assume the opposite of. It runs at
-ASSEMBLE time over the case document already on disk — the same seam `summarise_thinking` and
-`elide_unused_prompts` run at — so re-posting a finished run (`make eval-report RUN=… FORCE=1`) picks it
-up with **no re-run**. With every fold bounded, a part over the cap is an INVARIANT VIOLATION rather than
-a case: `comment_split.enforce_part_cap` raises `OversizedPartError` as the renderer bug it is instead of
-refusing the caller.
 
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
