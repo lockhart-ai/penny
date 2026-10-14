@@ -9,6 +9,9 @@ it; it is cited rather than restated.
 
 Read alongside:
 
+- **[`docs/eval-working-guide.md`](eval-working-guide.md)** — the **working method**: how to
+  plan a case or a change, run it, read what came back, and reduce variance. This document is
+  the contract a case is written to; that one is the field notes for using it.
 - **[`docs/eval-iteration-workflow.md`](eval-iteration-workflow.md)** — the **loop** a round of
   eval work runs in (one beat → pairs → seeded world → run → report → ruling).
 - **[`docs/agent-task-workflow.md`](agent-task-workflow.md) §4** — how a run is invoked, scoped,
