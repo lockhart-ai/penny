@@ -99,7 +99,7 @@ Re-run the relevant gate after any code change made during review.
 
 ## 7. Publish and shepherd
 
-Follow the repository-wide PR process for commit, push, CI, review comments, merge queue, and PII checks. The PR body should include:
+Follow the kitten SOP in [`docs/agent-task-workflow.md`](agent-task-workflow.md) for commit, push, the draft PR, CI, and the privacy gate. The PR body should include:
 
 - the user-visible and internal behavior change;
 - the protocol/server impact, if any;
