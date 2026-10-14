@@ -405,7 +405,7 @@ class _Perf:
 
     Sourced from the real promptlog (``duration_ms`` per call + token usage
     stored in each response) — the same numbers prod records, not a harness
-    stopwatch.  Printed per case so ``make eval`` shows wall time and tok/s.
+    stopwatch.  Printed per case so ``make eval-remote`` shows wall time and tok/s.
     """
 
     calls: int = 0
@@ -488,7 +488,7 @@ _EVAL_LLM_TIMEOUT_DEFAULT_SECONDS = 20.0
 def env_seconds(name: str, default: float) -> float:
     """A duration read from the environment, where UNSET and EMPTY mean the same thing.
 
-    ``make eval`` forwards its whole variable list explicitly, so a variable the caller
+    ``make eval-remote`` forwards its whole variable list explicitly, so a variable the caller
     did not set arrives as an EMPTY STRING rather than absent — and ``float("")`` raises
     at IMPORT time, which takes the entire eval suite down before a single sample runs
     (measured: two runs died in 7 seconds this way).  Reading the default for both is what
@@ -1141,12 +1141,12 @@ def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: boo
 
 
 # ── Eval run report (verbatim transcripts, for the PR body) ──────────────────
-# When EVAL_REPORT_DIR is set (wired through by the Makefile `eval` target), each sample
+# When EVAL_REPORT_DIR is set (wired through by the Makefile `eval-remote` target), each sample
 # appends a markdown section — the full turn-by-turn transcript read from the ephemeral
 # promptlog before the --rm DB is discarded — to <dir>/<case_id>.md.  The SOP
 # (docs/agent-task-workflow.md §4) folds these into the PR body under a <details> per case,
 # so a reviewer sees every run verbatim without a wall of text.  Off by default (no dir set
-# ⇒ no-op), so ordinary `make eval` runs are unaffected.
+# ⇒ no-op), so ordinary `make eval-remote` runs are unaffected.
 
 _ACTOR = {
     "user": "👤 user",

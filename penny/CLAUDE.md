@@ -419,7 +419,7 @@ so a name the report renders opens that sample's own evidence and never a neighb
 
 - A REQUEST-state classifier case declares its `parked_round` (the routine and values an earlier turn already settled) — detail in `docs/reference/eval-harness.md`.
 
-Run the suite with `make eval-remote`, pinned to one provider at a time; `docs/reference/eval-harness.md` covers worker/sample tuning, the local GPU queue, and the provider lock.
+Run the suite with `make eval-remote`, pinned to one provider at a time; `docs/reference/eval-harness.md` covers worker/sample tuning and the provider lock.
 
 - A scored run names the suite's model (the roster's first `EVAL_MODELS` entry, root `CLAUDE.md`) and is posted with `make eval-report PR=<n>` — detail in `docs/reference/eval-harness.md`.
 
@@ -441,7 +441,7 @@ incomplete — the next change will regress it and nothing will catch it.
 **Validate each change as you build it, not in one batch at the end.** A multi-part
 change (e.g. honest-`done()` guidance, then a structural counts line, then a flag the
 self-review reads) is several independent asks of the model — each needs its own
-`make eval` gate *as it lands*, because a single eval at the end can't tell you *which*
+`make eval-remote` gate *as it lands*, because a single eval at the end can't tell you *which*
 lever the model did or didn't understand. Shipping the code first and "evaluating later"
 has shipped levers here that the model ignored (a phase-1 `done()` guidance scored 0/3
 until its wording was sharpened — measurable only because it was eval'd on its own, with
@@ -457,7 +457,7 @@ only after the existing cases that read that surface (e.g. `test_collector_hones
 edit moves both; the existing suite is the proof it didn't regress them.
 
 **Authoring a case is not running it.** Every prompt change must be *dry-run through
-the harness against the live model* (`make eval` / a focused case) and the result read
+the harness against the live model* (`make eval-remote` / a focused case) and the result read
 **before you commit the prompt** — a case you wrote but didn't run tells you nothing
 about whether the model actually complies, and "coverage" without execution has shipped
 broken prompts here before. When it fails, read the model's thinking (auto-dumped on
@@ -486,7 +486,7 @@ The workflow:
 1. **While iterating**, drive the fix with `replay.py` / focused low-N runs (below) — fast, throwaway, may read the local prod DB.
 2. **Before opening the PR**, lift the validated behaviour into a committable, privacy-safe `tests/eval/` case: genericize any real data into synthetic topics (per the log→test→fix loop), and assert on persisted DB state / sends / run outcome, never on wording.
 3. **An eval case never forces or injects a tool call.** A natural input — the world, the seeded state, the user's wording — leads the model to act, and the real gate answers whatever it draws. A failure that shows on only some samples is a measured rate, read off the cohort's pass count; it is never manufactured by wrapping the model client to plant a bad draw.
-4. **A mechanism is pinned by a deterministic mock test in `tests/`** — loop control, branching, bounds, a gate's refusal of a malformed call. The mock hands the mechanism the exact bad input and asserts what it does, on every run: `make check` owns the mechanism proof, `make eval` owns the live model-behaviour contract.
+4. **A mechanism is pinned by a deterministic mock test in `tests/`** — loop control, branching, bounds, a gate's refusal of a malformed call. The mock hands the mechanism the exact bad input and asserts what it does, on every run: `make check` owns the mechanism proof, `make eval-remote` owns the live model-behaviour contract.
 
 #### The log → test → fix loop (durable process for correcting model behaviour)
 

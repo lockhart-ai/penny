@@ -9,13 +9,14 @@ sequential report-runs without posting a single report). This module makes the d
   * a completed run dir carries a ``.posted`` marker (holding the posted comment's URL) once
     ``make eval-report`` has posted its report — so re-posting is idempotent (skipped unless FORCE),
   * a run dir with a ``manifest.json`` (a completed run) but NO ``.posted`` is UNREVIEWED, and
-    ``make eval`` prints a loud banner naming every such dir before it takes a GPU queue ticket.
+    ``make eval-remote`` prints a loud banner naming every such dir before anything is spent.
 
 Pure filesystem logic over the durable artifact home (the primary checkout's
-``data/eval-artifacts``, #1734), driven by the Makefile's ``eval`` / ``eval-report`` recipes and
-exercised by plain (non-eval) tests — no model, no git, no network. The banner WARNS, never blocks:
-an intentional multi-run sweep stays possible; the debt is just undeniable. A lever-less ephemeral
-run writes no ``manifest.json``, so it never appears here (by design — no artifacts to review).
+``data/eval-artifacts``, #1734), driven by the Makefile's ``eval-remote`` / ``eval-report``
+recipes and exercised by plain (non-eval) tests — no model, no git, no network. The banner
+WARNS, never blocks: an intentional multi-run sweep stays possible; the debt is just
+undeniable. A lever-less ephemeral run writes no ``manifest.json``, so it never appears
+here (by design — no artifacts to review).
 
 The home is **shared by every worktree** (#1734 mounts the primary checkout's
 ``data/eval-artifacts`` into all of them), so a run in it belongs to whichever tree measured it.
@@ -74,7 +75,9 @@ _NO_MATCH_HEAD = "eval-report: no unposted completed run under {home} was measur
 _ALREADY_POSTED = (
     "     already posted at this commit: {names} — re-post one with RUN=<run-dir> FORCE=1"
 )
-_NO_MATCH_ACTION = "     run `make eval` on this tree, or post a named run with RUN=<run-dir>"
+_NO_MATCH_ACTION = (
+    "     run `make eval-remote` on this tree, or post a named run with RUN=<run-dir>"
+)
 _AMBIGUOUS_HEAD = "eval-report: {count} unposted runs under {home} were measured at {commit}:"
 _AMBIGUOUS_ACTION = "     name the one to post: make eval-report PR=<n> RUN=<run-dir>"
 _NO_HEAD_HEAD = (

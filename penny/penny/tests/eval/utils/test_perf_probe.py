@@ -9,7 +9,7 @@ and the reasoning share of generation — the same numbers ``ollama run --verbos
 prints, captured per model so a swap can be judged on raw speed as well as
 correctness.
 
-Marked ``eval`` so it runs only under ``make eval``.  It measures; it does not
+Marked ``eval`` so it runs only under ``make eval-remote``.  It measures; it does not
 gate — it asserts only that the native endpoint answered with timings.
 
 It is the ONE case that cannot run against a remote OpenAI-compatible provider: the

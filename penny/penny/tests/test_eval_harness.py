@@ -513,7 +513,7 @@ _RETIRED_CONTINUE_NUDGE = "Please provide your response."
 
 
 def test_a_forwarded_but_unset_duration_reads_as_its_default(monkeypatch) -> None:
-    """`make eval` forwards every variable, so an unset one arrives EMPTY, not absent.
+    """`make eval-remote` forwards every variable, so an unset one arrives EMPTY, not absent.
 
     Read with a plain default that empty string reaches `float("")`, which raises while
     the module is still being imported — the eval suite then dies before any sample runs,
@@ -1103,7 +1103,7 @@ def test_a_morning_job_is_one_whose_rule_states_a_morning_hour() -> None:
 def test_every_apply_case_seeds_a_round_that_cites_its_own_run(tmp_path) -> None:
     """The learn → apply seeds write a whole prior turn — messages, promptlog rows, the
     round's container and its entry, both transition rows — and their loud probes only run
-    under ``make eval``, where a raise costs an hour of GPU before it is seen.  Drive each
+    under ``make eval-remote``, where a raise costs an hour of GPU before it is seen.  Drive each
     case's seeder here instead, against a real migrated database, and run the three probes
     that read the LEDGER: the round was FRAMED on the way in (#1868/#1869 — the move carries
     the framing and the container it names exists, inert), the round's calls are in the
@@ -1219,7 +1219,7 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
     in request on that ask, carrying the binding it is waiting on (#1894) and no framing.
 
     Driven here against a real migrated database because the seeder is CODE, and its loud
-    probe otherwise runs only under ``make eval`` — where a raise costs an hour of GPU
+    probe otherwise runs only under ``make eval-remote`` — where a raise costs an hour of GPU
     before it is seen.  Its own database per case, because that is what the sample gets, and
     because a case seeding a reduced world is where a leftover ``_JOURNEYS`` reference would
     show.  The case's own premise rides along in the same loop: the supply answers exactly
@@ -1271,7 +1271,7 @@ def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> 
     cleanly and reads back as that state, with its container premise intact.
 
     Driven here against a real migrated database for the reason its sibling beats' pins are:
-    the seeders are CODE, and their loud probes otherwise run only under ``make eval``, where
+    the seeders are CODE, and their loud probes otherwise run only under ``make eval-remote``, where
     a raise costs an hour of GPU before it is seen.  Its own database per case, because that
     is what the sample gets, and because one of these worlds seeds FEWER journeys than the
     module's five — where a leftover ``_JOURNEYS`` reference would show.
@@ -1305,7 +1305,7 @@ def test_both_moves_into_elicit_from_a_parked_round_start_where_they_claim(tmp_p
     behaviour sentence names, and each one's store premise holds (#2215).
 
     Driven here against a real migrated database for the reason their sibling pins are: the
-    seeders are CODE, and their loud probes otherwise run only under ``make eval``, where a
+    seeders are CODE, and their loud probes otherwise run only under ``make eval-remote``, where a
     raise costs a paid run before it is seen.
 
     What rides along is each case's reason for the STORE claims it makes or leaves out, since
@@ -1541,9 +1541,9 @@ def test_every_standing_operation_is_answered_against_the_job_it_claims(tmp_path
     instantiation seam — seeds cleanly and reads back as the job the case describes.
 
     Driven here against a real migrated database for the reason its sibling beats' pins are:
-    the seeders are CODE, and their loud probes otherwise run only under ``make eval``, where a
-    raise costs an hour of GPU before it is seen.  Its own database per case, because that is
-    what the sample gets.
+    the seeders are CODE, and their loud probes otherwise run only under ``make eval-remote``,
+    where a raise costs an hour of GPU before it is seen.  Its own database per case, because
+    that is what the sample gets.
 
     What the premise holds is the precondition of the claims, and every way of getting it wrong
     is silent on a run: a row that stopped rendering the lever the ask is about would make every
@@ -1634,7 +1634,7 @@ def test_every_correction_is_answered_against_the_round_it_corrects(tmp_path) ->
     (#1902) saying the routine standing under that pinned name is the round's own.
 
     Driven here against a real migrated database for the reason its sibling beats' pins are:
-    the seeder is CODE, and its loud probe otherwise runs only under ``make eval``, where a
+    the seeder is CODE, and its loud probe otherwise runs only under ``make eval-remote``, where a
     raise costs an hour of GPU before it is seen.  Its own database per case, because that
     is what the sample gets.
 
@@ -6365,8 +6365,8 @@ def test_every_claimed_answer_is_one_token_its_own_world_carries() -> None:
 
 def test_every_answering_world_seeds_the_store_its_claims_assume(tmp_path) -> None:
     """Each case's world lays down cleanly and reads back as the world its claims assume — the
-    loud probe run here, against a real migrated database, rather than only under ``make eval``
-    where a raise costs a GPU run before it is seen.
+    loud probe run here, against a real migrated database, rather than only under
+    ``make eval-remote`` where a raise costs a GPU run before it is seen.
 
     Its own database per case, because that is what a sample gets, and seeded through the
     DRIVER's own seam (``seed_world_stores``) rather than a second copy of it — the world's

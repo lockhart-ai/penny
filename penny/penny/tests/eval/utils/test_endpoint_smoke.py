@@ -105,7 +105,7 @@ async def test_an_empty_vector_is_a_refusal_not_a_pass(monkeypatch) -> None:
 
 
 def test_the_cli_exit_code_is_what_stops_the_run(monkeypatch) -> None:
-    """`make eval` reads the exit code, so a refusal must be non-zero and a pass zero."""
+    """`make eval-remote` reads the exit code, so a refusal must be non-zero and a pass zero."""
     monkeypatch.setenv("LLM_API_URL", "https://openrouter.ai/api")
     monkeypatch.setenv("LLM_MODEL", "some-model")
     monkeypatch.setenv("LLM_API_KEY", "k")

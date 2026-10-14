@@ -134,7 +134,7 @@ def test_render_no_match_whole_render(tmp_path: Path) -> None:
         "     the artifact home is SHARED by every worktree (#1734) — a run in it belongs to "
         "whichever tree measured it"
     )
-    action = "     run `make eval` on this tree, or post a named run with RUN=<run-dir>"
+    action = "     run `make eval-remote` on this tree, or post a named run with RUN=<run-dir>"
     assert render_no_match(tmp_path, COMMIT_HERE, [posted]) == (
         f"eval-report: no unposted completed run under {tmp_path} was measured at {COMMIT_HERE}\n"
         f"{shared}\n"

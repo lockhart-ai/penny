@@ -10,16 +10,11 @@ A JSON list because that is how ``PLUGINS`` is already configured, and because a
 name cannot contain ``/`` — a per-model-suffixed variable scheme is unavailable, not just
 inelegant.
 
-**At least one entry, required.**  A remote run REFUSES to start on an empty roster — the
+**At least one entry, required.**  A run REFUSES to start on an empty roster — the
 fail-fast shape ``LLM_EMBEDDING_MODEL`` already has: a run that quietly measures nothing is
 worse than a run that does not start.  The suite's own PRs and checkpoints are measured on
 the roster's first entry; a second (or further) entry stays configurable and runnable by
 name for a look, and such a run gates nothing.
-
-**The requirement binds the REMOTE profile only.**  The field that makes an entry
-load-bearing is ``provider``, and a local Ollama has none — it serves one model, on one
-GPU, from one process.  ``make eval`` local keeps its own single configured model exactly
-as it was.
 """
 
 from __future__ import annotations
@@ -135,7 +130,7 @@ def render_resolution(entry: EvalModel) -> list[str]:
 def main(argv: list[str]) -> int:
     """Print this invocation's model + pinned provider; 1 when the roster refuses.
 
-    Run by the ``eval`` recipe BEFORE anything is spent, so an under-configured suite stops
+    Run by the ``eval-remote`` recipe BEFORE anything is spent, so an under-configured suite stops
     at the same point an unserveable endpoint does rather than minutes into a run.
     """
     if len(argv) > 1:

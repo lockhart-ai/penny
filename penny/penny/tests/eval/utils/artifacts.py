@@ -1,6 +1,6 @@
 """Per-run eval artifacts: the input manifest + per-case JSONL results.
 
-When ``EVAL_REPORT_DIR`` is set, a ``make eval`` run emits three durable
+When ``EVAL_REPORT_DIR`` is set, a ``make eval-remote`` run emits three durable
 artifacts into that directory, beside the per-case transcript reports
 (``<case_id>.md``):
 
@@ -22,7 +22,7 @@ A report run (``EVAL_REPORT_DIR`` set) with no lever (``EVAL_LEVER``) fails fast
 with an actionable message: the lever is what makes a score shift attributable to
 the change that caused it, so it is not optional.
 
-The whole surface is driven from the environment by the ``make eval`` wiring, but
+The whole surface is driven from the environment by the ``make eval-remote`` wiring, but
 the pure builders take their inputs explicitly so ``make check`` can exercise them
 with synthetic fixture data — no git, no model, no container.
 """
@@ -136,7 +136,7 @@ MISSING_LEVER_MESSAGE = (
     "EVAL_REPORT_DIR is set but EVAL_LEVER is empty. Every report run must state its "
     "hypothesis in one line so a score shift is attributable to the change that caused "
     "it. Set EVAL_LEVER, e.g.\n"
-    "    EVAL_LEVER='moved instruction X from skill to prompt' make eval\n"
+    "    EVAL_LEVER='moved instruction X from skill to prompt' make eval-remote\n"
     "(the lever alone now defaults EVAL_REPORT_DIR to a run-stamped dir under the "
     "durable /penny/eval-artifacts mount — the primary checkout's data/eval-artifacts, "
     "which survives the worktree being swept.)"
@@ -433,7 +433,7 @@ class CaseArtifact(BaseModel):
 
 
 class RunManifest(BaseModel):
-    """The run's input identity — one ``manifest.json`` per ``make eval`` run.
+    """The run's input identity — one ``manifest.json`` per ``make eval-remote`` run.
 
     ``baseline`` records the ``EVAL_BASELINE`` this run diffed against, so the flips index is
     derivable at assemble time from DURABLE run state — not re-read from a volatile environment
@@ -665,7 +665,7 @@ def render_manifest_header(manifest: RunManifest) -> str:
 # ── The run: manifest + dirty diff + the results.jsonl append point ───────────
 @dataclass
 class EvalRun:
-    """One ``make eval`` run's report directory, resolved manifest, and diff."""
+    """One ``make eval-remote`` run's report directory, resolved manifest, and diff."""
 
     report_dir: Path
     manifest: RunManifest

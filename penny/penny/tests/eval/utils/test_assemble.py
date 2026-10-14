@@ -517,7 +517,7 @@ def test_missing_manifest_raises_actionable(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError) as excinfo:
         load_manifest(tmp_path)
     assert "manifest.json" in str(excinfo.value)
-    assert "make eval" in str(excinfo.value)
+    assert "make eval-remote" in str(excinfo.value)
 
 
 def test_cli_writes_comment_and_reports_errors(

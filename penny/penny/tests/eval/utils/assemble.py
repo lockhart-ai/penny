@@ -1,7 +1,7 @@
 """Run-comment assembler (#1717/#1725): compose a completed run's artifacts into THE
 postable PR comment — the durable record of the iteration.
 
-The per-run artifacts and per-case report blocks all exist after a ``make eval`` run —
+The per-run artifacts and per-case report blocks all exist after a ``make eval-remote`` run —
 ``manifest.json`` + ``results.jsonl`` (``artifacts.py``) and one ``<case_id>.md``
 transcript per case (``conftest.py``'s ``_write_sample_report``, now the iteration-6
 transcript-integrated blocks rendered by ``report.py``, under the case document its own
@@ -110,7 +110,7 @@ def load_manifest(report_dir: Path) -> RunManifest:
     if not path.is_file():
         raise FileNotFoundError(
             f"No {MANIFEST_FILENAME} in {report_dir} — is this a completed eval run's report "
-            f"directory? Run `EVAL_REPORT_DIR={report_dir} … make eval` first."
+            f"directory? Run `EVAL_REPORT_DIR={report_dir} … make eval-remote` first."
         )
     return RunManifest.model_validate_json(path.read_text())
 

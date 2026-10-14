@@ -393,7 +393,7 @@ def test_run_from_env_missing_lever_fails_fast(tmp_path: Path) -> None:
         with pytest.raises(MissingLeverError) as excinfo:
             run_from_env(env)
         assert "EVAL_LEVER" in str(excinfo.value)
-        assert "make eval" in str(excinfo.value)  # actionable: names the fix
+        assert "make eval-remote" in str(excinfo.value)  # actionable: names the fix
         # points at the durable artifact home, not the ephemeral worktree data/ (#1734)
         assert "eval-artifacts" in str(excinfo.value)
 

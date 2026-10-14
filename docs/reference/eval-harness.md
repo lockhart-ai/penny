@@ -46,8 +46,8 @@ written lean.
 
 ### Running the suite (`make eval-remote`)
 
-**`make eval-remote` is how the suite runs** (`EVAL_PROFILE=remote`, resolved in the
-Makefile's `eval` recipe): an OpenAI-compatible provider at 8 xdist workers x 5
+**`make eval-remote` is how the suite runs** (resolved in the Makefile's `eval-remote`
+recipe): an OpenAI-compatible provider at 8 xdist workers x 5
 samples in flight, which the provider serves concurrently. That 40 is MEASURED, not
 chosen: 80 in flight on a 10-core box was both slower and dirtier (samples began missing
 their channel-readiness window), so raise `EVAL_REMOTE_WORKERS`/`EVAL_REMOTE_CONCURRENCY`
@@ -55,15 +55,14 @@ only with a measurement in hand. Every value stays individually overridable —
 `EVAL_WORKERS=1 make eval-remote` is serial for debugging one case, `EVAL_SAMPLES=N`
 changes the per-case sample count. The suite's model is gemma
 (`google/gemma-4-26b-a4b-it`), pinned to Cloudflare; name a different roster entry with
-`LLM_MODEL=<name> make eval-remote` (below). **`make eval` still exists against the local
-GPU, one sample at a time, but it is not offered as a way to run the suite** — the
-embedding model is the one piece that stays local either way (below).
+`LLM_MODEL=<name> make eval-remote` (below). The embedding model is the one piece that
+stays local (below).
 
-### Which models the remote profile may measure (#1996/#2222)
+### Which models the suite may measure (#1996/#2222)
 
-**Which models the remote profile may measure is CONFIGURATION, and AT LEAST ONE is
+**Which models the suite may measure is CONFIGURATION, and AT LEAST ONE is
 required (#1996/#2222).** `EVAL_MODELS` in the primary checkout's `.env` is a JSON list of
-`{"model": …, "provider": …}` entries (`penny/tests/eval/utils/roster.py`), and a remote run
+`{"model": …, "provider": …}` entries (`penny/tests/eval/utils/roster.py`), and a run
 **refuses to start** on an empty roster — the fail-fast shape `LLM_EMBEDDING_MODEL` already
 has. The suite's PRs and checkpoints are measured on the roster's first entry; a further
 entry stays configurable and runnable by name for a look, and such a run gates nothing. A
@@ -71,9 +70,7 @@ JSON list because that is how `PLUGINS` is configured, and because an env var na
 contain `/`. The recipe resolves this invocation's entry before anything is spent — the
 first by default, or the one `LLM_MODEL` names, and a model **outside** the roster is
 refused (it has no upstream to pin and none to record, which is the ad-hoc pass the
-variable replaces). **The requirement binds the REMOTE profile only**: the field that makes
-an entry load-bearing is `provider`, and a local Ollama has none — it serves one model at a
-time on one GPU, so `make eval` keeps its own single configured model.
+variable replaces).
 
 ### A configured provider is a hard PIN
 
@@ -95,25 +92,17 @@ records it beside the pinned one (a differing pair renders as `not who answered`
 did not hold as written), and the run health block tallies every provider that served the
 run.
 
-### The embedding model is NOT part of the profile
+### The embedding model stays local
 
-**The embedding model is NOT part of the profile**: it stays on the local Ollama in both,
+**The embedding model stays local**: every run points it at the local Ollama,
 so moving the chat model never silently moves the vector space every memory case is scored
 against (the dedup thresholds and `find` ranking sit on embeddinggemma's cosine geometry).
 Its endpoint moves only if `LLM_EMBEDDING_API_URL` is set deliberately. That is also the
-throughput ceiling on the remote profile: ~7.6 embedding calls per sample all queue on one
+suite's throughput ceiling: ~7.6 embedding calls per sample all queue on one
 local GPU, and median embed latency measured 91ms at 10 samples in flight, 161ms at 40 and
 384ms at 80.
 
-### The GPU queue is local-only
-
-**The GPU queue is local-only.** It exists because this machine has one GPU, so a remote
-run takes no ticket and is invisible to the queue's busy probe, which is what lets several
-agents drive remote evals without colliding with someone working locally. The probe reads the
-endpoint out of each container's own command and matches only local hosts; it used to match
-any eval container, so a remote run held the line against a local one while touching no GPU.
-
-### A pinned provider is serialised instead (#2219)
+### A pinned provider is serialised (#2219)
 
 **A pinned provider is serialised instead (#2219).** A pin gets that one provider's rate limit
 and no other, so two runs pinned to the same provider at once draw HTTP 429s and lose samples.
@@ -139,8 +128,8 @@ the script into the container for it), with the wait replaced so no test sleeps.
 ### One call proves the endpoint before a run commits to anything
 
 **One call proves the endpoint before a run commits to anything**
-(`penny.tests.eval.utils.endpoint_smoke`, run by the `eval` recipe before it takes a queue
-ticket): every sample builds its own preflight, so an unserveable model is otherwise
+(`penny.tests.eval.utils.endpoint_smoke`, run by the `eval-remote` recipe before it takes the
+provider lock): every sample builds its own preflight, so an unserveable model is otherwise
 discovered 755 times, concurrently, minutes deep — which is how a full-suite run was spent
 against a model whose provider 404'd every call. The refusal carries the provider's own
 message verbatim, because that message is the whole answer. **It RETRIES a transient fault
@@ -264,7 +253,7 @@ persists anything, so that one re-roll leaves no row and no promptlog read can s
 ### Presenting eval runs on a PR (the report-as-comment process)
 
 **Presenting eval runs on a PR (the report-as-comment process).** The harness emits a
-verbatim per-case markdown report when `EVAL_REPORT_DIR` is set (`make eval` passes it
+verbatim per-case markdown report when `EVAL_REPORT_DIR` is set (`make eval-remote` passes it
 through). The **PR body stays a stable description**; **every tweak + re-run pushes the
 commit and ADDS A NEW COMMENT** with that run's report — never rewrite the body, never
 overwrite a prior comment — so the iteration history (each review round's before/after)
@@ -280,7 +269,7 @@ and the run's one-line **lever**), a `dirty.diff` (the working-tree diff saved v
 only when dirty), and a `results.jsonl` (one mechanically-diffable record per case: run id,
 case id, family tag, mean, all-pass rate, per-check outcomes, N, timings). The manifest also
 renders as a markdown header (`commit · model · N · lever`) atop each `<case_id>.md` report.
-**The lever is required**: `make eval` forwards `EVAL_LEVER` (the run's hypothesis, e.g.
+**The lever is required**: `make eval-remote` forwards `EVAL_LEVER` (the run's hypothesis, e.g.
 `EVAL_LEVER='moved instruction X from skill to prompt'`) alongside `EVAL_REPORT_DIR`, and a
 report run with no lever **fails fast** with an actionable message before any sample runs —
 the lever is what makes a score shift attributable to the change that caused it. The commit
@@ -399,7 +388,7 @@ line**: `mean` and `all-pass` are aggregates of per-sample scores, printed on th
 in `results.jsonl`, and no case gates on either. Pure artifact consumption — no model, no git, no network — so it's exercised by plain
 (non-eval) whole-render tests (`tests/eval/utils/test_assemble.py`), not a GPU run. Run it via
 `python -m penny.tests.eval.utils.assemble <report_dir>` (prints the comment to stdout) or
-`EVAL_REPORT_DIR=… make assemble` (the same dir `make eval` wrote to). **One and only rendering
+`EVAL_REPORT_DIR=… make assemble` (the same dir `make eval-remote` wrote to). **One and only rendering
 (#1753/#1759):** EVERY sample block folds whole under its banner — collapsed by default, its full
 body always one click away ("default collapsed" never means the body is dropped) — identical in the
 on-disk `.md` and the assembled comment. There is **no compact / banner-only form and no `--full` /
@@ -444,7 +433,7 @@ folded away. Nothing is dropped — every sample still folds under its banner, o
 **Durable local artifact home (#1734).** "Stays local" means the **primary checkout's
 `data/eval-artifacts/`**, not the running worktree's `data/`. The `./data` bind mount is relative
 to the compose-file dir, so an eval run from a worktree would write artifacts under that worktree —
-where they die when it's swept post-merge. So `make eval` / `make assemble` resolve the primary
+where they die when it's swept post-merge. So `make eval-remote` / `make assemble` resolve the primary
 checkout host-side (from the shared git *common* dir — identical from every worktree) and
 bind-mount its `data/eval-artifacts` at `/penny/eval-artifacts`. A report run (one declaring
 `EVAL_LEVER`) with no explicit `EVAL_REPORT_DIR` defaults to a run-stamped
@@ -452,7 +441,7 @@ bind-mount its `data/eval-artifacts` at `/penny/eval-artifacts`. A report run (o
 artifacts **survive the worktree being removed** and `EVAL_BASELINE` can point a later run at a
 prior run's durable path. An explicit `EVAL_REPORT_DIR` is always honored; a lever-less iteration
 run stays ephemeral (no artifacts, no lever requirement). The Makefile derives the mount at parse
-time, so `make -n eval` shows the concrete `-v <primary>/data/eval-artifacts:/penny/eval-artifacts`
+time, so `make -n eval-remote` shows the concrete `-v <primary>/data/eval-artifacts:/penny/eval-artifacts`
 from any worktree.
 
 ### Posting a run: `make eval-report` one-shot + the unreviewed-run banner (#1757)
@@ -469,7 +458,7 @@ through stripping), posts it **verbatim** to PR `<n>` via `GH_TOKEN=$(make token
 stamps a **`.posted` marker** (holding the comment URL) into the run dir. It **fails loudly** when `PR`
 is unset, the run dir is missing, the token is empty, or the assemble output is empty; it is
 **idempotent by the marker** — a run already carrying `.posted` re-posts only with `FORCE=1`, else prints
-the existing URL and exits 0. And `make eval`, **before taking a GPU queue ticket**, scans the durable
+the existing URL and exits 0. And `make eval-remote`, **before anything is spent**, scans the durable
 home for run dirs with a `manifest.json` but **no** `.posted` and prints a **loud, multi-line banner**
 naming each (`⚠ N unreviewed eval run(s) … → post each: make eval-report PR=<n> …`) — **warn, never
 block** (a multi-run sweep stays possible; the debt is just undeniable). **Marker semantics**: a
