@@ -161,9 +161,13 @@ docs/                           — Design documents and review guides
                                   measured variance, the porting checklist (#1994)
   eval-catalogue.md             — GENERATED: every eval case by area, and which cases cover each
                                   machine edge. `make fix` writes it; `make check` fails when stale
+  eval-working-guide.md         — Working method for eval cases: planning, running, reading a run,
+                                  finding and reducing variance, reasoning about a fix
   eval-suite-history.md / migration-log.md — the eval-suite history and the DB migration log, moved out of `penny/CLAUDE.md`
   browser-extension-architecture.md — Browser extension architecture & design
   archive/                      — Nine finished design/implementation plans, kept for history
+  reference/                    — Per-area reference for `penny/penny/`, read before changing code in
+                                  that area (the table in `penny/CLAUDE.md` maps paths to files)
   benchmarking-embedding-models.md — Embedding model benchmark results
   benchmarking-qwen35-vs-gpt-oss.md — qwen3.5 vs gpt-oss benchmark comparison
 data/                           — Runtime data (gitignored)
