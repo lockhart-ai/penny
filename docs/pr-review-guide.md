@@ -440,6 +440,9 @@ This is the single most recurring source of production bugs in this project. It 
 
 Git workflow, branch/PR mechanics, the approval split, and PR title conventions are owned by root [`CLAUDE.md`](../CLAUDE.md) → "Git Workflow" — this guide doesn't duplicate them. Review a PR's git mechanics against that section directly, and flag drift from it the same way you'd flag drift from any other rule here.
 
+- [ ] The PR is still open before every push to its branch (`gh pr list --head <branch> --state open`)
+- [ ] CLAUDE.md and README.md updated when making significant changes (new features, architecture, config, API, directory structure)
+
 ---
 
 ## 12. Similarity and Embedding Code
