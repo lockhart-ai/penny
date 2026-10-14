@@ -286,7 +286,191 @@ pass.
   that text, not from a plan paraphrasing it
   ([`docs/eval-iteration-workflow.md` §2, §8](eval-iteration-workflow.md)).
 
-## 5 · Running
+## 5 · Building the world and the five wordings
+
+This is the "how" the plan above assumes: once the behaviour sentence, the layer and the
+claims are settled, here is how to build the fixture — the world a case's turn answers
+against, and the five wordings that pool into its cohort — for a chat case, a micro-context
+case, and a collector case, each with one small worked example. The shape of the call that
+takes them is [`docs/eval-case-design.md` §4](eval-case-design.md); cohort sizing and the
+phrasing-versus-scenario line are [`docs/eval-case-design.md` §6](eval-case-design.md);
+genericising a real page or wording into a synthetic one is [`docs/eval-iteration-workflow.md`
+§3](eval-iteration-workflow.md). None of that is restated here.
+
+### The world
+
+A world is a `World` (`penny/penny/tests/eval/utils/worlds.py`): the pages a browse can
+reach (`pages`, each a `CannedPage`), the collections already sitting in the store
+(`stores`, each a `SynthCollection`), the mailbox (`mailbox`, `CannedEmail`), what a correct
+sample must keep from each (`keeps`, one token tuple per source), what must never be kept
+from any of them (`excludes`), and what the reply owes (`answers`). `World.sources` walks
+pages, then stores, then mailbox as one list, so a page and a seeded collection render in
+the same table — `World.render()` — and a claim never has two different grounds to check
+against. One case declares one world; its samples share it and nothing else varies the
+ground.
+
+1. **Decide what the case's turn reads.** A chat or micro-context case usually needs only
+   `pages`; a case about what Penny already knows needs `stores`; an email case adds
+   `mailbox`. A collector case has its own page-and-entry-condition shape — below.
+2. **Write the source(s), at the shape and size of the real input** — already in §4 above: a
+   `CannedPage(match=..., text=...)` (matched by a lowercase substring of the request URL,
+   `conftest.py`'s `install_browse`) reads like a real page — a `Title:` line, the URL in the
+   visible body — transcribed from a recorded input's structure, not a five-link stand-in for
+   a ninety-link page. A `SynthCollection` is `(name, description, entries)`, each entry
+   written `"<key> — <content>"` (`SYNTH_KEY_SEPARATOR`) the way a real one is stored.
+3. **Invent values that are checkable.** Every fact a claim reads is a token invented for
+   this case, with no whitespace, appearing in exactly one place — so finding it in the store
+   or the reply is evidence it came from there and nowhere else. `keeps` names a token **per
+   source** (what identifies that source, not what the ask puts in scope); `excludes` names
+   tokens that must appear on no source the case keeps; `answers` names what the reply itself
+   must state. All three are declared on the `World`, and an empty tuple is a report — "this
+   ask has nothing to keep" — not an omission.
+4. **A source that fails is part of the world, not an exception to it.** `CannedPage(fails=
+   True)` makes a matched read raise inside the browse tool; `ALL_BROWSES_FAIL` (`match=""`,
+   `fails=True`) makes every source unreachable — the "browsed a lot, read nothing usable"
+   world. Install either the way any page is installed, as a source on the `World`.
+5. **Seed anything that must already be true through the store's own write path, never a
+   hand-inserted row.** A case passes a `seed` — a `Seeder` (`Callable[[Database], None]`,
+   `utils/seeds.py`) — that writes an entry through `memory.write(...)`, stands a job up
+   through `db.memories.create_collection(...)`, or lays a machine state down through the
+   transition ledger (`utils/transition_ledger.py`'s `_park`/`_log_classifier_draw`/
+   `_log_chat_step`, used by the builders in `utils/seeds.py` and `utils/transition_world.py`).
+   A hand-built row gives the runtime something to compare against that no real turn could
+   have produced.
+6. **Make the seed prove itself before the turn runs**, with a loud assertion of the world it
+   just built — `probe_seeded_world` in `chat/idle/test_chat_memory_stories.py`,
+   `_assert_the_watch_world` in `collector/test_watch_cycles.py`, `_assert_parked_in_elicit`
+   in `utils/seeds.py` are the pattern. A seed that has drifted from its own description fails
+   here, never as a puzzling score after a paid run. Read any time-dependent fact off the
+   sample's own `PinnedClock` (`utils/clock.py`) and `sample.timezone`, never off wall time.
+7. **A behaviour's opposite direction is the same wordings over a different world.** Where
+   the world the case needs for "fires" is not the world it needs for "does not fire" — e.g.
+   a collection that already holds a matching entry versus one that holds nothing — that is
+   two `World`s and two cases (§2's "the world carries the condition, not a clause in the
+   ask"), never one case whose ask changes to flip the outcome.
+
+### The five wordings
+
+Once there is a world, write the ask (or instruction) in five wordings — the cohort's arms.
+What varies is register, length, word order, and the user's own synonyms: terse against
+chatty, "can you" against "could you", "put it on my list" against "stick it on my list".
+What must never vary is the facts: every wording states every fact a claim below depends on,
+because the claims are answered pooling all five, and a wording that drops a fact measures a
+different, easier behaviour on that one arm and calls the result instability.
+
+- **Declare the facts beside the wordings**, as a small case-local function run over `(ask,
+  *also_phrased)` — see `assert_every_wording_carries_the_value` in
+  `chat/apply/test_missing_value_arrives.py` or `_probe_unspoken` in
+  `chat/idle/test_chat_memory_stories.py`. `make check` runs it and fails when a wording drops
+  a fact — either because the fact is spelled the same in all five, or because it survives
+  being reworded (declared as alternatives the function checks for).
+- **A wording never borrows the phrasing of the prompt under test**, never names a tool, and
+  never states the expected outcome — a wording that nudges the model toward the exact words
+  the system prompt uses, or asks "how many are left" when the claim only needs "in stock",
+  is lending the case's own answer to the thing it is measuring.
+- **If a rewording changes what a correct sample is, it is a different case**, not a sixth
+  wording — the phrasing-versus-scenario line,
+  [`docs/eval-case-design.md` §6](eval-case-design.md).
+- **Where the wordings come from depends on the layer:**
+  - **Chat** (and the classifier): five ways a *user* would actually say the ask —
+    `ask=` plus `also_phrased=` on `chat_eval`.
+  - **A micro-context** (the browse extractor, a framer/binder/labeller call): the arm is
+    **Penny's own text**, written upstream by the calling draw — the `extract` argument of a
+    browse call. Five wordings are five ways that calling draw might have worded the same
+    request, sampled from real upstream phrasing, never invented for the case —
+    `instruction=` plus `also_instructed=` on `extractor_eval`.
+  - **A collector**: there is no user turn, so the natural language is the `extract`
+    instruction the job's rendered program carries, reaching the model through the shipped
+    instantiation seam (`retarget_writes` → `bind_parameters` → `render_skill`), plus the
+    prose of the page that answers it. Never hand-author the program text directly — a
+    program the instantiation seam cannot emit measures a render, not a draw. `arms=` on
+    `collector_cycles_eval` takes a `CycleArm` per wording, each carrying its own `seed`,
+    `pages` and `world` — five wordings of one instruction, over five prose variants of one
+    page, with the watched fact byte-identical across all five.
+- **Three samples per wording, pooled: fifteen** (`samples_per_phrasing=3` on every driver).
+  One wording failing where the other four pass is a finding about how that one wording
+  reads, visible in the per-sample record — not grounds to drop it.
+
+### Checking it before a run
+
+`make fix` regenerates `docs/eval-catalogue.md` from every declared case; `make check` runs
+the fixture-coherence probes (an anchor really is on the page it claims, exactly once — e.g.
+`test_each_extract_field_case_coheres_with_the_page_it_claims` in `test_eval_harness.py`) and
+the seed probes above, and fails on a stale catalogue. A case that passes `make check` has a
+coherent world and five wordings before a single sample is run against a live model.
+
+### Three small worked examples
+
+**A chat case** — `memory-look-up-and-save`
+(`chat/idle/test_chat_memory_stories.py`). The world is one search-and-detail page pair plus
+one empty collection the ask names; the subject is invented so the model cannot answer from
+what it already knows:
+
+```python
+world=World(name="mistforge", pages=MULTIHOP_PAGES, keeps=(), excludes=(), stores=(_GAMES,)),
+ask="can you look up Mistforge Tactics, read up on it, and save it to my games list?",
+also_phrased=(
+    "could you find out about Mistforge Tactics and put it on my games list?",
+    "have a look at Mistforge Tactics, read up on it, and add it to my games list",
+    "go read about Mistforge Tactics and save what you find to my games list",
+    "look Mistforge Tactics up for me and stick it on my games list",
+),
+```
+
+`keeps` and `excludes` are empty by report: the two pages share the subject's own name, so no
+token picks out one over the other, and the ask rules nothing out. The constant fact every
+wording carries is the subject's name and the one list to write it to; the claims
+(`_wrote_into`, `_stored_the_subject`) read exactly those two things off the store afterward.
+
+**A micro-context case** — `extract-fields-all-present`
+(`extractor/test_browse_extract_fields.py`). One fixed listing page, read against an
+instruction naming three fields, in five wordings of that instruction (none of which hints at
+*how* to render the stock field, which would hand the model the anchor the claim reads):
+
+```python
+instruction="the item's name, its price and whether it is in stock",
+also_instructed=(
+    "what the item is called, what it costs, and whether it is available",
+    "the product name, the price, and the stock status",
+    "for the item on this page: its name, its price, and whether it can be bought",
+    "pull out the name of the item, how much it costs, and whether it is in stock",
+),
+```
+
+The world here is implicit — `extractor_eval` builds it from `url=`/`page=` as one
+`CannedPage`, since a micro-context's whole ground is the one page it reads. The anchors
+(`_ITEM_ANCHOR`, `_PRICE_ANCHOR`, `_STOCK_ANCHOR`) are the smallest unique spans the page
+actually carries, held against the page itself by the `make check` coherence probe above.
+
+**A collector case** — `watch-writes-the-first-reading`
+(`collector/test_watch_cycles.py`). Five `Reading`s — one instruction wording plus one prose
+variant of the same page each — built into five `CycleArm`s, with the entry condition (an
+empty collection) and the facts (one url, one price) constant across all five:
+
+```python
+READINGS = (
+    Reading("current-price", "the current price", _HEAD + …),
+    Reading("asking-price", "the asking price on the page", _HEAD + …),
+    …
+)
+
+def _arm(case: WatchCase, reading: Reading) -> CycleArm:
+    return CycleArm(
+        text=reading.extract,
+        seed=_seeder(case, reading),
+        pages=[_page(case, reading)],
+        world=_world(case, reading),
+    )
+```
+
+Each arm's own `_seeder` stands the routine up through `db.skills.upsert` and
+`db.memories.create_collection`, under the key the rendered program writes to, then asserts
+the whole world (`_assert_the_watch_world`) before the cycle runs — including that this
+arm's wording really did reach the stored program as `extract={...}`. The page's watched
+line (`_DATUM`) is byte-identical across all five prose variants, which is what lets the
+case's claims name `499` rather than just "a plausible number."
+
+## 6 · Running
 
 Runs go to OpenRouter with `make eval-remote`, pinned to one provider — upstreams serving one
 model are not interchangeable, and one was measured blanking every tool result it returned.
@@ -339,7 +523,7 @@ look that gates nothing; a PR's evidence is the suite's model.
   comment — never rewrite or overwrite a prior one; the comment stream is the durable record
   ([`docs/agent-task-workflow.md` §8](agent-task-workflow.md)).
 
-## 6 · Reading a run
+## 7 · Reading a run
 
 **Health first.** Before any claim, check how much of the cohort actually completed, the fault
 classes, and which provider answered — a degraded run is not evidence
@@ -449,9 +633,9 @@ found wrong is corrected in the open, not quietly replaced.
 
 **Sorting a whole-suite run** to choose what to work on: by the largest claim gap and by the
 highest variance, then set aside the classes already ruled out (the exploration-bounded cases from
-§3, the model-specific gaps from §7).
+§3, the model-specific gaps from §8).
 
-## 7 · Reasoning about a fix
+## 8 · Reasoning about a fix
 
 The ladder, cheapest and most durable first: fix the data or the presentation; then the wording;
 then code — never "make the model smarter"
