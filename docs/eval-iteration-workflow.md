@@ -55,7 +55,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 ## 5. Report
 
-- **Every run posts its verbatim report to the PR** (`make eval-report PR=<n>`) — the comment stream **is** the durable record of the iteration. What a ported case's report says: [`docs/eval-case-design.md`](eval-case-design.md); how it gets posted: [`docs/agent-task-workflow.md`](agent-task-workflow.md) §4.
+- **Every run posts its verbatim report to the PR** (`make eval-report PR=<n>`) — the comment stream **is** the durable record of the iteration. What a ported case's report says: [`docs/eval-case-design.md`](eval-case-design.md); how it gets posted: [`docs/agent-task-workflow.md`](agent-task-workflow.md) §8.
 - **The chat summary follows one shape, in this order:**
   1. **Overall** — claims passed of claims checked, per model, with the baseline beside them.
   2. **Per-case table** — each claim's passing count, each row naming the case's behaviour, plus run health and any variance feature that rose.
@@ -84,13 +84,13 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 - **One ticket, one scope, the SOP as contract.** Rounds land on the **inflight PR**; separate concerns get **separate tickets and PRs**. **Ask when unsure — never collapse "separate PR" into "inflight round" on your own reading.**
 - **Code-owner-authored text lands VERBATIM.** The kitten verifies it **char-for-char by independent AST extraction after `make fix`**, sweeps **every carrier** (pins, docstrings, comments), and **reports judgement calls and out-of-scope findings instead of absorbing them**.
-- **Kittens run their own scoped evals** and post every report to the PR (`docs/agent-task-workflow.md` §4); the coordinator never runs one itself.
+- **Kittens run their own scoped evals** and post every report to the PR (`docs/agent-task-workflow.md` §8); the coordinator never runs one itself.
 
 ## 9. Rerun upstream
 
 - A change to **shared seeders, shared claims, shared prompts, or anything the model reads** = a **non-regression rerun of every touched suite, baselined**.
 - When a **producing** prompt changes (the framer), the suites whose fixtures transcribe its draws need, in order: a **fresh sampling run** → the **fixture re-sample** → the **composed rerun**.
-- **The final state before merge is one composed run of the beat on the finished tree.** A PR that adds or changes eval cases merges only with **a run on the suite's model posted at its final head**; a rebase that leaves the tree byte-identical to the measured head keeps the run valid, and the PR says so in a comment (`docs/agent-task-workflow.md` §8).
+- **The final state before merge is one composed run of the beat on the finished tree.** A PR that adds or changes eval cases merges only with **a run on the suite's model posted at its final head**; a rebase that leaves the tree byte-identical to the measured head keeps the run valid, and the PR says so in a comment (`docs/agent-task-workflow.md` §12).
 
 ## 10. The loop itself
 
