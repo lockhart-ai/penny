@@ -95,12 +95,26 @@ Quotes are the code owner's own words.
    - There are no silent fallbacks and no silent cuts: anything shortened says what it left
      out.
 
-9. **A few composable primitives, not bespoke mechanisms.** Every recurring intent is a
-   configuration of a small vocabulary the model can reason about. **Machinery needs a second
-   customer:** fix the one instance, and build no guard, registry or tool
-   for a class with one member.
+9. **Penny reports honestly on what she actually did.** *"penny reports honestly on her
+   actual actions."*
+   - Every action ends in an account of itself: what was tried, how far it got, what it
+     produced and what it did not. A failure is handled inside the tool: a tool that cannot
+     finish stops gracefully and returns that account.
+   - The model tells the user what happened, from that account. *"failures should be handled
+     inside tools and the chat agent should be able to summarize their responses in her
+     response back to the user."*
+   - A fixed message stands in for her reply in one case only. *"the only time we should get
+     a canned message back from penny is if the model runner actual broke and was
+     unreachable."*
+   - What she can say in the turn she can look up afterwards. The account is in the record,
+     one call away, so asked later what went wrong she can answer.
 
-10. **Change behaviour through data before code.** Prefer the highest rung that works:
+10. **A few composable primitives, not bespoke mechanisms.** Every recurring intent is a
+    configuration of a small vocabulary the model can reason about. **Machinery needs a second
+    customer:** fix the one instance, and build no guard, registry or tool
+    for a class with one member.
+
+11. **Change behaviour through data before code.** Prefer the highest rung that works:
     1. the user teaches Penny;
     2. a direct edit in the UI;
     3. a prompt change measured by the eval;
@@ -108,11 +122,11 @@ Quotes are the code owner's own words.
 
     The goal is to manage Penny through Penny.
 
-11. **Weight the ambient space toward Penny's own state.** The user's data can be re-reached
+12. **Weight the ambient space toward Penny's own state.** The user's data can be re-reached
     from their next message; Penny's internal state can't be. So the self-state is rendered
     every turn, and the user's store appears as a map, not as its contents.
 
-12. **Structural rules over tuned thresholds.** Where a decision can rest on identity or a
+13. **Structural rules over tuned thresholds.** Where a decision can rest on identity or a
     set relation, it does. A similarity cutoff drifts and has to be re-tuned, and a structural
     rule has nothing to tune.
 
