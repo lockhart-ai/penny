@@ -66,6 +66,8 @@ A change to a prompt, `extraction_prompt`, tool description, or anything else th
 - Each re-run (yours, or one the coordinator asks for) adds a **new** PR comment — never rewrite the body or overwrite a prior comment; the comment stream is the durable record.
 - If your ticket is one round of a larger beat, `docs/eval-iteration-workflow.md` is the loop it's a round of.
 - If your brief explicitly defers eval validation to an end-of-epic sweep, skip the dry-run but add a "Model-facing changes" section to the PR body inventorying exactly what changed.
+- **Writing a case** (new or ported): [`docs/eval-working-guide.md`](eval-working-guide.md) §8 "Building the world and the five wordings" is how to build the fixture; §10 "Reading a run" is how to read what comes back.
+- **A failure-driven case** (your issue carries an agreed case proposal, not just a prompt change) follows its own order, all on the one draft PR: open the PR with the case as written; run it scoped and post the result as the "before" (`EVAL_LEVER="reproduces: <the failure>"`); push the fix as new commits on the same PR; run it scoped again and post the "after" (`EVAL_LEVER="fix: <the lever>"`). [`docs/eval-working-guide.md`](eval-working-guide.md) §1 is the whole path.
 
 ## 9. Commit, push, open a draft PR
 

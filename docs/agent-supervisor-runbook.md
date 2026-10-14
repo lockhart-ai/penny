@@ -14,12 +14,22 @@ Most work is this, start to finish — not a fleet:
 4. **Brief a kitten** (§3 below: model, worktree, the `[todo N]` marker, the brief template) and dispatch it.
 5. **Read its plan**, if the brief called for one, and approve or correct it before it touches a file.
 6. **Look in once, about 30 minutes in** — its diff so far, whether CI or its eval run is moving — and again if it looks stuck.
-7. **Watch it to a PR, then review for real.** Check what a kitten's report claims against the PR itself — the diff, the gate's exit line, the posted run — before acting on it; a report says what it believes happened, not what did. Read its files with `gh pr diff <n>` or `git show origin/<branch>:<path>`, never by opening them inside its worktree, which loads that tree's instruction files into your own context. If CI is red or you have review comments, resume a **Sonnet** kitten (SendMessage) with exactly what to fix, or send a fresh **Haiku** kitten its own small brief (§3); it adds commits and reports again, then stops, and you look again. Neither polls CI or shepherds itself.
+7. **Watch it to a PR, then review for real.** Check what a kitten's report claims against the PR itself — the diff, the gate's exit line, the posted run — before acting on it; a report says what it believes happened, not what did. Read its files with `gh pr diff <n>` or `git show origin/<branch>:<path>`, never by opening them inside its worktree, which loads that tree's instruction files into your own context. If CI is red or you have review comments, resume a **Sonnet** kitten (SendMessage) with exactly what to fix, or send a fresh **Haiku** kitten its own small brief (§3); it adds commits and reports again, then stops, and you look again. Neither polls CI or shepherds itself. Check the PR body itself for a generated-with footer or a session link — a kitten's own tooling adds one by default, against the SOP — and remove it if present.
 8. **Mark it ready** (it opened as a draft) and file the PR as a second artifact under the todo.
 9. **Approve and merge.** An eval-case PR goes to the code owner's review; an internals PR (runtime, harness, CI, docs) you approve yourself, under his `gh` login (`CLAUDE.md` → Git Workflow). An eval-case PR also needs a run on the suite's model posted at its final head before either of you approves it. Set merge-when-ready with `gh pr merge <n> --auto`, which enqueues the PR once it is approved and green; a PR that is already approved and green is queued with plain `gh pr merge <n>`. The merge queue does the rest.
 10. **After it merges or closes**, clean up (§5) and close the todo.
 
 Dependent PRs are linked as a GitHub stack (`gh stack link`) before review, so they're reviewed and queued in the right order.
+
+**A problem with Penny's behaviour is worked case-first.** The issue is still filed and the kitten
+still briefed as above, but the path between steps 1 and 4 differs — [`docs/eval-working-guide.md`
+§1 "From a failure to a case to a fix"](eval-working-guide.md) is the whole of it. You (not a
+kitten) diagnose and distil the failure, check `docs/eval-catalogue.md` for what already covers
+it, and put the finished case proposal to the code owner in one `ask` card
+([§6 "The case proposal"](eval-working-guide.md)). The kitten's one draft PR then carries the case
+together with its fix: the run that reproduces the failure, the fix, and the run that resolves it,
+each posted as a new comment. Because that PR adds an eval case, it goes to the code owner's
+review at step 9 like any other, not just an internals approval.
 
 ## 2. Keeping the code owner informed
 

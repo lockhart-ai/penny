@@ -18,7 +18,58 @@ measure it, running the suite, or reading a run to decide what to do next.
 
 ---
 
-## 1 · What the suite is for
+## 1 · From a failure to a case to a fix
+
+Penny's behaviour is managed through the suite. A failure seen in use becomes a case that
+reproduces it; the fix is whatever makes that case's claims hold and its variance fall, without
+costing its neighbours. A fix with no case is unmeasured. A case whose first run does not show
+the failure does not reproduce it.
+
+This is **not** the same rule as porting an existing case (§2 below): a port lands the case as it
+is and files any gap it shows for later ([`docs/eval-case-design.md` §10](eval-case-design.md)). A
+failure-driven case carries its fix in the same issue and the same PR, proved by two runs — the one
+that reproduces the failure, the one that shows it resolved.
+
+The path, in order. Each step says who does it, what it produces, and where the detail lives:
+
+1. **Observe** (the code owner). He says what went wrong, at whatever level he likes.
+2. **Diagnose** (the coordinator, reading only — wide reading goes to a read-only kitten). Find the
+   turn or cycle and read it off the runtime log and the prompt log. §5 "Distilling a failure"
+   below.
+3. **Classify the failure** (the coordinator) — a wrong decision on what the model was shown, a
+   sensible decision on a wrong or missing input, or a deterministic defect below the model —
+   because it decides what gets built. §5 below.
+4. **Distil** (the coordinator): the user's goal, the correct end state as facts, the entry
+   condition, the smallest input that still shows the failure. §5 below.
+5. **Check what already covers it** (the coordinator), against `docs/eval-catalogue.md`. §5 below.
+6. **Reproduce, then genericise** (the coordinator), replaying the recorded input before inventing
+   values of the same shape. §5 below.
+7. **Propose the case** (the coordinator) to the code owner, one `ask` card, using the form in §6
+   "The case proposal" below — the behaviour sentence, the world, the wordings and the claims are
+   his to rule on.
+8. **Write the case and open the draft PR** (a kitten). The agreed proposal goes into the issue
+   verbatim; the kitten builds the world and wordings and opens one draft PR for the issue
+   ([`docs/agent-task-workflow.md`](agent-task-workflow.md); §8 "Building the world and the five
+   wordings" below).
+9. **Run it to show it reproduces** (a kitten), scoped, on the suite's model, at the case's commit
+   — the "before" — posted to the PR (§9 "Running", §10 "Reading a run" below). If every claim
+   holds and the spread is narrow, the case does not reproduce the failure: back to step 4.
+10. **Push the fix to the same PR** (a kitten), one lever per round — presentation before wording
+    before code (§11 "Reasoning about a fix" below).
+11. **Run it again to show it resolves** (a kitten), at the new head, with the neighbours the
+    change could disturb — the "after" — posted to the same PR as a new comment. Further rounds
+    repeat steps 10 and 11.
+12. **Review and merge** (the coordinator, then the code owner). The PR adds an eval case, so the
+    code owner reviews it; a batch of fixes still ends with one whole-suite run, asked of the code
+    owner first.
+
+**One issue, one PR.** The code owner: *"i only want a single pr … write the test, create the pr,
+run it to show it reproduces the failure, then push the fix, run it again to show it resolves it,
+then we have both runs on the pr."* The case and its fix live together; the two posted runs, each
+at the commit it measured, are the evidence. Each run's `EVAL_LEVER` says which it is — for example
+`reproduces: <the failure>` and `fix: <the lever>`.
+
+## 2 · What the suite is for
 
 The suite is the list of behaviours Penny supports — `docs/eval-catalogue.md`, generated from the
 cases themselves. One case is one behaviour under one entry condition, in five wordings, three
@@ -28,9 +79,14 @@ samples each: a cohort of fifteen ([`docs/eval-case-design.md` §4, §6](eval-ca
   model got there — which tools, in what order, in what words — is measured as variance and
   never asserted. This is the whole of [`docs/principles.md` §4.1](principles.md).
 - **Claims are counted and reported, never gated, and carry no floor.** A well-formed case
-  scoring 4 of 15 is a finding about Penny, not about the case: the case lands, the gap is filed,
-  and the fix comes after it, never folded into the port
-  ([`docs/eval-case-design.md` §1, §10](eval-case-design.md)).
+  scoring 4 of 15 is a finding about Penny, not about the case — but what happens next depends on
+  how the case got here, and the two must not be confused:
+  - **Porting an existing case.** The case lands as it is; the gap is filed and the fix comes
+    after it, never folded into the port
+    ([`docs/eval-case-design.md` §1, §10](eval-case-design.md)).
+  - **A case written to reproduce a failure found in use.** The case and its fix share one issue
+    and one PR: the run that reproduces the failure and the run that resolves it are both posted
+    to that PR (§1 above).
 - **Reviewing a case judges the test, not the model:** is it a real use, is the setup fair, are
   facts asserted and behaviour left to variance, does it follow the principles
   ([`docs/eval-case-design.md` §11](eval-case-design.md)).
@@ -43,7 +99,7 @@ samples each: a cohort of fifteen ([`docs/eval-case-design.md` §4, §6](eval-ca
   failures, i'm only interested in repeatable patterns of major gaps."* One sample's one-off
   miss is not a finding; the same miss across phrasings or across a run's re-sample is.
 
-## 2 · What a check is
+## 3 · What a check is
 
 A check is strictly true or false of one sample — no thresholds, no "mostly." There are exactly
 three kinds, and nothing else is an assertion
@@ -60,7 +116,7 @@ three kinds, and nothing else is an assertion
   nothing invented ([`docs/eval-case-design.md` §2 "Assert what survives"](eval-case-design.md)).
 - **Never assert a route.** A tool name, an argument choice, a call count, or reply wording is
   *how*, not *what* — read in the tool-sequence and reply-spread variance features instead
-  (§3 below).
+  (§4 below).
 - **Never force or inject a tool call.** A natural input leads the model to act, and the real
   gate answers. A mechanism — a gate, a parser, a bound — is proved separately by a deterministic
   mock test in `make check`, not by an eval case
@@ -86,7 +142,7 @@ three kinds, and nothing else is an assertion
 **A budget is an assertion on behaviour, never a check.** A time, step, token or cost limit
 that turns a slow or expensive sample into a failure is asserting *how* the model behaved, which
 is the thing this design reserves for variance. Nothing in a case "goes red" on a budget: a
-sample that ran long is read through the cost section (§3) and the run's own step cap, never
+sample that ran long is read through the cost section (§4) and the run's own step cap, never
 through a claim that fails it. The runtime's own step cap is a bound on the run, not a claim
 about it — it stops a run from hanging, and says nothing about whether the run was correct.
 
@@ -103,7 +159,7 @@ found this way: a capitalised sentence-opening word read as a name, and "Yes" re
 status. Both looked like passing checks until someone asked what a correct sample would have had
 to do to fail them.
 
-## 3 · Variance, and what it tells you
+## 4 · Variance, and what it tells you
 
 This is the part the contract docs don't carry, because it isn't a rule about what a case may
 claim — it's what was learned pointing the same instrument at the suite, case after case.
@@ -238,7 +294,124 @@ not a feature in agreement — it's **blind**, and the report marks it that way.
 means two different things depending on which one it is; don't read a blind feature as a clean
 pass.
 
-## 4 · Planning a case or a change
+## 5 · Distilling a failure
+
+This is the "how" behind steps 2–6 of §1's path: turning an observed failure into the smallest
+thing a case can be built from.
+
+**Find the turn or cycle.** Start with the runtime log (`data/penny/logs/penny.log`) for when it
+happened, then the `promptlog` rows of that run (`penny/penny/database/models.py`'s `PromptLog`):
+`agent_name` says which agent or micro-context made the call, `run_id` groups every call of one
+agentic-loop invocation, and `messages`/`thinking`/`response` carry exactly what the model was
+shown, thought, called, and got back. For a chat turn that moved the conversation machine, the
+`state_transition` rows (`StateTransition`) say what state it was in and what it moved to —
+`cause` is `classifier` when a model draw decided it (its `run_id` joins back into the promptlog)
+or `structural` when nothing decided it. **The live database is read only with the code owner's
+go-ahead** — diagnosis otherwise reads the runtime log and, once it exists, a run's own per-sample
+database, never the production DB without asking first.
+
+**Classify the failure**, because the classification decides what gets built:
+
+- **The model decided wrongly on what it was shown** → an eval case at the layer where that
+  decision was made (chat turn, classifier draw, a micro-context).
+- **The model decided sensibly on a wrong or missing input** → still an eval case — the end state
+  was wrong — but the fix will be to presentation, not to the model's reasoning.
+- **A deterministic defect below the model** (a parser, a gate, a bound) → a mock test in
+  `make check`, not an eval case. Add an eval case too only if the same defect also showed up as a
+  wrong end state or as variance.
+
+**Distil.** Write down, in this order: the user's goal in one sentence; the correct end state as
+facts — where the machine lands, what the store holds, what the reply must and must not carry; the
+entry condition — what the store, the machine and the world held when the turn began; and the
+smallest input that still shows the failure.
+
+**Check what already covers it.** Look the behaviour up in `docs/eval-catalogue.md`, by area and
+by the machine edge it moves (§2's table groups cases by area; each case's row names its first
+wording and, where it moves one, its edge). If an existing case covers the behaviour and passes,
+say plainly what about the real input its world does not exercise — a size, a shape, a second
+source, an entry already present. Then apply the rule: if the real input changes what a correct
+sample is, or changes the set of claims a case can make, it is a **new** case and the existing one
+is left exactly as it is; otherwise the existing case's world is wrong, and it is corrected in
+place.
+
+**Reproduce, then genericise.** Replay the recorded input on the suite's model to confirm the
+failure is not a one-off — `penny/penny/tests/eval/utils/replay.py` reads a promptlog row **by
+id** and replays its exact messages:
+
+```
+python -m penny.tests.eval.utils.replay --id <promptlog id> --samples 12
+```
+
+(run inside the penny container; a non-collector prompt, including every chat turn, is replayed
+verbatim automatically). Once it reproduces, genericise: replace every real value with an invented
+one of the same shape, and confirm it still reproduces before it goes into a fixture. If
+genericising kills the repro, the trigger was in the specifics — narrow back to what it actually
+was.
+
+## 6 · The case proposal
+
+What goes to the code owner, in one `ask` card, once a failure is distilled (§5 above) — the form
+is short, and every line is filled or marked empty with the reason it's empty:
+
+- **Seen:** what happened, in one or two lines, genericised.
+- **Behaviour:** `"In the <locus>, when <X>, Penny <Y>."`
+- **Layer and driver; area; edge** (if it moves the machine).
+- **Covered today?** The nearest existing cases, and why they don't cover it.
+- **World:** the sources and what each says; what the store and the machine hold at the start; the
+  invented anchors; a line on how its shape and size match the real input.
+- **Wordings:** the five, and the facts every one of them carries.
+- **Landed / Store / Provenance:** the claims under each, or "empty" with the reason.
+- **Measured:** the features, including any the case declares itself.
+- **Expected on the first run:** what should fail or spread, and whether that rests on a
+  measurement or on one observation.
+- **Model and provider.**
+- **Rulings needed:** only real open questions, each with a recommendation.
+
+**A filled example**, for an invented failure: asked to watch a listing on a second page, Penny
+confirmed the job against the page named by an earlier, already-called-off round in the same
+conversation, not the page the current ask named.
+
+- **Seen:** the confirmation after a cold watch-ask named the wrong page — one from a round the
+  user had already called off earlier in the same conversation.
+- **Behaviour:** In the chat agent, when a cold ask names a new page to watch and an earlier round
+  in the same conversation named a different page that was called off, Penny confirms the job
+  against the page the current ask named.
+- **Layer and driver; area; edge:** chat turn, `chat_eval`; Conversation machine; idle → apply.
+- **Covered today?** `transition-idle-to-apply` drives a cold ask with no prior round in the
+  conversation; it never exercises a conversation that already carries a called-off round naming
+  a different page.
+- **World:** two ordinary listing pages (the called-off one, the new one) and the empty
+  collection the job writes to; the store holds nothing from the called-off round, since it was
+  never applied; the called-off round is seeded as the conversation's own threaded history, not an
+  invented row. Invented anchors: each page's URL, the job's watched-field token. Shape and size
+  match the idle→apply cases already in the suite — two real-shaped listing pages and one prior
+  closed round, not a trimmed single-turn stand-in.
+- **Wordings:** five phrasings of the new ask ("watch this one instead", "actually, track this
+  listing", …), each stating the new page's URL and the watch intent; none mentions the earlier
+  page.
+- **Landed / Store / Provenance:** Landed — apply. Store — one job created, bound to the new
+  page's container; nothing left over from the called-off round. Provenance — the confirmation
+  names the new page's token; the called-off page's token appears nowhere in the reply.
+- **Measured:** tool sequence.
+- **Expected on the first run:** most samples' confirmation to carry the called-off page's token
+  instead of the new one — this rests on the one observed sample, not yet a measured rate.
+- **Model and provider:** the suite's model, gemma, pinned to Cloudflare.
+- **Rulings needed:** whether "names the called-off page" belongs as a provenance claim (the
+  ask's own page is a fact the reply either states correctly or doesn't) or stays a case-local
+  measured feature — recommend the provenance claim, since the world settles which page is
+  correct.
+
+**What the coordinator settles itself, and what it asks.** High-level guidance only works if the
+coordinator fills in everything the docs already decide:
+
+- **Settled without asking:** five wordings by three samples; the suite's model; the layer (where
+  the wrong decision was made); that claims are facts only and routes are measured; where the file
+  goes; that values are invented.
+- **Asked, in one card:** whether the behaviour sentence is the behaviour wanted; any claim that
+  encodes a product judgement; new case or existing one, when the rule above doesn't settle it;
+  anything about the world that changes what "correct" means.
+
+## 7 · Planning a case or a change
 
 - **Start from the user's goal and write the behaviour as one sentence:** *"In the <locus>, when
   <X>, Penny <Y>."* This is `behaviour=` on the driver call
@@ -266,7 +439,7 @@ pass.
   live eval suite section): pull the real trigger from `promptlog`, confirm it reproduces, swap
   every real value for a synthetic one of the same shape, and confirm it still reproduces before
   committing the fixture.
-- **Go through the three kinds of check (§2) and say what is claimed under each, or that it is
+- **Go through the three kinds of check (§3) and say what is claimed under each, or that it is
   empty.** An empty category is a report, not an omission — say which of the two it is.
 - **A new case, or the existing one.** A case is one behaviour under one entry condition. If the
   ask or the world changes what a correct sample is, or changes the set of claims a case can
@@ -286,7 +459,7 @@ pass.
   that text, not from a plan paraphrasing it
   ([`docs/eval-iteration-workflow.md` §2, §8](eval-iteration-workflow.md)).
 
-## 5 · Building the world and the five wordings
+## 8 · Building the world and the five wordings
 
 This is the "how" the plan above assumes: once the behaviour sentence, the layer and the
 claims are settled, here is how to build the fixture — the world a case's turn answers
@@ -312,7 +485,7 @@ ground.
 1. **Decide what the case's turn reads.** A chat or micro-context case usually needs only
    `pages`; a case about what Penny already knows needs `stores`; an email case adds
    `mailbox`. A collector case has its own page-and-entry-condition shape — below.
-2. **Write the source(s), at the shape and size of the real input** — already in §4 above: a
+2. **Write the source(s), at the shape and size of the real input** — already in §7 above: a
    `CannedPage(match=..., text=...)` (matched by a lowercase substring of the request URL,
    `conftest.py`'s `install_browse`) reads like a real page — a `Title:` line, the URL in the
    visible body — transcribed from a recorded input's structure, not a five-link stand-in for
@@ -346,7 +519,7 @@ ground.
 7. **A behaviour's opposite direction is the same wordings over a different world.** Where
    the world the case needs for "fires" is not the world it needs for "does not fire" — e.g.
    a collection that already holds a matching entry versus one that holds nothing — that is
-   two `World`s and two cases (§2's "the world carries the condition, not a clause in the
+   two `World`s and two cases (§3's "the world carries the condition, not a clause in the
    ask"), never one case whose ask changes to flip the outcome.
 
 ### The five wordings
@@ -470,7 +643,7 @@ arm's wording really did reach the stored program as `extract={...}`. The page's
 line (`_DATUM`) is byte-identical across all five prose variants, which is what lets the
 case's claims name `499` rather than just "a plausible number."
 
-## 6 · Running
+## 9 · Running
 
 Runs go to OpenRouter with `make eval-remote`, pinned to one provider — upstreams serving one
 model are not interchangeable, and one was measured blanking every tool result it returned.
@@ -523,7 +696,7 @@ look that gates nothing; a PR's evidence is the suite's model.
   comment — never rewrite or overwrite a prior one; the comment stream is the durable record
   ([`docs/agent-task-workflow.md` §8](agent-task-workflow.md)).
 
-## 7 · Reading a run
+## 10 · Reading a run
 
 **Health first.** Before any claim, check how much of the cohort actually completed, the fault
 classes, and which provider answered — a degraded run is not evidence
@@ -535,7 +708,7 @@ answered than the one pinned.
 
 | section | what it holds | how to recognise a failure that belongs here |
 |---|---|---|
-| **Assertions** | end-state facts only — where the machine landed, what the store holds, provenance | a claim's count is below what it was expected to run at (facts, never asserted as a floor — §2) |
+| **Assertions** | end-state facts only — where the machine landed, what the store holds, provenance | a claim's count is below what it was expected to run at (facts, never asserted as a floor — §3) |
 | **Variance** | everything the model emitted on the way — tool sequence, routine shape, reply text, cost | an outlier sample, a feature's entropy rising past a proposed ceiling, a cost figure rising on an unchanged prompt |
 | **Harness** | samples too broken to count at all — excluded before any claim was answered | a sample in the "Excluded samples" fold, a dead or mostly-dead cohort, a fault class in the health block |
 
@@ -633,9 +806,9 @@ found wrong is corrected in the open, not quietly replaced.
 
 **Sorting a whole-suite run** to choose what to work on: by the largest claim gap and by the
 highest variance, then set aside the classes already ruled out (the exploration-bounded cases from
-§3, the model-specific gaps from §8).
+§4, the model-specific gaps from §11).
 
-## 8 · Reasoning about a fix
+## 11 · Reasoning about a fix
 
 The ladder, cheapest and most durable first: fix the data or the presentation; then the wording;
 then code — never "make the model smarter"
