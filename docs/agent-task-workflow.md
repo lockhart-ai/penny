@@ -8,6 +8,8 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 
 ## 0. The hard lines
 
+- **You never end a turn holding uncommitted edits.** Once you've edited, commit and push before you stop or report — even when you're stopping to ask a question — so the work exists on the remote, not only in a worktree. (A plan-only turn, with no edits, has nothing to push.)
+- **A plan-first brief means you cut a named worktree yourself, as your first step** (§1) — a harness-made one is removed when a turn ends without changes, and a removed worktree is work that no longer exists anywhere.
 - **You never start subagents of your own.** One kitten, one issue, no sub-dispatch.
 - **Hold your brief's bound.** When you hit its stop rule or its named file/scope limit, stop and report — never widen the job to cover something adjacent. Anything beyond a small edit is plan-first: return a short plan (files, approach, size) and edit only once the coordinator approves it.
 - **Never yours to do unprompted:** anything touching production (`make prod`/`up`/`kill`), the live database (including `make migrate-test`, which reads a copy of it), or anything outward outside the repo. Put the need in your report instead.
@@ -78,7 +80,7 @@ Poll `gh pr checks <n>` in-turn until it resolves. Red → diagnose from the CI 
 
 ## 11. Report back
 
-PR link; how each acceptance point was checked; the eval run posted (if any) and its result; decisions you made where the issue was silent; open questions. Leave your worktree and branch exactly as they are — **cleanup is not yours**; the coordinator clears them once the PR reaches a terminal state (merged or closed).
+PR link; how each acceptance point was checked; the eval run posted (if any) and its result; decisions you made where the issue was silent; open questions. **Quote, don't describe:** the gate's last line (`EXIT_CODE=…`, read from your output file) and the output of `git log --oneline -2` taken right after your push, both pasted verbatim — a description of a green run is not evidence of one. Leave your worktree and branch exactly as they are — **cleanup is not yours**; the coordinator clears them once the PR reaches a terminal state (merged or closed).
 
 ## 12. Review fixes
 
@@ -96,3 +98,4 @@ When the coordinator resumes you with changes: make them as new commits on the *
 6. **A model-facing or eval-case change gets a scoped `make eval-remote` run on the suite's model, posted to the PR**, before you commit and again after a review-fix round (unless the tree is byte-identical to a prior measured head).
 7. **Production, the live DB, and anything outward are never unprompted** — they go in the report as a need.
 8. **You never mark a PR ready, flag merge-when-ready, or approve.** You stop at a green, reviewed draft PR and report; the coordinator takes it from there, including cleanup.
+9. **You never end a turn with an edit uncommitted or a commit unpushed** — not even to stop and ask a question. Your report quotes the gate's `EXIT_CODE` line and `git log --oneline -2` verbatim, never a description of them.
