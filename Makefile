@@ -1,7 +1,7 @@
 # Check tool configuration (single source of truth for tool parameters)
 RUFF_TARGETS = penny/
 # Exclude the live-model eval suite from the default test run — it's slow and
-# needs a running Ollama, so it never runs in make check / CI (see make eval).
+# needs a running Ollama, so it never runs in make check / CI (see make eval-remote).
 PYTEST_ARGS = penny/tests/ -v -m "not eval"
 # -s streams the PERF lines (wall time + tok/s, printed per case) live.
 EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
@@ -293,12 +293,12 @@ pytest: $(if $(LOCAL),,build)
 # (a chat model + embeddinggemma) on synthetic seeds. Slow and stochastic, so it's kept
 # out of make check; run it by hand to validate prompt/behaviour changes.
 #
-#   make eval                                  the local GPU, one sample at a time
-#   make eval-remote                           a provider, 8 cases x 5 samples at once
-#   EVAL_SAMPLES=2 make eval                   fewer samples per case
-#   EVAL_PYTEST_ARGS="<node ids> -m eval -s" make eval-remote      scoped to some cases
+#   make eval-remote                           the way the suite runs: a provider, 8 cases x 5 samples at once
+#   LLM_MODEL=google/gemma-4-26b-a4b-it make eval-remote EVAL_LEVER='<one-line hypothesis>' EVAL_PYTEST_ARGS="<node ids> -m eval -s"
+#                                               the suite's model, a durable report, scoped to some cases
 #   EVAL_WORKERS=1 make eval-remote            remote but SERIAL, for debugging one case
 #   LLM_MODEL=<a model EVAL_MODELS names> make eval-remote         a different roster entry
+#   make eval                                  the local profile, this machine's GPU — not how the suite is run
 #
 # WHICH models a remote run may measure is CONFIGURATION, not a make variable: EVAL_MODELS
 # in the primary checkout's .env is a JSON list of {"model": ..., "provider": ...} entries,
@@ -331,10 +331,10 @@ pytest: $(if $(LOCAL),,build)
 # fixed here once and forwarded — otherwise each would stamp its own clock into the run
 # id and one directory would hold N runs. Each worker appends to its own results file;
 # assemble reads them all.
-# Remote endpoints: point LLM_API_URL at any OpenAI-compatible provider and the
-# suite runs against it — e.g. `LLM_API_URL=https://openrouter.ai/api
-# LLM_MODEL=openai/gpt-oss-20b make eval`, with LLM_API_KEY in the primary
-# checkout's .env. The chat endpoint moving does NOT move the embedding one (it
+# Remote endpoints: `make eval-remote` points at any OpenAI-compatible provider
+# through EVAL_MODELS (above) — e.g. `LLM_MODEL=google/gemma-4-26b-a4b-it
+# make eval-remote`, with LLM_API_KEY in the primary checkout's .env. The chat
+# endpoint moving does NOT move the embedding one (it
 # defaults to the local Ollama independently), and a remote chat model skips the
 # GPU queue below, since it contends for no GPU. An empty key on a remote
 # endpoint fails the run up front rather than 401-ing every sample.

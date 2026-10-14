@@ -17,11 +17,11 @@ not a check that means one thing in the loop and another in the run log.
 Each `BehaviorCondition` declares *where it applies*, as data:
 
 - `live` — caught while the run happens (a `ResponseValidator` disposition in the
-  agentic loop, or the `send_message` arg-validation gate), so the model can
-  recover.
-- `run_flag` — surfaces after the fact as a `⚠` line on the run record that the
-  `quality` collector reads and the addon badges, derived structurally from the
-  persisted `promptlog`.
+  agentic loop, or the notify micro-context's `_is_sendable` reroll gate — see
+  `tools/micro_context.py`), so the model can recover.
+- `run_flag` — surfaces after the fact as a `⚠` line on the run record, read directly
+  off `classify_run` by the self-state header and the addon's run browser, derived
+  structurally from the persisted `promptlog`.
 - `collector_only` — meaningful only for background/collector runs (vs. chat).
 
 A condition can be both `live` and `run_flag`. That overlap is the point:
@@ -32,14 +32,13 @@ A condition can be both `live` and `run_flag`. That overlap is the point:
 | `call_as_text`, `call_fragment_reply`, `empty`, `tool_parse_error` | ✓ | | discard-and-reroll (chat's invalid draws, #1839/#1937) |
 | `done_json_bail`, `text_instead_of_tool` | ✓ | | discard-and-reroll (the collector's invalid draws, #1839) |
 | `no_work_done` | ✓ | ✓ | live: premature-`done()` reject · post-hoc: bail flag |
-| `half_formed_send` | ✓ | ✓ | live: `send_message` arg gate · post-hoc: degenerate-send flag |
+| `half_formed_send` | ✓ | ✓ | live: notify-compose `_is_sendable` reroll gate · post-hoc: degenerate-send flag |
 | `incomplete`, `tool_failures` | | ✓ | post-hoc classifier only |
 
 `conditions.py` is a dependency-light leaf (only `constants` + pydantic, like
 `text_validity`), so the loop, the run-health classifier, and the addon-serving
 code all import it without a cycle. The `marker`/`detail` strings are the
-canonical run-record text and are **frozen** — migration 0072's `quality` prompt
-and the addon's TS type mirror them.
+canonical run-record text and are **frozen** — the addon's TS type mirrors them.
 
 This catalog supersedes the old split between `ValidationReason` (live) and
 `RunHealthFlag` (post-hoc); `RunOutcome` (the run's terminal state) is a separate

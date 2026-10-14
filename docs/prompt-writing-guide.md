@@ -1,10 +1,10 @@
 # Prompt-Writing Guide for Penny
 
 How to write the model-facing prompts that drive Penny — collector `extraction_prompt`s,
-agent system prompts, and tool descriptions — against a local gpt-oss:20b. Distilled from
-(1) patterns in heavily-tuned production system prompts (e.g. Claude Code's), and (2) what
-our own live-model evals (`make eval`) have repeatedly shown. Every claim here that cites a
-number was measured on this codebase.
+agent system prompts, and tool descriptions. Distilled from (1) patterns in heavily-tuned
+production system prompts (e.g. Claude Code's), and (2) what our own live-model evals
+(`make eval-remote`) have repeatedly shown. Every claim here that cites a number was
+measured on this codebase, against the model named where the finding is model-specific.
 
 ## Start here: it's a presentation problem before a capability problem
 
@@ -14,7 +14,7 @@ is really "present what X needs in a form the model can act on." Work in that or
 1. **First, present information so it guides the model toward the outcome.** Reach for the
    cheap, high-leverage levers — what a tool surfaces, how a tool *response* is worded and
    ordered, a line of system-prompt guidance — before retries, scaffolding, or code. *Measured:*
-   reordering the `memory_metadata` response so a collection's intent + recipe **led** (instead
+   reordering the `memory_get` response so a collection's intent + recipe **led** (instead
    of trailing a dozen operational settings) took "walk me through what this collection does"
    from **1/3 to 3/3** — zero new capability, the same facts shown differently. So when a
    behaviour is missing, the first question is "is the model being shown the right thing, the
@@ -104,13 +104,15 @@ Two corollaries, both measured on this codebase:
    task as `1. … 2. … 3. …`, one action per step.
 
 2. **Name every tool call explicitly, in ONE consistent format:** `N. tool(args) — description`.
-   e.g. `2. collection_list("skills") — every existing skill, with its key, STEPS, and TRIGGER.`
+   e.g. `2. collection_list("<collection>") — every entry, with its key and content.`
    Do **not** let some steps name their call crisply while an important one is demoted to a
-   vague parenthetical ("…, then send a message about it"). *Measured:* a `send_message`
-   buried as a parenthetical was skipped **~40%** of cycles; rewritten as a first-class step
-   `send_message("I changed the '<skill>' skill: <what>") — tell the user what you changed`
-   it was skipped **0%**. If a call matters, show it, formatted identically to the others —
-   inconsistent formatting reads as "this one is optional."
+   vague parenthetical ("…, then tell the user about it"). *Measured, from when the
+   user-facing send was still a step the model called itself* (it's deterministic Python
+   today, outside the tool loop — see `notification.py`): that call buried as a parenthetical
+   was skipped far more often than the identical call promoted to its own first-class
+   numbered step. The rule it taught stands regardless of which tool is at stake: if a call
+   matters, show it, formatted identically to the others — inconsistent formatting reads as
+   "this one is optional."
 
 3. **Emphatic markers are legitimate — use them deliberately for critical rules.**
    `IMPORTANT:`, `ALWAYS`, `NEVER`, ALL-CAPS on the load-bearing word. Production prompts use
@@ -160,11 +162,10 @@ Two corollaries, both measured on this codebase:
    rule is really "decide which situation this is, then respond," don't leave it to open-ended
    judgement — enumerate the cases (keep N ~2–4) and give each a prescribed response. gpt-oss
    reasons through discrete cases far better than a vague "act appropriately," and it *names its
-   choice* in the thinking trace before acting. This is the shape of the `quality` collector's
-   tiers (did-any-work? → matches-intent? → ignore-as-capacity) and the chat agent's imperative
-   gate (direct ask → do it; tells you about themselves → remember it; passing mention → just
-   reply). Rules of thumb: the cases must be model-distinguishable from the input and cover the
-   space (+ a default), and **name the tricky boundary case explicitly** — that's where
+   choice* in the thinking trace before acting. This is the shape of the chat agent's
+   imperative gate (direct ask → do it; tells you about themselves → remember it; passing
+   mention → just reply). Rules of thumb: the cases must be model-distinguishable from the
+   input and cover the space (+ a default), and **name the tricky boundary case explicitly** — that's where
    mis-classification lives. *Measured:* the imperative gate cut over-firing (`no-fire` 2/5→5/5),
    but a first wording that lumped "sharing a preference" under "casual share → don't act"
    suppressed the implicit "I'm into X" save (`likes-add-like` 5/5→3/5); carving the preference
@@ -202,16 +203,18 @@ the gap with an invented one.
 **2. Arguments — quote a sentinel, placeholder everything composed.** This is the
 highest-leverage rule, and it's counter-intuitive:
 
-- **A quoted literal is copied verbatim ~82% of the time.** One `done()` example whose
-  summary was written as a quoted string (`summary="…"`) became the *actual* summary in
-  ~14k of ~17k calls — the model pasted the example instead of describing what it did. So
-  **quote a literal ONLY when it is a deliberate sentinel you want copied verbatim** — a
-  machine-readable constant (`summary="no new matches this cycle"`) that downstream code or
-  a human reads as a fixed token. Quoting a value effectively hardcodes it — and a hardcoded
-  literal is one the model has to spell right on every draw, so choose its wording by
-  *Literals the model must write are short, common, non-compound words* below.
+- **A quoted literal is copied verbatim ~82% of the time.** Before `done()` went argless
+  (#1569), one example whose worked-cycle summary argument was written as a quoted string
+  became the *actual* summary in ~14k of ~17k calls — the model pasted the example instead
+  of describing what it did; that risk is part of why the argument is gone and the run
+  record is generated from the ledger instead (see *The canonical call notation* → point 5).
+  So **quote a literal ONLY when it is a deliberate sentinel you want copied verbatim** — a
+  machine-readable constant that downstream code or a human reads as a fixed token, never a
+  value that has to be composed fresh each time. Quoting a value effectively hardcodes it —
+  and a hardcoded literal is one the model has to spell right on every draw, so choose its
+  wording by *Literals the model must write are short, common, non-compound words* below.
 - **Use `<angle placeholders>` for anything the model must compose** — `<seed topic>`,
-  `<collection>`, `<one sentence on what actually happened>`. Angle placeholders leaked into
+  `<collection>`, `<one concise paragraph combining the sources>`. Angle placeholders leaked into
   a real tool argument **zero times across ~59k payloads**: the model reliably treats them
   as "fill this in," never as literal text. They are the safe default for every argument
   that isn't a sentinel.
@@ -235,18 +238,12 @@ calls in a `kwargs + reasoning=` payload dialect had its failures dominated by t
 emitting calls **as plain text** instead of real tool calls. Show the *call*, never its
 wire form.
 
-**5. The terminal `done()` — the canonical shape both levers meet.**
-`done(success=<true|false>, summary="<one sentence on what actually happened>")`:
-
-- `success=<true|false>` — a **placeholder** over lowercase JSON booleans (`true`/`false`,
-  not `True`/`False`).
-- The worked-cycle `summary` is a **placeholder** — `"<one sentence on what actually
-  happened>"` — because it must be composed fresh each cycle (rule 2).
-- The quiet-cycle sentinel `summary="no new matches this cycle"` stays **deliberately
-  quoted** — it's the one summary we *want* copied verbatim (a machine-readable "nothing to
-  do" constant). Keeping the worked case a placeholder while quoting only the sentinel is
-  exactly rule 2 applied: without a worked-case template the model copies the nearest quoted
-  string (the sentinel) onto cycles that *did* write.
+**5. The terminal `done()` is argless (#1569).** Write `done()` — no arguments, ever.
+The run record is GENERATED from the ledger (tool calls + write-gate outcomes + structural
+counts), never a model-authored `success`/`summary`; `done(success=…, summary=…)` fails
+validation (the args model is `NoArgs` / `extra="forbid"`). This closes the quoting trap
+rule 2 describes above by removing the argument that trap lived in: there is no worked-cycle
+summary left for the model to compose, quote, or copy wrong.
 
 **6. History / run renders use REAL tool names in this same shape.** When a rendered record
 plays back a call the model made (a run trace, a history line), it uses the actual tool name
@@ -274,9 +271,9 @@ runs with zero reroll-recovered samples**, and the composed case needed its fall
 times.
 
 So spend the naming budget on spellability. The parser doesn't care which token it matches, only
-that the model can hit it every time. And the risk lives in the words, not the token count: the
-quiet-cycle sentinel `summary="no new matches this cycle"` is five short common words and comes
-back intact; `PLACEHOLDER` is one long compound and didn't.
+that the model can hit it every time. And the risk lives in the words, not the token count: a
+short, common, uncompounded sentinel comes back intact; `PLACEHOLDER` is one long compound and
+didn't.
 
 ## The anti-pattern: accretion
 
@@ -365,7 +362,7 @@ others to catch a regression you introduced.
 
 ## Process (how to change a prompt)
 
-- **Dry-run every prompt change against the live model** (`make eval` / a focused case) and read
+- **Dry-run every prompt change against the live model** (`make eval-remote` / a focused case) and read
   the result **before** committing. A prompt you wrote but didn't run tells you nothing.
 - **Change ONE lever at a time.** Learned the hard way: rewriting style + structure + the
   specific rule at once made a regression un-attributable and cost ~14 eval rounds chasing
@@ -389,5 +386,5 @@ others to catch a regression you introduced.
 2. **Numbered steps** — each a tool call in the consistent `N. tool(args) — description` format.
 3. **The load-bearing rules inline** where they apply, emphasised if critical, concrete with an
    example.
-4. **Terminal actions explicit** — the user-facing `send_message(...)` and the closing `done(...)`
-   as their own final steps.
+4. **Terminal actions explicit** — the closing `done()` as its own final step; it is argless
+   (#1569), so it is the only terminal action a current numbered recipe writes as a tool call.

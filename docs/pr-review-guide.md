@@ -26,7 +26,7 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 - [ ] **No trivial pass-through methods on subclasses that re-state a parent's default.** If the parent has `def foo(self): return self.SOMETHING`, subclasses customize the value by overriding the class attribute (`SOMETHING = 16`), not by redeclaring the method. The pattern `def get_max_steps(self): return self.MAX_STEPS` on a subclass is a smell — the parent should define that body, and the child only sets the class attribute. Subclasses that genuinely need *different logic* (e.g., reading runtime config) override the method legitimately
 - [ ] **No `_method = staticmethod(module_function)` aliases.** Don't bind a module-level function to a class as a "method" purely to expose it under `self.` — call sites should import and call the function directly. The class isn't adding behavior; the alias is just indirection
 - [ ] **No keyed-indirection enums or attributes for single-value identifiers.** When an agent (or any class) has exactly one of something — one prompt type, one mode, one variant — don't wrap it in a `class FooType(StrEnum): CYCLE = "cycle"` with a `prompt_type = FooType.CYCLE` attribute on the class. The enum has one member, the attribute restates the agent's identity, and call sites pay the indirection cost for nothing. Use the agent's `name` (or other existing identity) directly, or hardcode the single string on the class. Multi-value enums where each variant maps to a distinct flow (e.g. `ChatPromptType` with `USER_MESSAGE`/`VISION_MESSAGE`/`VISION_CAPTION`) are still legitimate
-- [ ] **No per-agent plumbing for values that are universal under the unified-tool-surface principle.** Every agent gets every tool with identical capabilities. So values that the same tool needs at execute time (recipient for `send_message`, primary user for cooldown filtering, etc.) belong inside the tool — resolved from `db` or shared state at call time — not threaded through agent constructors, `_run_cycle(user)` parameters, or `get_tools(user)` overrides. Penny is single-user, so per-agent recipient binding has nothing to choose between; let the tool look it up. Per-agent metadata that genuinely varies (the agent's own `name` for write attribution and cooldown filtering) is fine to plumb — but only the things that actually differ between agents
+- [ ] **No per-agent plumbing for values that are universal under the unified-tool-surface principle.** Every agent gets every tool with identical capabilities. So values that the same tool needs at execute time (the primary user for cooldown filtering, etc.) belong inside the tool — resolved from `db` or shared state at call time — not threaded through agent constructors, `_run_cycle(user)` parameters, or `get_tools(user)` overrides. Penny is single-user, so per-agent recipient binding has nothing to choose between; let the tool look it up. Per-agent metadata that genuinely varies (the agent's own `name` for write attribution and cooldown filtering) is fine to plumb — but only the things that actually differ between agents
 
 ### Imports
 - [ ] All imports are at the top of the file — no inline/inner imports inside functions or methods
@@ -301,7 +301,7 @@ Every model-facing string that names a tool call — agent system prompts, tool 
 - [ ] **Steps are bare calls: `N. tool(args) — purpose`.** No `Call`/`Run` verb in front of the call, no backticks around it inside a numbered step
 - [ ] **Every tool mention carries its parens+args** — `browse(queries=["<seed topic>"])`, never a bare `browse`. A parens-less mention reads as "a thing that exists," not "the call to make," and trains the model to invent one (it once hallucinated a nonexistent `search` tool)
 - [ ] **Backtick dialect is uniform:** single markdown backticks ONLY, and only for a tool name mentioned inline in prose (`` `browse` `` in a sentence). No RST double-backticks (```` ``tool`` ````) anywhere in a model-facing string
-- [ ] **Quoted literals are deliberate sentinels only.** A quoted example value is copied verbatim ~82% of the time — quote a literal ONLY when you want it copied as a fixed machine-readable token (a consumer that keys on the exact string, e.g. the `"Message sent."` success signal). Anything the model must compose is a placeholder, never a quoted string
+- [ ] **Quoted literals are deliberate sentinels only.** A quoted example value is copied verbatim ~82% of the time — quote a literal ONLY when you want it copied as a fixed machine-readable token that a downstream consumer keys on the exact string of. Anything the model must compose is a placeholder, never a quoted string
 - [ ] **`<angle placeholders>` for every composed value** — `<seed topic>`, `<collection>`, `<one concise paragraph combining the sources>`. Never `[square brackets]` as a placeholder: the entry renderer used to display keys as `[key]`, and the model copied the display brackets straight into the argument (`key="[key]"` → "not found"); keys now render in invocation form (`key='<key>'`, `render_key`), and brackets stay reserved for non-copyable display metadata
 - [ ] **Kwargs when non-obvious, positional only for one obvious arg** — `tool(name=<x>, k=5)` whenever a call has more than one argument or any optional one; a single obvious argument may be positional (`collection_list("<collection>")`). Never a bare positional list of two-plus values — the model mis-slots them
 - [ ] **No framework-injected `reasoning` param and no raw JSON/payload snippets** (`{"name": "done", "arguments": {…}}`) in any written example — a payload-shaped example gets adopted as the model's *output* format, so it emits calls as plain text instead of real tool calls. Show the call, never its wire form
@@ -318,7 +318,7 @@ Every model-facing string that names a tool call — agent system prompts, tool 
 
 - A tool name with no parens (`use browse to …`) where a call shape belongs
 - A payload-shaped example — a `{"name": …, "arguments": {…}}` envelope or a visible `reasoning=` argument
-- A quoted example value the model shouldn't copy verbatim — a `summary="…"` describing *this cycle's* work rather than a fixed sentinel
+- A quoted example value the model shouldn't copy verbatim — a composed, cycle-specific value quoted as if it were a fixed sentinel (`done()` is argless (#1569) — this is exactly the mistake that made it so)
 - Mixed backtick dialects in one file — single and RST double-backticks together, or backticked calls inside numbered steps
 - A `[square-bracket]` placeholder standing in for "fill this in"
 - A new model-facing prompt string added outside its established home (`prompts.py`, a tool description, a migration's `extraction_prompt`, `constants.py`) with no justification
@@ -438,13 +438,7 @@ This is the single most recurring source of production bugs in this project. It 
 
 ## 11. Git and Workflow
 
-- [ ] All changes go through PRs — never push directly to `main`
-- [ ] Feature branches created from latest `main` (`git checkout main && git pull origin main` first)
-- [ ] Rebase on latest `main` before building, testing, or committing
-- [ ] Check PR is still open before every `git push` (`gh pr list --head <branch> --state open`)
-- [ ] Push branch before `gh pr create` (requires branch to exist on remote)
-- [ ] Use `make token` for all GitHub operations: `GH_TOKEN=$(make token) gh pr create ...`
-- [ ] CLAUDE.md and README.md updated when making significant changes (new features, architecture, config, API, directory structure)
+Git workflow, branch/PR mechanics, the approval split, and PR title conventions are owned by root [`CLAUDE.md`](../CLAUDE.md) → "Git Workflow" — this guide doesn't duplicate them. Review a PR's git mechanics against that section directly, and flag drift from it the same way you'd flag drift from any other rule here.
 
 ---
 
@@ -499,7 +493,7 @@ If you see any of these in a PR, flag immediately:
 | Renamed/removed tool still named in a tool description or stored prompt | Model follows a dead pointer to a tool that no longer exists |
 | Bare tool name with no parens in a model-facing prompt (`use browse to …`) | Trains the model to invent a call — every mention carries `parens+args` (canonical call notation) |
 | `{"name": …, "arguments": {…}}` payload or a visible `reasoning=` in a prompt example | Payload-shaped example gets adopted as output format — model emits calls as text; show the call, not its wire form |
-| `[square-bracket]` placeholder or a copy-me `summary="…"` in a prompt | Model copies brackets/quoted literals verbatim into args — use `<angle placeholders>`; quote only fixed sentinels |
+| `[square-bracket]` placeholder or a copy-me quoted composed value in a prompt | Model copies brackets/quoted literals verbatim into args — use `<angle placeholders>`; quote only fixed sentinels |
 | `if name in SET:` / `if obj.type == X:` repeated across methods or callers | Scatter-branching on type/shape — dispatch once to a polymorphic object, delete the conditionals |
 | `x = f(...); if isinstance(x, str): return x` | Error returned as a foreign-typed sentinel — raise a typed exception and catch it |
 | Exception caught then wrapped in `f"... {name} ..."` while a sibling self-renders | Make the exception render its own message; handle uniformly via `str(exc)` |

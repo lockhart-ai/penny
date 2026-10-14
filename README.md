@@ -214,10 +214,13 @@ make up               # Build and start Penny (foreground, with dev source mount
 make prod             # Deploy penny only (no dev override)
 make prod-ios         # Run Penny as the iOS channel without starting signal-api
 make kill             # Tear down containers and remove local images
+make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
 make build            # Build the penny Docker image
 make browser-build    # Bundle the browser extension content script
 make check            # Format check, lint, typecheck, migrate-validate, eval cold imports, eval-catalogue staleness, pytest, tsc (browser)
 make pytest           # Run integration tests
+make eval-remote      # Live-model eval suite on a remote provider, pinned to one, 8 cases x 5 samples at once
+make eval-report      # Post a completed eval run's assembled report to its PR
 make fix              # Format + autofix lint issues + regenerate docs/eval-catalogue.md
 make typecheck        # Type check with ty
 make token            # Generate GitHub App installation token for gh CLI
