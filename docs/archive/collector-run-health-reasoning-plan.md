@@ -73,7 +73,7 @@ from a per-call success flag. This is a render-time derivation, no migration.
 
 ## 3. Where behaviour lives & the validation discipline (READ THIS)
 
-From the root `CLAUDE.md` and `docs/self-improvement-loop.md`:
+From the root `CLAUDE.md` and `docs/archive/self-improvement-loop.md`:
 
 - **Behaviour changes via data/prompt before code.** Render/structural facts are
   code; the quality *decision* lives in its `extraction_prompt` (a migration-seeded
