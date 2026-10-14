@@ -1,89 +1,60 @@
 # Agent Supervisor Runbook
 
-How a Claude session **runs a fleet**: one supervisor owns a meta ticket, dispatches one subagent per child ticket, and shepherds the whole thing to done. This is the supervisor-side counterpart to `docs/agent-task-workflow.md` (the child's contract). The duty list lives in `CLAUDE.md` → *Agent Supervision*; this is the operating procedure.
+How you, the Opus **coordinator** of a Glade task, get Penny work done: diagnose with the code owner, file the issue, brief a kitten, watch it, review its PR, merge it, clean up. This is the coordinator's side of `docs/agent-task-workflow.md` (the kitten's contract). GitHub is the durable state, not your context — a fresh session must be able to pick up any of this from the issue, its todo, and `git worktree list` alone, never from a prior session's summary.
 
-The design: **GitHub is the durable state, not your context.** A fresh session must be able to pick up a half-finished fleet from the meta ticket + `git worktree list` alone. Record everything that matters (dispatches, PRs, decisions) on the meta as it happens.
+**You plan and delegate; you never do the work yourself.** You read, run `gh` queries, file and update issues/todos/artifacts, put decisions to the code owner on the `ask` card, brief and reply to kittens, read diffs and posted eval reports, mark PRs ready, approve internals, set merge-when-ready, link stacks, and clean up after a merge. You do not edit a file, run the gate, or run an eval — a kitten does, every time, even a one-line fix. The one exception: a whole-suite eval run is asked of the code owner first, then handed to a kitten to run.
 
-## 0. Should this be a fleet at all? (decide before dispatching)
+## 1. The everyday path: one issue, one kitten
 
-Fan-out is **not** a general speedup — it is leverage for a specific workload shape, and the wrong shape makes it *slower and far more expensive* than one session working the tickets in sequence. Decide deliberately; the default for a small batch, or one gated on the LOCAL eval GPU, is **one sequential session, not a fleet**. (A single session still works in a worktree per `CLAUDE.md` → Working Directory Discipline — that's isolation, not fan-out.)
+Most work is this, start to finish — not a fleet:
 
-The three failure modes to weigh — each observed to make a real fleet cost far more than the sequential alternative for no throughput gain:
+1. **Diagnose with the code owner.** Read the logs, the code and any related issues yourself; hand wide reading (a broad grep, a trawl of history) to a read-only kitten rather than doing it in your own context.
+2. **File the issue** — what was seen or asked, in the code owner's own words where he gave any.
+3. **Create its todo** (`create_todo`), named `#<issue>: <title>`, and file the issue as a link artifact under it (`add_artifact`).
+4. **Brief a kitten** (§3 below: model, worktree, the `[todo N]` marker, the brief template) and dispatch it.
+5. **Read its plan**, if the brief called for one, and approve or correct it before it touches a file.
+6. **Look in once, about 30 minutes in** — its diff so far, whether CI or its eval run is moving — and again if it looks stuck.
+7. **Watch it to a PR, then review for real**: the diff and its posted eval report, read yourself against the issue and `docs/pr-review-guide.md` — never the kitten's summary. If CI is red or you have review comments, resume the kitten (SendMessage) with exactly what to fix; it adds commits and reports again, then stops, and you look again. It does not poll CI or shepherd itself.
+8. **Mark it ready** (it opened as a draft) and file the PR as a second artifact under the todo.
+9. **Approve and merge.** An eval-case PR goes to the code owner's review; an internals PR (runtime, harness, CI, docs) you approve yourself, under his `gh` login (`CLAUDE.md` → Git Workflow). An eval-case PR also needs a run on the suite's model posted at its final head before either of you approves it. Then flag it: `gh pr merge <n> --auto` once approved and green, or plain `gh pr merge <n>` if it was already approved and green when you looked — `--auto` does not enqueue a PR that's already mergeable. The merge queue does the rest.
+10. **After it merges or closes**, clean up (§5) and close the todo.
 
-- **Coordination can outweigh the work.** Dispatching, heartbeating, relaying, and shepherding all cost tokens that never touch code. When the changes are small, this fixed per-ticket overhead dwarfs the diff — and a fleet pays it once per ticket instead of amortizing it once across a whole session.
-- **A fleet cannot outrun its slowest serial resource — but the eval gate is no longer one.** The rule stands; the example has changed. Eval verification used to mean the single-tenant local GPU, so "parallel" children queued behind it and sat idle. `make eval-remote` takes no GPU ticket, and each run has its own artifact directory and run id. What replaced the one serial gate is a gate PER PROVIDER plus a SHARED BUDGET: runs pinned to the same provider share its rate limit, so the recipe's own provider lock runs them one after another, while runs on different providers go at once and share about 40 samples in flight, past which runs get slower and dirtier. So eval-gated work is fannable across providers at a per-child concurrency you set, and children verifying against ONE provider are a queue, a scoped run long each (see resource arbitration below). `make eval` on the local GPU is still a serial gate and the old reasoning still applies to it.
-- **Cold starts and idle-polling dominate the token bill.** Each fresh subagent re-derives the world (reads the SOP, greps the tree, orients in git), and an agent blocked on a slow check burns turns re-reading its entire context just to wait. Many cold contexts cost dramatically more than one warm session that reuses its own.
+Dependent PRs are linked as a GitHub stack (`gh stack link`) before review, so they're reviewed and queued in the right order.
 
-**Fan out when ALL hold:** tickets are genuinely independent (disjoint code areas), verification is parallelizable (`make fix check`, and/or **scoped `make eval-remote`** — no longer disqualifying), and each unit is *substantial* relative to its setup (a mechanical migration across many files, a broad audit, per-module refactors).
+## 2. Keeping the code owner informed
 
-**Do NOT fan out when ANY hold — do it in one sequential session instead:** the units are small (a run of 10-line prompt/eval tweaks), verification is gated on the **local** eval GPU (`make eval`, still single-tenant), or the tickets touch shared files. A batch of tiny PRs is the anti-pattern this gate exists to catch — note the disqualifier is now the LOCAL GPU specifically, not eval verification as such, since remote eval runs in parallel.
+- Keep the task's **status line** current: one line on what's in flight, by issue/PR number.
+- A todo's **note** is one short sentence on where it stands right now, kept current as the kitten's state changes.
+- A decision goes to the code owner through the **`ask` card**, every open question in one call — he answers once, so ask everything you need at once, never a drip of follow-ups.
+- Each reply you send a kitten **stands on its own**: it reads only the last message of a turn, so don't write one that depends on it remembering an earlier one.
 
-If it's a mixed bag, split it: sequence the small ones and anything needing the local GPU in one session, and fan out the independent cluster — which may now include tickets that verify with a scoped `make eval-remote`.
+## 3. Briefing a kitten
 
-## 1. Bootstrap (fresh session, cold start or resume)
+- **Model.** Check the Claude plan's session and weekly usage before a batch, and again while kittens run. With room left: **Sonnet** for building, review and anything needing judgement; **Haiku** for mechanical jobs. As usage nears its limit, move narrow jobs to **GLM through OpenRouter** (`mcp__glade-agents__list_models`, then `mcp__glade-agents__dispatch`) well before the limit is reached, and back to Sonnet/Haiku once it resets. **Never Opus.** Always pass `model` explicitly — an unset model inherits yours.
+- **Worktree.** Dispatch with the `Agent` tool, `isolation: "worktree"`, description prefixed `[todo N]`. That isolation suits a kitten that **edits in its first turn** — the harness removes a worktree made this way when a turn ends with no changes. A **plan-first** kitten (one told to stop and report before editing) doesn't edit its first turn, so its brief has it cut a **named** worktree itself, as its own first step once you approve its plan, which the harness leaves alone:
+  ```
+  git -C <primary checkout> fetch -q origin main
+  git -C <primary checkout> worktree add -b <branch> <primary checkout>/.claude/worktrees/<name> origin/main
+  ```
+  then work only inside that path, minting its token the usual way (`make -C <primary checkout> -s token`), never opening `.env`.
+- **The brief** names: the issue; `docs/agent-task-workflow.md` as its contract; the files it may touch, or how many, plus a stop rule ("report a short plan first" for anything beyond a small edit); the decided direction, if the issue left anything open — kittens don't make product decisions; whether it's model-facing (its own scoped eval, posted to the PR) or not; the expected PR title (`type(scope): title`); and "report the PR URL, summary, gate result, and any questions" — it never contacts the code owner itself, questions come to you.
+- Rules not yet merged into the SOP go in the brief itself (a kitten reads the SOP from `main`), and test any command before telling a kitten to run it — a silently broken one leaves it looking compliant while it isn't.
+- Before picking up an existing issue, PR or branch, call `list_other_tasks` to check no other task already has it.
 
-1. Find the meta: `GH_TOKEN=$(make token) gh issue list --label meta --state open`. Read it **and its comments** — decisions and dispatch records live there.
-2. Reconcile reality: `gh issue view` every child ticket (state), `gh pr list --state all` for their PRs, `git worktree list` for live trees. Never trust a prior session's summary — query.
-3. Inventory other sessions: locked worktrees (`git worktree list --porcelain`, lock reason names the pid) mean **another supervisor's live agents**. Don't grab another supervisor's meta or force-remove its locked trees without the user's say-so.
-4. If any prior child's PR went terminal while unattended: relay the event (its agent may be resumable) or sweep it yourself (fleet-end sweep rules, CLAUDE.md).
+## 4. When a task fans out to several issues
 
-## 2. The meta ticket
+Fan-out is leverage for one workload shape, not a general speedup — the wrong shape costs more than working the issues one at a time. Default to one kitten at a time; fan out only when the issues are independent (disjoint code areas), verification is parallel (`make fix check` and/or scoped `make eval-remote`), and each is substantial next to its setup cost.
 
-- One meta per fleet, labeled `meta`. Body carries a **task-list checklist** of child tickets (`- [ ] #NNNN — summary`) so GitHub renders progress and reconciliation is mechanical.
-- Tier the checklist by actionability (directly actionable / needs-a-decision / design-first `blocked`+`investigation`) — children must not be dispatched onto design-first tickets.
-- The supervisor **owns it end-to-end**: check items off as PRs merge, comment when waves launch (which tickets, which PRs), record mid-flight decisions. Any "what's left?" answer reconciles against this checklist via live queries — never from memory.
-- At fleet end: close it with a final status comment, or explicitly state what remains open and why.
+- **The meta ticket.** One per fan-out, labelled `meta`, body a checklist of child issues; own it end-to-end, checking items off as PRs merge — any "what's left?" answer is a live query against it, never memory.
+- **Waves.** Group by disjoint files; hold shared-file issues (migrations included — one migration-creating issue per wave) for a later wave. Wait for a wave to clear the merge queue before launching the next.
+- **Heartbeat.** While a kitten is queued on the per-provider eval lock (`make eval-remote` runs one eval at a time per provider; its log prints `eval: provider <name> is busy … waiting (<s>s of 3600s)`), check every 30–60 minutes that it's still live and its artifact is progressing — a dead waiter never resurrects itself. Size each kitten's `EVAL_WORKERS` so, across providers, the combined in-flight stays near 40.
+- **Watch `mergeable`, not just open/merged** — a PR can go CONFLICTING when a sibling merges in the gap between its fetch and its push.
+- **Fleet-end sweep.** Once every PR is terminal, inventory `git worktree list` against PR states, clean up every terminal one (§5), close the meta.
+- **Bootstrapping onto one already running:** read the meta and its comments, `gh issue view`/`gh pr list` every child, `git worktree list` for live trees; a locked tree belongs to another live agent — relay, never force.
+- **Stop every kitten at once if the code owner pauses work** — their worktrees keep the work for later.
 
-## 3. Dispatching a child
+## 5. Post-merge cleanup
 
-- **One ticket per agent**, in its own **isolated worktree** (Agent tool `isolation: "worktree"`).
-- **Most work dispatches; you may implement directly.** Dispatch is the default, and it keeps your context for orchestration, investigation, review and design. When you want certainty or more context than a brief can carry, implement the ticket yourself, in your own worktree, keeping the SOP's hard lines. That is a permission, not a rule that you must dispatch.
-- **Model: Sonnet or Haiku for every subagent, never Opus.** Agent tool `model: "sonnet"` for implementation and eval-case work; `model: "haiku"` for mechanical chores (a rebase, posting a finished run, a readback). Always pass `model`: a dispatch that omits it inherits the supervisor's. Opus is the supervising session's, for planning and review, so a child's brief carries the design decisions and its diff gets read before anything is relayed.
-- The child's prompt is short and defers to the SOP. Shape:
-  1. "You own ticket #N end-to-end. **Read `docs/agent-task-workflow.md` FIRST and follow it end to end** — including §8 (shepherd to terminal state) and §9 (terminal cleanup)."
-  2. How to read the ticket (`make token` from the primary checkout, `gh issue view N --comments`).
-  3. **The decided direction** — if the ticket lists options, the supervisor (with the user) picks before dispatch; children don't make product decisions. Include known constraints/traps from your analysis.
-  4. Scope boundary; whether it's model-facing (eval contract, with the child running its own scoped evals) or not (no eval).
-  5. **The expected PR title** — `type(scope): title` per [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow), with the type, the scope, and (for a test port) the group name spelled out, so the log stays greppable by prefix and test PRs sort by group. The body states the change and closes its ticket; it carries no generated-with footer and no session URLs.
-  6. "Report the PR URL + summary + gate result."
-- Rules **not yet merged** into the SOP must be stated in the prompt (children read the SOP from `main`). And **verify the mechanism before relaying a rule** — test the command you're telling them to run (`make -n` is cheap); a silently-broken mechanism makes every child non-compliant while believing otherwise.
-- **Retargeting a PR onto a non-`main` base merges it at once** if its merge-when-ready flag is still set: a feature branch has no protection, so nothing holds it. Run `gh pr merge <n> --disable-auto` before any `gh pr edit --base`. A stacked PR carries no flag until GitHub retargets it to `main`.
-- **When a stacked PR's parent merges**, the queue has squashed the parent into one new commit on `main`, and the child still carries the parent's original commits. The child is rebased with `git rebase --onto origin/main <parent's last head>` to drop them, force-pushed, and flagged merge-when-ready only once GitHub has retargeted it to `main`. Say so in the relay to the child.
-- **Scoping an eval with `-k` matches pytest node ids** — file, function and parametrised model names — not case ids. Name the case's test FUNCTION in the brief; a case id matches nothing, or something else.
+Cleanup is yours, once a kitten's PR reaches a terminal state (merged or closed) — a kitten's own brief has it stop at its report and never clean up after itself. Remove its worktree and delete its local and remote branch (you may hand this mechanical step to a Haiku kitten). A locked worktree belongs to a live agent: leave it and relay the merge event instead of forcing it.
 
-## 4. Wave planning
-
-- Group waves by **disjoint code areas**. Hold shared-file tickets (`CLAUDE.md`, `prompts.py`, migrations, shared test fixtures) for a later wave or do them inline — parallel edits there just manufacture rebases.
-- **One migration-creating ticket per wave** (migration numbers collide; rebase-only renumber policy).
-- Default to **waiting for a wave to clear the merge queue before launching the next** (limits PR pileup; later waves branch from the truth). Children flag merge-when-ready (§8), so approvals (§6) are the only manual step — a batch of approvals cascades through the queue unattended. The shepherd loop makes modest overlap survivable, not free.
-- Watch cross-fleet overlap: if another session's fleet is active, compare target files before dispatching.
-
-## 5. While children run
-
-**Hands off the prod stack.** Agent sessions (supervisor and children) run only one-off `docker compose run --rm` against the main project (`make token`, `make check` — fine); never compose *lifecycle* commands (`make up`/`make prod`/`make kill`/`docker compose down`) — the production stack belongs to the user. **`make clean-project-images` counts as one**: it is `make kill`'s own recipe, and since worktree builds here reuse the shared `penny:latest` tag, a child has nothing project-scoped to reclaim — SOP §9 now has children verify-then-skip it (`docker images`/`ps -a`/`volume ls` filtered by their compose project). If a compose command you did run gets interrupted, **re-run it to completion**: a half-finished teardown mints orphaned container/network state that breaks the next `make prod` (the `up` targets now self-heal with a preceding `down --remove-orphans`, but don't rely on it).
-
-Standing duties (details in `CLAUDE.md` → Agent Supervision): **heartbeat** every 30–60 min while anything waits on a serialized resource; **stall recovery** ("check your result artifacts FIRST, then relaunch only what's missing"); **resource arbitration** (children run their own scoped evals inside their workflow, and the code owner's gate is the eval PR review, not each run; full-suite runs need his explicit go-ahead — they are his money and the whole in-flight budget; local-GPU contention is yours to surface; when children verify remotely against DIFFERENT providers, hand each one an `EVAL_WORKERS` budget so their combined in-flight stays near 40; and a pinned provider takes one run at a time across the fleet, which `make eval-remote` enforces itself with a per-provider lock — so children verifying against the same provider QUEUE on it, and a queued child is a waiting child: heartbeat it like the GPU queue. Its log prints `eval: provider <name> is busy — <lock> is held by pid <n>; waiting (<s>s of 3600s)` every 15 seconds while it waits, the count advancing; it gives up after an hour with `eval: gave up after …` and exit 1, which needs a relaunch, and a holder pid that outlives any plausible run is the stuck one to look at); **relay merge/close events** so children run §9; file children's out-of-scope findings as new tickets under the meta.
-
-- **Your PR watchers poll `mergeable`, not just open/merged.** A PR can be born CONFLICTING (a sibling merges in the window between the child's last fetch and its push) and sit there looking "up and green-ish" while nothing progresses — both a child's shepherd loop and a supervisor watcher missed exactly this once; the user caught it first. Watcher loop shape: `state` + `mergeable` + a failed-check count, alerting on any of the three.
-- **A child can end its turn a step short.** A child can stop after a background command settles and it narrates the result, once mid-rebase with conflict markers still in the tree. If the artifacts say the task is unfinished, resume the same subagent (SendMessage) with "finish the whole task in this turn" and the exact remaining steps.
-- **Stall detection is artifact-based, and "work looks done" is a stall state too.** On each heartbeat verify (a) the child's watched process actually exists (a gate/eval container in `docker ps`, a live waiter) and (b) its artifacts are progressing (new commits, the PR existing, checks advancing). The two observed stall phases are mid-§4 (a backgrounded gate that died — no process, no output file) and the §7 last mile (a clean, committed tree with **no PR** — the child judged the work "done" and went silent). A committed-but-unpublished tree is a stall even though nothing is red; the recovery nudge is the standing "check your artifacts first, then proceed straight to push → PR → `--auto` without ending your turn."
-
-## 6. Approving PRs (edges vs internals)
-
-The split is in [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow). In short: **eval cases are the code owner's** — any new judgment on a case's inputs, behaviour sentence or claims goes to his review, and you only approve deleting a legacy case already ruled covered. **Internals are yours** — runtime, harness, CI, docs — and his cases are the acceptance test. Children never approve.
-
-Before approving an internals PR (under the code owner's `gh` login, by his choice; everything else stays on the App token):
-- Read the whole diff against `docs/pr-review-guide.md` — not the child's summary.
-- CI is green.
-- The PR's head is the SHA you reviewed (`gh pr view <n> --json headRefOid`); a push after your read means reading again.
-- The merge-when-ready flag is set (`autoMergeRequest` non-null), so approval carries it through the queue.
-
-**A PR that adds or changes eval cases merges only with a run on the suite's model posted at its final head.** A rebase that leaves the tree byte-identical to the measured head (`git rev-parse HEAD^{tree}` equal) keeps the run valid, and the PR says so in a comment. An approved PR with merge-when-ready set enqueues the moment it is pushed and green, so after a rebase push its flag stays off until the new report, or that comment, is posted. SOP §8 carries the mechanics.
-
-Still ask first: anything touching production (`make prod`/`up`/`kill`, the live DB), full-suite eval runs, and anything outward outside the repo.
-
-## 7. Fleet end
-
-1. Every child PR terminal → **fleet-end sweep**: inventory `git worktree list` against PR states; remove terminal trees, delete local+remote branches; locked trees belong to live agents — relay, never force. **Check the remote branch of every CLOSED-unmerged PR explicitly** (`git ls-remote origin <branch>`): GitHub auto-deletes only a *merged* PR's branch, so closed ones leave a live remote branch behind for the sweep to delete. The sweep also owns any `worktree-agent-*` placeholder a child reported the isolation guard blocked it from deleting — it carries no unique commits, so it's a one-command delete from the primary checkout.
-2. Update the meta checklist; close it (or report what remains and why).
-3. Fold process lessons into this runbook / the SOP / CLAUDE.md — that's how this document got every rule it has.
+Still ask the code owner first: anything touching production (`make prod`/`up`/`kill`, the live DB), a whole-suite eval run, and anything outward outside the repo.

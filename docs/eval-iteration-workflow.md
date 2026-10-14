@@ -1,6 +1,6 @@
 # The Eval Iteration Workflow
 
-The repeatable loop for changing **model-facing behaviour**: how **one** objective goes from agreed input/output pairs → a seeded world → measured rounds on a live PR → merged. It is the eval-side sibling of the task-agent SOP — walk it top-to-bottom for one objective's iteration the way a task agent walks `docs/agent-task-workflow.md` for one ticket. Distilled from the state-transition suite arc (#1828–#1863).
+The repeatable loop for changing **model-facing behaviour**: how **one** objective goes from agreed input/output pairs → a seeded world → measured rounds on a live PR → merged. It is the eval-side sibling of the kitten SOP — walk it top-to-bottom for one objective's iteration the way a kitten walks `docs/agent-task-workflow.md` for one ticket. Distilled from the state-transition suite arc (#1828–#1863).
 
 The golden rule underneath all of it: **one beat at a time, pairs before code, every change measured, every run posted to the PR — the code owner rules on the cases at the PR review.**
 
@@ -9,20 +9,20 @@ The golden rule underneath all of it: **one beat at a time, pairs before code, e
 - **`docs/eval-iteration-workflow.md`** (this doc) — the **loop**: scope → pairs → seeded world → run → report → diagnose → iterate → merge.
 - **[`docs/prompt-writing-guide.md`](prompt-writing-guide.md)** — **how to write** the model-facing text a round changes (plain words, numbered call steps, the canonical call notation).
 - **[`docs/eval-case-design.md`](eval-case-design.md)** — the **contract a case is written to**: end-state assertions in three categories, everything the model emits measured as variance, and the porting checklist. Required reading before a case is written or ported.
-- **[`docs/agent-task-workflow.md`](agent-task-workflow.md)** — the **contract** the implementing task agent follows for each round's ticket → worktree → gate → PR → cleanup.
+- **[`docs/agent-task-workflow.md`](agent-task-workflow.md)** — the **contract** the implementing kitten follows for each round's ticket → worktree → gate → PR → report.
 
 ---
 
 ## 0. Roles (who decides what)
 
 - **The code owner owns the cases and rules at the eval PR review.** Their inputs, behaviour sentences and claims, and whether a case lands, are his calls — not inferred from a plan he read. His gate is the review, not each run; a full-suite run is the one run that waits for his explicit go-ahead.
-- **The supervisor holds the beat's scope** and owns the internals the round changes (prompts, machine, harness), per [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow).
-- **Task agents implement.** One ticket each, `docs/agent-task-workflow.md` as their contract. They run their own scoped evals and post every report to the PR. Most work dispatches this way; the supervisor may implement a round directly when it wants certainty or more context.
+- **The coordinator holds the beat's scope** and owns the internals the round changes (prompts, machine, harness), per [`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow).
+- **Kittens implement.** One ticket each, `docs/agent-task-workflow.md` as their contract. They run their own scoped evals and post every report to the PR; the coordinator reads each report and marks the PR ready once its run is in. The coordinator never implements a round itself.
 
 ## 1. Scope one beat
 
 - A **beat** is one edge, one micro-context, or one behaviour — never a family of them.
-- One beat gets **one ticket and one PR**, and iterates on that PR until the code owner lands it.
+- One beat gets **one ticket and one PR**, opened as a **draft** by the implementing kitten and kept a draft until the coordinator has read its posted run; it iterates on that PR until the code owner lands it.
 - Findings about **later** beats are **recorded on their tickets, not chased**. Discovering the next problem is not permission to start it.
 
 ## 2. Design the input/output pairs — in chat, first
@@ -44,7 +44,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 - **Time-shape** — recent turns are recent (banter after journeys), old work is out of the window. Order through the **real store APIs**; report what can't be controlled rather than faking it.
 - **Fixtures are transcriptions of measured draws, never inventions.** Sample the clean modal draw; keep subject vocabulary intact ("daily special" is the dish's name); **re-sample whenever the producing prompt changes**.
 - **Pages are richer than the task needs** — a real listing has an author, a blurb, older entries. A sparse page turns an over-asked extract into a false dead end.
-- **A loud seed probe asserts the whole world**, so a bad world fails **in the seed, not after GPU time** — plus a plain `make check` test driving the composed seeder against a migrated DB, including the built conversation window's **actual alternation**.
+- **A loud seed probe asserts the whole world**, so a bad world fails **in the seed, not after run time** — plus a plain `make check` test driving the composed seeder against a migrated DB, including the built conversation window's **actual alternation**.
 
 ## 4. Run
 
@@ -78,13 +78,13 @@ The seeded world mirrors the **full exit state** of everything that came before,
 - **Choice-menu conditions:** each edge states only its **own** shape — no edge describes a sibling, no "but not when" carve-outs. Naming your **own** near-misses is fine.
 - **Watched deletions:** a dropped guard is **recorded with the gate cases that would catch its absence**.
 - **Expect the see-saw.** A tightening captures a neighbour; a loosening leaks one. **Two or three measured rounds to converge is normal**, and the guard cases run **in the same round as the fix**.
-- **Prompt wording is an internal**, the supervisor's to write and approve ([`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow)). Text the code owner hands over lands verbatim, and **his register wins**.
+- **Prompt wording is an internal**: the kitten writes it to the coordinator's decided direction ([`CLAUDE.md` → Git Workflow](../CLAUDE.md#git-workflow)), and the coordinator approves. Text the code owner hands over lands verbatim, and **his register wins**.
 
-## 8. Dispatch to task agents
+## 8. Dispatch to kittens
 
 - **One ticket, one scope, the SOP as contract.** Rounds land on the **inflight PR**; separate concerns get **separate tickets and PRs**. **Ask when unsure — never collapse "separate PR" into "inflight round" on your own reading.**
-- **Code-owner-authored text lands VERBATIM.** The task agent verifies it **char-for-char by independent AST extraction after `make fix`**, sweeps **every carrier** (pins, docstrings, comments), and **reports judgement calls and out-of-scope findings instead of absorbing them**.
-- **Task agents run their own scoped evals** and post every report to the PR (`docs/agent-task-workflow.md` §4). Most rounds dispatch; the supervisor may run a round itself when it wants certainty or more context.
+- **Code-owner-authored text lands VERBATIM.** The kitten verifies it **char-for-char by independent AST extraction after `make fix`**, sweeps **every carrier** (pins, docstrings, comments), and **reports judgement calls and out-of-scope findings instead of absorbing them**.
+- **Kittens run their own scoped evals** and post every report to the PR (`docs/agent-task-workflow.md` §4); the coordinator never runs one itself.
 
 ## 9. Rerun upstream
 
@@ -98,7 +98,7 @@ The seeded world mirrors the **full exit state** of everything that came before,
 
 - **The code owner's checkpoint is the eval PR review, not each run.** Scoped runs are the implementer's to run as the round needs; a full-suite run waits for his explicit go-ahead.
 - **One beat to its terminal state.** Whether a case lands is his call.
-- **Merged means the task agent cleans up and the next beat opens.**
+- **Merged means the coordinator cleans up (worktree, branches) and the next beat opens.**
 
 ---
 
@@ -112,6 +112,6 @@ The seeded world mirrors the **full exit state** of everything that came before,
 6. **Every run posts its verbatim report to the PR**, and the chat summary runs overall → per-case → symptoms → diagnoses, in passing counts.
 7. **Diagnose from the thinking and the ledger, never greps**; the model's reasoning is ground truth and presented state is the first suspect.
 8. **One lever per run; the second patch means a wholesale rewrite**; the code owner's register wins on text he hands over.
-9. **Code-owner-authored text lands verbatim, AST-verified**, and task agents run their own scoped evals.
+9. **Code-owner-authored text lands verbatim, AST-verified**, and kittens run their own scoped evals; the coordinator never runs one itself.
 10. **Anything shared that changed gets a baselined non-regression rerun**, ending in one composed run of the beat on the finished tree; an eval-case PR merges with a run on the suite's model posted at its final head.
 11. **The code owner's checkpoint is the eval PR review** — not each run; the full suite still waits for his go-ahead.
