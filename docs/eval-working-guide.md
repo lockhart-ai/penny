@@ -21,9 +21,9 @@ measure it, running the suite, or reading a run to decide what to do next.
 ## 1 · From a failure to a case to a fix
 
 Penny's behaviour is managed through the suite. A failure seen in use becomes a case that
-reproduces it; the fix is whatever makes that case's claims hold and its variance fall, without
-costing its neighbours. A fix with no case is unmeasured. A case whose first run does not show
-the failure does not reproduce it.
+reproduces it; the fix is whatever makes that case's claims hold, its variance fall and its
+token cost fall, without costing its neighbours. A fix with no case is unmeasured. A case whose
+first run does not show the failure does not reproduce it.
 
 This is **not** the same rule as porting an existing case (§2 below): a port lands the case as it
 is and files any gap it shows for later ([`docs/eval-case-design.md` §10](eval-case-design.md)). A
@@ -52,13 +52,15 @@ The path, in order. Each step says who does it, what it produces, and where the 
    ([`docs/agent-task-workflow.md`](agent-task-workflow.md); §8 "Building the world and the five
    wordings" below).
 9. **Run it to show it reproduces** (a kitten), scoped, on the suite's model, at the case's commit
-   — the "before" — posted to the PR (§9 "Running", §10 "Reading a run" below). If every claim
-   holds and the spread is narrow, the case does not reproduce the failure: back to step 4.
+   — the "before" — posted to the PR (§9 "Running", §10 "Reading a run" below). It reproduces the
+   failure when any of the three measures shows it: a claim fails, the spread is wide, or the
+   token cost is high — whether the sample times out or finishes is not the point. Only when all
+   three read healthy does the case not reproduce it: back to step 4.
 10. **Push the fix to the same PR** (a kitten), one lever per round — presentation before wording
     before code (§11 "Reasoning about a fix" below).
 11. **Run it again to show it resolves** (a kitten), at the new head, with the neighbours the
-    change could disturb — the "after" — posted to the same PR as a new comment. Further rounds
-    repeat steps 10 and 11.
+    change could disturb — the "after" — posted to the same PR as a new comment, compared against
+    the "before" on all three measures. Further rounds repeat steps 10 and 11.
 12. **Review and merge** (the coordinator, then the code owner). The PR adds an eval case, so the
     code owner reviews it; a batch of fixes still ends with one whole-suite run, asked of the code
     owner first.
@@ -75,6 +77,22 @@ The suite is the list of behaviours Penny supports — `docs/eval-catalogue.md`,
 cases themselves. One case is one behaviour under one entry condition, in five wordings, three
 samples each: a cohort of fifteen ([`docs/eval-case-design.md` §4, §6](eval-case-design.md)).
 
+- **A case is read on three measures, never fewer.** The code owner:
+
+  > "the measures for an eval test are
+  > - checks passing
+  > - variance
+  > - token cost
+  >
+  > that lets us reproduce failure cases like the example here. we can do deterministic checks
+  > that the facts that were present are returned. we can measure variance. we can measure cost.
+  > we have all the tools to reproduce this kind of failure."
+
+  Checks are the claims, strictly true or false (§3 below). Variance is everything the model
+  emitted on the way — tool calls, routes, wording (§4 below). Token cost is what it spent
+  getting there — input, output, reasoning tokens, and duration (§4's "Token cost, the third
+  measure" below). The three answer different questions and are read together, never
+  collapsed into one.
 - **Facts are asserted; behaviour is measured.** A claim is a fact about the end state. How the
   model got there — which tools, in what order, in what words — is measured as variance and
   never asserted. This is the whole of [`docs/principles.md` §4.1](principles.md).
@@ -247,15 +265,20 @@ supplies beside it — something the ask never requested, so it can't be a claim
 harness cannot yet carry is a harness change**, designed by the coordinator, landing before the
 case that needs it — a case never invents its own pooling arithmetic.
 
-### Cost is variance
+### Token cost, the third measure
 
-How much the model spent before it answered is behaviour, exactly like a tool sequence — so it
-is measured, never a check, and never gates a run (the budget rule above). What's recorded today,
-and where each number shows up:
+How much the model spent before it answered stands beside checks and variance as its own
+measure (§2 above) — not a kind of variance, and never a check that gates a run (the budget rule,
+§3 above). A case can read as a clean pass on checks, with ordinary variance, and still cost far
+more than its neighbours — that rise is what this measure is for. What's recorded today, and
+where each number shows up:
 
 - **Duration and call count are recorded per sample.** Every sample's own banner carries its
   wall-clock duration and its call count, read straight off the real promptlog's `duration_ms`
   per call — the same numbers production logs, not a harness stopwatch.
+- **A model call that is cancelled before it returns writes no promptlog row today**
+  (#2355), so a draw cut off by a timeout is missing from the token figures, and its cost
+  shows only in the sample's duration and log until that is fixed.
 - **Tokens and reasoning share are a per-case average, in the case document's own Cost
   section** — beside Assertions and Variance, not inside either. Input tokens are split from
   output: input is the prompt and context Penny's own design controls, so a rise there is what
@@ -319,6 +342,14 @@ database, never the production DB without asking first.
 - **A deterministic defect below the model** (a parser, a gate, a bound) → a mock test in
   `make check`, not an eval case. Add an eval case too only if the same defect also showed up as a
   wrong end state or as variance.
+- **The model gets lost.** It reasons at great length or loops, and answers late, wrongly, or not
+  at all. The code owner: *"i expect a test that reproduces the world and the user ask and for the
+  model to get lost in a similar death spiral. whether it times out or finishes is not the point,
+  the point is that the token cost and variance will be high. that is the measurement. when the
+  fix is applied the model should reply quickly and coherently."* This is still an eval case that
+  reproduces the world and the ask: deterministic checks that the facts present in the world are
+  returned, token cost and variance read as the measurement of the spiral itself, and the same
+  case, re-run after the fix, showing a quick, coherent reply.
 
 **Distil.** Write down, in this order: the user's goal in one sentence; the correct end state as
 facts — where the machine lands, what the store holds, what the reply must and must not carry; the
@@ -361,9 +392,11 @@ is short, and every line is filled or marked empty with the reason it's empty:
   invented anchors; a line on how its shape and size match the real input.
 - **Wordings:** the five, and the facts every one of them carries.
 - **Landed / Store / Provenance:** the claims under each, or "empty" with the reason.
-- **Measured:** the features, including any the case declares itself.
-- **Expected on the first run:** what should fail or spread, and whether that rests on a
-  measurement or on one observation.
+- **Measured:** the features, including any the case declares itself, and the token cost
+  (duration, input/output/reasoning tokens) alongside them.
+- **Expected on the first run, on the three measures:** which claims should fail, what should
+  spread, and what the token cost should look like (high and why) — and whether any of that rests
+  on a measurement or on one observation.
 - **Model and provider.**
 - **Rulings needed:** only real open questions, each with a recommendation.
 
@@ -392,9 +425,12 @@ conversation, not the page the current ask named.
 - **Landed / Store / Provenance:** Landed — apply. Store — one job created, bound to the new
   page's container; nothing left over from the called-off round. Provenance — the confirmation
   names the new page's token; the called-off page's token appears nowhere in the reply.
-- **Measured:** tool sequence.
-- **Expected on the first run:** most samples' confirmation to carry the called-off page's token
-  instead of the new one — this rests on the one observed sample, not yet a measured rate.
+- **Measured:** tool sequence; token cost (duration, input/output/reasoning tokens) — ordinary
+  for this case's shape, since nothing about naming the wrong page should cost more to reach.
+- **Expected on the first run, on the three measures:** the provenance claim fails on most
+  samples, carrying the called-off page's token instead of the new one; tool sequence stays
+  ordinary; token cost stays ordinary too — this is a wrong-answer failure, not a death-spiral one,
+  and this rests on the one observed sample, not yet a measured rate.
 - **Model and provider:** the suite's model, gemma, pinned to Cloudflare.
 - **Rulings needed:** whether "names the called-off page" belongs as a provenance claim (the
   ask's own page is a fact the reply either states correctly or doesn't) or stays a case-local
@@ -821,9 +857,12 @@ then code — never "make the model smarter"
   after a second patch to the same passage, the passage is rewritten whole, not given a third
   clause ([`docs/principles.md` §3.3](principles.md); the craft is in
   [`docs/prompt-writing-guide.md`](prompt-writing-guide.md)).
-- **Each fix is measured on its own case against the reference run**, with a neighbouring case
-  measured alongside it when the change could over-correct that neighbour. A batch of fixes ends
-  with one whole-suite run, not one per fix.
+- **Each fix is measured on its own case against the "before" run, on all three measures** —
+  checks, variance, and token cost — not on whichever one motivated the fix; a presentation fix
+  for a wrong answer can still move cost, and a death-spiral fix is judged on cost and variance
+  falling as much as on the reply arriving at all. A neighbouring case is measured alongside it
+  when the change could over-correct that neighbour. A batch of fixes ends with one whole-suite
+  run, not one per fix.
 - **The suite's model is the one being fixed for.** Gaps on another roster entry are noted, not
   chased — chasing them tunes the fix to a model nobody is shipping. A check whose pass depends on
   one model's phrasing is a defect in the check, not a fact about the other model.
