@@ -208,6 +208,10 @@ and where each number shows up:
   thinking-vs-output character ratio, named as such) render as a share of output. Both carry a
   one-sided proposed ceiling, per model, with a round +10% margin rather than a measured one —
   cost isn't an entropy reading.
+- **The run as a whole states its cost too.** The assembled run summary carries a
+  `cost / sample` row in its identity table and a token total for the run (input, output, and
+  thinking where it is counted), and each case's row in the summary table carries its own input
+  and output token figures. All of it is tokens, calls and seconds.
 - **A re-rolled or discarded draw is read from the repeated context, not from a marker** — a
   discarded draw writes nothing into the conversation, so what gives it away is that the retry
   calls the model again on the *same* message list, leaving two promptlog rows with
@@ -291,9 +295,9 @@ model are not interchangeable, and one was measured blanking every tool result i
 make eval-remote
 ```
 
-runs the suite's model (the roster's first `EVAL_MODELS` entry) at `make eval-remote`'s default 8
-cases x 5 samples at once. To name the suite's model explicitly, scope a run to the cases a change
-touches, and declare the run's lever:
+runs the roster's first `EVAL_MODELS` entry at the default 8 cases x 5 samples at once. That entry
+is whatever the primary checkout's `.env` lists first, which may not be the suite's model, so name
+the suite's model explicitly, scope the run to the cases a change touches, and declare its lever:
 
 ```
 LLM_MODEL=google/gemma-4-26b-a4b-it make eval-remote \
