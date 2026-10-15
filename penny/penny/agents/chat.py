@@ -485,7 +485,9 @@ class ChatAgent(Agent):
                 )
 
             logger.info("Handling message from %s (conversation mode)", sender)
-            unconfigurable = await self._unconfigurable_round(state, framing, run_id)
+            unconfigurable = await self._unconfigurable_round(
+                state, framing, run_id, content, history
+            )
             if unconfigurable is not None:
                 return unconfigurable
             self._install_tools(self.get_tools(run_id=run_id))
@@ -519,7 +521,12 @@ class ChatAgent(Agent):
             self._turn_framing = None
 
     async def _unconfigurable_round(
-        self, state: ConversationState | None, framing: RoundFraming | None, run_id: str
+        self,
+        state: ConversationState | None,
+        framing: RoundFraming | None,
+        run_id: str,
+        content: str,
+        history: list[tuple[str, str]] | None,
     ) -> ControllerResponse | None:
         """An apply turn that arrived with no framing FAILED before it began (#1875) —
         ``None`` on every other turn, which is the ordinary path untouched.
@@ -531,7 +538,9 @@ class ChatAgent(Agent):
         before any tool-bearing run (#1839's shape, moved to the front of the turn because
         there is nothing to run rather than nothing learned).  Since #2370 that fact is
         handed to the shared last-draw-or-account building block instead of an immediate
-        canned line: one tools-off draw, with no history yet to carry, writes the reply.
+        canned line: one tools-off draw, over the turn's OWN messages — ``content`` and
+        ``history``, same as the ordinary run would build, so the model sees what the user
+        actually asked rather than just the bare fact — writes the reply.
 
         The two things it must NOT do are what makes this a failure rather than a
         fallback: instructing the turn as though it were binding the routine itself would
@@ -550,8 +559,8 @@ class ChatAgent(Agent):
         )
         facts = PennyResponse.FACTS_NOTHING_TO_CONFIGURE
         system_prompt = await self._build_system_prompt(self._current_user)
-        messages = self._build_messages(
-            Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts), system_prompt=system_prompt
+        messages = self._with_facts_turn(
+            self._build_messages(content, history, system_prompt), facts
         )
         return await self._narrate_or_account(
             messages, facts, [], run_id, ChatPromptType.USER_MESSAGE

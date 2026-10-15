@@ -32,23 +32,21 @@ class PennyResponse:
 
     # ── Narrated-or-accounted terminal facts (#2370) ────────────────────────────
     #
-    # Plain statements of a run's own state — never an order — appended as the last
-    # user turn before Agent._narrate_or_account's one tools-off draw, so the model
-    # can tell the user honestly what happened.  Reused verbatim as the deterministic
-    # account's own opening line (via `account_of`) when even that draw is unusable.
-
-    FACTS_REROLLS_EXHAUSTED = (
-        "The model was asked {attempts} times, and every answer that came back was unusable."
-    )
+    # Plain statements of a run's own state — never an order, and in SECOND PERSON,
+    # since the model reading these is Penny — appended as the last user turn before
+    # Agent._narrate_or_account's one tools-off draw, so the model can tell the user
+    # honestly what happened.  Reused verbatim as the deterministic account's own
+    # opening line (via `account_of`) when even that draw is unusable; FACTS_NO_REPLY_AT_SEND
+    # is the one exception, read only by the account (never handed to a draw), so it
+    # stays third person.
+    FACTS_REROLLS_EXHAUSTED = "Your last {attempts} answers this turn came back unusable."
     FACTS_MAX_STEPS = (
         "The step limit of {steps} tool steps was reached before an answer was written."
     )
-    FACTS_EMPTY_WITH_TOOLS = "The model's last answer came back empty after {count} tool calls."
-    FACTS_EMPTY_NO_TOOLS = "The model's last answer came back empty."
+    FACTS_EMPTY_WITH_TOOLS = "Your last answer came back empty, after {count} tool calls."
+    FACTS_EMPTY_NO_TOOLS = "Your last answer came back empty."
     FACTS_NOTHING_LEARNED = "No routine was captured from this turn."
-    FACTS_NOTHING_TO_CONFIGURE = (
-        "This turn has nothing to configure — no routine was framed for it to set up."
-    )
+    FACTS_NOTHING_TO_CONFIGURE = "There is no routine set up for this turn to configure."
     FACTS_NO_REPLY_AT_SEND = "This turn didn't produce a reply to send."
 
     # The deterministic account's own shape (`account_of` in agents/models.py): the

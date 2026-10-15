@@ -384,7 +384,7 @@ def _is_narrate_draw(messages: list[dict]) -> bool:
     answer it honestly (rather than fall through to its catch-all) checks this
     first."""
     last = messages[-1] if messages else {}
-    return "Tell the user honestly what happened this turn" in str(last.get("content", ""))
+    return "This is the last step of the turn, with no tools" in str(last.get("content", ""))
 
 
 def _spy_extractor(penny) -> dict:
@@ -1278,6 +1278,10 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
         # tool surface, no further calls.
         assert len(called) == 1
         assert called[0]["tools"] is None
+        # The turn's own messages carry the user's actual ask, not just the bare fact
+        # (#2370) — a user turn with the ask sits before the facts turn.
+        user_turns = [m["content"] for m in called[0]["messages"] if m["role"] == "user"]
+        assert "great — do that every hour and tell me when it changes" in user_turns
         assert {row.name for row in penny.db.memories.list_all()} == before
 
 

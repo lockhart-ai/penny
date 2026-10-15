@@ -548,12 +548,12 @@ class Prompt:
     # The one tools-off draw a run falls back to when it has nothing more to do but
     # hasn't failed outright (#2370, docs/principles.md §2 item 9): the step limit, a
     # spent reroll budget, an empty answer, nothing learned, nothing to configure.
-    # ``facts`` is a plain statement of what happened — never an order — appended as
+    # ``facts`` is a plain statement of what happened, in second person — appended as
     # the turn's last user message (``Agent._narrate_or_account`` /
-    # ``Agent._with_facts_turn``); permission, not instruction, is why there's no
-    # apology wording here for the model to copy.
+    # ``Agent._with_facts_turn``).  States the state and the task, nothing more: no
+    # prohibition for the model to read as an order and echo back.
     NARRATE_TERMINAL_FACTS = (
         "{facts}\n\n"
-        "Tell the user honestly what happened this turn, from the above and whatever "
-        "you actually did. No apology, and don't claim anything you didn't reach."
+        "This is the last step of the turn, with no tools. Write your reply to the "
+        "user from what is above: what you did this turn, and what didn't finish."
     )
