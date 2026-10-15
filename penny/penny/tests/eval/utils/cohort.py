@@ -1614,7 +1614,13 @@ _IDENTIFIER = (
     rf"\b[A-Za-z][A-Za-z']*(?=[A-Za-z0-9'.{re.escape(_HYPHENS)}]*[{re.escape(_HYPHENS)}]\d)"
     rf"(?:[{re.escape(_HYPHENS)}]{_IDENTIFIER_PART})+"
 )
-_SPECIFIC = re.compile(rf"{_URL}|{_IDENTIFIER}|{_NAME_PHRASE}|\b{_NUMBER}\b{_MERIDIEM}?")
+# The figure ends at a word boundary OR runs into its meridiem: `_MERIDIEM` carries the
+# boundary of the time's own end, so `9:40pm` is one value like `9:40 pm`.  Requiring the bare
+# `\b` even before a meridiem made a number followed directly by `pm` match nothing at all
+# there — `\b` fails between the last digit and the `p` — and the grammar backtracked INTO the
+# figure, stopping wherever a boundary did exist: `9:40pm` read as `9:`, a fragment reported
+# unsourced on a reply that stated the whole time.
+_SPECIFIC = re.compile(rf"{_URL}|{_IDENTIFIER}|{_NAME_PHRASE}|\b{_NUMBER}(?:{_MERIDIEM}|\b)")
 # A percentage in front of a word for the speaker's OWN certainty measures nothing in the
 # world: "not 100% sure" states no value, and MEASURED, was reported as `unsourced: ['100']`
 # on a reply that named no figure at all.  The class is closed by what it means — how sure

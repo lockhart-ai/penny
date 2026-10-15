@@ -12,6 +12,8 @@ import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database.models import MemoryEntry
@@ -368,6 +370,31 @@ def test_a_name_phrase_and_a_number_are_specific_values():
         "aurora\u2011deck\u20112",
     ]
     assert specifics("a 10-minute marinade, per patch-2.3-notes") == ["10", "patch-2.3-notes"]
+
+
+@pytest.mark.parametrize(
+    ("said", "given"),
+    [
+        ("9:40pm", "9:40 pm"),
+        ("9:40PM", "9:40 pm"),
+        ("9:40 pm", "9:40pm"),
+        ("9:40 p.m.", "9:40pm"),
+    ],
+)
+def test_a_clock_time_with_an_attached_meridiem_is_one_value(said: str, given: str):
+    """A meridiem glued onto the figure is part of the time, not a word beside it: the attached
+    and spaced forms are one value, and either sources the other.  MEASURED: the figure grammar
+    could not end a word boundary where `pm` followed with no space, so it backtracked into the
+    figure and stopped where a boundary did exist — `9:40pm` read as `9:`, reporting a time the
+    round was given, and reporting it as a fragment rather than the whole value."""
+    assert (
+        unsourced_specifics(f"we said {said}, so that is when", f"we said {given}, remember") == []
+    )
+    # An attached time nobody stated is still reported — as the whole value, never a fragment.
+    # The full stop closing a sentence after `p.m.` is prose, not part of the time.
+    assert unsourced_specifics(f"we said {said}, so that is when", "we said nothing of clocks") == [
+        said.rstrip(".")
+    ]
 
 
 def test_a_capital_at_a_clause_boundary_does_not_glue_into_a_name():
