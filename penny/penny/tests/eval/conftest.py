@@ -4109,6 +4109,7 @@ def _observe_end_to_end(
     jobs: list[str],
     per_job: list[_DrivenCycles],
     cycles: list[eval_cohort.CycleSnapshot],
+    seeded_replies: int,
 ) -> eval_cohort.SampleObservation:
     """Everything an end-to-end sample left behind, read while its database is still live —
     the chat phase's own reads (the machine walk, the mechanisms, what it wrote, what it said)
@@ -4128,7 +4129,10 @@ def _observe_end_to_end(
         )
     landed = db.machine.latest_transition()
     sent = [message for snapshot in cycles for message in snapshot.sent]
-    combined_reply = "\n".join([*outgoing_replies(db), *sent])
+    # ``seeded_replies`` is how many messages the seeded world wrote into the
+    # ``penny-messages`` log BEFORE the scripted turns ran; the list is oldest first, so the
+    # slice drops them and the reply holds only what THIS run said (#2375).
+    combined_reply = "\n".join([*outgoing_replies(db)[seeded_replies:], *sent])
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
@@ -4173,6 +4177,10 @@ async def _drive_end_to_end_sample(
         browse=list(arm.world.pages),
         prepare=None,
     )
+    # The seeded world's own sends are already in the message log before the turns run — a
+    # COUNT (not a timestamp; the eval clock is pinned) so the observation reads only this
+    # run's replies (#2375).
+    seeded_replies = len(outgoing_replies(penny.db))
     before = collection_names(penny.db)
     reply = await _drive_turns(penny, server, arm.turns, timeout=timeout, retryable=retryable)
     jobs = _discover_the_new_jobs(penny.db, before)
@@ -4188,7 +4196,13 @@ async def _drive_end_to_end_sample(
         penny.db, case_id, sample_index, result=result, reply=reply, driven=list(arm.turns)
     )
     result.observation = observe(
-        penny.db, reply=reply, before=before, jobs=jobs, per_job=per_job, snapshots=cycles
+        penny.db,
+        reply=reply,
+        before=before,
+        jobs=jobs,
+        per_job=per_job,
+        snapshots=cycles,
+        seeded_replies=seeded_replies,
     )
     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
     return result
@@ -4271,6 +4285,7 @@ def end_to_end_eval(
                 jobs: list[str],
                 per_job: list[_DrivenCycles],
                 snapshots: list[eval_cohort.CycleSnapshot],
+                seeded_replies: int,
             ) -> eval_cohort.SampleObservation:
                 return _observe_end_to_end(
                     db,
@@ -4282,6 +4297,7 @@ def end_to_end_eval(
                     jobs=jobs,
                     per_job=per_job,
                     cycles=snapshots,
+                    seeded_replies=seeded_replies,
                 )
 
             return await _drive_end_to_end_sample(

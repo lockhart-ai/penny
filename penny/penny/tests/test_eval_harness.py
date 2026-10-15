@@ -4400,6 +4400,7 @@ def test_an_end_to_end_sample_that_built_no_job_is_complete_and_fails_its_claims
         jobs=[],
         per_job=[],
         cycles=[],
+        seeded_replies=0,
     )
 
     assert observation.complete, "no job created is Penny's own failure, not a harness void"
@@ -4410,6 +4411,40 @@ def test_an_end_to_end_sample_that_built_no_job_is_complete_and_fails_its_claims
     world = World(name="probe", pages=(), keeps=(), excludes=())
     ok, rationale = _a_new_job_fires_every(3600)(observation, world)
     assert not ok, f"a sample with no created job must fail a job-terms claim, got {rationale!r}"
+
+
+def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> None:
+    """A message the seeded world wrote into the ``penny-messages`` log BEFORE the scripted
+    turns ran is not in the observation's ``reply`` — the reply-provenance and nothing-sent
+    claims read what THIS run said, not the seeded history too."""
+    # A migrated db, not the bare schema ``_make_db`` builds: ``outgoing_replies`` reads the
+    # ``penny-messages`` log a migration seeds, the way a real sample's database always has it.
+    db = migrated_db(str(tmp_path / "end-to-end-seeded-reply.db"))
+    _log_prompt(db, agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME, run_id="r1")
+    _log_prompt(db, agent_name=PennyConstants.CHAT_AGENT_NAME, run_id="r1")
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.OUTGOING,
+        sender="penny",
+        content="seeded history is not this run's reply",
+    )
+    assert outgoing_replies(db) == ["seeded history is not this run's reply"]
+
+    observation = _observe_end_to_end(
+        db,
+        name="probe-1",
+        phrasing="probe",
+        arm=0,
+        reply="done — job set up",
+        before=set(),
+        jobs=[],
+        per_job=[],
+        cycles=[],
+        seeded_replies=1,
+    )
+
+    # No scripted turn ran here, so this run's own reply is empty — the point is that the
+    # seeded history contributed nothing to it either.
+    assert observation.reply == ""
 
 
 def test_a_structured_fields_unset_is_declared_only_where_its_observer_omits_it() -> None:
