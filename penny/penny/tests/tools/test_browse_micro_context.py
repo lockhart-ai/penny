@@ -50,6 +50,7 @@ from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.micro_context import (
+    EXTRACT_MISSING_TAG,
     EXTRACTED_TAG,
     MICRO_CONTEXT_SYSTEM_PROMPT,
     NOT_PRESENT_TAG,
@@ -69,6 +70,12 @@ _EXTRACTED_VALUE = "The current bid is 275 zorkmids."
 _TAGGED_VALUE = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE}"
 _NOT_PRESENT_REASON = "the page lists no bid amount."
 _TAGGED_NOT_PRESENT = f"{NOT_PRESENT_TAG} {_NOT_PRESENT_REASON}"
+# The stated shortfall (#2360): a MISSING: line opening the draw, naming what the
+# instruction asked for that the page does not carry at all, BEFORE the EXTRACTED:
+# line it pairs with — never after, since EXTRACTED: spans the remainder and would
+# swallow anything that followed its own line.
+_SHORTFALL = "the seller's name"
+_TAGGED_VALUE_WITH_SHORTFALL = f"{EXTRACT_MISSING_TAG} {_SHORTFALL}\n{_TAGGED_VALUE}"
 # The confabulation-shaped leak the tag parse exists to stop: non-blank apology
 # prose that a blank-check classifier would have promoted to an extracted value.
 _UNTAGGED_APOLOGY = "The page doesn't list a price"
@@ -435,7 +442,8 @@ async def _execute_extract(tmp_path, name: str, model_content: str):
 async def test_micro_result_render_forms(tmp_path):
     """The enumerated main-loop render forms, whole-string, as the model reads
     them — each UNDER its page's ``## browse:`` section header (per-page, #1682):
-    extracted, not-present, failed-after-reroll (untagged), and poison-then-failed."""
+    extracted, extracted-with-a-stated-shortfall, not-present, failed-after-reroll
+    (untagged), and poison-then-failed."""
     header = f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n"
 
     # Success renders the VALUE ALONE — no fetch-handle tail (the "saved"
@@ -443,6 +451,17 @@ async def test_micro_result_render_forms(tmp_path):
     # failure renders below keep the log_get read as their remedy).
     result, _handle_id = await _execute_extract(tmp_path, "ok", _TAGGED_VALUE)
     assert result.message == f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE}"
+    assert result.success is True
+
+    # A stated shortfall (#2360) renders AFTER the value, so a reply can say what
+    # was found AND what was not — no fetch-handle tail here either, the same as
+    # the plain success above.
+    result, _handle_id = await _execute_extract(
+        tmp_path, "ok-with-shortfall", _TAGGED_VALUE_WITH_SHORTFALL
+    )
+    assert result.message == (
+        f"{header}{_INSTRUCTION}: {_EXTRACTED_VALUE} Not on the page: {_SHORTFALL}."
+    )
     assert result.success is True
 
     result, handle_id = await _execute_extract(tmp_path, "absent", _TAGGED_NOT_PRESENT)
@@ -922,13 +941,17 @@ def test_render_tool_call_names_the_micro_context_browse_step():
 @pytest.mark.asyncio
 async def test_micro_context_returns_byte_identical_value_with_attribution():
     """A tagged draw is the extracted value — the payload after the tag, stripped
-    once — and the call carries the ledger attribution."""
+    once — and the call carries the ledger attribution.
+
+    No ``MISSING:`` line was drawn, so ``missing`` reads empty — the honest "the
+    draw named nothing missing" rather than an absent field (#2360)."""
     model = _responds(f"  {_TAGGED_VALUE}  ")
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, run_target="widget-watch"
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
+    assert result.missing == ""
     assert model.requests[0]["agent_name"] == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
     assert model.requests[0]["prompt_type"] == PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE
     assert model.requests[0]["run_target"] == "widget-watch"
@@ -938,13 +961,47 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
 async def test_micro_context_not_present_is_enumerated_not_a_value():
     """A ``NOT_PRESENT:`` draw classifies as the enumerated not-present outcome
     carrying the reason — never as an extracted value.  Not-present is a
-    successful read of an absent fact, distinct from EXTRACTION_FAILED."""
+    successful read of an absent fact, distinct from EXTRACTION_FAILED.
+
+    ``missing`` (#2360) is read only on the ``EXTRACTED`` branch — a draw that
+    already answers nothing has no shortfall to add beside its ``reason``."""
     model = _responds(_TAGGED_NOT_PRESENT)
     result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
     assert result.outcome == MicroExtractOutcome.NOT_PRESENT
     assert result.reason == _NOT_PRESENT_REASON
     assert result.value == ""
+    assert result.missing == ""
     assert len(model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_micro_context_reads_a_leading_missing_line_as_the_stated_shortfall():
+    """The stated shortfall (#2360): a ``MISSING:`` line opening the draw, BEFORE
+    ``EXTRACTED:``, is read as the shortfall alongside the extracted value — the
+    place the model kept wanting to put this observation, now declared in the
+    shape rather than argued into existence on every draw.
+
+    ``EXTRACTED:``'s anchor is ANYWHERE rather than OPENS_DRAW for exactly this: it
+    must still be found at line 0 with no ``MISSING:`` line (the sibling tests
+    above) and at line 1 when one precedes it, here."""
+    model = _responds(_TAGGED_VALUE_WITH_SHORTFALL)
+    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert result.value == _EXTRACTED_VALUE
+    assert result.missing == _SHORTFALL
+
+
+@pytest.mark.asyncio
+async def test_micro_context_malformed_missing_line_is_absent_not_a_violation():
+    """``MISSING:`` is OPTIONAL at the grammar level (#2360): a blank shortfall —
+    the tag with nothing after it — is simply absent, never a reroll, exactly
+    like every other OPTIONAL line's "absence is never a verdict" (#1770)."""
+    model = _responds(f"{EXTRACT_MISSING_TAG}   \n{_TAGGED_VALUE}")
+    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert result.value == _EXTRACTED_VALUE
+    assert result.missing == ""
+    assert len(model.requests) == 1  # absence costs nothing — no reroll
 
 
 @pytest.mark.asyncio
@@ -992,27 +1049,38 @@ async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_
 
 
 def test_micro_context_system_prompt_declares_multiline_contract():
-    """Whole-render literal of the extraction system prompt (#1682/#1942): the first line
-    must OPEN with a tag, an EXTRACTED value may be a multi-line digest / list, a
-    NOT_PRESENT reason stays a single line — and the boundary between the two tags is
-    STATED: content carrying some of what was asked for is a read, and NOT_PRESENT is for
-    content carrying none of it."""
+    """Whole-render literal of the extraction system prompt (#1682/#1942/#2360): an
+    optional MISSING: line may open the draw, then one of the two tags — an EXTRACTED
+    value may be a multi-line digest / list, a NOT_PRESENT reason stays a single line —
+    and the boundary between the two tags is STATED: content carrying some of what was
+    asked for is a read, and NOT_PRESENT is for content carrying none of it.  #2360 gives
+    the model a place for the thing it kept wanting to say anyway: a MISSING: line naming,
+    together and once, whatever the instruction named that the page does not carry at
+    all — in plain words, with permission to give the part that IS there as well as the
+    prohibition on inventing the part that is not."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
-        "The FIRST LINE of your output must open with one of these two tags:\n"
+        "An optional MISSING: line may open your output (see below); whether or not it "
+        "is there, the next line — or the first, if it is not — opens with one of these "
+        "two tags:\n"
         "EXTRACTED: <the value — it may begin on this same line>\n"
         "NOT_PRESENT: <one short line naming what is missing>\n"
         "After EXTRACTED:, the extracted value is EVERYTHING that follows — as "
         "long as the instruction requires: a single value, one or more paragraphs, or "
-        "a list (put one item per line). An instruction often asks for several things "
-        "at once. Give whatever the content has for each of them and leave out the "
-        "ones it has nothing for: content carrying some of what was asked for is an "
-        "EXTRACTED: read. Use "
-        "NOT_PRESENT:, on a single line, when the content carries none of what "
-        "was asked for. Never invent a value that is not in the content, and write "
-        "nothing outside the value itself — no preamble, no explanation, no restating "
-        "the instruction."
+        "a list (put one item per line).\n"
+        "An instruction often names several things at once, and a page rarely carries "
+        "all of them. When the page carries at least one, write EXTRACTED: and give "
+        "exactly what it has for each thing named — a thing that is only partly on the "
+        "page still gets a line for the part that is there. Whatever the instruction "
+        "named that the page does not carry AT ALL, name it — all of it together, in "
+        "one short line — before EXTRACTED:\n"
+        "MISSING: <one short line naming what was asked for and is not on the page>\n"
+        "Use NOT_PRESENT:, on a single line, when the page carries NONE of what was "
+        "asked for. Never invent a value that is not in the content — when something "
+        "named is not there, say so on MISSING: (or NOT_PRESENT: when nothing is) "
+        "instead of guessing it. Write nothing outside the value itself — no preamble, "
+        "no explanation, no restating the instruction."
     )
 
 

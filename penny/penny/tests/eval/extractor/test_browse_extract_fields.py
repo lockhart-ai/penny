@@ -61,6 +61,7 @@ import pytest
 
 from penny.tests.eval.conftest import (
     EVAL_MODELS,
+    EXTRACT_MISSING,
     EXTRACT_OUTCOME,
     EXTRACT_REASON,
     EXTRACT_VALUE,
@@ -548,6 +549,32 @@ def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
     return not invented, f"not on the page: {invented}"
 
 
+def _names_the_shortfall(fixture: ExtractFixture) -> WorldClaim:
+    """A claim that the draw's stated shortfall (#2360) names what the page lacks — every
+    ``FieldExpectation`` this fixture declares with NO anchor, which is what was asked for
+    and is genuinely absent from the page.
+
+    Read off the fixture rather than written beside it, the same way :func:`_landed_on`
+    reads its wanted outcome: a fixture's absent-anchor expectations ARE the shortfall a
+    correct draw states, so a case that enlarges or narrows what the page lacks moves this
+    claim with it rather than leaving it to drift out of sync.
+
+    Compared through the same ``spoken_form`` fold ``_carries`` uses, against the FIELD
+    NAME itself (``"summary"``, ``"description"``, ``"published time"``) — the word the
+    fixture's own instruction already asks for, so a draw that echoes the ask's own
+    vocabulary back passes without the claim inventing a second phrasing to match."""
+    absent = [one.field for one in fixture.expectations if not one.anchor]
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        missing = sample.field(EXTRACT_MISSING)
+        named = bool(missing) and all(
+            spoken_form(field) in spoken_form(missing) for field in absent
+        )
+        return named, f"stated shortfall does not name {absent}: {missing!r}"
+
+    return answer
+
+
 def _stock_count_volunteered(sample: SampleObservation) -> ShareReading | None:
     """Whether the answer also states the COUNT beside the stock boolean — a detail the ask
     never requested.
@@ -676,6 +703,7 @@ async def test_a_page_that_answers_everything_still_answers_everything(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
         output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
         _STOCK_COUNT_VOLUNTEERED,
     )
 
@@ -798,6 +826,11 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
+    cohort.claim(
+        "state: the stated shortfall names the summaries the page does not give",
+        _names_the_shortfall(_PARTLY_PRESENT),
+        SpecCategory.PROVENANCE,
+    )
 
     # What is MEASURED — the draw's own structured fields, compared across the cohort.
     #
@@ -814,6 +847,7 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
         output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 
@@ -899,6 +933,11 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
+    cohort.claim(
+        "state: the stated shortfall names the published time the page does not give",
+        _names_the_shortfall(_PARTLY_PRESENT_ON_A_PROSE_PAGE),
+        SpecCategory.PROVENANCE,
+    )
 
     # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
     # tool sequence and no reply spread: a single call makes neither.  `reason` is measured
@@ -910,6 +949,7 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
         output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 
@@ -999,11 +1039,13 @@ async def test_a_page_carrying_none_of_it_still_says_so(
     # populates `reason` and leaves `value` empty, so `value` reads nothing on every sample and
     # is flagged blind — the honest "nothing diverged this run" — while `reason` carries the
     # spread.  Both stay COSMETIC: they are prose, and a divergence in them is a different word
-    # for the same outcome.
+    # for the same outcome.  `missing` reads nothing on every sample too — a MISSING: line only
+    # ever pairs with EXTRACTED, which this case never lands on.
     cohort.measure(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
         output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 
@@ -1119,6 +1161,11 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
+    cohort.claim(
+        "state: the stated shortfall names the descriptions the page does not give",
+        _names_the_shortfall(_TOP_HEADLINES),
+        SpecCategory.PROVENANCE,
+    )
 
     # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
     # tool sequence and no reply spread: a single call makes neither.
@@ -1126,6 +1173,7 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
         output_field(EXTRACT_OUTCOME),
         output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
         output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
     )
 
 

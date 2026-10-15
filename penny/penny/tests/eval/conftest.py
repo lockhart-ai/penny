@@ -5861,6 +5861,11 @@ def _extract_rerolled(db: Database) -> bool:
 EXTRACT_OUTCOME = "outcome"
 EXTRACT_VALUE = "value"
 EXTRACT_REASON = "reason"
+# The stated shortfall (#2360) — what the instruction named that the page does not carry
+# at all, read alongside an EXTRACTED value.  Empty on every outcome that isn't EXTRACTED,
+# and often empty on EXTRACTED too (a page that carries everything named has nothing to
+# report missing) — both are the honest read, not an absent field.
+EXTRACT_MISSING = "missing"
 
 # The outcomes that mean the draw never produced a usable answer at all.  A sample landing on
 # one of these is EXCLUDED rather than scored: it is the micro-context twin of a chat turn
@@ -5874,14 +5879,16 @@ _EXTRACT_FAILURES = frozenset(
 def _extraction_output(result: MicroContextResult) -> list[eval_cohort.OutputField]:
     """One extraction draw's STRUCTURED ANSWER, field by field.
 
-    All three fields, always — including the empty one.  Which of ``value`` and ``reason`` is
-    populated is decided by the outcome, so carrying only the filled one would make the
-    cohort's field comparison read a different set of axes per sample and quietly turn "the
-    draw answered differently" into "the draw answered a different question"."""
+    All four fields, always — including the empty one.  Which of ``value``, ``reason`` and
+    ``missing`` is populated is decided by the outcome, so carrying only the filled ones
+    would make the cohort's field comparison read a different set of axes per sample and
+    quietly turn "the draw answered differently" into "the draw answered a different
+    question"."""
     return [
         eval_cohort.OutputField(name=EXTRACT_OUTCOME, value=result.outcome.value),
         eval_cohort.OutputField(name=EXTRACT_VALUE, value=result.value),
         eval_cohort.OutputField(name=EXTRACT_REASON, value=result.reason),
+        eval_cohort.OutputField(name=EXTRACT_MISSING, value=result.missing),
     ]
 
 

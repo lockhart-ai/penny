@@ -109,6 +109,13 @@ _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
 # collection_write never fired (2026-07-19 beat-1b transcripts).  The failure renders
 # below KEEP the clause: there the handle is the remedy.
 _EXTRACT_SUCCESS = "{instruction}: {value}"
+# The stated shortfall (#2360), rendered after the value and only when the draw
+# named one: a reply can then say "I found X and Y but not Z" instead of being
+# silent about the part of the ask the page never carried.  Composed here,
+# mechanically, from the typed result alone — the extractor's contract is
+# untouched, it still just names what is missing, and nothing here invents
+# wording for it beyond this one fixed clause.
+_EXTRACT_SHORTFALL_CLAUSE = " Not on the page: {missing}."
 _EXTRACT_NOT_PRESENT = "The page doesn't contain {instruction!r} — {reason} {handle_clause}"
 _EXTRACT_FAILED = (
     "Couldn't extract {instruction!r} from the page — the extractor returned nothing "
@@ -631,9 +638,16 @@ class BrowseTool(Tool):
         A FAILURE additionally carries the page's own links (#2141) — the body never
         entered the conversation, so they are the only anchor the next call has.  A
         NOT_PRESENT does not: the page was read and the answer is that the fact is not
-        there, which is a finding rather than something to recover from."""
+        there, which is a finding rather than something to recover from.
+
+        A success's stated shortfall (#2360) is appended after the value, only when
+        the draw named one — so the reply can say what was found AND what was not,
+        rather than being silent about the part of the ask the page never carried."""
         if micro.outcome == MicroExtractOutcome.EXTRACTED:
-            return _EXTRACT_SUCCESS.format(instruction=instruction, value=micro.value)
+            success = _EXTRACT_SUCCESS.format(instruction=instruction, value=micro.value)
+            if micro.missing:
+                return f"{success}{_EXTRACT_SHORTFALL_CLAUSE.format(missing=micro.missing)}"
+            return success
         handle_clause = self._handle_clause(stored)
         if micro.outcome == MicroExtractOutcome.NOT_PRESENT:
             return _EXTRACT_NOT_PRESENT.format(

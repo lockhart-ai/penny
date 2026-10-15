@@ -102,9 +102,10 @@ class DrawField(StrEnum):
     SEMANTIC = "semantic"
     SKILL = "skill"
     MESSAGE = "message"
+    MISSING = "missing"
 
 
-# The two output tags — the enumerated contract, present on BOTH sides of the
+# The output tags — the enumerated contract, present on BOTH sides of the
 # interface: the prompt names them and the classifier parses them.  The label is
 # the interface between model-space and Python-space (the enumerated-cases
 # doctrine, #1554).  Without it the not-present case comes back as arbitrary
@@ -113,17 +114,58 @@ class DrawField(StrEnum):
 # "cannot confabulate stored values".
 EXTRACTED_TAG = "EXTRACTED:"
 NOT_PRESENT_TAG = "NOT_PRESENT:"
+# The stated shortfall (#2360): what the instruction named that the page does
+# not carry at all, read off the thinking the real-size front-page incident
+# produced.  The model kept wanting to "note the missing summaries" with
+# nowhere in the contract to put that note, re-litigating on every draw whether
+# a headline without its description was a partial unit or a missing one.  This
+# gives it the place: one line, before the value, naming what is not there —
+# EXTRACTED still answers with what IS there, and nothing about the decision
+# changes, so the loop has an exit that costs nothing else.
+#
+# Named ``EXTRACT_MISSING_TAG`` rather than bare ``MISSING_TAG`` — the skill
+# binder below already owns that name for its own, unrelated shortfall line
+# (a PER_ITEM tag on a different shape, ``SKILL_BIND_SHAPE``), and a second
+# module-level ``MISSING_TAG`` would silently shadow it.  The two customers'
+# WIRE tags can coexist (each is read against its own declared shape, and a
+# model only ever sees one system prompt per call) — it is the PYTHON name
+# that cannot repeat.
+EXTRACT_MISSING_TAG = "MISSING:"
 
-# The extraction shape (#1814): two ALTERNATIVE tags, exactly one of which must
-# OPEN the draw — which is also what makes them mutually exclusive without a rule
-# saying so.  ``EXTRACTED:`` spans the REMAINDER (the value is everything that
-# follows — a digest or an item-per-line list is served whole, #1682) while the
-# ``NOT_PRESENT:`` reason stays a single LINE, so a not-present apology can never
-# be multi-line-promoted into a value.
+# The extraction shape (#1814/#2360): ``EXTRACTED:`` and ``NOT_PRESENT:`` are
+# still the two ALTERNATIVE tags, exactly one of which answers the draw — but
+# since #2360 an OPTIONAL ``MISSING:`` line may come first, naming what the
+# instruction asked for and the page does not carry at all.  ``EXTRACTED:``
+# spans the REMAINDER (the value is everything that follows — a digest or an
+# item-per-line list is served whole, #1682), so nothing may follow its own
+# line without being swallowed into the value: that is why ``MISSING:`` is
+# declared to come BEFORE it, never after.  ``_EXTRACTED_LINE``'s anchor is
+# ANYWHERE rather than OPENS_DRAW for exactly this reason — it must still be
+# found at line 0 when there is no ``MISSING:`` line, and at line 1 when there
+# is.  The accepted trade-off: a draw that puts unrelated junk before
+# ``EXTRACTED:`` is no longer rejected by position alone the way it used to
+# be — the system prompt's "write nothing outside the value itself" and the
+# "nothing invented" claim still catch that, just not via the tag's position.
+# ``NOT_PRESENT:`` keeps OPENS_DRAW: a ``MISSING:`` line pairs with an
+# ``EXTRACTED:`` read (something is there to answer with) and never with
+# "the page carries none of it", so its exclusivity-by-position is unchanged.
+# The ``NOT_PRESENT:`` reason itself stays a single LINE, so a not-present
+# apology can never be multi-line-promoted into a value.
+_EXTRACT_MISSING_LINE = LineSpec(
+    tag=EXTRACT_MISSING_TAG,
+    role=LineRole.OPTIONAL,
+    anchor=LineAnchor.OPENS_DRAW,
+    fields=(
+        FieldSpec(
+            name=DrawField.MISSING,
+            placeholder="<one short line naming what was asked for and is not on the page>",
+        ),
+    ),
+)
 _EXTRACTED_LINE = LineSpec(
     tag=EXTRACTED_TAG,
     role=LineRole.ALTERNATIVE,
-    anchor=LineAnchor.OPENS_DRAW,
+    anchor=LineAnchor.ANYWHERE,
     span=PayloadSpan.REMAINDER,
     fields=(
         FieldSpec(name=DrawField.VALUE, placeholder="<the value — it may begin on this same line>"),
@@ -137,7 +179,7 @@ _NOT_PRESENT_LINE = LineSpec(
         FieldSpec(name=DrawField.REASON, placeholder="<one short line naming what is missing>"),
     ),
 )
-EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACTED_LINE, _NOT_PRESENT_LINE))
+EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE, _NOT_PRESENT_LINE))
 
 # The extraction framing — one legible, single-purpose instruction.  It asks a
 # world-question ("what's on the page?"), never a machine-question, forbids
@@ -145,7 +187,7 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACTED_LINE, _NOT_PRESENT_LINE))
 # forms so classification downstream is a deterministic tag parse, never a
 # judgment over free prose.  The value may be as long as the instruction requires
 # (a digest, a list) — the TAG must open the output; only its shape is fixed, not
-# its length.  The two tagged lines are RENDERED FROM THE SHAPE, so the prompt
+# its length.  The tagged lines are RENDERED FROM THE SHAPE, so the prompt
 # cannot state a contract the parse doesn't read.
 #
 # WHERE THE BOUNDARY BETWEEN THE TAGS FALLS IS STATED (#1942).  An instruction
@@ -159,22 +201,39 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACTED_LINE, _NOT_PRESENT_LINE))
 # instructions that hedge, because what a page holds is not a property of how the
 # ask was worded, and a rule keyed to the wording would simply not fire for the
 # ask nobody had in front of them.
+#
+# PLAIN WORDS, WITH PERMISSION AS WELL AS PROHIBITION (#2360).  The two sentences
+# that used to carry this alone — "give whatever the content has ... and leave
+# out the ones it has nothing for" and "never invent a value that is not in the
+# content" — told the model what NOT to do with a missing part and gave it
+# nowhere to put the observation it kept trying to make anyway.  Below, a part
+# that is only partly on the page is told PLAINLY what to do with it (give the
+# part that is there) and WHERE the rest of the thought goes (one MISSING: line,
+# named together, before the value) — permission for the thing it was already
+# reaching for, not just another way of forbidding invention.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
-    "The FIRST LINE of your output must open with one of these two tags:\n"
+    f"An optional {EXTRACT_MISSING_TAG} line may open your output (see below); whether or "
+    "not it is there, the next line — or the first, if it is not — opens with "
+    "one of these two tags:\n"
     f"{render_line(_EXTRACTED_LINE)}\n"
     f"{render_line(_NOT_PRESENT_LINE)}\n"
     f"After {EXTRACTED_TAG}, the extracted value is EVERYTHING that follows — as "
     "long as the instruction requires: a single value, one or more paragraphs, or "
-    "a list (put one item per line). An instruction often asks for several things "
-    "at once. Give whatever the content has for each of them and leave out the "
-    "ones it has nothing for: content carrying some of what was asked for is an "
-    f"{EXTRACTED_TAG} read. Use "
-    f"{NOT_PRESENT_TAG}, on a single line, when the content carries none of what "
-    "was asked for. Never invent a value that is not in the content, and write "
-    "nothing outside the value itself — no preamble, no explanation, no restating "
-    "the instruction."
+    "a list (put one item per line).\n"
+    "An instruction often names several things at once, and a page rarely carries "
+    f"all of them. When the page carries at least one, write {EXTRACTED_TAG} and "
+    "give exactly what it has for each thing named — a thing that is only partly "
+    "on the page still gets a line for the part that is there. Whatever the "
+    "instruction named that the page does not carry AT ALL, name it — all of it "
+    f"together, in one short line — before {EXTRACTED_TAG}\n"
+    f"{render_line(_EXTRACT_MISSING_LINE)}\n"
+    f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
+    "was asked for. Never invent a value that is not in the content — when "
+    f"something named is not there, say so on {EXTRACT_MISSING_TAG} (or {NOT_PRESENT_TAG} "
+    "when nothing is) instead of guessing it. Write nothing outside the value "
+    "itself — no preamble, no explanation, no restating the instruction."
 )
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
@@ -716,11 +775,19 @@ class MicroContextResult(BaseModel):
     outcomes — the caller renders those from the outcome alone.  The populated
     field is what flows to the main loop verbatim; the parent model never
     re-transcribes it.
+
+    ``missing`` (#2360) carries the draw's OPTIONAL stated shortfall — what the
+    instruction named that the page does not carry at all — and is only ever
+    populated alongside ``EXTRACTED``: an outcome that already answers nothing
+    (``NOT_PRESENT``) has no shortfall to add beside its ``reason``.  Empty when
+    the draw named nothing missing, which is the honest "it had everything
+    named" read rather than an absent field.
     """
 
     outcome: MicroExtractOutcome
     value: str = ""
     reason: str = ""
+    missing: str = ""
 
 
 class LeafLabel(BaseModel):
@@ -1236,10 +1303,17 @@ def _extraction_result(drawn: ParsedDraw) -> MicroContextResult:
     """The typed result for a valid extraction draw, read off the parsed draw by
     field name — the ``EXTRACTED:`` value (everything after the tag) or the
     ``NOT_PRESENT:`` reason (its first line only, so a not-present apology can never
-    be multi-line-promoted into a value)."""
+    be multi-line-promoted into a value).
+
+    ``MISSING:`` (#2360) is read only on the ``EXTRACTED`` branch — it is an
+    OPTIONAL line, so an absent or malformed one is simply no shortfall, never a
+    violation."""
     value = drawn.field(EXTRACTED_TAG, DrawField.VALUE)
     if value is not None:
-        return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=value)
+        missing = drawn.field(EXTRACT_MISSING_TAG, DrawField.MISSING) or ""
+        return MicroContextResult(
+            outcome=MicroExtractOutcome.EXTRACTED, value=value, missing=missing
+        )
     reason = drawn.field(NOT_PRESENT_TAG, DrawField.REASON)
     if reason is None:
         # Unreachable while the two tags are declared ALTERNATIVE (a parsed draw
