@@ -56,8 +56,8 @@ _FAMILY = "end-to-end"
 _BEHAVIOUR = (
     "In a job taught in chat, when the user asks for a watch, walks Penny through it once "
     "and accepts her offer with terms, Penny stands up a job on those terms whose cycles "
-    "record the first reading, stay quiet while the page holds, and replace the reading and "
-    "tell the user when it moves."
+    "keep the reading she was taught, stay quiet while the page holds, and replace the "
+    "reading and tell the user when it moves."
 )
 
 # ── The page the demonstration reads, and the two readings its cycles see ────
@@ -116,9 +116,10 @@ _BASELINE_PAGE = CannedPage(
 )
 _MOVED_PAGE = datum(_BASELINE_PAGE, _DATUM, _MOVED_DATUM)
 
-# The entry condition is COLD — no routine, no job, no collection — so the three cycles are:
-# the page as the demonstration read it, the same page again (nothing moved), then the moved
-# reading.
+# The entry condition is COLD — no routine, no job, no collection — but the demonstration's
+# learn turn performs the write for real and states the price in its reply, so the job's
+# three cycles are: a second look at a value that holds, a further look with the page still
+# holding, then the moved reading.
 _CYCLES = ([_BASELINE_PAGE], [_BASELINE_PAGE], [_MOVED_PAGE])
 
 # The ground the SCRIPT's own turns are answered against — one page, installed once before any
@@ -221,9 +222,29 @@ def _store_holds_the_first_reading(sample: SampleObservation, _world: World) -> 
     return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
 
 
-def _told_once_at_the_first_reading(sample: SampleObservation, _world: World) -> Answer:
-    sent = sent_at(sample.cycles, 0)
-    return len(sent) == 1, f"{len(sent)} messages sent on the first cycle: {sent}"
+def _told_the_price_by_the_first_cycle(sample: SampleObservation, _world: World) -> Answer:
+    """The user has been told the page's price by the end of the first cycle — by the
+    demonstration itself (the learn turn's reply states the price it just stored) or by the
+    job's own first cycle.
+
+    Read as the price appearing in any chat reply OR any notification so far: the chat phase's
+    replies with every cycle's own send stripped back out (``reply`` joins both), then the
+    messages the first cycle put on the queue — nothing from a later cycle counts, because
+    "by the end of the first cycle" is the claim's own bound."""
+    chat_replies = sample.reply
+    for message in sample.notifications:
+        if message in chat_replies:
+            chat_replies = chat_replies.replace(message, "")
+    notifications_so_far = sent_at(sample.cycles, 0)
+    told = _BASELINE_AMOUNT in chat_replies or any(
+        _BASELINE_AMOUNT in message for message in notifications_so_far
+    )
+    replies_hit = _BASELINE_AMOUNT in chat_replies
+    cycles_hit = [message for message in notifications_so_far if _BASELINE_AMOUNT in message]
+    return (
+        told,
+        f"in a chat reply: {replies_hit}; in a first-cycle notification: {cycles_hit}",
+    )
 
 
 def _store_still_holds_the_first_reading(sample: SampleObservation, _world: World) -> Answer:
@@ -231,12 +252,15 @@ def _store_still_holds_the_first_reading(sample: SampleObservation, _world: Worl
     return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
 
 
-def _nothing_more_sent_on_the_unchanged_cycle(sample: SampleObservation, _world: World) -> Answer:
-    """Nothing reached the user on the SECOND cycle — staying quiet is the point of this
-    claim, so it is only true of a sample where the second cycle actually ran: a sample with
-    no job, or whose job's cycles never got this far, has not stayed quiet on an unchanged
-    reading, it has simply not reached one — ``ran_at`` keeps that from reading as a vacuous
-    pass (#2375's review)."""
+def _nothing_sent_on_the_second_cycle(sample: SampleObservation, _world: World) -> Answer:
+    """Nothing was sent on the SECOND cycle, while the page held — with the demonstration's
+    own write already in the store, both the first and second cycles are looks at a value
+    that holds, and the job stays quiet on both.
+
+    Staying quiet is the point of this claim, so it is only true of a sample where the second
+    cycle actually ran: a sample with no job, or whose job's cycles never got this far, has
+    not stayed quiet on an unchanged reading, it has simply not reached one — ``ran_at`` keeps
+    that from reading as a vacuous pass (#2375's review)."""
     ran = ran_at(sample.cycles, 1)
     sent = sent_at(sample.cycles, 1)
     return ran and not sent, f"cycle ran: {ran}; sent on it: {sent}"
@@ -289,8 +313,8 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: the user was told once after the first reading",
-        _told_once_at_the_first_reading,
+        "state: by the end of the first cycle the user has been told the page's price",
+        _told_the_price_by_the_first_cycle,
         SpecCategory.STORE,
     )
     cohort.claim(
@@ -299,8 +323,8 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: nothing more was sent while the page held",
-        _nothing_more_sent_on_the_unchanged_cycle,
+        "state: nothing was sent on the second cycle, while the page held",
+        _nothing_sent_on_the_second_cycle,
         SpecCategory.STORE,
     )
     cohort.claim(
