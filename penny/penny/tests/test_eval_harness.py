@@ -335,6 +335,7 @@ from penny.tests.eval.conftest import (
     _mechanism_records,
     _observe_binding,
     _observe_classification,
+    _observe_end_to_end,
     _observe_extraction,
     _observe_framing,
     _observe_labelling,
@@ -410,7 +411,12 @@ from penny.tests.eval.utils.artifacts import (
     active_run,
     build_case_artifact,
 )
-from penny.tests.eval.utils.assertions import Cohort, _ends_when_asked, assertion_rows
+from penny.tests.eval.utils.assertions import (
+    Cohort,
+    _a_new_job_fires_every,
+    _ends_when_asked,
+    assertion_rows,
+)
 from penny.tests.eval.utils.baseline import load_baseline
 from penny.tests.eval.utils.cohort import (
     Arm,
@@ -4362,6 +4368,48 @@ def _observed_cycle(
         outcome=RunOutcome.WORKED.value,
         reason=None,
     )
+
+
+# ── An end-to-end sample that built or ran nothing is COMPLETE, never excluded (#2375) ──
+#
+# A chat/collector sample is voided when the HARNESS never got to measure it; an end-to-end
+# sample that built no job, or whose created job's cycles were all refused, is Penny's OWN
+# failure — exactly what these cases exist to catch — so it must stay in the pool and fail its
+# claims, not vanish as an instrument fault.
+
+
+def test_an_end_to_end_sample_that_built_no_job_is_complete_and_fails_its_claims(
+    tmp_path,
+) -> None:
+    """A script whose turns created no job to run cycles against is still a COMPLETE
+    observation — its walk names the fact, and a job-terms claim answers FALSE against it
+    rather than the sample disappearing from the pool."""
+    # A migrated db, not the bare schema ``_make_db`` builds: ``outgoing_replies`` reads the
+    # ``penny-messages`` log a migration seeds, the way a real sample's database always has it.
+    db = migrated_db(str(tmp_path / "end-to-end-no-job.db"))
+    _log_prompt(db, agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME, run_id="r1")
+    _log_prompt(db, agent_name=PennyConstants.CHAT_AGENT_NAME, run_id="r1")
+
+    observation = _observe_end_to_end(
+        db,
+        name="probe-1",
+        phrasing="probe",
+        arm=0,
+        reply="done — i couldn't set that up",
+        before=set(),
+        jobs=[],
+        per_job=[],
+        cycles=[],
+    )
+
+    assert observation.complete, "no job created is Penny's own failure, not a harness void"
+    assert observation.exclusion is None
+    assert observation.cycles == []
+    assert observation.walk.endswith(", no job"), observation.walk
+
+    world = World(name="probe", pages=(), keeps=(), excludes=())
+    ok, rationale = _a_new_job_fires_every(3600)(observation, world)
+    assert not ok, f"a sample with no created job must fail a job-terms claim, got {rationale!r}"
 
 
 def test_a_structured_fields_unset_is_declared_only_where_its_observer_omits_it() -> None:

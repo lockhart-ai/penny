@@ -4044,10 +4044,6 @@ class EndToEndArm(NamedTuple):
     cycles: Sequence[list[CannedPage]]
 
 
-NO_NEW_JOB = "the script created no job to run cycles against"
-NO_USABLE_CYCLE = "every job it created had its cycles refused by the dispatcher"
-
-
 def _discover_the_new_jobs(db: Database, before: set[str]) -> list[str]:
     """Every collection the script's own turns created and scheduled — found STRUCTURALLY, off
     the registry's before/after read, never by a name the case expects.  A routine minted
@@ -4084,25 +4080,21 @@ async def _drive_end_to_end_cycles(
     return snapshots, per_job
 
 
-def _end_to_end_ran_check(jobs: Sequence[str], per_job: Sequence[_DrivenCycles]) -> Check:
-    """At least one created job's cycles actually ran, so a sample whose only job the
-    dispatcher refused never reads as the model doing nothing."""
-    ran = any(driven.ran for driven in per_job)
-    refusals = [driven.refusal for driven in per_job if driven.refusal]
-    return Check(
-        "at least one created job's cycles ran",
-        kind="guard",
-        ok=bool(jobs) and ran,
-        rationale=None if ran else f"created {list(jobs)}; refused: {refusals}",
-    )
-
-
-def _end_to_end_walk(db: Database, per_job: Sequence[_DrivenCycles]) -> str:
+def _end_to_end_walk(db: Database, jobs: Sequence[str], per_job: Sequence[_DrivenCycles]) -> str:
     """The sample's whole walk: the conversation machine's moves, then every created job's
     own ordered cycle script — ``idle→elicit, elicit→learn, learn→apply, wrote, quiet,
-    wrote+told`` for the ordinary one-job case, each extra job's script joined beside it."""
+    wrote+told`` for the ordinary one-job case that ran, each extra job's script joined
+    beside it.
+
+    Names the two ways a round can fail to leave anything for a cycle to read, structurally
+    rather than by excluding the sample (#2375's review): ``no job`` when the script created
+    nothing to run cycles against, ``refused`` when it created one and the dispatcher turned
+    every cycle away.  Both are real behavioural failures a variant can reproduce, so the
+    claims below have to be able to see them — never a harness-side void."""
+    if not jobs:
+        return f"{_machine_walk(db)}, no job"
     scripts = [cycle_script(driven.observed) for driven in per_job if driven.observed]
-    cycles_walk = " | ".join(scripts) if scripts else CYCLE_DEAD
+    cycles_walk = " | ".join(scripts) if scripts else "refused"
     return f"{_machine_walk(db)}, {cycles_walk}"
 
 
@@ -4121,19 +4113,18 @@ def _observe_end_to_end(
     """Everything an end-to-end sample left behind, read while its database is still live —
     the chat phase's own reads (the machine walk, the mechanisms, what it wrote, what it said)
     joined with the cycle phase's (what the created jobs' cycles held and sent), so a claim
-    never has to know which phase produced which fact."""
+    never has to know which phase produced which fact.
+
+    A sample where the script built no job, or where every job it built had its cycles
+    refused, is COMPLETE, not excluded (#2375's review): those are Penny's own failures —
+    exactly what an end-to-end case exists to catch — and a variant that regresses either one
+    has to be able to fail a claim here, not disappear from the pool.  Only a chat-phase
+    model/infra error still voids the sample; it answered no turn at all to read anything
+    off."""
     chat_exclusion = _exclusion(db, reply)
     if chat_exclusion is not None:
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=chat_exclusion
-        )
-    if not jobs:
-        return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=NO_NEW_JOB
-        )
-    if not any(driven.ran for driven in per_job):
-        return eval_cohort.SampleObservation(
-            name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=NO_USABLE_CYCLE
         )
     landed = db.machine.latest_transition()
     sent = [message for snapshot in cycles for message in snapshot.sent]
@@ -4145,7 +4136,7 @@ def _observe_end_to_end(
         landed=landed.to_state if landed else None,
         turn_at=landed.created_at if landed else None,
         timezone=user_timezone_name(db),
-        walk=_end_to_end_walk(db, per_job),
+        walk=_end_to_end_walk(db, jobs, per_job),
         entries=_stored_entries(db),
         held=_held_entries(db),
         mechanisms=_mechanism_records(db, before),
@@ -4189,7 +4180,9 @@ async def _drive_end_to_end_sample(
         cycles, per_job = await _drive_end_to_end_cycles(penny, jobs, arm.cycles)
     else:
         cycles, per_job = [], []
-    result = SampleResult.graded([_end_to_end_ran_check(jobs, per_job)])
+    # No drive-time guard: the cohort's claims are the only way a sample is graded, and a
+    # sample that built no job or ran no cycle is COMPLETE — see ``_observe_end_to_end``.
+    result = SampleResult.graded([])
     _stamp_cause(penny.db, result)
     _write_sample_report(
         penny.db, case_id, sample_index, result=result, reply=reply, driven=list(arm.turns)
