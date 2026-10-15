@@ -136,6 +136,16 @@ _EXTRACT_DRAW_ERROR = (
 # on, so they come back with the failure sentence.
 _EXTRACT_LINKS_HEADER = "Links on the page:"
 
+# ── Timeout report (#2367) ──────────────────────────────────────────────────────
+# What a browse call reports when the executor's timeout cancels it, built ONLY
+# from state written before the cancellation landed (self._read_log /
+# self._extract_log) — never claiming more than those logs actually show.
+_TIMEOUT_PARTIAL_PROGRESS = "It timed out after {timeout}s, partway through. {read_clause}"
+_TIMEOUT_READ_CLAUSE = "Read: {listed}."
+_TIMEOUT_NOT_STORED = "not stored"
+_TIMEOUT_EXTRACT_FINISHED = "Extraction finished for these pages:\n{rendered}"
+_TIMEOUT_EXTRACT_WAITING = "Still waiting on: {labels}."
+
 # Type alias for the browser request function
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None]]]
 
@@ -394,7 +404,7 @@ class BrowseTool(Tool):
         cancellation before the first page came back has nothing to report)."""
         if not self._read_log:
             return super().timeout_report(timeout)
-        parts = [f"It timed out after {timeout}s, partway through. {self._read_clause()}"]
+        parts = [_TIMEOUT_PARTIAL_PROGRESS.format(timeout=timeout, read_clause=self._read_clause())]
         if self._extracting:
             parts.append(self._extract_progress_clause())
         return "\n\n".join(parts)
@@ -403,10 +413,10 @@ class BrowseTool(Tool):
         """The pages fetched before the timeout, each with its own stored handle
         (or a note that it wasn't stored)."""
         listed = "; ".join(
-            f"{label} ({self._entry_handle(entry) if entry else 'not stored'})"
+            f"{label} ({self._entry_handle(entry) if entry else _TIMEOUT_NOT_STORED})"
             for label, entry in self._read_log
         )
-        return f"Read: {listed}."
+        return _TIMEOUT_READ_CLAUSE.format(listed=listed)
 
     def _extract_progress_clause(self) -> str:
         """Which pages' extractions finished before the timeout — rendered with
@@ -418,10 +428,17 @@ class BrowseTool(Tool):
         parts = []
         if self._extract_log:
             rendered = PennyConstants.SECTION_SEPARATOR.join(r for _, r in self._extract_log)
-            parts.append(f"Extraction finished for these pages:\n{rendered}")
+            parts.append(_TIMEOUT_EXTRACT_FINISHED.format(rendered=rendered))
         if waiting:
-            parts.append("Still waiting on: " + "; ".join(waiting) + ".")
+            parts.append(_TIMEOUT_EXTRACT_WAITING.format(labels="; ".join(waiting)))
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _page_label(section: str) -> str:
+        """A page section's own header line — the one identifier used for BOTH the
+        read log and the extract log, so a page is named the same way in either
+        (#2367) without re-deriving it at each call site."""
+        return section.partition("\n")[0]
 
     def _record_read_log(self, page_sections: list[str], stored: list[MemoryEntry]) -> None:
         """Record which pages were fetched and where each is stored, toward this
@@ -433,7 +450,7 @@ class BrowseTool(Tool):
         handles: list[MemoryEntry | None] = (
             list(stored) if len(stored) == len(page_sections) else [None] * len(page_sections)
         )
-        labels = [section.partition("\n")[0] for section in page_sections]
+        labels = [self._page_label(section) for section in page_sections]
         self._read_log = list(zip(labels, handles, strict=True))
 
     # ── Micro-context (extract) path ──────────────────────────────────────────
@@ -519,25 +536,13 @@ class BrowseTool(Tool):
 
     @staticmethod
     def _drawn_pages(drawn: list[tuple[str, bool] | BaseException]) -> list[tuple[str, bool]]:
-        """Every page the batch drew.
-
-        ``_extract_one_page`` already turns an ordinary draw failure (a transport
-        error, say) into that page's own rendered failure instead of raising
-        (#2367), so nothing here should normally be an exception at all — this is
-        a defensive backstop for ``asyncio.gather`` handing back something
-        unexpected.  An ``Exception`` renders as a generic per-page failure rather
-        than discarding every other page's result, the same recovery
-        ``_extract_one_page`` applies.  A ``BaseException`` that is NOT an
-        ``Exception`` — ``CancelledError``, ``KeyboardInterrupt``, ``SystemExit`` —
-        keeps propagating rather than being rendered: those are never a page's
-        problem, they are the whole call (or process) ending, and the executor's
-        own timeout handling (or the interpreter) is what answers for them."""
+        """Every page the batch drew.  ``_extract_one_page`` already catches its
+        own draw's failures and renders them as that page's own result (#2367), so
+        nothing here should ever be a ``BaseException`` — one reaching this loop is
+        a bug elsewhere, and raising it is what surfaces that bug instead of
+        hiding it behind a silent, headerless page failure."""
         pages: list[tuple[str, bool]] = []
         for outcome in drawn:
-            if isinstance(outcome, Exception):
-                logger.exception("Unexpected error drawing a page", exc_info=outcome)
-                pages.append((f"Couldn't extract — the batch errored: {outcome}.", False))
-                continue
             if isinstance(outcome, BaseException):
                 raise outcome
             pages.append(outcome)
@@ -594,7 +599,7 @@ class BrowseTool(Tool):
                 MicroExtractOutcome.NOT_PRESENT,
             )
         rendered = self._under_page_header(section, body)
-        self._extract_log.append((section.partition("\n")[0], rendered))
+        self._extract_log.append((self._page_label(section), rendered))
         return rendered, succeeded
 
     def _render_draw_error(
