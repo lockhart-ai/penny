@@ -52,6 +52,7 @@ from penny.tests.eval.utils.cohort import (
     TOOL_SEQUENCE,
     SampleObservation,
     SpecCategory,
+    unsourced_specifics,
 )
 from penny.tests.eval.utils.fixtures import AURORA_LISTING_499, CannedPage, datum
 from penny.tests.eval.utils.job_end import UNTIL_SUNDAY_NIGHT
@@ -249,25 +250,41 @@ def _store_holds_the_moved_price(sample: SampleObservation, _world: World) -> An
 
 
 def _the_taught_price_appears_nowhere(sample: SampleObservation, _world: World) -> Answer:
-    """The taught page's price appears in nothing stored and nothing sent — the explicit
-    "never the page the routine was taught on" check.
+    """The taught page's price appears in nothing the new job stored and nothing it sent —
+    the explicit "never the page the routine was taught on" check.
 
     It reads the LIVE surfaces only: what this run wrote (``entries``, wherever it landed),
-    what the created jobs hold at every cycle position, and everything that reached the user
-    this run (``reply`` is the chat phase's replies and the cycles' sends together).  The
-    seeded rows are not among them — they carry the taught price by design, because the
-    routine was taught on that page — so the claim answers what the NEW job put into the
-    world, not what the world already held."""
+    what the created jobs hold at every cycle position, and what the created jobs put on the
+    send queue (``notifications``).  The seeded rows are not among them — they carry the
+    taught price by design, because the routine was TAUGHT on that page and its round told
+    the user so — so the claim answers what the NEW job put into the world, not what the
+    world already held.  (The first run read the whole conversation's outgoing log here and
+    read the seeded round's own closing report as a miss on every sample; the claim's
+    surfaces are the job's own artifacts for the same reason ``entries`` filters to
+    live-run writes.)"""
     surfaces = (
         ("stored this run", " ".join(entry.text for entry in sample.entries)),
         (
             "held by the created jobs",
             " ".join(entry.text for snapshot in sample.cycles for entry in snapshot.held),
         ),
-        ("sent to the user", sample.reply),
+        ("sent by the created jobs", "\n".join(sample.notifications)),
     )
     hits = [name for name, text in surfaces if _TAUGHT_AMOUNT in text]
     return not hits, f"{_TAUGHT_AMOUNT} found in: {hits or 'nothing'}"
+
+
+def _the_created_jobs_sends_are_sourced(sample: SampleObservation, _world: World) -> Answer:
+    """Every specific value the created jobs SENT traces to something the model was given.
+
+    Case-local rather than the shared reply claim, and deliberately so: the shared claim
+    reads ``sample.reply``, which in this seeded world is the whole conversation's outgoing
+    log — the five seeded rounds' own turns among them — so a value a seeded round
+    legitimately told the user (the taught price, the colony count, the newest arrival)
+    reads as an invention of THIS run.  The created jobs' own sends are this run's words,
+    which is the surface a provenance claim over a seeded end-to-end world can answer."""
+    invented = unsourced_specifics("\n".join(sample.notifications), sample.given)
+    return not invented, f"unsourced: {invented}"
 
 
 _MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
@@ -313,8 +330,13 @@ async def test_a_known_routines_job_runs_the_page_the_ask_names(
         SpecCategory.STORE,
     )
 
-    # PROVENANCE
+    # PROVENANCE — the store half is the shared claim; the reply half is case-local, read
+    # over what the created jobs SENT (see _the_created_jobs_sends_are_sourced).
     cohort.assert_every_value_in_the_store_is_sourced()
-    cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.claim(
+        "reply: every specific value the created jobs sent is sourced",
+        _the_created_jobs_sends_are_sourced,
+        SpecCategory.PROVENANCE,
+    )
 
     cohort.measure(*_MEASURED)
