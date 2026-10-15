@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from penny.constants import WriteGateOutcome
+from penny.responses import PennyResponse
 
 
 class MessageRole(StrEnum):
@@ -149,6 +150,15 @@ class ControllerResponse(BaseModel):
             "terminal state of its own."
         ),
     )
+    ran_out_of_steps: bool = Field(
+        default=False,
+        description=(
+            "Whether this run hit its step cap without a final answer (#2370).  "
+            "Structural, read by _run_outcome / Collector._unfinished_reason instead "
+            "of matching `answer` against a sentinel string — `answer` now carries "
+            "whatever the model's (or the deterministic account's) honest text is."
+        ),
+    )
 
     @property
     def generated_media_ids(self) -> list[int]:
@@ -160,3 +170,20 @@ class ControllerResponse(BaseModel):
         those rows at egress rather than fuzzy-matching the media table.
         """
         return [record.media_id for record in self.tool_calls if record.media_id is not None]
+
+
+def account_of(facts: str, tool_calls: list[ToolCallRecord]) -> str:
+    """The deterministic account for when even the narrated draw comes back
+    unusable (#2370): ``facts`` — the plain statement of this run's own state,
+    handed to that draw — plus a plain list of what was tried, built from the
+    record.  Never an apology, and never a second model call: this is the
+    fallback for when the model had nothing more to say, not a retry of it.
+    Reused at the channel layer (``channels/base.py``) for the rare case a
+    reply reaches send time still empty (e.g. a deliberate write-gate STOP)."""
+    if not tool_calls:
+        return f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+    tried = ", ".join(
+        f"{call.tool}{PennyResponse.ACCOUNT_FAILED_SUFFIX}" if call.failed else call.tool
+        for call in tool_calls
+    )
+    return f"{facts} {PennyResponse.ACCOUNT_TRIED_PREFIX}{tried}."

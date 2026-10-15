@@ -81,7 +81,6 @@ from penny.notification import (
 )
 from penny.program import ProgramCall, program_calls
 from penny.prompts import Prompt
-from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import next_occurrence, skill_params
@@ -870,8 +869,11 @@ class Collector(BackgroundAgent):
         step died, the tool the last successful step ran, and the error's class and
         message.  That case used to fall through to the generic no-``done()`` line, so
         the whole class — a failed call writes no ``promptlog`` row — was diagnosable
-        only by exclusion.  The loop returns the ``AGENT_MAX_STEPS`` sentinel only on
-        the real cap; anything else is an early give-up without reporting an outcome.
+        only by exclusion.  ``ran_out_of_steps`` is set structurally (#2370) only on
+        the real cap, never read off ``answer``'s text — a background cycle never
+        narrates one (``BackgroundAgent._draw_narration`` skips the draw), but the
+        field is the same one a narrating agent sets too; anything else is an early
+        give-up without reporting an outcome.
 
         A collection whose stored prompt is not a readable program gets its own line
         (#1911): there is nothing to read completion from, so its cycles can never
@@ -883,7 +885,7 @@ class Collector(BackgroundAgent):
             return response.abort.render()
         if (defect := self._configuration_defect()) is not None:
             return defect
-        if response.answer == PennyResponse.AGENT_MAX_STEPS:
+        if response.ran_out_of_steps:
             return "max steps exceeded — the program was left unfinished"
         return "cycle ended with the program unfinished"
 

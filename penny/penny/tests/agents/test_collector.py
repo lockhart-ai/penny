@@ -2536,10 +2536,14 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
     )
 
     # Nothing changed (only a read/browse) → a real bail, and hitting the step cap is
-    # distinguished from trailing off (the AGENT_MAX_STEPS sentinel).
+    # distinguished from trailing off by the structural ``ran_out_of_steps`` flag
+    # (#2370) — never by matching ``answer``'s text, which a background cycle never
+    # narrates anyway (its own ``_draw_narration`` skips the draw).
     maxed = ControllerResponse(
-        answer=PennyResponse.AGENT_MAX_STEPS,
+        answer="The step limit of 5 tool steps was reached before an answer was written. "
+        "I made no tool calls this turn.",
         tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})],
+        ran_out_of_steps=True,
     )
     assert collector._cycle_result(maxed, None, False) == (
         RunOutcome.FAILED,

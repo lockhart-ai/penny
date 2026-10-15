@@ -485,7 +485,8 @@ class ChatAgent(Agent):
                 )
 
             logger.info("Handling message from %s (conversation mode)", sender)
-            if (unconfigurable := self._unconfigurable_round(state, framing)) is not None:
+            unconfigurable = await self._unconfigurable_round(state, framing, run_id)
+            if unconfigurable is not None:
                 return unconfigurable
             self._install_tools(self.get_tools(run_id=run_id))
             # The machine decided this turn's state before the turn began, so the
@@ -509,7 +510,7 @@ class ChatAgent(Agent):
                 progress_scope="foreground",
                 prompt_type=ChatPromptType.USER_MESSAGE,
             )
-            return self._enforce_learn_terminal(state, response, run_id)
+            return await self._enforce_learn_terminal(state, response, run_id)
         finally:
             self._current_user = None
             self._pending_page_context = None
@@ -517,9 +518,8 @@ class ChatAgent(Agent):
             self._turn_state = None
             self._turn_framing = None
 
-    @staticmethod
-    def _unconfigurable_round(
-        state: ConversationState | None, framing: RoundFraming | None
+    async def _unconfigurable_round(
+        self, state: ConversationState | None, framing: RoundFraming | None, run_id: str
     ) -> ControllerResponse | None:
         """An apply turn that arrived with no framing FAILED before it began (#1875) —
         ``None`` on every other turn, which is the ordinary path untouched.
@@ -527,9 +527,11 @@ class ChatAgent(Agent):
         Apply configures the collection its own round set up: the container, the routine
         and the values it is pointed at are all supplied framework-side, and the turn says
         only the job's terms.  With no framing there is no container to configure, no
-        routine to name, and nothing the turn could truthfully report — so it ends here,
-        in python, with an honest reply and no model call at all (#1839's shape, moved to
-        the front of the turn because there is nothing to run rather than nothing learned).
+        routine to name, and nothing the turn could truthfully report — so this is settled
+        before any tool-bearing run (#1839's shape, moved to the front of the turn because
+        there is nothing to run rather than nothing learned).  Since #2370 that fact is
+        handed to the shared last-draw-or-account building block instead of an immediate
+        canned line: one tools-off draw, with no history yet to carry, writes the reply.
 
         The two things it must NOT do are what makes this a failure rather than a
         fallback: instructing the turn as though it were binding the routine itself would
@@ -544,11 +546,18 @@ class ChatAgent(Agent):
         if state is not ConversationState.APPLY or framing is not None:
             return None
         logger.warning(
-            "Apply turn arrived with no framing — nothing to configure, replying honestly"
+            "Apply turn arrived with no framing — nothing to configure, narrating honestly"
         )
-        return ControllerResponse(answer=PennyResponse.APPLY_NOTHING_TO_CONFIGURE)
+        facts = PennyResponse.FACTS_NOTHING_TO_CONFIGURE
+        system_prompt = await self._build_system_prompt(self._current_user)
+        messages = self._build_messages(
+            Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts), system_prompt=system_prompt
+        )
+        return await self._narrate_or_account(
+            messages, facts, [], run_id, ChatPromptType.USER_MESSAGE
+        )
 
-    def _enforce_learn_terminal(
+    async def _enforce_learn_terminal(
         self, state: ConversationState | None, response: ControllerResponse, run_id: str
     ) -> ControllerResponse:
         """A learn turn that produced no skill FAILED — say so instead of replying
@@ -556,11 +565,13 @@ class ChatAgent(Agent):
 
         The learn state has exactly ONE valid terminal state: a skill in the registry.
         The machine decided this turn was a learn turn BEFORE it ran, so at run end
-        this is a deterministic read of two recorded facts, not a judgment — and the
-        model's reply is thrown away rather than delivered, because a reply composed
-        under the learn instruction offers to set running a routine that was never
-        learned.  The tool calls travel with the honest failure, so the run record
-        still shows everything the turn did.
+        this is a deterministic read of two recorded facts, not a judgment.  Since
+        #2370 the model's own reply is no longer thrown away for a canned line: that
+        nothing was captured is a fact handed to one more tools-off draw, over this
+        turn's own messages (``Agent._run_messages`` — reconstructed from its
+        promptlog rows, the same conversation the failed attempt happened in), so the
+        honest reply can say what was actually tried.  The tool calls travel with it
+        either way, so the run record still shows everything the turn did.
 
         The machine is left exactly where it stands: parked in learn with its anchor,
         so the user's retry is the existing learn→learn re-demonstration edge and a
@@ -583,11 +594,15 @@ class ChatAgent(Agent):
         if not isinstance(self._extraction_result, NoExtraction):
             return response
         logger.warning(
-            "Learn turn produced no skill (%s) — replacing the reply with an honest failure",
+            "Learn turn produced no skill (%s) — narrating the honest outcome instead",
             self._extraction_result.gate,
         )
         discard_round_container(self.db, self._turn_framing, run_id=run_id)
-        return response.model_copy(update={"answer": PennyResponse.LEARN_NOTHING_LEARNED})
+        facts = PennyResponse.FACTS_NOTHING_LEARNED
+        messages = self._with_facts_turn(self._run_messages(run_id), facts)
+        return await self._narrate_or_account(
+            messages, facts, response.tool_calls, run_id, ChatPromptType.USER_MESSAGE
+        )
 
     # ── Message building ────────────────────────────────────────────────
 

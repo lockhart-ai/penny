@@ -33,7 +33,6 @@ from penny.database.skills import SkillDraft, SkillParameter, SkillStep
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
-from penny.responses import PennyResponse
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, require_memory, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
 from penny.tools.collection_instantiation import render_applied_configuration, skill_params
@@ -378,6 +377,16 @@ def _is_state_classifier(messages: list[dict]) -> bool:
     return system == STATE_CLASSIFIER_SYSTEM_PROMPT
 
 
+def _is_narrate_draw(messages: list[dict]) -> bool:
+    """Whether this request is ``Agent._narrate_or_account``'s last tools-off draw
+    (#2370) — identified by its own instruction wrapper, the same way the mock's
+    built-in intercept identifies other framework draws.  A handler that wants to
+    answer it honestly (rather than fall through to its catch-all) checks this
+    first."""
+    last = messages[-1] if messages else {}
+    return "Tell the user honestly what happened this turn" in str(last.get("content", ""))
+
+
 def _spy_extractor(penny) -> dict:
     """Wrap the chat agent's extractor to count how many times it runs — and with which
     turn state and round framing — so a case can pin the once-per-run guard (what stops the
@@ -611,13 +620,15 @@ async def test_a_learn_turn_that_taught_nothing_takes_its_container_with_it(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
     """A learn turn's one valid terminal state is a skill in the registry (#1839).  When it
-    produces none, the reply is replaced by the honest failure — and since #1868 the
-    container built for that round goes with it: it describes a routine that does not
-    exist, and it is minutes old and empty, so leaving it would put a job nobody is doing
-    in the store map.
+    produces none, the model's own first reply is no longer delivered as-is — one more
+    tools-off draw, handed that no routine was captured, writes the honest reply instead
+    (#2370) — and since #1868 the container built for that round goes with it: it
+    describes a routine that does not exist, and it is minutes old and empty, so leaving
+    it would put a job nobody is doing in the store map.
 
     Archived, not deleted, so the container that came and went is still answerable."""
     ask = "watch the aurora deck 2 price and remember it for me"
+    honest_reply = "ah, that didn't actually land — walk me through it again?"
 
     def handler(request, _count):
         messages = request.get("messages") or []
@@ -625,6 +636,8 @@ async def test_a_learn_turn_that_taught_nothing_takes_its_container_with_it(
             return _text(f"STATE: {ConversationState.LEARN.value}")
         if _framer_draws(messages):
             return _text(_ENTRY_FRAMING)
+        if _is_narrate_draw(messages):
+            return _text(honest_reply)
         return _text("sure, i'll keep an eye on it")  # no tool calls — nothing is taught
 
     mock_llm.set_response_handler(handler, answers_state_classifier=True)
@@ -633,7 +646,7 @@ async def test_a_learn_turn_that_taught_nothing_takes_its_container_with_it(
         await signal_server.push_message(sender=TEST_SENDER, content=ask)
         await wait_until(
             lambda: any(
-                PennyResponse.LEARN_NOTHING_LEARNED in str(message.get("message", ""))
+                honest_reply in str(message.get("message", ""))
                 for message in signal_server.outgoing_messages
             )
         )
@@ -907,20 +920,25 @@ def _park_machine_in_learn(penny, anchor_message_id: int | None = None) -> None:
 async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
-    """A learn turn whose run-end extraction returns NoExtraction FAILED: the model's
-    reply is thrown away and a deterministic honest failure goes out instead — the
-    observed harm being a reply that offers to set running a routine that was never
-    learned.  The machine is left parked in learn with its anchor, so the user's retry
-    is the existing learn→learn re-demonstration edge.
+    """A learn turn whose run-end extraction returns NoExtraction FAILED: the FIRST
+    reply — the one composed under the learn instruction, with no idea extraction
+    will fail — never survives, because it offers to set running a routine that was
+    never learned.  Since #2370 that's not a canned line any more: one more tools-off
+    draw, handed the fact that nothing was captured, writes the honest reply instead.
+    The machine is left parked in learn with its anchor, so the user's retry is the
+    existing learn→learn re-demonstration edge.
 
     The round here captures NOTHING — its one call fails — which is the gate that still
     stands after #1850 removed the shape requisites: a taught round that only read, or
     only wrote, is now a routine, but a round with nothing certified is still nothing to
     learn."""
     ask = "watch the aurora deck 2 price like this"
+    honest_reply = "hmm, that one didn't stick — walk me through it again?"
 
     def handler(request, _count):
         messages = request.get("messages") or []
+        if _is_narrate_draw(messages):
+            return _text(honest_reply)
         if any(m.get("role") == "tool" for m in messages):
             # Nothing survived certification (the read failed), so the extractor
             # declines — even though the model happily narrates success.
@@ -940,12 +958,8 @@ async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
             content=ask, sender=TEST_SENDER, state=ConversationState.LEARN
         )
 
-        # The model-authored reply never survives — the deterministic failure does,
-        # whole-render.
-        assert response.answer == (
-            "Hmm, something went wrong on my end — I didn't actually learn that "
-            "routine, so there's nothing saved. Can you walk me through it again?"
-        )
+        # The first, misleading reply never survives — the narrated honest one does.
+        assert response.answer == honest_reply
         assert "want me to run it daily" not in response.answer
         assert penny.db.skills.list_all() == []
         # Everything the turn did still travels with the failure (the run record stays
@@ -1226,7 +1240,9 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
     """An apply turn arriving with NO framing has nothing to configure, and says so
-    (#1875) — the turn ends in python, before any model call.
+    (#1875) — settled before any TOOL-bearing run, with no tool surface offered at
+    all.  Since #2370 that fact is handed to one tools-off draw instead of an
+    immediate canned line, so the model writes the honest reply itself.
 
     There is no unframed apply any more: the machine retries the framing once at apply
     entry, so reaching the turn without one means the round never settled what job it is.
@@ -1235,13 +1251,13 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
     surface so it invents a collection for a job nobody settled — and both end with Penny
     telling the user something is running when nothing is.
 
-    So: no model call at all, no tool surface, nothing created, and a reply that claims
-    nothing."""
+    So: no tool surface, nothing created, and a reply that claims nothing."""
     called: list[dict] = []
+    honest_reply = "hmm, i don't have a job set up to configure here — can you ask again?"
 
     def handler(request, _count):
         called.append(request)
-        return _text("should never be reached")
+        return _text(honest_reply)
 
     mock_llm.set_response_handler(handler)
 
@@ -1256,9 +1272,12 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
             framing=None,
         )
 
-        assert response.answer == PennyResponse.APPLY_NOTHING_TO_CONFIGURE
+        assert response.answer == honest_reply
         assert response.tool_calls == []
-        assert called == []
+        # One tools-off draw, handed that there's nothing to configure (#2370) — no
+        # tool surface, no further calls.
+        assert len(called) == 1
+        assert called[0]["tools"] is None
         assert {row.name for row in penny.db.memories.list_all()} == before
 
 

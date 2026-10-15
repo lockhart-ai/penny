@@ -34,8 +34,12 @@ async def get_restart_message(db: Database, ollama_client: LlmClient, commit_mes
         commit_message: the commit to announce (``commit_message_from_env()`` in production)
 
     Returns:
-        A casual, first-person restart message (e.g., "I added a new command! /debug")
-        or fallback PennyResponse.RESTART_FALLBACK if commit message unavailable
+        A casual, first-person restart message (e.g., "I added a new command! /debug");
+        ``PennyResponse.RESTART_FALLBACK`` when there's no commit to announce or the
+        model runner is unreachable — neither is a model-failure case, so the plain
+        greeting stands in both; ``PennyResponse.RESTART_UPDATE_NO_SUMMARY`` when the
+        model answered but came back empty or unusably long (#2370) — reachable, so a
+        deterministic note built from the commit itself, with no second model call.
     """
     commit_message = commit_message.strip()
 
@@ -67,8 +71,11 @@ async def get_restart_message(db: Database, ollama_client: LlmClient, commit_mes
         announcement = response.content.strip()
 
         if not announcement or len(announcement) > 150:
-            logger.warning("LLM response invalid, using fallback")
-            return PennyResponse.RESTART_FALLBACK
+            # Reachable — the model answered, it just came back empty or unusably
+            # long — so this is not the one case that keeps RESTART_FALLBACK (#2370):
+            # a plain note built from the commit information itself, no second call.
+            logger.warning("LLM response invalid, using a deterministic note")
+            return PennyResponse.RESTART_UPDATE_NO_SUMMARY.format(commit_message=commit_message)
 
         logger.info("Generated restart announcement: %s", announcement)
         return announcement

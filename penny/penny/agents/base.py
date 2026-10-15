@@ -20,6 +20,7 @@ from penny.agents.models import (
     ModelCallError,
     RunAbort,
     ToolCallRecord,
+    account_of,
 )
 from penny.config import Config
 from penny.constants import PennyConstants
@@ -495,6 +496,12 @@ class Agent:
     def _run_outcome(response: ControllerResponse) -> str:
         """Classify a finished run for its terminal progress event.
 
+        Reads the two STRUCTURAL facts the run already carries — ``ran_out_of_steps``
+        and ``abort`` — never ``answer``'s text (#2370): since #2370, ``answer`` holds
+        whatever the model's own narration or the deterministic account says, and a
+        run that recovered a good reply after a rocky middle is still the run that hit
+        the condition, which only the structural fields still say.
+
         An all-failed run is recorded as an error HERE, at the close, from what
         actually happened — it is no longer *stopped* early for it.  #1776 removed the
         all-failed abort: it fired on failure COUNT alone, so it could not tell a stuck
@@ -503,28 +510,50 @@ class Agent:
         loop; the honesty the abort's canned answer stood in for lives in the per-call
         failure narration the model reads and in this record, not in a truncated turn.
         """
-        if response.answer == PennyResponse.AGENT_MAX_STEPS:
+        if response.ran_out_of_steps:
             return "max_steps"
         all_calls_failed = bool(response.tool_calls) and all(
             record.failed for record in response.tool_calls
         )
-        if response.answer == PennyResponse.AGENT_MODEL_ERROR or all_calls_failed:
+        if response.abort is not None or all_calls_failed:
             return "error"
         return "completed"
 
-    @classmethod
-    def _aborted_response(
-        cls, error: ModelCallError, step: int, records: list[ToolCallRecord]
+    async def _aborted_response(
+        self,
+        error: ModelCallError,
+        step: int,
+        records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str | None,
+        prompt_type: str | None,
+        logged: _LoggedBoundary,
     ) -> ControllerResponse:
         """The run's terminal response when a model call produced nothing usable.
 
-        Behaviourally what it replaced — the ``AGENT_MODEL_ERROR`` answer with no tool
-        calls, so every downstream outcome classification is unchanged — with the
-        abort's structural facts attached (#1909).  The failed call logged no
-        ``promptlog`` row, so this record is the only place the cause is written down.
+        The abort's structural facts (#1909) travel with the response either way, so
+        every downstream outcome classification reads them, never ``answer``'s text.
+
+        Two causes share this path (#2370), and only one still draws again:
+          * ``error_class`` is an ``LlmError`` subclass name — the runner itself could
+            not be reached.  Answering ``AGENT_MODEL_ERROR`` immediately, with no
+            further draw, is deliberate: a connection already timing out would just be
+            asked to time out a second time.
+          * ``error_class`` is ``REROLL_EXHAUSTED`` — the model answered repeatedly,
+            but every draw was discarded as unusable.  It is still reachable, so this
+            is handed to the shared last-draw-or-account building block instead of the
+            canned line.
         """
-        abort = RunAbort(step=step, after_tool=cls._last_successful_tool(records), error=error)
-        return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR, abort=abort)
+        abort = RunAbort(step=step, after_tool=self._last_successful_tool(records), error=error)
+        if error.error_class != REROLL_EXHAUSTED:
+            return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR, abort=abort)
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        result = await self._narrate_or_account(
+            self._with_facts_turn(messages, facts), facts, records, run_id, prompt_type, logged
+        )
+        return result.model_copy(update={"abort": abort})
 
     @staticmethod
     def _last_successful_tool(records: list[ToolCallRecord]) -> str | None:
@@ -578,7 +607,15 @@ class Agent:
                 # the tail boundary advances exactly as on the success path (#1778) — and
                 # the run closes naming what killed it (#1909).
                 logged.turns = len(messages)
-                return self._aborted_response(aborted.error, step + 1, tool_call_records)
+                return await self._aborted_response(
+                    aborted.error,
+                    step + 1,
+                    tool_call_records,
+                    messages,
+                    run_id,
+                    prompt_type,
+                    logged,
+                )
             # The call carried (and logged) every turn accumulated so far, so the
             # record already holds them — the tail restarts from here.
             logged.turns = len(messages)
@@ -608,12 +645,21 @@ class Agent:
             if await self._nudge_text_step(response, messages, ctx, run_id):
                 continue
 
-            return self._build_final_response(response, source_urls, tool_call_records)
+            return await self._build_final_response(
+                response, source_urls, tool_call_records, messages, run_id, prompt_type, logged
+            )
 
         logger.warning("Max steps reached without final answer")
-        return ControllerResponse(
-            answer=PennyResponse.AGENT_MAX_STEPS, tool_calls=tool_call_records
+        facts = PennyResponse.FACTS_MAX_STEPS.format(steps=steps)
+        result = await self._narrate_or_account(
+            self._with_facts_turn(messages, facts),
+            facts,
+            tool_call_records,
+            run_id,
+            prompt_type,
+            logged,
         )
+        return result.model_copy(update={"ran_out_of_steps": True})
 
     def _tools_for_step(self, tools: list[dict], is_final_step: bool) -> list[dict]:
         """Strip tools on the final step unless the agent keeps them available."""
@@ -1064,11 +1110,15 @@ class Agent:
         executor's tool-not-found error with its "Did you mean X?" hint."""
         return self._tool_registry.get(name) is None and is_degenerate_tool_name(name)
 
-    def _build_final_response(
+    async def _build_final_response(
         self,
         response,
         source_urls: list[str],
         tool_call_records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str | None,
+        prompt_type: str | None,
+        logged: _LoggedBoundary,
     ) -> ControllerResponse:
         """Build the ControllerResponse from the model's final (non-tool) answer."""
         content = response.content.strip()
@@ -1079,7 +1129,9 @@ class Agent:
                 self._model_client.model,
                 len(tool_call_records),
             )
-            return self._empty_content_fallback(tool_call_records)
+            return await self._empty_content_fallback(
+                tool_call_records, messages, run_id, prompt_type, logged
+            )
 
         thinking = response.thinking or response.message.thinking
 
@@ -1094,7 +1146,9 @@ class Agent:
 
         if not content:
             logger.error("Model returned empty content after stripping think tags!")
-            return self._empty_content_fallback(tool_call_records)
+            return await self._empty_content_fallback(
+                tool_call_records, messages, run_id, prompt_type, logged
+            )
 
         content = clean_malformed_urls(content)
 
@@ -1108,9 +1162,19 @@ class Agent:
             tool_calls=tool_call_records,
         )
 
-    @staticmethod
-    def _empty_content_fallback(tool_call_records: list[ToolCallRecord]) -> ControllerResponse:
+    async def _empty_content_fallback(
+        self,
+        tool_call_records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str | None,
+        prompt_type: str | None,
+        logged: _LoggedBoundary,
+    ) -> ControllerResponse:
         """The close for a final answer that carries no usable content.
+
+        One more tools-off draw, handed that the last answer came back empty, writes
+        the reply instead (#2370) — or the deterministic account, when even that is
+        unusable.
 
         **The records travel with it** (#1776), exactly as they do on the normal
         final-answer path: everything that reads a finished run — the terminal outcome,
@@ -1120,12 +1184,126 @@ class Agent:
         was invisible while the all-tools-failed abort ended such runs before they could
         reach here; removing the abort makes this the path they take.
         """
-        fallback = (
-            PennyResponse.FALLBACK_RESPONSE
+        facts = (
+            PennyResponse.FACTS_EMPTY_WITH_TOOLS.format(count=len(tool_call_records))
             if tool_call_records
-            else PennyResponse.AGENT_EMPTY_RESPONSE
+            else PennyResponse.FACTS_EMPTY_NO_TOOLS
         )
-        return ControllerResponse(answer=fallback, tool_calls=tool_call_records)
+        return await self._narrate_or_account(
+            self._with_facts_turn(messages, facts),
+            facts,
+            tool_call_records,
+            run_id,
+            prompt_type,
+            logged,
+        )
+
+    # ── The last tools-off draw (#2370) ───────────────────────────────────
+    #
+    # Every reachable terminal shape that used to answer with a fixed message — the
+    # reroll budget spent, the step limit, an empty final answer, nothing learned,
+    # nothing to configure — hands this one building block a plain statement of what
+    # happened and lets the model write the reply.  Shared by every call site above
+    # and by ChatAgent's (chat.py): one template method, no flags.
+
+    @staticmethod
+    def _with_facts_turn(messages: list[dict], facts: str) -> list[dict]:
+        """``messages`` plus one user turn stating ``facts`` — the shape every
+        narrate-or-account call site hands the draw."""
+        return [
+            *messages,
+            {"role": "user", "content": Prompt.NARRATE_TERMINAL_FACTS.format(facts=facts)},
+        ]
+
+    def _run_messages(self, run_id: str) -> list[dict]:
+        """This run's own messages, reconstructed from its promptlog rows: the last
+        call's request plus the trailing turns no later call carried (#1778) — what
+        the turn actually saw and did, for a draw made after the run has already
+        returned (e.g. ``ChatAgent._enforce_learn_terminal``).  Empty when the run id
+        is unknown or made no model call."""
+        prompts = self.db.messages.get_run_prompts(run_id)
+        if not prompts:
+            return []
+        last = prompts[-1]
+        return [*last.get_messages(), *last.get_trailing_messages()]
+
+    async def _narrate_or_account(
+        self,
+        messages: list[dict],
+        facts: str,
+        tool_call_records: list[ToolCallRecord],
+        run_id: str | None,
+        prompt_type: str | None,
+        logged: _LoggedBoundary | None = None,
+    ) -> ControllerResponse:
+        """One last draw, tools off, over ``messages`` — which already ends in a user
+        turn stating ``facts``, a plain statement of this run's own state, never an
+        order (#2370, ``docs/principles.md`` §2 item 9).  The model writes the reply
+        when it can:
+
+          * a draw that cannot reach the model answers ``AGENT_MODEL_ERROR`` — the one
+            fixed message this ticket keeps, for a model genuinely down right now;
+          * a draw that comes back usable is the reply, verbatim;
+          * a draw that comes back unusable (empty, degenerate) — or that a subclass
+            skips outright — answers the deterministic account built from the record
+            instead (``account_of``), never an apology.
+
+        ``_draw_narration`` is the one step a subclass overrides (template method):
+        Collector overrides it to return ``None`` without drawing at all (#2370) — a
+        collector cycle has no user reply to write, and its own
+        ``invalid_draw_conditions`` would reject free text anyway — so this always
+        resolves to the deterministic account for it, with no extra live call spent on
+        a background cycle.
+
+        ``logged`` is the caller's own run-in-progress boundary box (#1778), passed
+        through untouched to ``_draw_narration`` — only a call site still inside
+        ``_run_agentic_loop_body`` has one; the others (``ChatAgent``'s post-run
+        narrations) leave it ``None``, having nothing left to stamp.
+        """
+        try:
+            content = await self._draw_narration(messages, run_id, prompt_type, logged)
+        except ModelCallAbortedError:
+            return ControllerResponse(
+                answer=PennyResponse.AGENT_MODEL_ERROR, tool_calls=tool_call_records
+            )
+        if content is not None:
+            return ControllerResponse(answer=content, tool_calls=tool_call_records)
+        return ControllerResponse(
+            answer=account_of(facts, tool_call_records), tool_calls=tool_call_records
+        )
+
+    async def _draw_narration(
+        self,
+        messages: list[dict],
+        run_id: str | None,
+        prompt_type: str | None,
+        logged: _LoggedBoundary | None,
+    ) -> str | None:
+        """One tools-off draw over ``messages``, or ``None`` when it comes back
+        unusable — empty, degenerate per ``_unusable_output_condition``, or a backend
+        tool-call parse failure (no tools were offered, but a backend can still try
+        and fail to read its own output as one; the same "nothing usable" bucket as a
+        degenerate draw, not a format nudge to retry).  Lets ``ModelCallAbortedError``
+        propagate uncaught — a draw that cannot reach the model is the caller's to
+        answer, not this method's to swallow.  The user-facing default; Collector
+        overrides this to skip the draw (#2370).
+
+        A draw that logs a row already carries, in ITS OWN ``messages``, everything
+        the caller's ``logged`` boundary (#1778) was tracking — so on success this
+        advances ``logged`` past the caller's whole (shorter) ``messages`` object,
+        which makes the run's end-of-loop tail stamp empty rather than re-stamping
+        what this row already has.  Left untouched on any path that logs no row
+        (a caught parse failure, or the skip above) — the prior tail stays correct."""
+        try:
+            response = await self._invoke_model(messages, None, run_id, prompt_type)
+        except LlmToolParseError:
+            return None
+        if logged is not None:
+            logged.turns = len(messages)
+        content = (response.content or "").strip()
+        if content and self._unusable_output_condition(response) is None:
+            return content
+        return None
 
     # ── Tool management ──────────────────────────────────────────────────
 
@@ -1746,6 +1924,22 @@ class BackgroundAgent(Agent):
     # cycles the guard's absence costs nothing to allow, and the run record says what
     # a cycle actually did.
     run_shape_validators: list[ResponseValidator] = []
+
+    async def _draw_narration(
+        self,
+        messages: list[dict],
+        run_id: str | None,
+        prompt_type: str | None,
+        logged: _LoggedBoundary | None,
+    ) -> str | None:
+        """A background cycle has no user reply to write (#2370) — skip the draw
+        outright rather than spend a live call whose ``TEXT_INSTEAD_OF_TOOL`` would
+        reject it anyway.  ``_narrate_or_account`` reads this ``None`` as "unusable"
+        and falls straight to the deterministic account, so a cycle that runs out of
+        steps, say, still records ``ran_out_of_steps`` structurally with no extra call
+        spent on a background run.  ``logged`` is left untouched — no row is logged
+        here, so the run's existing tail boundary (#1778) stays correct."""
+        return None
 
     channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 

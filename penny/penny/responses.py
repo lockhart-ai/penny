@@ -10,32 +10,52 @@ class PennyResponse:
 
     # ── General ──────────────────────────────────────────────────────────────
 
-    FALLBACK_RESPONSE = "Sorry, I couldn't generate a response."
+    # The restart announcement's own fallback (startup.py): used when there's no
+    # commit to announce (not a model matter at all) and when the model runner is
+    # unreachable (#2370) — nobody asked it anything yet, so there's nothing to
+    # narrate either way.
     RESTART_FALLBACK = "I just restarted!"
+
+    # A commit landed but the model's transformation of it came back empty or
+    # unusably long (#2370) — reachable, so no apology; a plain note built from
+    # the commit information itself, with no second model call.
+    RESTART_UPDATE_NO_SUMMARY = "I just restarted — a new commit landed: {commit_message}"
 
     # ── Agent Errors ─────────────────────────────────────────────────────────
 
+    # The one fixed message a chat turn can still answer with (#2370, docs/principles.md
+    # §2 item 9): the model runner itself could not be reached for this turn's last
+    # draw.  Every other terminal shape — the step limit, a spent reroll budget, an
+    # empty answer, nothing learned, nothing to configure — hands the model that fact
+    # and lets it write the reply (see FACTS_* below and Agent._narrate_or_account).
     AGENT_MODEL_ERROR = "Sorry, I had trouble reaching the AI model. Please try again."
-    AGENT_EMPTY_RESPONSE = "Sorry, the model generated an empty response."
-    AGENT_MAX_STEPS = "Sorry, I couldn't complete that request within the allowed steps."
 
-    # ── Conversation state ───────────────────────────────────────────────────
+    # ── Narrated-or-accounted terminal facts (#2370) ────────────────────────────
+    #
+    # Plain statements of a run's own state — never an order — appended as the last
+    # user turn before Agent._narrate_or_account's one tools-off draw, so the model
+    # can tell the user honestly what happened.  Reused verbatim as the deterministic
+    # account's own opening line (via `account_of`) when even that draw is unusable.
 
-    # A learn turn has exactly one valid terminal state — a skill in the registry
-    # (#1839).  When the run ends without one, the model's reply is thrown away and
-    # this goes out instead: it must not imply anything was saved or scheduled, and
-    # it names the one move that fixes it (demonstrate the routine again), since the
-    # machine stays parked in learn waiting for exactly that.
-    LEARN_NOTHING_LEARNED = (
-        "Hmm, something went wrong on my end — I didn't actually learn that routine, "
-        "so there's nothing saved. Can you walk me through it again?"
+    FACTS_REROLLS_EXHAUSTED = (
+        "The model was asked {attempts} times, and every answer that came back was unusable."
     )
+    FACTS_MAX_STEPS = (
+        "The step limit of {steps} tool steps was reached before an answer was written."
+    )
+    FACTS_EMPTY_WITH_TOOLS = "The model's last answer came back empty after {count} tool calls."
+    FACTS_EMPTY_NO_TOOLS = "The model's last answer came back empty."
+    FACTS_NOTHING_LEARNED = "No routine was captured from this turn."
+    FACTS_NOTHING_TO_CONFIGURE = (
+        "This turn has nothing to configure — no routine was framed for it to set up."
+    )
+    FACTS_NO_REPLY_AT_SEND = "This turn didn't produce a reply to send."
 
-    # An apply turn configures the collection its round set up, so a round that reaches
-    # apply with no framing has nothing to configure (#1875).  The turn fails here, before
-    # any model call: this goes out instead of a reply, and — like the learn failure above
-    # — it claims nothing was saved or scheduled and asks for the one move that fixes it.
-    APPLY_NOTHING_TO_CONFIGURE = "Something went wrong setting up this task — ask me again?"
+    # The deterministic account's own shape (`account_of` in agents/models.py): the
+    # facts above, plus a plain list of what was tried, built from the record.
+    ACCOUNT_NO_TOOL_CALLS = "I made no tool calls this turn."
+    ACCOUNT_TRIED_PREFIX = "What I tried: "
+    ACCOUNT_FAILED_SUFFIX = " (failed)"
 
     # ── Channel ──────────────────────────────────────────────────────────────
 

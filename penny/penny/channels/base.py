@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from penny.agents.models import account_of
 from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
 from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
@@ -777,7 +778,16 @@ class MessageChannel(ABC):
         author: str,
     ) -> None:
         """Send the agent's response and surface delivery failures."""
-        answer = response.answer.strip() if response.answer else PennyResponse.FALLBACK_RESPONSE
+        # Everything upstream (Agent._narrate_or_account, #2370) already tries to have
+        # the model say SOMETHING, so an empty answer reaching send time is the rare
+        # structural case (e.g. a deliberate write-gate STOP) rather than the model
+        # refusing — the deterministic account built from this run's own tool calls,
+        # never a generic apology.
+        answer = (
+            response.answer.strip()
+            if response.answer
+            else account_of(PennyResponse.FACTS_NO_REPLY_AT_SEND, response.tool_calls)
+        )
         incoming_log = MessageLog(
             id=incoming_id,
             direction=PennyConstants.MessageDirection.INCOMING,

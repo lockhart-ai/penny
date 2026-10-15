@@ -13,6 +13,7 @@ from penny.constants import ChannelType, PennyConstants
 from penny.llm.models import LlmConnectionError
 from penny.penny import Penny
 from penny.preflight import CheckStatus, PreflightCheck, PreflightError
+from penny.responses import PennyResponse
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 
@@ -224,6 +225,45 @@ async def test_startup_announcement_fallback_llm_error(
         announcement = signal_server.outgoing_messages[0]
         message = announcement["message"]
         assert message == "👋 I just restarted!", f"Expected fallback message, got: {message}"
+
+
+@pytest.mark.asyncio
+async def test_startup_announcement_deterministic_note_on_bad_answer(
+    signal_server, test_config, mock_llm, running_penny, monkeypatch
+):
+    """The model is reachable but answers badly (empty) — reachable, so this is NOT
+    the one case that keeps RESTART_FALLBACK (#2370): a deterministic note built from
+    the commit information itself, with no second model call."""
+    # First run: populate database
+    mock_llm.set_default_flow(final_response="test response 🌟")
+
+    async with running_penny(test_config) as penny:
+        penny.db.users.save_info(
+            sender=TEST_SENDER,
+            name="Test User",
+            location="Seattle, WA",
+            timezone="America/Los_Angeles",
+            date_of_birth="1990-01-01",
+        )
+
+        await signal_server.push_message(sender=TEST_SENDER, content="hey penny")
+        await signal_server.wait_for_message(timeout=10.0)
+
+    signal_server.outgoing_messages.clear()
+
+    commit_message = "feat: some feature"
+    monkeypatch.setenv("GIT_COMMIT_MESSAGE", commit_message)
+
+    # Second run: the model answers, but with nothing usable.
+    mock_llm.set_response_handler(lambda request, _count: mock_llm._make_text_response(request, ""))
+
+    async with running_penny(test_config):
+        await wait_until(lambda: len(signal_server.outgoing_messages) > 0)
+
+        announcement = signal_server.outgoing_messages[0]
+        message = announcement["message"]
+        expected = PennyResponse.RESTART_UPDATE_NO_SUMMARY.format(commit_message=commit_message)
+        assert message == f"👋 {expected}", f"Expected the deterministic note, got: {message}"
 
 
 @pytest.mark.asyncio

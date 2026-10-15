@@ -203,11 +203,14 @@ class TestTerminalToolResultRecorded:
     async def test_run_ending_on_a_tool_call_stamps_the_tail_on_its_record(self, test_db, mock_llm):
         """``max_steps`` reached on a tool step: the terminal call + its result land on
         the run's last prompt row, in the same wire shape the next call would have
-        carried them in."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
-        # Keep tools available on the last step (the collector/terminator shape), so the
-        # run can END on a tool call rather than be forced into a text answer.
-        agent._keep_tools_on_final_step = True
+        carried them in.
+
+        A background shape (#2370): a narrating agent hitting ``max_steps`` right after
+        a tool call no longer has "no next call" — the one tools-off draw IS a next
+        call, and its own request already carries the pair forward as ordinary history
+        rather than as a stamped tail.  A background cycle skips that draw outright, so
+        this scenario — truly no next call — still only happens there."""
+        agent, db, max_steps = _make_background_agent(test_db, max_steps=1)
 
         mock_llm.set_response_handler(
             lambda request, _count: mock_llm._make_tool_call_response(
@@ -216,7 +219,9 @@ class TestTerminalToolResultRecorded:
         )
 
         response = await agent.run("find kites", max_steps=max_steps, run_id="run-tail")
-        assert response.answer == PennyResponse.AGENT_MAX_STEPS
+        assert response.ran_out_of_steps
+        # No extra draw — one request only, confirming the skip (#2370).
+        assert len(mock_llm.requests) == 1
 
         tail = db.messages.get_run_prompts("run-tail")[-1].get_trailing_messages()
         assert [message["role"] for message in tail] == ["assistant", "tool"]
@@ -290,27 +295,36 @@ class TestLastStepToolRemoval:
         The strong nudge that used to answer this retired with the empty-content
         validator (#1937): a draw with tool calls survives the reroll guard by
         construction, the repair strips them, and nothing left in the chain speaks to
-        what remains — so the loop's own close states the outcome (FALLBACK_RESPONSE,
-        since the run did call a tool first) instead of appending a user turn ordering
-        the model to answer.  One model call per step, no extra round trip."""
+        what remains — so the loop's close hands that fact to one more tools-off draw
+        (#2370) rather than appending a user turn ordering the model to answer.  The
+        mock keeps hallucinating a tool call on every further request, so that draw is
+        unusable too, and the run closes on the deterministic account built from its
+        one real tool call."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
 
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
-            # Final step: model hallucinates a tool call despite no tools offered
+            # Final step (and the narrate draw after it): hallucinates a tool call
+            # despite no tools offered, same as production might.
             return mock_llm._make_tool_call_response(request, "search", {"query": "more"})
 
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test query", max_steps=max_steps)
-        assert response.answer == PennyResponse.FALLBACK_RESPONSE
-        assert len(mock_llm.requests) == 2
+        assert response.answer == (
+            f"{PennyResponse.FACTS_EMPTY_WITH_TOOLS.format(count=1)} "
+            f"{PennyResponse.ACCOUNT_TRIED_PREFIX}search."
+        )
+        # One extra call: the narrate draw after the final step came back empty (#2370).
+        assert len(mock_llm.requests) == 3
         # The final step was offered no tools, and no nudge turn was appended for it.
         assert mock_llm.requests[1]["tools"] is None
         assert [m["content"] for m in mock_llm.requests[1]["messages"] if m["role"] == "user"] == [
             "test query"
         ]
+        # The narrate draw is tools-off too.
+        assert mock_llm.requests[2]["tools"] is None
         # The run's own work still travels with the close (#1776).
         assert [record.tool for record in response.tool_calls] == ["search"]
 
@@ -802,10 +816,12 @@ class TestToolParseErrorReroll:
 
     @pytest.mark.asyncio
     async def test_persistent_tool_parse_error_fails_the_run(self, test_db, mock_llm):
-        """Budget exhausted → the run fails honestly via the existing aborted-run path,
-        after exactly DEGENERATE_REROLL_ATTEMPTS draws (the ONE shared budget) — and the
-        abort names the tripped condition, once per discarded draw (#1909), so a run
-        killed by parse failures is distinguishable from one killed by collapses."""
+        """Budget exhausted → the reroll cause is REACHABLE (#2370), so the run takes
+        one more tools-off draw rather than the canned error — and the mock keeps
+        raising the same parse error on that draw too, so it falls to the
+        deterministic account.  The abort still names the tripped condition, once per
+        discarded draw (#1909), so a run killed by parse failures is distinguishable
+        from one killed by collapses."""
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -815,8 +831,12 @@ class TestToolParseErrorReroll:
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test prompt", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        assert response.answer == f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        # The reroll budget, plus the one narrate draw after it — also a parse error.
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS + 1
         assert response.abort is not None
         assert response.abort == RunAbort(
             step=1,
@@ -1007,10 +1027,11 @@ class TestDegenerateOutputGuard:
 
     @pytest.mark.asyncio
     async def test_persistent_degeneration_aborts_run(self, test_db, mock_llm):
-        """When every reroll is still degenerate, the run is thrown out with
-        AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — poison is
-        never acted on or stored — and the abort names the collapse as the condition
-        that spent the budget (#1909)."""
+        """When every reroll is still degenerate, the reachable cause (#2370) takes one
+        more tools-off draw — the mock keeps returning the same collapsed tool call, so
+        that draw is unusable too (poison is never acted on or stored), and the run
+        closes on the deterministic account.  The abort still names the collapse as the
+        condition that spent the budget (#1909)."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
@@ -1019,8 +1040,11 @@ class TestDegenerateOutputGuard:
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test prompt", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        assert response.answer == f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS + 1
         assert response.abort is not None
         assert response.abort.error == ModelCallError(
             error_class=REROLL_EXHAUSTED,
@@ -1122,10 +1146,11 @@ class TestHarmonyEnvelopeLeakGuard:
 
     @pytest.mark.asyncio
     async def test_persistent_leak_aborts_run(self, test_db, mock_llm):
-        """When every reroll still leaks the envelope, the run is thrown out with
-        AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — raw
-        Harmony tokens are never delivered — and the abort names the leak rather than
-        the collapse the same budget also serves (#1909)."""
+        """When every reroll still leaks the envelope, the reachable cause (#2370)
+        takes one more tools-off draw — the mock keeps leaking on that draw too, so
+        raw Harmony tokens are still never delivered and the run closes on the
+        deterministic account.  The abort still names the leak rather than the
+        collapse the same budget also serves (#1909)."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
@@ -1134,8 +1159,11 @@ class TestHarmonyEnvelopeLeakGuard:
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("what's the deepest lake?", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        assert response.answer == f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS + 1
         assert response.abort is not None
         assert response.abort.error == ModelCallError(
             error_class=REROLL_EXHAUSTED,
@@ -1156,9 +1184,9 @@ class TestEmptyContentFallback:
 
     @pytest.mark.asyncio
     async def test_empty_response_returns_agent_empty_response(self, test_db, mock_llm):
-        """When the model returns empty content, AGENT_EMPTY_RESPONSE is returned.
-
-        One model call, not two: nothing asks the model to try again any more (#1937)."""
+        """When the model returns empty content, one more tools-off draw is tried
+        (#2370); the mock keeps answering empty, so the run closes on the
+        deterministic account."""
         agent, db, max_steps = _make_agent(test_db, mock_llm)
 
         def handler(request, count):
@@ -1167,20 +1195,22 @@ class TestEmptyContentFallback:
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test prompt", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_EMPTY_RESPONSE
-        assert len(mock_llm.requests) == 1
+        assert response.answer == (
+            f"{PennyResponse.FACTS_EMPTY_NO_TOOLS} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        )
+        # The empty draw, plus the one narrate draw after it (#2370).
+        assert len(mock_llm.requests) == 2
 
         await agent.close()
 
     @pytest.mark.asyncio
     async def test_empty_response_after_tool_call(self, test_db, mock_llm):
-        """FALLBACK_RESPONSE is returned when model returns empty after preceding tool calls.
+        """An empty answer after preceding tool calls still gets the one narrate draw
+        (#2370) — the mock keeps answering empty, so the account names what was tried.
 
-        The distinction matters: FALLBACK_RESPONSE signals "worked but couldn't
-        synthesise", AGENT_EMPTY_RESPONSE "never tried to answer".  The records travel
-        with it (#1776) — a run that called tools and then said nothing must not record
-        as a callless one, since everything reading a finished run reads ``tool_calls``.
-        """
+        The distinction matters: a run that called tools and then said nothing must
+        not record as a callless one, since everything reading a finished run reads
+        ``tool_calls`` (#1776) — the records travel with the close either way."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
 
         def handler(request, count):
@@ -1193,7 +1223,10 @@ class TestEmptyContentFallback:
         mock_llm.set_response_handler(handler)
 
         response = await agent.run("test prompt", max_steps=max_steps)
-        assert response.answer == PennyResponse.FALLBACK_RESPONSE
+        facts = PennyResponse.FACTS_EMPTY_WITH_TOOLS.format(count=3)
+        assert response.answer == (
+            f"{facts} {PennyResponse.ACCOUNT_TRIED_PREFIX}search, search, search."
+        )
         assert [record.tool for record in response.tool_calls] == ["search"] * 3
 
         await agent.close()
@@ -1201,11 +1234,14 @@ class TestEmptyContentFallback:
     @pytest.mark.asyncio
     async def test_stripped_hallucinated_call_closes_honestly(self, test_db, mock_llm):
         """A final-step tool call (tools stripped) is repaired away, and what is left is
-        an empty answer the run REPORTS rather than nudges about.
+        an empty answer the run narrates honestly rather than nudges about (#2370).
 
         ``HallucinatedToolCallRepair`` strips the calls and the content falls through a
         chain that no longer has anything to say about emptiness (#1937), so the close
-        states that the run said nothing instead of appending a strong-nudge user turn."""
+        hands that fact to one more tools-off draw instead of appending a strong-nudge
+        user turn.  The mock keeps hallucinating a tool call (ignoring that this new
+        draw offers no tools either), so that draw is unusable too and the run closes
+        on the deterministic account."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
 
         mock_llm.set_response_handler(
@@ -1215,8 +1251,10 @@ class TestEmptyContentFallback:
         )
 
         response = await agent.run("test prompt", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_EMPTY_RESPONSE
-        assert len(mock_llm.requests) == 1
+        assert response.answer == (
+            f"{PennyResponse.FACTS_EMPTY_NO_TOOLS} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        )
+        assert len(mock_llm.requests) == 2
 
         await agent.close()
 
@@ -2591,7 +2629,12 @@ class TestCollectorInvalidDrawReroll:
     @pytest.mark.asyncio
     async def test_persistent_call_less_draws_fail_the_run(self, test_db, mock_llm):
         """A model that never makes a call never loops forever: the shared reroll budget
-        bounds it and the run fails honestly, with no done record and no salvaged text."""
+        bounds it and the run fails honestly, with no done record and no salvaged text.
+
+        Reachable (#2370), but a background cycle has no user reply to write — its
+        ``_draw_narration`` override skips the draw outright, so this still closes on
+        the deterministic account with NO extra call spent (``len(mock_llm.requests)``
+        stays at the reroll budget, proof the skip actually fired)."""
         agent, db, max_steps = _make_background_agent(test_db, max_steps=3)
 
         mock_llm.set_response_handler(
@@ -2601,7 +2644,10 @@ class TestCollectorInvalidDrawReroll:
         response = await agent.run("", max_steps=max_steps)
 
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
-        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        assert response.answer == f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
         assert not any(record.tool == "stub_terminator" for record in response.tool_calls)
 
         await agent.close()
@@ -2665,7 +2711,10 @@ class TestChatCallShapedTextReroll:
 
     @pytest.mark.asyncio
     async def test_persistent_call_as_text_fails_the_turn(self, test_db, mock_llm):
-        """Budget exhausted → the turn fails honestly rather than delivering the blob."""
+        """Budget exhausted → reachable (#2370), so one more tools-off draw is tried —
+        the mock keeps emitting the same blob, which is unusable by the same rule, so
+        the turn still fails honestly rather than delivering it, now via the
+        deterministic account."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
@@ -2676,8 +2725,11 @@ class TestChatCallShapedTextReroll:
         )
 
         response = await agent.run("what's the deepest lake?", max_steps=max_steps)
-        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        assert response.answer == f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS + 1
 
         await agent.close()
 
@@ -2809,8 +2861,10 @@ class TestChatEmptyDrawReroll:
     @pytest.mark.asyncio
     async def test_three_unusable_draws_abort_the_run(self, test_db, mock_llm):
         """The accepted trade-off: a re-roll on the unchanged context cannot unstick a
-        deterministically-empty draw, so the budget burns and the run fails honestly via
-        the #1909 abort path — never an empty reply and never a nudge."""
+        deterministically-empty draw, so the budget burns and the run fails via the
+        #1909 abort path — reachable (#2370), so one more tools-off draw is tried; the
+        mock keeps answering empty, so it closes on the deterministic account, never
+        an apology and never a nudge."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
@@ -2825,8 +2879,11 @@ class TestChatEmptyDrawReroll:
 
         response = await agent.run("what does the lantern cost?", max_steps=max_steps)
 
-        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        )
+        assert response.answer == f"{facts} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS + 1
         assert response.tool_calls == []
         # The abort names every discarded draw in ORDER, so a run killed by three empties
         # and one killed by three collapses read as the different problems they are.

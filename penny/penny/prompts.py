@@ -544,3 +544,16 @@ class Prompt:
     # aborts in one measured run).  A model that has done its work can always call one
     # more tool; it cannot always walk a path the framework fixed in advance.
     COLLECTOR_DONE_STEP = "done()"
+
+    # The one tools-off draw a run falls back to when it has nothing more to do but
+    # hasn't failed outright (#2370, docs/principles.md §2 item 9): the step limit, a
+    # spent reroll budget, an empty answer, nothing learned, nothing to configure.
+    # ``facts`` is a plain statement of what happened — never an order — appended as
+    # the turn's last user message (``Agent._narrate_or_account`` /
+    # ``Agent._with_facts_turn``); permission, not instruction, is why there's no
+    # apology wording here for the model to copy.
+    NARRATE_TERMINAL_FACTS = (
+        "{facts}\n\n"
+        "Tell the user honestly what happened this turn, from the above and whatever "
+        "you actually did. No apology, and don't claim anything you didn't reach."
+    )
