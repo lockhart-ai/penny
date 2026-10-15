@@ -15,9 +15,9 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | Standing jobs | 9 |
 | Notifications | 3 |
 | Background collectors | 4 |
-| Reading a page | 4 |
+| Reading a page | 5 |
 | Chat tools | 6 |
-| Total | 95 |
+| Total | 96 |
 
 ## Conversation machine
 
@@ -147,6 +147,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | `extract-fields-none-present` | In the browse-extract micro-context, when the page carries none of what the instruction named, Penny says plainly that it carries none of it rather than answering anyway. | the closing price of each company named and its ticker symbol |  |
 | `extract-fields-partly-present` | In the browse-extract micro-context, when the page carries only some of what the instruction named, Penny comes back with the parts it has instead of reporting the page empty. | the headlines and their links, with a one-line summary of each where the page gives one |  |
 | `extract-fields-partly-present-on-a-prose-page` | In the browse-extract micro-context, when a prose section front carries two of the three things the instruction named, Penny comes back with the two. | the headline, the byline and the published time for each story |  |
+| `extract-top-headlines-off-a-front-page` | In the browse-extract micro-context, when a real-size front page carries the top headlines and their links but not their descriptions, Penny comes back with the headlines and links and invents no description. | the top 3 headlines on this page, with the title, a one-sentence description, and a link for each |  |
 
 ## Chat tools
 

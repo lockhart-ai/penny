@@ -7,19 +7,27 @@ content carrying SOME of what was asked for is an ``EXTRACTED:`` read that gives
 it has for each thing and leaves out the rest, and ``NOT_PRESENT:`` is for content carrying
 NONE of it.
 
-Four cases over the three states a page can be in relative to its instruction — it carries
-ALL of what was named, SOME of it, or NONE — with the middle state reached on two different
-page shapes.  Each is five wordings of its instruction over one fixed page:
+Five cases over the three states a page can be in relative to its instruction — it carries
+ALL of what was named, SOME of it, or NONE — with the middle state reached on three different
+page shapes, one of them at REAL SIZE.  Each is five wordings of its instruction over one
+fixed page:
 
 * ``extract-fields-all-present`` — the CONTROL: a listing that answers everything asked of
   it.  The cheapest case in the suite, and the one that says a per-field read was not bought
   by loosening the ordinary case.
-* ``extract-fields-partly-present`` — a homepage read as an index of other pages: titles and
-  links, and no summaries, under an instruction that asks for all three.
+* ``extract-top-headlines-off-a-front-page`` — the failure as it was actually seen (#2360):
+  a real-size news front page (~90 links, ~9K characters, the shape the content script
+  returns for such a page) read for its top three headlines, where the first three story
+  links carry no description.  Asked at real scale rather than the suite's usual few-link
+  stand-in, because the undecidable loop the incident showed — re-reading the whole link
+  list over and over while arguing whether a headline without its description is a partial
+  unit or a missing one — only shows at that size.
+* ``extract-fields-partly-present`` — the same front page read as an index of other pages:
+  titles and links, and no summaries, under an instruction that asks for all three.
 * ``extract-fields-partly-present-on-a-prose-page`` — the same shortfall reached by a second
   PAGE SHAPE: a prose section front printing a byline under each headline and no timestamp.
-* ``extract-fields-none-present`` — the honesty guard: a page carrying neither of the two
-  things named must say so rather than answer anyway.
+* ``extract-fields-none-present`` — the honesty guard: the front page carrying neither of
+  the two things named must say so rather than answer anyway.
 
 **The last two are a PAIR, and they are two cases rather than one.**  A behaviour states its
 negative direction inside its own case where that direction shares the expected outcome;
@@ -102,22 +110,151 @@ class ExtractFixture(NamedTuple):
 
 # ── The pages ────────────────────────────────────────────────────────────────
 #
-# A homepage read as an index of other pages: one markdown link per story, which is
-# titles and links and nothing else.  This is the shape the content script returns for
-# such a page, so an instruction that also asks for summaries is asking for something
-# genuinely not here.
-_HOMEPAGE_URL = "https://news-alpha.example/"
-_HOMEPAGE = (
-    "[Harbour bridge reopens after a two-year refit]"
-    "(https://news-alpha.example/world/2036/harbour-bridge-reopens-after-refit)\n"
-    "[Dockside market changes hands after eighty years]"
-    "(https://news-alpha.example/business/2036/dockside-market-changes-hands)\n"
-    "[Lantern festival draws a record crowd to the old quarter]"
-    "(https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd)\n"
-    "[Museum returns the borrowed mosaics a decade early]"
-    "(https://news-alpha.example/culture/2036/museum-returns-borrowed-mosaics)\n"
-    "[Ferry operator adds a night sailing for the winter]"
-    "(https://news-alpha.example/business/2036/ferry-operator-adds-a-night-sailing)"
+# A real-size news front page, in the link-index shape the content script returns for such a
+# page: one markdown link per story, nav item or footer item, and nothing else — no article
+# body, because an index page has none (#1942's `page_text.ts` split).  Shaped and sized like
+# the page measured off the incident that opened #2360: ~9K characters, ~90 links across three
+# header lines, ~15 one/two-word nav links, 38 story links, ~35 section/footer links and one
+# closing line.  The first three story links in document order carry headline only — the
+# ones `extract-top-headlines-off-a-front-page` asks for — and a few later ones (the shipyard,
+# aquarium, foundry and apiary stories) carry a one-sentence description inside the link
+# label, so the page is not uniformly one shape end to end.  Invented site, URLs and headlines.
+_FRONT_PAGE_URL = "https://news-alpha.example/"
+_FRONT_PAGE = (
+    "Title: News Alpha — front page\n"
+    "https://news-alpha.example/\n"
+    "Local, national and world coverage, updated through the day\n"
+    "[World](https://news-alpha.example/world)\n"
+    "[Business](https://news-alpha.example/business)\n"
+    "[Culture](https://news-alpha.example/culture)\n"
+    "[Sports](https://news-alpha.example/sports)\n"
+    "[Opinion](https://news-alpha.example/opinion)\n"
+    "[Science](https://news-alpha.example/science)\n"
+    "[Health](https://news-alpha.example/health)\n"
+    "[Weather](https://news-alpha.example/weather)\n"
+    "[Obituaries](https://news-alpha.example/obituaries)\n"
+    "[Classifieds](https://news-alpha.example/classifieds)\n"
+    "[Subscribe](https://news-alpha.example/subscribe)\n"
+    "[Newsletters](https://news-alpha.example/newsletters)\n"
+    "[Archive](https://news-alpha.example/archive)\n"
+    "[Contact us](https://news-alpha.example/contact)\n"
+    "[About us](https://news-alpha.example/about)\n"
+    "[Harbour bridge reopens after a two-year refit that outlasted three mayors and two "
+    "budget overhauls](https://news-alpha.example/world/2036/harbour-bridge-reopens-after-refit)\n"
+    "[Dockside market changes hands after eighty years under the same founding family of "
+    "traders](https://news-alpha.example/business/2036/dockside-market-changes-hands)\n"
+    "[Lantern festival draws a record crowd to the old quarter despite a week of heavy rain "
+    "forecast](https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd)\n"
+    "[Museum returns the borrowed mosaics a decade early after a quiet dispute over storage "
+    "costs](https://news-alpha.example/culture/2036/museum-returns-borrowed-mosaics)\n"
+    "[Ferry operator adds a night sailing for the winter after months of commuter "
+    "complaints](https://news-alpha.example/business/2036/ferry-operator-adds-night-sailing)\n"
+    "[City orchestra names a conductor from within the ranks for the first time in forty "
+    "years](https://news-alpha.example/culture/2036/orchestra-names-conductor-from-ranks)\n"
+    "[Bookshop reopens in the arcade under new owners who kept most of the old "
+    "staff](https://news-alpha.example/culture/2036/bookshop-reopens-in-arcade)\n"
+    "[Old lighthouse keeper's cottage is listed for sale after the trust ran out of "
+    "funds](https://news-alpha.example/world/2036/lighthouse-cottage-listed-for-sale)\n"
+    "[Rowing club wins the river cup for a third year running under a coach half their "
+    "age](https://news-alpha.example/sports/2036/rowing-club-wins-river-cup)\n"
+    "[Observatory volunteers log a record number of meteor sightings over the long "
+    "weekend](https://news-alpha.example/science/2036/observatory-logs-meteor-sightings)\n"
+    "[Clinic extends its evening hours after a sharp rise in walk-in appointments this "
+    "winter](https://news-alpha.example/health/2036/clinic-extends-evening-hours)\n"
+    "[Shipyard lands its biggest order in a decade from a regional ferry operator. The "
+    "contract covers four vessels and secures roughly three hundred jobs through the next "
+    "two winters.](https://news-alpha.example/business/2036/shipyard-lands-biggest-order)\n"
+    "[Canal towpath reopens to cyclists after the flood barrier repairs finally "
+    "finished](https://news-alpha.example/world/2036/canal-towpath-reopens-to-cyclists)\n"
+    "[Theatre revives a forgotten local play for its first run in sixty "
+    "years](https://news-alpha.example/culture/2036/theatre-revives-forgotten-local-play)\n"
+    "[Stadium announces a new roof design after years of complaints about rain "
+    "delays](https://news-alpha.example/sports/2036/stadium-announces-new-roof-design)\n"
+    "[Brewery doubles its tasting room after demand outgrew the old converted "
+    "barn](https://news-alpha.example/business/2036/brewery-doubles-tasting-room)\n"
+    "[Tunnel repairs finally finish after eighteen months of diversions through the old "
+    "quarter](https://news-alpha.example/world/2036/tunnel-repairs-finally-finish)\n"
+    "[Aquarium hatches a rare species of seahorse for the first time in its history. "
+    "Keepers say the hatchlings are already feeding well and will join the main display "
+    "within a month.](https://news-alpha.example/science/2036/aquarium-hatches-rare-seahorse)\n"
+    "[Vineyard opens its cellar for public tours after years of only private "
+    "tastings](https://news-alpha.example/culture/2036/vineyard-opens-cellar-tours)\n"
+    "[Quarry closure leaves the valley's last heavy haulage route without regular "
+    "traffic](https://news-alpha.example/world/2036/quarry-closure-leaves-valley-route)\n"
+    "[Sawmill switches to a four-day week after a long stretch of reduced "
+    "orders](https://news-alpha.example/business/2036/sawmill-switches-four-day-week)\n"
+    "[Hospital wing reopens after repairs that took twice as long as first "
+    "estimated](https://news-alpha.example/health/2036/hospital-wing-reopens-after-repairs)\n"
+    "[Foundry marks its hundredth year with an open day for the whole town. Former "
+    "apprentices are travelling back for the day, some from as far as the "
+    "capital.](https://news-alpha.example/world/2036/foundry-marks-hundredth-year)\n"
+    "[Cannery adds a second shift after landing a new regional supply "
+    "contract](https://news-alpha.example/business/2036/cannery-adds-second-shift)\n"
+    "[Mill museum adds a working loom display after a two-year restoration "
+    "project](https://news-alpha.example/culture/2036/mill-museum-adds-working-loom)\n"
+    "[Dam inspection finds no new cracks after last spring's heavy flooding "
+    "scare](https://news-alpha.example/world/2036/dam-inspection-finds-no-new-cracks)\n"
+    "[Reservoir levels drop to a ten-year low after the driest spring on "
+    "record](https://news-alpha.example/science/2036/reservoir-levels-drop-ten-year-low)\n"
+    "[Greenhouse restoration finishes ahead of schedule thanks to a surge of volunteer "
+    "labour](https://news-alpha.example/culture/2036/greenhouse-restoration-finishes-early)\n"
+    "[Nursery school expansion clears its final planning hurdle after a long community "
+    "review](https://news-alpha.example/world/2036/nursery-school-expansion-clears-hurdle)\n"
+    "[Hatchery ships its first export order of the season to three neighbouring "
+    "towns](https://news-alpha.example/business/2036/hatchery-ships-first-export-order)\n"
+    "[Apiary collective reports its best honey harvest in a decade across every member "
+    "farm. Members credit a mild spring and a late frost that never arrived this "
+    "year.](https://news-alpha.example/culture/2036/apiary-collective-reports-best-harvest)\n"
+    "[Orchard cooperative opens a new pressing house ahead of the autumn harvest "
+    "rush](https://news-alpha.example/world/2036/orchard-cooperative-opens-pressing-house)\n"
+    "[Tannery closes its oldest workshop after relocating production to the new "
+    "site](https://news-alpha.example/business/2036/tannery-closes-oldest-workshop)\n"
+    "[Forge apprenticeship programme doubles its intake after a surge of local "
+    "interest](https://news-alpha.example/culture/2036/forge-apprenticeship-doubles-intake)\n"
+    "[Distillery releases a limited cask after ageing it longer than originally "
+    "planned](https://news-alpha.example/business/2036/distillery-releases-limited-cask)\n"
+    "[Swim club opens a masters league after years of requests from older "
+    "members](https://news-alpha.example/sports/2036/swim-club-opens-masters-league)\n"
+    "[Cycling route gets a new signposted loop after the old markers finally wore "
+    "out](https://news-alpha.example/sports/2036/cycling-route-gets-new-loop)\n"
+    "[Pharmacy trials a late-night pickup window after a run of missed "
+    "deliveries](https://news-alpha.example/health/2036/pharmacy-trials-late-night-pickup)\n"
+    "[World news](https://news-alpha.example/world-news)\n"
+    "[Business desk](https://news-alpha.example/business-desk)\n"
+    "[Markets](https://news-alpha.example/markets)\n"
+    "[Culture](https://news-alpha.example/culture)\n"
+    "[Reviews](https://news-alpha.example/reviews)\n"
+    "[Sports](https://news-alpha.example/sports)\n"
+    "[Scores](https://news-alpha.example/scores)\n"
+    "[Opinion](https://news-alpha.example/opinion)\n"
+    "[Editorials](https://news-alpha.example/editorials)\n"
+    "[Letters](https://news-alpha.example/letters)\n"
+    "[Science](https://news-alpha.example/science)\n"
+    "[Environment](https://news-alpha.example/environment)\n"
+    "[Health](https://news-alpha.example/health)\n"
+    "[Wellbeing](https://news-alpha.example/wellbeing)\n"
+    "[Weather](https://news-alpha.example/weather)\n"
+    "[Forecasts](https://news-alpha.example/forecasts)\n"
+    "[Obituaries](https://news-alpha.example/obituaries)\n"
+    "[Classifieds](https://news-alpha.example/classifieds)\n"
+    "[Jobs](https://news-alpha.example/jobs)\n"
+    "[Property](https://news-alpha.example/property)\n"
+    "[Subscribe](https://news-alpha.example/subscribe)\n"
+    "[Gift a subscription](https://news-alpha.example/gift-a-subscription)\n"
+    "[Newsletters](https://news-alpha.example/newsletters)\n"
+    "[RSS feeds](https://news-alpha.example/rss-feeds)\n"
+    "[Mobile app](https://news-alpha.example/mobile-app)\n"
+    "[Archive](https://news-alpha.example/archive)\n"
+    "[Corrections](https://news-alpha.example/corrections)\n"
+    "[Ethics policy](https://news-alpha.example/ethics-policy)\n"
+    "[Privacy policy](https://news-alpha.example/privacy-policy)\n"
+    "[Terms of use](https://news-alpha.example/terms-of-use)\n"
+    "[Advertise](https://news-alpha.example/advertise)\n"
+    "[Careers](https://news-alpha.example/careers)\n"
+    "[Contact us](https://news-alpha.example/contact-us)\n"
+    "[About us](https://news-alpha.example/about-us)\n"
+    "[Help centre](https://news-alpha.example/help-centre)\n"
+    "[Older stories](https://news-alpha.example/archive/2036)"
 )
 
 # A section front that prints a byline under each headline and no timestamp — the same
@@ -126,18 +263,93 @@ _HOMEPAGE = (
 # instruction names different things (a byline and a time, where the other names a link and a
 # summary), and it names them of a page written as prose rather than as markdown links.  A
 # different ask over a different page is a scenario, and a scenario gets its own 15.
+#
+# Real-size section front: about ten stories, each with a byline and a one- or two-sentence
+# teaser — no timestamp on any of them, which is the shortfall this case holds on.
 _SECTION_URL = "https://news-alpha.example/culture"
 _SECTION = (
     "Culture\n"
     "\n"
     "Museum returns the borrowed mosaics a decade early\n"
     "by Wren Halloway\n"
+    "The loan agreement had years left to run, but the lender asked for them back early for "
+    "a touring show that opens in the spring, and the museum says it would rather hand them "
+    "over on good terms than fight the request. Curators spent the week photographing every "
+    "tile before the crates went out, in case a dispute over condition comes up later. Staff "
+    "say the full collection will not travel again for at least another five years.\n"
     "\n"
     "City orchestra names a conductor from within the ranks\n"
     "by Ines Marlowe\n"
+    "It is the first time in forty years the post has gone to someone already on the "
+    "payroll, and the players say the choice was close to unanimous after a season of guest "
+    "conductors failed to settle. The new conductor has led the viola section for nineteen "
+    "years and will keep a reduced teaching load at the conservatory alongside the new post. "
+    "The orchestra's board says the appointment was approved without a single dissenting "
+    "vote.\n"
     "\n"
     "Bookshop reopens in the arcade under new owners\n"
-    "by Wren Halloway\n"
+    "by Oskar Penrith\n"
+    "Most of the old staff stayed on, and the children's corner has doubled in size after "
+    "the new owners knocked through to the unit next door, which had sat empty since the "
+    "tailor's shop closed. The owners say the expansion was always the plan, and the delay "
+    "was only ever about getting the lease signed. The old unit next door had been empty "
+    "long enough that most regulars had forgotten what used to be there.\n"
+    "\n"
+    "Theatre revives a forgotten local play for its first run in sixty years\n"
+    "by Talia Brecht\n"
+    "The original script turned up in a box of donated costumes last spring, water-stained "
+    "but legible enough for the dramaturg to reconstruct the missing pages from a newspaper "
+    "review of the original run. Casting is already finished, and rehearsals begin as soon "
+    "as the set carpenters finish the revolving stage. The theatre says ticket prices will "
+    "stay the same as last season despite the extra cast member.\n"
+    "\n"
+    "Gallery hangs its winter show a month ahead of schedule\n"
+    "by Soren Myklund\n"
+    "Organisers say the early opening is meant to beat the worst of the holiday crowds, "
+    "though the move also lets the gallery squeeze in an extra weekend of ticketed previews "
+    "before the free weekdays begin. Three of the pieces on display have never been shown "
+    "outside the artist's own studio before now. The gallery is already fielding requests "
+    "from two other venues hoping to borrow the show once it closes.\n"
+    "\n"
+    "Choir society marks its centenary with a free concert in the square\n"
+    "by Priya Oduya\n"
+    "Founding members' descendants have been invited to sing in the final number, and the "
+    "society has dug up a recording from its fiftieth anniversary to play before the "
+    "concert starts. Organisers expect the square to fill well before the opening number, "
+    "and extra seating is being brought in. The choir's archivist spent three weekends in "
+    "the basement tracking down the right reel-to-reel player.\n"
+    "\n"
+    "Potters' guild opens its kilns to visitors for the first time in years\n"
+    "by Callum Fenwick\n"
+    "The open day replaces a members-only sale that ran for three decades, a change the "
+    "guild says is meant to bring in younger members who never knew the sale existed in the "
+    "first place. Visitors will be able to watch a full firing from loading to cooling "
+    "across the open weekend. The guild says it hopes to make the open day an annual fixture "
+    "rather than a one-off.\n"
+    "\n"
+    "Film society adds a second screen after years on a single projector\n"
+    "by Marisol Quintard\n"
+    "The upgrade was funded almost entirely by a single retiring patron's donation, and the "
+    "society says it plans to use the second screen for matinees of films too niche to "
+    "justify a full evening slot. The first title booked for the new screen is a restored "
+    "print nobody local has seen since its original run. The society is already taking "
+    "requests for a third screen, though nobody expects it to happen soon.\n"
+    "\n"
+    "Archive digitises its oldest ledgers after a grant from the heritage fund\n"
+    "by Declan Ashworth\n"
+    "Volunteers have been transcribing entries by hand ahead of the public launch, a job "
+    "the archivist says has turned up at least two shipwrecks nobody had previously "
+    "recorded in any local history. The full digitised ledger set is expected to go online "
+    "sometime next year, pending one more funding round. The archivist says the biggest "
+    "surprise so far was how many ledgers survived the old building's one flood.\n"
+    "\n"
+    "Puppet troupe tours the outer boroughs for the first time in its history\n"
+    "by Nadia Steinholt\n"
+    "The tour was planned around school terms rather than the usual festival calendar, "
+    "which the troupe says should let far more children see a show without their parents "
+    "needing to take a day off work. Every stop on the route was chosen by a borough that "
+    "had never hosted the troupe before this year. The troupe's founder says this is the "
+    "farthest the puppets have ever travelled from the workshop."
 )
 
 # An ordinary listing that answers everything asked of it — the control, where nothing about
@@ -151,12 +363,72 @@ _SECTION = (
 # port has not taken and is not the port's to take.  So the copy is real and this is why it
 # exists.  The url is IMPORTED (`LISTING_URL`) rather than retyped; the price is the same `499`
 # the shared listing prints, held against this page by the coherence probe in `make check`.
+#
+# Real-length product page: the full listing copy (specs, shipping, seller notes, a Q&A
+# section, early reviews) plus a "customers also viewed" rail of related items at OTHER
+# prices, none of which is `499` and none of which repeats the exact item name — a product
+# page's own real estate, not a five-line stand-in.
 _LISTING = (
     "Aurora Deck 2, handheld console\n"
     "\n"
     "Price: $499\n"
     "In stock — three left, open box and tested\n"
     "Ships from a fictional warehouse within two days.\n"
+    "\n"
+    "About this item\n"
+    "This handheld console has a seven inch display, a detachable controller grip and "
+    "roughly six hours of battery life on a full charge under typical use. This unit is an "
+    "open box return: the original packaging has been opened and resealed, and the console "
+    "has been tested and wiped to factory settings before listing. The seller reports no "
+    "cosmetic marks beyond light wear on the left grip, and the included cable is the "
+    "original rather than a replacement. The screen protector that shipped with the unit "
+    "has already been removed and is not included, though a replacement is cheap and widely "
+    "available at most electronics counters.\n"
+    "\n"
+    "Specifications\n"
+    "Display: seven inch, 1080p, sixty hertz.\n"
+    "Storage: five hundred twelve gigabytes, expandable.\n"
+    "Battery: roughly six hours of mixed use per charge.\n"
+    "Weight: three hundred ninety grams without the grip attached.\n"
+    "Connectivity: dual-band wireless and a single charging port.\n"
+    "Audio: stereo speakers and a standard headphone jack.\n"
+    "Included: console, grip, charging cable, and the original box insert.\n"
+    "\n"
+    "Shipping and returns\n"
+    "Ships from a fictional warehouse within two days of payment clearing. Returns are "
+    "accepted within thirty days provided the unit is returned in the condition it was "
+    "sent, with the original cable included. Buyers outside the seller's usual delivery "
+    "region should expect an extra day or two in transit depending on the carrier's "
+    "regional hub. A restocking fee may apply if the console comes back without its "
+    "original cable or box insert.\n"
+    "\n"
+    "Seller notes\n"
+    "Seller: nebula_resale (4.9 stars). Listing updated daily. The seller has sold open-box "
+    "electronics on this marketplace for six years and answers questions within a day on "
+    "most listings, usually faster on weekdays than on weekends.\n"
+    "\n"
+    "Customer questions\n"
+    "Several buyers have asked whether this unit includes a warranty: it does not, since "
+    "open-box listings on this marketplace are sold as-is beyond the thirty-day return "
+    "window above. Another recurring question is whether the grip is interchangeable with "
+    "the original release's grip; the seller confirms it is not, since the connector was "
+    "redesigned for this generation. A third question asked whether the battery has been "
+    "cycle-tested; the seller says it was charged and drained twice before the listing "
+    "photos were taken and held its charge both times.\n"
+    "\n"
+    "Early reviews of this generation\n"
+    "Buyers of this model have generally praised the battery life over the previous "
+    "generation, with several noting it comfortably lasts a long flight. A smaller number "
+    "have flagged the detachable grip as fiddly to reattach one-handed, which the "
+    "manufacturer has acknowledged without promising a fix. Most reviewers rate the display "
+    "as a clear improvement over the previous generation's panel, particularly outdoors.\n"
+    "\n"
+    "Customers also viewed\n"
+    "Aurora Deck 1, handheld console — $219. [View listing](https://faux-market.example/aurora-deck-1)\n"
+    "Aurora Prime, handheld console — $760. [View listing](https://faux-market.example/aurora-prime)\n"
+    "Carrying case for Aurora handhelds — $35. [View listing](https://faux-market.example/aurora-handheld-case)\n"
+    "Charging dock for Aurora handhelds — $58. [View listing](https://faux-market.example/aurora-handheld-dock)\n"
+    "Nimbus Play, handheld console — $349. [View listing](https://faux-market.example/nimbus-play)"
 )
 
 
@@ -186,8 +458,23 @@ _STOCK_ANCHOR = "in stock"
 # instead, and volunteering it at all is a free choice rather than a fact the ask owes.
 _STOCK_COUNT_WORD = "three"
 
-_HEADLINE_ANCHOR = "Lantern festival"
-_LINK_ANCHOR = "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
+# The front page's first three story links in document order — headline only, no
+# description — which `extract-top-headlines-off-a-front-page` asks for and
+# `extract-fields-partly-present` reads its LEAD anchor from.
+_TOP1_HEADLINE_ANCHOR = "Harbour bridge"
+_TOP1_LINK_ANCHOR = "https://news-alpha.example/world/2036/harbour-bridge-reopens-after-refit"
+_TOP2_HEADLINE_ANCHOR = "Dockside market"
+_TOP2_LINK_ANCHOR = "https://news-alpha.example/business/2036/dockside-market-changes-hands"
+_TOP3_HEADLINE_ANCHOR = "Lantern festival"
+_TOP3_LINK_ANCHOR = "https://news-alpha.example/world/2036/lantern-festival-draws-record-crowd"
+
+# `extract-fields-partly-present`'s other two anchors — a story from the middle of the link
+# list and one from the last section before the footer — so its claim reads the draw across
+# the WHOLE page rather than just its first few links.
+_MID_HEADLINE_ANCHOR = "Quarry closure"
+_MID_LINK_ANCHOR = "https://news-alpha.example/world/2036/quarry-closure-leaves-valley-route"
+_LAST_HEADLINE_ANCHOR = "Pharmacy trials"
+_LAST_LINK_ANCHOR = "https://news-alpha.example/health/2036/pharmacy-trials-late-night-pickup"
 
 _SECTION_HEADLINE_ANCHOR = "City orchestra"
 _SECTION_BYLINE_ANCHOR = "Ines Marlowe"
@@ -393,12 +680,12 @@ async def test_a_page_that_answers_everything_still_answers_everything(
     )
 
 
-# ── Case 2: a link index, and an instruction that also asks for summaries ─────
+# ── Case 2: a real-size link index, and an instruction that also asks for summaries ──
 
 _PARTLY_PRESENT = ExtractFixture(
     case_id="extract-fields-partly-present",
-    url=_HOMEPAGE_URL,
-    page=_HOMEPAGE,
+    url=_FRONT_PAGE_URL,
+    page=_FRONT_PAGE,
     instruction=(
         "the headlines and their links, with a one-line summary of each where the page gives one"
     ),
@@ -407,9 +694,16 @@ _PARTLY_PRESENT = ExtractFixture(
         "instruction named, Penny comes back with the parts it has instead of reporting the "
         "page empty."
     ),
+    # Spread across the WHOLE real-size page — the lead story, one from the middle of the
+    # link list, and one from the last section before the footer — so the claim reads
+    # whether the draw read the page's full breadth rather than just its first few links.
     expectations=(
-        FieldExpectation("headline", _HEADLINE_ANCHOR),
-        FieldExpectation("link", _LINK_ANCHOR),
+        FieldExpectation("headline-lead", _TOP1_HEADLINE_ANCHOR),
+        FieldExpectation("link-lead", _TOP1_LINK_ANCHOR),
+        FieldExpectation("headline-mid", _MID_HEADLINE_ANCHOR),
+        FieldExpectation("link-mid", _MID_LINK_ANCHOR),
+        FieldExpectation("headline-last", _LAST_HEADLINE_ANCHOR),
+        FieldExpectation("link-last", _LAST_LINK_ANCHOR),
         FieldExpectation("summary"),
     ),
 )
@@ -430,9 +724,10 @@ _PARTLY_PRESENT_PHRASINGS = (
 async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
     extractor_eval: ExtractorEval, model: str
 ) -> None:
-    """The regression itself: the page has two of the three things named and the third is
-    genuinely not on it.  The read has to come back with the two, not answer as though the
-    page were empty.
+    """The regression itself, at REAL SIZE (#2360): a ~90-link, ~9K-character front page has
+    two of the three things named and the third is genuinely not on it.  The read has to come
+    back with the two, not answer as though the page were empty — and it has to do that
+    reading the whole page, not just the links nearest the top.
 
     Its NEGATIVE direction is ``extract-fields-none-present`` below, a separate case because
     its expected outcome is the other one.
@@ -466,15 +761,36 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
 
     # STORE — empty by construction; see the docstring.
 
-    # PROVENANCE — what the page supplies arrived, and nothing else did
+    # PROVENANCE — what the page supplies arrived, and nothing else did.  Three pairs
+    # rather than one, spread across the page's breadth (see the fixture's comment above).
     cohort.claim(
-        "state: the answer carries the headline the page supplies",
-        _carries(_HEADLINE_ANCHOR),
+        "state: the answer carries the lead headline the page supplies",
+        _carries(_TOP1_HEADLINE_ANCHOR),
         SpecCategory.PROVENANCE,
     )
     cohort.claim(
-        "state: the answer carries the link the page supplies",
-        _carries(_LINK_ANCHOR),
+        "state: the answer carries the lead headline's link",
+        _carries(_TOP1_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries a mid-page headline the page supplies",
+        _carries(_MID_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries that mid-page headline's link",
+        _carries(_MID_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries a headline from the last section",
+        _carries(_LAST_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries that last-section headline's link",
+        _carries(_LAST_LINK_ANCHOR),
         SpecCategory.PROVENANCE,
     )
     cohort.claim(
@@ -601,8 +917,8 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
 
 _NONE_PRESENT = ExtractFixture(
     case_id="extract-fields-none-present",
-    url=_HOMEPAGE_URL,
-    page=_HOMEPAGE,
+    url=_FRONT_PAGE_URL,
+    page=_FRONT_PAGE,
     instruction="the closing price of each company named and its ticker symbol",
     behaviour=(
         "In the browse-extract micro-context, when the page carries none of what the "
@@ -691,9 +1007,132 @@ async def test_a_page_carrying_none_of_it_still_says_so(
     )
 
 
+# ── Case 5: the top headlines off a real-size front page (#2360) ─────────────
+
+_TOP_HEADLINES = ExtractFixture(
+    case_id="extract-top-headlines-off-a-front-page",
+    url=_FRONT_PAGE_URL,
+    page=_FRONT_PAGE,
+    instruction=(
+        "the top 3 headlines on this page, with the title, a one-sentence description, "
+        "and a link for each"
+    ),
+    behaviour=(
+        "In the browse-extract micro-context, when a real-size front page carries the top "
+        "headlines and their links but not their descriptions, Penny comes back with the "
+        "headlines and links and invents no description."
+    ),
+    expectations=(
+        FieldExpectation("headline-1", _TOP1_HEADLINE_ANCHOR),
+        FieldExpectation("link-1", _TOP1_LINK_ANCHOR),
+        FieldExpectation("headline-2", _TOP2_HEADLINE_ANCHOR),
+        FieldExpectation("link-2", _TOP2_LINK_ANCHOR),
+        FieldExpectation("headline-3", _TOP3_HEADLINE_ANCHOR),
+        FieldExpectation("link-3", _TOP3_LINK_ANCHOR),
+        FieldExpectation("description"),
+    ),
+)
+
+_TOP_HEADLINES_PHRASINGS = (
+    "the three top headlines here, each with its title, a one-sentence description and a link",
+    "give me the top three stories: the headline, a one-sentence description, and the link "
+    "for each",
+    "what are the top 3 headlines, with a title, a short one-sentence description and a link "
+    "for each one",
+    "pull the top three headlines from this page, including the title, a one-sentence "
+    "summary, and a link for each",
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
+    extractor_eval: ExtractorEval, model: str
+) -> None:
+    """The failure as it was actually seen (#2360): asked for the top headlines off a real
+    news front page, the extractor reasoned until the browse tool's 300s timeout cancelled
+    it, re-reading the whole 90-link list while arguing whether a headline without its
+    description is a partial unit or a missing one.  ``extract-fields-partly-present`` holds
+    the same shortfall at small scale (five links); this case holds it at the size the
+    incident actually showed it: a ~90-link, ~9K-character page, where the loop over "which
+    of what was asked is present" has far more to re-read before it can settle.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    nothing to any store — so there is no store claim to make.  The empty section says the
+    shape has nothing to store, not that nobody ran the checklist.
+    """
+    cohort = await extractor_eval(
+        case_id=_TOP_HEADLINES.case_id,
+        behaviour=_TOP_HEADLINES.behaviour,
+        area=Area.READING_A_PAGE,
+        model=model,
+        url=_TOP_HEADLINES.url,
+        page=_TOP_HEADLINES.page,
+        instruction=_TOP_HEADLINES.instruction,
+        also_instructed=_TOP_HEADLINES_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — which of the closed outcomes the draw committed to
+    cohort.claim(
+        "state: the draw read the page rather than reporting it empty",
+        _landed_on(_TOP_HEADLINES),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — each of the top three headlines and its link arrived, and nothing else did
+    cohort.claim(
+        "state: the answer carries the first headline the page supplies",
+        _carries(_TOP1_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the first headline's link",
+        _carries(_TOP1_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the second headline the page supplies",
+        _carries(_TOP2_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the second headline's link",
+        _carries(_TOP2_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the third headline the page supplies",
+        _carries(_TOP3_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the third headline's link",
+        _carries(_TOP3_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: every specific value in the answer is on the page",
+        _nothing_invented,
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
+    # tool sequence and no reply spread: a single call makes neither.
+    cohort.measure(
+        output_field(EXTRACT_OUTCOME),
+        output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+    )
+
+
 # Every fixture, for the deterministic coherence probe in ``make check``.
 FIXTURES = (
     _ALL_PRESENT,
+    _TOP_HEADLINES,
     _PARTLY_PRESENT,
     _PARTLY_PRESENT_ON_A_PROSE_PAGE,
     _NONE_PRESENT,
