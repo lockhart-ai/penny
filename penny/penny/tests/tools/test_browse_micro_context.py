@@ -46,6 +46,7 @@ from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
 from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
+from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.micro_context import (
@@ -814,18 +815,16 @@ async def test_poisoned_draw_rerolls_only_its_own_context(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_raising_draw_ends_the_call_with_every_sibling_awaited(tmp_path):
-    """A transport failure inside ONE page's draw ends the whole call with THAT error
-    — the behaviour the sequential loop had — and leaves no sibling draw running
-    behind it (#1941).
+async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
+    """A transport failure inside ONE page's draw renders as THAT page's own
+    failure line, under its own header — and leaves every OTHER page's already-
+    drawn result intact (#2367).
 
-    ``asyncio.gather`` does not cancel siblings when a child raises, so the batch is
-    collected with ``return_exceptions=True`` and the earliest failing page re-raised.
-    By the time the error leaves the tool every draw has finished, so nothing is still
-    spending the backend (and writing its own ledger row) against a call that already
-    failed.  The sibling's ``asyncio.sleep(0)`` is a cooperative YIELD, not a wait: it
-    gives the loop the chance to resume the failed gather early, which is exactly what
-    would leave it orphaned."""
+    The old behaviour re-raised the earliest failing page and discarded the whole
+    call, including a sibling page that had already succeeded.  ``_extract_one_page``
+    now catches the draw's own ``Exception`` per page (never ``BaseException``, so a
+    genuine cancellation still propagates), so one transport failure costs only its
+    own page."""
     db = _make_db(tmp_path)
     finished: list[str] = []
 
@@ -844,10 +843,65 @@ async def test_a_raising_draw_ends_the_call_with_every_sibling_awaited(tmp_path)
         _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2}),
     )
 
-    with pytest.raises(LlmTimeoutError):
-        await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
 
-    assert finished == [_MARKER_2]  # awaited to completion, never orphaned
+    assert finished == [_MARKER_2]  # the sibling drew undisturbed
+    sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
+    assert len(sections) == 2
+    assert sections[0].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n")
+    assert "the extraction call errored: model call timed out" in sections[0]
+    assert sections[1].startswith(f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL_2}\n")
+    assert _EXTRACTED_VALUE_2 in sections[1]
+    # Page 2 still succeeded, so the call as a whole did too.
+    assert result.success is True
+
+
+# ── Timeout report (#2367) ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(tmp_path):
+    """When the executor's timeout cancels an in-flight browse, ``timeout_report``
+    names the page whose extraction finished first — with the SAME content the
+    model would have gotten without a timeout — and the page still waiting, by its
+    own stored handle (#2367).  Nothing claims more than actually happened: page 2's
+    draw never returns, so it is never named as extracted."""
+    db = _make_db(tmp_path)
+
+    class _StallsOnTheSecondPage:
+        async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
+            content = messages[-1].get("content", "")
+            if _MARKER_1 in content:
+                return LlmResponse(message=LlmMessage(role="assistant", content=_TAGGED_VALUE))
+            await asyncio.sleep(10)  # cancelled by the tool's own timeout, well short of 10s
+            raise AssertionError("page 2's draw should have been cancelled")
+
+    tool = _multi_extract_tool(
+        db,
+        cast(Any, _StallsOnTheSecondPage()),
+        _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2}),
+    )
+    tool.timeout = 0.2  # type: ignore[assignment]  # BrowseTool.timeout defaults to 300.0
+
+    registry = ToolRegistry()
+    registry.register(tool)
+    executor = ToolExecutor(registry, timeout=60.0)  # unused: the tool's own timeout wins
+
+    result = await executor.execute(
+        ToolCall(
+            tool="browse", arguments={"queries": [_PAGE_URL, _PAGE_URL_2], "extract": _INSTRUCTION}
+        )
+    )
+
+    assert result.success is False
+    assert result.narration == "You tried to use `browse` but it timed out."
+    # Page 1's finished extraction carries its full content, not just a label.
+    assert _PAGE_URL in result.message
+    assert _EXTRACTED_VALUE in result.message
+    # Page 2 is named only as still waiting — never as extracted or not-present.
+    assert _PAGE_URL_2 in result.message
+    assert "still waiting" in result.message.lower()
+    assert _EXTRACTED_VALUE_2 not in result.message
 
 
 def test_render_tool_call_names_the_micro_context_browse_step():

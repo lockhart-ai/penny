@@ -201,6 +201,22 @@ class Tool(ABC):
                 return {}
         return node
 
+    def timeout_report(self, timeout: float) -> str:
+        """The ``ToolResult.message`` body for a call that hit its timeout.
+
+        Called by ``ToolExecutor`` AFTER ``asyncio.wait_for`` has cancelled this
+        tool's call — so this reads only state the tool wrote to ITSELF before the
+        cancellation landed (the cancelled coroutine's own locals are gone by the
+        time this runs).  The default here is a fully generic sentence, true of any
+        tool whether or not it tracks partial progress.  A tool that accumulates its
+        own progress as it runs (browse) overrides this to report what finished
+        instead — the recovery guard this issue adds, as a fallback: no new timer,
+        the one that just fired is still the only bound (#2367)."""
+        return (
+            f"It timed out after {timeout}s. It may be slow or unavailable — try a "
+            f"simpler request, or proceed without it rather than retrying the same call."
+        )
+
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:
         """
@@ -499,9 +515,7 @@ class ToolExecutor:
             logger.error("Tool execution timeout: %s", tool_call.tool)
             return ToolResult(
                 narration=FRAMEWORK_NARRATION_TIMEOUT.format(tool_name=tool_call.tool),
-                message=f"It timed out after {effective_timeout}s. "
-                f"It may be slow or unavailable — try a simpler request (e.g. one URL or a "
-                f"narrower query), or proceed without it rather than retrying the same call.",
+                message=tool.timeout_report(effective_timeout),
                 success=False,
             )
         except Exception as e:

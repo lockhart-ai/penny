@@ -28,6 +28,27 @@ class SlowTool(Tool):
         return "completed"
 
 
+class ReportingTool(Tool):
+    """Test tool that tracks partial progress and overrides ``timeout_report``
+    (#2367) — pins the executor's hook mechanism itself, independent of any real
+    tool's own report wording."""
+
+    name = "reporting_tool"
+    description = "A tool that reports what it finished on a timeout"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self):
+        self.progress = "nothing yet"
+
+    async def execute(self, **kwargs):
+        self.progress = "read page 1"
+        await asyncio.sleep(10)
+        return "completed"  # pragma: no cover - never reached in the timeout test
+
+    def timeout_report(self, timeout: float) -> str:
+        return f"It timed out after {timeout}s. Progress so far: {self.progress}."
+
+
 class LongTimeoutTool(Tool):
     """Test tool with a per-tool timeout override."""
 
@@ -63,6 +84,28 @@ class TestToolTimeout:
         assert result.narration == "You tried to use `slow_tool` but it timed out."
         assert "timed out" in result.message.lower()
         assert "try a simpler request" in result.message
+        # The generic text is fully generic (#2367) — no browse-specific advice
+        # ("one URL or a narrower query") baked into the message every OTHER
+        # tool's timeout also uses.
+        assert "narrower query" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_timeout_asks_the_tool_for_a_report(self):
+        """The executor's timeout branch calls ``tool.timeout_report`` and uses
+        its return as the result message (#2367) — the recovery-guard hook a
+        tool overrides to report whatever it had finished, instead of the
+        framework's generic text."""
+        registry = ToolRegistry()
+        tool = ReportingTool()
+        registry.register(tool)
+
+        executor = ToolExecutor(registry, timeout=0.05)
+
+        tool_call = ToolCall(tool="reporting_tool", arguments={})
+        result = await executor.execute(tool_call)
+
+        assert result.success is False
+        assert result.message == "It timed out after 0.05s. Progress so far: read page 1."
 
     @pytest.mark.asyncio
     async def test_tool_completes_within_timeout(self):

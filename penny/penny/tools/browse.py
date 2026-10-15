@@ -122,6 +122,13 @@ _EXTRACT_UNAVAILABLE = (
     "Couldn't extract {instruction!r} — no extraction model is configured for this browse. "
     "{handle_clause}"
 )
+# A draw that RAISED (a transport failure, say) instead of returning a typed outcome
+# (#2367) — rendered like the other failure outcomes, under the page's own header, so
+# one page's draw error no longer discards every OTHER page's already-finished result.
+_EXTRACT_DRAW_ERROR = (
+    "Couldn't extract {instruction!r} from the page — the extraction call errored: "
+    "{error}. {handle_clause}"
+)
 # A FAILED extraction hands back the page's own links (#2141).  The page body never
 # enters the conversation when ``extract`` is set, so a failure that says only that it
 # failed leaves the model with no anchor for its next call — it re-searches, lands on
@@ -222,6 +229,17 @@ class BrowseTool(Tool):
         self._browse_provider: Callable[[], tuple[RequestFn, PermissionManager] | None] | None = (
             None
         )
+        # Progress toward THIS call's timeout report (#2367) — reset at the top of
+        # every ``execute()``, written to as the call proceeds so ``timeout_report``
+        # can read back whatever had finished when the executor's timeout cancelled
+        # us (the cancelled coroutine's own locals are gone by then; only state on
+        # ``self`` survives).  Per-instance, not per-call: two concurrent ``browse``
+        # calls on the same instance in one step would share this record — accepted
+        # for now (the model is steered toward one call per turn via the queries
+        # array), not guarded.
+        self._read_log: list[tuple[str, MemoryEntry | None]] = []
+        self._extract_log: list[tuple[str, str]] = []
+        self._extracting = False
 
     @property
     def description(self) -> str:  # type: ignore[override]
@@ -335,6 +353,7 @@ class BrowseTool(Tool):
         the fetched content goes to a fresh micro-context and only the typed
         result returns; otherwise the assembled sections return directly.
         """
+        self._read_log, self._extract_log, self._extracting = [], [], False
         args = BrowseArgs(**kwargs)
         cap = self._max_calls
         to_run, dropped = args.queries[:cap], args.queries[cap:]
@@ -345,6 +364,7 @@ class BrowseTool(Tool):
 
         stored = await self._append_pages_to_browse_results(page_sections)
         await self._store_media(captures)
+        self._record_read_log(page_sections, stored)
 
         if dropped:
             sections.append(self._dropped_section(cap, dropped))
@@ -356,11 +376,65 @@ class BrowseTool(Tool):
         # partial failure keeps ``success=True``: the model works from what succeeded.
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
         if args.extract is not None and not all_failed:
+            self._extracting = True
             return await self._extract_result(sections, stored, args.extract)
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
         )
+
+    def timeout_report(self, timeout: float) -> str:
+        """Override of ``Tool.timeout_report`` (#2367): what THIS call had
+        finished when the executor's timeout cancelled it, read off
+        ``self._read_log`` / ``self._extract_log`` — written to as the call
+        progressed, since the cancelled coroutine's own locals are gone by the
+        time this runs.  Nothing here claims more than those logs actually show:
+        no page is named as read, stored, or extracted unless it is IN one of
+        them.  Falls back to the generic default when nothing was read yet (a
+        cancellation before the first page came back has nothing to report)."""
+        if not self._read_log:
+            return super().timeout_report(timeout)
+        parts = [f"It timed out after {timeout}s, partway through. {self._read_clause()}"]
+        if self._extracting:
+            parts.append(self._extract_progress_clause())
+        return "\n\n".join(parts)
+
+    def _read_clause(self) -> str:
+        """The pages fetched before the timeout, each with its own stored handle
+        (or a note that it wasn't stored)."""
+        listed = "; ".join(
+            f"{label} ({self._entry_handle(entry) if entry else 'not stored'})"
+            for label, entry in self._read_log
+        )
+        return f"Read: {listed}."
+
+    def _extract_progress_clause(self) -> str:
+        """Which pages' extractions finished before the timeout — rendered with
+        their FULL content (the same section the model would have read without a
+        timeout), not just a label — and which pages were read but never got an
+        extraction result back."""
+        finished_labels = {label for label, _ in self._extract_log}
+        waiting = [label for label, _ in self._read_log if label not in finished_labels]
+        parts = []
+        if self._extract_log:
+            rendered = PennyConstants.SECTION_SEPARATOR.join(r for _, r in self._extract_log)
+            parts.append(f"Extraction finished for these pages:\n{rendered}")
+        if waiting:
+            parts.append("Still waiting on: " + "; ".join(waiting) + ".")
+        return "\n\n".join(parts)
+
+    def _record_read_log(self, page_sections: list[str], stored: list[MemoryEntry]) -> None:
+        """Record which pages were fetched and where each is stored, toward this
+        call's timeout report (#2367) — BEFORE the slow extract stage starts, so a
+        cancellation during extraction still leaves this much behind.  ``stored`` is
+        empty when nothing was stored (no db, or nothing to store) even though pages
+        were fetched; pad with ``None`` rather than mis-pairing a page with the
+        wrong handle."""
+        handles: list[MemoryEntry | None] = (
+            list(stored) if len(stored) == len(page_sections) else [None] * len(page_sections)
+        )
+        labels = [section.partition("\n")[0] for section in page_sections]
+        self._read_log = list(zip(labels, handles, strict=True))
 
     # ── Micro-context (extract) path ──────────────────────────────────────────
 
@@ -445,19 +519,25 @@ class BrowseTool(Tool):
 
     @staticmethod
     def _drawn_pages(drawn: list[tuple[str, bool] | BaseException]) -> list[tuple[str, bool]]:
-        """Every page the batch drew — or the FIRST failure, re-raised in page order.
+        """Every page the batch drew.
 
-        ``return_exceptions=True`` is what makes the concurrent batch faithful to the
-        sequential loop it replaces.  ``asyncio.gather`` does NOT cancel a raising
-        child's siblings, so without it one draw's transport failure (an ``LlmError``
-        the client raises once its retries are spent) would leave the rest of the
-        batch running unawaited — still spending the backend, still writing their own
-        ledger rows, their results dropped on the floor — while the tool had already
-        failed.  Awaiting the whole batch and then re-raising the EARLIEST failing
-        page keeps the observable behaviour exactly what it was (that page ends the
-        call, with its own error) and orphans nothing."""
+        ``_extract_one_page`` already turns an ordinary draw failure (a transport
+        error, say) into that page's own rendered failure instead of raising
+        (#2367), so nothing here should normally be an exception at all — this is
+        a defensive backstop for ``asyncio.gather`` handing back something
+        unexpected.  An ``Exception`` renders as a generic per-page failure rather
+        than discarding every other page's result, the same recovery
+        ``_extract_one_page`` applies.  A ``BaseException`` that is NOT an
+        ``Exception`` — ``CancelledError``, ``KeyboardInterrupt``, ``SystemExit`` —
+        keeps propagating rather than being rendered: those are never a page's
+        problem, they are the whole call (or process) ending, and the executor's
+        own timeout handling (or the interpreter) is what answers for them."""
         pages: list[tuple[str, bool]] = []
         for outcome in drawn:
+            if isinstance(outcome, Exception):
+                logger.exception("Unexpected error drawing a page", exc_info=outcome)
+                pages.append((f"Couldn't extract — the batch errored: {outcome}.", False))
+                continue
             if isinstance(outcome, BaseException):
                 raise outcome
             pages.append(outcome)
@@ -489,15 +569,47 @@ class BrowseTool(Tool):
         failure) plus this page's fetch handle.  Returns the rendered section and
         whether it was a successful read: NOT_PRESENT is a *successful read of an
         absent fact* (the page was fetched and read; the fact isn't there), so only
-        the failure outcomes (no usable tagged output / poison) report False."""
-        micro = await micro_context.extract(section, instruction, run_target=self._author)
+        the failure outcomes (no usable tagged output / poison / draw error) report
+        False.
+
+        A draw that RAISES (a transport failure, say) is caught HERE, per page
+        (#2367), rather than left to propagate out of the whole batch — deliberately
+        ``Exception``, never ``BaseException``, so a ``CancelledError`` (this call's
+        own 300s timeout firing, or an outer preemption) still propagates untouched.
+        Either way, the finished render is recorded to ``self._extract_log`` toward
+        this call's timeout report, BEFORE returning — so a page that finishes
+        before a later sibling's draw stalls out the whole tool's timeout has
+        already been captured."""
         stored = [entry] if entry is not None else []
-        body = self._render_micro_result(micro, instruction, stored, _links_clause(section))
-        succeeded = micro.outcome in (
-            MicroExtractOutcome.EXTRACTED,
-            MicroExtractOutcome.NOT_PRESENT,
+        links = _links_clause(section)
+        try:
+            micro = await micro_context.extract(section, instruction, run_target=self._author)
+        except Exception as exc:
+            body = self._render_draw_error(exc, instruction, stored, links)
+            succeeded = False
+        else:
+            body = self._render_micro_result(micro, instruction, stored, links)
+            succeeded = micro.outcome in (
+                MicroExtractOutcome.EXTRACTED,
+                MicroExtractOutcome.NOT_PRESENT,
+            )
+        rendered = self._under_page_header(section, body)
+        self._extract_log.append((section.partition("\n")[0], rendered))
+        return rendered, succeeded
+
+    def _render_draw_error(
+        self, error: Exception, instruction: str, stored: list[MemoryEntry], links: str
+    ) -> str:
+        """One page's own failure when its draw raised instead of returning a typed
+        outcome — rendered like the other failure outcomes: the page's own links as
+        the only anchor the next call has, plus the fetch handle (#2367).  This is
+        what stops a single raised draw from discarding every OTHER page's result,
+        which an un-caught raise out of this method used to do."""
+        handle_clause = self._handle_clause(stored)
+        failure = _EXTRACT_DRAW_ERROR.format(
+            instruction=instruction, error=error, handle_clause=handle_clause
         )
-        return self._under_page_header(section, body), succeeded
+        return f"{failure}{links}"
 
     def _render_micro_result(
         self,
