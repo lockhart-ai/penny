@@ -211,6 +211,17 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE,
 # part that is there) and WHERE the rest of the thought goes (one MISSING: line,
 # named together, before the value) — permission for the thing it was already
 # reaching for, not just another way of forbidding invention.
+#
+# ROUND 2 (#2360): the first round's own "before" run showed the MISSING: line
+# working — the undecidable partial/missing debate shrank — but left a page
+# asking for an unbounded list (every headline on a ~90-link front page, not a
+# fixed "top 3") still mostly timing out.  The new thinking traces showed a
+# DIFFERENT loop past that point: having drafted its full answer, the model
+# re-scanned the content to double-check it had not missed an item ("Wait,
+# I'll check if there's any other story. No.") — completeness anxiety, not the
+# partial/missing question #2360 opened on.  The closing sentence below is the
+# same lever again, plain words, aimed at this one new thing: permission to
+# commit to a single pass rather than verifying it twice.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -232,8 +243,10 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
     "was asked for. Never invent a value that is not in the content — when "
     f"something named is not there, say so on {EXTRACT_MISSING_TAG} (or {NOT_PRESENT_TAG} "
-    "when nothing is) instead of guessing it. Write nothing outside the value "
-    "itself — no preamble, no explanation, no restating the instruction."
+    "when nothing is) instead of guessing it. Read the content once, writing "
+    "each line as you reach it — you do not need to go back over it afterward to "
+    "double-check you found everything. Write nothing outside the value itself — "
+    "no preamble, no explanation, no restating the instruction."
 )
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"

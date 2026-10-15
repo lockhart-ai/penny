@@ -1057,7 +1057,14 @@ def test_micro_context_system_prompt_declares_multiline_contract():
     the model a place for the thing it kept wanting to say anyway: a MISSING: line naming,
     together and once, whatever the instruction named that the page does not carry at
     all — in plain words, with permission to give the part that IS there as well as the
-    prohibition on inventing the part that is not."""
+    prohibition on inventing the part that is not.
+
+    The closing sentence (round 2 of #2360's fix) answers a DIFFERENT loop the first
+    round's thinking traces showed on a real-size, unbounded list ask: past the
+    partial/missing decision, the model re-scanned an already-drafted item list to
+    double-check completeness ("Wait, I'll check if there's any other story. No.") —
+    permission to commit to one pass is the plain-words answer to that, the same lever
+    as the MISSING: line itself, not a second mechanism."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -1079,8 +1086,10 @@ def test_micro_context_system_prompt_declares_multiline_contract():
         "Use NOT_PRESENT:, on a single line, when the page carries NONE of what was "
         "asked for. Never invent a value that is not in the content — when something "
         "named is not there, say so on MISSING: (or NOT_PRESENT: when nothing is) "
-        "instead of guessing it. Write nothing outside the value itself — no preamble, "
-        "no explanation, no restating the instruction."
+        "instead of guessing it. Read the content once, writing each line as you reach "
+        "it — you do not need to go back over it afterward to double-check you found "
+        "everything. Write nothing outside the value itself — no preamble, no "
+        "explanation, no restating the instruction."
     )
 
 
