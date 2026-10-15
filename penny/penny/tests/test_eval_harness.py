@@ -4427,7 +4427,15 @@ def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> N
         sender="penny",
         content="seeded history is not this run's reply",
     )
-    assert outgoing_replies(db) == ["seeded history is not this run's reply"]
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.OUTGOING,
+        sender="penny",
+        content="this run's reply",
+    )
+    assert outgoing_replies(db) == [
+        "seeded history is not this run's reply",
+        "this run's reply",
+    ]
 
     observation = _observe_end_to_end(
         db,
@@ -4442,9 +4450,7 @@ def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> N
         seeded_replies=1,
     )
 
-    # No scripted turn ran here, so this run's own reply is empty — the point is that the
-    # seeded history contributed nothing to it either.
-    assert observation.reply == ""
+    assert observation.reply == "this run's reply"
 
 
 def test_a_structured_fields_unset_is_declared_only_where_its_observer_omits_it() -> None:
