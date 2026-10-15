@@ -51,6 +51,57 @@ so a floor under them adds nothing: the count is reported and a person reads it.
 run on its own is **run health**, which refuses a dead cohort, and a **variance ceiling**, which
 catches a rise.
 
+### A declared second kind: the end-to-end job case (#2375)
+
+Everything above is written for **one enactment, one entry condition, one model run** — a chat
+turn, a collector cycle seeded directly, or a micro-context call. The **end-to-end job case** is a
+declared exception to that, because it answers a question a single-edge case cannot: whether what
+one stage builds is what the next stage actually runs on. A chat case stops at the configured row;
+a collector case seeds a program directly and runs one cycle against it. Neither can tell a swap in
+how a routine is recorded or instantiated from a swap in Penny's behaviour.
+
+An end-to-end case drives **several SCRIPTED turns**, then the job those turns created through its
+**own real cycles**, in one sample:
+
+- **The turns are scripted, not forced.** Each wording's whole script — a cold ask, whatever a
+  routine still has to be taught or re-pointed through, the message giving the job its terms — is
+  written in advance, one turn per step, each turn worded to read sensibly against whatever Penny
+  actually said back to the one before it. The turn still drives her real reply; nothing about her
+  response is scripted or injected.
+- **The entry condition is still seeded** — the way every case's is: what the chat phase's world
+  holds when the script starts (an empty machine, or a routine already taught and running
+  elsewhere). What changes is that the round's own turns are **driven for real** rather than seeded
+  as an earlier turn already having happened, because the question is whether the round's own
+  output is the cycle's input.
+- **The job the script creates is found structurally**, never by a name the case expects — a
+  routine minted fresh names its own container, and a later variant may put the same ask's job on
+  a different collection entirely. The driver reads whichever collection the round's turns created
+  and scheduled, then runs ITS cycles. Where the script creates more than one job, every created
+  job's cycles run, and a claim reads the **union** of what they hold and sent.
+- **Claims read only:** what the store's entries hold, what reached the user (chat replies and
+  collector notifications together), a created job's own terms — cadence, end, whether it tells
+  the user — and provenance. They never read which collection a job lands on, a routine's shape or
+  bound values, or which conversation-machine states the script passed through on the way. A later
+  variant that changes any of those is still measured by the same case.
+- **A failure at an early stage fails the later claims too**, by construction — a script that never
+  creates a job has no cycles to run, and a cycle run against the wrong world answers nothing. The
+  sample's own **walk** — the conversation machine's moves, then every created job's own ordered
+  cycle script (`wrote` / `quiet` / `…+told`) — is what a reader opens to see which stage broke.
+
+**Single-edge cases keep their existing rule, unchanged.** `chat_eval` and `collector_cycles_eval`
+still drive one enactment each, with the entry condition seeded; nothing above licenses a chat or
+collector case to script multiple turns or multiple cycles into one body.
+
+**The driver is `end_to_end_eval`** (`penny/tests/eval/conftest.py`): a case passes `arms` — five
+scripted wordings of the whole conversation, an `EndToEndArm` each, carrying its own seed, its own
+chat-phase `World` and its own per-cycle pages. `SampleObservation.cycles` (a list of
+`CycleSnapshot`, `utils/cohort.py`) carries what every created job's cycles left, read beside the
+chat-phase fields a single-edge case already reads. The job-terms claims a case makes against it —
+`Cohort.assert_a_new_job_fires_every` / `_notifies` / `_ends_when_asked` (`utils/assertions.py`) —
+read every mechanism **born this run**, existentially: the claim is that a job she created has the
+asked terms, never that she created exactly one, since "exactly one" would assert a restraint the
+model was never asked for.
+
 ## 2 · Section A — what an assertion is
 
 **An assertion is a statement expected to be strictly true of the run.** At the end of a run each

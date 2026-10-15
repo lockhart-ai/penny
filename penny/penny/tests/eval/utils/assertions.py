@@ -403,6 +403,41 @@ class Cohort:
             SpecCategory.STORE,
         )
 
+    def assert_a_new_job_fires_every(self, seconds: int) -> None:
+        """A job THIS SAMPLE CREATED fires as often as the ask said.
+
+        Unlike :meth:`assert_the_job_fires_every`, no container is named: an end-to-end case
+        drives a job the round mints fresh, under a name the model's own naming draw chooses
+        (#2375), so a case that expected a specific name would be asserting that naming draw
+        rather than the terms.  Read structurally instead — every mechanism BORN this run,
+        which is a registry fact rather than a guess — so the claim holds whichever name the
+        round picked, and fails only when none of them carries the asked cadence."""
+        self.claim(
+            "state: a job she created fires on the cadence the ask gave",
+            _a_new_job_fires_every(seconds),
+            SpecCategory.STORE,
+        )
+
+    def assert_a_new_job_notifies(self) -> None:
+        """A job this sample created says something when what it watches moves — the same
+        reading as :meth:`assert_the_job_notifies`, over every mechanism born this run rather
+        than one named in advance."""
+        self.claim(
+            "state: a job she created tells them when it changes",
+            _a_new_job_notifies(),
+            SpecCategory.STORE,
+        )
+
+    def assert_a_new_job_ends_when_asked(self, asked: AskedEnd) -> None:
+        """A job this sample created ends when the ask said to, on the user's own clock — the
+        same reading as :meth:`assert_the_job_ends_when_asked`, over every mechanism born this
+        run rather than one named in advance."""
+        self.claim(
+            "state: a job she created stops when the ask said to",
+            _a_new_job_ends_when_asked(asked),
+            SpecCategory.STORE,
+        )
+
     def assert_the_reply_answers_the_ask(self) -> None:
         """The reply states what the ask asked for, in the world's own terms.
 
@@ -644,6 +679,63 @@ def _ends_when_asked(container: str, asked: AskedEnd) -> WorldClaim:
         if job is None:
             return False, f"{container!r} was never stood up"
         return job_ends_as_asked(job, asked, turn_at=sample.turn_at, timezone=sample.timezone)
+
+    return answer
+
+
+def _new_jobs(sample: SampleObservation) -> list[MechanismRecord]:
+    """Every mechanism BORN this sample — structurally, off the registry's own before/after
+    read, never by a name the case expects.  An end-to-end round names its own container (the
+    routine it mints names it, or a later variant puts the same routine's job somewhere else
+    entirely), so a claim that found the job by name would be asserting that naming draw
+    rather than the terms it ran on (#2375)."""
+    return [one for one in sample.mechanisms if one.born_this_run]
+
+
+def _a_new_job_fires_every(seconds: int) -> WorldClaim:
+    """At least one job born this run fires ``seconds`` apart.  Existential over the created
+    jobs: the claim is that the job she stood up has the right cadence, not that she created
+    exactly one — a round that minted a second, unrelated mechanism is a different question
+    (measured, never asserted; #2375)."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        created = _new_jobs(sample)
+        drawn = {one.name: cadence_seconds(one.schedule) for one in created if one.schedule}
+        return (
+            seconds in drawn.values(),
+            f"created {sorted(drawn)}, firing every {list(drawn.values())}, wanted {seconds}s",
+        )
+
+    return answer
+
+
+def _a_new_job_notifies() -> WorldClaim:
+    """At least one job born this run says something when what it watches moves."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        created = _new_jobs(sample)
+        notifying = [one.name for one in created if one.notifies]
+        return bool(notifying), f"created {[one.name for one in created]}, notifying {notifying}"
+
+    return answer
+
+
+def _a_new_job_ends_when_asked(asked: AskedEnd) -> WorldClaim:
+    """At least one job born this run ends when the ask said to, on the user's own clock."""
+
+    def answer(sample: SampleObservation, _world: World) -> Answer:
+        created = _new_jobs(sample)
+        if not created:
+            return False, "no job was created"
+        outcomes = [
+            job_ends_as_asked(one, asked, turn_at=sample.turn_at, timezone=sample.timezone)
+            for one in created
+        ]
+        ok = any(passed for passed, _ in outcomes)
+        detail = "; ".join(
+            f"{one.name}: {reason}" for one, (_, reason) in zip(created, outcomes, strict=True)
+        )
+        return ok, detail
 
     return answer
 

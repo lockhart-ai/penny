@@ -150,6 +150,31 @@ class StoredEntry(BaseModel):
         return " ".join(part for part in (self.key, self.content) if part)
 
 
+class CycleSnapshot(BaseModel):
+    """ONE collector cycle an end-to-end sample drove, against ONE job the round created.
+
+    An end-to-end case drives a job's own real cycles after a scripted conversation stands it
+    up — and the round may create more than one job (an over-broad ask, a model that forked
+    the routine), so a sample carries a LIST of these rather than one job's cycles bundled
+    into the sample the way a pure-collector case does.  ``job`` names which created job this
+    cycle ran against — read for bookkeeping only, never compared to an expected name: WHICH
+    collection a job lands on is not a claim an end-to-end case makes.  ``index`` is this
+    cycle's position among the arm's own pages, so a claim about "after the second cycle" can
+    find every job's second cycle without caring how many jobs there were.
+
+    A claim reads the UNION across every snapshot at one ``index`` — see
+    ``Cohort._new_jobs_held_through``/``_new_jobs_sent_through`` in ``assertions.py`` — so a
+    round that (incorrectly) forked two jobs is still readable as "what ended up stored and
+    sent", which is exactly the question an end-to-end claim asks."""
+
+    job: str
+    index: int
+    held: list[StoredEntry] = Field(default_factory=list)
+    sent: list[str] = Field(default_factory=list)
+    outcome: str | None = None
+    reason: str | None = None
+
+
 class StoredImage(BaseModel):
     """One image the media store holds — what the row SAYS it is, and where it came from.
 
@@ -431,6 +456,13 @@ class SampleObservation(BaseModel):
     # because "told once" and "told twice" are different findings and a joined blob cannot
     # tell them apart.  ``reply`` above is the same messages as one text, for reply spread.
     notifications: list[str] = Field(default_factory=list)
+    # ── What the created job's OWN cycles left, for an end-to-end sample ──────
+    #
+    # Every real collector cycle this sample drove AFTER its scripted turns stood a job up —
+    # one snapshot per (job, cycle index).  A pure chat or pure collector sample leaves this
+    # empty; an end-to-end sample's job-terms and store claims read it instead of ``held``/
+    # ``notifications``, which stay at their chat-phase values (#2375).
+    cycles: list[CycleSnapshot] = Field(default_factory=list)
 
     @property
     def stored_text(self) -> str:
