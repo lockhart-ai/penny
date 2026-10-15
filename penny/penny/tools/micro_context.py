@@ -219,9 +219,16 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE,
 # DIFFERENT loop past that point: having drafted its full answer, the model
 # re-scanned the content to double-check it had not missed an item ("Wait,
 # I'll check if there's any other story. No.") — completeness anxiety, not the
-# partial/missing question #2360 opened on.  The closing sentence below is the
-# same lever again, plain words, aimed at this one new thing: permission to
-# commit to a single pass rather than verifying it twice.
+# partial/missing question #2360 opened on.  Round 2's one-pass sentence ("Read
+# the content once...") did not help in round 2's own run, so it is gone.
+#
+# ROUND 3 (#2360): round 2's run showed the timeout loop move past the re-scan
+# into arguing about the OUTPUT FORMAT of one item — whether headline, link and
+# summary go on one line or two — because the prompt said "a list (put one item
+# per line)" while an item has several parts.  The prompt now says what one
+# item's line IS (its parts, in the order the instruction names them, " — "
+# separated; a part the page does not give is left off the line) instead of
+# leaving the shape of an item for the model to argue about.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -232,7 +239,9 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     f"{render_line(_NOT_PRESENT_LINE)}\n"
     f"After {EXTRACTED_TAG}, the extracted value is EVERYTHING that follows — as "
     "long as the instruction requires: a single value, one or more paragraphs, or "
-    "a list (put one item per line).\n"
+    "a list. In a list, each item is one line holding that item's parts in the "
+    'order the instruction names them, separated by " — "; a part the page does '
+    "not give for that item is simply left off that item's line.\n"
     "An instruction often names several things at once, and a page rarely carries "
     f"all of them. When the page carries at least one, write {EXTRACTED_TAG} and "
     "give exactly what it has for each thing named — a thing that is only partly "
@@ -243,10 +252,8 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
     "was asked for. Never invent a value that is not in the content — when "
     f"something named is not there, say so on {EXTRACT_MISSING_TAG} (or {NOT_PRESENT_TAG} "
-    "when nothing is) instead of guessing it. Read the content once, writing "
-    "each line as you reach it — you do not need to go back over it afterward to "
-    "double-check you found everything. Write nothing outside the value itself — "
-    "no preamble, no explanation, no restating the instruction."
+    "when nothing is) instead of guessing it. Write nothing outside the value "
+    "itself — no preamble, no explanation, no restating the instruction."
 )
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"

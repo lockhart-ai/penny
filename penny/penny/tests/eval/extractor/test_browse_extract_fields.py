@@ -549,7 +549,7 @@ def _nothing_invented(sample: SampleObservation, _world: World) -> Answer:
     return not invented, f"not on the page: {invented}"
 
 
-def _names_the_shortfall(fixture: ExtractFixture) -> WorldClaim:
+def _names_the_shortfall(fixture: ExtractFixture, words: tuple[str, ...]) -> WorldClaim:
     """A claim that the draw's stated shortfall (#2360) names what the page lacks — every
     ``FieldExpectation`` this fixture declares with NO anchor, which is what was asked for
     and is genuinely absent from the page.
@@ -559,18 +559,23 @@ def _names_the_shortfall(fixture: ExtractFixture) -> WorldClaim:
     correct draw states, so a case that enlarges or narrows what the page lacks moves this
     claim with it rather than leaving it to drift out of sync.
 
-    Compared through the same ``spoken_form`` fold ``_carries`` uses, against the FIELD
-    NAME itself (``"summary"``, ``"description"``, ``"published time"``) — the word the
-    fixture's own instruction already asks for, so a draw that echoes the ask's own
-    vocabulary back passes without the claim inventing a second phrasing to match."""
+    Compared through the same ``spoken_form`` fold ``_carries`` uses, but against the
+    WORDS the case's OWN five wordings (the instruction and its phrasings) use for that
+    absent part, not one field name: the sample's wording is the ask the model read, and
+    the MISSING line it writes echoes whichever of those wordings it was given ("summary"
+    in one arm, "the time it was posted" in another), so the claim passes when the line
+    carries ANY of the case's words and fails otherwise — strictly true/false, no fuzzy
+    match.  Every fixture this claim serves declares exactly one absent expectation, so
+    ``words`` describes that one part; a fixture that ever declares two needs its own
+    per-field words."""
     absent = [one.field for one in fixture.expectations if not one.anchor]
 
     def answer(sample: SampleObservation, _world: World) -> Answer:
         missing = sample.field(EXTRACT_MISSING)
         named = bool(missing) and all(
-            spoken_form(field) in spoken_form(missing) for field in absent
+            any(spoken_form(word) in spoken_form(missing) for word in words) for _field in absent
         )
-        return named, f"stated shortfall does not name {absent}: {missing!r}"
+        return named, f"stated shortfall does not name any of {list(words)}: {missing!r}"
 
     return answer
 
@@ -736,6 +741,11 @@ _PARTLY_PRESENT = ExtractFixture(
     ),
 )
 
+# What the five wordings (the instruction and `_PARTLY_PRESENT_PHRASINGS` below) call the
+# part the page lacks — every one of them says "summary", so that is the word the MISSING
+# line echoes back on this case (#2360 round 3).
+_PARTLY_PRESENT_SHORTFALL_WORDS = ("summary",)
+
 # Two of the five hedge ("where the page gives one", "if there is one") and three do not, which
 # is deliberate: whether the answer degrades per field is decided by what the PAGE carries,
 # never by whether the instruction was worded to expect a gap.  Pooling both wordings into one
@@ -828,7 +838,7 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
     )
     cohort.claim(
         "state: the stated shortfall names the summaries the page does not give",
-        _names_the_shortfall(_PARTLY_PRESENT),
+        _names_the_shortfall(_PARTLY_PRESENT, _PARTLY_PRESENT_SHORTFALL_WORDS),
         SpecCategory.PROVENANCE,
     )
 
@@ -867,6 +877,19 @@ _PARTLY_PRESENT_ON_A_PROSE_PAGE = ExtractFixture(
         FieldExpectation("byline", _SECTION_BYLINE_ANCHOR),
         FieldExpectation("published time"),
     ),
+)
+
+# What the five wordings (the instruction and `_PROSE_PAGE_PHRASINGS` below) call the part
+# the page lacks, in their own words: "the published time for each story", "when it was
+# published", "its publication time", "the times they went up", "the time it was posted".
+# The MISSING line echoes whichever wording the sample was given (#2360 round 3), so the
+# claim reads any of these rather than one field name.
+_PROSE_PAGE_SHORTFALL_WORDS = (
+    "published time",
+    "when it was published",
+    "publication time",
+    "times they went up",
+    "time it was posted",
 )
 
 _PROSE_PAGE_PHRASINGS = (
@@ -935,7 +958,7 @@ async def test_a_prose_section_front_short_of_one_thing_still_reads(
     )
     cohort.claim(
         "state: the stated shortfall names the published time the page does not give",
-        _names_the_shortfall(_PARTLY_PRESENT_ON_A_PROSE_PAGE),
+        _names_the_shortfall(_PARTLY_PRESENT_ON_A_PROSE_PAGE, _PROSE_PAGE_SHORTFALL_WORDS),
         SpecCategory.PROVENANCE,
     )
 
@@ -1075,6 +1098,12 @@ _TOP_HEADLINES = ExtractFixture(
     ),
 )
 
+# What the five wordings (the instruction and `_TOP_HEADLINES_PHRASINGS` below) call the
+# part the page lacks: four say "description", the last says "a one-sentence summary" —
+# the MISSING line echoes whichever wording the sample was given (#2360 round 3), so the
+# claim reads any of these rather than one field name.
+_TOP_HEADLINES_SHORTFALL_WORDS = ("description", "summary")
+
 _TOP_HEADLINES_PHRASINGS = (
     "the three top headlines here, each with its title, a one-sentence description and a link",
     "give me the top three stories: the headline, a one-sentence description, and the link "
@@ -1163,7 +1192,7 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
     )
     cohort.claim(
         "state: the stated shortfall names the descriptions the page does not give",
-        _names_the_shortfall(_TOP_HEADLINES),
+        _names_the_shortfall(_TOP_HEADLINES, _TOP_HEADLINES_SHORTFALL_WORDS),
         SpecCategory.PROVENANCE,
     )
 

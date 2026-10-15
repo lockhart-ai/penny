@@ -1059,12 +1059,15 @@ def test_micro_context_system_prompt_declares_multiline_contract():
     all — in plain words, with permission to give the part that IS there as well as the
     prohibition on inventing the part that is not.
 
-    The closing sentence (round 2 of #2360's fix) answers a DIFFERENT loop the first
-    round's thinking traces showed on a real-size, unbounded list ask: past the
-    partial/missing decision, the model re-scanned an already-drafted item list to
-    double-check completeness ("Wait, I'll check if there's any other story. No.") —
-    permission to commit to one pass is the plain-words answer to that, the same lever
-    as the MISSING: line itself, not a second mechanism."""
+    Round 2 of #2360's fix answered a DIFFERENT loop the first round's thinking traces
+    showed on a real-size, unbounded list ask: past the partial/missing decision, the
+    model re-scanned an already-drafted item list to double-check completeness ("Wait,
+    I'll check if there's any other story. No."). Round 3 replaces the list-format
+    aside: between drafts the model argued about the OUTPUT FORMAT of one item — whether
+    headline, link and summary go on one line or two — because the prompt said "a list
+    (put one item per line)" while an item has several parts. The prompt now says what
+    one item's line IS (its parts, in the order the instruction names them, " — "
+    separated) instead of leaving the shape of an item to argue about."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -1075,7 +1078,9 @@ def test_micro_context_system_prompt_declares_multiline_contract():
         "NOT_PRESENT: <one short line naming what is missing>\n"
         "After EXTRACTED:, the extracted value is EVERYTHING that follows — as "
         "long as the instruction requires: a single value, one or more paragraphs, or "
-        "a list (put one item per line).\n"
+        "a list. In a list, each item is one line holding that item's parts in the "
+        'order the instruction names them, separated by " — "; a part the page does '
+        "not give for that item is simply left off that item's line.\n"
         "An instruction often names several things at once, and a page rarely carries "
         "all of them. When the page carries at least one, write EXTRACTED: and give "
         "exactly what it has for each thing named — a thing that is only partly on the "
@@ -1086,10 +1091,8 @@ def test_micro_context_system_prompt_declares_multiline_contract():
         "Use NOT_PRESENT:, on a single line, when the page carries NONE of what was "
         "asked for. Never invent a value that is not in the content — when something "
         "named is not there, say so on MISSING: (or NOT_PRESENT: when nothing is) "
-        "instead of guessing it. Read the content once, writing each line as you reach "
-        "it — you do not need to go back over it afterward to double-check you found "
-        "everything. Write nothing outside the value itself — no preamble, no "
-        "explanation, no restating the instruction."
+        "instead of guessing it. Write nothing outside the value itself — no preamble, "
+        "no explanation, no restating the instruction."
     )
 
 
