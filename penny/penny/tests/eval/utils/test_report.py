@@ -108,6 +108,88 @@ def test_clean_pass_folds_whole_with_its_own_sequence_and_micro_context() -> Non
     )
 
 
+def test_an_end_to_end_sample_renders_each_cycle_as_its_own_step() -> None:
+    """An end-to-end sample's collector cycles render as STEPS of their own (#2375), in order,
+    after the chat steps — each holding only its own events.
+
+    Everything after the last user turn used to fold into that turn's step, so the cycles'
+    browse calls, writes and their notify-composer draw sat inside ``step 3 · 👤`` out of
+    order, and a reader could not see where one cycle ended and the next began. A ``CYCLE``
+    event opens a ``cycle N · ⏱ | <description> |`` table; the chat's own reply stays in the
+    step that produced it; a check anchored inside a cycle sits on that cycle's step."""
+    events = [
+        report.Event(report.EventKind.USER, "watch this page and tell me when the price moves"),
+        report.Event(report.EventKind.CALL, 'browse({"queries":["x"]})', thinking="read the page"),
+        report.Event(report.EventKind.RESULT, "You opened the page (browse result) · $129"),
+        report.Event(report.EventKind.REPLY, "Watching it — I'll tell you when it moves.", ""),
+        report.Event(report.EventKind.CYCLE, "browse, collection_write"),
+        report.Event(
+            report.EventKind.CALL, 'browse({"queries":["x"]})', thinking="check the price"
+        ),
+        report.Event(report.EventKind.RESULT, "You opened the page (browse result) · $109"),
+        report.Event(
+            report.EventKind.CALL, 'collection_write({"key":"price"})', thinking="the price moved"
+        ),
+        report.Event(report.EventKind.RESULT, "You saved the entry (collection_write result)"),
+        report.Event(
+            report.EventKind.MICRO_IN, "The job just ran on its own.", context="notify-composer"
+        ),
+        report.Event(
+            report.EventKind.MICRO_OUT,
+            "MESSAGE: the price moved to $109",
+            thinking="tell them",
+            context="notify-composer",
+        ),
+        report.Event(report.EventKind.CYCLE, "browse"),
+        report.Event(report.EventKind.CALL, 'browse({"queries":["x"]})', thinking="check again"),
+        report.Event(report.EventKind.RESULT, "You opened the page (browse result) · $109"),
+    ]
+    checks = [
+        report.CheckView(
+            "C1", "the cycle wrote the reading", "spine", True, False, True, anchor_index=7
+        ),
+    ]
+    banner = report.render_banner(passed=True, duration_s=60, calls=8)
+    sample = report.build_sample(
+        number=1,
+        banner=banner,
+        events=events,
+        checks=checks,
+        run_close_score="1/1",
+    )
+    assert report.render_sample(sample) == (
+        "<details><summary>sample 1 — ✅ pass · 60s · 8 calls</summary>\n"
+        "\n"
+        '| step 1 · 👤 | "watch this page and tell me when the price moves" |  |\n'
+        "|---|---|---|\n"
+        "| 💭 | read the page |  |\n"
+        '| actual | 🔧 browse({"queries":["x"]}) |  |\n'
+        "| actual | 📥 You opened the page (browse result) · $129 |  |\n"
+        "| actual | 🤖 Watching it — I'll tell you when it moves. |  |\n"
+        "\n"
+        "| cycle 1 · ⏱ | browse, collection_write | ✅ |\n"
+        "|---|---|---|\n"
+        "| expected | C1 [spine]⚖ the cycle wrote the reading |  |\n"
+        "| 💭 | check the price |  |\n"
+        '| actual | 🔧 browse({"queries":["x"]}) |  |\n'
+        "| actual | 📥 You opened the page (browse result) · $109 |  |\n"
+        "| 💭 | the price moved |  |\n"
+        '| actual | 🔧 collection_write({"key":"price"}) | ✅ C1 |\n'
+        "| actual | 📥 You saved the entry (collection_write result) |  |\n"
+        "| actual | 🧩 notify-composer ← user turn: The job just ran on its own. |  |\n"
+        "| 💭 | thinking (notify-composer) — 9 chars: tell them |  |\n"
+        "| actual | 🧩 notify-composer → MESSAGE: the price moved to $109 |  |\n"
+        "\n"
+        "| cycle 2 · ⏱ | browse |  |\n"
+        "|---|---|---|\n"
+        "| 💭 | check again |  |\n"
+        '| actual | 🔧 browse({"queries":["x"]}) |  |\n'
+        "| actual | 📥 You opened the page (browse result) · $109 |  |\n"
+        "\n"
+        "</details>"
+    )
+
+
 def test_failed_sample_with_nudge_run_close_and_na() -> None:
     """A failure folds whole under its banner too (#1753): a recovery nudge renders ``⚠ recovery
     event`` inside its step, the failed anchor verdict carries its rationale + cause, and whole-run

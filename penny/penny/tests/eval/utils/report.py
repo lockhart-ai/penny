@@ -88,6 +88,11 @@ CELL_SEPARATOR = " | "
 # What a STEP's header row opens with: the seam ``body_blocks`` cuts on, and what counting a
 # sample's turns counts.
 STEP_ROW_OPENS = f"{ROW_OPENS}step "
+# What a COLLECTOR CYCLE's header row opens with (#2375): an end-to-end sample's cycles render
+# as steps of their own after the chat steps, each opening on this seam instead of borrowing
+# the user turn's.  The seam is a legal cut point for ``body_blocks`` the same way a step's is.
+CYCLE_ROW_OPENS = f"{ROW_OPENS}cycle "
+CYCLE_GLYPH = "⏱"
 
 RUN_CLOSE_LABEL = "run-close"
 RUN_CLOSE_TITLE = "whole-conversation contracts"
@@ -289,24 +294,36 @@ def _thinking_label(context: str, chars: int) -> str:
 class Step:
     """One conversational step: a user turn opens it, then its expected/💭/actual/note rows.
     ``verdict`` is the header's step-level roll-up (✅ all its checks passed · ❌ one failed ·
-    ✅→❌ a flip · blank for a step with no scored checks)."""
+    ✅→❌ a flip · blank for a step with no scored checks).
+
+    A COLLECTOR CYCLE is a step too (#2375) — ``cycle`` marks the ones that open on a cycle
+    rather than a user turn: ``user_message`` then carries the cycle's short description, and
+    the header reads ``cycle N · ⏱ | <description> |`` — N counting CYCLES from 1
+    (``cycle_number``), not steps — so an end-to-end sample's cycles render apart from the
+    turns that commissioned them."""
 
     number: int
     user_message: str
     verdict: str
     rows: list[Row]
+    cycle: bool = False
+    cycle_number: int = 0
 
     def render(self) -> str:
         """A step opens on its user turn — or says it had none, rather than quoting nothing.
 
         The opening step of a seeded round has no user message (the round was laid down before
         the measured turn), and `| step 1 · 👤 | "" |` renders that as a turn where the user said
-        the empty string."""
-        if self.user_message.strip():
+        the empty string.  A cycle step opens on its description instead."""
+        if self.cycle:
+            opener = f"{CYCLE_GLYPH} | {escape_cell(self.user_message)}"
+        elif self.user_message.strip():
             opener = f'{ACTOR_USER} | "{escape_cell(self.user_message)}"'
         else:
             opener = f"| {NO_USER_TURN}"
-        header = f"{STEP_ROW_OPENS}{self.number} · {opener} | {self.verdict} |"
+        opens = CYCLE_ROW_OPENS if self.cycle else STEP_ROW_OPENS
+        shown = self.cycle_number if self.cycle else self.number
+        header = f"{opens}{shown} · {opener} | {self.verdict} |"
         return "\n".join([header, TABLE_DIVIDER, *[row.render() for row in self.rows]])
 
 
@@ -1776,15 +1793,18 @@ SAMPLE_BLOCK_START = (
 # THE SEAM IS THE STEP.  A step is already the body's unit of composition and already reads
 # alone: a user turn and everything it produced, header row and all.  Cutting anywhere
 # inside one would split a markdown table; cutting between two loses nothing, because
-# nothing spans them.  (A cycle would be the other candidate, and it is not available here:
-# this module renders transcripts and knows steps, never what a collector cycle is.)
+# nothing spans them.  (A collector cycle is a step too now (#2375), so its table cuts the
+# same way — but the seam has never needed to know that; it reads the row's own opener.)
 #
 # Both standing rules survive verbatim.  NOTHING IS TRUNCATED — every block appears exactly
 # once, in order, and concatenating the parts' bodies reproduces the single fold's body
 # byte for byte (asserted by ``test_report.py``).  And when one STEP alone exceeds the budget
 # there is no seam inside it, so this stops short and hands the fold to the reduction below
 # (#2135) — which is lossy, states that it is, and runs only where the lossless seam cannot.
-_BODY_BLOCK_START = rf"(?:{re.escape(STEP_ROW_OPENS)}|{re.escape(ROW_OPENS)}{RUN_CLOSE_LABEL} )"
+_BODY_BLOCK_START = (
+    rf"(?:{re.escape(STEP_ROW_OPENS)}|{re.escape(CYCLE_ROW_OPENS)}"
+    rf"|{re.escape(ROW_OPENS)}{RUN_CLOSE_LABEL} )"
+)
 _BODY_BOUNDARY = re.compile(rf"\n\n(?={_BODY_BLOCK_START})")
 
 # What a part's banner gains so a reader knows the sample continues.  It rides INSIDE the
@@ -2250,11 +2270,16 @@ class EventKind(StrEnum):
     the instruction + page content into the extraction sub-model; ``MICRO_OUT`` is its extracted
     value.
 
+    ``CYCLE`` also opens a step (#2375) — a collector cycle's own step, its body the cycle's
+    short header description. It renders no ``actual`` row of its own; the events that follow it
+    are that cycle's.
+
     ``REPLY`` is text the user RECEIVED; ``ASIDE`` is text that reached nobody — the same
     distinction the delivered set already draws, given its own mark so a reader is not left
     inferring it from which fixture they happen to be reading."""
 
     USER = "user"
+    CYCLE = "cycle"
     CALL = "call"
     RESULT = "result"
     REPLY = "reply"
@@ -2274,6 +2299,9 @@ _ACTOR_GLYPH = {
     EventKind.MICRO_OUT: ACTOR_MICRO,
 }
 _ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.ASIDE, EventKind.MICRO_OUT})
+# The events that OPEN a step rather than rendering as one of its rows: a user turn, and a
+# collector cycle (#2375).
+_STEP_OPENERS = frozenset({EventKind.USER, EventKind.CYCLE})
 
 # The micro-context direction arrow the renderer puts after the actor label (#1759), so the role
 # vocabulary is single-sourced here and the ``MICRO_IN``/``MICRO_OUT`` event body carries only its
@@ -2405,7 +2433,8 @@ def build_sample(
 ) -> SampleTranscript:
     """Assemble a sample from its extracted events + resolved checks (the pure builder).
 
-    Steps segment on ``USER`` events. A check anchored to an event renders its ``expected`` row
+    Steps segment on ``USER`` and ``CYCLE`` events (a collector cycle opens a step of its own,
+    #2375). A check anchored to an event renders its ``expected`` row
     atop that event's step and its verdict on that event's ``actual`` row; a check with no anchor
     event falls to the run-close table. A nudge event renders ``⚠ recovery event``. Every sample
     folds whole at render (#1753) — the builder no longer decides fold-or-not. ``banner`` is
@@ -2426,14 +2455,18 @@ def build_sample(
 
 
 def _build_steps(events: list[Event], by_event: dict[int, list[CheckView]]) -> list[Step]:
-    """Segment the event stream into steps (a ``USER`` event opens each), attaching every event's
-    verdicts to its row and every step's placed checks' ``expected`` rows atop it."""
+    """Segment the event stream into steps (a ``USER`` or ``CYCLE`` event opens each — a cycle
+    step is its own, #2375), attaching every event's verdicts to its row and every step's placed
+    checks' ``expected`` rows atop it."""
     steps: list[Step] = []
     current: Step | None = None
     step_checks: list[CheckView] = []
+    cycles = 0
     for index, event in enumerate(events):
-        if event.kind == EventKind.USER:
-            current = Step(len(steps) + 1, event.body, "", [])
+        if event.kind in _STEP_OPENERS:
+            is_cycle = event.kind is EventKind.CYCLE
+            cycles += 1 if is_cycle else 0
+            current = Step(len(steps) + 1, event.body, "", [], cycle=is_cycle, cycle_number=cycles)
             step_checks = []
             steps.append(current)
             continue

@@ -318,6 +318,7 @@ from penny.tests.eval.conftest import (
     _chat_tool_sequence,
     _classification_output,
     _classifier_snapshot,
+    _cycle_descriptions,
     _cycle_shape,
     _cycles_exclusion,
     _cycles_ran_check,
@@ -354,6 +355,7 @@ from penny.tests.eval.conftest import (
     _stamp_cause,
     _stored_entries,
     _turn_kind,
+    _turns_to_events,
     _write_classifier_report,
     _write_sample_report,
     bound_value_field,
@@ -6024,6 +6026,138 @@ def test_an_agent_turn_nothing_delivered_renders_as_an_aside_not_as_a_reply():
     delivered = _sample_turns([row], reply="", driven=(), delivered=(narration,))
     assert (_ACTOR["penny"], narration) in delivered
     assert _turn_kind(_ACTOR["penny"], narration) is report.EventKind.REPLY
+
+
+def _walk_call(name: str, arguments: str = "{}") -> dict:
+    """One tool call in the wire shape both sides of a promptlog row carry it in. The
+    arguments DISTINGUISH the calls — the walk de-duplicates by rendered call, so two calls
+    that render identically read as one."""
+    return {"function": {"name": name, "arguments": arguments}}
+
+
+def _turn_row(agent_name: str, run_id: str, turns: list[dict], calls: list[dict]) -> PromptLog:
+    """One promptlog row for the transcript walk: ``turns`` is what it CARRIES (the messages
+    side the walk emits), ``calls`` the calls its own RESPONSE drew (the side
+    ``_cycle_descriptions`` reads a cycle's step description off)."""
+    return PromptLog(
+        agent_name=agent_name,
+        model="a-model",
+        prompt_type="chat",
+        run_id=run_id,
+        messages=json.dumps(turns),
+        response=json.dumps({"choices": [{"message": {"tool_calls": calls}}]}),
+    )
+
+
+def test_an_end_to_end_walk_splits_cycles_at_each_collector_run():
+    """A cycle renders where its RUN began, not where the last user turn left off (#2375).
+
+    An end-to-end sample's cycles used to fold into the user turn that commissioned them —
+    every call, write and composer draw after the chat's reply sat inside that turn's step,
+    out of order, with no boundary anywhere. The walk now emits a cycle boundary at each
+    collector ``run_id`` (the run/agent record, never a position), and the chat's own reply
+    closes the chat's last step just BEFORE the first cycle, so the reply never reads as a
+    tail of the job's cycles.
+
+    A collector-ONLY sample (no driven conversation — the single-edge driver) is one cycle
+    already: no boundary is emitted, so its no-user-turn step renders exactly as it always
+    did."""
+    reply = "Watching it."
+    rows = [
+        _turn_row(
+            "chat",
+            "chat-run",
+            [{"role": "user", "content": "watch this page"}],
+            calls=[],
+        ),
+        _turn_row(
+            "chat",
+            "chat-run",
+            [
+                {"role": "user", "content": "watch this page"},
+                {"role": "assistant", "tool_calls": [_walk_call("browse", '{"queries":["chat"]}')]},
+                {"role": "tool", "content": "You opened the page"},
+            ],
+            calls=[],
+        ),
+        _turn_row(
+            "collector",
+            "cycle-1",
+            [
+                {"role": "user", "content": ""},
+                {"role": "assistant", "tool_calls": [_walk_call("browse", '{"queries":["c1"]}')]},
+            ],
+            calls=[_walk_call("browse", '{"queries":["c1"]}')],
+        ),
+        _turn_row(
+            "collector",
+            "cycle-1",
+            [
+                {"role": "user", "content": ""},
+                {"role": "assistant", "tool_calls": [_walk_call("browse", '{"queries":["c1"]}')]},
+                {"role": "tool", "content": "You opened the page · $109"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [_walk_call("collection_write", '{"entries":[]}')],
+                },
+            ],
+            calls=[_walk_call("collection_write", '{"entries":[]}')],
+        ),
+        _turn_row(
+            "collector",
+            "cycle-2",
+            [
+                {"role": "user", "content": ""},
+                {"role": "assistant", "tool_calls": [_walk_call("browse", '{"queries":["c2"]}')]},
+            ],
+            calls=[_walk_call("browse", '{"queries":["c2"]}')],
+        ),
+    ]
+    turns = _sample_turns(rows, reply=reply, driven=("watch this page",), delivered=(reply,))
+
+    kinds = [_turn_kind(actor, content) for actor, content in turns]
+    assert kinds == [
+        report.EventKind.USER,
+        report.EventKind.CALL,
+        report.EventKind.RESULT,
+        report.EventKind.REPLY,
+        report.EventKind.CYCLE,
+        report.EventKind.CALL,
+        report.EventKind.RESULT,
+        report.EventKind.CALL,
+        report.EventKind.CYCLE,
+        report.EventKind.CALL,
+    ]
+    assert turns[3] == (_ACTOR["penny"], reply)  # the chat's reply, before any cycle
+    assert turns[4] == (_ACTOR["cycle"], "browse, collection_write")
+    assert turns[8] == (_ACTOR["cycle"], "browse")
+
+    events, _turn_to_event = _turns_to_events(turns, {}, [])
+    boundaries = [
+        index for index, event in enumerate(events) if event.kind is report.EventKind.CYCLE
+    ]
+    assert [events[index].body for index in boundaries] == ["browse, collection_write", "browse"]
+    # Each cycle's events sit BETWEEN its own boundary and the next one — nothing of cycle 1
+    # leaks past cycle 2's.
+    assert [event.kind for event in events[boundaries[0] : boundaries[1]]] == [
+        report.EventKind.CYCLE,
+        report.EventKind.CALL,
+        report.EventKind.RESULT,
+        report.EventKind.CALL,
+    ]
+    assert [event.kind for event in events[boundaries[1] :]] == [
+        report.EventKind.CYCLE,
+        report.EventKind.CALL,
+    ]
+
+    # The single-edge shape is untouched: the same cycle rows with nothing driven emit no
+    # boundaries at all.
+    collector_only = _sample_turns(rows[2:], reply="", driven=())
+    assert not any(actor == _ACTOR["cycle"] for actor, _content in collector_only)
+    assert _cycle_descriptions(rows) == {
+        "cycle-1": "browse, collection_write",
+        "cycle-2": "browse",
+    }
 
 
 def test_a_sample_whose_arm_cannot_be_resolved_raises_rather_than_passing_vacuously():

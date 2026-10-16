@@ -40,6 +40,7 @@ from pydantic import BaseModel
 from similarity.embeddings import deserialize_embedding
 from sqlmodel import Session, col, select
 
+from penny.agents.collector import Collector
 from penny.config import Config
 from penny.constants import ChannelType, MutationEntityType, PennyConstants
 from penny.conversation_machine import (
@@ -1158,7 +1159,17 @@ _ACTOR = {
     # the cycle — so rendering that narration with the reply mark said the opposite of the
     # truth on the one question a reader of that fold is asking.
     "aside": "🗒 Penny (to herself)",
+    # A CYCLE BOUNDARY, not an actor (#2375): the marker turn the end-to-end walk emits where
+    # one collector run ends and the next begins, so a cycle renders as a step of its own
+    # instead of folding into the user turn that commissioned it.  Its content is the cycle's
+    # short header description.
+    "cycle": "⏱ cycle",
 }
+
+# The collector's ledger identity — ``Collector.name``, the ``promptlog.agent_name`` every
+# cycle's main-loop rows carry.  Named once because the transcript walk reads cycle boundaries
+# off the ledger (each run_id of this agent is one cycle), not off where the rows sit.
+COLLECTOR_AGENT_NAME = Collector.name
 
 
 def _render_call(function: dict) -> str:
@@ -1185,6 +1196,31 @@ def _render_call(function: dict) -> str:
     return f"{name}({rendered})"
 
 
+def _cycle_descriptions(rows: list[PromptLog]) -> dict[str, str]:
+    """One short step description per collector run, read off the runs' own records (#2375):
+    the tool name of every model draw the run made, in ledger order — ``browse,
+    collection_write``.  Keyed by ``run_id``, so a cycle's step opens naming what THAT cycle
+    did rather than where its events happen to sit, and an identical draw made twice within
+    one run reads once — the same de-duplication the transcript walk applies to the call
+    itself (``_render_call``'s canonical form on both sides)."""
+    drawn: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+    for row in rows:
+        if (row.agent_name or "") != COLLECTOR_AGENT_NAME or not row.run_id:
+            continue
+        run_id = row.run_id
+        seen.setdefault(run_id, set())
+        for call in _response_tool_calls(row):
+            rendered = _render_call(call.get("function", {}))
+            if rendered in seen[run_id]:
+                continue
+            seen[run_id].add(rendered)
+            name = call.get("function", {}).get("name") or ""
+            if name:
+                drawn.setdefault(run_id, []).append(name)
+    return {run_id: ", ".join(names) for run_id, names in drawn.items()}
+
+
 def _sample_turns(
     rows: list[PromptLog],
     reply: str,
@@ -1201,6 +1237,15 @@ def _sample_turns(
     yields each user turn, tool call, tool result, and intermediate reply exactly once, in
     order.  The final reply (the last response's text, which is in no messages array) is
     appended last.  System prompt omitted.
+
+    A COLLECTOR run is a CYCLE, not a turn of the conversation (#2375): where the walk crosses
+    into a collector run_id it emits a cycle-boundary marker (``_ACTOR["cycle"]``) carrying
+    that run's short description (``_cycle_descriptions``), so an end-to-end sample's cycles
+    render as steps of their own, after the turns that commissioned them.  The chat's own
+    final reply is emitted just BEFORE the first cycle — it is the last chat step's closing
+    word, never a tail of the job's cycles.  Only a sample that DROVE a conversation splits
+    its cycles this way: a collector-only sample IS one cycle, and renders as the single
+    no-user-turn step it always was.
 
     ``driven`` is what the harness actually PUSHED.  A case may seed prior conversation to
     stand the world up (the state a preceding beat ends in), and the chat agent replays that
@@ -1224,6 +1269,9 @@ def _sample_turns(
     seen: set[tuple[str, str]] = set()
     pushed = {content.strip() for content in driven}
     sent = {content.strip() for content in delivered}
+    pending_reply = reply.strip()
+    cycle_steps = _cycle_descriptions(rows) if pushed else {}
+    open_cycle: str | None = None
 
     def emit(actor: str, content: str) -> None:
         if content and (actor, content) not in seen:
@@ -1231,6 +1279,16 @@ def _sample_turns(
             turns.append((actor, content))
 
     for row in rows:
+        run_id = row.run_id or ""
+        if run_id in cycle_steps:
+            if pending_reply:
+                emit(_ACTOR["penny"], pending_reply)
+                pending_reply = ""
+            if run_id != open_cycle:
+                open_cycle = run_id
+                # A cycle marker bypasses the de-dup: two cycles may describe themselves alike
+                # and both boundaries are real.
+                turns.append((_ACTOR["cycle"], cycle_steps[run_id]))
         for message in _row_turns(row):
             role, content = message.get("role"), message.get("content") or ""
             if role == "user":
@@ -1250,7 +1308,7 @@ def _sample_turns(
                     emit(_ACTOR["penny"], content)
                 elif not sent:
                     emit(_ACTOR["aside"], content)
-    emit(_ACTOR["penny"], reply.strip())
+    emit(_ACTOR["penny"], pending_reply)
     return turns
 
 
@@ -1557,7 +1615,10 @@ def _is_nudge(content: str) -> bool:
 
 def _turn_kind(actor: str, content: str) -> report.EventKind:
     """Map a ``_sample_turns`` (actor, content) pair to a report event kind (a recovery-nudge user
-    turn becomes ``NUDGE`` so it renders inside its step, not as a new step)."""
+    turn becomes ``NUDGE`` so it renders inside its step, not as a new step; a cycle boundary
+    becomes ``CYCLE`` so it OPENS a step, #2375)."""
+    if actor == _ACTOR["cycle"]:
+        return report.EventKind.CYCLE
     if actor == _ACTOR["user"]:
         return report.EventKind.NUDGE if _is_nudge(content) else report.EventKind.USER
     if actor == _ACTOR["call"]:
@@ -1702,14 +1763,16 @@ def _turns_to_events(
     batch at the anchor its placement names, in ledger order (#1773): a run-end batch closes the
     turn in progress (before the next user turn), a turn-head batch opens the turn it decided
     (right after that user turn), and an in-call batch follows the extract-browse call that spawned
-    it. Anything still queued at the end renders there rather than vanishing (collapsed never means
-    dropped, #1753). Returns the events and a ``turn index → event index`` map so a check placed on
-    a turn resolves to its event."""
+    it. A cycle boundary closes the turn in progress the same way (#2375) — the cycle that is
+    ending is the one whose composer draw renders inside it. Anything still queued at the end
+    renders there rather than vanishing (collapsed never means dropped, #1753). Returns the
+    events and a ``turn index → event index`` map so a check placed on a turn resolves to its
+    event."""
     events: list[report.Event] = []
     turn_to_event: dict[int, int] = {}
     for turn_index, (actor, content) in enumerate(turns):
         kind = _turn_kind(actor, content)
-        if kind == report.EventKind.USER:
+        if kind in (report.EventKind.USER, report.EventKind.CYCLE):
             _splice(micro_batches, MicroPlacement.RUN_CLOSE, events)
         action = kind in (
             report.EventKind.CALL,
