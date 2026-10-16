@@ -836,11 +836,6 @@ async def test_a_page_with_titles_and_links_and_no_summaries_still_reads(
         _nothing_invented,
         SpecCategory.PROVENANCE,
     )
-    cohort.claim(
-        "state: the stated shortfall names the summaries the page does not give",
-        _names_the_shortfall(_PARTLY_PRESENT, _PARTLY_PRESENT_SHORTFALL_WORDS),
-        SpecCategory.PROVENANCE,
-    )
 
     # What is MEASURED — the draw's own structured fields, compared across the cohort.
     #

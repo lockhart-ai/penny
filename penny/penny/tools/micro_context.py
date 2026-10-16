@@ -229,6 +229,9 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE,
 # item's line IS (its parts, in the order the instruction names them, " — "
 # separated; a part the page does not give is left off the line) instead of
 # leaving the shape of an item for the model to argue about.
+# ROUND 4 (#2360): replaced the "AT ALL" sentence after a replay of the slowest
+# draws took "the missing line names the descriptions" from 7/18 to 17/18 on the
+# top-three ask.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -246,8 +249,9 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     f"all of them. When the page carries at least one, write {EXTRACTED_TAG} and "
     "give exactly what it has for each thing named — a thing that is only partly "
     "on the page still gets a line for the part that is there. Whatever the "
-    "instruction named that the page does not carry AT ALL, name it — all of it "
-    f"together, in one short line — before {EXTRACTED_TAG}\n"
+    "instruction named that is not in your answer because the page does not give "
+    "it — for a list, a part that none of your items has — name it, all of it "
+    f"together, in one short line, before {EXTRACTED_TAG}\n"
     f"{render_line(_EXTRACT_MISSING_LINE)}\n"
     f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
     "was asked for. Never invent a value that is not in the content — when "
