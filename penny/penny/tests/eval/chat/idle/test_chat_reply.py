@@ -177,6 +177,13 @@ _MUSEUM_URL = "https://lanternmuseum.example/visit"
 # token, digits, and the currency symbol is left off it — how a number is written is the
 # model's choice and an assertion targets the part with no alternative rendering.
 _ADULT_TICKET = "18.50"
+#  Real size (#2372): nine sections, each its own markdown-link block, rather than the three
+#  the page carried before — ``_trim_search_result`` (``tools/browse.py``) keeps at most
+#  ``MAX_SEARCH_LINKS`` (10) solo-link lines plus the two lines either side of each on a
+#  SEARCH-shaped read, so nine blocks is real size that still survives that path whole; a
+#  direct read of the URL (what the demonstration itself hands over) is never trimmed at all.
+#  ``_ADULT_TICKET`` stays in its original block, unmoved, so the claim that reads it is
+#  unaffected by anything added around it.
 _MUSEUM_VISIT_PAGE = CannedPage(
     match="lantern",
     text=(
@@ -200,6 +207,42 @@ _MUSEUM_VISIT_PAGE = CannedPage(
         f"[Travel and access]({_MUSEUM_URL}/travel)\n"
         "There is no visitor car park; the quay car park is a short walk away.\n"
         "Guided tours run at 11:00 and 14:00 and cost $4.50 on top of admission.\n"
+        "\n"
+        "Membership\n"
+        "An annual pass covers every gallery and every late opening this year.\n"
+        f"[Membership]({_MUSEUM_URL}/membership)\n"
+        "A joint membership for two adults is $78.00, renewed each spring.\n"
+        "Members get a 10% discount in the café and the gift shop.\n"
+        "\n"
+        "Group bookings\n"
+        "Groups of eight or more should book at least a week ahead.\n"
+        f"[Group bookings]({_MUSEUM_URL}/groups)\n"
+        "A group guide can be booked separately for an extra $25.00 flat fee.\n"
+        "School groups are covered under a separate schools rate below.\n"
+        "\n"
+        "Accessibility\n"
+        "Step-free access runs from the harbour-side entrance to every floor.\n"
+        f"[Accessibility]({_MUSEUM_URL}/accessibility)\n"
+        "Wheelchairs and folding stools are available free at the front desk.\n"
+        "A quiet hour runs every Sunday morning before the building opens to everyone else.\n"
+        "\n"
+        "Café and shop\n"
+        "The harbour-view café serves until half an hour before closing.\n"
+        f"[Café and shop]({_MUSEUM_URL}/cafe)\n"
+        "The gift shop stocks prints of the standing collection and local maker's work.\n"
+        "Members get a 10% discount across both, as noted above.\n"
+        "\n"
+        "School visits\n"
+        "Term-time school visits run Tuesday to Friday mornings only.\n"
+        f"[School visits]({_MUSEUM_URL}/schools)\n"
+        "A worksheet pack is included free with every booked school visit.\n"
+        "One adult helper is admitted free for every ten pupils.\n"
+        "\n"
+        "Audio guides\n"
+        "Audio guides are available in six languages at the front desk.\n"
+        f"[Audio guides]({_MUSEUM_URL}/audio-guides)\n"
+        "A children's version runs shorter, with a scavenger-hunt trail built in.\n"
+        "Guides are $3.00 each, or free with an annual membership.\n"
     ),
 )
 
@@ -207,6 +250,11 @@ _GALLERY_URL = "https://lanternmuseum.example/galleries/tm-1841"
 # The watched value: the maker's surname, credited ONLY on the gallery's own page.  One
 # invented word, so a reply carrying it can only have opened that page.
 _GALLERY_MAKER = "Corvander"
+# Real size (#2372): eight link-centred blocks instead of two, up to ``MAX_SEARCH_LINKS``
+# (see the museum visit page's own note above).  ``_GALLERY_MAKER`` may repeat WITHIN this
+# page (the ``answers`` coherence check — ``test_every_claimed_answer_is_one_token_its_own_
+# world_carries`` — only requires it sit on exactly ONE of the world's two pages, never that
+# it appear once); it must still never reach ``_MUSEUM_GALLERIES_PAGE`` below.
 _TIDEMARK_GALLERY_PAGE = CannedPage(
     match="tm-1841",
     text=(
@@ -224,6 +272,42 @@ _TIDEMARK_GALLERY_PAGE = CannedPage(
         f"[The lens case]({_GALLERY_URL}#lenses)\n"
         "Two benches, and a rubbing table for children at the far end.\n"
         "The gallery is closed on the last Monday of each month for cleaning.\n"
+        "\n"
+        "Harbour glass cabinet\n"
+        "A rotating case of smaller harbour-glass pieces, changed twice a year.\n"
+        f"[Harbour glass cabinet]({_GALLERY_URL}#harbour-cabinet)\n"
+        "The current rotation favours blues and greens from the autumn firing.\n"
+        "Labels name the donor collection each piece came from.\n"
+        "\n"
+        "Storm lanterns display\n"
+        "A wall of working storm lanterns, lit on a timer after dusk.\n"
+        f"[Storm lanterns display]({_GALLERY_URL}#storm-lanterns)\n"
+        "Most were salvaged from decommissioned harbour boats.\n"
+        "A short recording of the timer sequence plays on the hour.\n"
+        "\n"
+        "Conservation workshop\n"
+        "A glass-fronted workshop where cracked pieces are repaired in view of visitors.\n"
+        f"[Conservation workshop]({_GALLERY_URL}#conservation)\n"
+        "Staff work Tuesdays and Thursdays and will answer questions through the glass.\n"
+        "Nothing on display here is for sale.\n"
+        "\n"
+        "Artist talks\n"
+        f"Ilse {_GALLERY_MAKER} gives a talk on the Nine Fathoms technique twice a year.\n"
+        f"[Artist talks]({_GALLERY_URL}#artist-talks)\n"
+        "Seats are first-come; the talk runs about forty minutes with questions after.\n"
+        "Past talks are not recorded or published anywhere.\n"
+        "\n"
+        "Gallery history\n"
+        "The gallery opened in 1962 as a single room off the old harbour office.\n"
+        f"[Gallery history]({_GALLERY_URL}#history)\n"
+        "It was extended twice, most recently to add the conservation workshop.\n"
+        "A short timeline of the extensions is posted by the entrance.\n"
+        "\n"
+        "Visiting the gallery\n"
+        "Open the same hours as the rest of the museum, no separate ticket needed.\n"
+        f"[Visiting the gallery]({_GALLERY_URL}#visiting)\n"
+        "The harbour-side entrance is the shortest walk from the tram stop.\n"
+        "Photography without flash is allowed throughout.\n"
     ),
 )
 
@@ -231,6 +315,10 @@ _GALLERIES_URL = "https://lanternmuseum.example/galleries"
 # Deliberately a CATCH-ALL (``match=""``), installed AFTER the gallery page: the slug the
 # index carries is the only query that reaches the detail page, so every search and every
 # other read lands here.  That is what makes the hop a hop rather than a lucky search.
+# Real size (#2372): eight link-centred blocks instead of three.  The sentence naming
+# ``_GALLERY_URL`` verbatim stays exactly as it was — that is the hop mechanism the case
+# measures — and nothing added below mentions ``_GALLERY_MAKER``, or the hop would be
+# reachable without taking it (the same coherence check named above this time reading FALSE).
 _MUSEUM_GALLERIES_PAGE = CannedPage(
     match="",
     text=(
@@ -244,11 +332,41 @@ _MUSEUM_GALLERIES_PAGE = CannedPage(
         "It is the largest of the four and takes the whole harbour side of the museum.\n"
         "Wheelhouse Gallery: instruments and charts, on the floor above.\n"
         "\n"
+        "Wheelhouse Gallery\n"
+        "Navigation instruments and harbour charts, spanning three centuries.\n"
+        f"[Wheelhouse Gallery]({_GALLERIES_URL}/wheelhouse)\n"
+        "A working ship's bell is rung at opening and closing time.\n"
+        "Children can handle a set of reproduction instruments at the activity table.\n"
+        "\n"
         "The other two\n"
         "Keeper's Room: uniforms, logbooks and the fog-signal apparatus\n"
         f"[Keeper's Room]({_GALLERIES_URL}/keepers-room)\n"
         "Quay Gallery: photographs of the working harbour, rehung twice a year.\n"
         "Neither has a permanent centrepiece.\n"
+        "\n"
+        "Quay Gallery\n"
+        "Photographs of the working harbour, from the earliest glass-plate prints.\n"
+        f"[Quay Gallery]({_GALLERIES_URL}/quay)\n"
+        "The rehang each spring and autumn follows the fishing season's own calendar.\n"
+        "A small reading table holds bound volumes of the harbour's shipping news.\n"
+        "\n"
+        "Membership\n"
+        "One membership covers every gallery and every late opening this year.\n"
+        f"[Membership]({_MUSEUM_URL}/membership)\n"
+        "Members skip the admission queue at every gallery entrance.\n"
+        "Renewal reminders go out by post a month ahead.\n"
+        "\n"
+        "Group visits\n"
+        "Groups of eight or more should book a gallery guide a week ahead.\n"
+        f"[Group visits]({_GALLERIES_URL}/group-visits)\n"
+        "A guide can cover one gallery or all four, depending on the time booked.\n"
+        "School groups follow the museum's own schools rate.\n"
+        "\n"
+        "Museum shop\n"
+        "The shop stocks prints and postcards from every gallery's own collection.\n"
+        f"[Museum shop]({_GALLERIES_URL}/shop)\n"
+        "A members' discount applies at the shop till as well as the café.\n"
+        "The shop closes fifteen minutes before the galleries do.\n"
         "\n"
         "Visiting the galleries\n"
         "All four are covered by one admission ticket\n"

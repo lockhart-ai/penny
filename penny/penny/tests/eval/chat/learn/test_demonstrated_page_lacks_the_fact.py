@@ -115,6 +115,11 @@ NOTICEBOARD_URL = "https://communitygarden.example/noticeboard"
 # The solo markdown link sits in the MIDDLE of the notices, because a search-shaped read keeps
 # only the lines within two of one (``_trim_search_result``) — placed at the end it would take the
 # compost schedule and drop everything after it.
+#
+# Real size (#2372): five more notices, each centred on its own link, up from the original
+# three sharing the one.  A direct read of ``NOTICEBOARD_URL`` (what the demonstration itself
+# hands over) is never trimmed, but every new block still keeps the ±2-line convention in case
+# a sample reaches it by searching the ask's own words instead.
 _NOTICEBOARD = CannedPage(
     match="noticeboard",
     text=(
@@ -126,6 +131,26 @@ _NOTICEBOARD = CannedPage(
         f"[Community garden noticeboard]({NOTICEBOARD_URL})\n"
         "Tool shed: the lock code changed — ask a committee member for the new one.\n"
         "Potluck: the 14th at noon in the orchard corner, bring a dish to share.\n"
+        "\n"
+        "Bee hotel build day: Saturday morning, bring a drill if you have one.\n"
+        f"[Bee hotel build day]({NOTICEBOARD_URL}#bee-hotel)\n"
+        "Materials are provided; the committee has offcuts left from last year's shed repair.\n"
+        "\n"
+        "Apple pressing day: the 21st, bring windfalls and a container to take juice home.\n"
+        f"[Apple pressing day]({NOTICEBOARD_URL}#apple-pressing)\n"
+        "The press is the same one the orchard group uses every autumn.\n"
+        "\n"
+        "Water meter readings: due by the end of the month, read your own plot's meter.\n"
+        f"[Water meter readings]({NOTICEBOARD_URL}#water-meter)\n"
+        "Readings go in the logbook by the standpipe, not to any committee member directly.\n"
+        "\n"
+        "Hedge-cutting rota: the boundary hedge is split into six sections this year.\n"
+        f"[Hedge-cutting rota]({NOTICEBOARD_URL}#hedge-cutting)\n"
+        "Sign up for a section on the sheet pinned below this notice.\n"
+        "\n"
+        "Newsletter sign-up: a printed newsletter restarts next month after a two-year gap.\n"
+        f"[Newsletter sign-up]({NOTICEBOARD_URL}#newsletter)\n"
+        "Leave your plot number in the box by the gate to be added to the list.\n"
     ),
 )
 
@@ -133,7 +158,19 @@ _NOTICEBOARD = CannedPage(
 # the page says carries one of them, and an entry about the page's silence carries none.  The
 # 14th is deliberately NOT one — a value read off the potluck line and pinned to the waitlist
 # carries it too, and such an entry states something the page never says.
-NOTICEBOARD_TOKENS = ("compost", "east gate", "tool shed", "lock code", "potluck", "orchard")
+NOTICEBOARD_TOKENS = (
+    "compost",
+    "east gate",
+    "tool shed",
+    "lock code",
+    "potluck",
+    "orchard",
+    "bee hotel",
+    "apple pressing",
+    "water meter",
+    "hedge-cutting",
+    "newsletter",
+)
 
 # What the user asked her to find, in the words every wording uses.  The page must not carry it,
 # which is the whole of what makes this world the absent-fact one.

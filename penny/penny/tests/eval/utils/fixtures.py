@@ -301,6 +301,12 @@ MESSAGES: tuple[Message, ...] = (
 # chat-browse-multihop: the search page links to a detail page but withholds the
 # date; the year (2031) lives ONLY on the detail page, so a reply that cites it
 # proves the model chained a second browse to the linked URL.
+#
+# Real size (#2372): a search page with several results (a search's own shape — a handful of
+# hits, not a front page's ninety) and a fuller title page, up from one line each.  Every
+# distractor result keeps its own solo link within ``_trim_search_result``'s ±2-line window
+# (``tools/browse.py``) and NONE of them carries the year, so the date stays reachable only
+# by following the one true link through to the second page — the whole point of the hop.
 MULTIHOP_PAGES = (
     CannedPage(
         match="mistforge",
@@ -310,6 +316,21 @@ MULTIHOP_PAGES = (
             "[Mistforge Tactics — official title page]"
             "(https://gamedb.example.com/titles/mt-clans-2099)\n"
             "See the official title page for full release details.\n"
+            "\n"
+            "Fan wiki entry, last edited by the community this month\n"
+            "[Mistforge Tactics — fan wiki]"
+            "(https://gamedb.example.com/wiki/mistforge-tactics)\n"
+            "Covers unit types, faction lore and a map of every campaign mission.\n"
+            "\n"
+            "A roundup of this month's turn-based strategy releases, Mistforge among them\n"
+            "[New turn-based strategy games this month]"
+            "(https://gamedb.example.com/roundups/strategy-this-month)\n"
+            "Six titles covered, with a short paragraph on each.\n"
+            "\n"
+            "A forum thread comparing Mistforge Tactics to two older titles in its genre\n"
+            "[Mistforge Tactics — forum discussion]"
+            "(https://gamedb.example.com/forums/mistforge-tactics-comparison)\n"
+            "Forty-one replies, mostly about the co-op campaign's difficulty curve.\n"
         ),
     ),
     CannedPage(
@@ -319,6 +340,23 @@ MULTIHOP_PAGES = (
             "Mistforge Tactics was released on March 14, 2031 by Emberline Studios. "
             "It is a turn-based strategy game with co-op campaigns.\n"
             "Source: https://gamedb.example.com/titles/mt-clans-2099\n"
+            "\n"
+            "Platforms\n"
+            "Available on PC, and on console from the following autumn.\n"
+            "Cross-platform saves are supported between the two.\n"
+            "\n"
+            "Gameplay modes\n"
+            "A single-player campaign, a two-player co-op campaign, and a skirmish mode.\n"
+            "Skirmish supports up to four players against the game's own AI factions.\n"
+            "\n"
+            "System requirements\n"
+            "Runs on most machines from the last six years; no dedicated graphics card "
+            "needed on the lowest settings.\n"
+            "A solid-state drive is recommended for the campaign's longer loading screens.\n"
+            "\n"
+            "Reception\n"
+            "Reviewers praised the co-op campaign and criticised the skirmish AI's pacing.\n"
+            "A balance patch addressing the skirmish AI is planned for next quarter.\n"
         ),
     ),
 )
