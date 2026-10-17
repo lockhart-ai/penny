@@ -15,15 +15,23 @@ carries the one value the claims forbid: the taught page's price.  Which collect
 lands on and what it is called are left to the model and read nowhere a claim depends on them;
 the driver finds the created job STRUCTURALLY and runs ITS cycles.
 
-**Claims read only:** what the store's entries hold after each cycle, what reached the user,
-the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on.
+**Claims read only:** what reached the user (the chat phase's replies and the job's own
+sends), the created job's own terms (cadence, end, notify), and provenance of everything
+sent or replied — never what a cycle left in the store, which is hers to keep as she wishes
+and is measured, not claimed (``ENTRIES_STORED``, #2490), nor which collection the job sits
+on.
 
-**The taught price in nothing stored and nothing sent is its own claim, not provenance's** —
+**The taught price in nothing sent or replied is its own claim, not provenance's** —
 the old page is legitimately part of what the round was given (the seeded history taught the
-routine on it), so the generic provenance claim cannot speak to it.  It reads the LIVE surfaces
-only: what this run wrote, what the created jobs hold, what was sent this run — never the
-seeded rows, which carry the taught price by design.
+routine on it), so the generic provenance claim cannot speak to it.  It reads the LIVE
+surfaces only: what was sent this run and what this run replied — never the seeded rows,
+which carry the taught price by design.
+
+**The five jobs the seeded world already had running are claimed undisturbed** — the one
+store read about the OLD state these cases still make (#2490's addendum): what this run did
+to them is read off the mutation ledger, where a rebind, a schedule change, a notify flip,
+a moved end and an archive all answer the same way and the field nobody enumerated is
+caught too.  What the NEW job keeps in its own store stays variance.
 
 **The pages are real-size** — several kilobytes, a labelled current-price line among other
 prices the page carries for unrelated items, the way a real marketplace listing reads.  The
@@ -42,7 +50,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at, seed_known_routine
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, seed_known_routine, sent_at
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -64,8 +72,8 @@ _FAMILY = "end-to-end"
 
 _BEHAVIOUR = (
     "In a job stood up from a routine Penny already knows, when a cold ask names a different "
-    "page, the job's cycles record that page's readings and never the page the routine was "
-    "taught on."
+    "page, the user is told that page's price as it stands and as it moves, and the taught "
+    "page's price appears in nothing sent or replied."
 )
 
 # ── The new page the ask names, and the two readings its cycles see ──────────
@@ -249,33 +257,56 @@ _ARMS = tuple(
 # ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _store_holds_the_new_page_price(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 0)
-    return _BASELINE_AMOUNT in held, f"expected {_BASELINE_AMOUNT}; held {held!r}"
+def _told_the_new_page_price_by_the_first_cycle(sample: SampleObservation, _world: World) -> Answer:
+    """The user has been told the new page's price by the end of the first cycle — by the
+    ask's own reply, if the turn read the page before standing the job up, or by the job's
+    own first cycle.
+
+    Read as the price appearing in any chat reply OR any notification so far: the chat phase's
+    replies with every cycle's own send stripped back out (``reply`` joins both), then the
+    messages the first cycle put on the queue — nothing from a later cycle counts, because
+    "by the end of the first cycle" is the claim's own bound."""
+    chat_replies = sample.reply
+    for message in sample.notifications:
+        if message in chat_replies:
+            chat_replies = chat_replies.replace(message, "")
+    notifications_so_far = sent_at(sample.cycles, 0)
+    told = _BASELINE_AMOUNT in chat_replies or any(
+        _BASELINE_AMOUNT in message for message in notifications_so_far
+    )
+    replies_hit = _BASELINE_AMOUNT in chat_replies
+    cycles_hit = [message for message in notifications_so_far if _BASELINE_AMOUNT in message]
+    return (
+        told,
+        f"in a chat reply: {replies_hit}; in a first-cycle notification: {cycles_hit}",
+    )
 
 
-def _store_holds_the_moved_price(sample: SampleObservation, _world: World) -> Answer:
-    held = held_text_at(sample.cycles, 1)
-    return _MOVED_AMOUNT in held, f"expected {_MOVED_AMOUNT}; held {held!r}"
+def _told_the_moved_price_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
+    """When the price moved, the user was told the moved price — the messages sent on the
+    second cycle carry the moved amount the page now posts.  Read off the cycle's own sends,
+    so a cycle that ran and sent nothing, or sent the old reading, fails here."""
+    sent = sent_at(sample.cycles, 1)
+    told = [message for message in sent if _MOVED_AMOUNT in message]
+    return bool(told), f"sent on the moved cycle: {sent}; carrying {_MOVED_AMOUNT}: {told}"
 
 
-def _the_taught_price_appears_nowhere(sample: SampleObservation, _world: World) -> Answer:
-    """The taught page's price appears in nothing stored and nothing sent — the explicit
-    "never the page the routine was taught on" check.
+def _the_taught_price_appears_in_nothing_sent_or_replied(
+    sample: SampleObservation, _world: World
+) -> Answer:
+    """The taught page's price appears in nothing sent and nothing replied — the explicit
+    "never the page the routine was taught on" check, restated to what reaches the user
+    (#2490).
 
-    It reads the LIVE surfaces only: what this run wrote (``entries``, wherever it landed),
-    what the created jobs hold at every cycle position, and everything that reached the user
-    this run (``reply`` is the chat phase's replies and the cycles' sends together).  The
-    seeded rows are not among them — they carry the taught price by design, because the
-    routine was taught on that page — so the claim answers what the NEW job put into the
-    world, not what the world already held."""
+    It reads what reached the user this run: everything the created jobs' cycles put on the
+    send queue, and what this run replied (``reply`` is the chat phase's replies and the
+    cycles' sends together for an end-to-end sample).  The seeded rows are not among them —
+    they carry the taught price by design, because the routine was taught on that page — so
+    the claim answers what the NEW job put in front of the user, not what the world already
+    held."""
     surfaces = (
-        ("stored this run", " ".join(entry.text for entry in sample.entries)),
-        (
-            "held by the created jobs",
-            " ".join(entry.text for snapshot in sample.cycles for entry in snapshot.held),
-        ),
-        ("sent to the user", sample.reply),
+        ("sent to the user", [message for snapshot in sample.cycles for message in snapshot.sent]),
+        ("replied", sample.reply),
     )
     hits = [name for name, text in surfaces if _TAUGHT_AMOUNT in text]
     return not hits, f"{_TAUGHT_AMOUNT} found in: {hits or 'nothing'}"
@@ -306,26 +337,31 @@ async def test_a_known_routines_job_runs_the_page_the_ask_names(
     cohort.assert_a_new_job_notifies()
     cohort.assert_a_new_job_ends_when_asked(_ASKED_END)
 
-    # STORE — the two cycles, each read as what the created job(s) held at that position,
-    # union over however many jobs the script created.
+    # SENT — the two cycles, each read as what reached the user at that position, union
+    # over however many jobs the script created.  What a cycle left in the store is hers,
+    # measured as variance (``ENTRIES_STORED``), never claimed (#2490).
     cohort.claim(
-        "state: after the first cycle the store holds the new page's price",
-        _store_holds_the_new_page_price,
+        "state: by the end of the first cycle the user has been told the new page's price",
+        _told_the_new_page_price_by_the_first_cycle,
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: after the second cycle the store holds the new page's moved price",
-        _store_holds_the_moved_price,
+        "state: when the price moved, the user was told the moved price",
+        _told_the_moved_price_when_it_moved,
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: the taught page's price appears in nothing stored and nothing sent",
-        _the_taught_price_appears_nowhere,
+        "state: the taught page's price appears in nothing sent or replied",
+        _the_taught_price_appears_in_nothing_sent_or_replied,
         SpecCategory.STORE,
     )
 
+    # UNDISTURBED — the five jobs the seeded world already had running are left as they were
+    # (#2490's addendum): read off the mutation ledger, so a rebind, a schedule change, a
+    # notify flip, a moved end and an archive all answer it the same way.
+    cohort.assert_the_running_mechanisms_survive()
+
     # PROVENANCE
-    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
