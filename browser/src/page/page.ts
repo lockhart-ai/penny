@@ -4,6 +4,8 @@
  */
 
 import {
+  type ConnectionState,
+  ConnectionState as CS,
   type CursorRecord,
   type DomainAllowlist,
   DomainPermission as DP,
@@ -103,6 +105,13 @@ let triggeringCollection: string | null = null;
 
 let pendingConfigSave = false;
 
+// --- Connection state ---
+
+// The socket's first connection is already covered by init()'s own fetch;
+// only a *re*connect (a drop followed by a later Connected) needs the page
+// to catch up, so this stays false until the first Connected arrives.
+let everConnected = false;
+
 // ============================================================
 // Init
 // ============================================================
@@ -188,7 +197,23 @@ function handleMessage(message: RuntimeMessage): void {
     handleMemoryChanged(message.name);
   } else if (message.type === RuntimeMessageType.CollectionTriggerResult) {
     handleCollectionTriggerResult(message);
+  } else if (message.type === RuntimeMessageType.ConnectionState) {
+    handleConnectionState(message.state);
   }
+}
+
+function handleConnectionState(state: ConnectionState): void {
+  if (state !== CS.Connected) return;
+  if (everConnected) {
+    // A reconnect, not the first connect — catch up on whatever was pushed
+    // while the socket was down.
+    resetAndFetchPrompts();
+    const memoriesPanel = document.getElementById("panel-memories");
+    if (memoriesPanel && !memoriesPanel.classList.contains("hidden")) {
+      requestMemories();
+    }
+  }
+  everConnected = true;
 }
 
 
@@ -210,8 +235,7 @@ function setupPrompts(): void {
       )) {
         b.classList.toggle("active", b === btn);
       }
-      allRuns = [];
-      requestPromptLogs(0);
+      resetAndFetchPrompts();
     });
   }
   promptsLoadMoreBtn.addEventListener("click", () => {
@@ -221,8 +245,7 @@ function setupPrompts(): void {
   flaggedToggle?.addEventListener("click", () => {
     flaggedOnly = !flaggedOnly;
     flaggedToggle.classList.toggle("active", flaggedOnly);
-    allRuns = [];
-    requestPromptLogs(0);
+    resetAndFetchPrompts();
   });
   const search = document.getElementById("prompts-search") as HTMLInputElement | null;
   if (search) {
@@ -244,6 +267,11 @@ function setupPrompts(): void {
     });
   }
   wireSearchClear("prompts-search", "prompts-search-clear");
+}
+
+function resetAndFetchPrompts(): void {
+  allRuns = [];
+  requestPromptLogs(0);
 }
 
 function requestPromptLogs(offset: number): void {
