@@ -2598,13 +2598,6 @@ def _framed_container(db: Database) -> str | None:
     return None
 
 
-def _awaited_parameters(db: Database) -> list[str]:
-    """What a round is still waiting on — always ``[]`` on this branch (#2455 naive
-    baseline): there is no request state and no partial binding, so nothing ever stamps
-    ``state_transition.round_shortfall``."""
-    return []
-
-
 def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
     """Collections this round created that carry a schedule or a notify flag.
 
@@ -2681,16 +2674,12 @@ def _observe_sample(
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=exclusion
         )
-    landed = db.machine.latest_transition()
     return eval_cohort.SampleObservation(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=landed.to_state if landed else None,
-        decision_skill=landed.skill_name if landed else None,
-        turn_at=landed.created_at if landed else None,
+        turn_at=_last_scripted_turn_at(db),
         timezone=user_timezone_name(db),
-        awaiting=_awaited_parameters(db),
         walk=_machine_walk(db),
         routines=_routine_records(db),
         entries=_stored_entries(db),
@@ -3823,7 +3812,6 @@ def _observe_cycles(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=_cycle_shape(last) if last is not None else CYCLE_DEAD,
         walk=script,
         entries=_stored_entries(db),
         tool_sequence=[call.tool for cycle in driven.observed for call in cycle.calls],
@@ -4133,7 +4121,6 @@ def _observe_end_to_end(
         return eval_cohort.SampleObservation(
             name=name, phrasing=phrasing, arm=arm, complete=False, exclusion=chat_exclusion
         )
-    landed = db.machine.latest_transition()
     sent = [message for snapshot in cycles for message in snapshot.sent]
     # ``seeded_replies`` is how many messages the seeded world wrote into the
     # ``penny-messages`` log BEFORE the scripted turns ran; the list is oldest first, so the
@@ -4143,7 +4130,6 @@ def _observe_end_to_end(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=landed.to_state if landed else None,
         turn_at=_last_scripted_turn_at(db),
         timezone=user_timezone_name(db),
         walk=_end_to_end_walk(db, jobs, per_job),

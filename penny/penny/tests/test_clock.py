@@ -323,9 +323,18 @@ def _a_turn_that_stood_a_job_up(
     The classifier draws, the machine lands in apply, and the job is stood up on ``rule``
     with the end ``ends`` says — resolved by the function ``collection_configure`` resolves it
     with, against the same database, so the instant the words are counted from is the one
-    production counts them from."""
+    production counts them from.
+
+    ``turn_at`` is read off the last scripted message ``TEST_SENDER`` sent (#2496 naive
+    baseline: there is no conversation machine, so no transition row's ``created_at``
+    carries it), so this logs that ask before the turn's own draws."""
     db = migrated_db(str(tmp_path / f"{name}.db"), clock=_pinned_at(starts_at))
     seed_user(db)
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content="watch this and stand up the job",
+    )
     _log_draw(db, PennyConstants.STATE_CLASSIFIER_AGENT_NAME, "STATE: apply")
     db.machine.record_transition(
         from_state="learn",

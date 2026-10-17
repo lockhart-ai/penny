@@ -44,11 +44,11 @@ prices: ``$499`` before the change and ``$449`` after.  So these cases can say w
 holds by name.  The two prices are mutually exclusive — neither is a substring of the other —
 because the moved case asserts one is present and the other gone.
 
-**The LANDED category is empty on all three, and that is the correct report.**  ``LANDED`` is
-read off the conversation machine's walk, and a collector moves no conversation machine.  The
-run record's outcome and its stop reason are tempting to file there, but they are RECORD
-FIELDS, which ``STORE`` covers literally — so that is where they are claimed, and the state
-section renders empty rather than having something invented to fill it.
+**No claim reads the machine, and none reads how a run ended (#2496).**  A collector moves
+no conversation machine, so there was never a landing to claim; and a cycle's run outcome and
+stop reason are the run record's own fields — retired as claims — so what each case asserts is
+what the store holds, what reached the user, and provenance.  How a cycle went is still
+MEASURED, as the cycle script below.
 
 The first three cases are the whole of the collector's enactment coverage for a page whose
 only hazard is OTHER PRODUCTS' prices.  A watch over a different page, a different datum or a
@@ -69,7 +69,6 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.constants import WRITE_GATE_STOP_REASONS, RunOutcome, WriteGateOutcome
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.tests.eval.conftest import (
@@ -121,10 +120,6 @@ _SCHEDULE = "FREQ=HOURLY"
 # write gate compares a candidate against what is stored UNDER THE SAME KEY, so a preseeded
 # row under any other key would leave the unchanged case with nothing to be unchanged against.
 _KEY = "asking price"
-
-# The STOP a no-change cycle ends on, as the run record states it — read from the shipped
-# table rather than restated, so a reworded reason cannot silently stop matching.
-_STOP_REASON = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
 # ── The facts, held constant across every arm ────────────────────────────────
 #
@@ -1007,28 +1002,6 @@ def _holds_the_moved_price_only(sample: SampleObservation, _world: World) -> Ans
     )
 
 
-def _closed_having_worked(sample: SampleObservation, _world: World) -> Answer:
-    """The run's own determination: it completed and it CHANGED something.
-
-    A record field, read literally off ``promptlog.run_outcome`` — ``worked`` is defined as
-    "completed and changed something", which is what "the cycle wrote" means without reading a
-    tool name.  ``no_work`` is a clean close that changed nothing and ``failed`` is a bail, and
-    both are the wrong end state here."""
-    closed = sample.run_outcome or "—"
-    detail = f" — {sample.run_reason}" if sample.run_reason else ""
-    return sample.run_outcome == RunOutcome.WORKED.value, f"the run closed {closed}{detail}"
-
-
-def _stopped_on_the_unchanged_value(sample: SampleObservation, _world: World) -> Answer:
-    """The run stopped at the write chokepoint, on the reason the shipped table names.
-
-    This is what makes silence STRUCTURAL rather than a judgement the model makes each cycle:
-    the gate compares the candidate against the stored value and raises its STOP on the very
-    call that would otherwise complete the program, so the notification the framework would
-    have entered is never entered at all."""
-    return sample.run_reason == _STOP_REASON, f"the run closed {sample.run_reason or '—'}"
-
-
 def _told_once(sample: SampleObservation, _world: World) -> Answer:
     """The user was told, and told once.
 
@@ -1078,18 +1051,12 @@ async def test_the_watch_writes_the_first_reading(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — nothing; see the module docstring.  A collector moves no conversation machine,
-    # and the run record's fields are STORE claims below rather than a category borrowed.
-
     # STORE
     cohort.claim("state: the collection holds one entry", _one_entry, SpecCategory.STORE)
     cohort.claim(
         f"state: the entry it holds carries {_BASELINE_AMOUNT}",
         _holds(_BASELINE_AMOUNT),
         SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: the run closed having changed something", _closed_having_worked, SpecCategory.STORE
     )
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
 
@@ -1123,18 +1090,12 @@ async def test_the_watch_stays_quiet_when_the_reading_has_not_moved(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — nothing; see the module docstring.
 
     # STORE
     cohort.claim("state: the collection still holds one entry", _one_entry, SpecCategory.STORE)
     cohort.claim(
         f"state: the entry it holds still carries {_BASELINE_AMOUNT}",
         _holds(_BASELINE_AMOUNT),
-        SpecCategory.STORE,
-    )
-    cohort.claim(
-        "state: the run stopped on the value being unchanged",
-        _stopped_on_the_unchanged_value,
         SpecCategory.STORE,
     )
     cohort.claim("state: nothing reached the send queue", _told_nothing, SpecCategory.STORE)
@@ -1165,7 +1126,6 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — nothing; see the module docstring.
 
     # STORE
     cohort.claim(
@@ -1175,9 +1135,6 @@ async def test_the_watch_writes_and_tells_when_the_reading_moves(
     )
     cohort.claim(
         "state: the collection still holds one entry, rewritten", _one_entry, SpecCategory.STORE
-    )
-    cohort.claim(
-        "state: the run closed having changed something", _closed_having_worked, SpecCategory.STORE
     )
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
 
@@ -1209,7 +1166,6 @@ async def test_the_watch_tells_the_asking_price_from_other_prices_on_the_same_li
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — nothing; see the module docstring.
 
     # STORE
     cohort.claim(
@@ -1219,9 +1175,6 @@ async def test_the_watch_tells_the_asking_price_from_other_prices_on_the_same_li
     )
     cohort.claim(
         "state: the collection still holds one entry, rewritten", _one_entry, SpecCategory.STORE
-    )
-    cohort.claim(
-        "state: the run closed having changed something", _closed_having_worked, SpecCategory.STORE
     )
     cohort.claim("state: the user was told once", _told_once, SpecCategory.STORE)
     cohort.claim(

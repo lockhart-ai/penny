@@ -20,7 +20,6 @@ from penny.datetime_utils import format_log_timestamp
 from penny.responses import PennyResponse
 from penny.tests.eval.conftest import _cohort_checks, _phrasing_label
 from penny.tests.eval.utils.assertions import Cohort, assertion_rows
-from penny.tests.eval.utils.catalogue import ConversationState
 from penny.tests.eval.utils.cohort import (
     CYCLE_SCRIPT,
     ENTRIES_STORED,
@@ -903,7 +902,6 @@ def _stored(name: str, content: str, key: str | None = None) -> SampleObservatio
         name=name,
         phrasing="the ask",
         arm=0,
-        landed="idle",
         entries=[entry],
         given=Given(_GAME_PAGE),
     )
@@ -1007,7 +1005,6 @@ def _round(name: str, *, container: str | None, wrote: str | None) -> SampleObse
         name=name,
         phrasing="the ask",
         arm=0,
-        landed=ConversationState.LEARN.value,
         container=container,
         entries=entries,
         given=Given(wrote or ""),
@@ -1160,7 +1157,6 @@ def test_the_reply_provenance_claim_reads_a_wrapped_url_as_sourced():
         name="s0",
         phrasing="the ask",
         arm=0,
-        landed="idle",
         reply=f"i read `{_CITED}` today",
         given=Given(_GIVEN),
     )
@@ -1261,7 +1257,7 @@ def test_a_name_the_page_never_carried_is_still_caught_beside_the_tags():
 # ── What the reply states ────────────────────────────────────────────────────
 def _reply_sample(reply: str) -> SampleObservation:
     """A sample whose reply is exactly this."""
-    return SampleObservation(name="s0", phrasing="the ask", arm=0, landed="idle", reply=reply)
+    return SampleObservation(name="s0", phrasing="the ask", arm=0, reply=reply)
 
 
 def test_a_reply_that_answers_nothing_fails_the_only_completeness_claim():
@@ -1335,24 +1331,25 @@ def test_a_reply_claim_fails_a_sample_that_aborted_on_a_model_error():
     """The framework's own apology states no value of the model's, so a REPLY-kind claim must
     not count it as a reply that held — one enforcement point, in ``Cohort._answer``, reached
     whichever claim is asked.  A STATE claim about the same sample answers its structural fact
-    exactly as it always did: the turn ran, and where it landed is a fact independent of what
-    its reply said."""
+    exactly as it always did: the turn ran, and the store's end state is a fact independent of
+    what its reply said."""
     world = World(name="base", pages=(), keeps=(), excludes=(), answers=("baikal",))
     aborted = SampleObservation(
         name="s0",
         phrasing="the ask",
         arm=0,
-        landed="idle",
         reply=PennyResponse.AGENT_MODEL_ERROR,
         aborted_on_model_error=True,
     )
     cohort = Cohort("case", _MODEL, [aborted], _one_arm(world))
-    cohort.assert_machine_landed(ConversationState.IDLE)
     cohort.assert_the_reply_answers_the_ask()
     cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.assert_the_running_mechanisms_survive()
 
-    state_claim, answers_claim, sourced_claim = cohort.claims
-    assert (state_claim.passed, state_claim.total) == (1, 1), "the landed-state fact is untouched"
+    answers_claim, sourced_claim, survival_claim = cohort.claims
+    assert (survival_claim.passed, survival_claim.total) == (1, 1), (
+        "the store fact is untouched by the abort"
+    )
     for reply_claim in (answers_claim, sourced_claim):
         assert (reply_claim.passed, reply_claim.total) == (0, 1)
         assert reply_claim.rationales == ["the turn ended on a model error — no reply to read"]
@@ -1367,7 +1364,6 @@ def test_a_reply_that_merely_quotes_the_apologys_words_is_read_as_a_reply():
         name="s0",
         phrasing="the ask",
         arm=0,
-        landed="idle",
         reply=f'Earlier I said "{PennyResponse.AGENT_MODEL_ERROR}" but it reconnected — done.',
         aborted_on_model_error=False,
     )
@@ -1396,14 +1392,12 @@ def test_no_claim_can_opt_out_of_being_scored():
     render without counting is a claim that could hold a case's number up while failing."""
     world = World(name="base", pages=(), keeps=(("499",),), excludes=())
     samples = [
-        SampleObservation(
-            name=f"s{i}", phrasing="the ask", arm=0, landed="learn", reply="x", given=Given("x")
-        )
+        SampleObservation(name=f"s{i}", phrasing="the ask", arm=0, reply="x", given=Given("x"))
         for i in range(2)
     ]
     cohort = Cohort("case", "m", samples, _one_arm(world))
-    cohort.assert_machine_landed(ConversationState.LEARN)
     cohort.assert_every_value_in_the_reply_is_sourced()
+    cohort.assert_every_value_in_the_store_is_sourced()
 
     checks = _cohort_checks(cohort)
     assert set(checks) == {"s0", "s1"}

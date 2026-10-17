@@ -192,9 +192,6 @@ async def test_a_random_pick_is_reported_as_the_tool_made_it(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — EMPTY, and that is a report rather than an omission: the world holds nothing
     # before the turn, so there is no prior state for a preservation claim to read, and the ask
     # asks for nothing to be kept.  Whether a sample wrote something anyway is its own call and

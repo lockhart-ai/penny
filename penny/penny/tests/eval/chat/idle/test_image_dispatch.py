@@ -244,10 +244,6 @@ def drew(subject: tuple[str, ...]) -> _ClaimFn:
 async def test_a_request_for_a_picture_draws_it(chat_eval: ChatEval, model: str) -> None:
     """An empty media store, the image tool on the surface, and a request for one picture."""
     cohort = await _drive(chat_eval, model, _REQUEST)
-    # LANDED — a picture asked for is handled right now, which is idle by the machine's own
-    # task-lifetime boundary (#1919).
-    cohort.assert_machine_landed("idle")
-
     # STORE — the picture the ask asked for, read off the media store.
     cohort.claim(
         "state: the media store holds an image drawn this turn of a dragon on a lighthouse",
@@ -278,9 +274,6 @@ async def test_a_remark_about_a_painting_stays_in_idle(chat_eval: ChatEval, mode
     Its own setup and its own run, because the request case's whole contract is that a picture
     is drawn — a case is one setup, one run and one set of assertions (#2100)."""
     cohort = await _drive(chat_eval, model, _NO_FIRE)
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — EMPTY, and a report: the world holds nothing a chat turn could alter (the image
     # store is append-only and the registry starts empty), so there is no prior state for a
     # preservation claim to read.

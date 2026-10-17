@@ -446,9 +446,6 @@ def _carries_no_neighbour_figure(tokens: tuple[str, ...]) -> WorldClaim:
 def claim_the_lookup(cohort: Cohort) -> None:
     """Every claim the lookup case makes, declared in one place so the deterministic pins
     answer the very set the case declares."""
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — the figure the ask asked for is in the reply (a delivered message is a record the
     # store holds), and the collection the turn was not sent to is as it was.
     cohort.assert_the_reply_answers_the_ask()
@@ -474,9 +471,6 @@ def claim_the_unreachable(cohort: Cohort) -> None:
     whether it SAYS the mailbox failed is prose, read on the modal sample as reply spread
     (the same call ``chat-reply-admits-the-read-failed`` makes for a dead browse) rather than a
     vocabulary this claim would have to guess in advance."""
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — what was already there survives.  No message was read, so the reply owes no
     # token.
     cohort.assert_what_the_store_held_survives()
@@ -492,9 +486,6 @@ def claim_the_unreachable(cohort: Cohort) -> None:
 def claim_the_absent(cohort: Cohort) -> None:
     """Every claim the absent-message case makes — where the turn landed, what survived it,
     and that nothing it stored or said was invented."""
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — what was already there survives.  No message holds the answer, so the reply owes
     # no token: whether it says nothing was found is reply text, measured as reply spread.
     cohort.assert_what_the_store_held_survives()
@@ -509,9 +500,6 @@ def claim_the_absent(cohort: Cohort) -> None:
 def claim_the_remark(cohort: Cohort) -> None:
     """Every claim the remark case makes — where the turn landed, what survived it, and that
     nothing it stored was invented."""
-    # LANDED
-    cohort.assert_machine_landed("idle")
-
     # STORE — what was already there survives.  The remark asks for nothing, so there is no
     # answer for the reply to owe.
     cohort.assert_what_the_store_held_survives()
