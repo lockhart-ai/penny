@@ -343,7 +343,20 @@ class Prompt:
     # Appended as a plain sentence, not a numbered step (#2455 naive baseline): there
     # is no numbered program any more for it to continue numbering from, so the close
     # is stated in the same prose the rest of the prompt is written in.
-    COLLECTOR_DONE_INSTRUCTION = "When you've done what this collection asks, call done()."
+    #
+    # The close carries a choice now (#2385): ``done(notify=…)`` is where the cycle
+    # records whether the user should hear about it.  The instruction names the
+    # choice and the anchor it reads against — what the collection holds and what it
+    # last told them, both rendered on the prompt — and states that a quiet cycle is
+    # a normal outcome, because the old argless close read quiet as "nothing to
+    # report" and the model had no way to say so on the record.
+    COLLECTOR_DONE_INSTRUCTION = (
+        "Finish with done(notify=…). Say true when this cycle found or stored "
+        "something the user would want to hear now — compare what the collection "
+        "holds and what you last told them with what you found. Say false when "
+        "nothing changed since what you last told them: a quiet cycle is a normal "
+        "outcome, not a failure."
+    )
 
     # The one tools-off draw a run falls back to when it has nothing more to do but
     # hasn't failed outright (#2370, docs/principles.md §2 item 9): the step limit, a

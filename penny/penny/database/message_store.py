@@ -1157,6 +1157,25 @@ class MessageStore:
             if row.mechanism is not None
         ]
 
+    def latest_mechanism_send(self, mechanism: str) -> MessageLog | None:
+        """The newest outgoing message this mechanism sent, or ``None`` if never.
+
+        Read off the emission provenance the drainer stamps (#1568): the outgoing
+        row whose ``mechanism`` names the collection, newest first.  This is what
+        the collector's "what you last told the user" line renders (#2385) — the
+        anchor the close's ``notify`` choice reads against, so "have I already said
+        this?" is a read, not a recollection.  Served by the partial
+        ``ix_messagelog_emission_time`` index (mechanism-bearing rows are sparse)."""
+        with self._session() as session:
+            return session.exec(
+                select(MessageLog)
+                .where(
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    MessageLog.mechanism == mechanism,
+                )
+                .order_by(*_NEWEST_MESSAGE_FIRST)
+            ).first()
+
     def latest_run_outcomes(self) -> dict[str, RunOutcomeStamp]:
         """Each collector's most recent completed run outcome + finish time, keyed
         by ``run_target`` — one grouped query (#1555).

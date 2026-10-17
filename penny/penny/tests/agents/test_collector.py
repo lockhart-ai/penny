@@ -36,6 +36,7 @@ from penny.constants import (
     CYCLE_END_RETRY_REASONS,
     HEALTHY_CYCLE_ENDS,
     WRITE_GATE_STOP_REASONS,
+    WRITE_GATE_STOP_WORTHY_OUTCOMES,
     CycleEnd,
     CycleTrigger,
     MutationAction,
@@ -107,10 +108,10 @@ _STAMP = "[YYYY-MM-DD HH:MM UTC]"
 def _normalise_stamps(text: str) -> str:
     """Collapse every rendered log timestamp to one placeholder so a whole-render
     literal is stable — the stamps are real wall-clock values written by the test
-    itself.  One helper, because three renders in this file carry stamps (a run-history
-    line, a holdings entry, the whole message array) and three copies of the pattern
-    would drift."""
-    return re.sub(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", _STAMP, text)
+    itself.  One helper, because the renders in this file carry stamps bracketed or
+    parenthesised (a run-history line, a holdings entry, the last-told line, the
+    whole message array) and copies of the pattern would drift."""
+    return re.sub(r"[\[(]\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC[\])]", _STAMP, text)
 
 
 def _backdate_collected(db: Database, name: str, *, minutes: int) -> None:
@@ -797,7 +798,7 @@ async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_confi
                     "entries": [{"key": "today", "content": "a fact"}],
                 },
             )
-        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
     mock_llm.set_response_handler(handler)
 
@@ -882,7 +883,11 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "2. Browse for new games.\n"
         "3. Write each one into board-games.\n"
         "\n"
-        "When you've done what this collection asks, call done().\n"
+        "Finish with done(notify=…). Say true when this cycle found or stored "
+        "something the user would want to hear now — compare what the collection "
+        "holds and what you last told them with what you found. Say false when "
+        "nothing changed since what you last told them: a quiet cycle is a normal "
+        "outcome, not a failure.\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
@@ -978,7 +983,11 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "Check https://northpier.example/departures for the dawn sailing and "
         "record the time it leaves.\n"
         "\n"
-        "When you've done what this collection asks, call done().\n"
+        "Finish with done(notify=…). Say true when this cycle found or stored "
+        "something the user would want to hear now — compare what the collection "
+        "holds and what you last told them with what you found. Say false when "
+        "nothing changed since what you last told them: a quiet cycle is a normal "
+        "outcome, not a failure.\n"
         "\n"
         f"{Collector._runtime_rules()}"
         "\n"
@@ -987,6 +996,10 @@ async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds
         "The entries it holds right now, and the key each one is stored under.\n"
         f"1. {_STAMP} key='last return' 21:15 from the island\n"
         f"2. {_STAMP} key='dawn sailing' 06:40 from the north pier"
+        "\n"
+        "\n"
+        "## What you last told the user\n"
+        "You have never sent them anything about this collection."
     ), f"Holdings render mismatch:\n{composed!r}"
 
 
@@ -1130,13 +1143,43 @@ def _results_so_far(request: dict) -> int:
     return sum(1 for message in request["messages"] if message.get("role") == "tool")
 
 
-def _program_handler(mock_llm, *, key: str = "Cinder Drift", content: str, drawn: str | None):
-    """A handler that runs the two-call program, CLOSES with ``done()``, and then
-    answers the notify draw.
+def _last_tool_result(request: dict) -> str:
+    """The most recent tool result in the conversation, or "" when there is none."""
+    for message in reversed(request["messages"]):
+        if message.get("role") == "tool":
+            return str(message.get("content") or "")
+    return ""
+
+
+def _write_said_unchanged(request: dict) -> bool:
+    """Did the write the cycle just made come back as no-news?  Reads the write
+    gate's own enumerated text — the unchanged / already-recorded renders — which is
+    what the close's ``notify`` choice reads against too (#2385)."""
+    result = _last_tool_result(request)
+    return "Unchanged:" in result or "Already recorded:" in result
+
+
+def _program_handler(
+    mock_llm,
+    *,
+    key: str = "Cinder Drift",
+    content: str,
+    drawn: str | None,
+    notify: bool = True,
+):
+    """A handler that runs the two-call program, CLOSES with ``done(notify=…)``, and
+    then answers the notify draw.
 
     It branches on the CONVERSATION — the notify draw by its own system prompt, the
     program step by how many tool results have come back — so the three cycle steps
-    (read, write, close) fall out in order and a STOPped write never reaches the close.
+    (read, write, close) fall out in order and the close always follows the write.
+
+    The close's ``notify`` reads the state the write left: a write the gate returned
+    as UNCHANGED / ALREADY-RECORDED means nothing new since what the user was told,
+    so the close records ``notify=false`` (the quiet cycle is a normal outcome,
+    #2385) — unless ``notify`` explicitly says otherwise, which is how a test pins
+    the model recording true anyway.  A write that landed news closes with
+    ``notify`` as given.
 
     ``drawn`` is what the notify micro-context replies; ``None`` makes it reply with
     something that is not a message at all, which is how the no-usable-draw path is
@@ -1159,7 +1202,8 @@ def _program_handler(mock_llm, *, key: str = "Cinder Drift", content: str, drawn
                     "entries": [{"key": key, "content": content}],
                 },
             )
-        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+        closing_notify = False if (notify and _write_said_unchanged(request)) else notify
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": closing_notify})
 
     return handler
 
@@ -1230,13 +1274,44 @@ async def test_a_done_closed_cycle_queues_exactly_one_notification(mock_llm, tes
 
 @pytest.mark.asyncio
 async def test_a_done_closed_cycle_without_notify_stays_quiet(mock_llm, test_config, tmp_path):
-    """The completed-QUIET shape: the same done-closed cycle on a collection that does
-    not notify draws nothing and queues nothing.
+    """The completed-QUIET shape: the same done-closed cycle that records
+    ``notify=false`` draws nothing and queues nothing.
 
-    Its record carries NO reason at all (#1916) — a bare clean close has nothing to
-    report beyond the outcome enum the header falls back to, and the completion phrase
-    that used to open every finished cycle's reason retired with the coverage read that
-    was the only thing distinguishing it from a stop."""
+    Whether the user hears is now the close's own recorded choice (#2385): the
+    composer runs only off a successful ``done(notify=true)`` — a false close means
+    the model looked at what the collection holds and what it last told the user,
+    decided there was no news, and put that on the record.  The record carries NO
+    reason at all (#1916) — a bare clean close has nothing to report beyond the
+    outcome enum the header falls back to."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            content="Cinder Drift — a new metroidvania. https://ex.example/cd",
+            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
+            notify=False,
+        )
+    )
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert len(mock_llm.requests) == 3  # the program's two calls + the close, no draw
+    assert db.send_queue.next_pending() is None
+    assert _run_reason(db) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_notify_true_close_on_a_notify_off_collection_sends_nothing(
+    mock_llm, test_config, tmp_path
+):
+    """The DETERMINISTIC arm (#2385): the model says ``notify=true`` but the
+    collection has notifications off — nothing is drawn, nothing is queued.
+
+    The close's choice is the model's, and the collection's switch is the user's;
+    both must agree for a message to be composed.  The switch is read
+    deterministically in Python, so a job configured silent stays silent whatever
+    the close records — the same gate the composer's own failures sit behind."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db, notify=False)
     mock_llm.set_response_handler(
@@ -1249,9 +1324,95 @@ async def test_a_done_closed_cycle_without_notify_stays_quiet(mock_llm, test_con
 
     await collector.run_for("indie-metroidvanias")
 
-    assert len(mock_llm.requests) == 3  # the program's two calls + the close, no draw
+    assert len(mock_llm.requests) == 3  # the close said true; no composer call followed
     assert db.send_queue.next_pending() is None
     assert _run_reason(db) == ""
+
+
+def _bad_done_then_close(mock_llm, bad_args: dict):
+    """A handler whose FIRST close attempt is malformed — the reroll the loop gives
+    the model on a failed record, then a valid ``done(notify=false)``.
+
+    The failed attempt branches on the CONVERSATION: the tool result naming the bad
+    argument is the last tool message, so the next step closes properly.  The cycle
+    stays quiet (notify=false) so the subject is the failed record itself."""
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if request["messages"][0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
+            return mock_llm._make_text_response(request, f"MESSAGE: {_DRAWN_MESSAGE}")
+        results = _results_so_far(request)
+        if results == 0:
+            return mock_llm._make_tool_call_response(
+                request, "collection_list", {"collection": "indie-metroidvanias"}
+            )
+        if results == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {
+                    "collection": "indie-metroidvanias",
+                    "entries": [
+                        {"key": "Cinder Drift", "content": "out now. https://ex.example/cd"}
+                    ],
+                },
+            )
+        last = _last_tool_result(request)
+        if "Call done(" in last and "notify" in last:
+            return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
+        return mock_llm._make_tool_call_response(request, DoneTool.name, bad_args)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_a_done_without_notify_is_a_failed_record_that_rerolls(
+    mock_llm, test_config, tmp_path
+):
+    """A close missing its REQUIRED ``notify`` is a failed record, not a close
+    (#2385): the loop rerolls, the model sees the field-naming error, and its valid
+    retry ends the cycle.
+
+    The record is what the run-health count reads; the close itself never happens on
+    a validation failure, so nothing downstream acts on an argument nobody supplied.
+    The error names the field, so the fix is a copy rather than a guess (n≤1)."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False)
+    mock_llm.set_response_handler(_bad_done_then_close(mock_llm, {}))
+
+    success, _ = await collector.run_for("indie-metroidvanias")
+
+    assert success is True
+    # list, write, the FAILED close, the retry that closed — the failed record is the
+    # cycle's third step and the retry its fourth.
+    assert len(mock_llm.requests) == 4
+    assert db.send_queue.next_pending() is None
+    run = _collector_run(db)
+    assert run["run_reason"] == ""
+    assert run["health"]["tool_failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_done_with_a_non_boolean_notify_is_a_failed_record_that_rerolls(
+    mock_llm, test_config, tmp_path
+):
+    """The same envelope, the other bad shape: ``notify="maybe"`` is not a boolean
+    (Pydantic lax mode coerces plain "yes"/"no" — those are not this test's shape),
+    so the close fails validation and the retry carries the real argument.
+
+    The argument is the recorded decision, made in the model's own terms; a value
+    the schema cannot read is a failed record, not a close."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False)
+    mock_llm.set_response_handler(_bad_done_then_close(mock_llm, {"notify": "maybe"}))
+
+    success, _ = await collector.run_for("indie-metroidvanias")
+
+    assert success is True
+    assert len(mock_llm.requests) == 4
+    assert db.send_queue.next_pending() is None
+    run = _collector_run(db)
+    assert run["run_reason"] == ""
+    assert run["health"]["tool_failures"] == 1
 
 
 # #2419's gap check — "a done-closed cycle that wrote nothing sends no notification"
@@ -1272,10 +1433,11 @@ _READ_ONLY_PROGRAM = (
 )
 
 
-def _read_only_handler(mock_llm, *, drawn: str):
-    """Runs the one-call read-only program, closes with ``done()``, then answers the
-    notify draw — branching on the CONVERSATION (the draw by its own system prompt, the
-    cycle step by how many results have come back) like ``_program_handler``."""
+def _read_only_handler(mock_llm, *, drawn: str, notify: bool = True):
+    """Runs the one-call read-only program, closes with ``done(notify=…)``, then
+    answers the notify draw — branching on the CONVERSATION (the draw by its own
+    system prompt, the cycle step by how many results have come back) like
+    ``_program_handler``."""
 
     def handler(request: dict, count: int) -> LlmResponse:
         if request["messages"][0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
@@ -1284,7 +1446,7 @@ def _read_only_handler(mock_llm, *, drawn: str):
             return mock_llm._make_tool_call_response(
                 request, "collection_list", {"collection": "indie-metroidvanias"}
             )
-        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": notify})
 
     return handler
 
@@ -1322,7 +1484,9 @@ async def test_a_read_only_cycle_that_told_nobody_still_records_no_work(
     completed cycle into work."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db, notify=False, extraction_prompt=_READ_ONLY_PROGRAM)
-    mock_llm.set_response_handler(_read_only_handler(mock_llm, drawn=f"MESSAGE: {_DRAWN_MESSAGE}"))
+    mock_llm.set_response_handler(
+        _read_only_handler(mock_llm, drawn=f"MESSAGE: {_DRAWN_MESSAGE}", notify=False)
+    )
 
     await collector.run_for("indie-metroidvanias")
 
@@ -1376,15 +1540,16 @@ async def test_an_undrawable_notification_records_honestly_and_reverts_the_cycle
 
 
 @pytest.mark.asyncio
-async def test_notify_cycle_sends_nothing_on_a_no_change_write(mock_llm, test_config, tmp_path):
-    """STOP interplay (#1557, carried to #1911/#1916): a notify=true run that
-    re-observes the watched key with an UNCHANGED value STOPs at the write gate, so a
-    no-change cycle emits NOTHING.
+async def test_an_unchanged_write_runs_on_to_a_quiet_close(mock_llm, test_config, tmp_path):
+    """An unchanged write no longer ENDS the cycle (#2385, the code owner's ruling on
+    the duplicate-write STOP): the write gate still dedups and its result still tells
+    the model the value was already held, but the call returns normally and the model
+    goes on to its close — where the quiet cycle is RECORDED as ``notify=false``.
 
-    The STOP ends the run at the chokepoint, before the cycle ever reaches the step that
-    would close it — which is why the trigger reads the STOP as well as the close.  The
-    write's own result is what carries it, so no-news is silent structurally rather than
-    by the model choosing not to mention it."""
+    What was removed is the gate deciding no-news on the model's behalf: whether the
+    user hears is the close's own recorded choice, made against what the collection
+    holds and what it last told the user.  Nothing is queued, and the run record
+    reads a bare clean close."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
     mock_llm.set_response_handler(
@@ -1398,27 +1563,24 @@ async def test_notify_cycle_sends_nothing_on_a_no_change_write(mock_llm, test_co
 
     await collector.run_for("indie-metroidvanias")
 
-    # The read, then the write that STOPped — and no notify draw after it.
-    assert len(mock_llm.requests) == 2
+    # The read, the write that came back UNCHANGED, then the close that recorded the
+    # quiet cycle — three cycle calls, and no notify draw after a false close.
+    assert len(mock_llm.requests) == 3
     assert db.send_queue.next_pending() is None
-    assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+    assert _run_reason(db) == ""
+    assert _get(db, "indie-metroidvanias").last_collected_at is not None
 
 
 @pytest.mark.asyncio
-async def test_notify_cycle_sends_nothing_when_the_value_is_stored_under_another_key(
-    mock_llm, test_config, tmp_path
-):
+async def test_an_already_recorded_write_runs_on_to_a_quiet_close(mock_llm, test_config, tmp_path):
     """The SAME no-news through the other door (#1919): the cycle re-observes what it
-    already holds but words the key differently, so the exact-key comparison never runs
-    and the dedup disjunction answers instead — a strict CONTENT match, which is
-    DUPLICATE_UNCHANGED and STOPs exactly as the exact key does.  Nothing is queued.
+    already holds but words the key differently, so the exact-key comparison never
+    runs and the dedup disjunction answers instead — a strict CONTENT match, read
+    back to the model as ALREADY RECORDED.  That is a result now, not a verdict: the
+    cycle runs on and closes ``notify=false``, and nothing is queued.
 
-    The run record is the point of the pin.  The STOP lands on the cycle's SECOND call,
-    after a real read has already been persisted, so there IS a promptlog row for
-    ``set_run_outcome`` to stamp and the declared stop reason reaches it.  A STOP on a
-    cycle's very first call leaves no row at all — the run record reads empty and every
-    cycle-shaped assertion silently scores against an absent ledger, which is the blind
-    spot this pin exists to keep closed."""
+    The value stays filed under the key it already had — a re-observation adds
+    nothing, and no reworded key is written."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
     mock_llm.set_response_handler(
@@ -1432,28 +1594,29 @@ async def test_notify_cycle_sends_nothing_when_the_value_is_stored_under_another
 
     await collector.run_for("indie-metroidvanias")
 
-    assert len(mock_llm.requests) == 2
+    assert len(mock_llm.requests) == 3
     assert db.send_queue.next_pending() is None
-    assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED]
+    assert _run_reason(db) == ""
     # The value stays filed under the key it already had — a re-observation adds nothing.
     entries = require_memory(db, "indie-metroidvanias").read_all()
     assert [entry.key for entry in entries] == [_NOTIFY_SEED_KEY]
+    assert _get(db, "indie-metroidvanias").last_collected_at is not None
 
 
 @pytest.mark.asyncio
 async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
     mock_llm, test_config, tmp_path
 ):
-    """The anti-spam proof (#1633, carried to #1911/#1916): the last prose gate in the
-    watch chain is gone.
+    """The anti-spam proof (#1633, carried to #1911/#1916, re-read for #2385).
 
     A notify=true watch collector observes its key.  The source value CHANGES, so the
     model writes the SAME key with a new value → the write gate auto-refreshes the
-    stored baseline IN PLACE (stamping the writing run) and, because CHANGED is not a
-    STOP, the cycle runs on to its close and the framework tells the user ONCE.  The
-    NEXT cycle re-observes the now-current value: the gate reads UNCHANGED and STOPs at
-    the write, so it never reaches the close and emits NOTHING.  Changed once →
-    notified once → quiet."""
+    stored baseline IN PLACE (stamping the writing run), the cycle runs on to its
+    close, the close records ``notify=true``, and the framework tells the user ONCE.
+    The NEXT cycle re-observes the now-current value: the gate reads UNCHANGED — a
+    result, not a STOP since #2385 — so the cycle reaches its close and records
+    ``notify=false``.  Changed once → notified once → quiet, and the quiet is the
+    model's recorded decision rather than the gate cutting the run short."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)  # baseline: _NOTIFY_SEED_KEY = _NOTIFY_SEED_CONTENT
     new_value = f"{_NOTIFY_SEED_CONTENT} — now with a playable demo!"
@@ -1478,13 +1641,13 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
         f"Update on {_NOTIFY_SEED_KEY}!"
     ]
 
-    # Cycle 2: the source is unchanged since the refresh, so the write STOPs and the
-    # notify draw is never reached.
+    # Cycle 2: the source is unchanged since the refresh.  The write comes back
+    # UNCHANGED and the cycle runs on to a close that records the quiet cycle.
     requests_before_cycle_2 = len(mock_llm.requests)
     await collector.run_for("indie-metroidvanias")
 
-    # The read, then the write that STOPped — and no notify draw after it.
-    assert len(mock_llm.requests) == requests_before_cycle_2 + 2
+    # The read, the unchanged write, the quiet close — and no second draw.
+    assert len(mock_llm.requests) == requests_before_cycle_2 + 3
     assert len(db.send_queue.pending_items()) == 1
 
 
@@ -1669,37 +1832,44 @@ _TWO_WRITE_PROGRAM = (
 
 
 @pytest.mark.asyncio
-async def test_a_write_gate_stop_keeps_what_the_cycle_wrote_before_it(
+async def test_an_unchanged_write_keeps_what_the_cycle_wrote_before_it(
     mock_llm, test_config, tmp_path
 ):
-    """A write-gate STOP is a HEALTHY end (#1936): an early clean no-news exit IS the
-    cycle's end point, so whatever landed before it stays.
+    """An unchanged write is a HEALTHY middle, not an end (#2385): the cycle files a
+    genuinely new find, then re-observes the seeded entry unchanged — and the
+    unchanged result no longer cuts the run off at the chokepoint.  The model goes
+    on to its close and records the quiet cycle, so everything it wrote this cycle
+    stands and the occurrence is spent.
 
-    The cycle files a genuinely new find, then re-observes the seeded entry unchanged
-    and STOPs at the chokepoint without ever reaching a close.  Treating "no close" as
-    "not finished" would throw the new find away and the collection would never
+    The shape this replaces (a write-gate STOP keeping what landed before it) was
+    the old mechanism's patch for the same accumulator: treating "no close" as "not
+    finished" would have thrown the new find away and the collection would never
     accumulate anything on a quiet cycle.
     """
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db, notify=False, extraction_prompt=_TWO_WRITE_PROGRAM)
     calls = 0
 
-    def writes_then_stops(request: dict, count: int) -> LlmResponse:
+    def writes_then_closes(request: dict, count: int) -> LlmResponse:
         nonlocal calls
         calls += 1
-        entry = (
-            {"key": "Cinder Drift", "content": "Cinder Drift — out next spring."}
-            if calls == 1
-            else {"key": _NOTIFY_SEED_KEY, "content": _NOTIFY_SEED_CONTENT}
-        )
-        return mock_llm._make_tool_call_response(
-            request, "collection_write", {"collection": "indie-metroidvanias", "entries": [entry]}
-        )
+        if calls <= 2:
+            entry = (
+                {"key": "Cinder Drift", "content": "Cinder Drift — out next spring."}
+                if calls == 1
+                else {"key": _NOTIFY_SEED_KEY, "content": _NOTIFY_SEED_CONTENT}
+            )
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {"collection": "indie-metroidvanias", "entries": [entry]},
+            )
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
-    mock_llm.set_response_handler(writes_then_stops)
+    mock_llm.set_response_handler(writes_then_closes)
     await collector.run_for("indie-metroidvanias")
 
-    assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+    assert _run_reason(db) == ""
     keys = {entry.key for entry in require_memory(db, "indie-metroidvanias").read_all()}
     assert keys == {_NOTIFY_SEED_KEY, "Cinder Drift"}
     assert _get(db, "indie-metroidvanias").last_collected_at is not None
@@ -1797,7 +1967,7 @@ def _reads_then_writes(mock_llm, *, close: bool):
                 },
             )
         if close:
-            return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+            return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
         raise LlmConnectionError("Connection refused")
 
     return handler
@@ -1867,21 +2037,71 @@ async def test_run_history_section_shows_timestamped_outcomes(test_config, tmp_p
 
     # Verbatim: newest-first (run-b ran after run-a), each outcome stamped with an
     # absolute UTC timestamp the model can compare against the "Current date and
-    # time: … UTC" line (timestamps normalised to a placeholder for stability).
+    # time: … UTC" line (timestamps normalised to a placeholder for stability) —
+    # and the last-told line in its NEVER form: nothing this mechanism sent exists.
     section = _normalise_stamps(section)
     assert section == (
         "\n\n## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "
         "work or re-sending, not an instruction to repeat.\n"
         "1. [YYYY-MM-DD HH:MM UTC] the value was unchanged since the last observation\n"
-        "2. [YYYY-MM-DD HH:MM UTC] worked"
+        "2. [YYYY-MM-DD HH:MM UTC] worked\n"
+        "\n"
+        "## What you last told the user\n"
+        "You have never sent them anything about this collection."
     ), f"Run-history section mismatch:\n{section!r}"
 
 
 @pytest.mark.asyncio
+async def test_run_history_section_carries_the_last_told_line(test_config, tmp_path):
+    """The close's ``notify`` choice reads against what the user was last TOLD
+    (#2385), so the prompt renders it: the newest outgoing message this mechanism
+    sent (the drainer's emission provenance, #1568), snippet + when — verbatim.
+
+    With a send on the record the line quotes it; without one the section says
+    "never" outright, because "nothing was shown" is not the same state as "you have
+    never sent them anything" and the close reads both differently."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
+    collector._current_target = db.memories.get("board-games")
+
+    # Absent first: a fresh mechanism has sent nothing.
+    assert collector._run_history_section("board-games").endswith(
+        "## What you last told the user\nYou have never sent them anything about this collection."
+    )
+
+    # Present: an outgoing send stamped with this mechanism renders its snippet.
+    db.messages.log_message(
+        "outgoing",
+        sender="penny",
+        content="Two new board games this week: Hollow Verge and Cinder Drift.",
+        mechanism="board-games",
+    )
+    section = _normalise_stamps(collector._run_history_section("board-games"))
+    assert section.endswith(
+        "## What you last told the user\n"
+        'The last thing you told the user: "Two new board games this week: Hollow '
+        'Verge and Cinder Drift." [YYYY-MM-DD HH:MM UTC]'
+    ), f"Last-told block mismatch:\n{section!r}"
+    assert "You have never sent them anything" not in section
+
+    # A send from ANOTHER mechanism is not this collection's last-told state.
+    db.messages.log_message(
+        "outgoing",
+        sender="penny",
+        content="A different collection's message entirely.",
+        mechanism="some-other-mechanism",
+    )
+    section = collector._run_history_section("board-games")
+    assert "Two new board games this week" in section
+    assert "A different collection's message entirely." not in section
+
+
+@pytest.mark.asyncio
 async def test_run_history_section_absent_without_runs(test_config, tmp_path):
-    """A collection with no prior completed runs gets no run-history block —
-    a fresh collector's prompt is unchanged."""
+    """A collection with no prior completed runs gets no run-history block — but the
+    last-told line still renders, in its never-sent form (#2385): "you have never
+    sent them anything" is a state the close can read, not an absence."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
     collector._current_target = db.memories.get("board-games")
@@ -1889,6 +2109,10 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
     prompt = await collector._build_system_prompt(None)
 
     assert "## Your recent runs" not in prompt
+    assert (
+        "## What you last told the user\n"
+        "You have never sent them anything about this collection." in prompt
+    )
 
 
 @pytest.mark.asyncio
@@ -1944,7 +2168,11 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
         "\n"
-        "When you've done what this collection asks, call done().\n"
+        "Finish with done(notify=…). Say true when this cycle found or stored "
+        "something the user would want to hear now — compare what the collection "
+        "holds and what you last told them with what you found. Say false when "
+        "nothing changed since what you last told them: a quiet cycle is a normal "
+        "outcome, not a failure.\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
@@ -1963,7 +2191,10 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "What your previous cycles did, and when — context to avoid repeating "
         "work or re-sending, not an instruction to repeat.\n"
         "1. [YYYY-MM-DD HH:MM UTC] no_work\n"
-        "2. [YYYY-MM-DD HH:MM UTC] worked"
+        "2. [YYYY-MM-DD HH:MM UTC] worked\n"
+        "\n"
+        "## What you last told the user\n"
+        "You have never sent them anything about this collection."
     )
     assert system_text == expected_system, (
         f"System mismatch:\n{system_text!r}\n\nvs expected:\n{expected_system!r}"
@@ -2143,15 +2374,14 @@ def test_cycle_result_classifies_worked_no_work_and_failed(test_config, tmp_path
 
 
 def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
-    """A write-gate STOP (#1587) closes the cycle at the chokepoint with NO done():
-    a watch's unchanged re-observation carries ``stop_reason`` on the write record —
-    the outcome is a clean ``no_work`` (nothing changed) stamped with the declared
-    stop reason, NOT a ``failed`` bail (the mislabel that would fire if the missing
-    done() fell through to the no-``done()`` path).  A STOP that also changed durable
+    """A record carrying a ``stop_reason`` classifies as a STOP, not a failed bail:
+    the declared table names the stamped reason, and a STOP that also changed durable
     state stays ``worked``.
 
-    A STOP is a HEALTHY end (#1936) — the cycle's writes survive it — so every case here
-    is scored with ``landed=True``, the only state a stopped cycle is ever in."""
+    No write-gate outcome produces a stop any more (#2385 moved STOP-worthiness into
+    the now-empty ``WRITE_GATE_STOP_WORTHY_OUTCOMES``), so the path is unreachable
+    end-to-end today — the hook reads whatever a record carries, so the render stays
+    honest for a legacy row or a future member."""
     collector, _ = _make_collector(test_config, tmp_path)
     reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
@@ -2177,32 +2407,18 @@ def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
                 tool="collection_write",
                 arguments={},
                 mutated=False,
-                stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED,
+                stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED,
             ),
         ],
     )
-    assert collector._cycle_result(stop_after_work, None, True) == (RunOutcome.WORKED, reason)
+    assert collector._cycle_result(stop_after_work, None, True) == (
+        RunOutcome.WORKED,
+        WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED],
+    )
 
-    # The reworded-key door onto the SAME no-news (#1919) closes the cycle identically
-    # and stamps its OWN declared reason, so a run record says which door it came
-    # through rather than collapsing both onto one phrase.
-    already_reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.DUPLICATE_UNCHANGED]
-    assert already_reason != reason
-    already_stop = ControllerResponse(
-        answer="",
-        tool_calls=[
-            ToolCallRecord(
-                tool="collection_write",
-                arguments={},
-                mutated=False,
-                stop_reason=WriteGateOutcome.DUPLICATE_UNCHANGED,
-            )
-        ],
-    )
-    assert collector._cycle_result(already_stop, None, True) == (
-        RunOutcome.NO_WORK,
-        already_reason,
-    )
+    # The stop-worthy SET is empty: nothing the write gate produces stops a cycle,
+    # so the set is the only thing a future member extends.
+    assert not WRITE_GATE_STOP_WORTHY_OUTCOMES
 
 
 def test_should_stop_loop_honors_the_terminator_and_the_write_gate_stop(test_config, tmp_path):
@@ -2370,7 +2586,7 @@ def _writes_then_closes(mock_llm) -> Callable[[dict, int], LlmResponse]:
                     "entries": [{"key": "today", "content": "the ferries are running"}],
                 },
             )
-        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
     return handler
 
@@ -2460,7 +2676,7 @@ async def test_a_quiet_completed_cycle_still_consumes_its_occurrence(
             return mock_llm._make_tool_call_response(
                 request, "collection_list", {"collection": "morning-briefing"}
             )
-        return mock_llm._make_tool_call_response(request, DoneTool.name, {})
+        return mock_llm._make_tool_call_response(request, DoneTool.name, {"notify": False})
 
     mock_llm.set_response_handler(reads_then_closes)
     assert await collector.execute() is True

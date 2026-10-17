@@ -503,8 +503,21 @@ class FindArgs(ToolArgs):
     memory: OptionalMemoryName = None
 
 
-# ``done`` is an argless sentinel (#1569): it just marks the cycle finished.  The
-# run record is GENERATED from the run's canonical ledger rows (the stored tool
-# calls + write-gate outcomes + structural counts), never from a model-authored
-# ``success``/``summary``, so the terminator carries no arguments to confabulate.
-# ``DoneTool`` binds :class:`~penny.tools.models.NoArgs`.
+class DoneArgs(ToolArgs):
+    """The one argument the cycle's close carries (#2385): whether the user should
+    hear about this cycle.
+
+    ``notify`` is REQUIRED — the choice is the cycle's to make and record, not a
+    default to fall into — and the run record is still GENERATED from the ledger
+    (the stored tool calls + write-gate outcomes + structural counts), never from a
+    model-authored ``success``/``summary``, so there is nothing else here to
+    confabulate.  A done call that fails validation is a failed record, not a close,
+    so the loop rerolls and the model tries again.  ``DoneTool`` binds this model.
+    """
+
+    notify: bool
+
+
+# ``DoneTool`` binds :class:`DoneArgs` (#2385) — the terminator used to be an
+# argless sentinel (#1569); the notify decision moved onto it so the composer runs
+# only when the cycle itself said there was news.

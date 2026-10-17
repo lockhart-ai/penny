@@ -490,8 +490,9 @@ class TestCollectionWrites:
         """A collision on the VALUE is DUPLICATE_UNCHANGED (#1919) — the stored entry
         already says what this write says, however either is worded, so the cycle
         observed nothing new.  It is ``KEY_EXISTS_UNCHANGED``'s twin for the
-        reworded-key path and STOP-worthy for the same reason, which is what keeps a
-        re-observation from reading as a rejection the model should recover from."""
+        reworded-key path and carries the declared reason for a stamped stop row;
+        since #2385 it no longer STOPS a cycle — the write returns normally and the
+        cycle records the quiet close itself."""
         db.memories.create_collection("likes", "positive prefs")
         shared_content = _unit_vec(4)
 
@@ -518,7 +519,7 @@ class TestCollectionWrites:
             author="preference-extractor",
         )
         assert results[0].outcome == WriteGateOutcome.DUPLICATE_UNCHANGED
-        assert results[0].outcome in WRITE_GATE_STOP_REASONS
+        assert results[0].outcome in WRITE_GATE_STOP_REASONS  # the declared reason table
         # The entry that HOLDS the value is named, not the key this write proposed.
         assert results[0].matched_key == "first key"
         assert len(db.memories.memory("likes").read_all()) == 1
