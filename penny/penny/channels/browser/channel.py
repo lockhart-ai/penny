@@ -44,8 +44,6 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST,
     BROWSER_MSG_TYPE_REGISTER,
     BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST,
-    BROWSER_MSG_TYPE_SKILL_DETAIL_REQUEST,
-    BROWSER_MSG_TYPE_SKILLS_REQUEST,
     BROWSER_MSG_TYPE_TOOL_RESPONSE,
     BROWSER_RESP_TYPE_CONFIG,
     BROWSER_RESP_TYPE_MEMORY_CHANGED,
@@ -86,16 +84,12 @@ from penny.channels.browser.models import (
     BrowserRunDetailRequest,
     BrowserRunDetailResponse,
     BrowserRunOutcomeUpdate,
-    BrowserSkillDetailRequest,
-    BrowserSkillDetailResponse,
-    BrowserSkillsResponse,
     BrowserToolRequest,
     BrowserToolResponse,
     CursorRecord,
     DomainPermissionRecord,
     MemoryEntryRecord,
     MemoryRecord,
-    SkillRecord,
 )
 from penny.channels.permission_manager import PermissionManager
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
@@ -106,8 +100,7 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
 )
-from penny.database.models import RuntimeConfig, Skill
-from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.models import RuntimeConfig
 from penny.tools.base import Tool
 
 if TYPE_CHECKING:
@@ -570,14 +563,6 @@ class BrowserChannel(MessageChannel):
 
         if msg_type == BROWSER_MSG_TYPE_ENTRY_DELETE:
             self._handle_entry_delete(data)
-            return device_label
-
-        if msg_type == BROWSER_MSG_TYPE_SKILLS_REQUEST:
-            await self._handle_skills_request(ws, data)
-            return device_label
-
-        if msg_type == BROWSER_MSG_TYPE_SKILL_DETAIL_REQUEST:
-            await self._handle_skill_detail_request(ws, data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST:
@@ -1128,43 +1113,7 @@ class BrowserChannel(MessageChannel):
         except MemoryTypeError as exc:
             logger.warning("entry_delete on non-collection %s: %s", req.memory, exc)
 
-    # ── Skills (read-only — #2443) ────────────────────────────────────────
-
-    async def _handle_skills_request(self, ws: ServerConnection, data: dict) -> None:
-        """List every skill's metadata for the addon's Skills tab."""
-        skills = self._db.skills.list_all()
-        payload = BrowserSkillsResponse(skills=[self._skill_to_record(s) for s in skills])
-        with contextlib.suppress(websockets.ConnectionClosed):
-            await ws.send(payload.model_dump_json())
-
-    async def _handle_skill_detail_request(self, ws: ServerConnection, data: dict) -> None:
-        """Send one skill's metadata + its structured parameters and steps + the
-        run it was taught from.  A miss is answered, not dropped (#2443): an
-        unknown name still gets a reply, with ``skill`` null and the requested
-        ``name`` echoed, so the tab's request never goes unanswered."""
-        try:
-            req = BrowserSkillDetailRequest(**data)
-        except ValidationError:
-            logger.warning("Invalid skill_detail_request: %s", str(data)[:200])
-            return
-        skill = self._db.skills.get(req.name)
-        if skill is None:
-            logger.warning("skill_detail_request for unknown skill: %s", req.name)
-        payload = self._skill_detail_payload(req.name, skill)
-        with contextlib.suppress(websockets.ConnectionClosed):
-            await ws.send(payload.model_dump_json())
-
-    @staticmethod
-    def _skill_detail_payload(name: str, skill: Skill | None) -> BrowserSkillDetailResponse:
-        if skill is None:
-            return BrowserSkillDetailResponse(name=name)
-        return BrowserSkillDetailResponse(
-            name=name,
-            skill=BrowserChannel._skill_to_record(skill),
-            parameters=parameters_from_json(skill.parameters),
-            steps=steps_from_json(skill.steps),
-            source_run_id=skill.source_run_id,
-        )
+    # ── Run detail (read-only — #2443) ───────────────────────────────────────
 
     async def _handle_run_detail_request(self, ws: ServerConnection, data: dict) -> None:
         """Send one run, fully serialized, by its ``run_id`` — e.g. the Skills
@@ -1182,17 +1131,6 @@ class BrowserChannel(MessageChannel):
         payload = BrowserRunDetailResponse(run_id=req.run_id, run=run)
         with contextlib.suppress(websockets.ConnectionClosed):
             await ws.send(payload.model_dump_json())
-
-    @staticmethod
-    def _skill_to_record(skill: Skill) -> SkillRecord:
-        return SkillRecord(
-            name=skill.name,
-            intent=skill.intent,
-            description=skill.description,
-            author=skill.author,
-            created_at=skill.created_at.isoformat(),
-            updated_at=skill.updated_at.isoformat(),
-        )
 
     async def _handle_config_request(self, ws: ServerConnection) -> None:
         """Return all runtime config params with current values."""

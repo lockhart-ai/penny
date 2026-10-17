@@ -61,8 +61,6 @@ export type WsOutgoingType =
   | "collection_trigger"
   | "cursor_set"
   | "cursor_clear"
-  | "skills_request"
-  | "skill_detail_request"
   | "run_detail_request";
 export const WsOutgoingType = {
   Message: "message",
@@ -88,8 +86,6 @@ export const WsOutgoingType = {
   CollectionTrigger: "collection_trigger",
   CursorSet: "cursor_set",
   CursorClear: "cursor_clear",
-  SkillsRequest: "skills_request",
-  SkillDetailRequest: "skill_detail_request",
   RunDetailRequest: "run_detail_request",
 } as const satisfies Record<string, WsOutgoingType>;
 
@@ -147,8 +143,6 @@ export type WsIncomingType =
   | "memory_page_response"
   | "memory_changed"
   | "collection_trigger_result"
-  | "skills_response"
-  | "skill_detail_response"
   | "run_detail_response";
 export const WsIncomingType = {
   Message: "message",
@@ -167,8 +161,6 @@ export const WsIncomingType = {
   MemoryPageResponse: "memory_page_response",
   MemoryChanged: "memory_changed",
   CollectionTriggerResult: "collection_trigger_result",
-  SkillsResponse: "skills_response",
-  SkillDetailResponse: "skill_detail_response",
   RunDetailResponse: "run_detail_response",
 } as const satisfies Record<string, WsIncomingType>;
 
@@ -408,77 +400,6 @@ export interface WsIncomingCollectionTriggerResultPayload {
   message: string;
 }
 
-// --- Skills (read-only, #2443) ---
-
-/** What one dynamic leaf of a skill step resolves to at render (mirrors
- * penny's `SkillSubKind`): a parameter the user binds, a prior step's result,
- * or a spot the labeller named that no user binds. */
-export type SkillSubKind = "hole" | "binding" | "placeholder";
-
-/** One dynamic leaf inside a step's arguments, addressed by its JSON path — a
- * leaf NOT covered by any substitution is a constant (mirrors penny's
- * `SkillSubstitution`). */
-export interface SkillSubstitution {
-  path: (string | number)[];
-  kind: SkillSubKind;
-  /** Set when `kind` is "hole" — the parameter's semantic name. */
-  parameter: string | null;
-  /** Set when `kind` is "binding" — the skill-relative step ordinal. */
-  step: number | null;
-  /** Set when `kind` is "placeholder" — what belongs there each run. */
-  description: string | null;
-  /** This leaf's demonstrated value named one of Penny's own collections. */
-  attachment: boolean;
-}
-
-/** One structured step of a skill — the verbatim tool name + arguments,
- * annotated with its dynamic leaves (mirrors penny's `SkillStep`). */
-export interface SkillStep {
-  ordinal: number;
-  source_ordinal: number;
-  tool: string;
-  arguments: Record<string, unknown>;
-  substitutions: SkillSubstitution[];
-}
-
-/** A declared parameter of a skill — a skill-level input, not a tool-arg echo
- * (mirrors penny's `SkillParameter`). */
-export interface SkillParameter {
-  name: string;
-  required: boolean;
-  description: string | null;
-  value: string | null;
-}
-
-/** One skill's metadata for the addon's Skills tab — the list view's row and
- * the detail view's header. */
-export interface SkillRecord {
-  name: string;
-  intent: string;
-  description: string;
-  author: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WsIncomingSkillsPayload {
-  type: typeof WsIncomingType.SkillsResponse;
-  skills: SkillRecord[];
-}
-
-/** One skill's full detail: metadata + structured parameters/steps (not
- * pre-rendered text) + the run it was taught from.  A miss is answered, not
- * dropped: `skill` is `null` and the requested `name` is echoed when no skill
- * of that name exists. */
-export interface WsIncomingSkillDetailPayload {
-  type: typeof WsIncomingType.SkillDetailResponse;
-  name: string;
-  skill: SkillRecord | null;
-  parameters: SkillParameter[];
-  steps: SkillStep[];
-  source_run_id: string | null;
-}
-
 /** One run, fully serialized (run → prompts → turns) — the same shape the
  * prompts tab's own list already carries each run in.  A miss is answered,
  * not dropped: `run` is `null` and the requested `run_id` is echoed when no
@@ -506,8 +427,6 @@ export type WsIncomingPayload =
   | WsIncomingMemoryPagePayload
   | WsIncomingMemoryChangedPayload
   | WsIncomingCollectionTriggerResultPayload
-  | WsIncomingSkillsPayload
-  | WsIncomingSkillDetailPayload
   | WsIncomingRunDetailPayload;
 
 // --- Runtime messages (sidebar ↔ background) ---
@@ -550,10 +469,6 @@ export type RuntimeMessageType =
   | "collection_trigger_result"
   | "cursor_set"
   | "cursor_clear"
-  | "skills_request"
-  | "skills_response"
-  | "skill_detail_request"
-  | "skill_detail_response"
   | "run_detail_request"
   | "run_detail_response";
 
@@ -595,10 +510,6 @@ export const RuntimeMessageType = {
   CollectionTriggerResult: "collection_trigger_result",
   CursorSet: "cursor_set",
   CursorClear: "cursor_clear",
-  SkillsRequest: "skills_request",
-  SkillsResponse: "skills_response",
-  SkillDetailRequest: "skill_detail_request",
-  SkillDetailResponse: "skill_detail_response",
   RunDetailRequest: "run_detail_request",
   RunDetailResponse: "run_detail_response",
 } as const satisfies Record<string, RuntimeMessageType>;
@@ -891,35 +802,7 @@ export interface RuntimeEntryDelete {
   key: string;
 }
 
-/** Skills tab → background: request the skills list */
-export interface RuntimeSkillsRequest {
-  type: typeof RuntimeMessageType.SkillsRequest;
-}
-
-/** Background → skills tab: skills list */
-export interface RuntimeSkillsResponse {
-  type: typeof RuntimeMessageType.SkillsResponse;
-  skills: SkillRecord[];
-}
-
-/** Skills tab → background: drill into one skill */
-export interface RuntimeSkillDetailRequest {
-  type: typeof RuntimeMessageType.SkillDetailRequest;
-  name: string;
-}
-
-/** Background → skills tab: one skill's detail.  A miss is answered, not
- * dropped: `skill` is `null` and `name` echoes the request when unknown. */
-export interface RuntimeSkillDetailResponse {
-  type: typeof RuntimeMessageType.SkillDetailResponse;
-  name: string;
-  skill: SkillRecord | null;
-  parameters: SkillParameter[];
-  steps: SkillStep[];
-  source_run_id: string | null;
-}
-
-/** Skills tab → background: open the run a skill was taught from */
+/** Open the run a skill was taught from (or just view a run) */
 export interface RuntimeRunDetailRequest {
   type: typeof RuntimeMessageType.RunDetailRequest;
   run_id: string;
@@ -971,10 +854,6 @@ export type RuntimeMessage =
   | RuntimeEntryDelete
   | RuntimeCursorSet
   | RuntimeCursorClear
-  | RuntimeSkillsRequest
-  | RuntimeSkillsResponse
-  | RuntimeSkillDetailRequest
-  | RuntimeSkillDetailResponse
   | RuntimeRunDetailRequest
   | RuntimeRunDetailResponse;
 
