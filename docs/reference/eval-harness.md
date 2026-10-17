@@ -12,9 +12,9 @@ conversation machine along one edge, `edge=(from_state, to_state)`, validated ag
 `OUT_EDGES`. A classifier case names the state it draws from and the state its claim says the
 draw lands in; a whole-turn case names the move its turn makes. The LAYER (classifier draw ·
 whole turn · micro-context · collector cycle) is not declared: each driver states its own.
-`docs/eval-catalogue.md` is the document generated from those declarations — a count per area,
-each area's cases (id · behaviour sentence · first wording · edge), and one row per machine edge
-naming the cases that cover it at the classifier-draw and whole-turn layers. **`make fix` writes
+`docs/eval-catalogue.md` is the document generated from those declarations — each area's cases
+(id · behaviour sentence · first wording · edge), and one row per machine edge naming the cases
+that cover it at the classifier-draw and whole-turn layers. **`make fix` writes
 it and `make check` fails when it is stale**, so a PR that adds, renames or re-declares a case
 commits the regenerated file. Collecting the cases calls no model and no endpoint: with
 `EVAL_CATALOGUE` naming a file, each driver validates its case, appends it as a

@@ -4,21 +4,6 @@ The behaviours Penny supports, one row per eval case, grouped by the area of Pen
 
 A case declares its area and, where it covers one, the edge of the conversation machine it moves along. The first wording is the first of the wordings the case is driven in.
 
-## Cases by area
-
-| Area | Cases |
-|---|---|
-| Conversation machine | 32 |
-| Teaching a routine | 17 |
-| Memory | 17 |
-| Answering from the web | 3 |
-| Standing jobs | 9 |
-| Notifications | 3 |
-| Background collectors | 6 |
-| Reading a page | 5 |
-| Chat tools | 6 |
-| Total | 98 |
-
 ## Conversation machine
 
 | Case | Behaviour | First wording | Edge |

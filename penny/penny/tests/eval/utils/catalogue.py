@@ -228,8 +228,6 @@ when it is out of date. It is not edited by hand.
 A case declares its area and, where it covers one, the edge of the conversation machine it \
 moves along. The first wording is the first of the wordings the case is driven in."""
 
-_SUMMARY_HEAD = "## Cases by area\n\n| Area | Cases |\n|---|---|"
-_SUMMARY_TOTAL = "Total"
 _AREA_TABLE_HEAD = "| Case | Behaviour | First wording | Edge |\n|---|---|---|---|"
 _NO_CASES = "No cases."
 _COVERAGE_HEAD = f"""\
@@ -250,18 +248,10 @@ def render(entries: Sequence[CatalogueEntry]) -> str:
     ordered = sorted(entries, key=lambda entry: entry.case_id)
     sections = [
         _HEAD,
-        _summary(ordered),
         *(_area_section(area, ordered) for area in Area),
         _edge_coverage(ordered),
     ]
     return "\n\n".join(sections) + "\n"
-
-
-def _summary(entries: Sequence[CatalogueEntry]) -> str:
-    """How many cases each area has."""
-    counts = Counter(entry.area for entry in entries)
-    rows = [f"| {area.capitalize()} | {counts[area]} |" for area in Area]
-    return "\n".join([_SUMMARY_HEAD, *rows, f"| {_SUMMARY_TOTAL} | {len(entries)} |"])
 
 
 def _area_section(area: Area, entries: Sequence[CatalogueEntry]) -> str:
