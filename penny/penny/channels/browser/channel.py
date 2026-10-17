@@ -111,6 +111,13 @@ from penny.tools.collection_instantiation import (
     parse_schedule,
 )
 
+# The same NAME=VALUE split `describe_schedule`'s own rendering uses, reused here
+# (not reimplemented) to compare two schedule strings structurally rather than as
+# raw text — see `_schedule_rules_equivalent` (#2457 review).
+from penny.tools.collection_instantiation import _canonical_lines as _schedule_canonical_lines
+from penny.tools.collection_instantiation import _rule_line as _schedule_rule_line
+from penny.tools.collection_instantiation import _rule_parts as _schedule_rule_parts
+
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
     from penny.agents.collector import Collector
@@ -131,6 +138,36 @@ def _attachment_to_src(attachment: str) -> str | None:
     if len(attachment) > 100:
         return f"data:image/png;base64,{attachment}"
     return None
+
+
+def _schedule_shape(schedule: str) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    """A schedule's comparable shape: its ``DTSTART`` line(s) verbatim, and its
+    one rule's own ``NAME=VALUE`` parts as an order-insensitive set — parsed with
+    the exact same split ``describe_schedule``'s rendering already uses
+    (``_rule_line``/``_rule_parts``), reused rather than re-derived.  Both inputs
+    are already-stored or already-validated schedules, so there is always
+    exactly one rule line to parse."""
+    canonical = _schedule_canonical_lines(schedule)
+    dtstart_lines = frozenset(
+        line.strip()
+        for line in canonical.splitlines()
+        if line.strip().upper().startswith("DTSTART")
+    )
+    rule_line = _schedule_rule_line(canonical)
+    parts = frozenset(_schedule_rule_parts(rule_line).items()) if rule_line else frozenset()
+    return dtstart_lines, parts
+
+
+def _schedule_rules_equivalent(a: str | None, b: str | None) -> bool:
+    """Whether two schedule strings state the identical thing — same ``DTSTART``
+    (if any) and the same rule parts, in any order.  Compared structurally, not
+    as raw text: the addon's presets regenerate a rule's parts in their own
+    fixed order, which need not match how the same rule was written elsewhere
+    (chat, by hand) — a resend of the SAME schedule in a different part order
+    must still read as unchanged (#2457 review)."""
+    if a is None or b is None:
+        return a == b
+    return _schedule_shape(a) == _schedule_shape(b)
 
 
 @dataclass
@@ -1078,15 +1115,18 @@ class BrowserChannel(MessageChannel):
             logger.warning("memory_update failed for %s: %s", req.name, exc)
 
     def _schedule_unchanged(self, name: str, schedule: str | None) -> bool:
-        """Whether a resent ``schedule`` matches the collection's CURRENT stored
-        one.  The addon's form always resends its full picker state, so this is
-        the one way to tell "the user left the schedule control alone" apart from
-        "the user set a new schedule that happens to read identically" — an
-        unmatched/missing collection is never reported as unchanged, so the real
-        update call makes its own actionable ``MemoryNotFoundError`` (#2457
-        review), not this helper."""
+        """Whether a resent ``schedule`` states the SAME thing as the collection's
+        CURRENT stored one.  The addon's form always resends its full picker
+        state, so this is the one way to tell "the user left the schedule
+        control alone" apart from "the user set a new schedule" — compared
+        STRUCTURALLY (``_schedule_rules_equivalent``), not as raw text, because a
+        preset regenerates a rule's parts in its own fixed order, which need not
+        match how the same rule was written elsewhere (chat, by hand) (#2457
+        review).  An unmatched/missing collection is never reported as
+        unchanged, so the real update call makes its own actionable
+        ``MemoryNotFoundError``, not this helper."""
         memory = self._db.memories.get(name)
-        return memory is not None and memory.schedule == schedule
+        return memory is not None and _schedule_rules_equivalent(memory.schedule, schedule)
 
     async def _validated_schedule(
         self,

@@ -2549,7 +2549,10 @@ class TestBrowserMemoryHandlers:
         unconditional ``replace_schedule=True`` wiped this end condition the
         moment any other field was edited (#2457 review).  A genuinely
         DIFFERENT rule, however, still replaces the end conditions atomically,
-        same as before."""
+        same as before — and a rule stated in a DIFFERENT PART ORDER (a preset
+        regenerates ``FREQ=DAILY;BYHOUR=9;BYMINUTE=0``; a rule written by chat
+        for the identical cadence can read ``FREQ=DAILY;BYMINUTE=0;BYHOUR=9``)
+        is still the SAME rule, not a change (second review round)."""
         channel, db = self._channel(tmp_path)
         expiry = datetime(2026, 12, 31, tzinfo=UTC)
         db.memories.create_collection(
@@ -2594,6 +2597,37 @@ class TestBrowserMemoryHandlers:
         # change replaces the axis atomically — the old rule's independent expiry
         # does not carry over onto a different rule.
         assert memory.expires_at is None
+
+        # Now store the SAME cadence written in a different part order (as chat
+        # would write it) with its own independent expiry, then resend it in the
+        # picker's own regenerated order — the rule hasn't actually changed, so
+        # the expiry must survive, and the stored text is left exactly as it was.
+        second_expiry = datetime(2027, 6, 1, tzinfo=UTC)
+        db.memories.update_collection_metadata(
+            "board-games",
+            schedule="FREQ=DAILY;BYMINUTE=0;BYHOUR=9",
+            expires_at=second_expiry,
+            replace_schedule=True,
+        )
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "description": "reordered description",
+                    "schedule": "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",  # same rule, preset order
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.description == "reordered description"
+        # Left exactly as stored — "unchanged" means untouched, not re-written
+        # into the resent order.
+        assert memory.schedule == "FREQ=DAILY;BYMINUTE=0;BYHOUR=9"
+        assert memory.expires_at is not None
+        assert memory.expires_at.replace(tzinfo=UTC) == second_expiry
 
     def test_memory_update_rejects_unreadable_schedule_and_reports_it(self, tmp_path):
         """An unparseable custom schedule on an edit is rejected and reported,
