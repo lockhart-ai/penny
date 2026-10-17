@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from pydantic import BaseModel, Field
 
 from penny.plugins.zoho.rule_models import (
@@ -20,6 +21,23 @@ if TYPE_CHECKING:
     from penny.plugins.zoho.mail_client import ZohoClient
 
 logger = logging.getLogger(__name__)
+
+# The account a client failure gets (#2369): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result. Catches the
+# mail client's own failures — a non-2xx response or a transport error (both
+# ``httpx.HTTPError``), or a failed OAuth token refresh / missing-account response
+# (``RuntimeError``, raised by ``ZohoClient`` itself — it has its own OAuth logic, not the
+# shared ``ZohoOAuthClient``) — never a bug in this file's own logic, which still propagates
+# to the executor's generic handler as today. ``create_email_rule``/``list_email_rules``
+# reach only ``db.email_rules`` (no network client), so they get no catch here.
+MOVE_EMAILS_FAILED = "The emails couldn't be moved ({e}), so nothing was moved in the mailbox."
+CREATE_FOLDER_FAILED = (
+    "The folder couldn't be created ({e}), so nothing was created in the mailbox."
+)
+APPLY_LABEL_FAILED = "The label couldn't be applied ({e}), so nothing was changed in the mailbox."
+LIST_LABELS_FAILED = (
+    "The mailbox labels couldn't be listed ({e}), so nothing was read from the mailbox."
+)
 
 
 class MoveEmailsArgs(BaseModel):
@@ -110,23 +128,27 @@ class MoveEmailsTool(Tool):
                 success=False,
             )
 
-        folder = await self._client.get_folder_by_name(args.folder_path.split("/")[-1])
+        try:
+            folder = await self._client.get_folder_by_name(args.folder_path.split("/")[-1])
 
-        if not folder and args.create_if_missing:
-            folder = await self._client.create_nested_folder(args.folder_path)
+            if not folder and args.create_if_missing:
+                folder = await self._client.create_nested_folder(args.folder_path)
+                if not folder:
+                    return ToolResult(
+                        message=f"Failed to create folder: {args.folder_path}",
+                        success=False,
+                    )
+
             if not folder:
                 return ToolResult(
-                    message=f"Failed to create folder: {args.folder_path}",
+                    message=f"Folder not found: {args.folder_path}",
                     success=False,
                 )
 
-        if not folder:
-            return ToolResult(
-                message=f"Folder not found: {args.folder_path}",
-                success=False,
-            )
-
-        success = await self._client.move_messages(args.message_ids, folder.folder_id)
+            success = await self._client.move_messages(args.message_ids, folder.folder_id)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Moving emails failed")
+            return ToolResult(message=MOVE_EMAILS_FAILED.format(e=e), success=False)
         if success:
             return ToolResult(
                 message=(
@@ -172,7 +194,11 @@ class CreateFolderTool(Tool):
         """Create a folder."""
         args = CreateFolderArgs(**kwargs)
 
-        folder = await self._client.create_nested_folder(args.folder_path)
+        try:
+            folder = await self._client.create_nested_folder(args.folder_path)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Creating folder failed")
+            return ToolResult(message=CREATE_FOLDER_FAILED.format(e=e), success=False)
         if folder:
             return ToolResult(
                 message=f"Successfully created folder: {args.folder_path}",
@@ -231,24 +257,28 @@ class ApplyLabelTool(Tool):
                 success=False,
             )
 
-        label = await self._client.get_label_by_name(args.label_name)
+        try:
+            label = await self._client.get_label_by_name(args.label_name)
 
-        if not label and args.create_if_missing:
-            label = await self._client.create_label(args.label_name)
+            if not label and args.create_if_missing:
+                label = await self._client.create_label(args.label_name)
+                if not label:
+                    return ToolResult(
+                        message=f"Failed to create label: {args.label_name}",
+                        success=False,
+                    )
+
             if not label:
                 return ToolResult(
-                    message=f"Failed to create label: {args.label_name}",
+                    message=f"Label not found: {args.label_name}",
                     success=False,
                 )
 
-        if not label:
-            return ToolResult(
-                message=f"Label not found: {args.label_name}",
-                success=False,
-            )
-
-        label_id = label.get("labelId", "")
-        success = await self._client.apply_label(args.message_ids, label_id)
+            label_id = label.get("labelId", "")
+            success = await self._client.apply_label(args.message_ids, label_id)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Applying label failed")
+            return ToolResult(message=APPLY_LABEL_FAILED.format(e=e), success=False)
         if success:
             return ToolResult(
                 message=(
@@ -287,7 +317,11 @@ class ListLabelsTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List all labels."""
-        labels = await self._client.get_labels()
+        try:
+            labels = await self._client.get_labels()
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Listing labels failed")
+            return ToolResult(message=LIST_LABELS_FAILED.format(e=e), success=False)
         if not labels:
             return ToolResult(message="No labels found.")
 

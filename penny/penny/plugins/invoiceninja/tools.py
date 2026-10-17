@@ -5,12 +5,43 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from pydantic import Field
 
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# The account a client failure gets (#2369): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result. Catches the
+# InvoiceNinja client's own failures — a non-2xx response or a transport error, both
+# ``httpx.HTTPError`` (``InvoiceNinjaClient`` raises nothing else: every call ends in
+# ``resp.raise_for_status()``, no bare ``RuntimeError`` anywhere in the client) — never a bug
+# in this file's own logic, which still propagates to the executor's generic handler as today.
+VERIFY_AUTH_FAILED = (
+    "InvoiceNinja authentication couldn't be verified ({e}), so nothing was confirmed."
+)
+LIST_INVOICES_FAILED = "Invoices couldn't be listed ({e}), so nothing was read from InvoiceNinja."
+CREATE_EXPENSE_FAILED = (
+    "The expense couldn't be created ({e}), so nothing was added to InvoiceNinja."
+)
+LIST_EXPENSES_FAILED = "Expenses couldn't be listed ({e}), so nothing was read from InvoiceNinja."
+GET_EXPENSE_FAILED = (
+    "That expense couldn't be fetched ({e}), so nothing was read from InvoiceNinja."
+)
+UPDATE_EXPENSE_FAILED = (
+    "The expense couldn't be updated ({e}), so nothing was changed in InvoiceNinja."
+)
+CREATE_EXPENSE_CATEGORY_FAILED = (
+    "The expense category couldn't be created ({e}), so nothing was added to InvoiceNinja."
+)
+LIST_EXPENSE_CATEGORIES_FAILED = (
+    "Expense categories couldn't be listed ({e}), so nothing was read from InvoiceNinja."
+)
+GET_EXPENSE_CATEGORY_FAILED = (
+    "That expense category couldn't be fetched ({e}), so nothing was read from InvoiceNinja."
+)
 
 
 class ListInvoicesArgs(ToolArgs):
@@ -47,7 +78,11 @@ class VerifyAuthTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Verify auth."""
-        await self._client.verify_auth()
+        try:
+            await self._client.verify_auth()
+        except httpx.HTTPError as e:
+            logger.exception("InvoiceNinja auth verification failed")
+            return ToolResult(message=VERIFY_AUTH_FAILED.format(e=e), success=False)
         return ToolResult(message="InvoiceNinja authentication is working.")
 
 
@@ -84,7 +119,11 @@ class ListInvoicesTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List invoices."""
         args = ListInvoicesArgs(**kwargs)
-        invoices = await self._client.list_invoices(status=args.status)
+        try:
+            invoices = await self._client.list_invoices(status=args.status)
+        except httpx.HTTPError as e:
+            logger.exception("Listing invoices failed")
+            return ToolResult(message=LIST_INVOICES_FAILED.format(e=e), success=False)
         if not invoices:
             return ToolResult(message="No invoices found.")
 
@@ -143,14 +182,18 @@ class CreateExpenseTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Create an expense."""
         args = CreateExpenseArgs(**kwargs)
-        expense = await self._client.create_expense(
-            amount=args.amount,
-            date=args.date,
-            vendor_id=args.vendor_id,
-            category_id=args.category_id,
-            public_notes=args.public_notes,
-            private_notes=args.private_notes,
-        )
+        try:
+            expense = await self._client.create_expense(
+                amount=args.amount,
+                date=args.date,
+                vendor_id=args.vendor_id,
+                category_id=args.category_id,
+                public_notes=args.public_notes,
+                private_notes=args.private_notes,
+            )
+        except httpx.HTTPError as e:
+            logger.exception("Creating InvoiceNinja expense failed")
+            return ToolResult(message=CREATE_EXPENSE_FAILED.format(e=e), success=False)
         return ToolResult(message=f"Created expense: {expense}")
 
 
@@ -202,7 +245,11 @@ class ListExpensesTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List expenses."""
         args = ListExpensesArgs(**kwargs)
-        expenses = await self._client.list_expenses(status=args.status, limit=args.limit)
+        try:
+            expenses = await self._client.list_expenses(status=args.status, limit=args.limit)
+        except httpx.HTTPError as e:
+            logger.exception("Listing expenses failed")
+            return ToolResult(message=LIST_EXPENSES_FAILED.format(e=e), success=False)
         if not expenses:
             return ToolResult(message="No expenses found.")
 
@@ -242,7 +289,11 @@ class GetExpenseTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Get an expense."""
         args = GetExpenseArgs(**kwargs)
-        expense = await self._client.get_expense(args.expense_id)
+        try:
+            expense = await self._client.get_expense(args.expense_id)
+        except httpx.HTTPError as e:
+            logger.exception("Fetching expense failed")
+            return ToolResult(message=GET_EXPENSE_FAILED.format(e=e), success=False)
         return ToolResult(message=str(expense))
 
 
@@ -294,15 +345,19 @@ class UpdateExpenseTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Update an expense."""
         args = UpdateExpenseArgs(**kwargs)
-        expense = await self._client.update_expense(
-            expense_id=args.expense_id,
-            amount=args.amount,
-            date=args.date,
-            vendor_id=args.vendor_id,
-            category_id=args.category_id,
-            public_notes=args.public_notes,
-            private_notes=args.private_notes,
-        )
+        try:
+            expense = await self._client.update_expense(
+                expense_id=args.expense_id,
+                amount=args.amount,
+                date=args.date,
+                vendor_id=args.vendor_id,
+                category_id=args.category_id,
+                public_notes=args.public_notes,
+                private_notes=args.private_notes,
+            )
+        except httpx.HTTPError as e:
+            logger.exception("Updating InvoiceNinja expense failed")
+            return ToolResult(message=UPDATE_EXPENSE_FAILED.format(e=e), success=False)
         return ToolResult(message=f"Updated expense: {expense}")
 
 
@@ -336,7 +391,11 @@ class CreateExpenseCategoryTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Create an expense category."""
         args = CreateExpenseCategoryArgs(**kwargs)
-        category = await self._client.create_expense_category(args.name)
+        try:
+            category = await self._client.create_expense_category(args.name)
+        except httpx.HTTPError as e:
+            logger.exception("Creating InvoiceNinja expense category failed")
+            return ToolResult(message=CREATE_EXPENSE_CATEGORY_FAILED.format(e=e), success=False)
         return ToolResult(message=f"Created expense category: {category}")
 
 
@@ -374,7 +433,11 @@ class ListExpenseCategoriesTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List expense categories."""
         args = ListExpenseCategoriesArgs(**kwargs)
-        categories = await self._client.list_expense_categories(limit=args.limit)
+        try:
+            categories = await self._client.list_expense_categories(limit=args.limit)
+        except httpx.HTTPError as e:
+            logger.exception("Listing expense categories failed")
+            return ToolResult(message=LIST_EXPENSE_CATEGORIES_FAILED.format(e=e), success=False)
         if not categories:
             return ToolResult(message="No expense categories found.")
 
@@ -414,5 +477,9 @@ class GetExpenseCategoryTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Get an expense category."""
         args = GetExpenseCategoryArgs(**kwargs)
-        category = await self._client.get_expense_category(args.category_id)
+        try:
+            category = await self._client.get_expense_category(args.category_id)
+        except httpx.HTTPError as e:
+            logger.exception("Fetching expense category failed")
+            return ToolResult(message=GET_EXPENSE_CATEGORY_FAILED.format(e=e), success=False)
         return ToolResult(message=str(category))

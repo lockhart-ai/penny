@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from penny.constants import PennyConstants
 from penny.plugins.zoho.email_tools import (
+    APPLY_LABEL_FAILED,
+    CREATE_FOLDER_FAILED,
+    LIST_LABELS_FAILED,
+    MOVE_EMAILS_FAILED,
     ApplyLabelTool,
     CreateEmailRuleTool,
     CreateFolderTool,
@@ -237,3 +242,70 @@ async def test_create_email_rule_rejects_unknown_field(db):
         "Call create_email_rule(<valid arguments>) again."
     )
     assert db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO) == []
+
+
+# ── Mail organisation tools report their own client failures (#2369) ─────────
+# Each tool's backend call is wrapped: a raised failure is caught and narrated — what
+# happened, with no order attached — rather than falling through to the executor's generic
+# "check the arguments" narration, which makes no sense for a backend outage. Mocked at the
+# backend boundary (the client each tool holds), the same seam every other test in this file
+# mocks at. The catch is narrow — ``httpx.HTTPError`` (a non-2xx response or a transport
+# error) plus ``RuntimeError`` (``ZohoClient`` raises this on its own OAuth token refresh and
+# on a missing mail account) — so a bug in this file's own logic is never mislabeled as a
+# mailbox outage. ``create_email_rule``/``list_email_rules`` reach only ``db.email_rules``
+# (no network client), so they get no such test.
+
+
+@pytest.mark.asyncio
+async def test_move_emails_reports_a_raised_move():
+    client = MagicMock()
+    folder = MagicMock(folder_id="F123")
+    client.get_folder_by_name = AsyncMock(return_value=folder)
+    client.move_messages = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await MoveEmailsTool(client).execute(
+        message_ids=["F001:M1"],
+        folder_path="Invoices",
+    )
+
+    assert result.success is False
+    assert result.message == MOVE_EMAILS_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_create_folder_reports_a_raised_create():
+    client = MagicMock()
+    client.create_nested_folder = AsyncMock(
+        side_effect=RuntimeError("Zoho OAuth error: invalid_grant")
+    )
+
+    result = await CreateFolderTool(client).execute(folder_path="Clients/Acme")
+
+    assert result.success is False
+    assert result.message == CREATE_FOLDER_FAILED.format(e="Zoho OAuth error: invalid_grant")
+
+
+@pytest.mark.asyncio
+async def test_apply_label_reports_a_raised_apply():
+    client = MagicMock()
+    client.get_label_by_name = AsyncMock(return_value={"labelId": "L1"})
+    client.apply_label = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await ApplyLabelTool(client).execute(
+        message_ids=["F001:M1"],
+        label_name="Done",
+    )
+
+    assert result.success is False
+    assert result.message == APPLY_LABEL_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_list_labels_reports_a_raised_listing():
+    client = MagicMock()
+    client.get_labels = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await ListLabelsTool(client).execute()
+
+    assert result.success is False
+    assert result.message == LIST_LABELS_FAILED.format(e="connection refused")

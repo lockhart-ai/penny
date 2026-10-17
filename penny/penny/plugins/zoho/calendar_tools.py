@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from pydantic import Field
 
 from penny.plugins.zoho.models import ZohoCalendarInfo, ZohoEvent
@@ -13,6 +14,31 @@ from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# The account a client failure gets (#2369): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result. Catches the
+# calendar client's own failures — a non-2xx response or a transport error (both
+# ``httpx.HTTPError``), or a failed OAuth token refresh (``RuntimeError``, raised by the
+# shared ``ZohoOAuthClient``) — never a bug in this file's own logic, which still propagates
+# to the executor's generic handler as today.
+CALENDAR_LIST_FAILED = (
+    "The calendars couldn't be listed ({e}), so nothing was read from the calendar."
+)
+CALENDAR_EVENTS_FAILED = (
+    "The calendar events couldn't be fetched ({e}), so nothing was read from the calendar."
+)
+CALENDAR_AVAILABILITY_FAILED = (
+    "Availability couldn't be checked ({e}), so nothing was read from the calendar."
+)
+CALENDAR_EVENT_CREATE_FAILED = (
+    "The calendar event couldn't be created ({e}), so nothing was added to the calendar."
+)
+CALENDAR_FREE_SLOTS_FAILED = (
+    "Free time slots couldn't be found ({e}), so nothing was read from the calendar."
+)
+CALENDAR_EVENT_UPDATE_FAILED = (
+    "The calendar event couldn't be updated ({e}), so nothing was changed on the calendar."
+)
 
 
 class ListCalendarsArgs(ToolArgs):
@@ -114,7 +140,11 @@ class ListCalendarsTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List all calendars."""
-        calendars = await self._client.get_calendars()
+        try:
+            calendars = await self._client.get_calendars()
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Calendar listing failed")
+            return ToolResult(message=CALENDAR_LIST_FAILED.format(e=e), success=False)
         if not calendars:
             return ToolResult(message="No calendars found.")
 
@@ -166,19 +196,23 @@ class GetEventsTool(Tool):
         """Get events from a calendar."""
         args = GetEventsArgs(**kwargs)
 
-        if args.calendar_name:
-            calendar = await self._client.get_calendar_by_name(args.calendar_name)
-            if not calendar:
-                return ToolResult(message=f"Calendar not found: {args.calendar_name}")
-        else:
-            calendar = await self._client.get_default_calendar()
-            if not calendar:
-                return ToolResult(message="No default calendar found.")
+        try:
+            if args.calendar_name:
+                calendar = await self._client.get_calendar_by_name(args.calendar_name)
+                if not calendar:
+                    return ToolResult(message=f"Calendar not found: {args.calendar_name}")
+            else:
+                calendar = await self._client.get_default_calendar()
+                if not calendar:
+                    return ToolResult(message="No default calendar found.")
 
-        start = datetime.now(UTC)
-        end = start + timedelta(days=args.days_ahead)
+            start = datetime.now(UTC)
+            end = start + timedelta(days=args.days_ahead)
 
-        events = await self._client.get_events(calendar.caluid, start, end)
+            events = await self._client.get_events(calendar.caluid, start, end)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Calendar events fetch failed")
+            return ToolResult(message=CALENDAR_EVENTS_FAILED.format(e=e), success=False)
         if not events:
             return ToolResult(
                 message=f"No events found in '{calendar.name}' for the next {args.days_ahead} days."
@@ -248,39 +282,43 @@ class CheckAvailabilityTool(Tool):
         except ValueError as e:
             return ToolResult(message=f"Invalid date format: {e}", success=False)
 
-        if not args.attendees:
-            calendar = await self._client.get_default_calendar()
-            if not calendar:
-                return ToolResult(message="No default calendar found to check availability.")
+        try:
+            if not args.attendees:
+                calendar = await self._client.get_default_calendar()
+                if not calendar:
+                    return ToolResult(message="No default calendar found to check availability.")
 
-            events = await self._client.get_events(calendar.caluid, start, end)
-            if not events:
-                time_range = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
-                return ToolResult(
-                    message=f"The time slot {time_range} appears to be **available** "
-                    "(no events found)."
-                )
+                events = await self._client.get_events(calendar.caluid, start, end)
+                if not events:
+                    time_range = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
+                    return ToolResult(
+                        message=f"The time slot {time_range} appears to be **available** "
+                        "(no events found)."
+                    )
 
-            conflicts = []
-            for evt in events:
-                if evt.start and evt.end and evt.start < end and evt.end > start:
-                    conflicts.append(evt)
+                conflicts = []
+                for evt in events:
+                    if evt.start and evt.end and evt.start < end and evt.end > start:
+                        conflicts.append(evt)
 
-            if not conflicts:
-                time_range = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
-                return ToolResult(message=f"The time slot {time_range} is **available**.")
+                if not conflicts:
+                    time_range = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
+                    return ToolResult(message=f"The time slot {time_range} is **available**.")
 
-            lines = ["The requested time has conflicts:\n"]
-            for evt in conflicts:
-                evt_time = (
-                    f"{evt.start.strftime('%H:%M')}-{evt.end.strftime('%H:%M')}"
-                    if evt.start and evt.end
-                    else "unknown time"
-                )
-                lines.append(f"- **{evt.title}** ({evt_time})")
-            return ToolResult(message="\n".join(lines))
+                lines = ["The requested time has conflicts:\n"]
+                for evt in conflicts:
+                    evt_time = (
+                        f"{evt.start.strftime('%H:%M')}-{evt.end.strftime('%H:%M')}"
+                        if evt.start and evt.end
+                        else "unknown time"
+                    )
+                    lines.append(f"- **{evt.title}** ({evt_time})")
+                return ToolResult(message="\n".join(lines))
 
-        busy_slots = await self._client.check_availability(start, end, args.attendees)
+            busy_slots = await self._client.check_availability(start, end, args.attendees)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Calendar availability check failed")
+            return ToolResult(message=CALENDAR_AVAILABILITY_FAILED.format(e=e), success=False)
 
         if not busy_slots:
             time_range = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
@@ -359,35 +397,39 @@ class CreateEventTool(Tool):
         """Create a calendar event."""
         args = CreateEventArgs(**kwargs)
 
-        if args.calendar_name:
-            calendar = await self._client.get_calendar_by_name(args.calendar_name)
-            if not calendar:
-                return ToolResult(
-                    message=f"Calendar not found: {args.calendar_name}. "
-                    "Check the calendar name and try again.",
-                    success=False,
-                )
-        else:
-            calendar = await self._client.get_default_calendar()
-            if not calendar:
-                return ToolResult(message="No default calendar found.", success=False)
-
         try:
-            start = _parse_iso_datetime(args.start)
-            end = _parse_iso_datetime(args.end)
-        except ValueError as e:
-            return ToolResult(message=f"Invalid date format: {e}", success=False)
+            if args.calendar_name:
+                calendar = await self._client.get_calendar_by_name(args.calendar_name)
+                if not calendar:
+                    return ToolResult(
+                        message=f"Calendar not found: {args.calendar_name}. "
+                        "Check the calendar name and try again.",
+                        success=False,
+                    )
+            else:
+                calendar = await self._client.get_default_calendar()
+                if not calendar:
+                    return ToolResult(message="No default calendar found.", success=False)
 
-        event = await self._client.create_event(
-            caluid=calendar.caluid,
-            title=args.title,
-            start=start,
-            end=end,
-            description=args.description,
-            location=args.location,
-            attendees=args.attendees,
-            is_allday=args.is_allday,
-        )
+            try:
+                start = _parse_iso_datetime(args.start)
+                end = _parse_iso_datetime(args.end)
+            except ValueError as e:
+                return ToolResult(message=f"Invalid date format: {e}", success=False)
+
+            event = await self._client.create_event(
+                caluid=calendar.caluid,
+                title=args.title,
+                start=start,
+                end=end,
+                description=args.description,
+                location=args.location,
+                attendees=args.attendees,
+                is_allday=args.is_allday,
+            )
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Calendar event creation failed")
+            return ToolResult(message=CALENDAR_EVENT_CREATE_FAILED.format(e=e), success=False)
 
         if event:
             time_str = f"{start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%H:%M')}"
@@ -449,12 +491,16 @@ class FindFreeSlotsTool(Tool):
         start = datetime.now(UTC)
         end = start + timedelta(days=args.days_ahead)
 
-        free_slots = await self._client.find_free_slots(
-            duration_minutes=args.duration_minutes,
-            start=start,
-            end=end,
-            attendees=args.attendees,
-        )
+        try:
+            free_slots = await self._client.find_free_slots(
+                duration_minutes=args.duration_minutes,
+                start=start,
+                end=end,
+                attendees=args.attendees,
+            )
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Free time slots search failed")
+            return ToolResult(message=CALENDAR_FREE_SLOTS_FAILED.format(e=e), success=False)
 
         if not free_slots:
             return ToolResult(
@@ -537,40 +583,44 @@ class UpdateEventTool(Tool):
         """Update a calendar event: resolve calendar, find event, apply changes."""
         args = UpdateEventArgs(**kwargs)
 
-        calendar = await self._resolve_calendar(args)
-        if isinstance(calendar, ToolResult):
-            return calendar
+        try:
+            calendar = await self._resolve_calendar(args)
+            if isinstance(calendar, ToolResult):
+                return calendar
 
-        event = await self._find_event(calendar, args)
-        if isinstance(event, ToolResult):
-            return event
+            event = await self._find_event(calendar, args)
+            if isinstance(event, ToolResult):
+                return event
 
-        full_event = await self._load_full_event(calendar, event)
-        if isinstance(full_event, ToolResult):
-            return full_event
+            full_event = await self._load_full_event(calendar, event)
+            if isinstance(full_event, ToolResult):
+                return full_event
 
-        times = self._resolve_new_times(args, full_event, event)
-        if isinstance(times, ToolResult):
-            return times
-        new_start, new_end = times
+            times = self._resolve_new_times(args, full_event, event)
+            if isinstance(times, ToolResult):
+                return times
+            new_start, new_end = times
 
-        effective_edittype, recurrenceid = self._compute_recurrence(args, full_event, event)
+            effective_edittype, recurrenceid = self._compute_recurrence(args, full_event, event)
 
-        updated_event = await self._client.update_event(
-            caluid=calendar.caluid,
-            event_uid=event.uid,
-            etag=full_event.etag,
-            title=args.new_title,
-            start=new_start,
-            end=new_end,
-            tz=full_event.timezone,
-            description=args.new_description,
-            location=args.new_location,
-            is_allday=full_event.is_allday,
-            recurrence_edittype=effective_edittype,
-            recurrenceid=recurrenceid,
-            rrule=full_event.rrule,
-        )
+            updated_event = await self._client.update_event(
+                caluid=calendar.caluid,
+                event_uid=event.uid,
+                etag=full_event.etag,
+                title=args.new_title,
+                start=new_start,
+                end=new_end,
+                tz=full_event.timezone,
+                description=args.new_description,
+                location=args.new_location,
+                is_allday=full_event.is_allday,
+                recurrence_edittype=effective_edittype,
+                recurrenceid=recurrenceid,
+                rrule=full_event.rrule,
+            )
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Calendar event update failed")
+            return ToolResult(message=CALENDAR_EVENT_UPDATE_FAILED.format(e=e), success=False)
 
         return self._build_update_result(args, updated_event, new_start, new_end)
 

@@ -5,12 +5,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from penny.plugins.zoho.calendar_tools import (
+    CALENDAR_AVAILABILITY_FAILED,
+    CALENDAR_EVENT_CREATE_FAILED,
+    CALENDAR_EVENT_UPDATE_FAILED,
+    CALENDAR_EVENTS_FAILED,
+    CALENDAR_FREE_SLOTS_FAILED,
+    CALENDAR_LIST_FAILED,
     CheckAvailabilityTool,
     CreateEventTool,
     FindFreeSlotsTool,
+    GetEventsTool,
+    ListCalendarsTool,
     UpdateEventTool,
 )
 from penny.plugins.zoho.models import BusySlot, FreeSlot, ZohoCalendarInfo, ZohoEvent
@@ -239,3 +248,97 @@ async def test_update_event_reports_missing_event_as_failure():
         "No event found matching 'Ghost' in calendar 'Default'. "
         "Please check the event title and try again."
     )
+
+
+# ── Calendar tools report their own client failures (#2369) ──────────────────
+# Each tool's backend call is wrapped: a raised failure is caught and narrated — what
+# happened, with no order attached — rather than falling through to the executor's generic
+# "check the arguments" narration, which makes no sense for a backend outage. Mocked at the
+# backend boundary (the client each tool holds), the same seam every other test in this file
+# mocks at. The catch is narrow — ``httpx.HTTPError`` (a non-2xx response or a transport
+# error) plus ``RuntimeError`` (the calendar client's shared ``ZohoOAuthClient`` raises this
+# on a failed token refresh) — so a bug in this file's own logic is never mislabeled as a
+# calendar outage.
+
+
+def _http_401() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://mail.zoho.com/api")
+    response = httpx.Response(401, request=request)
+    return httpx.HTTPStatusError("401 Unauthorized", request=request, response=response)
+
+
+@pytest.mark.asyncio
+async def test_list_calendars_reports_a_raised_listing():
+    client = MagicMock()
+    client.get_calendars = AsyncMock(side_effect=_http_401())
+
+    result = await ListCalendarsTool(client).execute()
+
+    assert result.success is False
+    assert result.message == CALENDAR_LIST_FAILED.format(e=_http_401())
+
+
+@pytest.mark.asyncio
+async def test_get_events_reports_a_raised_fetch():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(
+        side_effect=RuntimeError("Zoho OAuth error: invalid_grant")
+    )
+
+    result = await GetEventsTool(client).execute()
+
+    assert result.success is False
+    assert result.message == CALENDAR_EVENTS_FAILED.format(e="Zoho OAuth error: invalid_grant")
+
+
+@pytest.mark.asyncio
+async def test_check_availability_reports_a_raised_check():
+    client = MagicMock()
+    client.check_availability = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await CheckAvailabilityTool(client).execute(
+        start_date="2026-07-22T09:00:00",
+        end_date="2026-07-22T17:00:00",
+        attendees=["attendee@example.com"],
+    )
+
+    assert result.success is False
+    assert result.message == CALENDAR_AVAILABILITY_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_create_event_reports_a_raised_create():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(return_value=_calendar())
+    client.create_event = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await CreateEventTool(client).execute(
+        title="Standup",
+        start="2026-07-22T10:00:00",
+        end="2026-07-22T11:00:00",
+    )
+
+    assert result.success is False
+    assert result.message == CALENDAR_EVENT_CREATE_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_find_free_slots_reports_a_raised_search():
+    client = MagicMock()
+    client.find_free_slots = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await FindFreeSlotsTool(client).execute(duration_minutes=30)
+
+    assert result.success is False
+    assert result.message == CALENDAR_FREE_SLOTS_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_update_event_reports_a_raised_update():
+    client = MagicMock()
+    client.get_default_calendar = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await UpdateEventTool(client).execute(event_title="Standup")
+
+    assert result.success is False
+    assert result.message == CALENDAR_EVENT_UPDATE_FAILED.format(e="connection refused")

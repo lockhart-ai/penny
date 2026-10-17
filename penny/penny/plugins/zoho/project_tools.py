@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from pydantic import Field
 
 from penny.constants import PennyConstants
@@ -12,6 +13,27 @@ from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# The account a client failure gets (#2369): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result. Catches the
+# projects client's own failures — a non-2xx response or a transport error (both
+# ``httpx.HTTPError``), or a failed OAuth token refresh (``RuntimeError``, raised by the
+# shared ``ZohoOAuthClient``) — never a bug in this file's own logic, which still propagates
+# to the executor's generic handler as today.
+LIST_PROJECTS_FAILED = "Projects couldn't be listed ({e}), so nothing was read from Projects."
+PROJECT_DETAILS_FAILED = (
+    "That project's details couldn't be fetched ({e}), so nothing was read from Projects."
+)
+CREATE_PROJECT_FAILED = "The project couldn't be created ({e}), so nothing was added to Projects."
+LIST_TASK_LISTS_FAILED = (
+    "The task lists couldn't be listed ({e}), so nothing was read from Projects."
+)
+CREATE_TASK_LIST_FAILED = (
+    "The task list couldn't be created ({e}), so nothing was added to Projects."
+)
+LIST_TASKS_FAILED = "Tasks couldn't be listed ({e}), so nothing was read from Projects."
+CREATE_TASK_FAILED = "The task couldn't be created ({e}), so nothing was added to Projects."
+UPDATE_TASK_FAILED = "The task couldn't be updated ({e}), so nothing was changed in Projects."
 
 
 class ListProjectsArgs(ToolArgs):
@@ -100,7 +122,11 @@ class ListProjectsTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List all projects."""
-        projects = await self._client.get_projects()
+        try:
+            projects = await self._client.get_projects()
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Listing projects failed")
+            return ToolResult(message=LIST_PROJECTS_FAILED.format(e=e), success=False)
         if not projects:
             return ToolResult(message="No projects found.")
 
@@ -148,7 +174,11 @@ class GetProjectDetailsTool(Tool):
         """Get project details."""
         args = GetProjectArgs(**kwargs)
 
-        project = await self._client.get_project_by_name(args.project_name)
+        try:
+            project = await self._client.get_project_by_name(args.project_name)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Fetching project details failed")
+            return ToolResult(message=PROJECT_DETAILS_FAILED.format(e=e), success=False)
         if not project:
             return ToolResult(message=f"Project not found: {args.project_name}")
 
@@ -211,12 +241,16 @@ class CreateProjectTool(Tool):
         """Create a new project."""
         args = CreateProjectArgs(**kwargs)
 
-        project = await self._client.create_project(
-            name=args.name,
-            description=args.description,
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
+        try:
+            project = await self._client.create_project(
+                name=args.name,
+                description=args.description,
+                start_date=args.start_date,
+                end_date=args.end_date,
+            )
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Creating project failed")
+            return ToolResult(message=CREATE_PROJECT_FAILED.format(e=e), success=False)
 
         if project:
             return ToolResult(
@@ -258,11 +292,15 @@ class ListTaskListsTool(Tool):
         """List task lists in a project."""
         args = GetProjectArgs(**kwargs)
 
-        project = await self._client.get_project_by_name(args.project_name)
-        if not project:
-            return ToolResult(message=f"Project not found: {args.project_name}")
+        try:
+            project = await self._client.get_project_by_name(args.project_name)
+            if not project:
+                return ToolResult(message=f"Project not found: {args.project_name}")
 
-        tasklists = await self._client.get_task_lists(project.id)
+            tasklists = await self._client.get_task_lists(project.id)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Listing task lists failed")
+            return ToolResult(message=LIST_TASK_LISTS_FAILED.format(e=e), success=False)
         if not tasklists:
             return ToolResult(message=f"No task lists found in project '{project.name}'")
 
@@ -309,15 +347,19 @@ class CreateTaskListTool(Tool):
         """Create a task list."""
         args = CreateTaskListArgs(**kwargs)
 
-        project = await self._client.get_project_by_name(args.project_name)
-        if not project:
-            return ToolResult(
-                message=f"Project not found: {args.project_name}. "
-                "Check the project name and try again.",
-                success=False,
-            )
+        try:
+            project = await self._client.get_project_by_name(args.project_name)
+            if not project:
+                return ToolResult(
+                    message=f"Project not found: {args.project_name}. "
+                    "Check the project name and try again.",
+                    success=False,
+                )
 
-        tasklist = await self._client.create_task_list(project.id, args.name)
+            tasklist = await self._client.create_task_list(project.id, args.name)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Creating task list failed")
+            return ToolResult(message=CREATE_TASK_LIST_FAILED.format(e=e), success=False)
         if tasklist:
             return ToolResult(
                 message=(
@@ -360,11 +402,15 @@ class ListTasksTool(Tool):
         """List tasks in a project."""
         args = ListTasksArgs(**kwargs)
 
-        project = await self._client.get_project_by_name(args.project_name)
-        if not project:
-            return ToolResult(message=f"Project not found: {args.project_name}")
+        try:
+            project = await self._client.get_project_by_name(args.project_name)
+            if not project:
+                return ToolResult(message=f"Project not found: {args.project_name}")
 
-        tasks = await self._client.get_tasks(project.id)
+            tasks = await self._client.get_tasks(project.id)
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Listing tasks failed")
+            return ToolResult(message=LIST_TASKS_FAILED.format(e=e), success=False)
         if not tasks:
             return ToolResult(message=f"No tasks found in project '{project.name}'")
 
@@ -443,39 +489,43 @@ class CreateTaskTool(Tool):
         """Create a task."""
         args = CreateTaskArgs(**kwargs)
 
-        project = await self._client.get_project_by_name(args.project_name)
-        if not project:
-            return ToolResult(
-                message=f"Project not found: {args.project_name}. "
-                "Check the project name and try again.",
-                success=False,
-            )
-
-        tasklist_name = args.tasklist_name or PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST
-        tasklists = await self._client.get_task_lists(project.id)
-        tasklist = next(
-            (tl for tl in tasklists if tl.name.lower() == tasklist_name.lower()),
-            None,
-        )
-
-        if not tasklist:
-            tasklist = await self._client.create_task_list(project.id, tasklist_name)
-            if not tasklist:
+        try:
+            project = await self._client.get_project_by_name(args.project_name)
+            if not project:
                 return ToolResult(
-                    message=f"Failed to create task list: {tasklist_name}",
+                    message=f"Project not found: {args.project_name}. "
+                    "Check the project name and try again.",
                     success=False,
                 )
 
-        task = await self._client.create_task(
-            project_id=project.id,
-            name=args.name,
-            tasklist_id=tasklist.id,
-            description=args.description,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            priority=args.priority,
-            owner_zpuids=args.assignees,
-        )
+            tasklist_name = args.tasklist_name or PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST
+            tasklists = await self._client.get_task_lists(project.id)
+            tasklist = next(
+                (tl for tl in tasklists if tl.name.lower() == tasklist_name.lower()),
+                None,
+            )
+
+            if not tasklist:
+                tasklist = await self._client.create_task_list(project.id, tasklist_name)
+                if not tasklist:
+                    return ToolResult(
+                        message=f"Failed to create task list: {tasklist_name}",
+                        success=False,
+                    )
+
+            task = await self._client.create_task(
+                project_id=project.id,
+                name=args.name,
+                tasklist_id=tasklist.id,
+                description=args.description,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                priority=args.priority,
+                owner_zpuids=args.assignees,
+            )
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Creating task failed")
+            return ToolResult(message=CREATE_TASK_FAILED.format(e=e), success=False)
 
         if task:
             return ToolResult(
@@ -544,35 +594,41 @@ class UpdateTaskTool(Tool):
         """Update a task."""
         args = UpdateTaskArgs(**kwargs)
 
-        project = await self._client.get_project_by_name(args.project_name)
-        if not project:
-            return ToolResult(
-                message=f"Project not found: {args.project_name}. "
-                "Check the project name and try again.",
-                success=False,
+        try:
+            project = await self._client.get_project_by_name(args.project_name)
+            if not project:
+                return ToolResult(
+                    message=f"Project not found: {args.project_name}. "
+                    "Check the project name and try again.",
+                    success=False,
+                )
+
+            tasks = await self._client.get_tasks(project.id)
+            task = next(
+                (t for t in tasks if t.name.lower() == args.task_name.lower()),
+                None,
             )
 
-        tasks = await self._client.get_tasks(project.id)
-        task = next(
-            (t for t in tasks if t.name.lower() == args.task_name.lower()),
-            None,
-        )
+            if not task:
+                return ToolResult(
+                    message=(
+                        f"Task not found: {args.task_name}. Check the task name and try again."
+                    ),
+                    success=False,
+                )
 
-        if not task:
-            return ToolResult(
-                message=f"Task not found: {args.task_name}. Check the task name and try again.",
-                success=False,
+            updated = await self._client.update_task(
+                project_id=project.id,
+                task_id=task.id,
+                name=args.new_name,
+                description=args.description,
+                priority=args.priority,
+                status_id=args.status_id,
+                completion_percentage=args.completion_percentage,
             )
-
-        updated = await self._client.update_task(
-            project_id=project.id,
-            task_id=task.id,
-            name=args.new_name,
-            description=args.description,
-            priority=args.priority,
-            status_id=args.status_id,
-            completion_percentage=args.completion_percentage,
-        )
+        except (httpx.HTTPError, RuntimeError) as e:
+            logger.exception("Updating task failed")
+            return ToolResult(message=UPDATE_TASK_FAILED.format(e=e), success=False)
 
         if updated:
             changes = []

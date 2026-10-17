@@ -9,6 +9,26 @@ import pytest
 
 from penny.plugins.invoiceninja import InvoiceNinjaPlugin
 from penny.plugins.invoiceninja.client import InvoiceNinjaClient
+from penny.plugins.invoiceninja.tools import (
+    CREATE_EXPENSE_CATEGORY_FAILED,
+    CREATE_EXPENSE_FAILED,
+    GET_EXPENSE_CATEGORY_FAILED,
+    GET_EXPENSE_FAILED,
+    LIST_EXPENSE_CATEGORIES_FAILED,
+    LIST_EXPENSES_FAILED,
+    LIST_INVOICES_FAILED,
+    UPDATE_EXPENSE_FAILED,
+    VERIFY_AUTH_FAILED,
+    CreateExpenseCategoryTool,
+    CreateExpenseTool,
+    GetExpenseCategoryTool,
+    GetExpenseTool,
+    ListExpenseCategoriesTool,
+    ListExpensesTool,
+    ListInvoicesTool,
+    UpdateExpenseTool,
+    VerifyAuthTool,
+)
 
 
 def test_invoice_ninja_plugin_not_configured():
@@ -326,3 +346,120 @@ async def test_get_expense_category_fetches_by_id():
     mock_http.get.assert_awaited_once_with(
         "https://invoicing.example.com/api/v1/expense_categories/cat1"
     )
+
+
+# ── Tools report their own client failures (#2369) ───────────────────────────
+# Each tool's backend call is wrapped: a raised failure is caught and narrated — what
+# happened, with no order attached — rather than falling through to the executor's generic
+# "check the arguments" narration, which makes no sense for a backend outage. Mocked at the
+# client boundary each tool holds (not raw httpx, which the tests above already cover for
+# ``InvoiceNinjaClient`` itself). The catch is narrow — ``httpx.HTTPError`` only:
+# ``InvoiceNinjaClient`` raises nothing else, every call ends in ``resp.raise_for_status()``
+# — so a bug in this file's own logic is never mislabeled as an InvoiceNinja outage.
+
+
+def _http_401() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://invoicing.example.com/api/v1/health_check")
+    response = httpx.Response(401, request=request)
+    return httpx.HTTPStatusError("401 Unauthorized", request=request, response=response)
+
+
+@pytest.mark.asyncio
+async def test_verify_auth_tool_reports_a_raised_check():
+    client = MagicMock()
+    client.verify_auth = AsyncMock(side_effect=_http_401())
+
+    result = await VerifyAuthTool(client).execute()
+
+    assert result.success is False
+    assert result.message == VERIFY_AUTH_FAILED.format(e=_http_401())
+
+
+@pytest.mark.asyncio
+async def test_list_invoices_tool_reports_a_raised_listing():
+    client = MagicMock()
+    client.list_invoices = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await ListInvoicesTool(client).execute()
+
+    assert result.success is False
+    assert result.message == LIST_INVOICES_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_create_expense_tool_reports_a_raised_create():
+    client = MagicMock()
+    client.create_expense = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await CreateExpenseTool(client).execute(
+        amount=45.0, date="2026-07-22", vendor_id="ven1", category_id="cat1"
+    )
+
+    assert result.success is False
+    assert result.message == CREATE_EXPENSE_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_list_expenses_tool_reports_a_raised_listing():
+    client = MagicMock()
+    client.list_expenses = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await ListExpensesTool(client).execute()
+
+    assert result.success is False
+    assert result.message == LIST_EXPENSES_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_get_expense_tool_reports_a_raised_fetch():
+    client = MagicMock()
+    client.get_expense = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await GetExpenseTool(client).execute(expense_id="exp1")
+
+    assert result.success is False
+    assert result.message == GET_EXPENSE_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_update_expense_tool_reports_a_raised_update():
+    client = MagicMock()
+    client.update_expense = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await UpdateExpenseTool(client).execute(expense_id="exp1", amount=50.0)
+
+    assert result.success is False
+    assert result.message == UPDATE_EXPENSE_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_create_expense_category_tool_reports_a_raised_create():
+    client = MagicMock()
+    client.create_expense_category = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await CreateExpenseCategoryTool(client).execute(name="Travel")
+
+    assert result.success is False
+    assert result.message == CREATE_EXPENSE_CATEGORY_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_list_expense_categories_tool_reports_a_raised_listing():
+    client = MagicMock()
+    client.list_expense_categories = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await ListExpenseCategoriesTool(client).execute()
+
+    assert result.success is False
+    assert result.message == LIST_EXPENSE_CATEGORIES_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_get_expense_category_tool_reports_a_raised_fetch():
+    client = MagicMock()
+    client.get_expense_category = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    result = await GetExpenseCategoryTool(client).execute(category_id="cat1")
+
+    assert result.success is False
+    assert result.message == GET_EXPENSE_CATEGORY_FAILED.format(e="connection refused")
