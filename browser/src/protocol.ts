@@ -270,9 +270,24 @@ export interface PromptLogRun {
   run_id: string;
   agent_name: string;
   prompt_count: number;
+  // The run's REAL start/end (#2438) — the earliest `timestamp - duration_ms`
+  // and the latest `timestamp` across this run's own prompts AND its child
+  // draws, computed the same way on the server (`_run_window`) and here
+  // (`runTimingWindow`) so the two can't disagree.
   started_at: string;
   ended_at: string;
+  // "Model time" — this run's OWN prompts' summed `duration_ms`, EXCLUDING
+  // child draws (a draw can run long after the model itself has gone quiet,
+  // reading a page, say).  Kept exactly as it always was: paired with
+  // `total_output_tokens` for the header's tok/s figure.  See
+  // `wall_duration_ms` for the real elapsed time, children included.
   total_duration_ms: number;
+  // "Wall time" (#2438) — `ended_at - started_at` in ms, children included —
+  // the real duration of the round, which `total_duration_ms` alone used to
+  // be mistaken for (a browse round whose extraction read pages for minutes
+  // showed under a minute, since that reading time is a child draw's own
+  // `duration_ms`, never summed into the run's).
+  wall_duration_ms: number;
   total_input_tokens: number;
   total_output_tokens: number;
   run_outcome: RunOutcome | null;

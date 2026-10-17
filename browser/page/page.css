@@ -860,6 +860,14 @@ h1 {
   flex-shrink: 0;
 }
 
+/* This call's own start time (#2438) — a step row's finer-grained companion
+   to the run header's date. */
+.prompt-start {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* --- Prompt detail sections --- */
 
 .prompt-detail {

@@ -15,6 +15,8 @@ import {
   expandedIdsAfterRebuild,
   isAnchored,
   moveToFront,
+  rowStartedAt,
+  runTimingWindow,
   toolCallIds,
 } from "../dist/test/draw_nesting.mjs";
 
@@ -206,4 +208,37 @@ test("directChildNodes nests a retry's children only under its first attempt", (
   assert.equal(tree[0].children.length, 1);
   assert.equal(tree[0].children[0].draw.id, 4);
   assert.deepEqual(tree[1].children, []);
+});
+
+// --- Run timing (#2438): started_at is the first call's true start, wall
+// time spans a long-running child draw, and a step row shows its own start.
+
+test("rowStartedAt subtracts the call's own duration from its logged timestamp", () => {
+  const started = rowStartedAt({ timestamp: "2026-01-01T00:00:05.000Z", duration_ms: 5000 });
+  assert.equal(started, "2026-01-01T00:00:00.000Z");
+});
+
+test("rowStartedAt is the bare timestamp when duration_ms is 0", () => {
+  const started = rowStartedAt({ timestamp: "2026-01-01T00:00:05.000Z", duration_ms: 0 });
+  assert.equal(started, "2026-01-01T00:00:05.000Z");
+});
+
+test("runTimingWindow with a single row is just its own start/end", () => {
+  const row = prompt({ timestamp: "2026-01-01T00:00:05.000Z", duration_ms: 5000 });
+  const window = runTimingWindow([row]);
+  assert.equal(window.startedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(window.endedAt, "2026-01-01T00:00:05.000Z");
+  assert.equal(window.wallDurationMs, 5000);
+});
+
+test("runTimingWindow takes the earliest start and the latest end across every row", () => {
+  // A quick own call (10ms, starting at T0) dispatches a browse-extract draw
+  // right after it ends, which then runs for 233s — the window must reach to
+  // the DRAW's own end, not just the own call's, the exact bug #2438 fixes.
+  const own = prompt({ id: 1, timestamp: "2026-01-01T00:00:00.010Z", duration_ms: 10 });
+  const draw = prompt({ id: 2, timestamp: "2026-01-01T00:03:53.010Z", duration_ms: 233_000 });
+  const window = runTimingWindow([own, draw]);
+  assert.equal(window.startedAt, "2026-01-01T00:00:00.000Z"); // the OWN call's start (T0)
+  assert.equal(window.endedAt, "2026-01-01T00:03:53.010Z"); // the DRAW's own end
+  assert.equal(window.wallDurationMs, 233_010);
 });

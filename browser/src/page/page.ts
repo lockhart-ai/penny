@@ -39,6 +39,8 @@ import {
   expandedIdsAfterRebuild,
   isAnchored,
   moveToFront,
+  rowStartedAt,
+  runTimingWindow,
   toolCallIds,
 } from "./draw_nesting.js";
 
@@ -335,13 +337,27 @@ function handlePromptUpdate(prompt: PromptLogEntry): void {
   }
 }
 
+// The run's `started_at`/`ended_at`/`wall_duration_ms` recomputed from its own
+// prompts + child draws, via the one pure window function the server mirrors
+// (#2438) — called after every mutation that can move either boundary (a new
+// own prompt, a newly-attached draw, or pending draws merged into a just-
+// fetched run), so the live and fetched paths can never disagree.
+function applyRunTiming(run: PromptLogRun): void {
+  const window = runTimingWindow([...run.prompts, ...(run.child_draws ?? [])]);
+  run.started_at = window.startedAt;
+  run.ended_at = window.endedAt;
+  run.wall_duration_ms = window.wallDurationMs;
+}
+
 function updateExistingRun(run: PromptLogRun, prompt: PromptLogEntry): void {
   run.prompts.push(prompt);
   run.prompt_count = run.prompts.length;
-  run.ended_at = prompt.timestamp;
+  // Model time: this run's OWN prompts only — child draws never add to it
+  // (#2438; see wall_duration_ms below for the real elapsed time).
   run.total_duration_ms += prompt.duration_ms;
   run.total_input_tokens += prompt.input_tokens;
   run.total_output_tokens += prompt.output_tokens;
+  applyRunTiming(run);
 
   allRuns = moveToFront(allRuns, run.run_id);
   const row = runElements.get(run.run_id);
@@ -357,13 +373,16 @@ function updateExistingRun(run: PromptLogRun, prompt: PromptLogEntry): void {
 }
 
 function insertNewRun(prompt: PromptLogEntry): void {
+  const window = runTimingWindow([prompt]);
   const run: PromptLogRun = {
     run_id: prompt.run_id,
     agent_name: prompt.agent_name,
     prompt_count: 1,
-    started_at: prompt.timestamp,
-    ended_at: prompt.timestamp,
+    started_at: window.startedAt,
+    ended_at: window.endedAt,
+    // Model time: this run's OWN prompts only (#2438; see wall_duration_ms).
     total_duration_ms: prompt.duration_ms,
+    wall_duration_ms: window.wallDurationMs,
     total_input_tokens: prompt.input_tokens,
     total_output_tokens: prompt.output_tokens,
     run_outcome: null,
@@ -453,6 +472,10 @@ function reconcilePendingDraws(run: PromptLogRun): void {
     frontier = next;
   }
   run.child_draws = dedupeDraws(merged);
+  // Pending draws merged in above may extend past what the server's own
+  // started_at/ended_at/wall_duration_ms already reflected (#2438) — the same
+  // window function the server used, so the two can't disagree.
+  applyRunTiming(run);
 }
 
 /** Attach one draw — live, at any depth: its host run isn't on screen yet
@@ -473,11 +496,17 @@ function attachDraw(draw: PromptLogEntry): void {
     return;
   }
   container.host.child_draws = dedupeDraws([...(container.host.child_draws ?? []), draw]);
+  // A draw can extend the host's wall time well past its own last own prompt
+  // (reading a page takes real time) — recompute so the header's numbers
+  // update the same way a new own prompt's do (#2438).
+  applyRunTiming(container.host);
   rerenderHostBody(container.host);
   allRuns = moveToFront(allRuns, container.host.run_id);
   const hostRow = runElements.get(container.host.run_id);
   if (hostRow) {
     runsContainer.prepend(hostRow);
+    const summary = hostRow.querySelector(".run-summary")!;
+    summary.replaceChild(createRunHeader(container.host), summary.querySelector(".run-header")!);
     markRunActive(container.host.run_id, hostRow);
   }
   drainWaitingOn(draw);
@@ -961,6 +990,10 @@ function createRunHeader(run: PromptLogRun): HTMLElement {
 
   const meta = document.createElement("span");
   meta.className = "run-meta";
+  // tok/s is paired with "model time" (total_duration_ms, this run's OWN
+  // prompts only) deliberately — that's the number that actually measures
+  // generation throughput; "wall time" below also counts child draws (a
+  // browse extraction reading pages, say), which never generated a token.
   const tokPerSec = run.total_duration_ms > 0
     ? ((run.total_output_tokens / run.total_duration_ms) * 1000).toFixed(1)
     : "0";
@@ -968,7 +1001,8 @@ function createRunHeader(run: PromptLogRun): HTMLElement {
     `<span><i class="fa-solid fa-arrow-down"></i>${formatTokens(run.total_input_tokens)}</span>` +
     `<span><i class="fa-solid fa-arrow-up"></i>${formatTokens(run.total_output_tokens)}</span>` +
     `<span><i class="fa-solid fa-gauge-high"></i>${tokPerSec} tok/s</span>` +
-    `<span><i class="fa-solid fa-clock"></i>${formatDuration(run.total_duration_ms)}</span>`;
+    `<span title="Wall time — real elapsed time, child draws included"><i class="fa-solid fa-clock"></i>${formatDuration(run.wall_duration_ms)}</span>` +
+    `<span title="Model time — this run's own calls only"><i class="fa-solid fa-microchip"></i>${formatDuration(run.total_duration_ms)}</span>`;
   header.appendChild(meta);
 
   // Copy the whole run — its run_id + every prompt's full JSON (ids included),
@@ -1024,6 +1058,15 @@ function createPromptRow(prompt: PromptLogEntry, step: number | string): HTMLEle
     snippetEl.title = snippet;
     header.appendChild(snippetEl);
   }
+
+  // This call's own start — timestamp minus its duration (#2438), the same
+  // subtraction the run header's wall time is built from, so a step's shown
+  // start can never disagree with it.  `createDrawRow` reuses this function,
+  // so a nested draw row gets its own start the same way, for free.
+  const startEl = document.createElement("span");
+  startEl.className = "prompt-start";
+  startEl.textContent = formatTimeOfDay(rowStartedAt(prompt));
+  header.appendChild(startEl);
 
   const meta = document.createElement("span");
   meta.className = "prompt-meta";
@@ -1294,6 +1337,21 @@ function formatDateTime(iso: string): string {
       day: "numeric",
       hour: "numeric",
       minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+// A step row's own start (#2438) is within the same round as its run header's
+// date, so it only needs to add the finer-grained time-of-day — seconds
+// matter here, since steps can land seconds apart.
+function formatTimeOfDay(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
     });
   } catch {
     return iso;

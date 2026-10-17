@@ -1724,6 +1724,95 @@ class TestBrowserPromptLogHandlers:
         assert unanchored["made_tool_call"] is False  # a plain text reply, no tool call
 
     @pytest.mark.asyncio
+    async def test_prompt_logs_started_at_is_the_first_calls_true_start(self, tmp_path):
+        """``started_at`` is the run's REAL start — the first call's own
+        ``timestamp - duration_ms`` — not the raw logged timestamp, which
+        ``PromptLog.timestamp`` stamps when the call ENDS (#2438)."""
+        channel, db = self._channel(tmp_path)
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "hi"}}]},
+            agent_name="chat",
+            run_id="run1",
+            duration_ms=5_000,
+        )
+        with Session(db.engine) as session:
+            logged_at = (
+                session.exec(select(PromptLog).where(PromptLog.run_id == "run1")).one().timestamp
+            )
+
+        response = await self._request_prompt_logs(channel)
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+        started_at = datetime.fromisoformat(run["started_at"])
+        assert started_at == logged_at - timedelta(milliseconds=5_000)
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_wall_time_spans_a_long_running_child_draw(self, tmp_path):
+        """The run's wall time reaches to the LATEST end across its own
+        prompts AND its child draws (#2438) — a round whose only own call was
+        quick but whose browse-extract draw read pages for minutes shows that
+        whole span, not just the quick call's own duration.  ``total_duration_ms``
+        ("model time") stays the run's own call only, unaffected by the draw —
+        the two numbers must read differently, on purpose."""
+        channel, db = self._channel(tmp_path)
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "b0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "browse",
+                                        "arguments": json.dumps(
+                                            {"queries": ["https://example.test"], "extract": "x"}
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            agent_name="chat",
+            run_id="run1",
+            duration_ms=10,
+        )
+        with Session(db.engine) as session:
+            top = session.exec(select(PromptLog).where(PromptLog.run_id == "run1")).one()
+            draw_end = top.timestamp + timedelta(seconds=233)
+
+        # The draw dispatched on "b0"'s behalf — its own duration is small
+        # relative to how long after the run's own call it actually finished.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "extracted"}}]},
+            agent_name="browse-extract",
+            run_id="draw-1",
+            parent_run_id="run1",
+            parent_tool_call_id="b0",
+            duration_ms=1_000,
+        )
+        with Session(db.engine) as session:
+            draw_row = session.exec(select(PromptLog).where(PromptLog.run_id == "draw-1")).one()
+            draw_row.timestamp = draw_end
+            session.add(draw_row)
+            session.commit()
+
+        response = await self._request_prompt_logs(channel)
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+        assert run["total_duration_ms"] == 10  # model time: the run's own call only
+        assert run["ended_at"] == draw_end.isoformat()
+        assert run["wall_duration_ms"] >= 233_000  # wall time: reaches the draw's own end
+        assert run["wall_duration_ms"] > run["total_duration_ms"]
+
+    @pytest.mark.asyncio
     async def test_prompt_logs_carry_grandchild_draws(self, tmp_path):
         """A draw made on behalf of ANOTHER draw (a micro-context nested inside a
         micro-context, #2435) is still a descendant of the top-level run — found

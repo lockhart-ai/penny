@@ -49,6 +49,37 @@ export function byTimestamp<T extends { timestamp: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
+/** One row's own start — `timestamp` minus however long the call took
+ * (`duration_ms`) — the same subtraction `runTimingWindow` reduces over many
+ * rows, shared so a step row's own displayed start can never disagree with
+ * how the run header derives its (#2438). */
+export function rowStartedAt(row: { timestamp: string; duration_ms: number }): string {
+  return new Date(new Date(row.timestamp).getTime() - row.duration_ms).toISOString();
+}
+
+/** The structural timing window of a run: the earliest `timestamp -
+ * duration_ms` and the latest `timestamp` across every row handed to it — a
+ * run's own prompts AND its child draws, at any depth (#2438).  Mirrors the
+ * server's own window (`_run_window` in `message_store.py`), and is the one
+ * place either the FETCHED path (reconciling pending draws into a
+ * just-fetched run, which may extend its true start/end past what the server
+ * already computed) or the LIVE path (a pushed prompt or draw) derives a
+ * run's `started_at`/`ended_at`/`wall_duration_ms` — so the two can never
+ * disagree. */
+export function runTimingWindow(
+  rows: { timestamp: string; duration_ms: number }[],
+): { startedAt: string; endedAt: string; wallDurationMs: number } {
+  const starts = rows.map((r) => new Date(r.timestamp).getTime() - r.duration_ms);
+  const ends = rows.map((r) => new Date(r.timestamp).getTime());
+  const start = Math.min(...starts);
+  const end = Math.max(...ends);
+  return {
+    startedAt: new Date(start).toISOString(),
+    endedAt: new Date(end).toISOString(),
+    wallDurationMs: end - start,
+  };
+}
+
 /** A new array with the entry matching `id` moved to the front — "any update
  * to a run moves it to the top", live.  Returns a shallow copy unchanged when
  * `id` isn't present or is already first. */

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
@@ -1411,6 +1411,8 @@ class MessageStore:
             run_prompts = grouped.get(run_id)
             if run_prompts is None:
                 continue
+            # Model time: this run's OWN prompts only — _serialize_run keeps
+            # child draws out of this sum on purpose (#2438).
             total_duration_ms = sum(p.duration_ms or 0 for p in run_prompts)
             runs.append(
                 self._serialize_run(
@@ -1718,6 +1720,24 @@ class MessageStore:
         }
 
     @staticmethod
+    def _run_window(rows: list[PromptLog]) -> tuple[datetime, datetime]:
+        """The structural start/end of a run: the earliest ``timestamp -
+        duration_ms`` and the latest ``timestamp`` across EVERY row handed to it
+        (#2438).  ``PromptLog.timestamp`` is stamped when a call is logged, i.e.
+        when it ENDS, so a row's own start is recovered by subtracting how long it
+        took; a null ``duration_ms`` (a row logged before the column existed, or a
+        call that never finished) is read as 0, same as the duration sums
+        elsewhere in this module.
+
+        Callers hand this the run's own prompts AND its child draws together (a
+        flat list, any nesting depth) — nothing here is keyed to an agent or tool
+        name, so it adapts to however many micro-contexts a cycle makes without a
+        code change."""
+        starts = [p.timestamp - timedelta(milliseconds=p.duration_ms or 0) for p in rows]
+        ends = [p.timestamp for p in rows]
+        return min(starts), max(ends)
+
+    @staticmethod
     def _serialize_run(
         run_id: str,
         prompts: list[PromptLog],
@@ -1732,7 +1752,21 @@ class MessageStore:
         — each entry already carries its own ``parent_tool_call_id`` (or ``None``
         for the five micro-context customers that aren't nested inside a dispatched
         tool call), so the addon nests them itself rather than this needing a
-        second, run-shaped schema."""
+        second, run-shaped schema.
+
+        Two timings, kept deliberately separate (#2438): ``wall_duration_ms`` is
+        the real elapsed time of the whole run tree — ``started_at`` to
+        ``ended_at``, both computed by ``_run_window`` over this run's own
+        prompts AND its child draws, so a browse round whose extraction read
+        pages for minutes shows that whole span.  ``total_duration_ms`` stays
+        exactly what it always was — this run's OWN prompts' summed model-call
+        time, EXCLUDING child draws — labelled "model time" by the addon; a
+        child draw can run long after the model itself has gone quiet (reading a
+        page, say), and keeping it out of ``total_duration_ms`` keeps that number
+        paired with ``total_output_tokens`` for an honest tok/s."""
+        all_rows = [*prompts, *(child_draws or [])]
+        started_at, ended_at = MessageStore._run_window(all_rows)
+        wall_duration_ms = int((ended_at - started_at).total_seconds() * 1000)
         total_input_tokens = 0
         total_output_tokens = 0
         serialized_prompts = []
@@ -1769,9 +1803,10 @@ class MessageStore:
             "run_id": run_id,
             "agent_name": prompts[0].agent_name or "unknown",
             "prompt_count": len(prompts),
-            "started_at": prompts[0].timestamp.isoformat(),
-            "ended_at": prompts[-1].timestamp.isoformat(),
+            "started_at": started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
             "total_duration_ms": total_duration_ms,
+            "wall_duration_ms": wall_duration_ms,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
             "run_outcome": run_outcome,
