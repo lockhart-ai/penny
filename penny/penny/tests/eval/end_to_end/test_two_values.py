@@ -18,10 +18,12 @@ This is deliberately the two-parameter cold bind — the suite's least stable st
 as the ``-two-params`` quarantine in ``test_known_routine_new_space.py`` — asked end to end,
 through the job's own cycles.  Findings are the point; the numbers go to the code owner.
 
-**Claims read only:** what the store's entries hold after each cycle, what reached the user,
-the created job's own terms (cadence, end, notify), and provenance — never which collection
-the job sits on, the routine's shape or bound values, or which conversation-machine states the
-script passed through on the way (#2375's ruling).
+**Claims read only:** what reached the user (the chat phase's replies and the job's own
+sends), the created job's own terms (cadence, end, notify), and provenance of everything
+sent or replied — never what a cycle left in the store, which is hers to keep as she wishes
+and is measured, not claimed (``ENTRIES_STORED``, #2490), nor which collection the job sits
+on, the routine's shape or bound values, or which conversation-machine states the script
+passed through on the way (#2375's ruling).
 
 **The pages are real-size** — several kilobytes, the watched line among the notices a real
 harbour page carries.  The night sailing's two times are mutually exclusive as numerals, and
@@ -39,7 +41,7 @@ import pytest
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.tests.eval.conftest import EVAL_MODELS, EndToEndArm, EndToEndEval
-from penny.tests.eval.end_to_end.world import END_TO_END_WALK, held_text_at
+from penny.tests.eval.end_to_end.world import END_TO_END_WALK, sent_at
 from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
@@ -67,7 +69,7 @@ _FAMILY = "end-to-end"
 
 _BEHAVIOUR = (
     "In a job stood up from a routine Penny already knows, when the ask changes both the page "
-    "and the thing to look for, the job's cycles record the new thing from the new page."
+    "and the thing to look for, the user is told the new thing from the new page."
 )
 
 # ── The new page the ask names, and the two readings its cycles see ──────────
@@ -77,7 +79,8 @@ _NEW_URL = "https://harborferries.example/seasonal-sailings"
 # The OLD item, carried at the value the routine was taught on — read off the ferry family's
 # own demonstrated round so the page and the taught value cannot drift apart.
 _OLD_ITEM_LINE = _FERRY_DEMONSTRATED.entry_value
-# The marker the "not the old item's" claim reads — a stable substring of the old item's line.
+# The marker the "not the late sailing's" half of the first-cycle claim reads — a stable
+# substring of the old item's line.
 _OLD_ITEM_MARKER = "not scheduled"
 
 # The NEW item, and the two readings its value takes.
@@ -182,8 +185,9 @@ def _assert_every_wording_carries_the_facts() -> None:
             f"{_CASE_ID}: this wording names the old item — {ask!r}"
         )
     # The new page must actually carry the old item's line at the taught value — that is what
-    # makes the "not the old item's" claim below able to fail — and each of the new item's
-    # times must appear exactly once on its own page (``datum`` enforces the second).
+    # makes the "not the late sailing's" half of the first-cycle claim below able to fail —
+    # and each of the new item's times must appear exactly once on its own page (``datum``
+    # enforces the second).
     assert _OLD_ITEM_MARKER in _BASELINE_PAGE.text, (
         f"{_CASE_ID}: the new page carries no old item, so the negative half of the first "
         "cycle's claim has nothing to be false of"
@@ -224,19 +228,40 @@ _ARMS = tuple(
 # ── The claims ───────────────────────────────────────────────────────────────
 
 
-def _store_holds_the_new_item_not_the_old(sample: SampleObservation, _world: World) -> Answer:
-    """After the first cycle the store holds the night sailing's time — and not the late
-    sailing's, whose line sits on the same page at the value the routine was taught on."""
-    held = held_text_at(sample.cycles, 0)
-    ok = _NEW_BASELINE_TIME in held and _OLD_ITEM_MARKER not in held
-    return ok, f"expected {_NEW_BASELINE_TIME} and not {_OLD_ITEM_MARKER!r}; held {held!r}"
+def _told_the_night_sailing_time_by_the_first_cycle(
+    sample: SampleObservation, _world: World
+) -> Answer:
+    """By the end of the first cycle the user has been told the night sailing's time — and
+    not the late sailing's, whose line sits on the same page at the value the routine was
+    taught on.
+
+    The positive half reads the night sailing's time in any chat reply OR any notification so
+    far: the chat phase's replies with every cycle's own send stripped back out (``reply``
+    joins both), then the messages the first cycle put on the queue — nothing from a later
+    cycle counts, because "by the end of the first cycle" is the claim's own bound.  The
+    negative half reads the same surfaces for the late sailing's marker: a cycle that read
+    the wrong line on the right page told the user the wrong thing."""
+    chat_replies = sample.reply
+    for message in sample.notifications:
+        if message in chat_replies:
+            chat_replies = chat_replies.replace(message, "")
+    notifications_so_far = sent_at(sample.cycles, 0)
+    told_surfaces = [chat_replies, *notifications_so_far]
+    night = any(_NEW_BASELINE_TIME in surface for surface in told_surfaces)
+    late = any(_OLD_ITEM_MARKER in surface for surface in told_surfaces)
+    return night and not late, (
+        f"the night sailing's {_NEW_BASELINE_TIME} told: {night}; "
+        f"the late sailing's line told: {late}"
+    )
 
 
-def _store_holds_the_moved_time(sample: SampleObservation, _world: World) -> Answer:
-    """After the second cycle the store holds the night sailing's moved time — the old item's
-    line stayed put on the page, so only the watched value's movement is there to record."""
-    held = held_text_at(sample.cycles, 1)
-    return _NEW_MOVED_TIME in held, f"expected {_NEW_MOVED_TIME}; held {held!r}"
+def _told_the_moved_time_when_it_moved(sample: SampleObservation, _world: World) -> Answer:
+    """When the time moved, the user was told the moved time — the messages sent on the
+    second cycle carry the moved departure the page now posts.  Read off the cycle's own
+    sends, so a cycle that ran and sent nothing, or sent the old time, fails here."""
+    sent = sent_at(sample.cycles, 1)
+    told = [message for message in sent if _NEW_MOVED_TIME in message]
+    return bool(told), f"sent on the moved cycle: {sent}; carrying {_NEW_MOVED_TIME}: {told}"
 
 
 _MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
@@ -264,22 +289,22 @@ async def test_a_known_routines_job_records_the_new_thing_from_the_new_page(
     cohort.assert_a_new_job_notifies()
     cohort.assert_a_new_job_ends_when_asked(_ASKED_END)
 
-    # STORE — the two cycles, each read as what the created job(s) held at that position,
-    # union over however many jobs the script created.
+    # SENT — the two cycles, each read as what reached the user at that position, union
+    # over however many jobs the script created.  What a cycle left in the store is hers,
+    # measured as variance (``ENTRIES_STORED``), never claimed (#2490).
     cohort.claim(
-        "state: after the first cycle the store holds the night sailing's time, not the late "
-        "sailing's",
-        _store_holds_the_new_item_not_the_old,
+        "state: by the end of the first cycle the user has been told the night sailing's "
+        "time, and not the late sailing's",
+        _told_the_night_sailing_time_by_the_first_cycle,
         SpecCategory.STORE,
     )
     cohort.claim(
-        "state: after the second cycle the store holds the night sailing's moved time",
-        _store_holds_the_moved_time,
+        "state: when the time moved, the user was told the moved time",
+        _told_the_moved_time_when_it_moved,
         SpecCategory.STORE,
     )
 
     # PROVENANCE
-    cohort.assert_every_value_in_the_store_is_sourced()
     cohort.assert_every_value_in_the_reply_is_sourced()
 
     cohort.measure(*_MEASURED)
