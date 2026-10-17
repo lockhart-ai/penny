@@ -1156,7 +1156,7 @@ async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_
 
 
 def test_micro_context_system_prompt_declares_multiline_contract():
-    """Whole-render literal of the extraction system prompt (#1682/#1942/#2360/#2453): an
+    """Whole-render literal of the extraction system prompt (#1682/#1942/#2360): an
     optional MISSING: line may open the draw, then one of the two tags — an EXTRACTED
     value may be a multi-line digest / list, a NOT_PRESENT reason stays a single line —
     and the boundary between the two tags is STATED: content carrying some of what was
@@ -1174,17 +1174,7 @@ def test_micro_context_system_prompt_declares_multiline_contract():
     headline, link and summary go on one line or two — because the prompt said "a list
     (put one item per line)" while an item has several parts. The prompt now says what
     one item's line IS (its parts, in the order the instruction names them, " — "
-    separated) instead of leaving the shape of an item to argue about.
-
-    #2453's round 5: real production draws measured 4-5x a plain ask's cost on exactly
-    this decision — a part absent for the whole list, over a page with no run-on label
-    anywhere in it — because settling it took several passes back over items already
-    covered.  A first attempt (an open-ended "don't re-check items already covered"
-    permission) measured WORSE on the suite's one unbounded-list case: under half its
-    samples completed inside the harness's own wait, and the ones that did more than
-    doubled their token cost — an open count ("several") left room to argue about how
-    much checking is enough.  The sentence kept names a SPECIFIC count instead: three
-    items decide it, not a judgment call."""
+    separated) instead of leaving the shape of an item to argue about."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -1206,9 +1196,6 @@ def test_micro_context_system_prompt_declares_multiline_contract():
         "list, a part that none of your items has — name it, all of it together, in "
         "one short line, before EXTRACTED:\n"
         "MISSING: <one short line naming what was asked for and is not on the page>\n"
-        "If the first three items you look at carry nothing for one of the named "
-        "things, the rest of the list will not either — write it on MISSING: from "
-        "those three and move on to the value.\n"
         "Use NOT_PRESENT:, on a single line, when the page carries NONE of what was "
         "asked for. Never invent a value that is not in the content — when something "
         "named is not there, say so on MISSING: (or NOT_PRESENT: when nothing is) "

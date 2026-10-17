@@ -232,16 +232,6 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE,
 # ROUND 4 (#2360): replaced the "AT ALL" sentence after a replay of the slowest
 # draws took "the missing line names the descriptions" from 7/18 to 17/18 on the
 # top-three ask.
-#
-# ROUND 5 (#2453): real production draws measured 4-5x a plain ask's cost on
-# deciding that a part is absent for a whole list, over a page with no run-on
-# label anywhere in it — the decision kept re-checking items already covered.
-# Round 5's FIRST attempt (a general "don't re-check" sentence) measured worse:
-# it regressed the suite's one unbounded-list case to under half its samples
-# completing inside the harness's own wait, more than doubling its token cost on
-# the samples that did. That version is gone. This one gives the decision a
-# CONCRETE, BOUNDED rule instead of an open-ended permission: a specific count
-# of items, not "several" or "a few" for the model to weigh on its own.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -263,9 +253,6 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "it — for a list, a part that none of your items has — name it, all of it "
     f"together, in one short line, before {EXTRACTED_TAG}\n"
     f"{render_line(_EXTRACT_MISSING_LINE)}\n"
-    "If the first three items you look at carry nothing for one of the named "
-    "things, the rest of the list will not either — write it on "
-    f"{EXTRACT_MISSING_TAG} from those three and move on to the value.\n"
     f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
     "was asked for. Never invent a value that is not in the content — when "
     f"something named is not there, say so on {EXTRACT_MISSING_TAG} (or {NOT_PRESENT_TAG} "
