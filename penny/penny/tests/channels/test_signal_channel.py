@@ -1,5 +1,8 @@
 """Integration tests for Signal channel."""
 
+import time
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 
 from penny.channels.signal import SignalChannel
@@ -826,5 +829,151 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
         TEST_SENDER, "tell me about ex", parent_id=None, author="penny", media_ids=[999999]
     )
     assert signal_server.outgoing_messages[-1].get("base64_attachments") == [expected]
+
+    await channel.close()
+
+
+def _text_envelope(config, sender: str, content: str) -> dict:
+    """A plain Signal text-message envelope, built directly rather than pushed
+    through the mock server's websocket — ``handle_message`` is the same entry
+    point the receive loop calls with the parsed envelope (mirrors
+    ``_reaction_envelope`` in test_signal_reactions.py)."""
+    ts = int(time.time() * 1000)
+    return {
+        "account": config.signal_number,
+        "envelope": {
+            "source": sender,
+            "sourceNumber": sender,
+            "sourceUuid": "test-uuid",
+            "sourceName": "Test User",
+            "sourceDevice": 1,
+            "timestamp": ts,
+            "serverReceivedTimestamp": ts,
+            "serverDeliveredTimestamp": ts,
+            "dataMessage": {
+                "timestamp": ts,
+                "message": content,
+                "expiresInSeconds": 0,
+                "isExpirationUpdate": False,
+                "viewOnce": False,
+                "quote": None,
+            },
+        },
+    }
+
+
+def _build_signal_world(test_config, db):
+    """A ``ChatAgent`` + ``SignalChannel`` pair, built the same way every other
+    test in this file does — factored out because #2371's tests need three
+    copies of it."""
+    from penny.agents import ChatAgent
+    from penny.prompts import Prompt
+
+    client = LlmClient(
+        api_url=test_config.llm_api_url,
+        model=test_config.llm_model,
+        db=db,
+        max_retries=test_config.llm_max_retries,
+        retry_delay=test_config.llm_retry_delay,
+    )
+    message_agent = ChatAgent(
+        system_prompt=Prompt.CONVERSATION_PROMPT,
+        model_client=client,
+        embedding_model_client=client,
+        tools=[],
+        db=db,
+        config=test_config,
+    )
+    channel = SignalChannel(
+        api_url=test_config.signal_api_url,
+        phone_number=test_config.signal_number or "+15551234567",
+        message_agent=message_agent,
+        db=db,
+    )
+    return channel, message_agent
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reports_failure_before_a_reply_exists(
+    signal_server, test_config, mock_llm, test_user_info, monkeypatch
+):
+    """A turn never ends in silence (#2371): when the agent itself raises — a
+    bug, not a model that couldn't be reached — ``handle_message``'s outer
+    backstop still answers, with a deterministic account built from what it
+    knows (no tool calls happened yet)."""
+    from penny.agents.models import account_of
+    from penny.responses import PennyResponse
+
+    db = Database(test_config.db_path)
+    channel, message_agent = _build_signal_world(test_config, db)
+    monkeypatch.setattr(message_agent, "handle", AsyncMock(side_effect=RuntimeError("boom")))
+
+    await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "hi"))
+
+    sent = signal_server.outgoing_messages[-1]
+    assert sent["message"] == account_of(PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, [])
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reports_failure_after_a_reply_exists(
+    signal_server, test_config, mock_llm, test_user_info, monkeypatch
+):
+    """Once the agent has answered, a failure finishing the turn (logging,
+    linking, delivering) is reported with the run's OWN tool calls — the
+    richer account ``_finish_turn``'s own failure handling can build, since the
+    answer already exists by the time it runs."""
+    from penny.agents.models import ControllerResponse, ToolCallRecord, account_of
+    from penny.constants import PennyConstants
+    from penny.responses import PennyResponse
+
+    db = Database(test_config.db_path)
+    channel, message_agent = _build_signal_world(test_config, db)
+
+    tool_calls = [ToolCallRecord(tool="search_web", arguments={"query": "x"}, failed=True)]
+    monkeypatch.setattr(
+        message_agent,
+        "handle",
+        AsyncMock(
+            return_value=ControllerResponse(answer="here's what I found", tool_calls=tool_calls)
+        ),
+    )
+    # Fail only the INCOMING log write _finish_turn makes — the OUTGOING one the
+    # fallback account still needs to send must keep working, or this test can't
+    # tell "reported with an account" apart from "also silently broken".
+    original_log_message = db.messages.log_message
+
+    def flaky_log_message(direction, *args, **kwargs):
+        if direction == PennyConstants.MessageDirection.INCOMING:
+            raise RuntimeError("db down")
+        return original_log_message(direction, *args, **kwargs)
+
+    monkeypatch.setattr(db.messages, "log_message", Mock(side_effect=flaky_log_message))
+
+    await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "hi"))
+
+    sent = signal_server.outgoing_messages[-1]
+    assert sent["message"] == account_of(PennyResponse.FACTS_TURN_FAILED_AFTER_REPLY, tool_calls)
+
+    await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_never_raises_even_when_the_account_also_fails(
+    signal_server, test_config, mock_llm, test_user_info, monkeypatch
+):
+    """The one invariant that must survive every layer of this: a second
+    failure (e.g. the channel itself can't send right now) is logged, never
+    raised — ``handle_message`` must never crash its channel's receive loop."""
+    db = Database(test_config.db_path)
+    channel, message_agent = _build_signal_world(test_config, db)
+    monkeypatch.setattr(message_agent, "handle", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(channel, "send_message", AsyncMock(side_effect=RuntimeError("down")))
+
+    # Must not raise.
+    await channel.handle_message(_text_envelope(test_config, TEST_SENDER, "hi"))
+
+    assert signal_server.outgoing_messages == []
 
     await channel.close()

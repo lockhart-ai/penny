@@ -49,6 +49,17 @@ class PennyResponse:
     FACTS_NOTHING_TO_CONFIGURE = "There is no routine set up for this turn to configure."
     FACTS_NO_REPLY_AT_SEND = "This turn didn't produce a reply to send."
 
+    # The channel's own backstop facts (#2371): built when ``handle_message`` catches an
+    # exception that escaped everything inside it — a bug, not a model that couldn't be
+    # reached (that's AGENT_MODEL_ERROR above, decided inside the agent). Third person,
+    # like FACTS_NO_REPLY_AT_SEND, for the same reason: read only by ``account_of``,
+    # never handed to a model draw.
+    FACTS_TURN_FAILED_BEFORE_REPLY = "This turn hit an unexpected error before a reply was written."
+    FACTS_TURN_FAILED_AFTER_REPLY = (
+        "This turn hit an unexpected error after a reply was written, so it may not have "
+        "reached you."
+    )
+
     # The deterministic account's own shape (`account_of` in agents/models.py): the
     # facts above, plus a plain list of what was tried, built from the record.
     ACCOUNT_NO_TOOL_CALLS = "I made no tool calls this turn."

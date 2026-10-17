@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
-from penny.agents.models import account_of
+from penny.agents.models import ToolCallRecord, account_of
 from penny.config import Config
 from penny.constants import PennyConstants, PermissionResolution
 from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
@@ -514,7 +514,15 @@ class MessageChannel(ABC):
         Process an incoming message through the agent.
 
         This is the main message handling logic, shared by all channel implementations.
+
+        A turn never ends in silence (#2371): the paths below that know enough to
+        account for their own failure handle it themselves (``_finish_turn``, the
+        command executor); this is the backstop for everything else.  ``message``
+        starts unbound-but-named so the ``except`` below can tell whether we ever
+        learned who to answer — before ``extract_message`` returns, there is no
+        recipient, so logging is the honest ceiling.
         """
+        message: IncomingMessage | None = None
         try:
             message = self.extract_message(envelope_data)
             if message is None:
@@ -539,6 +547,25 @@ class MessageChannel(ABC):
 
         except Exception as e:
             logger.exception("Error handling message: %s", e)
+            if message is not None:
+                await self._report_turn_failure(
+                    message.sender, PennyResponse.FACTS_TURN_FAILED_BEFORE_REPLY, []
+                )
+
+    async def _report_turn_failure(
+        self, recipient: str, facts: str, tool_calls: list[ToolCallRecord]
+    ) -> None:
+        """Tell the user a turn died on an escaped exception — never silence, and
+        never ``AGENT_MODEL_ERROR`` (that fact is only for the model itself being
+        unreachable, decided inside the agent, not here).  Built deterministically
+        from what this layer knows (``account_of``, reused from #2370): no second
+        model call, since by the time we're here the model's own state is unknown.
+        Guarded so a second failure (e.g. the DB that just broke) is logged rather
+        than raised — ``handle_message`` must never crash its channel's receive loop."""
+        try:
+            await self.send_message(recipient, account_of(facts, tool_calls))
+        except Exception:
+            logger.exception("Also failed to tell %s this turn failed", recipient)
 
     async def _validate_message(self, message: IncomingMessage) -> bool:
         """Check vision config and notify scheduler. Returns False if message should be dropped."""
@@ -746,6 +773,31 @@ class MessageChannel(ABC):
             shortfall=entered.shortfall if entered is not None else None,
             **self._make_handle_kwargs(message, progress),
         )
+        try:
+            await self._finish_turn(
+                message, user_sender, device_id, response, run_id, parent_id, progress
+            )
+        except Exception:
+            logger.exception("Failed to finish turn for %s", message.sender)
+            await self._report_turn_failure(
+                message.sender, PennyResponse.FACTS_TURN_FAILED_AFTER_REPLY, response.tool_calls
+            )
+
+    async def _finish_turn(
+        self,
+        message: IncomingMessage,
+        user_sender: str,
+        device_id: int | None,
+        response: Any,
+        run_id: str,
+        parent_id: int | None,
+        progress: ProgressTracker | None,
+    ) -> None:
+        """Log the incoming message, link it to anything the run created, and
+        deliver the reply — the part of the turn that has an answer in hand
+        already (#2371: split out so a failure here can be reported with the
+        run's own ``response.tool_calls``, which ``_run_message_through_agent``
+        doesn't have once control returns to it)."""
         incoming_embedding = await self._embed_message(message.content)
         incoming_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
