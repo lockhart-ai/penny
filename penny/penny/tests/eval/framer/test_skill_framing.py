@@ -7,7 +7,7 @@ occasion.  It never sees the tool calls; the leaf labeller, which names the rout
 implementation, never sees the ask (#1824).  Nothing is offered to it: it MINTS the
 parameters by reading what the user said.
 
-**Six cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each one ask
+**Seven cases** (#2006/#2056) are the framer's decisions covered in ISOLATION, each one ask
 in five wordings pooled into a cohort of fifteen and read against
 ``docs/eval-case-design.md``.  **Code-owner ruling (#2222)**: which parameters are
 emitted, how many, and what they are named are all model OUTPUT — "the number of
@@ -38,6 +38,11 @@ form:
 * ``framer-keeps-three-of-a-kind-as-three-parameters`` — three URLS of the same kind, where
   run 1 measured every two-page sample folding them into one ``sites — list of URLs``; at
   three the list is more tempting still.
+* ``framer-settles-an-ask-that-names-a-count`` — the ask names a count attached to a piece
+  of information (#2331/#2373): whether the draw mints the count as its own parameter, folds
+  it into the page parameter's description, or something else is measured
+  (``_minted_families``), never asserted; what the case reads is the SPIRAL itself — token
+  cost and the thinking trace re-checking the same rule — not a right-or-wrong answer.
 
 What the cases deliberately do NOT claim, and why, is stated in each of them: the
 genericity contract (that a routine's name says the KIND of task and never THIS occasion) is
@@ -916,6 +921,108 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
     _measure_the_draw(cohort, positions=3, families=(_SAME_KIND_SOURCE,))
 
 
+# ── The ported case: an ask naming a count, in five wordings (#2331/#2373) ────
+#
+# The code owner's traced cause: a framing ask that names a count ("the top 5 headlines")
+# sends the draw back over its own rules again and again — whether the count is a piece
+# the user provided (and so a parameter) or is "carried" by a description that names the
+# same kind of thing.  No existing case puts a NUMBER in the ask: the three-of-a-kind case
+# above makes multiplicity salient but never states a count word the model has to decide is
+# a parameter or isn't.  This case is the structural analog of the issue's own worked
+# example, built fresh (no recorded promptlog carries it yet) rather than replayed.
+#
+# The ONE family a stated count is answered by, whatever the draw calls it or however it
+# spells the number.  Not ``name_only``: a count folded into the page parameter's
+# description (rather than minted as its own parameter) is exactly the alternative this
+# case measures, so the description fallback has to stay open.
+_COUNT_FAMILY = ParameterFamily(
+    "count", ("count", "top", "limit", "number", "n", "how_many", "quantity", "amount")
+)
+
+# THE FACTS ARE CONSTANT across the five wordings: every arm names the same front page, asks
+# for the top 5 headlines, and says to keep them.
+_COUNT_TURNS = (
+    "could you keep an eye on citydesk.example/front and send me the top 5 headlines every morning",
+    "go to citydesk.example/front, pull the top 5 headlines, and remember them",
+)
+
+_COUNT_PHRASINGS = (
+    (
+        "i'd like citydesk.example/front watched — give me the top 5 headlines each morning",
+        "open citydesk.example/front, grab the top 5 headlines, and save them",
+    ),
+    (
+        "can you track citydesk.example/front and show me its top 5 headlines every day?",
+        "visit citydesk.example/front, get the top 5 headlines, and keep them",
+    ),
+    (
+        "keep tabs on citydesk.example/front for me and list the top 5 headlines daily",
+        "check citydesk.example/front, find the top 5 headlines, and store them",
+    ),
+    (
+        "watch citydesk.example/front and let me know the top 5 headlines every morning",
+        "read citydesk.example/front, note the top 5 headlines, and remember them",
+    ),
+)
+
+COUNT_ARMS = PortedArms(
+    case_id="framer-settles-an-ask-that-names-a-count",
+    arms=(_COUNT_TURNS, *_COUNT_PHRASINGS),
+    carries=("citydesk.example/front", "top 5", "headlines"),
+    demonstrates=("remember", "save", "keep", "store"),
+)
+
+_COUNT_BEHAVIOUR = (
+    f"In the {PennyConstants.SKILL_FRAME_AGENT_NAME} micro-context, when the ask names a "
+    "count attached to a piece of information, Penny writes the routine's interface from "
+    "the user's own words."
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_named_count_is_framed_without_a_spiral(
+    framer_eval: FramerEval, model: str
+) -> None:
+    """One ask in five wordings: watch this page, keep the top 5 headlines every morning.
+
+    The traced cause of #2331: a count word in the ask ("the top 5 ...") pulls the draw
+    back over "a piece the name and description already carry is not a parameter" again and
+    again, because the routine's own generic description necessarily names the KIND of
+    thing the count modifies.  This is the "model gets lost" shape
+    (``docs/eval-working-guide.md`` §5): the end state is still read on the usual three
+    claims below, but the measurement that matters here is the SPIRAL itself — token cost
+    (duration, output and reasoning tokens) and the thinking trace, read off the run, not a
+    claim this file states.
+
+    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    code owner's ruling)**: which parameters are minted, how many, and what they answer are
+    all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
+    — that every minted VALUE traces to the user's own words — is already enforced by the
+    framer's own acceptance check (`_mints_a_usable_signature` / `_values_were_demonstrated`
+    in ``tools/micro_context.py``), so asserting it again here would score 15/15 by
+    construction.  STORE stays empty for the usual reason: one call returns a typed result;
+    it moves no machine and writes to no store.
+    """
+    cohort = await framer_eval(
+        case_id=COUNT_ARMS.case_id,
+        behaviour=_COUNT_BEHAVIOUR,
+        area=Area.TEACHING_A_ROUTINE,
+        model=model,
+        turns=_COUNT_TURNS,
+        also_phrased=_COUNT_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — EMPTY; see the docstring.
+
+    # STORE — EMPTY; see the docstring.
+
+    # PROVENANCE — EMPTY; see the docstring.
+
+    _measure_the_draw(cohort, positions=2, families=(_page_family("url"), _COUNT_FAMILY))
+
+
 # EVERY ported case's arms, for the deterministic probe in ``make check`` — one place, so the
 # probe and the live runs can never be checking two different sets of wordings.
 PORTED_ARMS = (
@@ -925,6 +1032,7 @@ PORTED_ARMS = (
     SEARCH_ARMS,
     PAGE_AND_TITLE_ARMS,
     THREE_SOURCES_ARMS,
+    COUNT_ARMS,
 )
 
 
