@@ -70,6 +70,7 @@ from penny.database.skills import (
     render_spoken_turns,
 )
 from penny.datetime_utils import user_timezone_name
+from penny.llm.call_link import CallLink
 from penny.llm.models import strip_harmony_control_tokens
 from penny.llm.similarity import embed_text
 from penny.notification import NotificationInput, render_notification
@@ -4906,7 +4907,12 @@ def classifier_eval(
                     parked_round=parked_round,
                 )
                 decision = await asyncio.wait_for(
-                    classifier.classify(snapshot, phrasing, run_target=penny.chat_agent.name),
+                    classifier.classify(
+                        snapshot,
+                        phrasing,
+                        call_link=CallLink.new_top(),
+                        run_target=penny.chat_agent.name,
+                    ),
                     timeout=timeout,
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
@@ -5448,7 +5454,9 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             signature: SkillSignature | None = None
             try:
                 signature = await asyncio.wait_for(
-                    micro.frame_skill(content, run_target=penny.chat_agent.name),
+                    micro.frame_skill(
+                        content, call_link=CallLink.new_top(), run_target=penny.chat_agent.name
+                    ),
                     timeout=timeout,
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
@@ -5587,7 +5595,12 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Iter
             labels: SkillLabels | None = None
             try:
                 labels = await asyncio.wait_for(
-                    micro.label_skill(content, offered, run_target=penny.chat_agent.name),
+                    micro.label_skill(
+                        content,
+                        offered,
+                        call_link=CallLink.new_top(),
+                        run_target=penny.chat_agent.name,
+                    ),
                     timeout=timeout,
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
@@ -5860,7 +5873,13 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Iterat
             binding: SkillBinding | None = None
             try:
                 binding = await asyncio.wait_for(
-                    micro.bind_skill(content, declared, said, run_target=penny.chat_agent.name),
+                    micro.bind_skill(
+                        content,
+                        declared,
+                        said,
+                        call_link=CallLink.new_top(),
+                        run_target=penny.chat_agent.name,
+                    ),
                     timeout=timeout,
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has
@@ -6106,7 +6125,11 @@ def extractor_eval(
             try:
                 extracted = await asyncio.wait_for(
                     micro.extract(
-                        content, asked, run_target=penny.chat_agent.name, reading=reading
+                        content,
+                        asked,
+                        call_link=CallLink.new_top(),
+                        run_target=penny.chat_agent.name,
+                        reading=reading,
                     ),
                     timeout=timeout,
                 )
@@ -6271,7 +6294,9 @@ def notify_composer_eval(
             message: str | None = None
             try:
                 message = await asyncio.wait_for(
-                    micro.compose_notification(content, run_target=penny.chat_agent.name),
+                    micro.compose_notification(
+                        content, call_link=CallLink.new_top(), run_target=penny.chat_agent.name
+                    ),
                     timeout=timeout,
                 )
                 # The case is graded from its cohort's CLAIMS, made after every sample has

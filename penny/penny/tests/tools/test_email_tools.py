@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penny.email.models import EmailAddress, EmailDetail, EmailSummary
+from penny.llm.call_link import CallLink
 from penny.tools.draft_email import DraftEmailTool
 from penny.tools.list_emails import MAILBOX_LIST_FAILED, ListEmailsTool
 from penny.tools.list_emails import NO_EMAILS_FOUND as LIST_NO_EMAILS_FOUND
@@ -80,7 +81,7 @@ async def test_read_emails_tool_summarizes_content():
         "what packages am I expecting",
         "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
     )
-    result = await tool.execute(email_ids=["M001"])
+    result = await tool.execute(CallLink.new_top(), email_ids=["M001"])
 
     assert result.message == "Shipping Co shipped order #123-456, arriving Feb 12."
     mock_client.read_emails.assert_called_once_with(["M001"])
@@ -107,7 +108,7 @@ async def test_read_emails_tool_falls_back_on_empty_summary():
         "test query",
         "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
     )
-    result = await tool.execute(email_ids=["M001"])
+    result = await tool.execute(CallLink.new_top(), email_ids=["M001"])
 
     assert "Your order #123-456 has been shipped!" in result.message
 
@@ -126,7 +127,7 @@ async def test_read_emails_tool_no_ids():
         "test query",
         "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
     )
-    result = await tool.run(email_ids=[])
+    result = await tool.run(CallLink.new_top(), email_ids=[])
 
     assert result.success is False
     assert "email_ids" in result.message
@@ -142,7 +143,7 @@ async def test_search_emails_tool_rejects_all_empty_search():
     mock_client = AsyncMock()
 
     tool = SearchEmailsTool(mock_client)
-    result = await tool.run()
+    result = await tool.run(CallLink.new_top())
 
     assert result.success is False
     assert "criterion" in result.message
@@ -153,7 +154,7 @@ async def test_search_emails_tool_rejects_all_empty_search():
 async def test_search_emails_tool_runs_with_one_criterion(mock_email_client):
     """A single criterion (text) is enough to pass validation and reach ``execute``."""
     tool = SearchEmailsTool(mock_email_client)
-    result = await tool.run(text="package")
+    result = await tool.run(CallLink.new_top(), text="package")
 
     assert result.success is True
     assert "email(s)" in result.message
@@ -167,15 +168,17 @@ async def test_draft_email_tool_rejects_structural_gaps():
     mock_client = AsyncMock()
     tool = DraftEmailTool(mock_client)
 
-    empty_to = await tool.run(to=[], subject="Hi", body="Hello there")
+    empty_to = await tool.run(CallLink.new_top(), to=[], subject="Hi", body="Hello there")
     assert empty_to.success is False
     assert "to" in empty_to.message
 
-    blank_subject = await tool.run(to=["a@b.com"], subject="   ", body="Hello there")
+    blank_subject = await tool.run(
+        CallLink.new_top(), to=["a@b.com"], subject="   ", body="Hello there"
+    )
     assert blank_subject.success is False
     assert "subject" in blank_subject.message
 
-    blank_body = await tool.run(to=["a@b.com"], subject="Hi", body="")
+    blank_body = await tool.run(CallLink.new_top(), to=["a@b.com"], subject="Hi", body="")
     assert blank_body.success is False
     assert "body" in blank_body.message
 
@@ -190,7 +193,7 @@ async def test_draft_email_tool_saves_well_formed_draft():
     mock_client.draft_response.return_value = "draft-123"
     tool = DraftEmailTool(mock_client)
 
-    result = await tool.run(to=["a@b.com"], subject="Hi", body="Hello there")
+    result = await tool.run(CallLink.new_top(), to=["a@b.com"], subject="Hi", body="Hello there")
 
     assert result.success is True
     assert result.mutated is True
@@ -210,7 +213,7 @@ async def test_search_emails_tool_reports_a_raised_search():
     mock_client.search_emails.side_effect = RuntimeError("connection refused")
     tool = SearchEmailsTool(mock_client)
 
-    result = await tool.run(text="package")
+    result = await tool.run(CallLink.new_top(), text="package")
 
     assert result.success is False
     assert result.message == MAILBOX_SEARCH_FAILED.format(e="connection refused")
@@ -227,7 +230,7 @@ async def test_read_emails_tool_reports_a_raised_read():
         "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
     )
 
-    result = await tool.run(email_ids=["M001"])
+    result = await tool.run(CallLink.new_top(), email_ids=["M001"])
 
     assert result.success is False
     assert result.message == MAILBOX_READ_FAILED.format(e="connection refused")
@@ -239,7 +242,7 @@ async def test_list_emails_tool_reports_a_raised_listing():
     mock_client.list_emails.side_effect = RuntimeError("connection refused")
     tool = ListEmailsTool(mock_client)
 
-    result = await tool.run(folder="Sent")
+    result = await tool.run(CallLink.new_top(), folder="Sent")
 
     assert result.success is False
     assert result.message == MAILBOX_LIST_FAILED.format(folder="Sent", e="connection refused")
@@ -251,7 +254,7 @@ async def test_list_folders_tool_reports_a_raised_listing():
     mock_client.get_folders.side_effect = RuntimeError("connection refused")
     tool = ListFoldersTool(mock_client)
 
-    result = await tool.run()
+    result = await tool.run(CallLink.new_top())
 
     assert result.success is False
     assert result.message == MAILBOX_FOLDERS_FAILED.format(e="connection refused")

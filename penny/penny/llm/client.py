@@ -11,13 +11,13 @@ import json
 import logging
 import re
 import time
-import uuid
 from typing import Any
 
 import httpx
 import openai
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
 from penny.llm.models import (
     FAULT_LOG_FIELD,
     PROVIDER_LOG_FIELD,
@@ -39,7 +39,6 @@ from penny.llm.models import (
     ProviderPin,
     fault_for_status,
 )
-from penny.llm.run_context import current_parent_run_id, current_run_id, current_tool_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -269,9 +268,10 @@ class LlmClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         format: dict | str | None = None,
+        *,
+        call_link: CallLink,
         agent_name: str | None = None,
         prompt_type: str | None = None,
-        run_id: str | None = None,
         run_target: str | None = None,
     ) -> LlmResponse:
         """Generate a chat completion with optional tool calling.
@@ -285,20 +285,17 @@ class LlmClient:
         retried twice before answering reports its real cost, which is what the eval
         harness's token-cost accounting reads.
 
-        ``run_id`` is an explicit override (every real caller today supplies one);
-        when omitted, the ambient run (pushed by whatever started this run, or by a
-        micro-context's own draw) supplies it, and a call with no ambient run either
-        (a one-shot with nothing above it) mints a fresh one rather than logging an
-        unfetchable ``run_id=None`` row (#2458). ``parent_run_id`` / ``parent_tool_call_id``
-        are no longer parameters at all: they are read from that same ambient state
-        at log time (``penny.llm.run_context``), so a draw made INSIDE a tool (a
-        micro-context, which pushes its own ``run_id`` for its own ledger attribution)
-        links back to the chat/collector run — and, for a draw made from inside a
-        dispatched tool call, that call's own id — with no wiring at this call site.
+        ``call_link`` (#2458) is REQUIRED — no ambient state, no ``X or <mint>``
+        fallback here (the code owner's ruling: the type checker is the
+        enforcement). It names this call's own ``run_id`` and, for a draw made on
+        behalf of an enclosing run (a micro-context, which mints its own ``run_id``
+        via :meth:`~penny.llm.call_link.CallLink.child` for its own ledger
+        attribution) or from inside a dispatched tool call, that run's/call's id —
+        read straight off the link, never re-derived here.
         """
-        resolved_run_id = run_id if run_id is not None else current_run_id() or uuid.uuid4().hex
-        parent_run_id = current_parent_run_id()
-        parent_tool_call_id = current_tool_call_id()
+        resolved_run_id = call_link.run_id
+        parent_run_id = call_link.parent_run_id
+        parent_tool_call_id = call_link.parent_tool_call_id
         start = time.time()
         messages_snapshot = list(messages)
         try:
@@ -463,9 +460,10 @@ class LlmClient:
         prompt: str,
         tools: list[dict] | None = None,
         format: dict | str | None = None,
+        *,
+        call_link: CallLink,
         agent_name: str | None = None,
         prompt_type: str | None = None,
-        run_id: str | None = None,
     ) -> LlmResponse:
         """Generate a completion for a prompt (converts to chat format internally)."""
         messages = [{"role": "user", "content": prompt}]
@@ -473,9 +471,9 @@ class LlmClient:
             messages,
             tools,
             format,
+            call_link=call_link,
             agent_name=agent_name,
             prompt_type=prompt_type,
-            run_id=run_id,
         )
 
     # ── Embeddings ───────────────────────────────────────────────────────

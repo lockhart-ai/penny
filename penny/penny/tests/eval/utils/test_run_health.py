@@ -21,6 +21,7 @@ import openai
 import pytest
 
 from penny.database.message_store import PromptPerf
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmFault, LlmResponseError, LlmTimeoutError
 from penny.tests import conftest as root_conftest
@@ -112,7 +113,7 @@ class TestTheFaultTallyReadsWhatTheClientWrites:
         monkeypatch.setattr(client.client.chat.completions, "create", answer_without_a_completion)
         try:
             with pytest.raises(LlmResponseError):
-                await client.chat([{"role": "user", "content": "hi"}])
+                await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
         finally:
             await client.close()
             logging.getLogger(run_health.PENNY_LOGGER).removeHandler(tally)
@@ -136,7 +137,7 @@ class TestTheFaultTallyReadsWhatTheClientWrites:
         monkeypatch.setattr(client.client.chat.completions, "create", refuse)
         try:
             with pytest.raises(LlmResponseError):
-                await client.chat([{"role": "user", "content": "hi"}])
+                await client.chat([{"role": "user", "content": "hi"}], call_link=CallLink.new_top())
         finally:
             await client.close()
             logging.getLogger(run_health.PENNY_LOGGER).removeHandler(tally)

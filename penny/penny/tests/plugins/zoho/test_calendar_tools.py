@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from penny.llm.call_link import CallLink
 from penny.plugins.zoho.calendar_tools import (
     CALENDAR_AVAILABILITY_FAILED,
     CALENDAR_EVENT_CREATE_FAILED,
@@ -39,6 +40,7 @@ async def test_check_availability_renders_typed_busy_slots():
     )
 
     result = await CheckAvailabilityTool(client).execute(
+        CallLink.new_top(),
         start_date="2026-07-22T09:00:00",
         end_date="2026-07-22T17:00:00",
         attendees=["attendee@example.com"],
@@ -57,6 +59,7 @@ async def test_check_availability_reports_free_range_when_no_busy_slots():
     client.check_availability = AsyncMock(return_value=[])
 
     result = await CheckAvailabilityTool(client).execute(
+        CallLink.new_top(),
         start_date="2026-07-22T09:00:00",
         end_date="2026-07-22T17:00:00",
         attendees=["attendee@example.com"],
@@ -79,7 +82,7 @@ async def test_find_free_slots_renders_typed_slot():
         ]
     )
 
-    result = await FindFreeSlotsTool(client).execute(duration_minutes=30)
+    result = await FindFreeSlotsTool(client).execute(CallLink.new_top(), duration_minutes=30)
 
     assert result.success
     assert result.message == (
@@ -100,7 +103,7 @@ async def test_find_free_slots_lists_every_slot():
     ]
     client.find_free_slots = AsyncMock(return_value=slots)
 
-    result = await FindFreeSlotsTool(client).execute(duration_minutes=30)
+    result = await FindFreeSlotsTool(client).execute(CallLink.new_top(), duration_minutes=30)
 
     assert result.success
     assert "Found 12 available slot(s)" in result.message
@@ -116,6 +119,7 @@ async def test_create_event_reports_missing_calendar_as_failure():
     client.get_calendar_by_name = AsyncMock(return_value=None)
 
     result = await CreateEventTool(client).execute(
+        CallLink.new_top(),
         title="Standup",
         start="2026-07-22T10:00:00",
         end="2026-07-22T11:00:00",
@@ -155,6 +159,7 @@ async def test_update_event_applies_changes_and_renders_summary():
     client.update_event = AsyncMock(return_value=ZohoEvent(uid="E1", title="Standup"))
 
     result = await UpdateEventTool(client).execute(
+        CallLink.new_top(),
         event_title="Standup",
         new_start="2026-07-22T14:00:00",
         new_end="2026-07-22T15:00:00",
@@ -207,6 +212,7 @@ async def test_update_recurring_event_switches_edittype_and_sets_recurrenceid():
     client.update_event = AsyncMock(return_value=ZohoEvent(uid="E1", title="Weekly sync"))
 
     result = await UpdateEventTool(client).execute(
+        CallLink.new_top(),
         event_title="Weekly sync",
         new_start="2026-07-29T10:00:00",
         new_end="2026-07-29T11:00:00",
@@ -228,7 +234,9 @@ async def test_update_event_reports_missing_calendar_as_failure():
     client = MagicMock()
     client.get_calendar_by_name = AsyncMock(return_value=None)
 
-    result = await UpdateEventTool(client).execute(event_title="Standup", calendar_name="Nope")
+    result = await UpdateEventTool(client).execute(
+        CallLink.new_top(), event_title="Standup", calendar_name="Nope"
+    )
 
     assert result.success is False
     assert result.message == "Calendar not found: Nope. Check the calendar name and try again."
@@ -241,7 +249,7 @@ async def test_update_event_reports_missing_event_as_failure():
     client.get_default_calendar = AsyncMock(return_value=_calendar())
     client.get_events = AsyncMock(return_value=[])
 
-    result = await UpdateEventTool(client).execute(event_title="Ghost")
+    result = await UpdateEventTool(client).execute(CallLink.new_top(), event_title="Ghost")
 
     assert result.success is False
     assert result.message == (
@@ -272,7 +280,7 @@ async def test_list_calendars_reports_a_raised_listing():
     client = MagicMock()
     client.get_calendars = AsyncMock(side_effect=_http_401())
 
-    result = await ListCalendarsTool(client).execute()
+    result = await ListCalendarsTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == CALENDAR_LIST_FAILED.format(e=_http_401())
@@ -285,7 +293,7 @@ async def test_get_events_reports_a_raised_fetch():
         side_effect=RuntimeError("Zoho OAuth error: invalid_grant")
     )
 
-    result = await GetEventsTool(client).execute()
+    result = await GetEventsTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == CALENDAR_EVENTS_FAILED.format(e="Zoho OAuth error: invalid_grant")
@@ -297,6 +305,7 @@ async def test_check_availability_reports_a_raised_check():
     client.check_availability = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     result = await CheckAvailabilityTool(client).execute(
+        CallLink.new_top(),
         start_date="2026-07-22T09:00:00",
         end_date="2026-07-22T17:00:00",
         attendees=["attendee@example.com"],
@@ -313,6 +322,7 @@ async def test_create_event_reports_a_raised_create():
     client.create_event = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     result = await CreateEventTool(client).execute(
+        CallLink.new_top(),
         title="Standup",
         start="2026-07-22T10:00:00",
         end="2026-07-22T11:00:00",
@@ -327,7 +337,7 @@ async def test_find_free_slots_reports_a_raised_search():
     client = MagicMock()
     client.find_free_slots = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await FindFreeSlotsTool(client).execute(duration_minutes=30)
+    result = await FindFreeSlotsTool(client).execute(CallLink.new_top(), duration_minutes=30)
 
     assert result.success is False
     assert result.message == CALENDAR_FREE_SLOTS_FAILED.format(e="connection refused")
@@ -338,7 +348,7 @@ async def test_update_event_reports_a_raised_update():
     client = MagicMock()
     client.get_default_calendar = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await UpdateEventTool(client).execute(event_title="Standup")
+    result = await UpdateEventTool(client).execute(CallLink.new_top(), event_title="Standup")
 
     assert result.success is False
     assert result.message == CALENDAR_EVENT_UPDATE_FAILED.format(e="connection refused")

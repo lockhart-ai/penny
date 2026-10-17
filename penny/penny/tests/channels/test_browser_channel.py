@@ -20,6 +20,7 @@ from penny.constants import ChannelType, PageReading, PennyConstants, Permission
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
+from penny.llm.call_link import CallLink
 from penny.tests.conftest import require_memory, wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
@@ -215,7 +216,9 @@ class TestBrowseTool:
             )
         )
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert "Page content." in result.message
@@ -244,7 +247,9 @@ class TestBrowseTool:
             author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
-        result = await tool.execute(queries=["https://ex.com/r"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://ex.com/r"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert not hasattr(result, "image_base64")
@@ -289,7 +294,9 @@ class TestBrowseTool:
         request_fn = AsyncMock(return_value=(kagi_content, None, PageReading.ARTICLE))
         tool = self._make_tool(request_fn)
         result = await tool.execute(
-            queries=["https://kagi.com/search?q=test"], extract="the page content"
+            CallLink.new_top(),
+            queries=["https://kagi.com/search?q=test"],
+            extract="the page content",
         )
 
         assert isinstance(result, ToolResult)
@@ -321,7 +328,9 @@ class TestBrowseTool:
             author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert _all_media(db) == []
@@ -335,7 +344,9 @@ class TestBrowseTool:
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         request_fn = AsyncMock(side_effect=RuntimeError("extraction failed after 10 retries"))
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         # The only query errored, so the call did nothing: success=False makes that
@@ -365,7 +376,9 @@ class TestBrowseTool:
 
         tool = self._make_tool(request_fn)
         result = await tool.execute(
-            queries=["https://good.com", "https://bad.com"], extract="the page content"
+            CallLink.new_top(),
+            queries=["https://good.com", "https://bad.com"],
+            extract="the page content",
         )
 
         assert result.success is True
@@ -383,6 +396,7 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)  # max_calls=3
 
         result = await tool.execute(
+            CallLink.new_top(),
             queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
             extract="the page content",
         )
@@ -404,7 +418,9 @@ class TestBrowseTool:
             return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None, PageReading.ARTICLE)
         )
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
-        await tool.execute(queries=["https://example.com"], extract="the page content")
+        await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         mock_perm.check_domain.assert_called_once_with("https://example.com")
         request_fn.assert_called_once()
@@ -420,7 +436,9 @@ class TestBrowseTool:
         request_fn = AsyncMock()
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
 
-        result = await tool.execute(queries=["https://blocked.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://blocked.com"], extract="the page content"
+        )
 
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
         assert "blocked" in result.message
@@ -438,7 +456,9 @@ class TestBrowseTool:
             return ("", None, PageReading.ARTICLE)
 
         tool = self._make_tool(hanging_request_fn)
-        result = await tool.execute(queries=["https://example.com"], extract="the page content")
+        result = await tool.execute(
+            CallLink.new_top(), queries=["https://example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
@@ -476,7 +496,9 @@ class TestBrowseToolMediaCapture:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 
         result = await tool.execute(
-            queries=["https://a.com", "https://b.com"], extract="the page content"
+            CallLink.new_top(),
+            queries=["https://a.com", "https://b.com"],
+            extract="the page content",
         )
         assert isinstance(result, ToolResult)
         rows = sorted(_all_media(db), key=lambda r: r.source_url or "")

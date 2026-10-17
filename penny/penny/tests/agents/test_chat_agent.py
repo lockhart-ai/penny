@@ -30,6 +30,7 @@ from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
 from penny.database.skill_store import steps_from_json
 from penny.database.skills import SkillDraft, SkillParameter, SkillStep
+from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
@@ -395,11 +396,11 @@ def _spy_extractor(penny) -> dict:
     counter: dict = {"n": 0, "states": [], "framings": []}
     original = penny.chat_agent._skill_extractor.extract
 
-    async def counting_extract(run_id: str, *, state, framing=None):
+    async def counting_extract(run_id: str, *, call_link, state, framing=None):
         counter["n"] += 1
         counter["states"].append(state)
         counter["framings"].append(framing)
-        return await original(run_id, state=state, framing=framing)
+        return await original(run_id, call_link=call_link, state=state, framing=framing)
 
     penny.chat_agent._skill_extractor.extract = counting_extract
     return counter
@@ -955,7 +956,10 @@ async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
         _park_machine_in_learn(penny, anchor_id)
 
         response = await penny.chat_agent.handle(
-            content=ask, sender=TEST_SENDER, state=ConversationState.LEARN
+            call_link=CallLink.new_top(),
+            content=ask,
+            sender=TEST_SENDER,
+            state=ConversationState.LEARN,
         )
 
         # The first, misleading reply never survives — the narrated honest one does.
@@ -1015,7 +1019,10 @@ async def test_learn_turn_that_learns_a_skill_keeps_todays_reply(
         _park_machine_in_learn(penny)
 
         response = await penny.chat_agent.handle(
-            content=ask, sender=TEST_SENDER, state=ConversationState.LEARN
+            call_link=CallLink.new_top(),
+            content=ask,
+            sender=TEST_SENDER,
+            state=ConversationState.LEARN,
         )
 
         assert len(penny.db.skills.list_all()) == 1
@@ -1141,6 +1148,7 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
         _round_container(penny)
 
         response = await penny.chat_agent.handle(
+            call_link=CallLink.new_top(),
             content=ask,
             sender=TEST_SENDER,
             state=ConversationState.APPLY,
@@ -1227,6 +1235,7 @@ async def test_a_call_naming_something_else_still_lands_on_the_rounds_container(
         _round_container(penny)
 
         await penny.chat_agent.handle(
+            call_link=CallLink.new_top(),
             content=ask,
             sender=TEST_SENDER,
             state=ConversationState.APPLY,
@@ -1270,6 +1279,7 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
         before = {row.name for row in penny.db.memories.list_all()}
 
         response = await penny.chat_agent.handle(
+            call_link=CallLink.new_top(),
             content="great — do that every hour and tell me when it changes",
             sender=TEST_SENDER,
             state=ConversationState.APPLY,
@@ -1330,6 +1340,7 @@ async def test_a_request_turn_is_instructed_with_the_rounds_shortfall(
         before = {row.name for row in penny.db.memories.list_all()}
 
         response = await penny.chat_agent.handle(
+            call_link=CallLink.new_top(),
             content="keep an eye on the weekend rate for me",
             sender=TEST_SENDER,
             state=ConversationState.REQUEST,
@@ -1365,6 +1376,7 @@ async def test_a_non_learn_turn_that_learns_nothing_is_untouched(
         penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
 
         response = await penny.chat_agent.handle(
+            call_link=CallLink.new_top(),
             content="what's the aurora deck 2 at?",
             sender=TEST_SENDER,
             state=ConversationState.IDLE,

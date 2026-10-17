@@ -64,8 +64,8 @@ from penny.database.skills import (
     render_skill,
     retarget_writes,
 )
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse
-from penny.llm.run_context import run_scope
 from penny.prompts import Prompt
 from penny.skill_extraction import (
     ExtractionGate,
@@ -247,7 +247,9 @@ async def test_read_write_run_qualifies_and_distils_correctly(db, emitted_write_
     write = (emitted_write_tool, _WRITE_ARGS, _WRITE_OK, True)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, write])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted) and not result.replaced
     skill = result.skill
@@ -327,7 +329,9 @@ async def test_redirected_write_keeps_the_attachment_mark(db):
         )
         session.commit()
 
-    result = await _extractor(db).extract("run-loop", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-loop", state=ConversationState.LEARN, call_link=CallLink.top("run-loop")
+    )
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -350,7 +354,9 @@ async def test_learning_a_skill_attaches_nothing(db):
     it: no skill, no rendered prompt, nothing scheduled."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     row = db.memories.get("aurora-prices")
@@ -385,7 +391,7 @@ async def test_only_a_learn_turn_extracts(db, state):
     record says which gate declined and why."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=state)
+    result = await _extractor(db).extract("run-A", state=state, call_link=CallLink.top("run-A"))
 
     assert result == NoExtraction(gate=ExtractionGate.NOT_LEARN)
     assert db.skills.list_all() == []
@@ -407,7 +413,9 @@ async def test_a_learn_run_that_only_read_extracts(db):
     assert not hasattr(ExtractionGate, "PURE_READ")
     _log_run(db, "run-A", "check the aurora deck 2 listing for me like this", [_BROWSE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert [step.tool for step in steps_from_json(result.skill.steps)] == ["browse"]
@@ -425,7 +433,9 @@ async def test_a_learn_run_that_only_wrote_extracts(db):
     assert not hasattr(ExtractionGate, "PURE_WRITE")
     _log_run(db, "run-A", "here's how to file an aurora reading", [_WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert [step.tool for step in steps_from_json(result.skill.steps)] == ["collection_write"]
@@ -441,7 +451,9 @@ async def test_a_failed_write_is_filtered_and_the_read_still_extracts(db):
     failed_write = ("collection_write", _WRITE_ARGS, "write failed", False)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, failed_write])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert [step.tool for step in steps_from_json(result.skill.steps)] == ["browse"]
@@ -456,7 +468,9 @@ async def test_the_health_gate_is_retired(db):
     assert not hasattr(ExtractionGate, "BAILED")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
 
@@ -485,7 +499,9 @@ async def test_run_with_no_tool_calls_is_excluded(db, calls):
     the different and less true ``NO_CERTIFIED_STEPS``."""
     _log_run(db, "run-A", "hey how's it going", calls)
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert result == NoExtraction(gate=ExtractionGate.NO_TOOL_CALLS)
     assert db.skills.list_all() == []
@@ -498,7 +514,9 @@ async def test_run_with_no_certified_steps_is_excluded(db):
     (never an empty skill)."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE], stamp_success=False)
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert result == NoExtraction(gate=ExtractionGate.NO_CERTIFIED_STEPS)
     assert db.skills.list_all() == []
@@ -514,7 +532,9 @@ async def test_failed_step_is_filtered_from_the_routine(db):
     failed_read = ("collection_list", {"collection": "notes"}, "read failed", False)
     _log_run(db, "run-A", _UTTERANCE, [failed_read, _BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -538,7 +558,9 @@ async def test_name_is_a_slug_of_the_utterance_with_urls_stripped(db):
     )
     _log_run(db, "run-A", utterance, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert result.skill.name == "read-the-aurora-deck-2-listing"
@@ -555,12 +577,16 @@ async def test_reteaching_the_same_utterance_replaces_by_name(db):
     extractor = _extractor(db)
 
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
-    first = await extractor.extract("run-A", state=ConversationState.LEARN)
+    first = await extractor.extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
     assert isinstance(first, SkillExtracted) and not first.replaced
 
     # A second demonstration of the SAME routine (same utterance → same slug name).
     _log_run(db, "run-B", _UTTERANCE, [_BROWSE, _WRITE])
-    second = await extractor.extract("run-B", state=ConversationState.LEARN)
+    second = await extractor.extract(
+        "run-B", state=ConversationState.LEARN, call_link=CallLink.top("run-B")
+    )
 
     assert isinstance(second, SkillExtracted) and second.replaced
     assert second.skill.name == first.skill.name
@@ -585,13 +611,17 @@ async def test_same_shape_and_meaning_replaces_keeping_existing_name(db):
     extractor = _extractor(db, mock)
 
     _log_run(db, "run-A", "watch the aurora deck 2 price", [_BROWSE, _WRITE])
-    first = await extractor.extract("run-A", state=ConversationState.LEARN)
+    first = await extractor.extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
     assert isinstance(first, SkillExtracted)
     original_name = first.skill.name
 
     # Different wording (a different slug), same tool shape, same aurora meaning.
     _log_run(db, "run-B", "keep an eye on the aurora deck 2 price for me", [_BROWSE, _WRITE])
-    second = await extractor.extract("run-B", state=ConversationState.LEARN)
+    second = await extractor.extract(
+        "run-B", state=ConversationState.LEARN, call_link=CallLink.top("run-B")
+    )
 
     assert isinstance(second, SkillExtracted) and second.replaced
     assert second.skill.name == original_name  # kept the existing skill's name
@@ -612,9 +642,11 @@ async def test_different_meaning_inserts_a_new_skill(db):
     extractor = _extractor(db, mock)
 
     _log_run(db, "run-A", "watch the aurora deck 2 price", [_BROWSE, _WRITE])
-    await extractor.extract("run-A", state=ConversationState.LEARN)
+    await extractor.extract("run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A"))
     _log_run(db, "run-B", "watch the harbor weather report", [_BROWSE, _WRITE])
-    second = await extractor.extract("run-B", state=ConversationState.LEARN)
+    second = await extractor.extract(
+        "run-B", state=ConversationState.LEARN, call_link=CallLink.top("run-B")
+    )
 
     assert isinstance(second, SkillExtracted) and not second.replaced
     assert len(db.skills.list_all()) == 2
@@ -635,7 +667,9 @@ async def test_collector_run_is_not_extracted(db):
         agent_name="thoughts",
     )
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert result == NoExtraction(gate=ExtractionGate.NOT_CHAT)
 
@@ -646,7 +680,9 @@ async def test_fresh_migrated_registry_stays_empty_without_a_qualifying_run(tmp_
     non-qualifying turn leaves it empty (no seeds, no accidental extraction)."""
     db = migrated_db(str(tmp_path / "seeded.db"))
     _log_run(db, "run-A", "hi there", [])
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
     assert isinstance(result, NoExtraction)
     assert db.skills.list_all() == []
 
@@ -774,7 +810,9 @@ async def test_orientation_find_step_is_dropped_from_the_recipe(db):
     find = ("find", {"query": "watch a listing price"}, _FIND_RESULT, True)
     _log_run(db, "run-A", _UTTERANCE, [find, _BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -796,7 +834,9 @@ async def test_find_plus_write_captures_the_write_alone(db):
     find = ("find", {"query": "aurora prices"}, _FIND_RESULT, True)
     _log_run(db, "run-A", _UTTERANCE, [find, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -818,7 +858,9 @@ async def test_wrapped_write_value_binds_against_the_result_payload(db):
     write = ("collection_write", _WRAP_WRITE_ARGS, _WRITE_OK, True)
     _log_run(db, "run-A", _UTTERANCE, [browse, write])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -865,7 +907,9 @@ async def test_the_two_run_end_draws_are_shown_different_evidence(db):
     db.messages.log_message(direction="incoming", sender="user", content=ask)
     db.messages.log_message(direction="outgoing", sender="penny", content=elicit)
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert result.origin_message == _UTTERANCE
@@ -897,7 +941,9 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
     model = _run_end_model(labels="I think this is a price-watching routine of some kind.")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert result.skill.name == "read-the-aurora-deck-2-listing"  # the fallback slug
@@ -949,12 +995,14 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     model = _run_end_model(labels=_LABELLED_ROUND, framing=_FRAMED_ROUND)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
-    with run_scope("run-A"):
-        result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
-    # Both run-end draws link back to the run purely from AMBIENT state (#2458) —
-    # neither ``_label_skill`` nor ``_frame_skill`` takes a ``parent_run_id`` any more.
+    # Both run-end draws link back to the run via the EXPLICIT call_link `extract`
+    # was handed (#2458) — neither ``_label_skill`` nor ``_frame_skill`` takes a
+    # bare ``parent_run_id`` parameter.
     assert _last_request(model, SKILL_NAMING_SYSTEM_PROMPT)["parent_run_id"] == "run-A"
     assert _last_request(model, SKILL_FRAME_SYSTEM_PROMPT)["parent_run_id"] == "run-A"
     params = parameters_from_json(result.skill.parameters)
@@ -1016,7 +1064,10 @@ async def test_the_round_s_entry_framing_is_reused_at_run_end_and_never_re_drawn
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
     result = await _extractor(db, model=model).extract(
-        "run-A", state=ConversationState.LEARN, framing=_round_framing()
+        "run-A",
+        state=ConversationState.LEARN,
+        framing=_round_framing(),
+        call_link=CallLink.top("run-A"),
     )
 
     assert isinstance(result, SkillExtracted)
@@ -1048,11 +1099,15 @@ async def test_a_corrected_round_replaces_its_own_routine_in_place(db):
     framing = _round_framing()
 
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
-    first = await extractor.extract("run-A", state=ConversationState.LEARN, framing=framing)
+    first = await extractor.extract(
+        "run-A", state=ConversationState.LEARN, framing=framing, call_link=CallLink.top("run-A")
+    )
     assert isinstance(first, SkillExtracted) and not first.replaced
 
     _log_run(db, "run-B", _CORRECTION, [_CORRECTED_BROWSE, _WRITE])
-    second = await extractor.extract("run-B", state=ConversationState.LEARN, framing=framing)
+    second = await extractor.extract(
+        "run-B", state=ConversationState.LEARN, framing=framing, call_link=CallLink.top("run-B")
+    )
 
     assert isinstance(second, SkillExtracted) and second.replaced
     assert [skill.name for skill in db.skills.list_all()] == [_PINNED_SKILL]
@@ -1082,12 +1137,17 @@ async def test_a_framed_round_s_routine_is_never_captured_by_a_same_meaning_sibl
     extractor = _extractor(db, mock, model=_run_end_model(labels=_LABELLED_ROUND))
 
     _log_run(db, "run-A", "watch the aurora deck 2 price", [_BROWSE, _WRITE])
-    sibling = await extractor.extract("run-A", state=ConversationState.LEARN)
+    sibling = await extractor.extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
     assert isinstance(sibling, SkillExtracted)
 
     _log_run(db, "run-B", _UTTERANCE, [_BROWSE, _WRITE])
     framed = await extractor.extract(
-        "run-B", state=ConversationState.LEARN, framing=_round_framing()
+        "run-B",
+        state=ConversationState.LEARN,
+        framing=_round_framing(),
+        call_link=CallLink.top("run-B"),
     )
 
     assert isinstance(framed, SkillExtracted) and not framed.replaced
@@ -1109,7 +1169,9 @@ async def test_a_failed_framing_falls_back_to_the_slug_with_nothing_to_bind(db):
     model = _run_end_model(labels=_LABELLED_ROUND, framing="a price watcher, I think")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -1139,7 +1201,9 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     model = _run_end_model(labels="LABEL queries: listing_page — the page this routine reads")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -1163,7 +1227,9 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     )
     _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
 
-    later = await _extractor(db, model=decayed).extract("run-B", state=ConversationState.LEARN)
+    later = await _extractor(db, model=decayed).extract(
+        "run-B", state=ConversationState.LEARN, call_link=CallLink.top("run-B")
+    )
 
     assert isinstance(later, SkillExtracted)
     assert _draws(decayed, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -1185,7 +1251,9 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -1210,7 +1278,9 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -1238,7 +1308,9 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1  # the line is well-formed: no reroll
@@ -1289,7 +1361,9 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1, (
@@ -1321,7 +1395,9 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -1368,7 +1444,9 @@ async def _framed(drawn: str, spoken: str = _FRAMER_TURNS) -> tuple[SkillSignatu
     turns: a drawn value has to be a literal span of it, so a case that means to exercise
     the span check hands it a document the value is not in."""
     model = _run_end_model(framing=drawn)
-    signature = await MicroContext(cast(Any, model)).frame_skill(spoken)
+    signature = await MicroContext(cast(Any, model)).frame_skill(
+        spoken, call_link=CallLink.new_top()
+    )
     return signature, len(model.requests)
 
 
@@ -1585,7 +1663,9 @@ async def test_the_destination_is_filled_by_the_attachment_under_its_drawn_name(
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert parameters_from_json(result.skill.parameters) == []
@@ -1628,7 +1708,9 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE, second_write])
 
-    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     assert parameters_from_json(result.skill.parameters) == []
@@ -1872,7 +1954,9 @@ async def test_lifecycle_call_is_dropped_from_the_recipe(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, create, _WRITE])
 
-    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+    result = await _extractor(db).extract(
+        "run-A", state=ConversationState.LEARN, call_link=CallLink.top("run-A")
+    )
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)

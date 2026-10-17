@@ -49,6 +49,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryRow
 from penny.database.skills import SkillParameter
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmResponse
 from penny.notification import NOTIFICATION_NOTES, NOTIFIED_CYCLE_ENDS, NotificationOutcome
@@ -180,7 +181,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         return tool
 
     alpha = _log_read_for("alpha")
-    alpha_result = await alpha.execute(log="chatter")
+    alpha_result = await alpha.execute(CallLink.new_top(), log="chatter")
     assert "hello there" in alpha_result.message
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
@@ -188,7 +189,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
     beta = _log_read_for("beta")
-    assert "hello there" in (await beta.execute(log="chatter")).message, (
+    assert "hello there" in (await beta.execute(CallLink.new_top(), log="chatter")).message, (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
@@ -1249,6 +1250,7 @@ async def _configure_timetable_collection(db: Database) -> None:
     through the real front door with the values the job is pointed at."""
     seed_timetable_skill(db)
     result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+        CallLink.new_top(),
         collection="ferry-departures",
         description="the dawn sailing on the north pier timetable",
         skill="check_timetable",
@@ -3191,7 +3193,7 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
         extraction_prompt='Extract things.\n1. log_read(log="user-messages")',
     )
 
-    async def mock_run_cycle(run_id: str) -> CycleResult:
+    async def mock_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
         return CycleResult(
             success=True,
             response=ControllerResponse(
@@ -3299,7 +3301,7 @@ async def test_cycle_runs_under_lock(test_config, tmp_path):
 
     observed: dict = {}
 
-    async def fake_run_cycle(run_id: str) -> CycleResult:
+    async def fake_run_cycle(run_id: str, call_link: CallLink) -> CycleResult:
         target = collector._current_target
         assert target is not None
         observed["locked"] = collector._cycle_lock.locked()

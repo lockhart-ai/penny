@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
 from penny.plugins.zoho.project_tools import (
     CREATE_PROJECT_FAILED,
     CREATE_TASK_FAILED,
@@ -38,7 +39,9 @@ async def test_create_task_reports_failure_when_tasklist_creation_fails():
     client.create_task_list = AsyncMock(return_value=None)
     client.create_task = AsyncMock()
 
-    result = await CreateTaskTool(client).execute(project_name="Acme", name="Ship it")
+    result = await CreateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", name="Ship it"
+    )
 
     assert result.success is False
     assert "Failed to create task list" in result.message
@@ -51,7 +54,9 @@ async def test_create_task_reports_missing_project_as_failure():
     client = MagicMock()
     client.get_project_by_name = AsyncMock(return_value=None)
 
-    result = await CreateTaskTool(client).execute(project_name="Ghost", name="Ship it")
+    result = await CreateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Ghost", name="Ship it"
+    )
 
     assert result.success is False
     assert "Project not found" in result.message
@@ -64,7 +69,9 @@ async def test_update_task_reports_missing_task_as_failure():
     client.get_project_by_name = AsyncMock(return_value=MagicMock(id="P1"))
     client.get_tasks = AsyncMock(return_value=[])
 
-    result = await UpdateTaskTool(client).execute(project_name="Acme", task_name="Ghost")
+    result = await UpdateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", task_name="Ghost"
+    )
 
     assert result.success is False
     assert "Task not found" in result.message
@@ -89,7 +96,9 @@ async def test_create_task_defaults_to_general_tasklist():
     client.create_task_list = AsyncMock(return_value=tasklist)
     client.create_task = AsyncMock(return_value=task)
 
-    result = await CreateTaskTool(client).execute(project_name="Acme", name="Ship it")
+    result = await CreateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", name="Ship it"
+    )
 
     assert result.success
     client.create_task_list.assert_awaited_once_with("P1", "General")
@@ -111,7 +120,7 @@ async def test_list_projects_reports_a_raised_listing():
     client = MagicMock()
     client.get_projects = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListProjectsTool(client).execute()
+    result = await ListProjectsTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == LIST_PROJECTS_FAILED.format(e="connection refused")
@@ -124,7 +133,7 @@ async def test_get_project_details_reports_a_raised_fetch():
         side_effect=RuntimeError("Zoho OAuth error: invalid_grant")
     )
 
-    result = await GetProjectDetailsTool(client).execute(project_name="Acme")
+    result = await GetProjectDetailsTool(client).execute(CallLink.new_top(), project_name="Acme")
 
     assert result.success is False
     assert result.message == PROJECT_DETAILS_FAILED.format(e="Zoho OAuth error: invalid_grant")
@@ -135,7 +144,7 @@ async def test_create_project_reports_a_raised_create():
     client = MagicMock()
     client.create_project = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await CreateProjectTool(client).execute(name="Acme")
+    result = await CreateProjectTool(client).execute(CallLink.new_top(), name="Acme")
 
     assert result.success is False
     assert result.message == CREATE_PROJECT_FAILED.format(e="connection refused")
@@ -147,7 +156,7 @@ async def test_list_task_lists_reports_a_raised_listing():
     client.get_project_by_name = AsyncMock(return_value=MagicMock(id="P1"))
     client.get_task_lists = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListTaskListsTool(client).execute(project_name="Acme")
+    result = await ListTaskListsTool(client).execute(CallLink.new_top(), project_name="Acme")
 
     assert result.success is False
     assert result.message == LIST_TASK_LISTS_FAILED.format(e="connection refused")
@@ -159,7 +168,9 @@ async def test_create_task_list_reports_a_raised_create():
     client.get_project_by_name = AsyncMock(return_value=MagicMock(id="P1"))
     client.create_task_list = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await CreateTaskListTool(client).execute(project_name="Acme", name="Phase 2")
+    result = await CreateTaskListTool(client).execute(
+        CallLink.new_top(), project_name="Acme", name="Phase 2"
+    )
 
     assert result.success is False
     assert result.message == CREATE_TASK_LIST_FAILED.format(e="connection refused")
@@ -171,7 +182,7 @@ async def test_list_tasks_reports_a_raised_listing():
     client.get_project_by_name = AsyncMock(return_value=MagicMock(id="P1"))
     client.get_tasks = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListTasksTool(client).execute(project_name="Acme")
+    result = await ListTasksTool(client).execute(CallLink.new_top(), project_name="Acme")
 
     assert result.success is False
     assert result.message == LIST_TASKS_FAILED.format(e="connection refused")
@@ -185,7 +196,9 @@ async def test_create_task_reports_a_raised_create():
     client.create_task_list = AsyncMock(return_value=MagicMock(id="TL1"))
     client.create_task = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await CreateTaskTool(client).execute(project_name="Acme", name="Ship it")
+    result = await CreateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", name="Ship it"
+    )
 
     assert result.success is False
     assert result.message == CREATE_TASK_FAILED.format(e="connection refused")
@@ -200,7 +213,9 @@ async def test_update_task_reports_a_raised_update():
     client.get_tasks = AsyncMock(return_value=[task])
     client.update_task = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await UpdateTaskTool(client).execute(project_name="Acme", task_name="Ship it")
+    result = await UpdateTaskTool(client).execute(
+        CallLink.new_top(), project_name="Acme", task_name="Ship it"
+    )
 
     assert result.success is False
     assert result.message == UPDATE_TASK_FAILED.format(e="connection refused")

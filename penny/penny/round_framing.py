@@ -83,6 +83,7 @@ from penny.database.skills import (
     derive_collection_name,
     render_spoken_turns,
 )
+from penny.llm.call_link import CallLink
 from penny.llm.similarity import embed_text
 from penny.skill_extraction import build_framing_content
 from penny.tools.micro_context import (
@@ -153,7 +154,7 @@ class RoundFramer:
         self._run_target = run_target
 
     async def frame_entry(
-        self, *, ask: str | None, message: str, run_id: str | None
+        self, *, ask: str | None, message: str, run_id: str | None, call_link: CallLink
     ) -> RoundFraming | None:
         """Frame the round the machine is entering FOR THE FIRST TIME, and settle its
         container — the summary method.
@@ -166,7 +167,7 @@ class RoundFramer:
         ``None`` when the draw failed: NO container is built, the gate is logged, and
         everything downstream degrades to what it did before this existed — the round runs
         unframed, and run-end extraction frames it the way it always has."""
-        signature = await self._draw(ask, message, run_id=run_id)
+        signature = await self._draw(ask, message, call_link=call_link)
         if signature is None:
             logger.warning(
                 "The round entering learn could not be framed — no container was built, "
@@ -201,7 +202,7 @@ class RoundFramer:
         await self._settle_container(framing, run_id=run_id)
 
     async def _draw(
-        self, ask: str | None, message: str, *, run_id: str | None
+        self, ask: str | None, message: str, *, call_link: CallLink
     ) -> SkillSignature | None:
         """One framing draw over the round's USER turns — the ask it is anchored to and
         the message that just arrived, rendered by the SHIPPED renderer so the document
@@ -211,7 +212,9 @@ class RoundFramer:
         only the one turn, which is the floor the framer already handles."""
         conversation = [(PennyConstants.MessageDirection.INCOMING, ask)] if ask else []
         content = build_framing_content(message, conversation)
-        return await self._micro_context.frame_skill(content, run_target=self._run_target)
+        return await self._micro_context.frame_skill(
+            content, call_link=call_link, run_target=self._run_target
+        )
 
     async def bind_entry(
         self,
@@ -220,6 +223,7 @@ class RoundFramer:
         ask: str | None,
         message: str,
         run_id: str | None,
+        call_link: CallLink,
         settled: dict[str, str] | None = None,
     ) -> RoundEntry | None:
         """Frame the round an entry is entering against a routine that ALREADY EXISTS
@@ -259,7 +263,9 @@ class RoundFramer:
             return None
         declared = parameters_from_json(routine.parameters)
         already = _already_settled(declared, settled)
-        return await self._settle_binding(routine, declared, already, ask, message, run_id=run_id)
+        return await self._settle_binding(
+            routine, declared, already, ask, message, run_id=run_id, call_link=call_link
+        )
 
     async def _settle_binding(
         self,
@@ -270,6 +276,7 @@ class RoundFramer:
         message: str,
         *,
         run_id: str | None,
+        call_link: CallLink,
     ) -> RoundEntry | None:
         """Fill what is still OPEN and settle the round on the result (#1894).
 
@@ -280,7 +287,7 @@ class RoundFramer:
         open_parameters = [parameter for parameter in declared if parameter.name not in already]
         if not open_parameters:
             return await self._framed(routine, declared, already, run_id=run_id)
-        bound = await self._bind(routine, open_parameters, ask, message, run_id=run_id)
+        bound = await self._bind(routine, open_parameters, ask, message, call_link=call_link)
         if not isinstance(bound, BoundValues):
             return _shortfall(routine, declared, already, bound)
         return await self._framed(routine, declared, already | bound.values, run_id=run_id)
@@ -307,7 +314,7 @@ class RoundFramer:
         ask: str | None,
         message: str,
         *,
-        run_id: str | None,
+        call_link: CallLink,
     ) -> SkillBinding | None:
         """One BINDING draw over the round's user turns, in the binder's own typed union —
         which of its two directions came back is the caller's to read, because the two
@@ -327,6 +334,7 @@ class RoundFramer:
             content,
             [parameter.name for parameter in open_parameters],
             spoken,
+            call_link=call_link,
             run_target=self._run_target,
         )
 

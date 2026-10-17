@@ -50,8 +50,8 @@ from penny.conversation_machine import (
     render_classifier_content,
 )
 from penny.database.skills import SkillDraft, SkillStep
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse
-from penny.llm.run_context import run_scope
 from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -727,11 +727,11 @@ async def test_classify_decides_with_attribution_and_exact_model_input():
     carries the classifier's own ledger attribution plus exactly the dispatch
     system prompt and the rendered slice — the whole model input, pinned."""
     model = _responds("STATE: elicit")
-    # The ambient scope a real turn would already be inside (#2458) — the
-    # classifier no longer takes a ``parent_run_id`` parameter at all, so this
-    # pins that the linkage still lands, purely from ambient state.
-    with run_scope("chat-run-1"):
-        decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK, run_target="chat")
+    # The enclosing turn's own link (#2458) — explicit, never ambient: a real
+    # turn hands the classifier the SAME link the channel minted for it.
+    decision = await _classifier(model).classify(
+        _IDLE_SNAPSHOT, _ASK, run_target="chat", call_link=CallLink.top("chat-run-1")
+    )
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.ELICIT
     assert len(model.requests) == 1
@@ -756,7 +756,7 @@ async def test_classify_out_of_union_draw_is_rerolled_then_stays():
     snapshot, so a flaky draw can never conjure an apply against an empty
     registry."""
     model = _responds("STATE: apply")
-    decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK)
+    decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK, call_link=CallLink.new_top())
     assert decision.outcome == StateDrawOutcome.INVALID
     assert decision.state is None
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -768,7 +768,9 @@ async def test_classify_untagged_draw_is_rerolled_then_stays():
     """Untagged (but clean) output takes the same path: the whole budget, then
     INVALID — prose is never promoted to a transition."""
     model = _responds("sure, sounds good")
-    decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
+    decision = await _classifier(model).classify(
+        _ELICIT_SNAPSHOT, _STEPS, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.INVALID
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert next_state(ConversationState.ELICIT, decision) == ConversationState.ELICIT
@@ -782,7 +784,9 @@ async def test_classify_tolerates_a_decorated_or_quoted_draw():
     Membership is exact, so without tolerance a correct decision would have been
     read as out-of-union, rerolled, and then held the machine where it stood."""
     model = _responds('- **STATE:** "learn"')
-    decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
+    decision = await _classifier(model).classify(
+        _ELICIT_SNAPSHOT, _STEPS, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.LEARN
     assert len(model.requests) == 1  # no reroll — the draw was valid all along
@@ -795,13 +799,17 @@ async def test_classify_reroll_can_recover():
     violations still leave a third draw, which is the whole point of spending the
     poison budget on a detectably-invalid one."""
     model = _responds_per_call(lambda count: "hmm, let me think" if count == 1 else "STATE: learn")
-    decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
+    decision = await _classifier(model).classify(
+        _ELICIT_SNAPSHOT, _STEPS, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.LEARN
     assert len(model.requests) == 2
 
     late = _responds_per_call(lambda count: "hmm, let me think" if count <= 2 else "STATE: learn")
-    recovered = await _classifier(late).classify(_ELICIT_SNAPSHOT, _STEPS)
+    recovered = await _classifier(late).classify(
+        _ELICIT_SNAPSHOT, _STEPS, call_link=CallLink.new_top()
+    )
     assert recovered.outcome == StateDrawOutcome.DECIDED
     assert recovered.state == ConversationState.LEARN
     assert len(late.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -814,7 +822,9 @@ async def test_classify_poison_is_discarded_then_stays():
     machine holds its state (a poisoned draw can never eject a parked teach
     loop)."""
     model = _responds("...???...")
-    decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
+    decision = await _classifier(model).classify(
+        _ELICIT_SNAPSHOT, _STEPS, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.POISON_REROLL_FAILED
     assert decision.state is None
     assert len(model.requests) == 3
@@ -828,7 +838,9 @@ async def test_classify_from_apply_refuses():
     loudly rather than classified into nonsense."""
     with pytest.raises(ValueError, match="structural"):
         await _classifier(_responds("STATE: idle")).classify(
-            MachineSnapshot(state=ConversationState.APPLY), "great, thanks!"
+            MachineSnapshot(state=ConversationState.APPLY),
+            "great, thanks!",
+            call_link=CallLink.new_top(),
         )
 
 
@@ -842,7 +854,9 @@ async def test_classify_apply_draw_binds_a_listed_skill():
     """An apply draw carrying a SKILL: line naming a listed candidate decides
     apply WITH the skill bound — the machine never receives a dangling apply."""
     model = _responds("STATE: apply\nSKILL: watch a listing price for changes")
-    decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
+    decision = await _classifier(model).classify(
+        _WITH_SKILL, _PRICE_ASK, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.APPLY
     assert decision.skill == "watch a listing price for changes"
@@ -853,7 +867,9 @@ async def test_classify_apply_without_skill_line_is_rerolled_then_stays():
     """Drawing the gated state WITHOUT its SKILL: line is a contract violation
     exactly like an untagged draw: the whole budget, then INVALID — fail → stay."""
     model = _responds("STATE: apply")
-    decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
+    decision = await _classifier(model).classify(
+        _WITH_SKILL, _PRICE_ASK, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.INVALID
     assert decision.skill is None
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -864,7 +880,9 @@ async def test_classify_apply_with_unlisted_skill_is_rerolled_then_stays():
     """A SKILL: payload outside the offered candidates is the same violation —
     the bound skill is membership-validated, never a free-text guess."""
     model = _responds("STATE: apply\nSKILL: fold the laundry")
-    decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
+    decision = await _classifier(model).classify(
+        _WITH_SKILL, _PRICE_ASK, call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.INVALID
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
@@ -873,7 +891,9 @@ async def test_classify_ungated_draw_ignores_a_stray_skill_line():
     """A stray SKILL: line on a NON-gated draw binds nothing and does not
     invalidate the decision — only the gated state demands (or reads) it."""
     model = _responds("STATE: idle\nSKILL: watch a listing price for changes")
-    decision = await _classifier(model).classify(_WITH_SKILL, "morning! how's it going?")
+    decision = await _classifier(model).classify(
+        _WITH_SKILL, "morning! how's it going?", call_link=CallLink.new_top()
+    )
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.IDLE
     assert decision.skill is None
@@ -989,7 +1009,9 @@ async def test_machine_cold_starts_idle_and_records_the_move(db):
     assert machine.state() is ConversationState.IDLE
 
     message_id = _log(db, _KAYAK_ASK)
-    entered = await machine.advance(_KAYAK_ASK, message_id=message_id, run_id="run-1")
+    entered = await machine.advance(
+        _KAYAK_ASK, message_id=message_id, run_id="run-1", call_link=CallLink.new_top()
+    )
 
     assert entered.decision.state is ConversationState.APPLY
     assert entered.state is ConversationState.APPLY
@@ -1009,7 +1031,7 @@ async def test_held_draw_stays_put_but_is_still_recorded(db):
     successful moves would report a perfect classifier by construction, so the
     held draw lands as a self-edge carrying its honest outcome."""
     machine = _machine(db, _responds("I think we should probably elicit here"))
-    entered = await machine.advance(_ASK, message_id=_log(db, _ASK))
+    entered = await machine.advance(_ASK, message_id=_log(db, _ASK), call_link=CallLink.new_top())
 
     assert entered.decision.state is None
     assert entered.shortfall is None
@@ -1034,7 +1056,9 @@ async def test_state_subscribers_receive_self_transitions_and_listener_failures_
     machine.subscribe_state_changes(published.append)
 
     with caplog.at_level("ERROR", logger="penny.conversation_machine"):
-        entered = await machine.advance("hello", message_id=_log(db, "hello"))
+        entered = await machine.advance(
+            "hello", message_id=_log(db, "hello"), call_link=CallLink.new_top()
+        )
 
     assert entered.state is ConversationState.IDLE
     assert published == [ConversationState.IDLE]
@@ -1048,7 +1072,7 @@ async def test_state_subscription_cleanup_is_idempotent(db):
 
     unsubscribe()
     unsubscribe()
-    await machine.advance("hello", message_id=_log(db, "hello"))
+    await machine.advance("hello", message_id=_log(db, "hello"), call_link=CallLink.new_top())
 
     assert published == []
 
@@ -1060,16 +1084,22 @@ async def test_anchor_is_set_on_entry_kept_while_parked_and_cleared_on_break_out
     dropped on the break-out to idle."""
     anchor_id = _log(db, _ASK)
     machine = _machine(db, _responds("STATE: elicit"))
-    await machine.advance(_ASK, message_id=anchor_id)
+    await machine.advance(_ASK, message_id=anchor_id, call_link=CallLink.new_top())
     assert machine.state() is ConversationState.ELICIT
     assert db.machine.latest_transition().anchor_message_id == anchor_id
 
     staying = _machine(db, _responds("STATE: elicit"))
-    await staying.advance("wait — what exactly do you need?", message_id=_log(db, "wait — what?"))
+    await staying.advance(
+        "wait — what exactly do you need?",
+        message_id=_log(db, "wait — what?"),
+        call_link=CallLink.new_top(),
+    )
     assert db.machine.latest_transition().anchor_message_id == anchor_id
 
     bailing = _machine(db, _responds("STATE: idle"))
-    await bailing.advance("never mind, forget it", message_id=_log(db, "never mind"))
+    await bailing.advance(
+        "never mind, forget it", message_id=_log(db, "never mind"), call_link=CallLink.new_top()
+    )
     assert bailing.state() is ConversationState.IDLE
     assert db.machine.latest_transition().anchor_message_id is None
 
@@ -1079,10 +1109,14 @@ async def test_parked_anchor_reaches_the_classifier_as_the_task(db):
     on — the whole point of persisting it — resolved from the message row rather
     than a copy the machine keeps."""
     anchor_id = _log(db, _ASK)
-    await _machine(db, _responds("STATE: elicit")).advance(_ASK, message_id=anchor_id)
+    await _machine(db, _responds("STATE: elicit")).advance(
+        _ASK, message_id=anchor_id, call_link=CallLink.new_top()
+    )
 
     model = _responds("STATE: learn")
-    await _machine(db, model).advance(_STEPS, message_id=_log(db, _STEPS))
+    await _machine(db, model).advance(
+        _STEPS, message_id=_log(db, _STEPS), call_link=CallLink.new_top()
+    )
     assert _ASK in model.requests[-1]["messages"][1]["content"]
 
 
@@ -1099,7 +1133,7 @@ async def test_apply_resets_structurally_then_classifies_the_new_message(db):
     machine = _machine(db, _responds("STATE: idle"))
     published: list[ConversationState] = []
     machine.subscribe_state_changes(published.append)
-    await machine.advance("thanks!", message_id=_log(db, "thanks!"))
+    await machine.advance("thanks!", message_id=_log(db, "thanks!"), call_link=CallLink.new_top())
 
     assert machine.state() is ConversationState.IDLE
     _parked, reset, classified = reversed(db.machine.recent_transitions(10))

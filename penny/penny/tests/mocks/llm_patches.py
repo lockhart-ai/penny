@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
-from penny.llm.run_context import current_parent_run_id, current_run_id, current_tool_call_id
 from penny.tools.micro_context import STATE_CLASSIFIER_SYSTEM_PROMPT
 
 # Dimension of the deterministic default embedding.  The embedding model is a
@@ -111,30 +111,29 @@ class MockLlmClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         format: dict | str | None = None,
+        *,
+        call_link: CallLink,
         agent_name: str | None = None,
         prompt_type: str | None = None,
-        run_id: str | None = None,
         run_target: str | None = None,
     ) -> LlmResponse:
         """Mock chat() call.
 
-        Matches the real client's signature (#2458): ``parent_run_id`` /
-        ``parent_tool_call_id`` are no longer parameters at all — read from the
-        same ambient state (``penny.llm.run_context``) the real client reads, and
-        recorded on ``request_data`` so a test asserting on them sees exactly what
-        production would have stamped, however it was opened (a ``run_scope`` /
-        ``tool_call_scope`` the test entered, or one already opened by the agent
-        loop it's driving)."""
+        Matches the real client's signature (#2458): ``call_link`` is REQUIRED —
+        no ambient state, no default — and ``run_id``/``parent_run_id``/
+        ``parent_tool_call_id`` are read straight off it and recorded on
+        ``request_data``, so a test asserting on them sees exactly what
+        production would have stamped from whatever link it was handed."""
         request_data = {
             "model": self.model,
-            "run_id": run_id if run_id is not None else current_run_id(),
+            "run_id": call_link.run_id,
             "messages": messages,
             "tools": tools,
             "agent_name": agent_name,
             "prompt_type": prompt_type,
             "run_target": run_target,
-            "parent_run_id": current_parent_run_id(),
-            "parent_tool_call_id": current_tool_call_id(),
+            "parent_run_id": call_link.parent_run_id,
+            "parent_tool_call_id": call_link.parent_tool_call_id,
         }
         # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
         # browse routes page content through one): answer deterministically with the
@@ -180,9 +179,10 @@ class MockLlmClient:
         prompt: str,
         tools: list[dict] | None = None,
         format: dict | str | None = None,
+        *,
+        call_link: CallLink,
         agent_name: str | None = None,
         prompt_type: str | None = None,
-        run_id: str | None = None,
     ) -> LlmResponse:
         """Mock generate() call — wraps chat like the real client."""
         messages = [{"role": "user", "content": prompt}]
@@ -190,9 +190,9 @@ class MockLlmClient:
             messages,
             tools,
             format,
+            call_link=call_link,
             agent_name=agent_name,
             prompt_type=prompt_type,
-            run_id=run_id,
         )
 
     def set_embed_handler(
@@ -298,7 +298,9 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MockLlmClient:
             model = kwargs.get("model", _mock_client.model)
             old_model = _mock_client.model
             _mock_client.model = model
-            response = await _mock_client.chat(messages=messages, tools=tools)
+            response = await _mock_client.chat(
+                messages=messages, tools=tools, call_link=CallLink.new_top()
+            )
             _mock_client.model = old_model
             return _FakeCompletion(response)
 

@@ -22,6 +22,7 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database.skills import SkillParameter, build_binding_content, render_spoken_turns
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -68,7 +69,9 @@ def _responds(content: str) -> MockLlmClient:
 
 async def _bind(model: MockLlmClient) -> SkillBinding | None:
     """The binder over the fixture round, driven by ``model``."""
-    return await MicroContext(cast(Any, model)).bind_skill(_CONTENT, _DECLARED, _SPOKEN)
+    return await MicroContext(cast(Any, model)).bind_skill(
+        _CONTENT, _DECLARED, _SPOKEN, call_link=CallLink.new_top()
+    )
 
 
 # ── The two enumerated answers ────────────────────────────────────────────────

@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
+from penny.llm.call_link import CallLink
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
 pytestmark = pytest.mark.bare_db
@@ -41,7 +42,7 @@ async def test_mute_sets_state_and_mirrors_back(db):
     """A first mute writes the MuteState row and reports it as a real change."""
     _register_user(db)
 
-    result = await NotificationsMuteTool(db).execute()
+    result = await NotificationsMuteTool(db).execute(CallLink.new_top())
 
     assert result.success is True
     assert result.mutated is True
@@ -58,7 +59,7 @@ async def test_mute_when_already_muted_is_a_noop(db):
     _register_user(db)
     db.users.set_muted(_RECIPIENT)
 
-    result = await NotificationsMuteTool(db).execute()
+    result = await NotificationsMuteTool(db).execute(CallLink.new_top())
 
     assert result.success is True
     assert result.mutated is False
@@ -77,7 +78,7 @@ async def test_unmute_clears_state_and_mirrors_back(db):
     _register_user(db)
     db.users.set_muted(_RECIPIENT)
 
-    result = await NotificationsUnmuteTool(db).execute()
+    result = await NotificationsUnmuteTool(db).execute(CallLink.new_top())
 
     assert result.success is True
     assert result.mutated is True
@@ -94,7 +95,7 @@ async def test_unmute_when_not_muted_is_a_noop(db):
     """Unmuting a user who isn't muted is a successful no-op (mutated=False)."""
     _register_user(db)
 
-    result = await NotificationsUnmuteTool(db).execute()
+    result = await NotificationsUnmuteTool(db).execute(CallLink.new_top())
 
     assert result.success is True
     assert result.mutated is False
@@ -111,8 +112,8 @@ async def test_tools_fail_loudly_with_no_registered_user(db):
     (no silent no-op), naming the config condition rather than pretending success.
 
     (No ``save_info`` call → no primary sender.)"""
-    mute = await NotificationsMuteTool(db).execute()
-    unmute = await NotificationsUnmuteTool(db).execute()
+    mute = await NotificationsMuteTool(db).execute(CallLink.new_top())
+    unmute = await NotificationsUnmuteTool(db).execute(CallLink.new_top())
 
     for result in (mute, unmute):
         assert result.success is False

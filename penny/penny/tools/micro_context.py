@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 from functools import partial
@@ -60,8 +59,8 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import PageReading, PennyConstants
+from penny.llm.call_link import CallLink
 from penny.llm.refusal import is_refusal
-from penny.llm.run_context import run_scope
 from penny.text_validity import (
     half_formed_send_reason,
     has_leaked_harmony_envelope,
@@ -1028,6 +1027,7 @@ class MicroContext:
         content: str,
         instruction: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
         reading: PageReading = PageReading.ARTICLE,
     ) -> MicroContextResult:
@@ -1042,11 +1042,12 @@ class MicroContext:
         unchanged context for the whole budget, then the extraction fails honestly.  A
         blank draw takes the same path (a blank payload is not a payload).
 
-        This draw links back to the chat/collector run — and, since this is the one
-        customer invoked from INSIDE a dispatched tool call, that call's own id — with
-        no parameter here at all (#2458): ``_draw_clean`` reads the ambient run and
-        tool-call id (pushed by whatever started the run, and by the tool dispatcher
-        around this call) at the moment it draws.
+        ``call_link`` (#2458) is this draw's own linkage — REQUIRED, no default.
+        Since this is the one customer invoked from INSIDE a dispatched tool call,
+        it carries that call's id; ``_draw_clean`` derives this draw's OWN child
+        link from it (:meth:`~penny.llm.call_link.CallLink.child`), so the run this
+        extraction makes is attributed back to the enclosing run and tool call with
+        no ambient read anywhere.
 
         ``reading`` (#2388) is the structural mark the extension set when it read the
         page — on :attr:`PageReading.LINK_LIST` the user turn carries one note, BEFORE
@@ -1059,6 +1060,7 @@ class MicroContext:
             content,
             instruction,
             run_target,
+            call_link=call_link,
             shape=EXTRACT_SHAPE,
             reading_note=reading_note,
         )
@@ -1071,6 +1073,7 @@ class MicroContext:
         content: str,
         offered: Sequence[str],
         *,
+        call_link: CallLink,
         run_target: str | None = None,
     ) -> SkillLabels | None:
         """Name EVERY spot in a demonstrated routine (#1828) — the second customer of
@@ -1089,6 +1092,7 @@ class MicroContext:
             content,
             "",
             run_target,
+            call_link=call_link,
             shape=SKILL_NAMING_SHAPE,
             accepts=partial(_labels_every_spot, offered=offered),
             system_prompt=SKILL_NAMING_SYSTEM_PROMPT,
@@ -1104,6 +1108,7 @@ class MicroContext:
         self,
         content: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
     ) -> SkillSignature | None:
         """Write a routine's public INTERFACE from the user's ask alone (#1830) — the
@@ -1131,6 +1136,7 @@ class MicroContext:
             content,
             "",
             run_target,
+            call_link=call_link,
             shape=SKILL_FRAME_SHAPE,
             accepts=partial(_mints_a_usable_signature, spoken=content),
             system_prompt=SKILL_FRAME_SYSTEM_PROMPT,
@@ -1148,6 +1154,7 @@ class MicroContext:
         declared: Sequence[str],
         spoken: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
     ) -> SkillBinding | None:
         """Fill an EXISTING routine's declared parameters from the user's own words
@@ -1172,6 +1179,7 @@ class MicroContext:
             content,
             "",
             run_target,
+            call_link=call_link,
             shape=SKILL_BIND_SHAPE,
             accepts=partial(_fills_the_declared_signature, declared=declared, spoken=spoken),
             system_prompt=BIND_SKILL_SYSTEM_PROMPT,
@@ -1187,6 +1195,7 @@ class MicroContext:
         self,
         content: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
     ) -> str | None:
         """Write the one message a finished collector cycle sends the user (#1911) — the
@@ -1209,6 +1218,7 @@ class MicroContext:
             content,
             "",
             run_target,
+            call_link=call_link,
             shape=NOTIFY_SHAPE,
             accepts=_is_sendable,
             system_prompt=NOTIFY_SYSTEM_PROMPT,
@@ -1225,6 +1235,7 @@ class MicroContext:
         content: str,
         allowed: Sequence[str],
         *,
+        call_link: CallLink,
         skill_gated_states: Sequence[str] = (),
         skills: Sequence[str] = (),
         run_target: str | None = None,
@@ -1247,6 +1258,7 @@ class MicroContext:
             content,
             "",
             run_target,
+            call_link=call_link,
             shape=STATE_CLASSIFIER_SHAPE,
             accepts=partial(
                 _state_is_bound,
@@ -1269,6 +1281,7 @@ class MicroContext:
         instruction: str,
         run_target: str | None,
         *,
+        call_link: CallLink,
         shape: MicroContextShape,
         accepts: Callable[[ParsedDraw], bool] = _accept_any,
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
@@ -1294,17 +1307,19 @@ class MicroContext:
         budget, not a thing to reach one draw sooner.
 
         Only the shape (and the prompt + attribution) differs per customer, so no
-        customer owns a reroll loop or partitions a string of its own.  The ambient
-        run/tool-call linkage (#2458, ``_draw_clean``) is unchanged across rerolls —
-        each attempt re-opens the SAME ``run_scope``, so every attempt of one draw
-        still names the run (and, for a tool-nested draw, the call) it was made for.
-        ``reading_note`` (#2388) rides the same way — only ``extract`` ever supplies a
-        non-empty one; every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
+        customer owns a reroll loop or partitions a string of its own.  ``call_link``
+        (#2458) is passed straight through to ``_draw_clean``, which derives ONE
+        child link for the whole draw before the reroll loop starts — every attempt
+        of one draw still names the same run (and, for a tool-nested draw, the same
+        call) it was made for, never re-derived per attempt.  ``reading_note``
+        (#2388) rides the same way — only ``extract`` ever supplies a non-empty one;
+        every other customer's ``_BARE_CONTENT_TEMPLATE`` ignores it."""
         for _ in range(self._reroll_attempts):
             draw = await self._draw_clean(
                 content,
                 instruction,
                 run_target,
+                call_link=call_link,
                 system_prompt=system_prompt,
                 agent_name=agent_name,
                 prompt_type=prompt_type,
@@ -1332,6 +1347,7 @@ class MicroContext:
         instruction: str,
         run_target: str | None,
         *,
+        call_link: CallLink,
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
@@ -1346,37 +1362,39 @@ class MicroContext:
         browse-extract contract) so a second output contract — run-end skill naming
         (#1665) — rides the SAME poison/reroll loop without duplicating it.
 
-        Mints its OWN ``run_id`` and opens ``run_scope`` with it (#2458) — the whole
-        point being that a micro-context's call is its own ledger-visible run, never
-        folded into the run it was made for. Opening the scope captures whatever run
-        id was ambient a moment ago as this draw's PARENT (the chat/collector run, or
-        an enclosing draw at any depth) — with no parameter threaded through from the
-        customer that called us. The ambient tool-call id, if the dispatcher pushed
-        one around this whole call, rides along unchanged; nothing here sets it."""
+        Derives its OWN draw link via ``call_link.child()`` (#2458) ONCE, before the
+        reroll loop — the whole point being that a micro-context's call is its own
+        ledger-visible run, never folded into the run it was made for, while every
+        reroll attempt of this ONE draw still logs under the SAME child run id.
+        ``child()`` is what keeps nesting correct at any depth: it converts
+        ``call_link``'s own POSITION (the tool call it is presently inside, if any)
+        into this draw's logged ``parent_tool_call_id``, so a draw made from inside
+        a dispatched tool call links to that call, while a draw made from inside
+        ANOTHER draw (never itself positioned inside a tool call) correctly gets
+        ``parent_tool_call_id=None``."""
         messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
-        run_id = uuid.uuid4().hex
-        with run_scope(run_id):
-            for attempt in range(self._reroll_attempts):
-                response = await self._model_client.chat(
-                    messages=messages,
-                    agent_name=agent_name,
-                    prompt_type=prompt_type,
-                    run_id=run_id,
-                    run_target=run_target,
-                )
-                text = response.content or ""
-                if not self._is_poison(text):
-                    return text
-                logger.warning(
-                    "Micro-context output unusable — discarding and re-rolling %d/%d",
-                    attempt + 1,
-                    self._reroll_attempts,
-                )
-            logger.error(
-                "Micro-context output still unusable after %d re-rolls — extraction aborted",
+        draw_link = call_link.child()
+        for attempt in range(self._reroll_attempts):
+            response = await self._model_client.chat(
+                messages=messages,
+                agent_name=agent_name,
+                prompt_type=prompt_type,
+                call_link=draw_link,
+                run_target=run_target,
+            )
+            text = response.content or ""
+            if not self._is_poison(text):
+                return text
+            logger.warning(
+                "Micro-context output unusable — discarding and re-rolling %d/%d",
+                attempt + 1,
                 self._reroll_attempts,
             )
-            return None
+        logger.error(
+            "Micro-context output still unusable after %d re-rolls — extraction aborted",
+            self._reroll_attempts,
+        )
+        return None
 
     @staticmethod
     def _is_poison(text: str) -> bool:

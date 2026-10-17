@@ -106,6 +106,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import TransitionCause
+from penny.llm.call_link import CallLink
 from penny.prompts import Prompt
 from penny.tools.micro_context import (
     SKILL_TAG,
@@ -751,8 +752,8 @@ class StateClassifier:
         snapshot: MachineSnapshot,
         message: str,
         *,
+        call_link: CallLink,
         run_target: str | None = None,
-        run_id: str | None = None,
     ) -> StateDecision:
         """One tagged draw over the current state's out-edges: narrow the union
         structurally, render the scoped slice, draw once (poison-screened,
@@ -767,6 +768,7 @@ class StateClassifier:
         draw = await self._micro_context.classify_state(
             content,
             [edge.value for edge in edges],
+            call_link=call_link,
             skill_gated_states=SKILL_GATED_STATES,
             skills=[candidate.name for candidate in snapshot.skill_candidates],
             run_target=run_target,
@@ -1260,6 +1262,7 @@ class ConversationMachine:
         self,
         message: str,
         *,
+        call_link: CallLink,
         message_id: int | None = None,
         penny_last_turn: str | None = None,
         run_id: str | None = None,
@@ -1277,9 +1280,11 @@ class ConversationMachine:
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(
-            snapshot, message, run_target=run_target, run_id=run_id
+            snapshot, message, call_link=call_link, run_target=run_target
         )
-        entry = await self._frame_round(state, decision, message, run_id=run_id)
+        entry = await self._frame_round(
+            state, decision, message, run_id=run_id, call_link=call_link
+        )
         self._record_decision(state, decision, message_id=message_id, run_id=run_id, entry=entry)
         turn_entry = TurnEntry(
             state=self.state(),
@@ -1415,6 +1420,7 @@ class ConversationMachine:
         message: str,
         *,
         run_id: str | None,
+        call_link: CallLink,
     ) -> RoundEntry | None:
         """The round-framing hook (#1868/#1875/#1870/#1894): the moves that settle the
         round's entry — its framing and the container its results are kept in, or the
@@ -1447,9 +1453,13 @@ class ConversationMachine:
         if framer is None or decision.state is None:
             return None
         if decision.state is ConversationState.LEARN:
-            return await self._frame_learn_entry(framer, current, message, run_id=run_id)
+            return await self._frame_learn_entry(
+                framer, current, message, run_id=run_id, call_link=call_link
+            )
         if decision.state in _BINDING_STATES and self.framing() is None:
-            return await self._bind_round_entry(framer, decision, message, run_id=run_id)
+            return await self._bind_round_entry(
+                framer, decision, message, run_id=run_id, call_link=call_link
+            )
         return None
 
     async def _frame_learn_entry(
@@ -1459,6 +1469,7 @@ class ConversationMachine:
         message: str,
         *,
         run_id: str | None,
+        call_link: CallLink,
     ) -> RoundFraming | None:
         """A round being TAUGHT has no routine yet, so the framer MINTS one (#1868) — on
         the round's FIRST entry into learn, and only that one (#1902).
@@ -1483,10 +1494,18 @@ class ConversationMachine:
         if current is ConversationState.LEARN and carried is not None:
             await framer.carry_entry(carried, run_id=run_id)
             return None
-        return await framer.frame_entry(ask=self._anchor_text(), message=message, run_id=run_id)
+        return await framer.frame_entry(
+            ask=self._anchor_text(), message=message, run_id=run_id, call_link=call_link
+        )
 
     async def _bind_round_entry(
-        self, framer: RoundFramer, decision: StateDecision, message: str, *, run_id: str | None
+        self,
+        framer: RoundFramer,
+        decision: StateDecision,
+        message: str,
+        *,
+        run_id: str | None,
+        call_link: CallLink,
     ) -> RoundEntry | None:
         """A round asking for a routine Penny ALREADY KNOWS has one, so the BINDER fills it
         (#1870/#1894) — the entry draw of every skill-gated landing, apply and request
@@ -1519,6 +1538,7 @@ class ConversationMachine:
             ask=self._anchor_text(),
             message=message,
             run_id=run_id,
+            call_link=call_link,
             settled=self._settled_values(decision.skill),
         )
 

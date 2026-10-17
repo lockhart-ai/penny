@@ -72,6 +72,7 @@ from penny.database.skills import (
     unbound_required_parameters,
 )
 from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
+from penny.llm.call_link import CallLink
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
@@ -403,7 +404,7 @@ class MemoryTool(Tool):
     # did-you-mean suggestion on a name miss (#1674).
     _db: Database
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         try:
             return await self._run(**kwargs)
         except MemoryNotFoundError as exc:
@@ -2965,7 +2966,7 @@ class GetEventTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         # Plain ``Tool``, not ``MemoryTool``: this reads the ledger by id, resolves
         # no memory, and raises no MemoryAccessError — both misses are enumerated
         # refusals below, so the base's except template would be inert here.
@@ -3037,7 +3038,7 @@ class SkillGetTool(Tool):
         self._db = db
         self._llm = llm_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         # Plain ``Tool``, not ``MemoryTool``: a skill isn't a memory, and the
         # not-found case needs the skill registry's own did-you-mean, not the
         # memory registry's.
@@ -3498,7 +3499,7 @@ class DoneTool(Tool):
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
         return "You wrapped up the cycle:"
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         # The done call itself always succeeds and never mutates state; the run's
         # outcome is derived structurally from the ledger, not from this call.
         return ToolResult(message="Cycle complete.")

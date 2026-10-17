@@ -18,6 +18,7 @@ type + description hints for that exact shape (asserted below).
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import IMAGE_GENERATION_FAILED, GenerateImageTool
@@ -53,7 +54,7 @@ class _DummyTool(Tool):
         "required": ["query"],
     }
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         return ToolResult(message="ok")
 
 
@@ -228,7 +229,7 @@ class TestGenerateImageToolHandlesItsOwnFailure:
         image_client.generate_image = AsyncMock(side_effect=RuntimeError("endpoint unreachable"))
         tool = GenerateImageTool(image_client, MagicMock(), MagicMock())
 
-        result = await tool.execute(description="a red fox")
+        result = await tool.execute(CallLink.new_top(), description="a red fox")
 
         assert result.success is False
         assert result.message == IMAGE_GENERATION_FAILED.format(e="endpoint unreachable")

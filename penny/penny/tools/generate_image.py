@@ -24,6 +24,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
 from penny.tools.base import Tool
@@ -78,7 +79,7 @@ class GenerateImageTool(Tool):
         self._db = db
         self._embedding_client = embedding_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Generate the image, store it for egress, and confirm what was drawn."""
         args = GenerateImageArgs(**kwargs)
         try:

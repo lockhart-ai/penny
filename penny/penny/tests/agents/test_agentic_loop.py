@@ -22,6 +22,7 @@ from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.models import PromptLog
 from penny.llm import LlmClient
+from penny.llm.call_link import CallLink
 from penny.llm.models import (
     LlmConnectionError,
     LlmMessage,
@@ -32,7 +33,6 @@ from penny.llm.models import (
     LlmToolCallFunction,
     LlmToolParseError,
 )
-from penny.llm.run_context import current_tool_call_id
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
@@ -91,7 +91,7 @@ class StubSearchTool(Tool):
     }
     args_model = _StubSearchArgs
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return ToolResult(message="Mock search results for testing")
 
 
@@ -159,7 +159,9 @@ class TestReasoningStripped:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the weather?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the weather?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "here's the weather!"
         assert len(response.tool_calls) == 1
         assert response.tool_calls[0].reasoning == "User asked about weather"
@@ -184,7 +186,7 @@ class TestReasoningStripped:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert len(response.tool_calls) == 1
         assert response.tool_calls[0].reasoning is None
 
@@ -219,7 +221,9 @@ class TestTerminalToolResultRecorded:
             )
         )
 
-        response = await agent.run("find kites", max_steps=max_steps, run_id="run-tail")
+        response = await agent.run(
+            "find kites", max_steps=max_steps, call_link=CallLink.top("run-tail")
+        )
         assert response.ran_out_of_steps
         # No extra draw — one request only, confirming the skip (#2370).
         assert len(mock_llm.requests) == 1
@@ -250,7 +254,7 @@ class TestTerminalToolResultRecorded:
         mock_llm.set_response_handler(handler)
 
         with pytest.raises(RuntimeError):
-            await agent.run("find kites", max_steps=max_steps, run_id="run-died")
+            await agent.run("find kites", max_steps=max_steps, call_link=CallLink.top("run-died"))
 
         tail = db.messages.get_run_prompts("run-died")[-1].get_trailing_messages()
         assert [message["role"] for message in tail] == ["assistant", "tool"]
@@ -276,7 +280,7 @@ class TestLastStepToolRemoval:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "final answer"
 
         # Step 1 should have tools, step 2 should not
@@ -312,7 +316,7 @@ class TestLastStepToolRemoval:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test query", max_steps=max_steps)
+        response = await agent.run("test query", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == (
             f"{PennyResponse.FACTS_EMPTY_WITH_TOOLS.format(count=1)} "
             f"{PennyResponse.ACCOUNT_TRIED_PREFIX}search."
@@ -346,7 +350,7 @@ class TestLastStepToolRemoval:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "here is the answer"
 
         await agent.close()
@@ -384,23 +388,25 @@ class _EchoToolCallIdArgs(ToolArgs):
 
 
 class EchoToolCallIdTool(Tool):
-    """A tool whose result IS the ambient tool-call id it was dispatched under
-    (#2458) — lets a test observe the dispatcher's ``tool_call_scope`` directly,
-    rather than inferring it from a nested model call's logged row."""
+    """A tool whose result IS the dispatched call's own id, read off its
+    ``call_link`` (#2458) — lets a test observe the dispatcher's
+    ``CallLink.for_tool_call`` directly, rather than inferring it from a nested
+    model call's logged row."""
 
     name = "echo_tool_call_id"
-    description = "Echo the ambient tool-call id"
+    description = "Echo this dispatched call's own id"
     parameters = {"type": "object", "properties": {"tag": {"type": "string"}}}
     args_model = _EchoToolCallIdArgs
 
-    async def execute(self, **kwargs):
-        return ToolResult(message=current_tool_call_id() or "<none>")
+    async def execute(self, call_link: CallLink, **kwargs):
+        return ToolResult(message=call_link.tool_call_id or "<none>")
 
 
-class TestParallelToolCallsEachGetTheirOwnAmbientId:
-    """``asyncio.gather`` wraps each dispatched tool call in its own ``Task``, which
-    copies the ambient context at creation (#2458) — so N parallel tool calls in one
-    step each see their OWN ``tool_call_id``, never a sibling's and never ``None``."""
+class TestParallelToolCallsEachGetTheirOwnLink:
+    """The dispatcher builds each dispatched call its OWN ``CallLink`` (#2458,
+    ``call_link.for_tool_call(tool_call_id)``) — so N parallel tool calls in one
+    step each see their OWN id, never a sibling's and never ``None``, with no
+    ambient state or ``Task``-copy semantics required for the isolation."""
 
     @pytest.mark.asyncio
     async def test_two_parallel_calls_each_see_their_own_id(self, test_db, mock_llm):
@@ -449,13 +455,13 @@ class TestParallelToolCallsEachGetTheirOwnAmbientId:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=3)
+        response = await agent.run("test", max_steps=3, call_link=CallLink.new_top())
 
         assert response.answer == "done"
         assert len(response.tool_calls) == 2
         results = {record.result for record in response.tool_calls}
         # Each call's own (provider-assigned) id, and no result is a sibling's or
-        # ``None`` — the two Tasks' independent context snapshots held.
+        # ``None`` — each dispatched call got its own ``CallLink``.
         assert results == {"call_0", "call_1"}
 
         await agent.close()
@@ -484,7 +490,7 @@ class TestRepeatCallGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
         # Both searches should have executed
         assert len(response.tool_calls) == 2
@@ -505,7 +511,7 @@ class TestRepeatCallGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
         # Only first call should have executed
         assert len(response.tool_calls) == 1
@@ -535,7 +541,7 @@ class TestRepeatCallGuard:
 
         state = {"created": False}
 
-        async def execute(tool_call):
+        async def execute(tool_call, call_link=None):
             if tool_call.tool == "collection_configure":
                 state["created"] = True
                 return ToolResult(message="Created collection widget-log", mutated=True)
@@ -570,7 +576,7 @@ class TestRepeatCallGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
 
         writes = [r for r in response.tool_calls if r.tool == "collection_write"]
@@ -595,7 +601,7 @@ class TestRepeatCallGuard:
 
         state = {"written": False}
 
-        async def execute(tool_call):
+        async def execute(tool_call, call_link=None):
             if tool_call.tool == "collection_write":
                 state["written"] = True
                 return ToolResult(message="Wrote entry to widget-log", mutated=True)
@@ -631,7 +637,7 @@ class TestRepeatCallGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
 
         reads = [r for r in response.tool_calls if r.tool == "collection_list"]
@@ -653,7 +659,7 @@ class TestRepeatCallGuard:
 
         failure = "Memory widget-log not found — create it first"
 
-        async def execute(tool_call):
+        async def execute(tool_call, call_link=None):
             if tool_call.tool == "collection_write":
                 return ToolResult(message=failure, success=False)
             return ToolResult(message="ok")
@@ -671,7 +677,7 @@ class TestRepeatCallGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
 
         writes = [r for r in response.tool_calls if r.tool == "collection_write"]
@@ -693,7 +699,7 @@ class TestRepeatCallGuard:
 
         failure = "Memory widget-log not found — create it first"
 
-        async def execute(tool_call):
+        async def execute(tool_call, call_link=None):
             if tool_call.tool == "collection_configure":
                 return ToolResult(message="Created collection widget-log", mutated=True)
             if tool_call.tool == "collection_write":
@@ -728,7 +734,7 @@ class TestRepeatCallGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
 
         writes = [r for r in response.tool_calls if r.tool == "collection_write"]
@@ -793,7 +799,7 @@ class TestModelErrorHandling:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert response.abort is not None
         assert response.abort == RunAbort(
@@ -830,7 +836,7 @@ class TestModelErrorHandling:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert response.abort is not None
         assert response.abort == RunAbort(
@@ -869,7 +875,7 @@ class TestToolParseErrorReroll:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test prompt", max_steps=max_steps)
+        await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
 
         # The redraw is the SAME call again on byte-identical messages — the failed draw
         # left no assistant turn and no nudge user-turn behind.
@@ -895,7 +901,9 @@ class TestToolParseErrorReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("tell me about vitamins", max_steps=max_steps)
+        response = await agent.run(
+            "tell me about vitamins", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "Here is the info about vitamins!"
         assert len(mock_llm.requests) == 3
 
@@ -917,7 +925,7 @@ class TestToolParseErrorReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
             attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         )
@@ -952,7 +960,9 @@ class TestToolParseErrorReroll:
         mock_llm.set_response_handler(handler)
 
         with caplog.at_level(logging.WARNING, logger="penny.agents.base"):
-            response = await agent.run("test prompt", max_steps=max_steps)
+            response = await agent.run(
+                "test prompt", max_steps=max_steps, call_link=CallLink.new_top()
+            )
 
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert response.abort is not None
@@ -977,7 +987,7 @@ class TestToolParseErrorReroll:
         mock_llm.set_response_handler(handler)
 
         with pytest.raises(RuntimeError, match="unexpected programmer bug"):
-            await agent.run("test prompt", max_steps=max_steps)
+            await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
 
         await agent.close()
 
@@ -1004,7 +1014,7 @@ class TestDegenerateOutputGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test query", max_steps=max_steps)
+        response = await agent.run("test query", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "recovered cleanly"
         # Exactly one reroll, both calls inside the same step.
         assert len(mock_llm.requests) == 2
@@ -1025,7 +1035,7 @@ class TestDegenerateOutputGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "here is the real answer"
         assert len(mock_llm.requests) == 2
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
@@ -1076,7 +1086,7 @@ class TestDegenerateOutputGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "here is the real answer"
         # Exactly one reroll on the unchanged context — the fragment never appended.
         assert len(mock_llm.requests) == 2
@@ -1100,7 +1110,7 @@ class TestDegenerateOutputGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test query", max_steps=max_steps)
+        response = await agent.run("test query", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "recovered cleanly"
         # Exactly one reroll on the unchanged context.
         assert len(mock_llm.requests) == 2
@@ -1126,7 +1136,7 @@ class TestDegenerateOutputGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
             attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         )
@@ -1173,7 +1183,9 @@ class TestDegenerateOutputGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("review the collector run", max_steps=max_steps)
+        response = await agent.run(
+            "review the collector run", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         # The quoting response was DISCARDED and re-rolled (one reroll, poison never
         # appended) — it never reached the send gate that would have allowed it.
         assert response.answer == "recovered cleanly"
@@ -1222,7 +1234,9 @@ class TestHarmonyEnvelopeLeakGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the deepest lake?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "here is the real answer"
         # Exactly one reroll on the unchanged context; the leak was never appended.
         assert len(mock_llm.requests) == 2
@@ -1245,7 +1259,9 @@ class TestHarmonyEnvelopeLeakGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the deepest lake?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
             attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         )
@@ -1281,7 +1297,7 @@ class TestEmptyContentFallback:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == (
             f"{PennyResponse.FACTS_EMPTY_NO_TOOLS} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
         )
@@ -1309,7 +1325,7 @@ class TestEmptyContentFallback:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         facts = PennyResponse.FACTS_EMPTY_WITH_TOOLS.format(count=3)
         assert response.answer == (
             f"{facts} {PennyResponse.ACCOUNT_TRIED_PREFIX}search, search, search."
@@ -1337,7 +1353,7 @@ class TestEmptyContentFallback:
             )
         )
 
-        response = await agent.run("test prompt", max_steps=max_steps)
+        response = await agent.run("test prompt", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == (
             f"{PennyResponse.FACTS_EMPTY_NO_TOOLS} {PennyResponse.ACCOUNT_NO_TOOL_CALLS}"
         )
@@ -1357,7 +1373,7 @@ class TestThinkTagStripping:
         raw = "<think>Internal reasoning here.</think>\nHere is the real answer."
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert "<think>" not in response.answer
         assert "Internal reasoning here." not in response.answer
         assert response.answer == "Here is the real answer."
@@ -1372,7 +1388,7 @@ class TestThinkTagStripping:
         raw = "<think>Step-by-step plan.</think>\nFinal response."
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.thinking == "Step-by-step plan."
         assert response.answer == "Final response."
 
@@ -1400,7 +1416,7 @@ class TestThinkTagStripping:
             lambda req, count: mock_llm._make_text_response(req, "Normal answer.")
         )
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "Normal answer."
         assert response.thinking is None
 
@@ -1438,7 +1454,7 @@ class TestAfterStepHook:
         mock_llm.set_response_handler(handler)
         agent.allow_repeat_tools = True
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
 
         # Two steps with tool calls → two after_step calls
@@ -1472,7 +1488,7 @@ class TestAfterStepHook:
         mock_llm.set_response_handler(handler)
         agent.allow_repeat_tools = True
 
-        await agent.run("test", max_steps=max_steps)
+        await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
 
         # 3 tool calls → exactly 3 entries, no duplicates from re-scanning history.
         # Each is wrapped by Tool.format_result — a tagged first-person narration
@@ -1519,7 +1535,9 @@ class TestToolCallCap:
         mock_llm.set_response_handler(handler)
         agent.allow_repeat_tools = True
 
-        response = await agent.run("test question", max_steps=max_steps)
+        response = await agent.run(
+            "test question", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "here is the answer"
         assert len(response.tool_calls) == 4
 
@@ -1539,7 +1557,7 @@ class TestParallelToolCalls:
         """Two tool calls returned in one response each get their own tool message."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent._tool_executor.execute = AsyncMock(
-            side_effect=lambda tool_call: ToolResult(
+            side_effect=lambda tool_call, call_link=None: ToolResult(
                 message=f"result for {tool_call.arguments.get('query', '')}"
             )
         )
@@ -1555,7 +1573,7 @@ class TestParallelToolCalls:
         mock_llm.set_response_handler(handler)
         agent.allow_repeat_tools = True
 
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert response.answer == "done"
         assert len(response.tool_calls) == 2
@@ -1599,7 +1617,7 @@ class TestParallelToolCalls:
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "done"
         await agent.close()
 
@@ -1623,7 +1641,9 @@ class TestParallelToolCalls:
         )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
-        await tool.execute(queries=["best pizza toronto"], extract="the page content")
+        await tool.execute(
+            CallLink.new_top(), queries=["best pizza toronto"], extract="the page content"
+        )
 
         assert len(browsed_urls) == 1
         search_url = list(browsed_urls.keys())[0]
@@ -1646,6 +1666,7 @@ class TestParallelToolCalls:
         )
 
         result = await tool.execute(
+            CallLink.new_top(),
             queries=["best pizza toronto", "https://example.test/a", "https://example.test/b"],
             extract="the page content",
         )
@@ -1675,7 +1696,7 @@ class TestParallelToolCalls:
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
         attempts: list[str] = []
 
-        async def failing_then_working(tool_call):
+        async def failing_then_working(tool_call, call_link=None):
             attempts.append(tool_call.arguments["queries"][0])
             if len(attempts) <= 2:
                 return ToolResult(
@@ -1696,7 +1717,9 @@ class TestParallelToolCalls:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("look this up", max_steps=max_steps)
+        response = await agent.run(
+            "look this up", max_steps=max_steps, call_link=CallLink.new_top()
+        )
 
         # The turn reached the answer instead of stopping after the second failure.
         assert response.answer == "here's what the page said"
@@ -1716,7 +1739,7 @@ class TestParallelToolCalls:
             model_client=cast(Any, MockLlmClient()),
         )
 
-        result = await tool.run(queries=[], extract="the page content")
+        result = await tool.run(CallLink.new_top(), queries=[], extract="the page content")
 
         assert result.success is False
         assert "queries" in result.message
@@ -1725,9 +1748,9 @@ class TestParallelToolCalls:
         # extract is REQUIRED (#1570 — every browse routes through a micro-context;
         # the page never enters the main context whole).  A missing or blank extract
         # is rejected at the same gate with the fix, never treated as "whole page".
-        missing = await tool.run(queries=["https://x.test"])
+        missing = await tool.run(CallLink.new_top(), queries=["https://x.test"])
         assert missing.success is False and "extract" in missing.message
-        blank = await tool.run(queries=["https://x.test"], extract="   ")
+        blank = await tool.run(CallLink.new_top(), queries=["https://x.test"], extract="   ")
         assert blank.success is False and "extract" in blank.message
         assert BrowseArgs(queries=["q"], extract="the price").extract == "the price"
 
@@ -1751,6 +1774,7 @@ class TestParallelToolCalls:
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         await tool.execute(
+            CallLink.new_top(),
             queries=["https://example.com/page", "https://other.com"],
             extract="the page content",
         )
@@ -1785,7 +1809,7 @@ class TestParallelToolCalls:
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         result = await tool.execute(
-            queries=["https://slow.example.com"], extract="the page content"
+            CallLink.new_top(), queries=["https://slow.example.com"], extract="the page content"
         )
 
         assert isinstance(result, ToolResult)
@@ -1930,7 +1954,7 @@ class TestLargeToolResults:
 
         with patch.object(agent._tool_executor, "execute") as mock_exec:
             mock_exec.return_value = ToolResult(message=large_result)
-            response = await agent.run("test", max_steps=max_steps)
+            response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert response.answer == "done"
         await agent.close()
@@ -1965,7 +1989,9 @@ class TestValidatorRetry:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what does the deck cost?", max_steps=max_steps)
+        response = await agent.run(
+            "what does the deck cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == _CLEAN_ANSWER
         assert len(mock_llm.requests) == 2
         # No appended draft: the re-draw carries byte-identical messages.
@@ -1986,7 +2012,9 @@ class TestValidatorRetry:
 
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, draft))
 
-        response = await agent.run("what does the deck cost?", max_steps=max_steps)
+        response = await agent.run(
+            "what does the deck cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == draft
         assert len(mock_llm.requests) == 2
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
@@ -2007,7 +2035,9 @@ class TestValidatorRetry:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what does the deck cost?", max_steps=max_steps)
+        response = await agent.run(
+            "what does the deck cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == _CLEAN_ANSWER
         assert len(mock_llm.requests) == 4
         first = mock_llm.requests[0]["messages"]
@@ -2034,7 +2064,11 @@ class TestValidatorRetry:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("Give me a list of vegan smoothie recipes", max_steps=max_steps)
+        response = await agent.run(
+            "Give me a list of vegan smoothie recipes",
+            max_steps=max_steps,
+            call_link=CallLink.new_top(),
+        )
         assert response.answer == "Here are the vegan smoothie recipes!"
         assert len(mock_llm.requests) == 3
         assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
@@ -2050,7 +2084,9 @@ class TestValidatorRetry:
             lambda req, count: mock_llm._make_text_response(req, "Here are your recipes!")
         )
 
-        response = await agent.run("Give me vegan smoothie recipes", max_steps=max_steps)
+        response = await agent.run(
+            "Give me vegan smoothie recipes", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "Here are your recipes!"
         assert len(mock_llm.requests) == 1
 
@@ -2087,7 +2123,10 @@ class TestUrlValidationSourceContext:
         mock_llm.set_response_handler(handler)
 
         response = await agent.run(
-            "tell me about colds", max_steps=max_steps, system_prompt=system_prompt
+            "tell me about colds",
+            max_steps=max_steps,
+            system_prompt=system_prompt,
+            call_link=CallLink.new_top(),
         )
 
         assert response.answer == answer
@@ -2115,7 +2154,9 @@ class TestUrlValidationSourceContext:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("follow up", max_steps=max_steps, history=history)
+        response = await agent.run(
+            "follow up", max_steps=max_steps, history=history, call_link=CallLink.new_top()
+        )
 
         assert response.answer == answer
         assert len(mock_llm.requests) == 2
@@ -2137,7 +2178,7 @@ class TestUrlValidationSourceContext:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("question", max_steps=max_steps)
+        response = await agent.run("question", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert response.answer == good
         # Tool call + bad text + retry text = 3 model calls, the retry on the unchanged context
@@ -2165,7 +2206,9 @@ class TestMalformedUrlCleaning:
         )
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
-        response = await agent.run("tell me about travel", max_steps=max_steps)
+        response = await agent.run(
+            "tell me about travel", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "Check this out:  for details. Also 【browse: 】, **** and ()."
 
         await agent.close()
@@ -2178,7 +2221,7 @@ class TestMalformedUrlCleaning:
         raw = "Visit [Travel Guide](https://travelguide.com/destination-) for more info."
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
-        response = await agent.run("travel info", max_steps=max_steps)
+        response = await agent.run("travel info", max_steps=max_steps, call_link=CallLink.new_top())
         assert "https://travelguide.com/destination-" not in response.answer
         assert "Travel Guide" in response.answer
 
@@ -2198,7 +2241,9 @@ class TestMalformedUrlCleaning:
         )
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, raw))
 
-        response = await agent.run("article link", max_steps=max_steps)
+        response = await agent.run(
+            "article link", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == raw
 
         await agent.close()
@@ -2220,7 +2265,9 @@ class TestMalformedUrlCleaning:
         source_url = "https://real-source.com/article"
         with patch.object(agent._tool_executor, "execute") as mock_exec:
             mock_exec.return_value = ToolResult(message="result", source_urls=[source_url])
-            response = await agent.run("test query", max_steps=max_steps)
+            response = await agent.run(
+                "test query", max_steps=max_steps, call_link=CallLink.new_top()
+            )
 
         assert "https://bad.example/path-" not in response.answer
         assert source_url in response.answer
@@ -2254,7 +2301,9 @@ class TestAllToolsFailedRunsOutItsSteps:
             return mock_llm._make_text_response(request, "I couldn't reach any source for that")
 
         mock_llm.set_response_handler(handler)
-        response = await agent.run("what's the news?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the news?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
 
         assert response.answer == "I couldn't reach any source for that"
         # A failing call on every step that HAS tools — the old guard stopped at 2.
@@ -2285,7 +2334,12 @@ class TestAllToolsFailedRunsOutItsSteps:
             )
 
         mock_llm.set_response_handler(handler)
-        response = await agent.run("what's the news?", max_steps=max_steps, on_progress=on_progress)
+        response = await agent.run(
+            "what's the news?",
+            max_steps=max_steps,
+            on_progress=on_progress,
+            call_link=CallLink.new_top(),
+        )
 
         assert response.tool_calls  # the run really did make failing calls
         failure_frame = "You tried to use `search` but it didn't work: (search result)\n"
@@ -2306,7 +2360,7 @@ class TestAllToolsFailedRunsOutItsSteps:
 
         call_count = 0
 
-        async def alternating_executor(tool_call):
+        async def alternating_executor(tool_call, call_link=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -2321,7 +2375,7 @@ class TestAllToolsFailedRunsOutItsSteps:
             return mock_llm._make_text_response(request, "here are results")
 
         mock_llm.set_response_handler(handler)
-        response = await agent.run("test", max_steps=max_steps)
+        response = await agent.run("test", max_steps=max_steps, call_link=CallLink.new_top())
         assert response.answer == "here are results"
 
         await agent.close()
@@ -2351,7 +2405,9 @@ class TestOnToolStartCallback:
         mock_llm.set_response_handler(handler)
         agent.allow_repeat_tools = True
 
-        response = await agent.run("test", max_steps=max_steps, on_tool_start=on_tool_start)
+        response = await agent.run(
+            "test", max_steps=max_steps, on_tool_start=on_tool_start, call_link=CallLink.new_top()
+        )
         assert response.answer == "done"
         # Two sequential single-tool steps → callback fires twice, each with one tool
         assert len(captured) == 2
@@ -2382,7 +2438,9 @@ class TestOnToolStartCallback:
         mock_llm.set_response_handler(handler)
         agent.allow_repeat_tools = True
 
-        response = await agent.run("test", max_steps=max_steps, on_tool_start=on_tool_start)
+        response = await agent.run(
+            "test", max_steps=max_steps, on_tool_start=on_tool_start, call_link=CallLink.new_top()
+        )
         assert response.answer == "done"
         # One step with two parallel tools → callback fires once with both
         assert len(captured) == 1
@@ -2407,7 +2465,9 @@ class TestOnToolStartCallback:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test", max_steps=max_steps, on_tool_start=on_tool_start)
+        await agent.run(
+            "test", max_steps=max_steps, on_tool_start=on_tool_start, call_link=CallLink.new_top()
+        )
         # Only the first step fires; the second is fully deduplicated so pending is empty
         assert len(captured) == 1
 
@@ -2429,7 +2489,9 @@ class TestOnToolStartCallback:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("test", max_steps=max_steps, on_tool_start=on_tool_start)
+        response = await agent.run(
+            "test", max_steps=max_steps, on_tool_start=on_tool_start, call_link=CallLink.new_top()
+        )
         assert response.answer == "done"
         assert len(response.tool_calls) == 1
 
@@ -2451,7 +2513,9 @@ class TestOnToolStartCallback:
             return mock_llm._make_text_response(request, "done")
 
         mock_llm.set_response_handler(handler)
-        response = await agent.run("test", max_steps=max_steps, on_progress=on_progress)
+        response = await agent.run(
+            "test", max_steps=max_steps, on_progress=on_progress, call_link=CallLink.new_top()
+        )
 
         assert response.answer == "done"
         assert [event.event for event in events] == [
@@ -2487,7 +2551,7 @@ class TestPromptLogAnnotations:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test question", max_steps=max_steps)
+        await agent.run("test question", max_steps=max_steps, call_link=CallLink.new_top())
 
         with Session(db.engine) as session:
             logs = session.exec(select(PromptLog)).all()
@@ -2518,8 +2582,8 @@ class TestPromptLogAnnotations:
 
         mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, "done"))
 
-        await agent.run("first", max_steps=max_steps)
-        await agent.run("second", max_steps=max_steps)
+        await agent.run("first", max_steps=max_steps, call_link=CallLink.new_top())
+        await agent.run("second", max_steps=max_steps, call_link=CallLink.new_top())
 
         with Session(db.engine) as session:
             logs = session.exec(select(PromptLog)).all()
@@ -2544,7 +2608,7 @@ class _StubTerminator(Tool):
     description = "End the run."
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         return ToolResult(message="Cycle complete.")
 
 
@@ -2622,7 +2686,7 @@ class TestCollectorInvalidDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("", max_steps=max_steps)
+        response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         # Exactly one reroll, on the UNCHANGED context — the prose never appended and
         # no nudge user-turn injected.
@@ -2653,7 +2717,7 @@ class TestCollectorInvalidDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("", max_steps=max_steps)
+        response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         tools_called = [record.tool for record in response.tool_calls]
         assert "search" in tools_called
@@ -2677,7 +2741,7 @@ class TestCollectorInvalidDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("", max_steps=max_steps)
+        response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert len(mock_llm.requests) == 3
         assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
@@ -2702,7 +2766,7 @@ class TestCollectorInvalidDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("", max_steps=max_steps)
+        response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert len(mock_llm.requests) == 3
         assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
@@ -2728,7 +2792,7 @@ class TestCollectorInvalidDrawReroll:
             lambda request, count: mock_llm._make_text_response(request, "still just talking")
         )
 
-        response = await agent.run("", max_steps=max_steps)
+        response = await agent.run("", max_steps=max_steps, call_link=CallLink.new_top())
 
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
@@ -2786,7 +2850,9 @@ class TestChatCallShapedTextReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the deepest lake?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
 
         # The JSON blob never became the reply and never entered the context.
         assert response.answer == "I couldn't find that app anywhere."
@@ -2811,7 +2877,9 @@ class TestChatCallShapedTextReroll:
             )
         )
 
-        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the deepest lake?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
             attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         )
@@ -2836,7 +2904,9 @@ class TestChatCallShapedTextReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        response = await agent.run(
+            "what's the deepest lake?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
         assert response.answer == "Lake Baikal is the deepest lake!"
         assert len(mock_llm.requests) == 2  # no reroll
 
@@ -2924,7 +2994,9 @@ class TestChatEmptyDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what does the lantern cost?", max_steps=max_steps)
+        response = await agent.run(
+            "what does the lantern cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
 
         # Two re-rolls on one budget, all three draws against a context that never grew.
         assert len(mock_llm.requests) == 4
@@ -2964,7 +3036,9 @@ class TestChatEmptyDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what does the lantern cost?", max_steps=max_steps)
+        response = await agent.run(
+            "what does the lantern cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
 
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
             attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -2998,7 +3072,9 @@ class TestChatEmptyDrawReroll:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what does the lantern cost?", max_steps=max_steps)
+        response = await agent.run(
+            "what does the lantern cost?", max_steps=max_steps, call_link=CallLink.new_top()
+        )
 
         assert response.answer == "It is nine credits."
         assert len(mock_llm.requests) == 3

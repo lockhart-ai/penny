@@ -75,8 +75,8 @@ from penny.database.mutation_store import render_mutation
 from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillDraft, SkillParameter
 from penny.datetime_utils import format_log_timestamp
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse
-from penny.llm.run_context import run_scope
 from penny.round_framing import (
     RoundFramer,
     abandon_round_container,
@@ -219,7 +219,12 @@ def _park_in_elicit(db: Database, anchor_id: int) -> None:
 async def _enter_learn(db: Database, framing: str = _FRAMED, message: str = _DEMO) -> None:
     """One move from a parked elicit into learn, framed by ``framing``."""
     machine = _machine(db, _model(state="STATE: learn", framing=framing))
-    await machine.advance(message, message_id=_log(db, message), run_id="run-learn")
+    await machine.advance(
+        message,
+        message_id=_log(db, message),
+        run_id="run-learn",
+        call_link=CallLink.top("run-learn"),
+    )
 
 
 # ── Entry: the round is framed and its container is built, before the turn ────
@@ -258,18 +263,22 @@ async def test_entering_learn_frames_the_round_and_builds_an_inert_container(db)
     assert row.created_by_run_id == "run-learn"
 
 
-async def test_the_framer_s_draw_links_back_to_the_turn_from_ambient_state(db):
-    """The framer draw at round entry links back to the turn making it purely from
-    AMBIENT state (#2458) — ``RoundFramer._draw`` takes no ``parent_run_id`` parameter
-    at all any more; the linkage comes from whatever ``run_scope`` the turn opened,
-    exactly as the channel opens one for a real turn."""
+async def test_the_framer_s_draw_links_back_to_the_turn_from_its_explicit_link(db):
+    """The framer draw at round entry links back to the turn making it via the
+    EXPLICIT ``call_link`` the turn hands down (#2458, no ambient state) —
+    ``RoundFramer._draw`` takes no bare ``parent_run_id`` parameter; the linkage
+    comes from the same link a real turn's channel would have minted."""
     anchor_id = _log(db, _ASK)
     _park_in_elicit(db, anchor_id)
     model = _model(state="STATE: learn", framing=_FRAMED)
     machine = _machine(db, model)
 
-    with run_scope("run-learn-link"):
-        await machine.advance(_DEMO, message_id=_log(db, _DEMO), run_id="run-learn-link")
+    await machine.advance(
+        _DEMO,
+        message_id=_log(db, _DEMO),
+        run_id="run-learn-link",
+        call_link=CallLink.top("run-learn-link"),
+    )
 
     assert _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
     framer_request = next(
@@ -294,7 +303,9 @@ async def test_the_framer_reads_the_round_s_own_turns_and_nothing_else(db):
     model = _model(state="STATE: learn", framing=_FRAMED)
 
     machine = _machine(db, model)
-    await machine.advance(_DEMO, message_id=_log(db, _DEMO), run_id="run-learn")
+    await machine.advance(
+        _DEMO, message_id=_log(db, _DEMO), run_id="run-learn", call_link=CallLink.top("run-learn")
+    )
 
     framing_requests = [
         request
@@ -346,7 +357,12 @@ async def test_a_correction_keeps_the_round_s_framing_and_draws_nothing(db):
     # neither reaches the round, because no draw is made.
     model = _model(state="STATE: learn", framing=_FRAMED_TOURS)
     correcting = _machine(db, model)
-    await correcting.advance(_CORRECTION, message_id=_log(db, _CORRECTION), run_id="run-fix")
+    await correcting.advance(
+        _CORRECTION,
+        message_id=_log(db, _CORRECTION),
+        run_id="run-fix",
+        call_link=CallLink.top("run-fix"),
+    )
 
     assert not _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
     framing = correcting.framing()
@@ -432,12 +448,22 @@ async def test_the_framing_is_carried_while_parked_and_cleared_on_break_out(db):
     _seed_skill(db)
 
     accepting = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", framing=""))
-    await accepting.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    await accepting.advance(
+        "yes please",
+        message_id=_log(db, "yes please"),
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
+    )
     carried = accepting.framing()
     assert carried is not None and carried.container == _CONTAINER
 
     bailing = _machine(db, _model(state="STATE: idle", framing=""))
-    await bailing.advance("never mind", message_id=_log(db, "never mind"), run_id="run-idle")
+    await bailing.advance(
+        "never mind",
+        message_id=_log(db, "never mind"),
+        run_id="run-idle",
+        call_link=CallLink.top("run-idle"),
+    )
     assert bailing.state() is ConversationState.IDLE
     assert bailing.framing() is None
 
@@ -456,7 +482,12 @@ async def test_a_held_draw_frames_nothing_and_touches_no_container(db):
     before = {row.name for row in db.memories.list_all()}
 
     held = _machine(db, _model(state="i think we should keep learning here", framing=_FRAMED_TOURS))
-    await held.advance(_CORRECTION, message_id=_log(db, _CORRECTION), run_id="run-held")
+    await held.advance(
+        _CORRECTION,
+        message_id=_log(db, _CORRECTION),
+        run_id="run-held",
+        call_link=CallLink.top("run-held"),
+    )
 
     assert held.state() is ConversationState.LEARN
     assert {row.name for row in db.memories.list_all()} == before
@@ -480,7 +511,9 @@ async def test_a_round_that_is_still_unframed_is_drawn_again_on_re_entry(db):
 
     model = _model(state="STATE: learn", framing=_FRAMED)
     retrying = _machine(db, model)
-    await retrying.advance(_DEMO, message_id=_log(db, _DEMO), run_id="run-retry")
+    await retrying.advance(
+        _DEMO, message_id=_log(db, _DEMO), run_id="run-retry", call_link=CallLink.top("run-retry")
+    )
 
     assert _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
     framing = retrying.framing()
@@ -499,7 +532,9 @@ async def _cold_apply(
     the registry and the values come from this one message."""
     model = _model(state=f"STATE: apply\nSKILL: {skill}", binding=binding)
     machine = _machine(db, model)
-    await machine.advance(ask, message_id=_log(db, ask), run_id="run-apply")
+    await machine.advance(
+        ask, message_id=_log(db, ask), run_id="run-apply", call_link=CallLink.top("run-apply")
+    )
     return machine, model
 
 
@@ -586,7 +621,12 @@ async def test_an_apply_after_an_unframed_learn_round_binds_from_the_ask_and_the
 
     model = _model(state=f"STATE: apply\nSKILL: {_SKILL}")
     machine = _machine(db, model)
-    await machine.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    await machine.advance(
+        "yes please",
+        message_id=_log(db, "yes please"),
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
+    )
 
     assert machine.state() is ConversationState.APPLY
     assert _drew_against(model, BIND_SKILL_SYSTEM_PROMPT)
@@ -627,7 +667,11 @@ async def test_binding_a_routine_the_registry_lacks_builds_nothing(db):
     framer = RoundFramer(db, cast(Any, model), cast(Any, MockLlmClient()))
 
     framing = await framer.bind_entry(
-        skill=_SKILL, ask=None, message=_ASK_NAMING_THE_PAGE, run_id="run-apply"
+        skill=_SKILL,
+        ask=None,
+        message=_ASK_NAMING_THE_PAGE,
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
     )
 
     assert framing is None
@@ -653,7 +697,9 @@ async def test_a_cold_apply_the_words_fall_short_of_lands_in_request(db):
     machine = _machine(db, model)
     published: list[ConversationState] = []
     machine.subscribe_state_changes(published.append)
-    entered = await machine.advance(_ASK, message_id=anchor_id, run_id="run-request")
+    entered = await machine.advance(
+        _ASK, message_id=anchor_id, run_id="run-request", call_link=CallLink.top("run-request")
+    )
 
     assert machine.state() is ConversationState.REQUEST
     assert entered.state is ConversationState.REQUEST
@@ -686,7 +732,12 @@ async def test_the_request_turn_is_handed_the_routine_and_what_is_still_missing(
     machine = _machine(
         db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding=_SHORT_OF_THE_PAGE)
     )
-    entered = await machine.advance(_RATE_ASK, message_id=_log(db, _RATE_ASK), run_id="run-request")
+    entered = await machine.advance(
+        _RATE_ASK,
+        message_id=_log(db, _RATE_ASK),
+        run_id="run-request",
+        call_link=CallLink.top("run-request"),
+    )
 
     shortfall = entered.shortfall
     assert shortfall is not None
@@ -708,11 +759,16 @@ async def test_a_request_the_next_message_still_falls_short_of_asks_again(db):
     _seed_skill(db)
     anchor_id = _log(db, _ASK)
     short = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding="MISSING url")
-    await _machine(db, short).advance(_ASK, message_id=anchor_id, run_id="run-request")
+    await _machine(db, short).advance(
+        _ASK, message_id=anchor_id, run_id="run-request", call_link=CallLink.top("run-request")
+    )
 
     again = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding="MISSING url"))
     entered = await again.advance(
-        "the usual one", message_id=_log(db, "the usual one"), run_id="run-request-2"
+        "the usual one",
+        message_id=_log(db, "the usual one"),
+        run_id="run-request-2",
+        call_link=CallLink.top("run-request-2"),
     )
 
     assert again.state() is ConversationState.REQUEST
@@ -768,7 +824,12 @@ async def test_an_apply_move_that_already_has_a_framing_draws_nothing(db):
     )
 
     machine = _machine(db, model)
-    await machine.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    await machine.advance(
+        "yes please",
+        message_id=_log(db, "yes please"),
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
+    )
 
     assert not _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
     assert not _drew_against(model, BIND_SKILL_SYSTEM_PROMPT)
@@ -787,8 +848,9 @@ async def _park_in_request(
     door, where the binder never used to run at all."""
     model = _model(state=f"STATE: request\nSKILL: {_SKILL}", binding=_SHORT_OF_THE_PAGE)
     machine = _machine(db, model)
-    with run_scope("run-request"):
-        await machine.advance(ask, message_id=_log(db, ask), run_id="run-request")
+    await machine.advance(
+        ask, message_id=_log(db, ask), run_id="run-request", call_link=CallLink.top("run-request")
+    )
     return machine, model
 
 
@@ -817,8 +879,8 @@ async def test_a_request_draw_binds_the_routine_it_named(db):
     ]
     assert machine.framing() is None
     assert not [row for row in db.memories.list_all() if row.name.startswith("watch-rental")]
-    # The binder's draw links back to the turn purely from AMBIENT state (#2458) —
-    # it takes no ``parent_run_id`` parameter at all any more.
+    # The binder's draw links back to the turn via the EXPLICIT call_link the
+    # turn hands down (#2458) — it takes no bare ``parent_run_id`` parameter.
     binder_request = next(
         request
         for request in model.requests
@@ -861,7 +923,9 @@ async def test_the_parked_binding_is_what_the_next_turn_is_classified_against(db
 
     model = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding=_BOUND)
     supply = "harborkayak.example/rentals"
-    await _machine(db, model).advance(supply, message_id=_log(db, supply), run_id="run-apply")
+    await _machine(db, model).advance(
+        supply, message_id=_log(db, supply), run_id="run-apply", call_link=CallLink.top("run-apply")
+    )
 
     assert (
         "## The details this task is waiting on\n"
@@ -893,7 +957,9 @@ async def test_the_message_that_arrives_completes_the_parked_binding(db):
     model = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding=_BOUND)
     machine = _machine(db, model)
     supply = "harborkayak.example/rentals"
-    await machine.advance(supply, message_id=_log(db, supply), run_id="run-apply")
+    await machine.advance(
+        supply, message_id=_log(db, supply), run_id="run-apply", call_link=CallLink.top("run-apply")
+    )
 
     assert machine.state() is ConversationState.APPLY
     framing = machine.framing()
@@ -933,7 +999,9 @@ async def test_a_binding_settled_for_one_routine_is_not_carried_into_another(db)
         binding="VALUE url: harborkayak.example/tours\nVALUE keyword: the day rate",
     )
     supply = "harborkayak.example/tours, the day rate"
-    await _machine(db, model).advance(supply, message_id=_log(db, supply), run_id="run-apply")
+    await _machine(db, model).advance(
+        supply, message_id=_log(db, supply), run_id="run-apply", call_link=CallLink.top("run-apply")
+    )
 
     asked = _drawn_content(model, BIND_SKILL_SYSTEM_PROMPT)
     assert "- url: the rental page to read" in asked
@@ -954,7 +1022,9 @@ async def test_a_re_taught_routine_drops_a_value_it_no_longer_declares(db):
     model = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding=_BOUND)
     machine = _machine(db, model)
     supply = "harborkayak.example/rentals"
-    await machine.advance(supply, message_id=_log(db, supply), run_id="run-apply")
+    await machine.advance(
+        supply, message_id=_log(db, supply), run_id="run-apply", call_link=CallLink.top("run-apply")
+    )
 
     framing = machine.framing()
     assert framing is not None
@@ -998,7 +1068,9 @@ async def test_a_request_draw_the_words_fully_cover_settles_the_round(db):
 
     model = _model(state=f"STATE: request\nSKILL: {_SKILL}", binding=_BOUND)
     machine = _machine(db, model)
-    await machine.advance(ask, message_id=_log(db, ask), run_id="run-request")
+    await machine.advance(
+        ask, message_id=_log(db, ask), run_id="run-request", call_link=CallLink.top("run-request")
+    )
 
     assert machine.state() is ConversationState.REQUEST
     assert machine.shortfall() is None, "nothing is missing, so nothing is waited on"
@@ -1019,7 +1091,9 @@ async def test_a_round_that_leaves_request_stops_waiting_on_anything(db):
 
     machine = _machine(db, _model(state="STATE: elicit"))
     wrong = "no, that's not what I meant — I want the whole timetable"
-    await machine.advance(wrong, message_id=_log(db, wrong), run_id="run-elicit")
+    await machine.advance(
+        wrong, message_id=_log(db, wrong), run_id="run-elicit", call_link=CallLink.top("run-elicit")
+    )
 
     assert machine.state() is ConversationState.ELICIT
     assert machine.shortfall() is None
@@ -1033,7 +1107,9 @@ async def test_a_round_that_leaves_request_stops_waiting_on_anything(db):
 async def _bail(db: Database, message: str = "actually forget it, i don't need this") -> None:
     """One classified move to idle — the break-out edge every parked state carries."""
     machine = _machine(db, _model(state="STATE: idle", framing=""))
-    await machine.advance(message, message_id=_log(db, message), run_id="run-bail")
+    await machine.advance(
+        message, message_id=_log(db, message), run_id="run-bail", call_link=CallLink.top("run-bail")
+    )
 
 
 async def test_a_round_that_bails_to_idle_takes_its_container_with_it(db):
@@ -1178,7 +1254,9 @@ async def test_a_bail_from_a_round_that_taught_nothing_leaves_the_registry_alone
     _seed_skill(db)
     ask = _ASK_NAMING_THE_PAGE
     machine = _machine(db, _model(state=f"STATE: request\nSKILL: {_SKILL}", binding=_BOUND))
-    await machine.advance(ask, message_id=_log(db, ask), run_id="run-request")
+    await machine.advance(
+        ask, message_id=_log(db, ask), run_id="run-request", call_link=CallLink.top("run-request")
+    )
     assert machine.framing() is not None, "the round is parked carrying a bound framing"
     assert _round_provenance(db) is None, "nothing was minted, so nothing was replaced"
 
@@ -1201,7 +1279,12 @@ async def test_a_re_taught_round_that_is_not_bailed_keeps_the_corrected_routine(
     _upsert_named_skill(db, _SKILL, [SkillParameter(name="page", description="the corrected one")])
 
     accepting = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", framing=""))
-    await accepting.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    await accepting.advance(
+        "yes please",
+        message_id=_log(db, "yes please"),
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
+    )
 
     kept = _require_skill(db, _SKILL)
     assert [p.name for p in parameters_from_json(kept.parameters)] == ["page"]
@@ -1322,7 +1405,12 @@ async def test_the_post_apply_reset_leaves_the_round_s_routine_alone(db):
     await _enter_learn(db)
     _seed_skill(db)
     accepting = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", framing=""))
-    await accepting.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    await accepting.advance(
+        "yes please",
+        message_id=_log(db, "yes please"),
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
+    )
 
     await _bail(db, "great, thanks")
 
@@ -1357,7 +1445,12 @@ async def test_the_post_apply_reset_leaves_the_job_s_container_alone(db):
     await _enter_learn(db)
     _seed_skill(db)
     accepting = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", framing=""))
-    await accepting.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    await accepting.advance(
+        "yes please",
+        message_id=_log(db, "yes please"),
+        run_id="run-apply",
+        call_link=CallLink.top("run-apply"),
+    )
     assert accepting.state() is ConversationState.APPLY
 
     await _bail(db, "great, thanks")

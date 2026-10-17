@@ -106,6 +106,7 @@ from penny.database.skills import (
     distill_steps,
     render_skill,
 )
+from penny.llm.call_link import CallLink
 from penny.llm.similarity import embed_text
 from penny.text_validity import is_blank
 from penny.tools.base import Tool
@@ -388,6 +389,7 @@ class SkillExtractor:
         self,
         run_id: str,
         *,
+        call_link: CallLink,
         state: ConversationState | None,
         framing: RoundFraming | None = None,
     ) -> SkillExtractionResult:
@@ -417,7 +419,7 @@ class SkillExtractor:
         gate = self._disqualify(prompts, projection, certified)
         if gate is not None:
             return NoExtraction(gate=gate)
-        draft = await self._draft(run_id, projection, certified, framing)
+        draft = await self._draft(run_id, call_link, projection, certified, framing)
         return await self._persist(draft, projection.origin_message, framing)
 
     @staticmethod
@@ -471,6 +473,7 @@ class SkillExtractor:
     async def _draft(
         self,
         run_id: str,
+        call_link: CallLink,
         projection: RunProjection,
         certified: list[RunProjectionStep],
         framing: RoundFraming | None,
@@ -492,8 +495,8 @@ class SkillExtractor:
             _resolved_attachment_names(self._db, run_id, certified),
         )
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        labels = await self._label_skill(run_id, steps, parameters, projection, conversation)
-        signature = await self._signature(run_id, framing, projection, conversation)
+        labels = await self._label_skill(call_link, steps, parameters, projection, conversation)
+        signature = await self._signature(call_link, framing, projection, conversation)
         steps, parameters = _apply_leaf_labels(steps, parameters, labels)
         name, description = _naming(signature, projection.origin_message)
         return SkillDraft(
@@ -507,7 +510,7 @@ class SkillExtractor:
 
     async def _label_skill(
         self,
-        run_id: str,
+        call_link: CallLink,
         steps: list[SkillStep],
         parameters: list[SkillParameter],
         projection: RunProjection,
@@ -529,12 +532,13 @@ class SkillExtractor:
         return await self._micro_context.label_skill(
             content,
             [parameter.name for parameter in parameters],
+            call_link=call_link,
             run_target=self._agent_name,
         )
 
     async def _signature(
         self,
-        run_id: str,
+        call_link: CallLink,
         framing: RoundFraming | None,
         projection: RunProjection,
         conversation: list[tuple[str, str]],
@@ -548,10 +552,10 @@ class SkillExtractor:
         container pointing at a routine that no longer exists by that name."""
         if framing is not None:
             return framing.signature
-        return await self._frame_skill(run_id, projection, conversation)
+        return await self._frame_skill(call_link, projection, conversation)
 
     async def _frame_skill(
-        self, run_id: str, projection: RunProjection, conversation: list[tuple[str, str]]
+        self, call_link: CallLink, projection: RunProjection, conversation: list[tuple[str, str]]
     ) -> SkillSignature | None:
         """One single-shot framing micro-context over the user's ask (#1830).
 
@@ -562,7 +566,9 @@ class SkillExtractor:
         one well-formed, distinctly-named parameter.  ``None`` otherwise, and the caller
         falls back to the deterministic slug with nothing to bind."""
         content = build_framing_content(projection.origin_message, conversation)
-        return await self._micro_context.frame_skill(content, run_target=self._agent_name)
+        return await self._micro_context.frame_skill(
+            content, call_link=call_link, run_target=self._agent_name
+        )
 
     @staticmethod
     def _distill_inputs(

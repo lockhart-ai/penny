@@ -37,6 +37,7 @@ from penny.database.memory.store import _FIELD_PRIORS, _MetadataUpdate
 from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import FieldPrior, MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
+from penny.llm.call_link import CallLink
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tests.conftest import require_memory
 from penny.tests.schema_template import schema_only_db
@@ -278,7 +279,9 @@ class TestMemoryMetadata:
             created=datetime(2026, 3, 5, 8, 0, tzinfo=UTC),
             updated=datetime(2026, 3, 5, 8, 10, tzinfo=UTC),
         )
-        result = asyncio.run(MemoryMetadataTool(db).execute(memory="hedgehog-sightings"))
+        result = asyncio.run(
+            MemoryMetadataTool(db).execute(CallLink.new_top(), memory="hedgehog-sightings")
+        )
         assert (
             result.message
             == """\
@@ -379,7 +382,7 @@ Recent changes (newest first):
             notify=True,
         )
         tool = MemoryMetadataTool(db)
-        result = asyncio.run(tool.execute(memory="board-games"))
+        result = asyncio.run(tool.execute(CallLink.new_top(), memory="board-games"))
         assert "board-games" in result.message
         assert "collection" in result.message
         assert "strategy board games" in result.message
@@ -397,7 +400,7 @@ Recent changes (newest first):
         assert re.search(r"created: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\n", result.message)
         # A collected memory renders its stamp through the same shared format.
         db.memories.mark_collected("board-games")
-        collected = asyncio.run(tool.execute(memory="board-games")).message
+        collected = asyncio.run(tool.execute(CallLink.new_top(), memory="board-games")).message
         stamped = db.memories.memory("board-games").row.last_collected_at
         assert stamped is not None
         assert f"last collected: {format_log_timestamp(stamped)}" in collected
@@ -405,7 +408,7 @@ Recent changes (newest first):
     def test_collection_metadata_tool_no_extraction_prompt(self, db):
         db.memories.create_collection("plain", "no collector")
         tool = MemoryMetadataTool(db)
-        result = asyncio.run(tool.execute(memory="plain"))
+        result = asyncio.run(tool.execute(CallLink.new_top(), memory="plain"))
         assert "steps: none" in result.message
         # notify is opt-in: a collection created without it defaults to silent.
         assert "notify: False" in result.message
@@ -419,7 +422,7 @@ Recent changes (newest first):
 
     def test_collection_metadata_tool_not_found(self, db):
         tool = MemoryMetadataTool(db)
-        result = asyncio.run(tool.execute(memory="nonexistent"))
+        result = asyncio.run(tool.execute(CallLink.new_top(), memory="nonexistent"))
         assert "not found" in result.message
         # A wrong-name miss (incl. the entry-vs-collection footgun: a skill key
         # addressed as a collection) names the resolve-by-meaning recovery, so the

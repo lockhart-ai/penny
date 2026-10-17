@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from penny.constants import PageReading, PennyConstants, ProgressEmoji
 from penny.database.memory import LogEntryInput
+from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
@@ -363,18 +364,17 @@ class BrowseTool(Tool):
             parts.append(template.format(urls=", ".join(reads)))
         return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Dispatch all lookups in parallel via the browser extension.
 
         With an ``extract`` micro-instruction (and at least one readable page),
         the fetched content goes to a fresh micro-context and only the typed
         result returns; otherwise the assembled sections return directly.
 
-        Any extraction draw this call makes links back to the run AND to this
-        dispatched call with no parameter here at all (#2458): the tool
-        dispatcher opens the ambient tool-call scope around the whole of
-        ``tool.run()``, before ``execute`` is ever reached.
-        """
+        ``call_link`` (#2458) is THIS dispatched call's own linkage — the tool
+        dispatcher built it via ``CallLink.for_tool_call(tool_call_id)`` before
+        ``run`` even validated args. Threaded through to every extraction draw this
+        call makes, so each one links back to the run AND to this dispatched call."""
         self._read_log, self._extract_log, self._extracting = [], [], False
         args = BrowseArgs(**kwargs)
         cap = self._max_calls
@@ -399,7 +399,9 @@ class BrowseTool(Tool):
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
         if args.extract is not None and not all_failed:
             self._extracting = True
-            return await self._extract_result(sections, stored, page_readings, args.extract)
+            return await self._extract_result(
+                sections, stored, page_readings, args.extract, call_link
+            )
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
@@ -473,6 +475,7 @@ class BrowseTool(Tool):
         stored: list[MemoryEntry],
         page_readings: list[PageReading],
         instruction: str,
+        call_link: CallLink,
     ) -> ToolResult:
         """One micro-context call PER successfully-fetched page (#1682) — each result
         rendered UNDER that page's own ``## browse …:`` section header, so a
@@ -504,7 +507,9 @@ class BrowseTool(Tool):
         batch = self._extract_batch(sections, stored, page_readings)
         drawn = await asyncio.gather(
             *[
-                self._extract_one_page(micro_context, section, instruction, entry, reading)
+                self._extract_one_page(
+                    micro_context, section, instruction, entry, reading, call_link
+                )
                 for _, section, entry, reading in batch
             ],
             return_exceptions=True,
@@ -587,6 +592,7 @@ class BrowseTool(Tool):
         instruction: str,
         entry: MemoryEntry | None,
         reading: PageReading,
+        call_link: CallLink,
     ) -> tuple[str, bool]:
         """Extract ONE fetched page's content and render the typed result under that
         page's own section header — the extracted value (or an honest NOT_PRESENT /
@@ -610,6 +616,7 @@ class BrowseTool(Tool):
             micro = await micro_context.extract(
                 section,
                 instruction,
+                call_link=call_link,
                 run_target=self._author,
                 reading=reading,
             )

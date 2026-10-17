@@ -18,6 +18,7 @@ import random
 import pytest
 
 from penny.constants import ProgressEmoji
+from penny.llm.call_link import CallLink
 from penny.tools import choose as choose_module
 from penny.tools.choose import CHOSE_MESSAGE, ChooseTool
 from penny.tools.models import ToolResult
@@ -66,7 +67,7 @@ async def test_picks_an_option_and_reports_it(monkeypatch):
     """
     monkeypatch.setattr(choose_module.random, "choice", lambda seq: seq[1])
 
-    result = await ChooseTool().run(options=_OPTIONS)
+    result = await ChooseTool().run(CallLink.new_top(), options=_OPTIONS)
 
     assert result.success is True
     assert result.mutated is False
@@ -87,33 +88,33 @@ async def test_pick_is_always_among_the_options(monkeypatch):
 
     tool = ChooseTool()
     for _ in range(30):
-        result = await tool.run(options=_OPTIONS)
+        result = await tool.run(CallLink.new_top(), options=_OPTIONS)
         assert result.message in valid_messages
 
 
 @pytest.mark.asyncio
 async def test_fewer_than_two_options_is_refused():
     """A single option is not a choice — refused at the arg gate, actionably."""
-    result = await ChooseTool().run(options=["only one"])
+    result = await ChooseTool().run(CallLink.new_top(), options=["only one"])
 
     assert result.success is False
     assert result.mutated is False
     assert result.message == _TOO_FEW_REFUSAL
     # Empty list hits the same requirement (fewer than two).
-    empty = await ChooseTool().run(options=[])
+    empty = await ChooseTool().run(CallLink.new_top(), options=[])
     assert empty.message == _TOO_FEW_REFUSAL
 
 
 @pytest.mark.asyncio
 async def test_blank_option_is_refused():
     """A blank / whitespace-only option can't be a real outcome — refused, actionably."""
-    result = await ChooseTool().run(options=["red", "   "])
+    result = await ChooseTool().run(CallLink.new_top(), options=["red", "   "])
 
     assert result.success is False
     assert result.mutated is False
     assert result.message == _BLANK_REFUSAL
     # An empty-string option is the same defect.
-    empty_string = await ChooseTool().run(options=["red", "", "blue"])
+    empty_string = await ChooseTool().run(CallLink.new_top(), options=["red", "", "blue"])
     assert empty_string.message == _BLANK_REFUSAL
 
 

@@ -28,8 +28,8 @@ from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
-from penny.llm.run_context import run_scope, tool_call_scope
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import (
@@ -308,19 +308,19 @@ class Agent:
         plumbed through here.
 
         This is the base, generic background-cycle entry — a top-level run starter
-        (#2458), so it opens the ambient run scope here.  ``Collector`` (the only
+        (#2458), so it mints the top ``CallLink`` here.  ``Collector`` (the only
         live ``BackgroundAgent``) overrides ``execute`` with its own
-        ``_execute_cycle``, which opens its own scope around the notifier too; this
-        one stays scoped defensively for any future subclass that doesn't.
+        ``_execute_cycle``, which mints its own link around the notifier too; this
+        one stays a defensive starter for any future subclass that doesn't.
         """
         run_id = uuid.uuid4().hex
+        call_link = CallLink.top(run_id)
         progress: ProgressCallback | None = None
         cleanup: Callable[[], Awaitable[None]] | None = None
         if self._progress_factory is not None:
             progress, cleanup = self._progress_factory()
         try:
-            with run_scope(run_id):
-                result = await self._run_cycle(run_id, on_progress=progress)
+            result = await self._run_cycle(run_id, call_link, on_progress=progress)
             self.settle_reads(result.reads, self._consumed_input(result.success, result.response))
             return result.success
         finally:
@@ -328,7 +328,7 @@ class Agent:
                 await cleanup()
 
     async def _run_cycle(
-        self, run_id: str, on_progress: ProgressCallback | None = None
+        self, run_id: str, call_link: CallLink, on_progress: ProgressCallback | None = None
     ) -> CycleResult:
         """Generic agentic shell: install tools, run the loop, hand the reads back.
 
@@ -346,9 +346,10 @@ class Agent:
         ``run_id`` is supplied by the caller — the same UUID stamps every
         promptlog row this cycle produces, threads to the tool surface as the
         writing run (so this cycle's entry writes cite it, #1560), and is what
-        subclass cleanup passes back to ``set_run_outcome``.  Returning the
-        response alongside ``success`` keeps the call chain explicit; no
-        per-cycle state lives on ``self``.
+        subclass cleanup passes back to ``set_run_outcome``.  ``call_link``
+        (#2458) is ``CallLink.top(run_id)`` — the same identity, for the model
+        calls this cycle makes.  Returning the response alongside ``success``
+        keeps the call chain explicit; no per-cycle state lives on ``self``.
         """
         tools = self.get_tools(run_id=run_id)
         cursor_tools = tuple(t for t in tools if isinstance(t, CursorReadTool))
@@ -360,8 +361,8 @@ class Agent:
         response = await self.run(
             prompt="",
             max_steps=self.get_max_steps(),
+            call_link=call_link,
             system_prompt=system_prompt,
-            run_id=run_id,
             prompt_type=self.name,
             on_progress=on_progress,
             progress_scope="background",
@@ -443,39 +444,37 @@ class Agent:
         self,
         prompt: str,
         max_steps: int,
+        *,
+        call_link: CallLink,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
-        run_id: str | None = None,
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
     ) -> ControllerResponse:
         """Run the agentic loop — prompt in, response out.
 
-        A top-level run starter (#2458) when called with no ``run_id`` — opens the
-        ambient scope around the whole loop. Every live caller already opens its
-        own scope with this same id first (the channel, for a chat turn; a
-        collector cycle), so this is a no-op there (``run_scope`` collapses when
-        the id is already ambient) and only does real work for a direct caller
-        that supplies none of its own.
+        ``call_link`` (#2458) is REQUIRED — a top-level run starter builds its own
+        top link (``CallLink.top(run_id)``) and passes it in; there is no default
+        and no fallback, so every caller must supply one.  ``run_id`` (for DB/
+        progress purposes, distinct from the model-call linkage) is read off it.
         """
-        if run_id is None:
-            run_id = uuid.uuid4().hex
+        run_id = call_link.run_id
         self._tool_result_text = []
         messages = self._build_messages(prompt, history, system_prompt)
         tools = self._tool_registry.get_ollama_tools()
-        with run_scope(run_id):
-            return await self._run_agentic_loop(
-                messages,
-                tools,
-                max_steps,
-                on_tool_start,
-                on_progress,
-                run_id,
-                prompt_type,
-                progress_scope,
-            )
+        return await self._run_agentic_loop(
+            messages,
+            tools,
+            max_steps,
+            on_tool_start,
+            on_progress,
+            run_id,
+            call_link,
+            prompt_type,
+            progress_scope,
+        )
 
     # ── Agentic loop internals ───────────────────────────────────────────
 
@@ -484,15 +483,15 @@ class Agent:
         messages: list[dict],
         tools: list[dict],
         steps: int,
-        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
-        on_progress: ProgressCallback | None = None,
-        run_id: str | None = None,
-        prompt_type: str | None = None,
-        progress_scope: str = "foreground",
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
+        on_progress: ProgressCallback | None,
+        run_id: str,
+        call_link: CallLink,
+        prompt_type: str | None,
+        progress_scope: str,
     ) -> ControllerResponse:
         """Run the loop while guaranteeing a terminal progress event and a complete
         run record (the trailing turns no model call carried, #1778)."""
-        run_id = run_id or uuid.uuid4().hex
         outcome = "error"
         logged = _LoggedBoundary()
         await self._notify_progress(
@@ -506,6 +505,7 @@ class Agent:
                 on_tool_start,
                 on_progress,
                 run_id,
+                call_link,
                 prompt_type,
                 progress_scope,
                 logged,
@@ -560,6 +560,7 @@ class Agent:
         records: list[ToolCallRecord],
         messages: list[dict],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary,
     ) -> ControllerResponse:
@@ -594,6 +595,7 @@ class Agent:
             facts,
             records,
             run_id,
+            call_link,
             prompt_type,
             logged,
             reason=abort.render(),
@@ -612,11 +614,12 @@ class Agent:
         messages: list[dict],
         tools: list[dict],
         steps: int,
-        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
-        on_progress: ProgressCallback | None = None,
-        run_id: str | None = None,
-        prompt_type: str | None = None,
-        progress_scope: str = "foreground",
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
+        on_progress: ProgressCallback | None,
+        run_id: str,
+        call_link: CallLink,
+        prompt_type: str | None,
+        progress_scope: str,
         logged: _LoggedBoundary | None = None,
     ) -> ControllerResponse:
         """Execute the step loop: call model, process tool calls, or return final answer.
@@ -625,7 +628,6 @@ class Agent:
         model call has just carried, so whatever sits beyond it when the loop leaves
         (by return OR by exception) is the tail the caller stamps onto the record."""
         logged = logged if logged is not None else _LoggedBoundary()
-        run_id = run_id or uuid.uuid4().hex
         source_urls: list[str] = []
         called_tools: set[tuple[str, ...]] = set()
         tool_call_records: list[ToolCallRecord] = []
@@ -645,7 +647,7 @@ class Agent:
 
             try:
                 response = await self._call_model_validated(
-                    messages, step_tools, run_id, prompt_type
+                    messages, step_tools, call_link, prompt_type
                 )
             except ModelCallAbortedError as aborted:
                 # A call that came back with nothing still carried every turn so far, so
@@ -658,6 +660,7 @@ class Agent:
                     tool_call_records,
                     messages,
                     run_id,
+                    call_link,
                     prompt_type,
                     logged,
                 )
@@ -676,6 +679,7 @@ class Agent:
                     on_tool_start,
                     on_progress,
                     run_id,
+                    call_link,
                     progress_scope,
                     step + 1,
                     steps,
@@ -687,11 +691,18 @@ class Agent:
                     return ControllerResponse(answer="", tool_calls=tool_call_records)
                 continue
 
-            if await self._nudge_text_step(response, messages, ctx, run_id):
+            if await self._nudge_text_step(response, messages, ctx, run_id, call_link):
                 continue
 
             return await self._build_final_response(
-                response, source_urls, tool_call_records, messages, run_id, prompt_type, logged
+                response,
+                source_urls,
+                tool_call_records,
+                messages,
+                run_id,
+                call_link,
+                prompt_type,
+                logged,
             )
 
         logger.warning("Max steps reached without final answer")
@@ -701,6 +712,7 @@ class Agent:
             facts,
             tool_call_records,
             run_id,
+            call_link,
             prompt_type,
             logged,
             reason="the step limit was reached before an answer was written",
@@ -758,7 +770,7 @@ class Agent:
                 assert_never(unreachable)
 
     async def _prepare_text_shape(
-        self, response: LlmResponse, ctx: LoopContext, run_id: str
+        self, response: LlmResponse, ctx: LoopContext, run_id: str, call_link: CallLink
     ) -> LoopContext:
         """Template hook: enrich the loop context before the text-branch run-shape
         validators run.  The base is a no-op (collectors never extract); the
@@ -769,7 +781,12 @@ class Agent:
         return ctx
 
     async def _nudge_text_step(
-        self, response: LlmResponse, messages: list[dict], ctx: LoopContext, run_id: str
+        self,
+        response: LlmResponse,
+        messages: list[dict],
+        ctx: LoopContext,
+        run_id: str,
+        call_link: CallLink,
     ) -> bool:
         """Run the run-shape chain over a text-only response; apply a
         ``NudgeContinue`` (a chat run that just learned a skill and must narrate it) or a
@@ -782,7 +799,7 @@ class Agent:
         Returns True when the loop should ``continue`` (response + nudge appended, or the
         draft dropped and the record added to the system prompt), False to treat the text
         as the final answer."""
-        ctx = await self._prepare_text_shape(response, ctx, run_id)
+        ctx = await self._prepare_text_shape(response, ctx, run_id, call_link)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
                 messages.append(response.message.to_input_message())
@@ -896,8 +913,8 @@ class Agent:
         self,
         messages: list[dict],
         tools: list[dict],
-        run_id: str | None = None,
-        prompt_type: str | None = None,
+        call_link: CallLink,
+        prompt_type: str | None,
     ) -> LlmResponse:
         """Call the model, driving the response-validation chain on each output.
 
@@ -920,7 +937,9 @@ class Agent:
         max_retries = PennyConstants.RESPONSE_VALIDATION_RETRIES
         effective_tools = tools if tools else None
         retried: set[ConditionKey] = set()
-        response = await self._invoke_nondegenerate(messages, effective_tools, run_id, prompt_type)
+        response = await self._invoke_nondegenerate(
+            messages, effective_tools, call_link, prompt_type
+        )
 
         for attempt in range(max_retries):
             if response.has_tool_calls and effective_tools is not None:
@@ -945,7 +964,7 @@ class Agent:
                         # the form the chain validated.
                         return self._without_unoffered_calls(response, effective_tools)
                     response = await self._invoke_nondegenerate(
-                        messages, effective_tools, run_id, prompt_type
+                        messages, effective_tools, call_link, prompt_type
                     )
                 case Repair() | RejectToolCall() | NudgeContinue() | RedrawWithRecord() | Stop():
                     raise AssertionError("response validators produced an unexpected disposition")
@@ -990,7 +1009,7 @@ class Agent:
         self,
         messages: list[dict],
         effective_tools: list[dict] | None,
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
     ) -> LlmResponse:
         """Call the LLM, raising ``ModelCallAbortedError`` on connection/response errors.
@@ -1015,7 +1034,7 @@ class Agent:
                 tools=effective_tools,
                 agent_name=self.name,
                 prompt_type=prompt_type,
-                run_id=run_id,
+                call_link=call_link,
                 # The bound collection (collectors) / None (chat) is
                 # known from the first prompt — stamp it on every row so the run
                 # is identifiable at write time, not retroactively at cycle end.
@@ -1034,7 +1053,7 @@ class Agent:
         self,
         messages: list[dict],
         effective_tools: list[dict] | None,
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
     ) -> LlmResponse:
         """Call the model, discarding an UNUSABLE draw and re-rolling on the
@@ -1069,7 +1088,9 @@ class Agent:
         discarded: list[ConditionKey] = []
         for attempt in range(attempts):
             try:
-                response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+                response = await self._invoke_model(
+                    messages, effective_tools, call_link, prompt_type
+                )
             except LlmToolParseError as error:
                 # The backend refused to parse the draw as a tool call, so there is no
                 # response to inspect — the draw is unusable by the same rule, and a
@@ -1163,6 +1184,7 @@ class Agent:
         tool_call_records: list[ToolCallRecord],
         messages: list[dict],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary,
     ) -> ControllerResponse:
@@ -1176,7 +1198,7 @@ class Agent:
                 len(tool_call_records),
             )
             return await self._empty_content_fallback(
-                tool_call_records, messages, run_id, prompt_type, logged
+                tool_call_records, messages, run_id, call_link, prompt_type, logged
             )
 
         thinking = response.thinking or response.message.thinking
@@ -1193,7 +1215,7 @@ class Agent:
         if not content:
             logger.error("Model returned empty content after stripping think tags!")
             return await self._empty_content_fallback(
-                tool_call_records, messages, run_id, prompt_type, logged
+                tool_call_records, messages, run_id, call_link, prompt_type, logged
             )
 
         content = clean_malformed_urls(content)
@@ -1213,6 +1235,7 @@ class Agent:
         tool_call_records: list[ToolCallRecord],
         messages: list[dict],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary,
     ) -> ControllerResponse:
@@ -1240,6 +1263,7 @@ class Agent:
             facts,
             tool_call_records,
             run_id,
+            call_link,
             prompt_type,
             logged,
             reason="the model's final answer came back empty",
@@ -1280,6 +1304,7 @@ class Agent:
         facts: str,
         tool_call_records: list[ToolCallRecord],
         run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None = None,
         *,
@@ -1326,7 +1351,7 @@ class Agent:
         BEFORE it, one step removed from the reply it is actually about.
         """
         try:
-            content = await self._draw_narration(messages, run_id, prompt_type, logged)
+            content = await self._draw_narration(messages, call_link, prompt_type, logged)
         except ModelCallAbortedError:
             if run_id is not None:
                 self._record_turn_failure(run_id, reason)
@@ -1344,7 +1369,7 @@ class Agent:
     async def _draw_narration(
         self,
         messages: list[dict],
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
     ) -> str | None:
@@ -1364,7 +1389,7 @@ class Agent:
         what this row already has.  Left untouched on any path that logs no row
         (a caught parse failure, or the skip above) — the prior tail stays correct."""
         try:
-            response = await self._invoke_model(messages, None, run_id, prompt_type)
+            response = await self._invoke_model(messages, None, call_link, prompt_type)
         except LlmToolParseError:
             return None
         if logged is not None:
@@ -1467,8 +1492,9 @@ class Agent:
         """Build a fresh BrowseTool from config, updating self._browse_tool.
 
         Any extraction draw it makes links back to the enclosing run (and, when
-        dispatched as a tool call, that call) purely from ambient state (#2458) —
-        nothing is threaded through the tool's own construction any more."""
+        dispatched as a tool call, that call) via the ``call_link`` the dispatcher
+        hands its ``execute`` at call time (#2458) — nothing is threaded through
+        the tool's own construction any more."""
         max_calls = int(self.config.runtime.MAX_QUERIES)
         search_url = str(self.config.runtime.SEARCH_URL)
         tool = BrowseTool(
@@ -1503,9 +1529,10 @@ class Agent:
         response,
         called_tools: set[tuple[str, ...]],
         prior_records: list[ToolCallRecord],
-        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
-        on_progress: ProgressCallback | None = None,
-        run_id: str = "",
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None,
+        on_progress: ProgressCallback | None,
+        run_id: str,
+        call_link: CallLink,
         progress_scope: str = "foreground",
         step: int | None = None,
         max_steps: int | None = None,
@@ -1540,7 +1567,7 @@ class Agent:
 
         results = await asyncio.gather(
             *[
-                self._execute_single_tool(tool_call_id, name, args, reasoning)
+                self._execute_single_tool(tool_call_id, name, args, reasoning, call_link)
                 for tool_call_id, name, args, reasoning in pending
             ]
         )
@@ -1738,6 +1765,7 @@ class Agent:
         tool_name: str,
         arguments: dict,
         reasoning: str | None,
+        call_link: CallLink,
     ) -> tuple[ToolResult, ToolCallRecord, list[str]]:
         """Execute one tool call. Returns (result, record, source_urls).
 
@@ -1746,13 +1774,12 @@ class Agent:
         on ``result.success``.  ``record.failed`` is still computed here on the raw
         result, before any framing, so failure detection is unaffected.
 
-        Opens the ambient TOOL-CALL scope (#2458) around the whole dispatched call —
-        before args are even validated — so anything this one call makes, at any
-        depth (a micro-context draw), links back to THIS call's id with no parameter
-        threaded through ``execute``.  The agent loop dispatches a step's tool calls
-        CONCURRENTLY (``asyncio.gather`` wraps each bare coroutine in its own
-        ``Task``, which copies the ambient context at creation), so two calls in one
-        step never see each other's id — each gets its own independent snapshot.
+        Builds THIS dispatched call's own link (#2458) via
+        ``call_link.for_tool_call(tool_call_id)`` — before args are even validated —
+        so anything this one call makes, at any depth (a micro-context draw), links
+        back to this call's id with no ambient state anywhere.  The agent loop
+        dispatches a step's tool calls CONCURRENTLY (``asyncio.gather``), but each
+        gets its OWN link object here, so there is nothing to leak between them.
         """
         logger.info("Executing tool: %s", tool_name)
         if reasoning:
@@ -1760,13 +1787,13 @@ class Agent:
 
         record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
         tool_call = ToolCall(tool=tool_name, arguments=arguments, id=tool_call_id)
+        dispatched_link = call_link.for_tool_call(tool_call_id)
 
         # The executor always hands back a structured ToolResult — a tool's own
         # return, or a synthesised failed one for framework errors (not-found,
         # timeout, crash).  One branch, no string-prefix guessing; success and
         # mutated are authoritative.
-        with tool_call_scope(tool_call_id):
-            result = await self._tool_executor.execute(tool_call)
+        result = await self._tool_executor.execute(tool_call, dispatched_link)
         record.failed = not result.success
         record.mutated = result.mutated
         record.result = result.message
@@ -2011,7 +2038,7 @@ class BackgroundAgent(Agent):
     async def _draw_narration(
         self,
         messages: list[dict],
-        run_id: str | None,
+        call_link: CallLink,
         prompt_type: str | None,
         logged: _LoggedBoundary | None,
     ) -> str | None:

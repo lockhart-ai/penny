@@ -24,6 +24,7 @@ from typing import Any
 from pydantic import field_validator
 
 from penny.constants import ProgressEmoji
+from penny.llm.call_link import CallLink
 from penny.text_validity import is_blank
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
@@ -105,7 +106,7 @@ class ChooseTool(Tool):
     }
     args_model = ChooseArgs
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Pick one option uniformly at random and report it."""
         args = ChooseArgs(**kwargs)
         pick = random.choice(args.options)

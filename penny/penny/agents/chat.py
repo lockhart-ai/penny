@@ -7,7 +7,6 @@ Context is injected automatically via the Agent base class.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -23,8 +22,8 @@ from penny.conversation_machine import (
     conversation_prompt,
 )
 from penny.datetime_utils import current_datetime_line, user_timezone_name
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmError
-from penny.llm.run_context import run_scope
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.round_framing import discard_round_container
@@ -255,7 +254,7 @@ class ChatAgent(Agent):
     # ── Automatic skill extraction + narration (#1658) ──────────────────
 
     async def _prepare_text_shape(
-        self, response: LlmResponse, ctx: LoopContext, run_id: str
+        self, response: LlmResponse, ctx: LoopContext, run_id: str, call_link: CallLink
     ) -> LoopContext:
         """When the chat run emits final text, work out every RECORD this run has to
         narrate and hand the next one to the chat chain's narration validators.
@@ -274,13 +273,15 @@ class ChatAgent(Agent):
         have done with the third frame."""
         if run_id != self._extraction_run_id:
             self._extraction_run_id = run_id
-            self._pending_frames = await self._run_end_frames(ctx, run_id)
+            self._pending_frames = await self._run_end_frames(ctx, run_id, call_link)
         if not self._pending_frames:
             return ctx
         field, frame = self._pending_frames.pop(0)
         return ctx.model_copy(update={field: frame})
 
-    async def _run_end_frames(self, ctx: LoopContext, run_id: str) -> list[tuple[str, str]]:
+    async def _run_end_frames(
+        self, ctx: LoopContext, run_id: str, call_link: CallLink
+    ) -> list[tuple[str, str]]:
         """Every record this run has to narrate, as ``(ctx field, rendered frame)``, in the
         order they are narrated — the table of contents for the run-end prep above.
 
@@ -291,7 +292,9 @@ class ChatAgent(Agent):
         candidates = [
             (
                 "learned_skill_frame",
-                await self._extract_and_frame_skill(run_id, self._turn_state, self._turn_framing),
+                await self._extract_and_frame_skill(
+                    run_id, call_link, self._turn_state, self._turn_framing
+                ),
             ),
             ("applied_configuration_frame", self._applied_configuration_frame(ctx, run_id)),
             ("writes_landed_frame", self._writes_landed_frame(ctx, run_id)),
@@ -372,6 +375,7 @@ class ChatAgent(Agent):
     async def _extract_and_frame_skill(
         self,
         run_id: str,
+        call_link: CallLink,
         state: ConversationState | None,
         framing: RoundFraming | None,
     ) -> str | None:
@@ -396,7 +400,9 @@ class ChatAgent(Agent):
         ``framing`` is the round's entry framing (#1868), handed on the same way: the
         interface was settled before the round ran, so extraction reads it rather than
         drawing the routine's name a second time."""
-        result = await self._skill_extractor.extract(run_id, state=state, framing=framing)
+        result = await self._skill_extractor.extract(
+            run_id, call_link=call_link, state=state, framing=framing
+        )
         self._extraction_result = result
         match result:
             case SkillExtracted(skill=skill, origin_message=origin):
@@ -419,10 +425,11 @@ class ChatAgent(Agent):
         self,
         content: str,
         sender: str,
+        *,
+        call_link: CallLink,
         images: list[str] | None = None,
         page_context: PageContext | None = None,
         quoted_text: str | None = None,
-        run_id: str | None = None,
         state: ConversationState | None = None,
         framing: RoundFraming | None = None,
         shortfall: RoundShortfall | None = None,
@@ -433,15 +440,13 @@ class ChatAgent(Agent):
 
         Builds context, processes images, runs agentic loop.
 
-        ``run_id`` is the turn's run id, minted by the channel so the same id
-        both stamps every promptlog row and is recorded on any collection the
-        turn creates (``created_by_run_id``, #1566) — the channel later links the
-        spawning message to that run.  Passed as an explicit parameter down the
-        call chain for writes/mutations; when a direct caller omits it, one is
-        minted here.  A top-level run starter in its own right (#2458) — opens the
-        ambient scope with this id, which collapses to a no-op when the channel
-        already opened one with the same id, and does real work for a direct
-        caller (a test, say) that supplies none.
+        ``call_link`` (#2458) is REQUIRED — a top-level run starter in its own
+        right, built by the channel (``CallLink.top(run_id)``) before the state
+        classifier even draws, so the classifier, this turn, and run-end skill
+        extraction all link back to the SAME run with no ambient state and no
+        fallback.  ``run_id`` (for DB/mutation purposes — stamped on every
+        promptlog row, recorded on any collection the turn creates via
+        ``created_by_run_id``, #1566) is read off it.
 
         ``state`` is the conversation machine's decision about this turn, made before
         it began (``None`` when nothing decided it — idle).  It picks the turn's one
@@ -465,73 +470,71 @@ class ChatAgent(Agent):
         self._extraction_result = None
         self._turn_state = state
         self._turn_framing = framing
-        run_id = run_id or uuid.uuid4().hex
-        with run_scope(run_id):
-            try:
-                content, has_images = await self._process_images(content, images)
-                self._current_message = content
-                history = self.get_history(sender, quoted_text=quoted_text)
+        run_id = call_link.run_id
+        try:
+            content, has_images = await self._process_images(content, images, call_link)
+            self._current_message = content
+            history = self.get_history(sender, quoted_text=quoted_text)
 
-                if has_images:
-                    logger.info("Handling vision message from %s", sender)
-                    self._install_tools([])
-                    system_prompt = await self._build_system_prompt(
-                        sender, instructions=Prompt.VISION_RESPONSE_PROMPT
-                    )
-                    return await self.run(
-                        prompt=content,
-                        history=history,
-                        max_steps=PennyConstants.VISION_MAX_STEPS,
-                        system_prompt=system_prompt,
-                        run_id=run_id,
-                        on_progress=on_progress,
-                        progress_scope="foreground",
-                        prompt_type=ChatPromptType.VISION_MESSAGE,
-                    )
-
-                logger.info("Handling message from %s (conversation mode)", sender)
-                unconfigurable = await self._unconfigurable_round(
-                    state, framing, run_id, content, history
-                )
-                if unconfigurable is not None:
-                    return unconfigurable
-                self._install_tools(self.get_tools(run_id=run_id))
-                # The machine decided this turn's state before the turn began, so the
-                # prompt carries THAT state's single instruction (#1706).  ``None`` —
-                # no machine wired, or a state with no instruction yet — composes the
-                # unchanged default.
+            if has_images:
+                logger.info("Handling vision message from %s", sender)
+                self._install_tools([])
                 system_prompt = await self._build_system_prompt(
-                    sender,
-                    instructions=(
-                        conversation_prompt(state, framing, shortfall)
-                        if state is not None
-                        else None
-                    ),
+                    sender, instructions=Prompt.VISION_RESPONSE_PROMPT
                 )
-                response = await self.run(
+                return await self.run(
                     prompt=content,
-                    max_steps=self.get_max_steps(),
                     history=history,
+                    max_steps=PennyConstants.VISION_MAX_STEPS,
+                    call_link=call_link,
                     system_prompt=system_prompt,
-                    run_id=run_id,
-                    on_tool_start=on_tool_start,
                     on_progress=on_progress,
                     progress_scope="foreground",
-                    prompt_type=ChatPromptType.USER_MESSAGE,
+                    prompt_type=ChatPromptType.VISION_MESSAGE,
                 )
-                return await self._enforce_learn_terminal(state, response, run_id)
-            finally:
-                self._current_user = None
-                self._pending_page_context = None
-                self._current_message = None
-                self._turn_state = None
-                self._turn_framing = None
+
+            logger.info("Handling message from %s (conversation mode)", sender)
+            unconfigurable = await self._unconfigurable_round(
+                state, framing, run_id, call_link, content, history
+            )
+            if unconfigurable is not None:
+                return unconfigurable
+            self._install_tools(self.get_tools(run_id=run_id))
+            # The machine decided this turn's state before the turn began, so the
+            # prompt carries THAT state's single instruction (#1706).  ``None`` —
+            # no machine wired, or a state with no instruction yet — composes the
+            # unchanged default.
+            system_prompt = await self._build_system_prompt(
+                sender,
+                instructions=(
+                    conversation_prompt(state, framing, shortfall) if state is not None else None
+                ),
+            )
+            response = await self.run(
+                prompt=content,
+                max_steps=self.get_max_steps(),
+                call_link=call_link,
+                history=history,
+                system_prompt=system_prompt,
+                on_tool_start=on_tool_start,
+                on_progress=on_progress,
+                progress_scope="foreground",
+                prompt_type=ChatPromptType.USER_MESSAGE,
+            )
+            return await self._enforce_learn_terminal(state, response, run_id, call_link)
+        finally:
+            self._current_user = None
+            self._pending_page_context = None
+            self._current_message = None
+            self._turn_state = None
+            self._turn_framing = None
 
     async def _unconfigurable_round(
         self,
         state: ConversationState | None,
         framing: RoundFraming | None,
         run_id: str,
+        call_link: CallLink,
         content: str,
         history: list[tuple[str, str]] | None,
     ) -> ControllerResponse | None:
@@ -574,12 +577,17 @@ class ChatAgent(Agent):
             facts,
             [],
             run_id,
+            call_link,
             ChatPromptType.USER_MESSAGE,
             reason="the turn had no routine to configure",
         )
 
     async def _enforce_learn_terminal(
-        self, state: ConversationState | None, response: ControllerResponse, run_id: str
+        self,
+        state: ConversationState | None,
+        response: ControllerResponse,
+        run_id: str,
+        call_link: CallLink,
     ) -> ControllerResponse:
         """A learn turn that produced no skill FAILED — say so instead of replying
         (#1839).
@@ -626,6 +634,7 @@ class ChatAgent(Agent):
             facts,
             response.tool_calls,
             run_id,
+            call_link,
             ChatPromptType.USER_MESSAGE,
             reason="the turn captured no routine to learn",
         )
@@ -791,13 +800,20 @@ class ChatAgent(Agent):
 
     # ── Vision ────────────────────────────────────────────────────────────
 
-    async def caption_image(self, image_b64: str) -> str:
+    async def caption_image(self, image_b64: str, call_link: CallLink) -> str:
         """Caption an image using the vision model.
 
         The channel layer rejects image messages before they reach this
         method when ``LLM_VISION_MODEL`` is unset, so the client is
         guaranteed to exist by the time we get here. Guard explicitly so
         the type narrows without an assert.
+
+        ``call_link`` (#2458) is REQUIRED — the caller's own turn link when
+        called from inside a turn (``_process_images``, its only production
+        caller); a direct caller with no turn in progress supplies its own
+        (``CallLink.new_top()``). This caption is its own ledger-visible run —
+        ``call_link.child()`` mints its own run id, linking back to whatever
+        ``call_link`` names as parent.
         """
         if self._vision_model_client is None:
             raise RuntimeError(
@@ -811,18 +827,20 @@ class ChatAgent(Agent):
             messages=messages,
             agent_name=self.name,
             prompt_type=ChatPromptType.VISION_CAPTION,
-            run_id=uuid.uuid4().hex,
+            call_link=call_link.child(),
         )
         return response.content.strip()
 
     # ── Image processing ──────────────────────────────────────────────────
 
-    async def _process_images(self, content: str, images: list[str] | None) -> tuple[str, bool]:
+    async def _process_images(
+        self, content: str, images: list[str] | None, call_link: CallLink
+    ) -> tuple[str, bool]:
         """Caption images with vision model and build combined text prompt."""
         if not images:
             return content, False
 
-        captions = [await self.caption_image(img) for img in images]
+        captions = [await self.caption_image(img, call_link) for img in images]
         caption = ", ".join(captions)
         if content:
             content = Prompt.VISION_IMAGE_CONTEXT.format(user_text=content, caption=caption)

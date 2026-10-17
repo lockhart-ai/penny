@@ -18,8 +18,8 @@ from typing import Any, cast
 import pytest
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
 from penny.llm.models import LlmMessage, LlmResponse
-from penny.llm.run_context import run_scope
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     MESSAGE_TAG,
@@ -46,7 +46,7 @@ class _Model:
 async def _compose(*draws: str) -> tuple[str | None, _Model]:
     model = _Model(*draws)
     drawn = await MicroContext(cast(Any, model)).compose_notification(
-        _DOCUMENT, run_target="tide-times"
+        _DOCUMENT, call_link=CallLink.new_top(), run_target="tide-times"
     )
     return drawn, model
 
@@ -117,22 +117,22 @@ async def test_the_document_is_the_whole_user_turn_and_the_draw_is_attributed():
 
 
 @pytest.mark.asyncio
-async def test_the_draw_links_back_to_the_cycle_from_ambient_state():
-    """The notifier's draw links back to the collector cycle it closes purely from
-    AMBIENT state (#2458) — ``compose_notification`` takes no ``parent_run_id``
-    parameter at all; the linkage is whatever ``run_scope`` the cycle opened
-    (``agents/collector.py::_execute_cycle``, which stays open across the notifier
-    precisely so this draw can still see it after the main loop has returned)."""
+async def test_the_draw_links_back_to_the_cycle_from_its_explicit_link():
+    """The notifier's draw links back to the collector cycle it closes via the
+    EXPLICIT ``call_link`` the cycle hands down (#2458, no ambient state) —
+    ``compose_notification`` takes no bare ``parent_run_id`` parameter; the
+    linkage is whatever link ``agents/collector.py::_execute_cycle`` minted,
+    which stays available across the notifier precisely because it is passed
+    as a value, not an ambient scope that could close early."""
     mock = MockLlmClient()
     mock.set_response_handler(
         lambda request, count: LlmResponse(
             message=LlmMessage(role="assistant", content=f"{MESSAGE_TAG} Hey! 06:12 now.")
         )
     )
-    with run_scope("cycle-run-1"):
-        drawn = await MicroContext(cast(Any, mock)).compose_notification(
-            _DOCUMENT, run_target="tide-times"
-        )
+    drawn = await MicroContext(cast(Any, mock)).compose_notification(
+        _DOCUMENT, call_link=CallLink.top("cycle-run-1"), run_target="tide-times"
+    )
     assert drawn == "Hey! 06:12 now."
     assert len(mock.requests) == 1
     assert mock.requests[0]["parent_run_id"] == "cycle-run-1"
