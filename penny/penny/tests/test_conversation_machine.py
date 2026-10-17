@@ -1585,25 +1585,27 @@ def test_the_applied_configuration_narration_whole_render():
     """The frame a turn that CONFIGURED the round's routine is handed, verbatim (#1869) —
     pinned so an edit is a visible diff, like every other model-facing surface.
 
-    It is the skill-learned frame's sibling one step further along: that one carries what
-    a run LEARNED, this one what it SET RUNNING, and this one exists because the turn no
-    longer supplies the routine or the values it is pointed at.  So its last sentence is
-    the honesty clause — say only what is above — since the record is now the only place
-    those facts are, and a reply going beyond it would be stating a configuration the turn
-    never made.
+    Since #2473 it is delivered with the tool step the moment ``collection_configure``
+    lands, not as a message after a draft, so it reads as a plain statement of what the
+    store now holds rather than an instruction to reply — the writes-landed record's
+    shape (below), not the skill-learned frame's imperative one.  Its last sentence is
+    still the honesty clause — say only what is above — since the record is the only
+    place those facts are, and a reply going beyond it would be stating a configuration
+    the turn never made.
 
     Since #1946 the record also carries, on any line this turn MOVED, what that line used
     to say, so the frame names that shape: a turn asked to FIX a running job is asked
     about two states, and the row it reads holds only the one that won."""
     assert Prompt.CONFIGURATION_APPLIED_NARRATION == (
-        "The job is now set up, and here is exactly what was configured:\n\n"
+        "### What this turn configured\n"
+        "Read back from the store after this turn's last call:\n\n"
         "{configuration}\n\n"
-        "Reply to the user now. Tell them in your own words what is running: what it "
-        "watches, how often it runs, when it stops if it stops, and whether they will "
-        'hear from it. A line reading "was … → now …" is one this turn changed: the '
-        "first part is what it used to be and the second is what it is now, so if you "
-        "tell them what changed, copy both from there. Say only what is above — "
-        "anything not there was not set."
+        "That is the store's own record of what is running: what it watches, how often "
+        "it runs, when it stops if it stops, and whether you will hear from it. When "
+        "your reply says what is running, take it from there. A line reading "
+        '"was … → now …" is one this turn changed: the first part is what it used to be '
+        "and the second is what it is now, so if you say what changed, copy both from "
+        "there. Say only what is above — anything not there was not set."
     )
 
 
