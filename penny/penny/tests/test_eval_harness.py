@@ -870,7 +870,7 @@ def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name.endswith(_DRIVER_SUFFIX)
     ]
-    assert len(drivers) == 8, f"the drivers this pin reads: {[node.name for node in drivers]}"
+    assert len(drivers) == 9, f"the drivers this pin reads: {[node.name for node in drivers]}"
     for driver in drivers:
         missing = _DRIVER_GUARDS - _names_called(driver)
         assert not missing, f"{driver.name} never calls {sorted(missing)}"
