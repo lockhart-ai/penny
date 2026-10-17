@@ -38,6 +38,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlmodel import Session, select
 
+from penny.config_params import RuntimeParams
 from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.memory.objects import render_tool_call
@@ -268,6 +269,7 @@ class _OverlapProbe:
     """
 
     def __init__(self, replies: dict[str, str]) -> None:
+        self.runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
         self._replies = replies  # page marker → its tagged reply, in issue order
         self._markers = list(replies)
         self._all_in_flight = asyncio.Event()
@@ -915,6 +917,8 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
     finished: list[str] = []
 
     class _RaisesOnTheFirstPage:
+        runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
+
         async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
             content = messages[-1].get("content", "")
             if _MARKER_1 in content:
@@ -957,6 +961,8 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
     db = _make_db(tmp_path)
 
     class _StallsOnTheSecondPage:
+        runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
+
         async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
             content = messages[-1].get("content", "")
             if _MARKER_1 in content:
@@ -1313,6 +1319,39 @@ async def test_micro_context_poison_is_discarded_and_rerolled():
     assert result.outcome == MicroExtractOutcome.POISON_REROLL_FAILED
     assert result.value == ""
     assert len(model.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_micro_context_cut_draw_gets_one_thinking_off_last_draw():
+    """A draw the token budget cut (``finish_reason="length"``, empty content)
+    gets ONE more call on the same messages with thinking disabled and the same
+    budget (#2476), and that response answers the draw in place of the cut one —
+    the parse then reads it like any other draw.  Both calls carry the call kind's
+    own token budget, resolved off the client's ``runtime`` by ``agent_name``."""
+    model = MockLlmClient(
+        runtime=RuntimeParams(env_overrides={"TOKEN_BUDGET_BROWSE_EXTRACT": 1234})
+    )
+    model.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content="" if count == 1 else _TAGGED_VALUE,
+            ),
+            finish_reason="length" if count == 1 else None,
+        )
+    )
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert result.value == _EXTRACTED_VALUE
+    assert len(model.requests) == 2
+    # Both calls carried the draw's kind budget, resolved from this client's runtime.
+    assert model.requests[0]["token_budget"] == 1234
+    assert model.requests[1]["token_budget"] == 1234
+    # The retry is the thinking-off last draw; the first draw keeps the default.
+    assert model.requests[0]["thinking_enabled"] is True
+    assert model.requests[1]["thinking_enabled"] is False
 
 
 def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):

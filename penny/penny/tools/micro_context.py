@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.llm.call_link import CallLink
 from penny.llm.refusal import is_refusal
@@ -1371,9 +1372,25 @@ class MicroContext:
         into this draw's logged ``parent_tool_call_id``, so a draw made from inside
         a dispatched tool call links to that call, while a draw made from inside
         ANOTHER draw (never itself positioned inside a tool call) correctly gets
-        ``parent_tool_call_id=None``."""
+        ``parent_tool_call_id=None``.
+
+        Every call carries its kind's own token budget (#2476), resolved off the
+        shared client's ``runtime`` by ``agent_name`` — a client built with no
+        runtime at all (a test, a one-off script) falls back to a default-only
+        lookup, the same chain every other runtime param reads.  A draw the cap cut
+        (``finish_reason="length"``) gets ONE more call on the same messages with
+        thinking disabled — the budget spent its reasoning tokens, so the last
+        draw is asked to answer with what it has — and that response takes the cut
+        one's place; the poison screen and the parse then read it like any other
+        draw.  At most once per draw: a retry that is itself cut is used as-is, an
+        honest escape rather than an unbounded loop."""
         messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
         draw_link = call_link.child()
+        runtime = self._model_client.runtime
+        token_budget = token_budget_for(
+            runtime if runtime is not None else RuntimeParams(), agent_name
+        )
+        retried_cut = False
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
                 messages=messages,
@@ -1381,7 +1398,23 @@ class MicroContext:
                 prompt_type=prompt_type,
                 call_link=draw_link,
                 run_target=run_target,
+                token_budget=token_budget,
             )
+            if response.finish_reason == "length" and not retried_cut:
+                retried_cut = True
+                logger.warning(
+                    "%s draw was cut at its token budget — one more draw with thinking off",
+                    agent_name,
+                )
+                response = await self._model_client.chat(
+                    messages=messages,
+                    agent_name=agent_name,
+                    prompt_type=prompt_type,
+                    call_link=draw_link,
+                    run_target=run_target,
+                    token_budget=token_budget,
+                    thinking_enabled=False,
+                )
             text = response.content or ""
             if not self._is_poison(text):
                 return text
