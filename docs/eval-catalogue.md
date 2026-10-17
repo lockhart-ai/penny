@@ -14,10 +14,10 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | Answering from the web | 3 |
 | Standing jobs | 9 |
 | Notifications | 3 |
-| Background collectors | 5 |
+| Background collectors | 6 |
 | Reading a page | 5 |
 | Chat tools | 6 |
-| Total | 97 |
+| Total | 98 |
 
 ## Conversation machine
 
@@ -134,6 +134,7 @@ A case declares its area and, where it covers one, the edge of the conversation 
 
 | Case | Behaviour | First wording | Edge |
 |---|---|---|---|
+| `end-to-end-new-page` | In a job stood up from a routine Penny already knows, when a cold ask names a different page, the job's cycles record that page's readings and never the page the routine was taught on. | can you watch this listing for me and let me know when the price changes? https://ridgelinegear.example/cedar-ridge-camp-table — every hour until sunday night |  |
 | `end-to-end-teach-then-accept` | In a job taught in chat, when the user asks for a watch, walks Penny through it once and accepts her offer with terms, Penny stands up a job on those terms whose cycles keep the reading she was taught, stay quiet while the page holds, and replace the reading and tell the user when it moves. | can you watch this for me and let me know when the price changes? https://trailgear.example/juniper-trail-stove |  |
 | `honesty-writes-nothing-when-every-read-fails` | In a headline-collecting collector, when every page it is pointed at fails to read, Penny files nothing and closes the cycle having changed nothing — she writes no entry out of a source she never read. | the headlines on the page and the link to each one |  |
 | `watch-stays-quiet-when-the-reading-has-not-moved` | In a price-watch collector, when the page's price has not changed since she last recorded it, Penny writes nothing and says nothing. | the current price |  |
