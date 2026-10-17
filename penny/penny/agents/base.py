@@ -1780,6 +1780,14 @@ class Agent:
         back to this call's id with no ambient state anywhere.  The agent loop
         dispatches a step's tool calls CONCURRENTLY (``asyncio.gather``), but each
         gets its OWN link object here, so there is nothing to leak between them.
+
+        Publishes ``tool_started``/``tool_finished`` (#2439) bracketing the
+        executor call — ``(call_link.run_id, tool_call_id)`` is an exact identity
+        (unlike a model call's), so a live Prompts tab never has to guess which
+        running row a finish belongs to.  ``call_link.run_id`` is the run
+        DISPATCHING this call, not this call's own position — exactly what a
+        logged step of that run already carries, so the addon anchors a running
+        tool the same way it anchors any draw this tool call goes on to make.
         """
         logger.info("Executing tool: %s", tool_name)
         if reasoning:
@@ -1788,6 +1796,10 @@ class Agent:
         record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
         tool_call = ToolCall(tool=tool_name, arguments=arguments, id=tool_call_id)
         dispatched_link = call_link.for_tool_call(tool_call_id)
+        status = Tool.format_status(tool_name, arguments)
+        self.db.messages.publish_tool_started(
+            run_id=call_link.run_id, tool_call_id=tool_call_id, tool_name=tool_name, status=status
+        )
 
         # The executor always hands back a structured ToolResult — a tool's own
         # return, or a synthesised failed one for framework errors (not-found,
@@ -1809,6 +1821,13 @@ class Agent:
             result.success,
             result.mutated,
             result.message[:200],
+        )
+        self.db.messages.publish_tool_finished(
+            run_id=call_link.run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            success=result.success,
         )
         return result, record, result.source_urls
 

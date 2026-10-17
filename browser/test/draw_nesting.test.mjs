@@ -12,10 +12,16 @@ import {
   byTimestamp,
   dedupeDraws,
   directChildNodes,
+  dropRunningCalls,
+  dropRunningTools,
   expandedIdsAfterRebuild,
+  fetchedRunIdsFrom,
   isAnchored,
   moveToFront,
   rowStartedAt,
+  runningCallNodesFor,
+  runningRunIdClosure,
+  runningToolNodesFor,
   runTimingWindow,
   toolCallIds,
 } from "../dist/test/draw_nesting.mjs";
@@ -241,4 +247,95 @@ test("runTimingWindow takes the earliest start and the latest end across every r
   assert.equal(window.startedAt, "2026-01-01T00:00:00.000Z"); // the OWN call's start (T0)
   assert.equal(window.endedAt, "2026-01-01T00:03:53.010Z"); // the DRAW's own end
   assert.equal(window.wallDurationMs, 233_010);
+});
+
+// --- Live step markers (#2439) ---
+
+function runningCall(overrides = {}) {
+  return {
+    runId: "draw1",
+    parentRunId: "run1",
+    parentToolCallId: null,
+    agentName: "browse-extract",
+    promptType: "micro_context",
+    model: "m",
+    runTarget: null,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function runningTool(overrides = {}) {
+  return {
+    runId: "run1",
+    toolCallId: "b0",
+    toolName: "browse",
+    status: "Reading example.com",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("runningCallNodesFor finds a call parented on the container, anchored by its tool call", () => {
+  const steps = [withToolCall("b0")];
+  const nodes = runningCallNodesFor("run1", steps, [runningCall({ parentToolCallId: "b0" })]);
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].kind, "call");
+  assert.equal(nodes[0].stepIndex, 0);
+});
+
+test("runningCallNodesFor is unanchored (renders under the run as a whole) with no tool call parent", () => {
+  const nodes = runningCallNodesFor("run1", [withToolCall("b0")], [runningCall({ parentToolCallId: null })]);
+  assert.equal(nodes[0].stepIndex, null);
+});
+
+test("runningCallNodesFor ignores a running call parented on a DIFFERENT run", () => {
+  const nodes = runningCallNodesFor("run1", [], [runningCall({ parentRunId: "some-other-run" })]);
+  assert.deepEqual(nodes, []);
+});
+
+test("runningToolNodesFor anchors a dispatched tool call to the step that dispatched it", () => {
+  const steps = [withToolCall("a0"), withToolCall("b0")];
+  const nodes = runningToolNodesFor("run1", steps, [runningTool({ toolCallId: "b0" })]);
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].kind, "tool");
+  assert.equal(nodes[0].stepIndex, 1);
+});
+
+test("runningRunIdClosure is just the root when nothing nests under it", () => {
+  const closure = runningRunIdClosure("run1", [runningCall({ runId: "draw1", parentRunId: "some-other-run" })]);
+  assert.deepEqual([...closure], ["run1"]);
+});
+
+test("runningRunIdClosure reaches a draw nested two levels deep under the root", () => {
+  const calls = [
+    runningCall({ runId: "draw1", parentRunId: "run1" }),
+    runningCall({ runId: "draw2", parentRunId: "draw1" }),
+  ];
+  const closure = runningRunIdClosure("run1", calls);
+  assert.deepEqual([...closure].sort(), ["draw1", "draw2", "run1"]);
+});
+
+test("dropRunningCalls filters by runId, leaving everything else", () => {
+  const calls = [runningCall({ runId: "draw1" }), runningCall({ runId: "draw2" })];
+  assert.deepEqual(
+    dropRunningCalls(calls, new Set(["draw1"])).map((c) => c.runId),
+    ["draw2"],
+  );
+});
+
+test("dropRunningTools filters by runId, leaving everything else", () => {
+  const tools = [runningTool({ runId: "run1" }), runningTool({ runId: "run2" })];
+  assert.deepEqual(
+    dropRunningTools(tools, new Set(["run1"])).map((t) => t.runId),
+    ["run2"],
+  );
+});
+
+test("fetchedRunIdsFrom collects a run's own id and every child draw's", () => {
+  const runs = [
+    { run_id: "run1", child_draws: [prompt({ id: 1, run_id: "draw1" }), prompt({ id: 2, run_id: "draw2" })] },
+    { run_id: "run2" },
+  ];
+  assert.deepEqual([...fetchedRunIdsFrom(runs)].sort(), ["draw1", "draw2", "run1", "run2"]);
 });

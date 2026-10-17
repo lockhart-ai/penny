@@ -33,6 +33,56 @@ _MONOSPACE_RE = re.compile(r"`(.+?)`")
 _TILDE_OPERATOR = "\u223c"
 
 
+class CallStarted(BaseModel):
+    """A model call about to be made (#2439) — published BEFORE any ``promptlog``
+    row exists for it, from ``LlmClient.chat()`` itself (the one chokepoint every
+    caller shares: the agent loop, a micro-context's own draw via
+    ``CallLink.child()``, the conversation-machine classifier, round framing,
+    skill extraction).  Carries exactly the identity the eventual logged row
+    will carry (``run_id``/``parent_run_id``/``parent_tool_call_id``), so a live
+    Prompts tab can show a running row in the same place the logged draw will
+    land, and later match the two by ``run_id`` — a ``child()`` draw mints a
+    fresh one every time (unique, trivial match); a run's own sequential steps
+    share one, but the agent loop awaits each call before starting the next, so
+    at most one is ever outstanding for a given ``run_id`` (unambiguous FIFO)."""
+
+    run_id: str
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    agent_name: str | None
+    prompt_type: str | None
+    model: str
+    run_target: str | None
+    started_at: datetime
+
+
+class ToolStarted(BaseModel):
+    """A dispatched tool call about to execute (#2439) — published from the
+    dispatcher (``Agent._execute_single_tool``) before ``ToolExecutor.execute``
+    runs.  ``(run_id, tool_call_id)`` is an exact identity (unlike a model
+    call's), so a running tool entry never needs FIFO matching."""
+
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    started_at: datetime
+
+
+class ToolFinished(BaseModel):
+    """A dispatched tool call that just finished (#2439) — published right
+    after ``ToolExecutor.execute`` returns, from the same site as
+    ``ToolStarted``.  ``success`` is the tool's own structural result, so the
+    addon can flip a running row to a checkmark/x immediately, ahead of the
+    authoritative logged record a later call's ``messages`` will carry."""
+
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    success: bool
+
+
 class PromptPerf(NamedTuple):
     """Aggregate wall time + token usage across logged prompts.
 
@@ -194,6 +244,13 @@ class MessageStore:
         # only the one built last silently taking over the other's.
         self._prompt_logged_listeners: list[Callable[[dict], None]] = []
         self._run_outcome_set_listeners: list[Callable[[str, str, str], None]] = []
+        # Live step markers (#2439) — published ahead of any DB row, from
+        # LlmClient.chat() and the tool dispatcher, so a connected addon can show
+        # a running step before the logged record exists.  No channel subscribes
+        # these by default (browser does; iOS doesn't yet — no live renderer).
+        self._call_started_listeners: list[Callable[[CallStarted], None]] = []
+        self._tool_started_listeners: list[Callable[[ToolStarted], None]] = []
+        self._tool_finished_listeners: list[Callable[[ToolFinished], None]] = []
 
     def subscribe_prompt_logged(self, listener: Callable[[dict], None]) -> None:
         """Add a listener notified after every logged prompt that carries a run id."""
@@ -202,6 +259,18 @@ class MessageStore:
     def subscribe_run_outcome_set(self, listener: Callable[[str, str, str], None]) -> None:
         """Add a listener notified whenever a run's outcome is set."""
         self._run_outcome_set_listeners.append(listener)
+
+    def subscribe_call_started(self, listener: Callable[[CallStarted], None]) -> None:
+        """Add a listener notified just before every model call is made (#2439)."""
+        self._call_started_listeners.append(listener)
+
+    def subscribe_tool_started(self, listener: Callable[[ToolStarted], None]) -> None:
+        """Add a listener notified just before every dispatched tool call runs (#2439)."""
+        self._tool_started_listeners.append(listener)
+
+    def subscribe_tool_finished(self, listener: Callable[[ToolFinished], None]) -> None:
+        """Add a listener notified right after every dispatched tool call finishes (#2439)."""
+        self._tool_finished_listeners.append(listener)
 
     def _publish_prompt_logged(self, payload: dict) -> None:
         """Notify every subscriber; one raising must not stop the rest, or the
@@ -219,6 +288,85 @@ class MessageStore:
                 listener(run_id, outcome, reason)
             except Exception:
                 logger.exception("A run-outcome-set listener failed")
+
+    def publish_call_started(
+        self,
+        *,
+        run_id: str,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        agent_name: str | None,
+        prompt_type: str | None,
+        model: str,
+        run_target: str | None,
+    ) -> None:
+        """Notify every subscriber that a model call is about to be made (#2439).
+
+        Called from ``LlmClient.chat()`` BEFORE the network request — the one
+        chokepoint every caller (the agent loop, a micro-context draw, the
+        classifier, round framing, skill extraction) shares — so a connected
+        addon can show a running row before any ``promptlog`` row exists for
+        this call.  A no-op with nobody subscribed (no connected browser), the
+        same guard every publish here uses."""
+        if not self._call_started_listeners:
+            return
+        event = CallStarted(
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            agent_name=agent_name,
+            prompt_type=prompt_type,
+            model=model,
+            run_target=run_target,
+            started_at=self._clock.now(),
+        )
+        for listener in tuple(self._call_started_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("A call-started listener failed")
+
+    def publish_tool_started(
+        self, *, run_id: str, tool_call_id: str, tool_name: str, status: str
+    ) -> None:
+        """Notify every subscriber that a dispatched tool call is about to run
+        (#2439).  Called from the dispatcher (``Agent._execute_single_tool``)
+        before ``ToolExecutor.execute`` — a no-op with nobody subscribed."""
+        if not self._tool_started_listeners:
+            return
+        event = ToolStarted(
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            started_at=self._clock.now(),
+        )
+        for listener in tuple(self._tool_started_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("A tool-started listener failed")
+
+    def publish_tool_finished(
+        self, *, run_id: str, tool_call_id: str, tool_name: str, status: str, success: bool
+    ) -> None:
+        """Notify every subscriber that a dispatched tool call just finished
+        (#2439).  Called from the same dispatcher site, right after
+        ``ToolExecutor.execute`` returns — a no-op with nobody subscribed."""
+        if not self._tool_finished_listeners:
+            return
+        event = ToolFinished(
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            success=success,
+        )
+        for listener in tuple(self._tool_finished_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("A tool-finished listener failed")
 
     def _session(self) -> Session:
         return Session(self.engine)

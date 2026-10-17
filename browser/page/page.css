@@ -868,6 +868,22 @@ h1 {
   white-space: nowrap;
 }
 
+/* A live step marker (#2439) — a model call or tool call pushed as running,
+   ahead of any logged record.  Never expandable (no detail exists yet), so
+   its header keeps the default cursor rather than `.prompt-header`'s pointer. */
+.prompt-running {
+  background: var(--bg-tertiary);
+  opacity: 0.85;
+}
+
+.prompt-running .prompt-header {
+  cursor: default;
+}
+
+.prompt-running .prompt-tools {
+  color: var(--text-muted);
+}
+
 /* --- Prompt detail sections --- */
 
 .prompt-detail {

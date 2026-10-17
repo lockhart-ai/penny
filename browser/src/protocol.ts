@@ -144,7 +144,10 @@ export type WsIncomingType =
   | "memory_changed"
   | "collection_trigger_result"
   | "run_detail_response"
-  | "memory_save_error";
+  | "memory_save_error"
+  | "call_started"
+  | "tool_started"
+  | "tool_finished";
 export const WsIncomingType = {
   Message: "message",
   Typing: "typing",
@@ -164,6 +167,9 @@ export const WsIncomingType = {
   CollectionTriggerResult: "collection_trigger_result",
   RunDetailResponse: "run_detail_response",
   MemorySaveError: "memory_save_error",
+  CallStarted: "call_started",
+  ToolStarted: "tool_started",
+  ToolFinished: "tool_finished",
 } as const satisfies Record<string, WsIncomingType>;
 
 export interface WsIncomingMessagePayload {
@@ -442,6 +448,42 @@ export interface WsIncomingMemorySaveErrorPayload {
   message: string;
 }
 
+/** A model call is about to be made (#2439) — no `promptlog` row exists for it
+ * yet.  Carries the same identity the eventual logged row will carry, so a
+ * live Prompts tab can show a running step and later match it by `run_id`. */
+export interface WsIncomingCallStartedPayload {
+  type: typeof WsIncomingType.CallStarted;
+  run_id: string;
+  parent_run_id: string | null;
+  parent_tool_call_id: string | null;
+  agent_name: string | null;
+  prompt_type: string | null;
+  model: string;
+  run_target: string | null;
+  started_at: string;
+}
+
+/** A dispatched tool call is about to run (#2439) — `(run_id, tool_call_id)`
+ * is an exact identity, unlike a model call's. */
+export interface WsIncomingToolStartedPayload {
+  type: typeof WsIncomingType.ToolStarted;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  started_at: string;
+}
+
+/** A dispatched tool call just finished (#2439). */
+export interface WsIncomingToolFinishedPayload {
+  type: typeof WsIncomingType.ToolFinished;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  success: boolean;
+}
+
 export type WsIncomingPayload =
   | WsIncomingMessagePayload
   | WsIncomingTypingPayload
@@ -460,7 +502,10 @@ export type WsIncomingPayload =
   | WsIncomingMemoryChangedPayload
   | WsIncomingCollectionTriggerResultPayload
   | WsIncomingRunDetailPayload
-  | WsIncomingMemorySaveErrorPayload;
+  | WsIncomingMemorySaveErrorPayload
+  | WsIncomingCallStartedPayload
+  | WsIncomingToolStartedPayload
+  | WsIncomingToolFinishedPayload;
 
 // --- Runtime messages (sidebar ↔ background) ---
 
@@ -504,7 +549,10 @@ export type RuntimeMessageType =
   | "cursor_set"
   | "cursor_clear"
   | "run_detail_request"
-  | "run_detail_response";
+  | "run_detail_response"
+  | "call_started"
+  | "tool_started"
+  | "tool_finished";
 
 export const RuntimeMessageType = {
   SendChat: "send_chat",
@@ -547,6 +595,9 @@ export const RuntimeMessageType = {
   CursorClear: "cursor_clear",
   RunDetailRequest: "run_detail_request",
   RunDetailResponse: "run_detail_response",
+  CallStarted: "call_started",
+  ToolStarted: "tool_started",
+  ToolFinished: "tool_finished",
 } as const satisfies Record<string, RuntimeMessageType>;
 
 /** Sidebar → background: user typed a chat message */
@@ -684,6 +735,40 @@ export interface RuntimeRunOutcomeUpdate {
   run_id: string;
   outcome: RunOutcome;
   reason: string;
+}
+
+/** Background → prompts page: a model call is about to be made (#2439) —
+ * live step markers, no promptlog row yet. */
+export interface RuntimeCallStarted {
+  type: typeof RuntimeMessageType.CallStarted;
+  run_id: string;
+  parent_run_id: string | null;
+  parent_tool_call_id: string | null;
+  agent_name: string | null;
+  prompt_type: string | null;
+  model: string;
+  run_target: string | null;
+  started_at: string;
+}
+
+/** Background → prompts page: a dispatched tool call is about to run (#2439). */
+export interface RuntimeToolStarted {
+  type: typeof RuntimeMessageType.ToolStarted;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  started_at: string;
+}
+
+/** Background → prompts page: a dispatched tool call just finished (#2439). */
+export interface RuntimeToolFinished {
+  type: typeof RuntimeMessageType.ToolFinished;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  success: boolean;
 }
 
 /** Memories tab → background: request the memories list */
@@ -896,7 +981,10 @@ export type RuntimeMessage =
   | RuntimeCursorSet
   | RuntimeCursorClear
   | RuntimeRunDetailRequest
-  | RuntimeRunDetailResponse;
+  | RuntimeRunDetailResponse
+  | RuntimeCallStarted
+  | RuntimeToolStarted
+  | RuntimeToolFinished;
 
 // --- Domain permissions ---
 

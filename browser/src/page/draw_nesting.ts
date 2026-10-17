@@ -141,6 +141,136 @@ export function expandedIdsAfterRebuild(
   return kept;
 }
 
+// --- Live step markers (#2439): running calls and tool calls, pushed ahead of
+// any promptlog row.  Kept as their OWN client-only types rather than folded
+// into `PromptLogEntry` (so a running row can never be mistaken for a logged
+// one, or render a "pending" badge through the #2469 outcome styling) — see
+// page.ts for the flat arrays these live in and how they resolve.
+
+/** A model call pushed as "about to be made" — no promptlog row exists for it
+ * yet.  Anchors exactly like a draw does: `parentRunId`/`parentToolCallId`
+ * read the same way `attachmentIndex` reads a draw's. */
+export interface RunningCall {
+  runId: string;
+  parentRunId: string | null;
+  parentToolCallId: string | null;
+  agentName: string | null;
+  promptType: string | null;
+  model: string;
+  runTarget: string | null;
+  startedAt: string;
+}
+
+/** A dispatched tool call pushed as running, or just finished —
+ * `finishedSuccess` is `undefined` while still running. */
+export interface RunningTool {
+  runId: string;
+  toolCallId: string;
+  toolName: string;
+  status: string;
+  startedAt: string;
+  finishedSuccess?: boolean;
+}
+
+function byStartedAt<T extends { startedAt: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
+/** A running call or running tool call, tagged by `kind` so a mixed list of
+ * both discriminates cleanly at render time (never structural `"call" in
+ * node` sniffing). */
+export interface RunningCallNode {
+  kind: "call";
+  call: RunningCall;
+  stepIndex: number | null;
+}
+export interface RunningToolNode {
+  kind: "tool";
+  tool: RunningTool;
+  stepIndex: number | null;
+}
+export type RunningNode = RunningCallNode | RunningToolNode;
+
+/** Every running call parented on `containerRunId` (by `parentRunId`, exactly
+ * how a real draw is found by `directChildNodes`), each carrying the step of
+ * `containerOwnRows` it anchors to.  Recomputed fresh at every render — a
+ * running call is never "attached" into a host's own state the way a draw is
+ * (see `attachDraw`), so there is nothing to hold-and-drain: whenever its
+ * host eventually renders for any reason, this just finds it. */
+export function runningCallNodesFor(
+  containerRunId: string,
+  containerOwnRows: PromptLogEntry[],
+  calls: RunningCall[],
+): RunningCallNode[] {
+  return byStartedAt(calls.filter((call) => call.parentRunId === containerRunId)).map((call) => ({
+    kind: "call",
+    call,
+    stepIndex: attachmentIndex(containerOwnRows, call.parentToolCallId),
+  }));
+}
+
+/** Every running tool call dispatched BY `containerRunId` (by `runId` — a
+ * tool call is never itself a run, so it has no children of its own to
+ * recurse into), each carrying the step it anchors to. */
+export function runningToolNodesFor(
+  containerRunId: string,
+  containerOwnRows: PromptLogEntry[],
+  tools: RunningTool[],
+): RunningToolNode[] {
+  return byStartedAt(tools.filter((tool) => tool.runId === containerRunId)).map((tool) => ({
+    kind: "tool",
+    tool,
+    stepIndex: attachmentIndex(containerOwnRows, tool.toolCallId),
+  }));
+}
+
+/** `rootRunId` plus every running call's `runId` transitively parented under
+ * it (any depth, via `parentRunId` chains) — the sweep a run's OWN outcome
+ * arriving must resolve, not only its own direct entry: an abandoned nested
+ * draw that never logs its own terminal row (a crash mid-call) is still
+ * cleared once the RUN it belongs to is known to be over, so nothing is left
+ * spinning forever. */
+export function runningRunIdClosure(rootRunId: string, calls: RunningCall[]): Set<string> {
+  const closure = new Set<string>([rootRunId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const call of calls) {
+      if (call.parentRunId !== null && closure.has(call.parentRunId) && !closure.has(call.runId)) {
+        closure.add(call.runId);
+        added = true;
+      }
+    }
+  }
+  return closure;
+}
+
+/** Running calls with every entry whose `runId` is in `runIds` dropped — the
+ * shared filter behind every resolution path (a real record arriving, a run
+ * outcome, a fetch bringing the run in). */
+export function dropRunningCalls(calls: RunningCall[], runIds: ReadonlySet<string>): RunningCall[] {
+  return calls.filter((call) => !runIds.has(call.runId));
+}
+
+/** Running tool calls with every entry whose `runId` is in `runIds` dropped —
+ * see `dropRunningCalls`. */
+export function dropRunningTools(tools: RunningTool[], runIds: ReadonlySet<string>): RunningTool[] {
+  return tools.filter((tool) => !runIds.has(tool.runId));
+}
+
+/** Every run_id a fetched page of runs is now authoritative for — each run's
+ * own id plus every child draw's — so a running placeholder for anything the
+ * fetch just brought in can be dropped, even one the live push never
+ * resolved (a reconnect, or a call that started before this page loaded). */
+export function fetchedRunIdsFrom(runs: { run_id: string; child_draws?: PromptLogEntry[] }[]): Set<string> {
+  const ids = new Set<string>();
+  for (const run of runs) {
+    ids.add(run.run_id);
+    for (const draw of run.child_draws ?? []) ids.add(draw.run_id);
+  }
+  return ids;
+}
+
 /** One draw, nested to any depth (#2435): the step of the PARENT's own rows it
  * anchors to (by index into whatever `ownRows` the caller resolved for that
  * parent — `null` for "directly under the parent as a whole", whether the

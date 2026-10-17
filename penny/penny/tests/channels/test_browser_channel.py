@@ -1350,6 +1350,45 @@ class TestBrowserPushBroadcasts:
         channel._on_run_outcome_set("run-1", "worked", "wrote 2 entries")
         channel._on_prompt_logged({"run_id": "run-1"})
 
+    @pytest.mark.asyncio
+    async def test_live_step_markers_reach_every_connected_addon(self, db):
+        """call_started/tool_started/tool_finished (#2439) broadcast through the
+        SAME chokepoint every other push does — a connected addon gets all
+        three, going through `LlmClient.chat()`/the tool dispatcher exactly as
+        production fires them, not a hand-built payload."""
+        channel = self._channel(db)
+        live = _MockWs()
+        self._connect(channel, "firefox-live", live)
+
+        before = asyncio.all_tasks()
+        db.messages.publish_call_started(
+            run_id="run-1",
+            parent_run_id=None,
+            parent_tool_call_id=None,
+            agent_name="chat",
+            prompt_type="idle",
+            model="test-model",
+            run_target=None,
+        )
+        db.messages.publish_tool_started(
+            run_id="run-1", tool_call_id="call-1", tool_name="search", status="Searching…"
+        )
+        db.messages.publish_tool_finished(
+            run_id="run-1",
+            tool_call_id="call-1",
+            tool_name="search",
+            status="Searching…",
+            success=True,
+        )
+        await self._settle(before)
+
+        assert [m["type"] for m in live.sent] == ["call_started", "tool_started", "tool_finished"]
+        assert live.sent[0]["run_id"] == "run-1"
+        assert live.sent[0]["agent_name"] == "chat"
+        assert live.sent[0]["model"] == "test-model"
+        assert live.sent[1]["tool_call_id"] == live.sent[2]["tool_call_id"] == "call-1"
+        assert live.sent[2]["success"] is True
+
 
 class TestBrowserPermissionDelegation:
     """BrowserChannel delegates permission checks to PermissionManager."""

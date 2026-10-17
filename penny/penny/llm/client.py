@@ -296,6 +296,9 @@ class LlmClient:
         resolved_run_id = call_link.run_id
         parent_run_id = call_link.parent_run_id
         parent_tool_call_id = call_link.parent_tool_call_id
+        self._publish_call_started(
+            resolved_run_id, parent_run_id, parent_tool_call_id, agent_name, prompt_type, run_target
+        )
         start = time.time()
         messages_snapshot = list(messages)
         try:
@@ -800,6 +803,33 @@ class LlmClient:
         if thinking:
             logger.debug("Model thinking: %s", thinking[:200])
         logger.debug("Response content: %s", response.content)
+
+    def _publish_call_started(
+        self,
+        run_id: str,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        agent_name: str | None,
+        prompt_type: str | None,
+        run_target: str | None,
+    ) -> None:
+        """Announce this call is about to be made (#2439), before the network
+        request — a live Prompts tab's only signal that anything is happening
+        until the call's own ``promptlog`` row eventually lands.  Every reroll
+        attempt and every validator retry is its own real call here, so this
+        fires once per actual request, matching 1:1 with the row ``_log_call``
+        will write for it however it ends."""
+        if not self.db:
+            return
+        self.db.messages.publish_call_started(
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            agent_name=agent_name,
+            prompt_type=prompt_type,
+            model=self.model,
+            run_target=run_target,
+        )
 
     def _log_call(
         self,

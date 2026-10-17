@@ -55,6 +55,9 @@ BROWSER_RESP_TYPE_MEMORY_CHANGED = "memory_changed"
 BROWSER_RESP_TYPE_RUN_DETAIL = "run_detail_response"
 BROWSER_RESP_TYPE_COLLECTION_TRIGGER_RESULT = "collection_trigger_result"
 BROWSER_RESP_TYPE_MEMORY_SAVE_ERROR = "memory_save_error"
+BROWSER_RESP_TYPE_CALL_STARTED = "call_started"
+BROWSER_RESP_TYPE_TOOL_STARTED = "tool_started"
+BROWSER_RESP_TYPE_TOOL_FINISHED = "tool_finished"
 
 # Sections of a memory's detail view that paginate independently.
 MEMORY_SECTION_ENTRIES = "entries"
@@ -198,6 +201,44 @@ class BrowserRunOutcomeUpdate(BaseModel):
     run_id: str
     outcome: str
     reason: str
+
+
+class BrowserCallStarted(BaseModel):
+    """Push notification: a model call is about to be made (#2439) — no
+    ``promptlog`` row exists for it yet.  ``started_at`` is already an ISO
+    string (``MessageStore``'s own clock, serialized at the channel boundary)."""
+
+    type: str = BROWSER_RESP_TYPE_CALL_STARTED
+    run_id: str
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    agent_name: str | None
+    prompt_type: str | None
+    model: str
+    run_target: str | None
+    started_at: str
+
+
+class BrowserToolStarted(BaseModel):
+    """Push notification: a dispatched tool call is about to run (#2439)."""
+
+    type: str = BROWSER_RESP_TYPE_TOOL_STARTED
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    started_at: str
+
+
+class BrowserToolFinished(BaseModel):
+    """Push notification: a dispatched tool call just finished (#2439)."""
+
+    type: str = BROWSER_RESP_TYPE_TOOL_FINISHED
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    success: bool
 
 
 class BrowserMemoryDetailRequest(BaseModel):

@@ -45,6 +45,7 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_REGISTER,
     BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST,
     BROWSER_MSG_TYPE_TOOL_RESPONSE,
+    BROWSER_RESP_TYPE_CALL_STARTED,
     BROWSER_RESP_TYPE_CONFIG,
     BROWSER_RESP_TYPE_MEMORY_CHANGED,
     BROWSER_RESP_TYPE_MESSAGE,
@@ -52,8 +53,11 @@ from penny.channels.browser.models import (
     BROWSER_RESP_TYPE_PROMPT_LOGS,
     BROWSER_RESP_TYPE_RUN_OUTCOME,
     BROWSER_RESP_TYPE_STATUS,
+    BROWSER_RESP_TYPE_TOOL_FINISHED,
+    BROWSER_RESP_TYPE_TOOL_STARTED,
     BROWSER_RESP_TYPE_TYPING,
     MEMORY_SECTION_COLLECTOR_RUNS,
+    BrowserCallStarted,
     BrowserCapabilitiesUpdate,
     BrowserCollectionTrigger,
     BrowserCollectionTriggerResult,
@@ -85,8 +89,10 @@ from penny.channels.browser.models import (
     BrowserRunDetailRequest,
     BrowserRunDetailResponse,
     BrowserRunOutcomeUpdate,
+    BrowserToolFinished,
     BrowserToolRequest,
     BrowserToolResponse,
+    BrowserToolStarted,
     CursorRecord,
     DomainPermissionRecord,
     MemoryEntryRecord,
@@ -101,6 +107,7 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
 )
+from penny.database.message_store import CallStarted, ToolFinished, ToolStarted
 from penny.database.models import RuntimeConfig
 from penny.datetime_utils import user_timezone_name
 from penny.tools.base import Tool
@@ -187,6 +194,12 @@ class BrowserChannel(MessageChannel):
         db.messages.subscribe_prompt_logged(self._on_prompt_logged)
         db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
         db.memories.subscribe_memory_changed(self._on_memory_changed)
+        # Live step markers (#2439) — the addon's Prompts tab is the only
+        # consumer today; iOS's data browser is read-only and has no live
+        # renderer, so it deliberately doesn't subscribe these.
+        db.messages.subscribe_call_started(self._on_call_started)
+        db.messages.subscribe_tool_started(self._on_tool_started)
+        db.messages.subscribe_tool_finished(self._on_tool_finished)
 
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Callback fired after each prompt is logged — broadcast to browsers."""
@@ -197,6 +210,43 @@ class BrowserChannel(MessageChannel):
         """Callback fired when a run outcome is set — broadcast to browsers."""
         payload = BrowserRunOutcomeUpdate(run_id=run_id, outcome=outcome, reason=reason)
         self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_RUN_OUTCOME)
+
+    def _on_call_started(self, event: CallStarted) -> None:
+        """Callback fired just before a model call is made (#2439) — broadcast
+        to browsers so a running row can show ahead of the logged record."""
+        payload = BrowserCallStarted(
+            run_id=event.run_id,
+            parent_run_id=event.parent_run_id,
+            parent_tool_call_id=event.parent_tool_call_id,
+            agent_name=event.agent_name,
+            prompt_type=event.prompt_type,
+            model=event.model,
+            run_target=event.run_target,
+            started_at=event.started_at.isoformat(),
+        )
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_CALL_STARTED)
+
+    def _on_tool_started(self, event: ToolStarted) -> None:
+        """Callback fired just before a dispatched tool call runs (#2439)."""
+        payload = BrowserToolStarted(
+            run_id=event.run_id,
+            tool_call_id=event.tool_call_id,
+            tool_name=event.tool_name,
+            status=event.status,
+            started_at=event.started_at.isoformat(),
+        )
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_TOOL_STARTED)
+
+    def _on_tool_finished(self, event: ToolFinished) -> None:
+        """Callback fired right after a dispatched tool call finishes (#2439)."""
+        payload = BrowserToolFinished(
+            run_id=event.run_id,
+            tool_call_id=event.tool_call_id,
+            tool_name=event.tool_name,
+            status=event.status,
+            success=event.success,
+        )
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_TOOL_FINISHED)
 
     def _on_memory_changed(self, name: str | None) -> None:
         """Callback fired after any memory mutation — broadcast to browsers

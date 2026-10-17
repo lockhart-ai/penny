@@ -279,6 +279,36 @@ function connect(): void {
         outcome: data.outcome,
         reason: data.reason,
       });
+    } else if (data.type === WsIn.CallStarted) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.CallStarted,
+        run_id: data.run_id,
+        parent_run_id: data.parent_run_id,
+        parent_tool_call_id: data.parent_tool_call_id,
+        agent_name: data.agent_name,
+        prompt_type: data.prompt_type,
+        model: data.model,
+        run_target: data.run_target,
+        started_at: data.started_at,
+      });
+    } else if (data.type === WsIn.ToolStarted) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.ToolStarted,
+        run_id: data.run_id,
+        tool_call_id: data.tool_call_id,
+        tool_name: data.tool_name,
+        status: data.status,
+        started_at: data.started_at,
+      });
+    } else if (data.type === WsIn.ToolFinished) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.ToolFinished,
+        run_id: data.run_id,
+        tool_call_id: data.tool_call_id,
+        tool_name: data.tool_name,
+        status: data.status,
+        success: data.success,
+      });
     } else if (data.type === WsIn.MemoriesResponse) {
       broadcastToSidebar({
         type: RuntimeMessageType.MemoriesResponse,

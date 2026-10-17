@@ -2595,6 +2595,129 @@ class TestPromptLogAnnotations:
         await agent.close()
 
 
+class TestLiveStepMarkers:
+    """Live step markers (#2439): call_started/tool_started/tool_finished are
+    published from the one shared chokepoint every caller already carries
+    (``LlmClient.chat()``, the tool dispatcher) — no new per-call parameter,
+    just the identity already flowing through ``CallLink``."""
+
+    @pytest.mark.asyncio
+    async def test_call_started_published_once_per_actual_model_call(self, test_db, mock_llm):
+        """Each real chat() invocation — including a tool-call step and the
+        final text step — publishes call_started BEFORE the network request,
+        one for one with the promptlog row it will go on to write."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
+
+        started: list = []
+        db.messages.subscribe_call_started(started.append)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        call_link = CallLink.new_top()
+        await agent.run("test question", max_steps=max_steps, call_link=call_link)
+
+        with Session(db.engine) as session:
+            logs = session.exec(select(PromptLog)).all()
+
+        assert len(started) == len(logs) == 2
+        assert all(event.run_id == call_link.run_id for event in started)
+        assert all(event.parent_run_id is None for event in started)
+        assert all(event.parent_tool_call_id is None for event in started)
+        assert all(event.agent_name == "Agent" for event in started)
+        assert all(event.model == "test-model" for event in started)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_call_started_carries_a_dispatched_calls_own_link(self, test_db, mock_llm):
+        """A model call made with a POSITIONED link (inside a dispatched tool
+        call, as a micro-context draw would be) carries that position's
+        parent_run_id/parent_tool_call_id on call_started too — the same
+        identity the eventual logged row carries, never re-derived."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
+        mock_llm.set_response_handler(lambda req, count: mock_llm._make_text_response(req, "done"))
+
+        started: list = []
+        db.messages.subscribe_call_started(started.append)
+
+        outer = CallLink.new_top()
+        positioned = outer.for_tool_call("tool-call-1")
+        draw_link = positioned.child()
+        await agent.run("draw", max_steps=max_steps, call_link=draw_link)
+
+        assert len(started) == 1
+        assert started[0].run_id == draw_link.run_id
+        assert started[0].parent_run_id == outer.run_id
+        assert started[0].parent_tool_call_id == "tool-call-1"
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_tool_started_and_finished_bracket_the_dispatch(self, test_db, mock_llm):
+        """A dispatched tool call publishes tool_started before execution and
+        tool_finished with its outcome right after — matched by the exact
+        (run_id, tool_call_id) identity, never a guess."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
+        agent._tool_executor.execute = AsyncMock(
+            return_value=ToolResult(message="result", success=True)
+        )
+
+        started: list = []
+        finished: list = []
+        db.messages.subscribe_tool_started(started.append)
+        db.messages.subscribe_tool_finished(finished.append)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        call_link = CallLink.new_top()
+        await agent.run("test question", max_steps=max_steps, call_link=call_link)
+
+        assert len(started) == len(finished) == 1
+        assert started[0].run_id == finished[0].run_id == call_link.run_id
+        assert started[0].tool_call_id == finished[0].tool_call_id
+        assert started[0].tool_name == finished[0].tool_name == "search"
+        assert finished[0].success is True
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_tool_finished_reports_a_failed_call(self, test_db, mock_llm):
+        """A tool call that FAILS still publishes tool_finished — success is
+        the tool's own structural result, not assumed."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
+        agent._tool_executor.execute = AsyncMock(
+            return_value=ToolResult(message="broke", success=False)
+        )
+
+        finished: list = []
+        db.messages.subscribe_tool_finished(finished.append)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        await agent.run("test question", max_steps=max_steps, call_link=CallLink.new_top())
+
+        assert len(finished) == 1
+        assert finished[0].success is False
+
+        await agent.close()
+
+
 class _StubTerminator(Tool):
     """A terminator tool for the LOOP tests only.
 
