@@ -94,6 +94,7 @@ from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import FailureCause
 from penny.tests.eval.utils.assertions import Cohort
 from penny.tests.eval.utils.baseline import Baseline, baseline_from_env
+from penny.tests.eval.utils.budget_hits import BudgetHits, tally_budget_hits
 from penny.tests.eval.utils.catalogue import Area, Edge, Layer
 from penny.tests.eval.utils.clock import SAMPLE_TIMEZONE, PinnedClock
 from penny.tests.eval.utils.fixtures import CannedPage, SynthCollection
@@ -710,6 +711,12 @@ def live_prompt_perf(db: Database) -> PromptPerf:
         sum(len(MessageStore._extract_content(response)) for response in responses),
         sum(MessageStore._extract_reasoning_tokens(response) for response in responses),
     )
+
+
+def live_budget_hits(db: Database) -> BudgetHits:
+    """``tally_budget_hits`` over this sample's own rows — the same window
+    ``live_prompt_perf`` reads, so a cut counted here is never a seeded prior turn's."""
+    return tally_budget_hits(live_prompts(db, _PERF_WINDOW))
 
 
 def _row_turns(row: PromptLog) -> list[dict]:
@@ -2255,6 +2262,7 @@ async def _run_samples(
             async with eval_penny(config, server) as penny:
                 result = await drive(penny, server, sample_index, retryable)
                 perf.add(live_prompt_perf(penny.db))
+                run_health.record_budget_hits(live_budget_hits(penny.db))
                 return result
         finally:
             await server.stop()

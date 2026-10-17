@@ -9,6 +9,7 @@ reports a healthy run forever.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
@@ -21,6 +22,7 @@ import openai
 import pytest
 
 from penny.database.message_store import PromptPerf
+from penny.database.models import PromptLog
 from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmFault, LlmResponseError, LlmTimeoutError
@@ -29,6 +31,13 @@ from penny.tests.eval import conftest as eval_conftest
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report, run_health
 from penny.tests.eval.utils.artifacts import worker_filename
+from penny.tests.eval.utils.budget_hits import (
+    UNTAGGED_CALL_KIND,
+    BudgetHits,
+    CallKindTally,
+    render_budget_hits,
+    tally_budget_hits,
+)
 from penny.tests.eval.utils.catalogue import CATALOGUE_ENV, Area, CatalogueEntry, Layer, load
 from penny.tests.eval.utils.run_health import (
     CohortRecord,
@@ -160,6 +169,69 @@ class TestTheFaultTallyReadsWhatTheClientWrites:
         assert tally.calls == 0
 
 
+def _row(
+    *, agent_name: str | None, finish_reason: str | None = "stop", response: str | None = None
+) -> PromptLog:
+    """One promptlog row, carrying only what ``tally_budget_hits`` reads: its call kind
+    and its raw response's finish reason."""
+    if response is None:
+        response = json.dumps({"choices": [{"finish_reason": finish_reason, "message": {}}]})
+    return PromptLog(model="test-model", messages="[]", response=response, agent_name=agent_name)
+
+
+class TestBudgetHitsAreReadOffEachSamplesOwnPromptlog:
+    """A token-budget cut (#2477) is read off the raw response, by call kind, as a MEASURE —
+    never a pass/fail check: the runtime itself retries a cut draw (#2475/#2476)."""
+
+    def test_mixed_rows_count_draws_and_cuts_per_kind(self) -> None:
+        rows = [
+            _row(agent_name="chat", finish_reason="stop"),
+            _row(agent_name="chat", finish_reason="length"),
+            _row(agent_name="browse-extract", finish_reason="length"),
+            _row(agent_name="browse-extract", finish_reason="stop"),
+            _row(agent_name=None, finish_reason="stop"),
+        ]
+        hits = tally_budget_hits(rows)
+        assert hits.by_kind["chat"] == CallKindTally(draws=2, cuts=1)
+        assert hits.by_kind["browse-extract"] == CallKindTally(draws=2, cuts=1)
+        assert hits.by_kind[UNTAGGED_CALL_KIND] == CallKindTally(draws=1, cuts=0)
+        assert hits.total_cuts == 2
+
+    def test_a_cancelled_rows_empty_response_is_tolerated_and_not_a_cut(self) -> None:
+        """A cancelled call logs the literal ``"{}"`` (``MessageStore.log_prompt``) — no
+        ``choices`` to read a finish reason off, so it counts as a draw and never a cut."""
+        rows = [_row(agent_name="chat", response="{}")]
+        hits = tally_budget_hits(rows)
+        assert hits.by_kind["chat"] == CallKindTally(draws=1, cuts=0)
+
+    def test_an_empty_response_string_is_tolerated_the_same_way(self) -> None:
+        rows = [_row(agent_name="chat", response="")]
+        hits = tally_budget_hits(rows)
+        assert hits.by_kind["chat"] == CallKindTally(draws=1, cuts=0)
+
+    def test_two_readings_merge_their_counts_by_kind(self) -> None:
+        first = BudgetHits(by_kind={"chat": CallKindTally(draws=5, cuts=1)})
+        second = BudgetHits(
+            by_kind={
+                "chat": CallKindTally(draws=3, cuts=0),
+                "browse-extract": CallKindTally(draws=2, cuts=2),
+            }
+        )
+        merged = first.merge(second)
+        assert merged.by_kind["chat"] == CallKindTally(draws=8, cuts=1)
+        assert merged.by_kind["browse-extract"] == CallKindTally(draws=2, cuts=2)
+        assert merged.total_cuts == 3
+
+    def test_the_render_names_the_most_cut_kind_first(self) -> None:
+        hits = BudgetHits(
+            by_kind={
+                "chat": CallKindTally(draws=412, cuts=0),
+                "browse-extract": CallKindTally(draws=75, cuts=11),
+            }
+        )
+        assert render_budget_hits(hits) == "budget cuts: browse-extract 11/75, chat 0/412"
+
+
 _HEALTHY = RunHealth(
     cohorts=[
         CohortRecord(case_id="chat-reply", intended=5, completed=5),
@@ -229,6 +301,34 @@ class TestTheBlockARunPrintsAboutItself:
         bare = RunHealth(cohorts=[CohortRecord(case_id="c", intended=1, completed=1)], calls=4)
         assert "providers: none reported by this endpoint" in bare.render()
 
+    def test_a_run_nothing_was_cut_on_prints_no_budget_line(self) -> None:
+        """Quiet by default — the same gate ``_fault_lines`` uses — so a run with nothing to
+        say about budgets says nothing, rather than a line of zeroes nobody asked for."""
+        assert "budget cuts" not in _HEALTHY.render()
+        assert "budget cuts" not in _DEGRADED.render()
+
+    def test_a_run_with_a_cut_names_every_drawn_kind_worst_first(self) -> None:
+        cut = RunHealth(
+            cohorts=[CohortRecord(case_id="browse-chat", intended=5, completed=5)],
+            calls=487,
+            budget_hits=BudgetHits(
+                by_kind={
+                    "chat": CallKindTally(draws=412, cuts=0),
+                    "browse-extract": CallKindTally(draws=75, cuts=11),
+                }
+            ),
+        )
+        assert cut.render() == (
+            "samples: 5 of 5 completed · 0 dead "
+            "(completed = the sample's measured turn ran and was scored)\n"
+            "cases: 1 of 1 readable — a case must complete more than half the samples "
+            "it intended\n"
+            "model calls: 487 attempts · 0 faulted\n"
+            "  budget cuts: browse-extract 11/75, chat 0/412\n"
+            "providers: none reported by this endpoint\n"
+            "verdict: this run is a result."
+        )
+
 
 class TestMergingWhatSeveralProcessesSaw:
     """Under xdist the cases are spread across processes; the run is their sum.
@@ -244,12 +344,19 @@ class TestMergingWhatSeveralProcessesSaw:
             calls=100,
             faults={LlmFault.NO_CHOICES: 4},
             providers={"vertex": ProviderTally(calls=100, faults={LlmFault.NO_CHOICES: 4})},
+            budget_hits=BudgetHits(by_kind={"chat": CallKindTally(draws=50, cuts=1)}),
         )
         second = RunHealth(
             cohorts=[CohortRecord(case_id="b", intended=5, completed=1)],
             calls=60,
             faults={LlmFault.NO_CHOICES: 6, LlmFault.TIMEOUT: 1},
             providers={"vertex": ProviderTally(calls=60, faults={LlmFault.NO_CHOICES: 6})},
+            budget_hits=BudgetHits(
+                by_kind={
+                    "chat": CallKindTally(draws=30, cuts=0),
+                    "browse-extract": CallKindTally(draws=10, cuts=2),
+                }
+            ),
         )
         run_health.write_health(tmp_path, "gw0", first)
         run_health.write_health(tmp_path, "gw1", second)
@@ -265,6 +372,8 @@ class TestMergingWhatSeveralProcessesSaw:
         assert merged.faults == {LlmFault.NO_CHOICES: 10, LlmFault.TIMEOUT: 1}
         assert merged.providers["vertex"].calls == 160
         assert merged.providers["vertex"].faults == {LlmFault.NO_CHOICES: 10}
+        assert merged.budget_hits.by_kind["chat"] == CallKindTally(draws=80, cuts=1)
+        assert merged.budget_hits.by_kind["browse-extract"] == CallKindTally(draws=10, cuts=2)
         # One dead case in one worker is enough to refuse the whole run.
         assert not merged.viable
 
@@ -312,6 +421,7 @@ def _stubbed_world(monkeypatch, *, stands_up: bool = True) -> None:
     monkeypatch.setattr(
         eval_conftest, "live_prompt_perf", lambda _db: PromptPerf(1, 10, 2, 3, 0, 0, 0)
     )
+    monkeypatch.setattr(eval_conftest, "live_budget_hits", lambda _db: BudgetHits())
     _isolated_health(monkeypatch)
 
 
@@ -346,6 +456,7 @@ def _boot_through_the_real_preflight(
 def _isolated_health(monkeypatch) -> None:
     """A run-health tally of this test's own, and no report directory to write into."""
     monkeypatch.setattr(run_health, "_cohorts", [])
+    monkeypatch.setattr(run_health, "_budget_hits", BudgetHits())
     monkeypatch.delenv("EVAL_REPORT_DIR", raising=False)
 
 
