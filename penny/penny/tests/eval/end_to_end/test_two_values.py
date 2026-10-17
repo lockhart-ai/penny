@@ -411,6 +411,11 @@ async def test_a_known_routines_job_records_the_new_thing_from_the_new_page(
         SpecCategory.STORE,
     )
 
+    # UNDISTURBED — the ferry job already running before the ask is left as it was (#2490's
+    # addendum): read off the mutation ledger, so a rebind, a schedule change, a notify flip,
+    # a moved end and an archive all answer it the same way.
+    cohort.assert_the_running_mechanisms_survive()
+
     # PROVENANCE
     cohort.assert_every_value_in_the_reply_is_sourced()
 
