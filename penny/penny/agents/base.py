@@ -600,7 +600,12 @@ class Agent:
             budget on reasoning and cut again, so this last draw turns thinking OFF —
             the same per-kind budget is sent again (``_invoke_model`` resolves it from
             ``self.name`` on every call), which is fine now that none of it goes to
-            reasoning.
+            reasoning.  It also sets ``live_draw=True`` — a SEPARATE signal from
+            ``thinking_enabled`` (#2475's review): ``thinking_enabled`` means only
+            whether this draw reasons, and ``live_draw`` is the one explicit flag
+            ``BackgroundAgent`` reads to decide whether to draw live at all, so a
+            future caller turning thinking off for an unrelated reason can never
+            silently make a collector narrate.
         """
         abort = RunAbort(step=step, after_tool=self._last_successful_tool(records), error=error)
         if error.error_class not in (REROLL_EXHAUSTED, BUDGET_EXCEEDED):
@@ -613,11 +618,13 @@ class Agent:
         if error.error_class == BUDGET_EXCEEDED:
             facts = PennyResponse.FACTS_BUDGET_EXCEEDED
             thinking_enabled = False
+            live_draw = True
         else:
             facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
                 attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
             )
             thinking_enabled = True
+            live_draw = False
         result = await self._narrate_or_account(
             self._with_facts_turn(messages, facts),
             facts,
@@ -628,6 +635,7 @@ class Agent:
             logged,
             reason=abort.render(),
             thinking_enabled=thinking_enabled,
+            live_draw=live_draw,
         )
         return result.model_copy(update={"abort": abort})
 
@@ -1405,6 +1413,7 @@ class Agent:
         *,
         reason: str,
         thinking_enabled: bool = True,
+        live_draw: bool = False,
     ) -> ControllerResponse:
         """One last draw, tools off, over ``messages`` — which already ends in a user
         turn stating ``facts``, a plain statement of this run's own state, never an
@@ -1423,11 +1432,15 @@ class Agent:
         (#2370) for every ORDINARY background terminal shape — a collector cycle has
         no user reply to write, and its own ``invalid_draw_conditions`` would reject
         free text anyway — so this always resolves to the deterministic account for
-        those.  The one exception (#2475) is the budget-cut cause: ``thinking_enabled``
-        comes in False only from ``_aborted_response``'s ``BUDGET_EXCEEDED`` branch, and
-        ``BackgroundAgent`` reads exactly that to draw live anyway, per the code owner's
-        ruling that every call kind still ends in a model summary when the model can be
-        reached — never by reading ``reason``'s wording, which stays free text.
+        those.  The one exception (#2475) is the budget-cut cause: ``live_draw=True``
+        comes in only from ``_aborted_response``'s ``BUDGET_EXCEEDED`` branch, and
+        ``BackgroundAgent`` reads exactly that flag to draw live anyway, per the code
+        owner's ruling that every call kind still ends in a model summary when the
+        model can be reached.  ``live_draw`` is deliberately its OWN flag, separate
+        from ``thinking_enabled`` (which means only whether the draw reasons) — a
+        future caller that turns thinking off for some other reason must not silently
+        make a background agent narrate too.  Never read off ``reason``'s wording,
+        which stays free text.
 
         ``logged`` is the caller's own run-in-progress boundary box (#1778), passed
         through untouched to ``_draw_narration`` — only a call site still inside
@@ -1452,7 +1465,12 @@ class Agent:
         """
         try:
             content = await self._draw_narration(
-                messages, call_link, prompt_type, logged, thinking_enabled=thinking_enabled
+                messages,
+                call_link,
+                prompt_type,
+                logged,
+                thinking_enabled=thinking_enabled,
+                live_draw=live_draw,
             )
         except ModelCallAbortedError:
             if run_id is not None:
@@ -1476,6 +1494,7 @@ class Agent:
         logged: _LoggedBoundary | None,
         *,
         thinking_enabled: bool = True,
+        live_draw: bool = False,
     ) -> str | None:
         """One tools-off draw over ``messages``, or ``None`` when it comes back
         unusable — empty, degenerate per ``_unusable_output_condition``, or a backend
@@ -1483,16 +1502,18 @@ class Agent:
         and fail to read its own output as one; the same "nothing usable" bucket as a
         degenerate draw, not a format nudge to retry).  Lets ``ModelCallAbortedError``
         propagate uncaught — a draw that cannot reach the model is the caller's to
-        answer, not this method's to swallow.  The user-facing default; ``BackgroundAgent``
-        overrides this to skip the draw for every ordinary terminal shape (#2370), but
-        reads straight through to this base behaviour when ``thinking_enabled`` is
-        False (#2475's budget-cut narration).
+        answer, not this method's to swallow.  The user-facing default — it always
+        draws, so ``live_draw`` is irrelevant HERE; ``BackgroundAgent`` overrides this
+        to skip the draw for every ordinary terminal shape (#2370), reading straight
+        through to this base behaviour only when ``live_draw`` is True (#2475's
+        budget-cut narration — the one caller-supplied flag that says "draw anyway",
+        kept deliberately separate from ``thinking_enabled`` below).
 
-        ``thinking_enabled`` (#2475) rides straight to ``_invoke_model`` — False only
-        for the one draw answering a budget-cut step, so this draw doesn't just cut
-        again on the same cap.  ``_invoke_model`` resolves this agent's own per-kind
-        token budget on every call regardless, which is still the right size here:
-        with thinking off, none of it goes to reasoning.
+        ``thinking_enabled`` (#2475) means only whether this draw reasons, and rides
+        straight to ``_invoke_model`` — False only for the budget-cut narration draw,
+        so it doesn't just cut again on the same cap.  ``_invoke_model`` resolves this
+        agent's own per-kind token budget on every call regardless, which is still the
+        right size here: with thinking off, none of it goes to reasoning.
 
         A draw that logs a row already carries, in ITS OWN ``messages``, everything
         the caller's ``logged`` boundary (#1778) was tracking — so on success this
@@ -2176,6 +2197,7 @@ class BackgroundAgent(Agent):
         logged: _LoggedBoundary | None,
         *,
         thinking_enabled: bool = True,
+        live_draw: bool = False,
     ) -> str | None:
         """A background cycle has no user reply to write for its ORDINARY terminal
         shapes (#2370) — skip the draw outright rather than spend a live call whose
@@ -2188,12 +2210,14 @@ class BackgroundAgent(Agent):
 
         A budget cut is the one shape this does NOT skip (#2475): the code owner's
         ruling is that every call kind still ends in a live model summary when the
-        model can be reached, even a background one.  ``thinking_enabled=False`` is
-        that signal — no other call into ``_narrate_or_account`` passes it, so reading
-        it here is reading a structural fact about WHY this draw is happening, never
-        the free-text ``reason`` a caller stamps.  Falls through to the base draw,
-        itself over its own per-kind budget with thinking off."""
-        if thinking_enabled:
+        model can be reached, even a background one.  ``live_draw`` is the EXPLICIT
+        signal for that — a flag with no other meaning, set only by
+        ``_aborted_response``'s ``BUDGET_EXCEEDED`` branch — never ``thinking_enabled``
+        (which this reads too, but only to pass it on): a future caller that turns
+        thinking off for some unrelated reason must not silently make this draw live.
+        Never the free-text ``reason`` a caller stamps, either.  Falls through to the
+        base draw, itself over its own per-kind budget."""
+        if not live_draw:
             return None
         return await super()._draw_narration(
             messages, call_link, prompt_type, logged, thinking_enabled=thinking_enabled
