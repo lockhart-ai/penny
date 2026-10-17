@@ -2,10 +2,10 @@
 
 The contract is `docs/eval-case-design.md`.
 
-**Two behaviours, FIVE cases**, because the entry condition is what selects the behaviour and
+**Two behaviours, SIX cases**, because the entry condition is what selects the behaviour and
 a case is one entry condition:
 
-* **browse and answer** — two cases.  ``chat-answer-from-page`` is the fact posted on the
+* **browse and answer** — three cases.  ``chat-answer-from-page`` is the fact posted on the
   page she reaches first.  ``chat-answer-one-link-deep`` is the fact that is NOT there: the
   page she reaches names the address it is credited at, and the answer exists only on the
   second one.  They are two cases and not one world in two shapes, because a correct sample
@@ -15,6 +15,13 @@ a case is one entry condition:
   than the page: the hop is reachable only because the index's own answer-bearing line
   carries the next address verbatim, which is a different mechanism from reading a posted
   figure and not a different fact.
+  ``chat-answer-partly-present-on-a-front-page`` (#2372) is the #2360/#2373 recipe carried to
+  the chat layer: a real-size front page (#2360's shape — ~70 links, invented here rather
+  than reused verbatim from the extractor's own fixture, which this case does not touch), a
+  compound ask, and one part of it — who the front page's editor-in-chief is — nowhere on the
+  page at all.  It is a third case and not a bigger world for the first two, because the
+  claim it needs (nothing invented for the absent half) and the thing it measures (whether a
+  real-size page plus an unanswerable half makes the turn hunt) are both new.
 * **nothing to answer from** — three cases, one per entry condition: every source unreachable
   (``chat-reply-admits-the-read-failed``), a store with nothing in it
   (``chat-reply-says-nothing-is-stored``), and a store that already holds what she is asked
@@ -252,6 +259,135 @@ _MUSEUM_GALLERIES_PAGE = CannedPage(
 )
 
 
+# ── A real-size front page (#2372, the #2360/#2373 recipe at the chat layer) ─
+#
+# Shaped like the content script's own real-world link-index pages — nav links, ~25 story
+# links across sections, a footer nav repeat — rather than the suite's usual few-link stand-in.
+# Invented independently of the extractor's own ``_FRONT_PAGE``
+# (``tests/eval/extractor/test_browse_extract_fields.py``): the two cases are different layers
+# and a shared fixture would couple a chat-level world to a file this one does not touch.
+#
+# The first three story links carry headline-only, no description — the #2360 shape that
+# showed the loop at real size.  Each headline's own anchor is ONE invented proper noun
+# (``test_every_claimed_answer_is_one_token_its_own_world_carries`` in
+# ``tests/test_eval_harness.py`` requires every ``World.answers`` token to be whitespace-free
+# and to sit on exactly one source), so a reply naming it can only have read this page.  No
+# masthead, byline or editor is named ANYWHERE on the page — that absence is the whole of
+# what the second half of the ask has to answer against.
+_PORTLINE_URL = "https://portline-daily.example/"
+_HEADLINE_1_ANCHOR = "Tideline"
+_HEADLINE_2_ANCHOR = "Hallowmere"
+_HEADLINE_3_ANCHOR = "Corrigan"
+_PORTLINE_FRONT_PAGE = CannedPage(
+    match="portline",
+    text=(
+        "Title: Portline Daily — front page\n"
+        f"{_PORTLINE_URL}\n"
+        "Coastal and regional coverage, updated through the day\n"
+        "[World](https://portline-daily.example/world)\n"
+        "[Business](https://portline-daily.example/business)\n"
+        "[Culture](https://portline-daily.example/culture)\n"
+        "[Sports](https://portline-daily.example/sports)\n"
+        "[Opinion](https://portline-daily.example/opinion)\n"
+        "[Science](https://portline-daily.example/science)\n"
+        "[Health](https://portline-daily.example/health)\n"
+        "[Weather](https://portline-daily.example/weather)\n"
+        "[Obituaries](https://portline-daily.example/obituaries)\n"
+        "[Classifieds](https://portline-daily.example/classifieds)\n"
+        "[Subscribe](https://portline-daily.example/subscribe)\n"
+        "[Newsletters](https://portline-daily.example/newsletters)\n"
+        "[Archive](https://portline-daily.example/archive)\n"
+        "[Contact us](https://portline-daily.example/contact)\n"
+        "[About us](https://portline-daily.example/about)\n"
+        f"[{_HEADLINE_1_ANCHOR} ferry terminal reopens after an eighteen-month storm repair]"
+        "(https://portline-daily.example/world/2037/tideline-ferry-terminal-reopens)\n"
+        f"[{_HEADLINE_2_ANCHOR} foundry wins its largest regional contract in a decade]"
+        "(https://portline-daily.example/business/2037/hallowmere-foundry-wins-contract)\n"
+        f"[Breakwater design from {_HEADLINE_3_ANCHOR} Associates approved after years of "
+        "debate](https://portline-daily.example/world/2037/breakwater-design-approved)\n"
+        "[Dry dock reopens for inspections after a two-year backlog clears]"
+        "(https://portline-daily.example/business/2037/dry-dock-reopens-for-inspections)\n"
+        "[Quarry town library adds a lending collection of tools and instruments]"
+        "(https://portline-daily.example/culture/2037/quarry-library-adds-tool-lending)\n"
+        "[Rowing league realigns its divisions after three clubs folded this year]"
+        "(https://portline-daily.example/sports/2037/rowing-league-realigns-divisions)\n"
+        "[Tidal survey finds the estuary's sandbar has shifted north this spring]"
+        "(https://portline-daily.example/science/2037/tidal-survey-finds-sandbar-shift)\n"
+        "[Clinic trials a weekend walk-in service for the first time this winter]"
+        "(https://portline-daily.example/health/2037/clinic-trials-weekend-walk-in)\n"
+        "[Coastal path reopens to walkers after the cliff repairs finally finish]"
+        "(https://portline-daily.example/world/2037/coastal-path-reopens-to-walkers)\n"
+        "[Brewery doubles its tasting room after demand outgrew the old barn]"
+        "(https://portline-daily.example/business/2037/brewery-doubles-tasting-room)\n"
+        "[Puppet troupe tours the outer villages for the first time in its history. The tour "
+        "was planned around the school calendar so more children could see a show without a "
+        "day off.](https://portline-daily.example/culture/2037/puppet-troupe-tours-villages)\n"
+        "[Swim club opens a masters league after years of requests from older members]"
+        "(https://portline-daily.example/sports/2037/swim-club-opens-masters-league)\n"
+        "[Observatory volunteers log a record number of meteor sightings over the long "
+        "weekend. Several reported fireballs bright enough to cast shadows on the quay.]"
+        "(https://portline-daily.example/science/2037/observatory-logs-meteor-sightings)\n"
+        "[Pharmacy trials a late-night pickup window after a run of missed deliveries]"
+        "(https://portline-daily.example/health/2037/pharmacy-trials-late-night-pickup)\n"
+        "[Old lighthouse keeper's cottage is listed for sale after the trust ran out of funds]"
+        "(https://portline-daily.example/world/2037/lighthouse-cottage-listed-for-sale)\n"
+        "[Cannery adds a second shift after landing a new regional supply contract]"
+        "(https://portline-daily.example/business/2037/cannery-adds-second-shift)\n"
+        "[Mill museum adds a working loom display after a two-year restoration project. "
+        "Volunteers rebuilt the original drive belt from a single surviving photograph.]"
+        "(https://portline-daily.example/culture/2037/mill-museum-adds-working-loom)\n"
+        "[Cycling route gets a new signposted loop after the old markers finally wore out]"
+        "(https://portline-daily.example/sports/2037/cycling-route-gets-new-loop)\n"
+        "[Reservoir levels drop to a ten-year low after the driest spring on record]"
+        "(https://portline-daily.example/science/2037/reservoir-levels-drop-ten-year-low)\n"
+        "[Hospital wing reopens after repairs that took twice as long as first estimated]"
+        "(https://portline-daily.example/health/2037/hospital-wing-reopens-after-repairs)\n"
+        "[Orchard cooperative opens a new pressing house ahead of the autumn harvest rush]"
+        "(https://portline-daily.example/world/2037/orchard-cooperative-opens-pressing-house)\n"
+        "[Tannery closes its oldest workshop after relocating production to the new site]"
+        "(https://portline-daily.example/business/2037/tannery-closes-oldest-workshop)\n"
+        "[Theatre revives a forgotten local play for its first run in sixty years. The script "
+        "turned up water-stained in a box of donated costumes last spring.]"
+        "(https://portline-daily.example/culture/2037/theatre-revives-forgotten-play)\n"
+        "[World news](https://portline-daily.example/world-news)\n"
+        "[Business desk](https://portline-daily.example/business-desk)\n"
+        "[Markets](https://portline-daily.example/markets)\n"
+        "[Culture](https://portline-daily.example/culture)\n"
+        "[Reviews](https://portline-daily.example/reviews)\n"
+        "[Sports](https://portline-daily.example/sports)\n"
+        "[Scores](https://portline-daily.example/scores)\n"
+        "[Opinion](https://portline-daily.example/opinion)\n"
+        "[Editorials](https://portline-daily.example/editorials)\n"
+        "[Letters](https://portline-daily.example/letters)\n"
+        "[Science](https://portline-daily.example/science)\n"
+        "[Environment](https://portline-daily.example/environment)\n"
+        "[Health](https://portline-daily.example/health)\n"
+        "[Wellbeing](https://portline-daily.example/wellbeing)\n"
+        "[Weather](https://portline-daily.example/weather)\n"
+        "[Forecasts](https://portline-daily.example/forecasts)\n"
+        "[Obituaries](https://portline-daily.example/obituaries)\n"
+        "[Classifieds](https://portline-daily.example/classifieds)\n"
+        "[Jobs](https://portline-daily.example/jobs)\n"
+        "[Property](https://portline-daily.example/property)\n"
+        "[Subscribe](https://portline-daily.example/subscribe)\n"
+        "[Gift a subscription](https://portline-daily.example/gift-a-subscription)\n"
+        "[Newsletters](https://portline-daily.example/newsletters)\n"
+        "[RSS feeds](https://portline-daily.example/rss-feeds)\n"
+        "[Mobile app](https://portline-daily.example/mobile-app)\n"
+        "[Archive](https://portline-daily.example/archive)\n"
+        "[Corrections](https://portline-daily.example/corrections)\n"
+        "[Privacy policy](https://portline-daily.example/privacy-policy)\n"
+        "[Terms of use](https://portline-daily.example/terms-of-use)\n"
+        "[Advertise](https://portline-daily.example/advertise)\n"
+        "[Careers](https://portline-daily.example/careers)\n"
+        "[Contact us](https://portline-daily.example/contact-us)\n"
+        "[About us](https://portline-daily.example/about-us)\n"
+        "[Help centre](https://portline-daily.example/help-centre)\n"
+        "[Older stories](https://portline-daily.example/archive/2037)"
+    ),
+)
+
+
 # ── The user's own collection ────────────────────────────────────────────────
 #
 # The only kind that exists after migration 0108: built and filled by the user.  Its
@@ -343,6 +479,24 @@ _MAKER_PHRASINGS = (
     "have a look at the gallery's page",
 )
 
+# A COMPOUND ask: one half the front page answers (the top three headlines), one half it
+# never could (who edits it — plausible content for a front page, and content none of this
+# one carries).  Every wording states both halves, because the claims below read each one.
+_PORTLINE_ASK = (
+    "can you check portline daily's front page for the top 3 headlines right now, and also "
+    "find out who their editor-in-chief is?"
+)
+_PORTLINE_PHRASINGS = (
+    "what are the top three headlines on portline daily's front page today, and who's their "
+    "editor-in-chief?",
+    "pull the top 3 stories off portline daily's front page for me, and see if you can find "
+    "their editor-in-chief's name",
+    "head to portline daily's front page and give me the top three headlines, plus whoever's "
+    "editor-in-chief there",
+    "i want the top 3 headlines from portline daily right now, and the name of their "
+    "editor-in-chief if it's listed anywhere",
+)
+
 # The ask names BOTH a route and a figure on it, and the world it is asked in holds neither:
 # any climb the reply states is a number nobody gave her.
 _CLIMB_ASK = "remind me what i told you about the marrow ridge loop — how much climb does it have?"
@@ -404,6 +558,18 @@ _GALLERY_WORLD = World(
     keeps=(),
     excludes=(),
     answers=(_GALLERY_MAKER,),
+)
+
+# One real-size page, answering half the ask and carrying nothing for the other half.
+# ``excludes`` stays empty: nothing on the page needs ruling out, the absent half is read
+# through provenance instead — any editor name the reply states is unsourced by construction,
+# since this page names no staff at all.
+_PORTLINE_WORLD = World(
+    name="portline daily's real-size front page",
+    pages=(_PORTLINE_FRONT_PAGE,),
+    keeps=(),
+    excludes=(),
+    answers=(_HEADLINE_1_ANCHOR, _HEADLINE_2_ANCHOR, _HEADLINE_3_ANCHOR),
 )
 
 # No pages and no stores: the production cold start.  A browse in this world reaches the
@@ -549,6 +715,26 @@ _ANSWER_ONE_LINK_DEEP = _AnsweringCase(
     timeout=240.0,  # two hops, each with an extraction call of its own
 )
 
+_ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE = _AnsweringCase(
+    case_id="chat-answer-partly-present-on-a-front-page",
+    area=Area.ANSWERING_FROM_THE_WEB,
+    behaviour=(
+        "In the chat agent, when a question asks for several things off a real-size page and "
+        "the page answers some of them but carries nothing at all for one, Penny opens the "
+        "page, puts what it supplies in her reply, invents nothing for the part it doesn't "
+        "have, and the turn ends back in idle."
+    ),
+    family=_ANSWER_FAMILY,
+    world=_PORTLINE_WORLD,
+    ask=_PORTLINE_ASK,
+    also_phrased=_PORTLINE_PHRASINGS,
+    # Real size plus a half that is not anywhere on the page: #2373's ruling is that hunting
+    # for it is MEASURED, not fixed, so the timeout has to be generous enough to let a hunt
+    # play out (including one browse call reaching its own 300s tool timeout) and still
+    # count as a completed sample rather than a harness-side cutoff.
+    timeout=420.0,
+)
+
 _ADMITS_THE_READ_FAILED = _AnsweringCase(
     case_id="chat-reply-admits-the-read-failed",
     area=Area.ANSWERING_FROM_THE_WEB,
@@ -598,6 +784,7 @@ _SAYS_ALREADY_THERE = _AnsweringCase(
 ANSWERING_CASES = (
     _ANSWER_FROM_PAGE,
     _ANSWER_ONE_LINK_DEEP,
+    _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE,
     _ADMITS_THE_READ_FAILED,
     _SAYS_NOTHING_IS_STORED,
     _SAYS_ALREADY_THERE,
@@ -663,6 +850,32 @@ async def test_the_value_one_link_deep_comes_back_in_the_reply(
     the value arrived, however she got there; what ``TOOL_SEQUENCE`` says is how a cohort that
     stopped hopping looks."""
     cohort = await _drive(chat_eval, model, _ANSWER_ONE_LINK_DEEP)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE
+    cohort.assert_the_reply_answers_the_ask()
+
+    # PROVENANCE
+    cohort.assert_every_value_in_the_store_is_sourced()
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_compound_ask_over_a_real_size_page_gets_what_is_there_and_invents_no_editor(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """The #2360/#2373 recipe carried to the chat layer (#2372): a real-size front page, a
+    compound ask, and one half of it — the editor-in-chief — nowhere on the page at all.
+
+    Whether she hunts for the missing half, and how much that costs, is MEASURED
+    (``TOOL_SEQUENCE``, token cost) and never fixed — the #2373 ruling.  The bar this case
+    holds her to is the honest end state: the three headlines she can answer come back
+    sourced, nothing stands in for the editor nobody gave her, and the turn still lands in
+    idle."""
+    cohort = await _drive(chat_eval, model, _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE)
     # LANDED
     cohort.assert_machine_landed(ConversationState.IDLE)
 
