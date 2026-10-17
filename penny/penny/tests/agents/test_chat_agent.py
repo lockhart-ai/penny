@@ -324,18 +324,24 @@ async def test_collection_configure_stamps_chat_provenance(
 # ── 1b. Automatic skill extraction + narration at run end (#1658) ─────────
 
 _FRAME_MARKER = "You just learned a reusable skill"
-# The writes record's own heading (#1946/#2185) — the third narrate-from-the-RECORD
-# frame, told apart from the two above by the first line of its own template.
+# The writes record's own heading (#1946/#2185) — told apart from the skill frame above
+# by the first line of its own template.
 _WRITES_RECORD_HEADING = Prompt.WRITES_LANDED_RECORD.split("\n")[0]
 
 
 def _writes_record(messages: list[dict]) -> str | None:
-    """The writes record as the draw reads it — the tail of its SYSTEM PROMPT from the
-    record's heading — or None when this draw has not been handed one.  It is never a
-    message in the conversation (#2030), so the system prompt is the only place looked."""
-    system = str(messages[0].get("content", "")) if messages else ""
-    start = system.find(_WRITES_RECORD_HEADING)
-    return None if start < 0 else system[start:]
+    """The LATEST writes record in view — appended to the end of a tool-result message
+    the moment its write landed (#2473), never a message of its own and never edited into
+    the system prompt (#2030).  Read from the END of the conversation backward, so a run
+    with two writes reads the most recent (full-picture) addendum rather than an earlier
+    one it has already superseded.  ``None`` when no draw has had one appended yet."""
+    for message in reversed(messages):
+        if message.get("role") == "tool":
+            content = str(message.get("content", ""))
+            start = content.find(_WRITES_RECORD_HEADING)
+            if start >= 0:
+                return content[start:]
+    return None
 
 
 def _injected(messages: list[dict], marker: str) -> str | None:
@@ -415,12 +421,17 @@ async def test_run_end_extracts_and_narrates_a_skill(
     run-shape validator narrates it in the SAME turn from the rendered recipe (SAID==DID)
     — one extra model call, the extraction running exactly once.
 
+    The writes record is a DIFFERENT shape now (#2473): it is appended to the write
+    call's own tool result the moment it lands, before any draft exists — so by the
+    time the skill frame is narrated, the one reply the model drafts already reads
+    both records at once, with no second draw and nothing dropped.
+
     The whole path is exercised end to end: the classifier's draw moves the machine, the
     channel hands the landed state to the turn, and the turn hands it to the extractor
     (#1850) — so the state extraction gates on is the one the turn actually ran under,
     not something re-read afterwards."""
     ask = "watch the aurora deck 2 price and remember it for me"
-    captured: dict[str, str | None] = {"frame": None, "writes": None, "tail": None}
+    captured: dict[str, str | None] = {"frame": None, "writes": None}
 
     def handler(request, _count):
         messages = request.get("messages") or []
@@ -432,20 +443,6 @@ async def test_run_end_extracts_and_narrates_a_skill(
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
-        frame = _injected(messages, _FRAME_MARKER)
-        writes = _writes_record(messages)
-        # The round has TWO records to narrate and they arrive one draw at a time, in the
-        # order the prep hands them out — the skill first, then what landed.  Checked
-        # newest-first here, so each capture happens on the draw that first sees it.
-        if writes is not None:
-            captured["writes"] = writes
-            # The draft the skill frame was answered with is DROPPED, not kept for the
-            # record to correct: the conversation still ends on the skill frame.
-            captured["tail"] = str(messages[-1].get("content", ""))
-            return _text("learned it, and saved the price! 🌟")
-        if frame is not None:  # the narration nudge is present → the post-nudge re-reply
-            captured["frame"] = frame
-            return _text("nice — i learned that routine! 🌟")
         tool_turns = [m for m in messages if m.get("role") == "tool"]
         if not tool_turns:  # a read (senses) — the first half of the routine
             return _tool_call("c0", "collection_list", {"collection": "aurora-prices"})
@@ -458,7 +455,15 @@ async def test_run_end_extracts_and_narrates_a_skill(
                     "entries": [{"key": "aurora deck 2 price", "content": "$499"}],
                 },
             )
-        return _text("the aurora deck 2 is $499 right now")  # final text → triggers extraction
+        frame = _injected(messages, _FRAME_MARKER)
+        if frame is not None:  # the skill nudge is present → the post-nudge re-reply
+            captured["frame"] = frame
+            # The writes record is already on the write's own tool result by now — it
+            # arrived with the tool call, well before this draw — so the one reply this
+            # run drafts reads both the skill frame AND the record at once.
+            captured["writes"] = _writes_record(messages)
+            return _text("learned it, and saved the price! 🌟")
+        return _text("the aurora deck 2 is $499 right now")  # first final text → skill nudge
 
     mock_llm.set_response_handler(handler, answers_state_classifier=True)
 
@@ -470,8 +475,6 @@ async def test_run_end_extracts_and_narrates_a_skill(
         calls = _spy_extractor(penny)
 
         await signal_server.push_message(sender=TEST_SENDER, content=ask)
-        # First the skill lands (extraction qualified + persisted), then the re-reply
-        # model call captures the narration frame — it only happens after the nudge.
         await wait_until(lambda: len(penny.db.skills.list_all()) == 1)
         await wait_until(lambda: captured["writes"] is not None)
 
@@ -501,17 +504,14 @@ async def test_run_end_extracts_and_narrates_a_skill(
         # reply that is the one moment they are there to see it.
         assert render_skill_shape(skill) == "`collection_list` → `collection_write`"
 
-        # A demonstration turn has TWO records, and each is narrated exactly once (#1946):
-        # the round's own reply used to report the writes from memory, which is what
+        # A demonstration turn has TWO records, and now neither costs a redraw: the
+        # round's own reply used to report the writes from memory, which is what
         # counted a discarded draw as an entry the user now has.  The seeded entry is not
-        # in it — it was written by nobody's run — so what the frame carries is this run's.
+        # in it — it was written by nobody's run — so what the record carries is this
+        # run's.
         assert captured["writes"] == Prompt.WRITES_LANDED_RECORD.format(
             record="1 entry landed in 'aurora-prices': 'aurora deck 2 price'"
         )
-        # The writes record follows the skill frame without the draft between them: the
-        # reply to the skill frame was dropped, so the draw after the record answers the
-        # skill frame with the record in view rather than correcting its own reply.
-        assert captured["tail"] == captured["frame"]
 
         # Extraction ran EXACTLY once, on the state the machine landed in — the
         # re-reply found the run already handled.
@@ -729,25 +729,18 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
     A discarded draw never becomes a call, so it writes nothing and leaves nothing behind
     — but from inside the run it is indistinguishable from a write that happened, which
     is how a demonstration came to report every item pushed while the store held fewer.
-    The frame is read off the ledger's own entry stamps, so it carries the one that
-    landed and the reply is composed against that."""
+    The frame is read off the ledger's own entry stamps, appended to the landed write's
+    own tool result the moment it lands (#2473) — so the model's first reply already
+    reads what actually landed, with no draft to discard and no second draw."""
     ask = "save the keel lantern and the aurora lantern prices for me"
-    draft = "saved both lantern prices for you"
-    captured: dict[str, str | None] = {"writes": None, "tail_role": None}
+    captured: dict[str, str | None] = {"writes": None}
     drew_the_second = {"hit": False}
-    saw_the_draft = {"hit": False}
 
     def handler(request, _count):
         messages = request.get("messages") or []
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
-        writes = _writes_record(messages)
-        if writes is not None:  # the record is in view → the one reply written after it
-            captured["writes"] = writes
-            captured["tail_role"] = str(messages[-1].get("role"))
-            saw_the_draft["hit"] = draft in blob
-            return _text("saved the keel lantern — the aurora one didn't land 🌊")
         tool_turns = [m for m in messages if m.get("role") == "tool"]
         if not tool_turns:  # the write that LANDS
             return _tool_call(
@@ -771,7 +764,11 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
                     "entries": [{"key": "aurora lantern", "content": _COLLAPSE}],
                 },
             )
-        return _text(draft)
+        # The collapse was discarded and re-rolled on the UNCHANGED context: tool_turns
+        # still counts the one landed write, whose own tool result already carries the
+        # record — in view before this, the model's FIRST and only, draft.
+        captured["writes"] = _writes_record(messages)
+        return _text("saved the keel lantern — the aurora one didn't land 🌊")
 
     mock_llm.set_response_handler(handler)
 
@@ -779,10 +776,7 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
         penny.db.memories.create_collection("lantern-prices", "lantern prices")
 
         await signal_server.push_message(sender=TEST_SENDER, content=ask)
-        # The reply is the LAST thing the turn does, so waiting for it waits for the whole
-        # turn — the nudge, the re-reply, and the send.
         reply = await signal_server.wait_for_message(timeout=10.0)
-        assert captured["writes"] is not None
 
         # The store holds ONE entry, and the frame states exactly that — not the two the
         # run drew.  Nothing here counts tool calls: the read is the entry stamps, so a
@@ -793,12 +787,8 @@ async def test_a_turn_narrates_the_writes_that_landed_not_the_ones_it_drew(
         assert captured["writes"] == Prompt.WRITES_LANDED_RECORD.format(
             record="1 entry landed in 'lantern-prices': 'keel lantern'"
         )
-        # The record is Penny's own state, not a message after her reply (#2030): the
-        # draft it would have corrected is dropped, so the conversation the reply is drawn
-        # from still ends on the last tool result and holds no reply to correct.
-        assert captured["tail_role"] == "tool"
-        assert saw_the_draft["hit"] is False
-        # And the reply the user receives is the one composed AFTER the record.
+        # And the reply the user receives is the one drafted with the record already in
+        # view — not a second one corrected after the fact.
         assert "didn't land" in reply["message"]
 
 
@@ -812,7 +802,9 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
 
     The save here is refused as unchanged (the key already holds that value), which is
     the store answering, not failing.  The record lists the try with that answer,
-    verbatim, read off the run's own call records by the tool's declared mark."""
+    verbatim, read off the run's own call records by the tool's declared mark —
+    appended to the refused call's own tool result the moment it comes back (#2473), so
+    the model's first reply already reads it."""
     ask = "note the keel lantern price for me, it's $18"
     captured: dict[str, str | None] = {"writes": None}
 
@@ -821,10 +813,6 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
-        writes = _writes_record(messages)
-        if writes is not None:
-            captured["writes"] = writes
-            return _text("that one was already in there at $18 🏮")
         if not [m for m in messages if m.get("role") == "tool"]:
             return _tool_call(
                 "c0",
@@ -834,7 +822,8 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
                     "entries": [{"key": "keel lantern", "content": "$18"}],
                 },
             )
-        return _text("saved the keel lantern price for you")
+        captured["writes"] = _writes_record(messages)
+        return _text("that one was already in there at $18 🏮")
 
     mock_llm.set_response_handler(handler)
 
@@ -856,6 +845,65 @@ async def test_a_turn_whose_every_save_was_refused_is_told_nothing_landed(
             )
         )
         assert "already" in reply["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_writes_twice_states_the_full_record_each_time(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A later step's addendum states the record AS OF NOW, not a delta (#2473): a run
+    with two landed writes never leaves an earlier addendum understating what has
+    landed, so the model is never shown two "current" records that disagree."""
+    ask = "save the keel lantern and the aurora lantern prices for me"
+    seen: list[str | None] = []
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        tool_turns = [m for m in messages if m.get("role") == "tool"]
+        if not tool_turns:
+            return _tool_call(
+                "c0",
+                "collection_write",
+                {
+                    "collection": "lantern-prices",
+                    "entries": [{"key": "keel lantern", "content": "$18"}],
+                },
+            )
+        if len(tool_turns) == 1:
+            seen.append(_writes_record(messages))
+            return _tool_call(
+                "c1",
+                "collection_write",
+                {
+                    "collection": "lantern-prices",
+                    "entries": [{"key": "aurora lantern", "content": "$22"}],
+                },
+            )
+        seen.append(_writes_record(messages))
+        return _text("saved both lantern prices for you")
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("lantern-prices", "lantern prices")
+
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        await signal_server.wait_for_message(timeout=10.0)
+
+        assert len(seen) == 2
+        # Before the second write, the record states only the one that had landed.
+        assert seen[0] == Prompt.WRITES_LANDED_RECORD.format(
+            record="1 entry landed in 'lantern-prices': 'keel lantern'"
+        )
+        # After it, the record is recomputed fresh — the WHOLE picture, not a delta
+        # naming only the new entry — so nothing here reads as a correction of the
+        # first.
+        assert seen[1] == Prompt.WRITES_LANDED_RECORD.format(
+            record=("2 entries landed in 'lantern-prices': 'keel lantern', 'aurora lantern'")
+        )
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1155,8 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
     """The #1869 seam end to end: an apply turn entered with the round's framing renders
     the container verbatim, makes ONE terms-only ``collection_configure``, the framework supplies
     the collection + the routine + the values it is pointed at, and the turn then narrates
-    what is running from the RECORD.
+    what is running from the RECORD — appended to that call's own tool result the moment
+    it lands (#2473), so the model's first reply reads it with no narration round-trip.
 
     What the turn said is the cadence and the notify flag; everything else on the row came
     off the round — which is the whole point, since the values are literal spans of turns
@@ -1125,21 +1174,23 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
-        frame = next(
+        prompts.setdefault("system", str(messages[0].get("content", "")))
+        if not any(m.get("role") == "tool" for m in messages):
+            return _terms_only_set(_APPLY_FRAMING.container)
+        # The configure call already landed, and its own tool result already carries
+        # the record (#2473) — this is the model's FIRST reply, not a post-nudge
+        # re-reply.  The record is a TAIL of that tool result (appended after its own
+        # narration + body), so it is sliced from the marker rather than compared
+        # against the whole message.
+        captured["frame"] = next(
             (
-                m["content"]
+                m["content"][m["content"].index(_CONFIGURED_MARKER) :]
                 for m in messages
                 if isinstance(m.get("content"), str) and _CONFIGURED_MARKER in m["content"]
             ),
             None,
         )
-        if frame is not None:  # the narration nudge is present → the post-nudge re-reply
-            captured["frame"] = frame
-            return _text(reply)
-        prompts.setdefault("system", str(messages[0].get("content", "")))
-        if any(m.get("role") == "tool" for m in messages):
-            return _text("all set")
-        return _terms_only_set(_APPLY_FRAMING.container)
+        return _text(reply)
 
     mock_llm.set_response_handler(handler)
 

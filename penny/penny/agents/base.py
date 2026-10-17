@@ -49,7 +49,6 @@ from penny.validation import (
     LoopContext,
     NudgeContinue,
     Proceed,
-    RedrawWithRecord,
     RejectToolCall,
     Repair,
     ResponseValidator,
@@ -686,6 +685,7 @@ class Agent:
                 )
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
                 await self.after_step(result.records, result.messages, messages)
+                await self.after_tool_step(result.records, tool_call_records, messages, run_id)
                 if self.should_stop_loop(tool_call_records):
                     logger.info("Loop stop requested after step %d/%d", step + 1, steps)
                     return ControllerResponse(answer="", tool_calls=tool_call_records)
@@ -761,13 +761,37 @@ class Agent:
                 return True
             case Proceed():
                 return False
-            case Retry() | Repair() | NudgeContinue() | RedrawWithRecord() | Stop():
+            case Retry() | Repair() | NudgeContinue() | Stop():
                 raise AssertionError(
                     "run-shape validators produced an unexpected disposition on a "
                     "tool-call response"
                 )
             case unreachable:
                 assert_never(unreachable)
+
+    async def after_tool_step(
+        self,
+        step_records: list[ToolCallRecord],
+        records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str,
+    ) -> None:
+        """Template hook: called once a tool step's results are already absorbed into
+        ``messages`` (after ``_absorb_tool_step_result`` / ``after_step``), before the
+        next model call.  A no-op on the base ``Agent`` — a background cycle's own
+        account IS its reply (#1569), so there is nothing here for it to narrate.
+
+        ``step_records`` is this STEP's own new records (what just ran); ``records`` is
+        the run's WHOLE accumulated history including them — a subclass that gates on
+        what just happened reads the first, a subclass that renders a cumulative record
+        reads the second.
+
+        ``ChatAgent`` overrides this to append what the run has WRITTEN and
+        CONFIGURED so far to the end of the step's own tool result (#2473): both
+        records exist the moment their tool call lands, so handing them over HERE —
+        rather than waiting for the text branch and discarding whatever got drafted
+        in between — means the model's first reply is drawn with them already in
+        view, and there is never a second one to throw away."""
 
     async def _prepare_text_shape(
         self, response: LlmResponse, ctx: LoopContext, run_id: str, call_link: CallLink
@@ -789,24 +813,21 @@ class Agent:
         call_link: CallLink,
     ) -> bool:
         """Run the run-shape chain over a text-only response; apply a
-        ``NudgeContinue`` (a chat run that just learned a skill and must narrate it) or a
-        ``RedrawWithRecord`` (a chat run whose reply is written after what it saved).
+        ``NudgeContinue`` (a chat run that just learned a skill and must narrate it,
+        #1658) — the one record still narrated at this branch, because skill
+        extraction is triggered by the text draft itself.
 
         Every text draw reaching here is a VALID one for this agent's shape — an
         invalid one was discarded and re-rolled before the loop ever saw it (#1839) —
         so a nudge appended here only ever continues a legitimate turn.
 
-        Returns True when the loop should ``continue`` (response + nudge appended, or the
-        draft dropped and the record added to the system prompt), False to treat the text
-        as the final answer."""
+        Returns True when the loop should ``continue`` (response + nudge appended),
+        False to treat the text as the final answer."""
         ctx = await self._prepare_text_shape(response, ctx, run_id, call_link)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
                 messages.append(response.message.to_input_message())
                 messages.append({"role": MessageRole.USER, "content": message})
-                return True
-            case RedrawWithRecord(record=record):
-                self._add_to_system_prompt(messages, record)
                 return True
             case Proceed():
                 return False
@@ -816,17 +837,6 @@ class Agent:
                 )
             case unreachable:
                 assert_never(unreachable)
-
-    @staticmethod
-    def _add_to_system_prompt(messages: list[dict], section: str) -> None:
-        """Append ``section`` to the end of the system prompt — the model's view of its
-        own situation, whose tail is the self-state — so the next draw reads it as state
-        rather than as something said to it.  ``_build_messages`` always opens the
-        conversation with the system message; one that does not is a programming error."""
-        system = messages[0]
-        if system.get("role") != MessageRole.SYSTEM:
-            raise AssertionError("the conversation does not open with its system prompt")
-        messages[0] = {**system, "content": f"{system['content']}\n\n{section}"}
 
     @staticmethod
     def _frame_injected_result(tool_name: str, narration: str, body: str) -> str:
@@ -966,7 +976,7 @@ class Agent:
                     response = await self._invoke_nondegenerate(
                         messages, effective_tools, call_link, prompt_type
                     )
-                case Repair() | RejectToolCall() | NudgeContinue() | RedrawWithRecord() | Stop():
+                case Repair() | RejectToolCall() | NudgeContinue() | Stop():
                     raise AssertionError("response validators produced an unexpected disposition")
                 case unreachable:
                     assert_never(unreachable)

@@ -50,7 +50,6 @@ from penny.validation.outcomes import (
     LoopContext,
     NudgeContinue,
     Proceed,
-    RedrawWithRecord,
     Repair,
     Retry,
     ValidationOutcome,
@@ -317,19 +316,22 @@ class HallucinatedToolCallRepair:
 
 
 class _RecordNarrationValidator(ABC):
-    """The shared shape of the narrate-from-the-RECORD guards: a chat run that changed
+    """The shared shape of a narrate-from-the-RECORD guard: a chat run that changed
     something durable tells the user about it from what the framework stamped, never from
     memory (SAID==DID).
 
     The framework does the work deterministically at the text-branch prep
     (``ChatAgent._prepare_text_shape``) and stamps a rendered frame on the ctx; a
-    subclass names which frame it reads, and how it is handed over (``_narrate``: a
-    ``NudgeContinue`` by default, a ``RedrawWithRecord`` for the writes record).  Either
-    way — a validator in the chat chain, not a branch in the loop — the model re-replies
-    against the render.  The prep stamps ONE frame per text draw and never the same one
-    twice (a run's records are computed once and handed out in a declared order), so a
-    turn that has several records to narrate narrates each of them exactly once and the
-    draw after the last falls through to the real final answer.
+    subclass names which frame it reads.  The model re-replies against the render via a
+    ``NudgeContinue`` — a validator in the chat chain, not a branch in the loop.
+
+    This used to have two siblings — the applied-configuration frame (#1869) and the
+    writes-landed frame (#1946/#2185) — both retired by #2473: each record exists the
+    moment its tool call lands, so ``ChatAgent.after_tool_step`` now appends it straight
+    onto that step's own tool result instead of waiting for the text branch and
+    discarding whatever got drafted in between.  ``SkillNarrationValidator`` below is the
+    one record still narrated here, because skill extraction is triggered by the text
+    draft itself — there is no earlier moment to hand its frame over.
 
     On the final step there is no room to continue (tools stripped, the loop would
     exhaust), so it Proceeds — what happened has already happened durably, and it surfaces
@@ -341,14 +343,8 @@ class _RecordNarrationValidator(ABC):
         frame = self._frame(ctx)
         if frame:
             logger.info("Narrating %s this turn", self._narrating())
-            return self._narrate(frame)
+            return NudgeContinue(message=frame)
         return Proceed(response=response)
-
-    def _narrate(self, frame: str) -> ValidationOutcome:
-        """How the record reaches the model: by default a message after the draft, which
-        the model then answers.  A subclass whose record the reply must be WRITTEN FROM,
-        rather than answered, hands it over as state instead."""
-        return NudgeContinue(message=frame)
 
     @abstractmethod
     def _frame(self, ctx: LoopContext) -> str | None:
@@ -369,49 +365,6 @@ class SkillNarrationValidator(_RecordNarrationValidator):
 
     def _narrating(self) -> str:
         return "an auto-extracted skill"
-
-
-class AppliedConfigurationValidator(_RecordNarrationValidator):
-    """A chat run that just CONFIGURED the round's routine narrates it in the same turn
-    (#1869) — the applied-configuration sibling of the skill-learned frame above.
-
-    It exists because that turn no longer supplies the routine or the values it is
-    pointed at: the round settled both and the framework supplied them at the call, so
-    what is running is a record to READ.  The frame carries that record — cadence, end
-    condition, notify, what it watches — and a turn narrating from anything else would be
-    stating a configuration it did not make."""
-
-    def _frame(self, ctx: LoopContext) -> str | None:
-        return ctx.applied_configuration_frame
-
-    def _narrating(self) -> str:
-        return "the configuration this turn applied"
-
-
-class WritesLandedValidator(_RecordNarrationValidator):
-    """A chat run that wrote entries, or tried to, has its reply written after what
-    actually landed (#1946/#2185) — the third sibling of the two frames above, and the
-    plainest of them.
-
-    A turn's own account of its writes is a count of what it ATTEMPTED: a draw the reroll
-    guard discarded never happened, a write the change-gate refused never landed, and
-    both look like writes from inside the run.  The ledger's entry stamps say which ones
-    survived — and when none did, each try's own answer says why — so the record carries
-    that and the reply states it rather than adding up its own intentions.
-
-    The record is handed over as the model's own STATE, never as a message after the
-    draft (#2030): a message arriving after a reply reads as the user correcting that
-    reply, and the next draw answered the correction instead of the user.  So the draft is
-    dropped and the one reply is drawn with the record in view."""
-
-    def _narrate(self, frame: str) -> ValidationOutcome:
-        return RedrawWithRecord(record=frame)
-
-    def _frame(self, ctx: LoopContext) -> str | None:
-        return ctx.writes_landed_frame
-
-    def _narrating(self) -> str:
-        return "what this turn wrote"
 
 
 # ── Collector-only run-shape validator ───────────────────────────────────────

@@ -382,31 +382,36 @@ class Prompt:
         "they'd like."
     )
 
-    # Injected as a user turn after a chat run that just CONFIGURED the round's routine
-    # (#1869) — the applied-configuration sibling of SKILL_LEARNED_NARRATION above, and it
-    # exists for the same reason that one does, one step further along: the turn no longer
-    # supplies the routine or the values it is pointed at (the round settled both, and the
-    # framework supplied them at the call), so what is now running is something the model
-    # has to READ rather than remember.  ``{configuration}`` is the record the store holds
-    # — cadence, end condition, notify, and what it is pointed at — so SAID==DID holds by
-    # construction.  Deliberately not the rendered program, for SKILL_LEARNED_NARRATION's
-    # own reason (#1799): a block of tool calls in front of this request is a block that
-    # gets read aloud.
+    # Appended to the end of the step's own tool-result message the moment a chat turn's
+    # ``collection_configure`` call lands (#1869/#2473) — the applied-configuration sibling
+    # of WRITES_LANDED_RECORD below, and it exists for the same reason that one does: the
+    # turn no longer supplies the routine or the values it is pointed at (the round settled
+    # both, and the framework supplied them at the call), so what is now running is
+    # something the model has to READ rather than remember.  ``{configuration}`` is the
+    # record the store holds — cadence, end condition, notify, and what it is pointed at —
+    # so SAID==DID holds by construction.  Deliberately not the rendered program, for
+    # SKILL_LEARNED_NARRATION's own reason (#1799): a block of tool calls in front of this
+    # request is a block that gets read aloud.
     # ``{configuration}`` also carries, on any line this turn CHANGED, what that line
     # used to say (#1946): a turn asked to FIX a running job is asked about two states,
     # and the row it reads holds only the one that won — so the was-state was the one
     # thing left to remember, and the observed regression was a correct fix reported
     # beside an invented prior value.  The instruction names the shape rather than the
     # fields, since which line carries one is decided by what the turn moved.
+    #
+    # Delivered as STATE on the tool result, before any draft (#2473) — never a message
+    # after a reply, and never a redraw with the draft dropped: the record reaches the
+    # model with the call that produced it, so the one reply it drafts already reads it.
     CONFIGURATION_APPLIED_NARRATION = (
-        "The job is now set up, and here is exactly what was configured:\n\n"
+        "### What this turn configured\n"
+        "Read back from the store after this turn's last call:\n\n"
         "{configuration}\n\n"
-        "Reply to the user now. Tell them in your own words what is running: what it "
-        "watches, how often it runs, when it stops if it stops, and whether they will "
-        'hear from it. A line reading "was … → now …" is one this turn changed: the '
-        "first part is what it used to be and the second is what it is now, so if you "
-        "tell them what changed, copy both from there. Say only what is above — "
-        "anything not there was not set."
+        "That is the store's own record of what is running: what it watches, how often "
+        "it runs, when it stops if it stops, and whether you will hear from it. When "
+        "your reply says what is running, take it from there. A line reading "
+        '"was … → now …" is one this turn changed: the first part is what it used to be '
+        "and the second is what it is now, so if you say what changed, copy both from "
+        "there. Say only what is above — anything not there was not set."
     )
 
     # What a chat run that tried to keep something is shown before its reply is written
@@ -416,14 +421,18 @@ class Prompt:
     # the turn.  ``{record}`` is the ledger's own answer: the entries this run's stamp is
     # on, or — when it tried and none landed — each try with the tool's own answer to it.
     #
-    # It is a section of Penny's OWN STATE, appended to the end of the system prompt, and
-    # the reply is drawn after it; it is never a message in the conversation (#2030).  As a
-    # user turn arriving after a reply was already written, it read as the user correcting
-    # that reply, and the reply that followed answered the correction ("You're totally
-    # right…") instead of the user.  So the draft it would have corrected is discarded and
-    # the record is part of what the one reply is written from, in the place Penny reads
-    # her own situation.  The closing lines give PERMISSION to report a shortfall, because
-    # the reply this replaces was not lying — it was counting from the wrong place.
+    # It is a section of Penny's OWN STATE, appended to the end of the step's own
+    # tool-result message the moment the write call lands (#2473), and the one reply this
+    # run drafts is drawn after it; it is never a message in the conversation (#2030) and
+    # never edited into the system prompt (editing the prefix mid-run would invalidate a
+    # local build's prefix cache).  A message arriving after a reply reads as the user
+    # correcting it, and the reply that followed used to answer the correction ("You're
+    # totally right…") instead of the user — which is also what used to force a whole
+    # second draw, discarding whatever the first one said.  Delivered this early, there is
+    # no draft to discard: the record is part of what the one reply is written from, in
+    # the place Penny reads her own situation.  The closing lines give PERMISSION to report
+    # a shortfall, because the reply this replaces was not lying — it was counting from the
+    # wrong place.
     WRITES_LANDED_RECORD = (
         "### What this turn saved\n"
         "Read back from the store after this turn's last call:\n\n"

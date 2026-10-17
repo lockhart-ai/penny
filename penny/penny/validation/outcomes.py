@@ -77,19 +77,6 @@ class NudgeContinue(BaseModel):
     message: str
 
 
-class RedrawWithRecord(BaseModel):
-    """Discard the draft, add ``record`` to the end of the system prompt, and draw the
-    reply again on an otherwise unchanged conversation — e.g. a chat run that tried to
-    keep something, whose reply is written after the store's own answer about it (#2185).
-
-    The record joins what the model reads as its OWN situation rather than arriving as a
-    message: nothing in the conversation reads as a correction of the draft, because the
-    draft is not in it.  Like ``NudgeContinue``, only ever applied to a VALID draw."""
-
-    model_config = ConfigDict(frozen=True)
-    record: str
-
-
 class Stop(BaseModel):
     """End the loop now, returning ``response`` — e.g. every tool call so far has
     failed, so there's no point continuing."""
@@ -99,9 +86,7 @@ class Stop(BaseModel):
 
 
 # The closed set of things the loop can be told to do about a model response.
-ValidationOutcome = (
-    Proceed | Retry | Repair | RejectToolCall | NudgeContinue | RedrawWithRecord | Stop
-)
+ValidationOutcome = Proceed | Retry | Repair | RejectToolCall | NudgeContinue | Stop
 
 
 class LoopContext(BaseModel):
@@ -130,25 +115,14 @@ class LoopContext(BaseModel):
     # ``SkillNarrationValidator`` can narrate it (SAID==DID).  ``None`` when the run
     # did not qualify for extraction, so every non-chat / non-qualifying run reads
     # the same empty default.
+    #
+    # Its two former siblings — the applied-configuration frame (#1869) and the
+    # writes-landed frame (#1946/#2185) — are GONE (#2473): both records exist the
+    # moment their tool call lands, so ``ChatAgent.after_tool_step`` appends each
+    # straight onto that step's own tool result instead of stamping it here for a
+    # text-branch validator to redraw with.  Only the skill frame still waits for the
+    # text branch, because extraction is triggered by the text draft itself.
     learned_skill_frame: str | None = None
-    # The rendered record of what this run just CONFIGURED (#1869), stamped onto the
-    # text-branch ctx by ``ChatAgent._prepare_text_shape`` so the chat
-    # ``AppliedConfigurationValidator`` can narrate it.  Its sibling above carries what a
-    # run LEARNED; this one carries what a run SET RUNNING — and it exists because the
-    # turn no longer supplies the routine or the values it is pointed at (the round
-    # settled both), so what is now running is something to read rather than remember.
-    # ``None`` on every run that configured nothing, which is every run that is not an
-    # apply turn standing a framed round up.
-    applied_configuration_frame: str | None = None
-    # The rendered record of what this run SAVED (#1946/#2185), stamped onto the
-    # text-branch ctx by ``ChatAgent._prepare_text_shape`` so the chat
-    # ``WritesLandedValidator`` can have the reply drawn after it.  The third sibling: what
-    # a run LEARNED, what it SET RUNNING, and — here — what it left in the store.  It
-    # exists because a run's own account of its writes counts what it ATTEMPTED (a
-    # discarded draw and a refused write both feel like writes from inside the turn) while
-    # the ledger counts what LANDED.  ``None`` on every run that neither wrote a keyed
-    # entry nor tried to, which is most turns.
-    writes_landed_frame: str | None = None
 
 
 @runtime_checkable
@@ -172,7 +146,7 @@ def run_validators(
 
     ``Repair`` threads its transformed response into the rest of the chain and
     continues; ``Proceed`` passes; the first ``Retry`` / ``RejectToolCall`` /
-    ``NudgeContinue`` / ``RedrawWithRecord`` / ``Stop`` short-circuits and is returned.
+    ``NudgeContinue`` / ``Stop`` short-circuits and is returned.
     When the chain completes with no objection, returns ``Proceed`` carrying the
     (possibly-repaired) response."""
     working = response
@@ -182,9 +156,7 @@ def run_validators(
                 working = repaired
             case Proceed():
                 pass
-            case (
-                Retry() | RejectToolCall() | NudgeContinue() | RedrawWithRecord() | Stop()
-            ) as terminal:
+            case (Retry() | RejectToolCall() | NudgeContinue() | Stop()) as terminal:
                 return terminal
             case unreachable:
                 assert_never(unreachable)

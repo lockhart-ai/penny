@@ -48,11 +48,7 @@ from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmute
 from penny.tools.skill_tools import render_skill_brief, render_skill_shape
 from penny.validation import ConditionKey
 from penny.validation.outcomes import LoopContext
-from penny.validation.response_validators import (
-    AppliedConfigurationValidator,
-    SkillNarrationValidator,
-    WritesLandedValidator,
-)
+from penny.validation.response_validators import SkillNarrationValidator
 
 if TYPE_CHECKING:
     from penny.llm.image_client import OllamaImageClient
@@ -87,18 +83,13 @@ class ChatAgent(Agent):
     #  - SkillNarrationValidator: on a run that just auto-extracted a skill (#1658),
     #    nudge the model to tell the user what it learned FROM the rendered frame the
     #    text-branch prep stamped on the ctx (SAID==DID).
-    #  - AppliedConfigurationValidator: on a run that just configured the round's routine
-    #    (#1869), the same move for what is now RUNNING — the turn supplied only the terms,
-    #    so the routine and what it watches are read off the record rather than recalled.
-    #  - WritesLandedValidator: on a run that wrote entries or tried to (#1946/#2185), what
-    #    actually landed — the ledger's answer, against which a turn's own count of its
-    #    writes is a count of what it attempted.  Last, because it is the corrective one:
-    #    the frames above ask for an account of the round, this one says which of it the
-    #    store holds.  Handed over as state the reply is drawn after, not as a message.
+    #
+    # Its two former siblings — the applied-configuration frame (#1869) and the
+    # writes-landed frame (#1946/#2185) — retired with #2473: both records exist the
+    # moment their tool call lands, so ``after_tool_step`` (below) appends each straight
+    # onto that step's own tool result rather than waiting for a text draw to discard.
     run_shape_validators = [
         SkillNarrationValidator(),
-        AppliedConfigurationValidator(),
-        WritesLandedValidator(),
     ]
 
     # Chat's invalid draws are the ones that are not a REPLY (#1839/#1937): a plain
@@ -174,13 +165,6 @@ class ChatAgent(Agent):
         # once-per-run guard, so the post-narration re-reply never re-extracts or
         # re-reads the store (chat turns are sequential, so one field suffices; no leak).
         self._extraction_run_id: str | None = None
-        # That run's records still to narrate, as ``(ctx field, rendered frame)`` in the
-        # order they are handed out — one per text draw (#1946).  Computed once with the
-        # extraction above and DRAINED by the prep, so a turn with several records to
-        # narrate (a demonstration both learns a routine and writes entries) narrates each
-        # exactly once instead of the chain short-circuiting on the first and dropping
-        # the rest.
-        self._pending_frames: list[tuple[str, str]] = []
         # What that attempt RETURNED, held for the span of the turn so the run-end
         # learn check reads a recorded outcome rather than re-deciding it (#1839).
         # ``None`` means extraction never ran (no text branch was reached).
@@ -256,52 +240,95 @@ class ChatAgent(Agent):
     async def _prepare_text_shape(
         self, response: LlmResponse, ctx: LoopContext, run_id: str, call_link: CallLink
     ) -> LoopContext:
-        """When the chat run emits final text, work out every RECORD this run has to
-        narrate and hand the next one to the chat chain's narration validators.
+        """When the chat run emits its first final text, run automatic skill extraction
+        over this run's completed ledger (#1658) and hand the rendered frame to the chat
+        chain's ``SkillNarrationValidator``.
 
-        The records are computed exactly ONCE per run (``_extraction_run_id``), because
-        one of them — the automatic skill extraction over this run's completed ledger — is
-        real work that must not be repeated, and because re-reading the store after a
-        narration would answer the same question a second time.  They are then handed out
-        ONE PER TEXT DRAW, in ``_run_end_frames``' declared order: each draw stamps the
-        next un-narrated frame, its validator nudges, and the draw after the last one
-        finds nothing left and becomes the real final answer.
+        Extraction runs exactly ONCE per run (``_extraction_run_id``): it is real work
+        over the store that must not be repeated, and re-reading it after the narration
+        would answer the same question a second time.  ``None`` on every later text draw
+        of the same run — the frame is narrated once, the chain nudges, and the draw
+        after it finds nothing left and becomes the real final answer.
 
-        One per draw rather than all at once because the chain short-circuits on the first
-        frame it finds — stamping several would narrate one and silently drop the rest,
-        which is what a demonstration turn (a skill learned AND entries written) would
-        have done with the third frame."""
-        if run_id != self._extraction_run_id:
-            self._extraction_run_id = run_id
-            self._pending_frames = await self._run_end_frames(ctx, run_id, call_link)
-        if not self._pending_frames:
+        This is the only record still narrated at the text branch.  Its former
+        siblings — what the run CONFIGURED (#1869) and what it WROTE (#1946/#2185) —
+        are delivered earlier, by ``after_tool_step`` (below), the moment their own tool
+        call lands (#2473): extraction has no such earlier moment, since what triggers
+        it IS the text draft."""
+        if run_id == self._extraction_run_id:
             return ctx
-        field, frame = self._pending_frames.pop(0)
-        return ctx.model_copy(update={field: frame})
+        self._extraction_run_id = run_id
+        frame = await self._extract_and_frame_skill(
+            run_id, call_link, self._turn_state, self._turn_framing
+        )
+        if frame is None:
+            return ctx
+        return ctx.model_copy(update={"learned_skill_frame": frame})
 
-    async def _run_end_frames(
-        self, ctx: LoopContext, run_id: str, call_link: CallLink
-    ) -> list[tuple[str, str]]:
-        """Every record this run has to narrate, as ``(ctx field, rendered frame)``, in the
-        order they are narrated — the table of contents for the run-end prep above.
+    # ── Writes + configuration records, delivered with the tool step (#2473) ──
 
-        The order is what the reply is composed against LAST: what the run WROTE comes
-        after what it learned or set up, because the writes record is the corrective one —
-        the earlier frames ask for an account of the round, and this one says which parts
-        of that account the store actually holds."""
-        candidates = [
-            (
-                "learned_skill_frame",
-                await self._extract_and_frame_skill(
-                    run_id, call_link, self._turn_state, self._turn_framing
-                ),
-            ),
-            ("applied_configuration_frame", self._applied_configuration_frame(ctx, run_id)),
-            ("writes_landed_frame", self._writes_landed_frame(ctx, run_id)),
-        ]
-        return [(field, frame) for field, frame in candidates if frame is not None]
+    async def after_tool_step(
+        self,
+        step_records: list[ToolCallRecord],
+        records: list[ToolCallRecord],
+        messages: list[dict],
+        run_id: str,
+    ) -> None:
+        """Append what this run has CONFIGURED and WRITTEN so far to the end of the
+        step's own tool result — before any draft of the reply exists.
 
-    def _writes_landed_frame(self, ctx: LoopContext, run_id: str) -> str | None:
+        Both records exist the moment their tool call lands (they are reads of the
+        store, not of the run's own memory of itself), so recomputing them and
+        appending whichever are non-``None`` here means the model's first reply is
+        drawn with them already in view.  There is no draft to discard and no second
+        draw: the old mechanism dropped a reply written before the record and redrew
+        with it spliced into the system prompt, which is the two-reply regression this
+        ticket closes (#2473).
+
+        Recomputed only on a step whose OWN calls could plausibly have changed one of
+        the two (a ``collection_configure`` or a store-asking write) — ``_may_change_a_
+        record`` gates it on ``step_records`` alone, so a step that only read or
+        browsed costs no extra ledger query; neither record can change from a read.
+
+        Appended to the TOOL result, never edited into the system prompt: the system
+        prompt is this run's prefix, and editing it mid-run would invalidate a local
+        build's prefix cache on every later step.  A later step's addendum states the
+        record AS OF NOW — the whole picture, not a delta — so a run with two writes
+        never leaves an earlier message understating what has landed."""
+        if not self._may_change_a_record(step_records):
+            return
+        addendum = "\n\n".join(
+            frame
+            for frame in (
+                self._applied_configuration_frame(records, run_id),
+                self._writes_landed_frame(records, run_id),
+            )
+            if frame is not None
+        )
+        if addendum:
+            self._append_to_last_tool_result(messages, addendum)
+
+    @staticmethod
+    def _may_change_a_record(step_records: list[ToolCallRecord]) -> bool:
+        """Whether this step's OWN calls could have moved the configuration or the
+        writes record — the same two tool marks those records are read off
+        (``CollectionSetTool.name`` / ``Tool.asks_to_store``), so a step that only read
+        or browsed is never worth a ledger query: neither record can change from a
+        read."""
+        return any(
+            record.tool == CollectionSetTool.name or Tool.asks_to_store(record.tool)
+            for record in step_records
+        )
+
+    @staticmethod
+    def _append_to_last_tool_result(messages: list[dict], addendum: str) -> None:
+        """Append ``addendum`` to the content of the LAST message in ``messages`` — the
+        step's own tool result, since this is only ever called right after a tool step's
+        results have been absorbed into it (#2473)."""
+        last = messages[-1]
+        messages[-1] = {**last, "content": f"{last['content']}\n\n{addendum}"}
+
+    def _writes_landed_frame(self, records: list[ToolCallRecord], run_id: str) -> str | None:
         """The record of what this run SAVED, rendered for the reply to be written after
         (#1946/#2185) — ``None`` when the run neither saved anything nor tried to.
 
@@ -317,18 +344,20 @@ class ChatAgent(Agent):
         and deciding it SHOULD have tried would mean reading the ask's words.  Nothing in
         the path names a tool, so a plugin's verb is covered by declaring the mark."""
         landed = render_writes_landed(self.db.memories.entries_written_by_run(run_id))
-        record = landed or render_nothing_landed(self._store_attempts(ctx))
+        record = landed or render_nothing_landed(self._store_attempts(records))
         if record is None:
             return None
         return Prompt.WRITES_LANDED_RECORD.format(record=record)
 
     @staticmethod
-    def _store_attempts(ctx: LoopContext) -> list[ToolCallRecord]:
+    def _store_attempts(records: list[ToolCallRecord]) -> list[ToolCallRecord]:
         """This run's calls that asked the store to keep an entry, in the order made —
         read off each call's own tool's declared mark, never off its name."""
-        return [record for record in ctx.records if Tool.asks_to_store(record.tool)]
+        return [record for record in records if Tool.asks_to_store(record.tool)]
 
-    def _applied_configuration_frame(self, ctx: LoopContext, run_id: str) -> str | None:
+    def _applied_configuration_frame(
+        self, records: list[ToolCallRecord], run_id: str
+    ) -> str | None:
         """The record of what this turn CONFIGURED, rendered for the narration frame
         (#1869) — ``None`` when the turn configured nothing.
 
@@ -349,7 +378,7 @@ class ChatAgent(Agent):
         the old value, so a turn asked to FIX a running job had nowhere to read the state
         it was fixing and reported it from memory."""
         framing = self._configuring_round()
-        if framing is None or not self._set_a_collection(ctx):
+        if framing is None or not self._set_a_collection(records):
             return None
         row = self.db.memories.get(framing.container)
         if row is None:
@@ -363,13 +392,13 @@ class ChatAgent(Agent):
         return Prompt.CONFIGURATION_APPLIED_NARRATION.format(configuration=configuration)
 
     @staticmethod
-    def _set_a_collection(ctx: LoopContext) -> bool:
+    def _set_a_collection(records: list[ToolCallRecord]) -> bool:
         """Whether a ``collection_configure`` call succeeded this run — the structural "did this
         turn configure anything" read, off the run's own call records rather than off the
         durable row (which would also read TRUE for a job configured on some earlier
         turn)."""
         return any(
-            record.tool == CollectionSetTool.name and not record.failed for record in ctx.records
+            record.tool == CollectionSetTool.name and not record.failed for record in records
         )
 
     async def _extract_and_frame_skill(
