@@ -235,6 +235,22 @@ export interface PromptLogEntry {
   response: Record<string, unknown>;
   thinking: string;
   has_tools: boolean;
+  // Whether this call's response actually INVOKED a tool, vs. merely being
+  // offered some (has_tools) — the step icon's tool-vs-plain-reply read (#2434).
+  made_tool_call: boolean;
+  // The enclosing chat/collector run this call was made ON BEHALF OF, when it is
+  // a micro-context draw rather than a run's own top-level call; null otherwise.
+  parent_run_id: string | null;
+  // The specific tool-call id the draw was made for — set only alongside
+  // parent_run_id, and only for a draw nested inside a dispatched tool call
+  // (e.g. browse's extraction); null for the other micro-context customers,
+  // which run on behalf of the run as a whole.
+  parent_tool_call_id: string | null;
+  // How this CALL ended: "completed" | "cancelled" | "timed_out" | "raised".
+  // Null on a row logged before this column existed (read as "completed").
+  call_outcome: string | null;
+  call_error_class: string | null;
+  call_error_message: string | null;
 }
 
 export interface PromptLogRun {
@@ -254,6 +270,12 @@ export interface PromptLogRun {
   health: RunHealth;
   record: string;
   prompts: PromptLogEntry[];
+  // The model calls a micro-context made ON BEHALF of this run (#2434) — a flat
+  // list in the same per-prompt shape as `prompts`, each entry already carrying
+  // its own `parent_tool_call_id` (or null) so the addon nests them itself.
+  // Only a FETCHED run carries this; a live single-prompt push builds its own
+  // run client-side with none, so it's optional rather than an empty array.
+  child_draws?: PromptLogEntry[];
 }
 
 /** First-class outcome of a collector cycle (mirrors penny's RunOutcome). */

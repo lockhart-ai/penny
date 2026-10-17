@@ -1637,6 +1637,90 @@ class TestBrowserPromptLogHandlers:
         assert runs["run1"]["record"].startswith("[board-games] wrote 2 new games")
 
     @pytest.mark.asyncio
+    async def test_prompt_logs_carry_child_draws_and_call_linkage(self, tmp_path):
+        """A fetched run carries its own prompts' new linkage fields AND a flat
+        ``child_draws`` list of the model calls a micro-context made on its
+        behalf (#2434) — one draw anchored to the tool call that dispatched it
+        (``browse``'s own extraction), one carrying no ``parent_tool_call_id`` at
+        all (the state classifier / notifier / skill extractor shape, run on
+        behalf of the run as a whole rather than from inside a tool call)."""
+        channel, db = self._channel(tmp_path)
+        # The run's own top-level call: a browse tool call, keyed "b0".
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "b0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "browse",
+                                        "arguments": json.dumps(
+                                            {"queries": ["https://example.test"], "extract": "x"}
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            agent_name="chat",
+            run_id="run1",
+        )
+        # A draw browse dispatched on "b0"'s behalf — anchored to that tool call.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response=None,
+            agent_name="browse-extract",
+            run_id="draw-1",
+            parent_run_id="run1",
+            parent_tool_call_id="b0",
+            call_outcome="cancelled",
+            duration_ms=300_000,
+        )
+        # A draw run on the run's behalf as a whole — e.g. the state classifier —
+        # with no tool call to nest under.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "idle"}}]},
+            agent_name="state-classifier",
+            run_id="draw-2",
+            parent_run_id="run1",
+        )
+
+        response = await self._request_prompt_logs(channel)
+        # Each draw mints its OWN run_id for its own ledger attribution, so it
+        # also surfaces as its own (childless) run in the same page — pick "run1"
+        # out by id rather than assuming it's newest.
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+
+        # The run's own prompt: made a tool call, carries no parent linkage.
+        top_level = run["prompts"][0]
+        assert top_level["made_tool_call"] is True
+        assert top_level["parent_run_id"] is None
+        assert top_level["parent_tool_call_id"] is None
+        assert top_level["call_outcome"] is None
+
+        draws_by_agent = {d["agent_name"]: d for d in run["child_draws"]}
+        anchored = draws_by_agent["browse-extract"]
+        assert anchored["parent_run_id"] == "run1"
+        assert anchored["parent_tool_call_id"] == "b0"
+        assert anchored["call_outcome"] == "cancelled"
+        assert anchored["made_tool_call"] is False  # no response at all — cancelled
+
+        unanchored = draws_by_agent["state-classifier"]
+        assert unanchored["parent_run_id"] == "run1"
+        assert unanchored["parent_tool_call_id"] is None
+        assert unanchored["made_tool_call"] is False  # a plain text reply, no tool call
+
+    @pytest.mark.asyncio
     async def test_prompt_logs_flagged_only(self, tmp_path):
         """flagged_only returns only regressive runs — and carries their flags.
 
@@ -1802,6 +1886,40 @@ class TestBrowserPromptLogHandlers:
         assert received[0]["run_id"] == "run1"
         assert received[0]["input_tokens"] == 50
         assert received[0]["output_tokens"] == 20
+        # No tool call in that response, and no parent linkage — an ordinary
+        # top-level call (#2434).
+        assert received[0]["made_tool_call"] is False
+        assert received[0]["parent_run_id"] is None
+        assert received[0]["parent_tool_call_id"] is None
+        assert received[0]["call_outcome"] is None
+        assert received[0]["call_error_class"] is None
+        assert received[0]["call_error_message"] is None
+
+        # A micro-context draw, made on another run's behalf, that DID call a
+        # tool — every new field carries through on the live push too.
+        db.messages.log_prompt(
+            model="test",
+            messages=[],
+            response={
+                "choices": [
+                    {"message": {"tool_calls": [{"id": "c0", "function": {"name": "done"}}]}}
+                ]
+            },
+            agent_name="browse-extract",
+            run_id="draw-1",
+            parent_run_id="run1",
+            parent_tool_call_id="b0",
+            call_outcome="raised",
+            call_error_class="ValueError",
+            call_error_message="bad page",
+        )
+        assert len(received) == 2
+        assert received[1]["made_tool_call"] is True
+        assert received[1]["parent_run_id"] == "run1"
+        assert received[1]["parent_tool_call_id"] == "b0"
+        assert received[1]["call_outcome"] == "raised"
+        assert received[1]["call_error_class"] == "ValueError"
+        assert received[1]["call_error_message"] == "bad page"
 
 
 def _seed_collector_run(db, run_target: str, run_id: str, outcome: str, reason: str) -> None:

@@ -330,6 +330,12 @@ class MessageStore:
                             "response": response_payload,
                             "thinking": thinking or "",
                             "has_tools": tools is not None,
+                            "made_tool_call": self._made_tool_call(response_payload),
+                            "parent_run_id": parent_run_id,
+                            "parent_tool_call_id": parent_tool_call_id,
+                            "call_outcome": call_outcome,
+                            "call_error_class": call_error_class,
+                            "call_error_message": call_error_message,
                         }
                     )
         except Exception as e:
@@ -1196,6 +1202,23 @@ class MessageStore:
                 grouped.setdefault(prompt.run_id, []).append(prompt)
         return grouped
 
+    @staticmethod
+    def _group_child_draws(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:
+        """Every child draw (#2434) made on behalf of any of the given runs —
+        the batch form of ``get_child_draws``, one query for a whole page of runs
+        instead of one per run — grouped by ``parent_run_id``, ascending time order
+        (the order ``_serialize_run`` renders them in)."""
+        grouped: dict[str, list[PromptLog]] = {}
+        draws = session.exec(
+            select(PromptLog)
+            .where(col(PromptLog.parent_run_id).in_(run_ids))
+            .order_by(col(PromptLog.timestamp).asc())
+        ).all()
+        for draw in draws:
+            if draw.parent_run_id is not None:
+                grouped.setdefault(draw.parent_run_id, []).append(draw)
+        return grouped
+
     def get_prompt_log_runs(
         self,
         limit: int = 50,
@@ -1258,7 +1281,11 @@ class MessageStore:
         return [run_id for run_id in rows if run_id is not None]
 
     def _runs_for(self, session: Session, run_ids_ordered: list[str]) -> list[dict]:
-        """Load + serialize the given runs (heavy prompt rows), preserving order."""
+        """Load + serialize the given runs (heavy prompt rows), preserving order.
+
+        Also batches each run's child draws (#2434) in the same page — one extra
+        query, not one per run — so every fetched run carries its own micro-context
+        draws alongside its prompts."""
         if not run_ids_ordered:
             return []
         grouped: dict[str, list[PromptLog]] = {}
@@ -1271,11 +1298,16 @@ class MessageStore:
             if prompt.run_id is None:
                 continue
             grouped.setdefault(prompt.run_id, []).append(prompt)
+        child_draws_by_run = self._group_child_draws(session, run_ids_ordered)
         runs = []
         for run_id in run_ids_ordered:
             run_prompts = grouped[run_id]
             total_duration_ms = sum(p.duration_ms or 0 for p in run_prompts)
-            runs.append(self._serialize_run(run_id, run_prompts, total_duration_ms))
+            runs.append(
+                self._serialize_run(
+                    run_id, run_prompts, total_duration_ms, child_draws_by_run.get(run_id)
+                )
+            )
         return runs
 
     # The flagged-only triage is a view of RECENT regressions, so it scans a
@@ -1456,6 +1488,19 @@ class MessageStore:
         return usage.get("prompt_tokens", 0) or 0, usage.get("completion_tokens", 0) or 0
 
     @staticmethod
+    def _made_tool_call(response: dict) -> bool:
+        """Whether this call's response actually INVOKED a tool, as opposed to
+        merely being offered some (``has_tools``) — the addon step icon's
+        tool-vs-plain-reply discriminator (#2434).  Reads the same
+        ``choices[0].message.tool_calls`` shape ``_run_logged_steps`` sweeps
+        across a whole run, for one response."""
+        choices = response.get("choices") or []
+        if not choices:
+            return False
+        message = choices[0].get("message") or {}
+        return bool(message.get("tool_calls"))
+
+    @staticmethod
     def _extract_reasoning_tokens(response: dict) -> int:
         """The provider's own count of the reasoning part of ``completion_tokens``.
 
@@ -1468,37 +1513,66 @@ class MessageStore:
         return details.get("reasoning_tokens", 0) or 0
 
     @staticmethod
+    def _serialize_prompt_record(p: PromptLog) -> dict:
+        """One ``promptlog`` row in the addon's per-prompt wire shape — shared by a
+        run's own prompts and its child draws (#2434), which carry the identical
+        shape so the addon nests the latter under the former by matching
+        ``parent_tool_call_id`` itself, with no second schema to keep in sync.
+
+        ``made_tool_call`` is this ONE response's own tool-call bit (whether the
+        call actually invoked one), distinct from ``has_tools`` (whether tools were
+        merely offered).  ``parent_run_id``/``parent_tool_call_id`` link a child
+        draw back to the run/step it was made for (``None`` for an ordinary
+        top-level call); ``call_outcome``/``call_error_class``/``call_error_message``
+        carry how the call itself ended."""
+        response = json.loads(p.response) if p.response else {}
+        input_tokens, output_tokens = MessageStore._extract_token_usage(response)
+        return {
+            "id": p.id,
+            "timestamp": p.timestamp.isoformat(),
+            "model": p.model,
+            "agent_name": p.agent_name or "",
+            "prompt_type": p.prompt_type or "",
+            "duration_ms": p.duration_ms or 0,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "run_target": p.run_target,
+            "messages": json.loads(p.messages) if p.messages else [],
+            "response": response,
+            "thinking": p.thinking or "",
+            "has_tools": p.tools is not None,
+            "made_tool_call": MessageStore._made_tool_call(response),
+            "parent_run_id": p.parent_run_id,
+            "parent_tool_call_id": p.parent_tool_call_id,
+            "call_outcome": p.call_outcome,
+            "call_error_class": p.call_error_class,
+            "call_error_message": p.call_error_message,
+        }
+
+    @staticmethod
     def _serialize_run(
         run_id: str,
         prompts: list[PromptLog],
         total_duration_ms: int,
+        child_draws: list[PromptLog] | None = None,
     ) -> dict:
-        """Serialize a single run and its prompts to a dict."""
+        """Serialize a single run, its own prompts, and its child draws (#2434 —
+        the model calls a micro-context made ON BEHALF of this run, found by
+        ``get_child_draws``/``_group_child_draws``) to a dict.
+
+        ``child_draws`` is a FLAT list in the same per-prompt shape as ``prompts``
+        — each entry already carries its own ``parent_tool_call_id`` (or ``None``
+        for the five micro-context customers that aren't nested inside a dispatched
+        tool call), so the addon nests them itself rather than this needing a
+        second, run-shaped schema."""
         total_input_tokens = 0
         total_output_tokens = 0
         serialized_prompts = []
         for p in prompts:
-            response = json.loads(p.response) if p.response else {}
-            input_tokens, output_tokens = MessageStore._extract_token_usage(response)
-            total_input_tokens += input_tokens
-            total_output_tokens += output_tokens
-            serialized_prompts.append(
-                {
-                    "id": p.id,
-                    "timestamp": p.timestamp.isoformat(),
-                    "model": p.model,
-                    "agent_name": p.agent_name or "",
-                    "prompt_type": p.prompt_type or "",
-                    "duration_ms": p.duration_ms or 0,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "run_target": p.run_target,
-                    "messages": json.loads(p.messages) if p.messages else [],
-                    "response": response,
-                    "thinking": p.thinking or "",
-                    "has_tools": p.tools is not None,
-                }
-            )
+            record = MessageStore._serialize_prompt_record(p)
+            total_input_tokens += record["input_tokens"]
+            total_output_tokens += record["output_tokens"]
+            serialized_prompts.append(record)
 
         # Run outcome is set on the last prompt that has one
         run_outcome: str | None = None
@@ -1538,4 +1612,7 @@ class MessageStore:
             "health": classify_run(prompts).model_dump(),
             "record": render_run_record(prompts),
             "prompts": serialized_prompts,
+            "child_draws": [
+                MessageStore._serialize_prompt_record(draw) for draw in (child_draws or [])
+            ],
         }
