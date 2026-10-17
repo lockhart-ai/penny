@@ -114,6 +114,8 @@ A case declares its area and, where it covers one, the edge of the conversation 
 | `explicit-mute-request-mutes` | In the chat agent, when the user asks for notifications to be muted, Penny mutes them. | please mute notifications |  |
 | `explicit-unmute-request-unmutes` | In the chat agent, when notifications are muted and the user asks for them to be unmuted, Penny unmutes them. | please unmute notifications |  |
 | `notifications-no-fire` | In the chat agent, when a message names notifications as its subject without asking for them to be changed, Penny stays in idle with notifications still on. | your notifications have been really useful this week, thanks |  |
+| `notify-composer-many-findings` | In the notify composer, when a cycle finds many new entries at once, Penny's notification names what the findings carry and invents nothing. | keeps an eye on Faraday Exchange, Orbital Swap, and Nightjar Market for new or discounted vintage synthesizers |  |
+| `notify-composer-single-finding` | In the notify composer, when a cycle finds one ordinary new entry, Penny's notification names what the finding carries and invents nothing. | keeps an eye on Orbital Swap for new garden-tool listings |  |
 
 ## Background collectors
 
