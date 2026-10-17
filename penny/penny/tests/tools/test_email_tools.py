@@ -14,9 +14,8 @@ import pytest
 
 from penny.email.models import EmailAddress, EmailDetail, EmailSummary
 from penny.tools.draft_email import DraftEmailTool
-from penny.tools.list_emails import MAILBOX_LIST_FAILED
+from penny.tools.list_emails import MAILBOX_LIST_FAILED, ListEmailsTool
 from penny.tools.list_emails import NO_EMAILS_FOUND as LIST_NO_EMAILS_FOUND
-from penny.tools.list_emails import ListEmailsTool
 from penny.tools.list_folders import MAILBOX_FOLDERS_FAILED, ListFoldersTool
 from penny.tools.models import ToolResult
 from penny.tools.read_emails import MAILBOX_READ_FAILED, NO_EMAILS_TO_READ, ReadEmailsTool
