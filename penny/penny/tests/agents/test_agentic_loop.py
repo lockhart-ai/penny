@@ -1453,10 +1453,6 @@ def _cut_draw() -> LlmResponse:
     )
 
 
-def _text_response(content: str) -> LlmResponse:
-    return LlmResponse(message=LlmMessage(role="assistant", content=content), model="test-model")
-
-
 class TestBudgetExceeded:
     """A draw cut by its own token budget (#2475, ``finish_reason ==
     FINISH_REASON_LENGTH``) is never handed to the discard-and-reroll machinery that
