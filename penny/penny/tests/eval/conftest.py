@@ -29,6 +29,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -2629,6 +2630,23 @@ def _machine_walk(db: Database) -> str:
     return ", ".join(f"{move.from_state}→{move.to_state}" for move in moves) or "no move"
 
 
+def _last_scripted_turn_at(db: Database) -> datetime | None:
+    """The moment this sample's own script turned — the last message ``TEST_SENDER`` sent,
+    on the pinned clock every other read in the sample shares (``MessageStore.log_message``
+    stamps ``timestamp`` from the store's own ``Clock``, the same one a job's schedule and
+    ``expires_at`` resolve against).
+
+    The naive branch's stand-in for ``db.machine.latest_transition().created_at`` (#2455):
+    there is no conversation machine any more, so no transition row ever lands, and reading
+    one here answered ``None`` on every sample — the end-claim's rationale is literally "the
+    sample recorded no turn to read the ask's end against," on every sample, pass or fail.
+    ``get_user_messages`` is oldest-first and a seeded prior conversation (``seed_known_
+    routine``) logs its own ask BEFORE any live turn runs, so the most recent entry is always
+    this sample's own last scripted turn, never the seed's."""
+    messages = db.messages.get_user_messages(TEST_SENDER, limit=1)
+    return messages[-1].timestamp if messages else None
+
+
 def _observe_sample(
     db: Database,
     *,
@@ -4077,7 +4095,7 @@ def _observe_end_to_end(
         phrasing=phrasing,
         arm=arm,
         landed=landed.to_state if landed else None,
-        turn_at=landed.created_at if landed else None,
+        turn_at=_last_scripted_turn_at(db),
         timezone=user_timezone_name(db),
         walk=_end_to_end_walk(db, jobs, per_job),
         entries=_stored_entries(db),

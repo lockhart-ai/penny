@@ -13,9 +13,13 @@ from collections.abc import Sequence
 from penny.constants import ChatPromptType, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.datetime_utils import user_timezone_name
 from penny.tests.conftest import TEST_SENDER, require_memory
-from penny.tests.eval.conftest import EVAL_MODELS
+from penny.tests.eval.conftest import EVAL_MODELS, seeded_run_id
 from penny.tests.eval.utils.cohort import CycleSnapshot, Feature
+from penny.tools.base import Tool
+from penny.tools.collection_instantiation import render_creation_echo
+from penny.tools.models import ToolResult
 
 # The sample's WHOLE walk: the conversation machine's moves through the scripted turns, then
 # every created job's own ordered cycle script ("wrote", "quiet", "…+told") — one feature
@@ -157,35 +161,59 @@ def seed_known_routine(
     The job's prompt is the plain naive shape (#2455): free text naming the page and what
     to find on it, written straight into ``extraction_prompt`` — what the seeded
     ``collection_configure`` call itself names, so the logged call and the row it produced
-    agree."""
+    agree.
+
+    Each logged tool turn's result text is the REAL render (``Tool.format_result`` over the
+    narration + tag every live call gets, bodied with the exact text the create/write path
+    itself produces — ``render_creation_echo`` for the configure call), not a hand-written
+    approximation — so a reader can't tell this history apart from a live turn's by its
+    shape (code-owner review, #2455)."""
     ask_id = db.messages.log_message(PennyConstants.MessageDirection.INCOMING, TEST_SENDER, ask)
     assert ask_id is not None, "the seeded ask failed to log — nothing for the run to link to"
-    run_id = f"run-seeded-{collection}"
+    # The harness's own seeded-run marker (``is_seeded_run``) — every "what did THIS sample
+    # do" reader excludes rows under this prefix, which is what keeps the already-running
+    # job's entry from reading as something the live turn just stored.
+    run_id = seeded_run_id(collection)
     prompt = f"Check {url} for {extract} and save it."
+
+    # The durable state first, through the SAME store methods a live turn calls, so the row
+    # and the entry carry the real provenance (`created_by_run_id`, the mutation event, the
+    # entry's own `created_by_run_id`/`last_written_by_run_id`) a reader's `memory_get`/
+    # recent-activity render reads — and so the logged turns below can quote back the exact
+    # row and entry this produced, rather than a description of what they WOULD produce.
+    row = db.memories.create_collection(
+        collection,
+        description,
+        extraction_prompt=prompt,
+        schedule=schedule,
+        created_by_run_id=run_id,
+    )
+    require_memory(db, collection).write(
+        [EntryInput(key=entry_key, content=entry_value)], author="chat", run_id=run_id
+    )
+    db.memories.link_source_message(run_id, ask_id)
 
     conversation: list[dict] = [{"role": "user", "content": ask}]
 
+    browse_args = {"queries": [url], "extract": extract}
     browse_id = "call-seeded-browse"
     _log_chat_step(
         db,
         run_id=run_id,
         messages=conversation,
-        response=_seeded_response(
-            tool_calls=[
-                _wire_tool_call(browse_id, "browse", {"queries": [url], "extract": extract})
-            ]
-        ),
+        response=_seeded_response(tool_calls=[_wire_tool_call(browse_id, "browse", browse_args)]),
+    )
+    browse_result = Tool.format_result(
+        "browse", browse_args, ToolResult(message=entry_value, success=True, source_urls=[url])
     )
     conversation = [
         *conversation,
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [
-                _wire_tool_call(browse_id, "browse", {"queries": [url], "extract": extract})
-            ],
+            "tool_calls": [_wire_tool_call(browse_id, "browse", browse_args)],
         },
-        _tool_result_turn(browse_id, entry_value),
+        _tool_result_turn(browse_id, browse_result),
     ]
 
     write_id = "call-seeded-write"
@@ -198,6 +226,10 @@ def seed_known_routine(
             tool_calls=[_wire_tool_call(write_id, "collection_write", write_args)]
         ),
     )
+    write_message = f"Wrote 1 entry to '{collection}': {entry_key}."
+    write_result = Tool.format_result(
+        "collection_write", write_args, ToolResult(message=write_message, mutated=True)
+    )
     conversation = [
         *conversation,
         {
@@ -205,7 +237,7 @@ def seed_known_routine(
             "content": "",
             "tool_calls": [_wire_tool_call(write_id, "collection_write", write_args)],
         },
-        _tool_result_turn(write_id, f"1 entry landed in '{collection}': '{entry_key}'"),
+        _tool_result_turn(write_id, write_result),
     ]
 
     configure_id = "call-seeded-configure"
@@ -223,6 +255,10 @@ def seed_known_routine(
             tool_calls=[_wire_tool_call(configure_id, "collection_configure", configure_args)]
         ),
     )
+    echo = render_creation_echo(row, user_timezone_name(db))
+    configure_result = Tool.format_result(
+        "collection_configure", configure_args, ToolResult(message=echo, mutated=True)
+    )
     conversation = [
         *conversation,
         {
@@ -230,25 +266,8 @@ def seed_known_routine(
             "content": "",
             "tool_calls": [_wire_tool_call(configure_id, "collection_configure", configure_args)],
         },
-        _tool_result_turn(configure_id, f"Created collection '{collection}'."),
+        _tool_result_turn(configure_id, configure_result),
     ]
-
-    # The durable state the log above describes — through the SAME store methods a live
-    # turn calls, so the row and the entry carry the real provenance (`created_by_run_id`,
-    # the mutation event, the entry's own `created_by_run_id`/`last_written_by_run_id`) a
-    # reader's `memory_get`/recent-activity render reads, not a hand-built row that merely
-    # looks like one.
-    db.memories.create_collection(
-        collection,
-        description,
-        extraction_prompt=prompt,
-        schedule=schedule,
-        created_by_run_id=run_id,
-    )
-    require_memory(db, collection).write(
-        [EntryInput(key=entry_key, content=entry_value)], author="chat", run_id=run_id
-    )
-    db.memories.link_source_message(run_id, ask_id)
 
     _log_chat_step(db, run_id=run_id, messages=conversation, response=_seeded_response(reply))
     db.messages.log_message(PennyConstants.MessageDirection.OUTGOING, "penny", reply)

@@ -410,6 +410,11 @@ class TestExpiresAtGrammar:
             # America/Toronto is EDT (UTC-4) on this date.
             ("2026-09-01 09:00", datetime(2026, 9, 1, 13, 0, tzinfo=UTC)),
             ("2026-09-01", datetime(2026, 9, 1, 4, 0, tzinfo=UTC)),
+            # The exact naive shape a live model wrote for ``expires_at`` on an
+            # end-to-end eval run (#2455 naive baseline) — pinned literally so a
+            # regression back to a UTC default shows here, not only three hours off
+            # in a live-model report. America/Toronto is still EDT (UTC-4) in October.
+            ("2026-10-18T22:00:00", datetime(2026, 10, 19, 2, 0, tzinfo=UTC)),
             # Words, read in the user's zone: 10pm where they are is 02:00 UTC next day.
             ("10pm today", datetime(2026, 8, 10, 2, 0, tzinfo=UTC)),
             ("tomorrow at 9am", datetime(2026, 8, 10, 13, 0, tzinfo=UTC)),

@@ -50,7 +50,7 @@ from penny.llm.models import (
 )
 from penny.responses import PennyResponse
 from penny.tests import eval as eval_package
-from penny.tests.conftest import require_memory, wait_until
+from penny.tests.conftest import TEST_SENDER, require_memory, wait_until
 from penny.tests.eval import drivers as eval_drivers_package
 from penny.tests.eval.chat.idle.test_chat_memory_stories import (
     _DELETE_LIST,
@@ -175,6 +175,7 @@ from penny.tests.eval.conftest import (
     _exclusion,
     _flush_sample_blocks,
     _held_entries,
+    _last_scripted_turn_at,
     _mechanism_records,
     _observe_end_to_end,
     _observe_extraction,
@@ -223,6 +224,7 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.conftest import (
     collection_names as memory_names_now,
 )
+from penny.tests.eval.end_to_end.world import seed_known_routine
 from penny.tests.eval.extractor.test_browse_extract_fields import FIXTURES as EXTRACT_FIELD_FIXTURES
 from penny.tests.eval.utils import cohort as eval_cohort
 from penny.tests.eval.utils import report
@@ -3087,6 +3089,79 @@ def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> N
     )
 
     assert observation.reply == "this run's reply"
+
+
+def test_an_end_to_end_sample_with_no_transitions_still_reads_a_turn_at(tmp_path) -> None:
+    """There is no conversation machine on this branch (#2455 naive baseline), so no sample
+    ever writes a ``state_transition`` row — reading ``turn_at`` off one answered ``None``
+    on every sample, and an end claim ("stops when asked") failed every one of them with
+    the same rationale regardless of what the model did.  ``turn_at`` has to come from a
+    record that still exists: the last scripted message ``TEST_SENDER`` sent, on the clock
+    the sample's own store already stamped it with."""
+    db = migrated_db(str(tmp_path / "end-to-end-turn-at.db"))
+    _log_prompt(db, agent_name=PennyConstants.CHAT_AGENT_NAME, run_id="r1")
+    asked_id = db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content="watch this until sunday night",
+    )
+    assert asked_id is not None
+    asked_row = db.messages.get_by_id(asked_id)
+    assert asked_row is not None
+
+    observation = _observe_end_to_end(
+        db,
+        name="probe-1",
+        phrasing="probe",
+        arm=0,
+        reply="done",
+        before=set(),
+        jobs=[],
+        per_job=[],
+        cycles=[],
+        seeded_replies=0,
+    )
+
+    assert observation.turn_at == asked_row.timestamp
+    assert _last_scripted_turn_at(db) == asked_row.timestamp
+
+
+def test_a_seeded_known_routines_entry_is_not_counted_as_written_this_run(tmp_path) -> None:
+    """``seed_known_routine`` stands up "a routine she already knows" (#2455, code-owner
+    ruling) — a job already running, with an earlier conversation in her logs that set it
+    up.  That earlier conversation is HISTORY, not this sample's own work: the entry it
+    wrote must not read as something a live turn just stored, or the new-page case's
+    negative claim ("the taught page's price appears in nothing stored") fails on every
+    sample regardless of what the model does, because the seeded price always "landed"."""
+    db = migrated_db(str(tmp_path / "seed-known-routine.db"))
+    seed_known_routine(
+        db,
+        collection="aurora-deck-2-price",
+        description="the Aurora Deck 2 handheld console price",
+        url="https://example.com/listing",
+        extract="the current price",
+        entry_key="price",
+        entry_value="Price: $499",
+        schedule="FREQ=HOURLY",
+        ask="can you keep an eye on the Aurora Deck 2 price for me and let me know if it changes?",
+        reply="done — I'll check the Aurora Deck 2 price and let you know if it moves.",
+    )
+
+    assert _stored_entries(db) == [], (
+        "the seeded entry is the WORLD, not this run's write — it must not appear "
+        "among what this sample stored"
+    )
+    held = _held_entries(db)
+    assert [(entry.collection, entry.key, entry.content) for entry in held] == [
+        ("aurora-deck-2-price", "price", "Price: $499")
+    ], "the seeded entry must still be HELD, since the store holds it either way"
+
+    # Every logged prompt row belongs to the seeded conversation, so a live-prompt reader
+    # excludes all of it — the prior fix's bug: a run id that didn't start with the
+    # harness's own ``seeded-`` prefix left these rows reading as LIVE chat turns.
+    rows = db.messages.recent_prompts(limit=20)
+    assert rows, "the seeded conversation should have logged its own turns"
+    assert all(is_seeded_run(row.run_id) for row in rows)
 
 
 @pytest.mark.parametrize("case", WATCH_CASES, ids=lambda one: one.case_id)
