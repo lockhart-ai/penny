@@ -1,9 +1,16 @@
-"""End-to-end: a watch taught in chat, then run (#2375).
+"""End-to-end: a cold ask for a price watch (#2375, restated #2494).
 
 **The declared second kind** `docs/eval-case-design.md` names: a SCRIPT of real chat turns —
-a cold ask for a watch, the user's walkthrough once Penny asks to be taught, and an acceptance
-giving the job its terms — followed by the job those turns created, run through its OWN real
-cycles against a page that holds, then moves.
+whose FIRST turn is the whole natural ask (the page, the cadence, the end, and "tell me when
+it changes"), followed by whatever a routine still has to be taught through, driven ONLY
+while no job has been created yet this run — then the job those turns created, run through
+its OWN real cycles against a page that holds, then moves.
+
+A Penny who stands the job up from the first turn is driven once; a Penny who asks to be
+taught first gets the walkthrough and an acceptance restating the terms, same as today.
+Both are measured on the same claims, and how many turns it took is itself a measured
+feature (``TURNS_DRIVEN``) rather than a fact about either mechanism (#2494's ruling — the
+case states the goal, not the cycle a particular implementation happens to need).
 
 No routine, no job and no collection exist before the script runs: the world is COLD, so
 whatever container the round builds, whatever it names the routine, and which collection the
@@ -43,6 +50,7 @@ from penny.tests.eval.utils.cohort import (
     JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
+    TURNS_DRIVEN,
     SampleObservation,
     SpecCategory,
 )
@@ -52,13 +60,13 @@ from penny.tests.eval.utils.worlds import World
 
 pytestmark = pytest.mark.eval
 
-_CASE_ID = "end-to-end-teach-then-accept"
+_CASE_ID = "end-to-end-cold-ask"
 _FAMILY = "end-to-end"
 
 _BEHAVIOUR = (
-    "In a job taught in chat, when the user asks for a watch, walks Penny through it once "
-    "and accepts her offer with terms, Penny stands up a job on those terms whose cycles "
-    "stay quiet while the page holds, and tell the user the new price when it moves."
+    "In a cold ask for a price watch, when the user gives the page, the cadence, the end "
+    "and the tell-me in one turn, Penny stands up a job on those terms, whose cycles stay "
+    "quiet while the page holds and tell the user the new price when it moves."
 )
 
 # ── The page the demonstration reads, and the two readings its cycles see ────
@@ -135,37 +143,49 @@ _WORLD = World(name=_CASE_ID, pages=(_BASELINE_PAGE,), keeps=(), excludes=())
 _CADENCE_SECONDS = 3600
 _ASKED_END = until_tonight_at(22)
 
-# ── The five scripts: one cold ask, one walkthrough, one acceptance — five wordings ──
+# ── The five scripts: one cold ask carrying ALL the terms, then two FOLLOW-UPS ──
 #
-# What varies is how a person says each of the three turns: which verb opens the ask, how the
-# walkthrough names the three actions, which word the acceptance opens with.  What does NOT
-# vary is the url (named in both the ask and the walkthrough), the walkthrough's three actions
-# against that one page, and the acceptance's cadence, end and telling clause — every wording
-# carries all of them, because the claims below hinge on them.
+# Turn 1 is the whole natural ask (#2494): the page, the cadence, the end and "tell me" all
+# ride together, so a Penny who acts on it alone needs nothing further.  Turns 2 and 3 are
+# unchanged from the old flow's walkthrough and acceptance — a Penny who asks to be taught
+# first still gets them, driven only while no job exists yet; the acceptance RESTATES the
+# terms, the way an acceptance answering an offer naturally would.
+#
+# What varies is how a person says each turn: which verb opens the cold ask, how the
+# walkthrough names its three actions, which word the acceptance opens with.  What does NOT
+# vary is the url (named in the cold ask and the walkthrough), the cold ask's own cadence,
+# end and telling clause, the walkthrough's three actions against that one page, and the
+# acceptance's cadence, end and telling clause — every wording carries all of them, because
+# the claims below hinge on them.
 _SCRIPTS: tuple[tuple[str, str, str], ...] = (
     (
-        f"can you watch this for me and let me know when the price changes? {_URL}",
+        f"can you watch this for me, checking it every hour until 10pm tonight, and let me "
+        f"know when the price changes? {_URL}",
         f"sure — open {_URL}, find the current price, and remember it",
         "yes please — check it every hour until 10pm tonight and let me know if the price changes",
     ),
     (
-        f"could you keep an eye on this listing and tell me if the price moves? {_URL}",
+        f"could you keep an eye on this listing every hour until 10pm tonight and message me "
+        f"if the price moves? {_URL}",
         f"ok — head to {_URL}, see what the current price is, and keep it",
         "sounds good — do that every hour until 10pm tonight and message me if it changes",
     ),
     (
-        f"i'd like you to watch this page for price changes and tell me when it happens: {_URL}",
+        f"i'd like you to watch this page for price changes, checking it hourly until 10pm "
+        f"tonight, and let me know when it happens: {_URL}",
         f"yep — go to {_URL}, check the current price, and save it",
         "great, go ahead — check it hourly until 10pm tonight and let me know when the price "
         "changes",
     ),
     (
-        f"track this for me and let me know when the price changes, please — {_URL}",
+        f"track this for me every hour until 10pm tonight and tell me if the price moves, "
+        f"please — {_URL}",
         f"alright — visit {_URL}, note the current price, and hang on to it",
         "yeah do that — every hour until 10pm tonight, and tell me if it moves",
     ),
     (
-        f"can you monitor this listing's price and give me a heads up when it changes? {_URL}",
+        f"can you monitor this listing's price every hour until 10pm tonight and message me "
+        f"the moment it changes? {_URL}",
         f"sure thing — read {_URL}, pull the current price off it, and remember that",
         "perfect — run that every hour until 10pm tonight and message me the moment it changes",
     ),
@@ -177,18 +197,18 @@ _TELLING_CLAUSES = ("let me know", "message", "tell me")
 
 
 def _assert_every_script_carries_the_facts() -> None:
-    """Every one of the five scripts' three turns carries the facts the claims below read —
-    the url in the ask and the walkthrough, and the acceptance's cadence, end and telling
-    clause — so a dropped fact fails in this assertion rather than as a puzzling score after a
+    """Every one of the five scripts' cold ask carries ALL the facts the claims below read —
+    the url, the cadence, the end and a telling clause — and the walkthrough still names the
+    url, so a dropped fact fails in this assertion rather than as a puzzling score after a
     paid run."""
-    for ask, walkthrough, acceptance in _SCRIPTS:
-        assert _URL in ask, f"{_CASE_ID}: this ask names no page — {ask!r}"
-        assert _URL in walkthrough, f"{_CASE_ID}: this walkthrough names no page — {walkthrough!r}"
-        missing = [token for token in (_CADENCE_TOKEN, _END_TOKEN) if token not in acceptance]
-        assert not missing, f"{_CASE_ID}: this acceptance gives none of {missing} — {acceptance!r}"
-        assert any(clause in acceptance for clause in _TELLING_CLAUSES), (
-            f"{_CASE_ID}: this acceptance never asks to be told — {acceptance!r}"
+    for ask, walkthrough, _acceptance in _SCRIPTS:
+        assert _URL in ask, f"{_CASE_ID}: this cold ask names no page — {ask!r}"
+        missing = [token for token in (_CADENCE_TOKEN, _END_TOKEN) if token not in ask]
+        assert not missing, f"{_CASE_ID}: this cold ask gives none of {missing} — {ask!r}"
+        assert any(clause in ask for clause in _TELLING_CLAUSES), (
+            f"{_CASE_ID}: this cold ask never asks to be told — {ask!r}"
         )
+        assert _URL in walkthrough, f"{_CASE_ID}: this walkthrough names no page — {walkthrough!r}"
 
 
 _assert_every_script_carries_the_facts()
@@ -271,15 +291,23 @@ def _told_the_new_price_when_it_moved(sample: SampleObservation, _world: World) 
     return bool(told), f"sent on the moved cycle: {sent}; carrying {_MOVED_AMOUNT}: {told}"
 
 
-_MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
+_MEASURED = (
+    END_TO_END_WALK,
+    TOOL_SEQUENCE,
+    ENTRIES_STORED,
+    JOB_TERMS,
+    REPLY_SPREAD,
+    TURNS_DRIVEN,
+)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
-async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
+async def test_a_cold_ask_for_a_price_watch_is_run_through_its_own_cycles(
     end_to_end_eval: EndToEndEval, model: str
 ) -> None:
-    """A cold ask, a walkthrough and an acceptance with terms — all driven for real — then the
-    job those turns created runs for real across a page that holds, then moves."""
+    """A cold ask carrying the page, the cadence, the end and the tell-me in one turn — with
+    a walkthrough and an acceptance driven only while no job exists yet — then the job the
+    script created runs for real across a page that holds, then moves."""
     cohort = await end_to_end_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,

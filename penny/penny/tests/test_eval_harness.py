@@ -338,6 +338,7 @@ from penny.tests.eval.conftest import (
     _labelling_output,
     _machine_walk,
     _mechanism_records,
+    _no_job_created_yet,
     _observe_binding,
     _observe_classification,
     _observe_end_to_end,
@@ -4518,6 +4519,7 @@ def test_an_end_to_end_sample_that_built_no_job_is_complete_and_fails_its_claims
         per_job=[],
         cycles=[],
         seeded_replies=0,
+        turns_driven=1,
     )
 
     assert observation.complete, "no job created is Penny's own failure, not a harness void"
@@ -4528,6 +4530,38 @@ def test_an_end_to_end_sample_that_built_no_job_is_complete_and_fails_its_claims
     world = World(name="probe", pages=(), keeps=(), excludes=())
     ok, rationale = _a_new_job_fires_every(3600)(observation, world)
     assert not ok, f"a sample with no created job must fail a job-terms claim, got {rationale!r}"
+
+
+# ── A follow-up turn is gated on the registry, structurally, before it is sent (#2494) ──
+#
+# ``_no_job_created_yet`` is the predicate ``_drive_end_to_end_script`` checks before every
+# turn after the script's first: TRUE while the round has stood up nothing yet, so the next
+# turn is still owed; FALSE once a job exists, so every remaining scripted turn is skipped.
+# Pinned directly against the registry, with no live model and no mock Signal server — the
+# gate is a pure structural read, and the live cases prove the loop that calls it.
+
+
+def test_a_follow_up_is_owed_while_the_round_has_created_no_job(tmp_path) -> None:
+    """A fresh round, with nothing scheduled or notifying outside what existed ``before`` it
+    started, owes its next scripted turn."""
+    db = migrated_db(str(tmp_path / "end-to-end-gate-no-job.db"))
+    before = set(collection_names(db))
+
+    assert _no_job_created_yet(db, before), "an empty round must still owe its next turn"
+
+
+def test_a_follow_up_is_skipped_once_the_round_has_created_a_job(tmp_path) -> None:
+    """A collection the round itself created, carrying a schedule, is a job — and once one
+    exists, no further scripted turn is owed."""
+    db = migrated_db(str(tmp_path / "end-to-end-gate-has-job.db"))
+    before = set(collection_names(db))
+    db.memories.create_collection(
+        "a-new-watch", "a job this round stood up", schedule="FREQ=HOURLY"
+    )
+
+    assert not _no_job_created_yet(db, before), (
+        "a round that already stood up a job must owe no further turn"
+    )
 
 
 def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> None:
@@ -4565,6 +4599,7 @@ def test_an_end_to_end_sample_reply_holds_only_this_runs_messages(tmp_path) -> N
         per_job=[],
         cycles=[],
         seeded_replies=1,
+        turns_driven=1,
     )
 
     assert observation.reply == "this run's reply"

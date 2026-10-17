@@ -1,9 +1,14 @@
-"""End-to-end: a known routine stood up on a new page (#2375).
+"""End-to-end: a known routine stood up on a new page (#2375, follow-up added #2494).
 
 **The declared second kind** `docs/eval-case-design.md` names: a SCRIPT of real chat turns —
-here a single cold ask, naming a page the routine was never taught on and giving the job its
-terms — followed by the job that turn stood up, run through its OWN real cycles against that
-page.
+here a cold ask, naming a page the routine was never taught on and giving the job its terms
+in one turn, with a FOLLOW-UP agreement driven only while no job has been created yet this
+run — then the job the script stood up, run through its OWN real cycles against that page.
+
+The follow-up answers a Penny who offers before acting: known-routine binding can land her on
+an offer ("set it up like the Aurora listing?") that waits for the user rather than creating
+the job outright, and a one-turn script would never answer it.  A Penny who binds and acts on
+the cold ask alone is driven once; the agreement is there for the one that asks first.
 
 The entry condition is SEEDED, the composed world of five finished journeys
 (``seed_composed_world``): the price-watcher routine already exists, taught on the Aurora
@@ -58,6 +63,7 @@ from penny.tests.eval.utils.cohort import (
     JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
+    TURNS_DRIVEN,
     SampleObservation,
     SpecCategory,
 )
@@ -181,6 +187,11 @@ _CADENCE_TOKEN = "hour"
 _END_TOKEN = "sunday night"
 _TELLING_CLAUSES = ("let me know", "tell me", "message")
 
+# The FOLLOW-UP (#2494): driven only while the cold ask above hasn't already created the job —
+# the answer to a Penny who offers to set it up like the Aurora listing and waits, rather than
+# acting on the cold ask's own terms.
+_AGREEMENT = "yes, set it up as a new job like that"
+
 
 def _assert_every_wording_carries_the_facts() -> None:
     """Every one of the five wordings carries the facts the claims below read — the page, the
@@ -233,7 +244,7 @@ def _seed(db: Database) -> None:
 _ARMS = tuple(
     EndToEndArm(
         label=ask,
-        turns=(ask,),
+        turns=(ask, _AGREEMENT),
         seed=_seed,
         seed_skills=[journey.round.skill for journey in _JOURNEYS],
         world=_WORLD,
@@ -301,16 +312,24 @@ def _the_taught_price_appears_in_nothing_sent_or_replied(
     return not hits, f"{_TAUGHT_AMOUNT} found in: {hits or 'nothing'}"
 
 
-_MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
+_MEASURED = (
+    END_TO_END_WALK,
+    TOOL_SEQUENCE,
+    ENTRIES_STORED,
+    JOB_TERMS,
+    REPLY_SPREAD,
+    TURNS_DRIVEN,
+)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_known_routines_job_runs_the_page_the_ask_names(
     end_to_end_eval: EndToEndEval, model: str
 ) -> None:
-    """One cold ask, naming a page the price-watcher was never taught on, with terms — then
-    the job that ask stood up runs for real across that page, which holds, then moves, while
-    the page the routine was taught on stays live and readable."""
+    """A cold ask naming a page the price-watcher was never taught on, with terms, and an
+    agreement driven only while no job exists yet — then the job the script stood up runs
+    for real across that page, which holds, then moves, while the page the routine was
+    taught on stays live and readable."""
     cohort = await end_to_end_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,
