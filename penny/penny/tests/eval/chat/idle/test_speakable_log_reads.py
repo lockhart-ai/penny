@@ -768,11 +768,19 @@ async def test_why_a_job_is_in_trouble_comes_out_of_the_run_record(
 
 _FAILED_PAGE = "https://pemberwick.example/tribune"
 _FAILED_EXTRACT_ASK = "the day's headlines"
+# The invented word names SPECIFIC CONTENT the extraction got as far as before timing out
+# — never a detail of the SITE or the ASK (the user's own message already names "pemberwick
+# tribune" and "headlines", so a reply that only restates THOSE answers correctly without
+# ever having read the record at all — measured: a first draft of this reason put the
+# invented word in the site's own name, and 10 of 15 samples gave a correct, honest account
+# of the cause while never saying it, scoring as a miss for a claim that was testing the
+# wrong thing). A model giving the full honest answer ("it got partway through — as far as
+# X — before stopping") has to name X, and X exists in exactly one place: this reason.
 _FAILED_TURN_REASON = (
-    "the pemberwick tribune's front page was read and stored, but the headline extraction "
-    "didn't finish before timing out"
+    "the page was read and stored; the extraction got as far as a headline about a "
+    "driftglass festival before it timed out, so the rest of the headlines never came through"
 )
-_FAILED_TURN_TOKEN = "pemberwick"
+_FAILED_TURN_TOKEN = "driftglass"
 
 
 def _seed_the_failed_turn(db: Database) -> None:
