@@ -1156,7 +1156,7 @@ async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_
 
 
 def test_micro_context_system_prompt_declares_multiline_contract():
-    """Whole-render literal of the extraction system prompt (#1682/#1942/#2360/#2453): an
+    """Whole-render literal of the extraction system prompt (#1682/#1942/#2360): an
     optional MISSING: line may open the draw, then one of the two tags — an EXTRACTED
     value may be a multi-line digest / list, a NOT_PRESENT reason stays a single line —
     and the boundary between the two tags is STATED: content carrying some of what was
@@ -1174,14 +1174,7 @@ def test_micro_context_system_prompt_declares_multiline_contract():
     headline, link and summary go on one line or two — because the prompt said "a list
     (put one item per line)" while an item has several parts. The prompt now says what
     one item's line IS (its parts, in the order the instruction names them, " — "
-    separated) instead of leaving the shape of an item to argue about.
-
-    #2453's own round: real production draws measured 4-5x a plain ask's cost on exactly
-    this decision — a part absent for the whole list, over a page with no run-on label
-    anywhere in it — because settling it took several passes back over items already
-    covered.  The sentence after the rendered MISSING: line gives that re-checking a
-    stop: once a part has turned up nowhere on several items, that is the answer for all
-    of them, and nothing is bought by re-opening ones the same read already settled."""
+    separated) instead of leaving the shape of an item to argue about."""
     assert MICRO_CONTEXT_SYSTEM_PROMPT == (
         "You are an extraction step. You are given the full text of one or more web "
         "pages and a single instruction naming exactly what to pull out of them. "
@@ -1203,10 +1196,6 @@ def test_micro_context_system_prompt_declares_multiline_contract():
         "list, a part that none of your items has — name it, all of it together, in "
         "one short line, before EXTRACTED:\n"
         "MISSING: <one short line naming what was asked for and is not on the page>\n"
-        "A part that turns up nowhere, on item after item, is settled once that is "
-        "clear — the same part will not suddenly appear further down, so there is no "
-        "need to keep checking items already covered, or to go back over ones that "
-        "are.\n"
         "Use NOT_PRESENT:, on a single line, when the page carries NONE of what was "
         "asked for. Never invent a value that is not in the content — when something "
         "named is not there, say so on MISSING: (or NOT_PRESENT: when nothing is) "

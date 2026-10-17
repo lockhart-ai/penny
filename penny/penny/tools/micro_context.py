@@ -232,19 +232,6 @@ EXTRACT_SHAPE = MicroContextShape(lines=(_EXTRACT_MISSING_LINE, _EXTRACTED_LINE,
 # ROUND 4 (#2360): replaced the "AT ALL" sentence after a replay of the slowest
 # draws took "the missing line names the descriptions" from 7/18 to 17/18 on the
 # top-three ask.
-#
-# ROUND 5 (#2453): the #2360 rounds fixed WHICH tag a part the page lacks gets
-# (MISSING:, not a lost NOT_PRESENT:), but a replay of real production draws
-# found a DIFFERENT cost once that was settled: deciding that a part is absent
-# for the whole list, at all, took several passes over items already covered —
-# re-reading item one's absence, then item two's, then doubling back to
-# item one again "to be sure" — a real draw's median cost on exactly this ask
-# ran 4-5x a plain ask with nothing to decide, over a page with no run-on label
-# anywhere in sight (so the extra cost is this decision, not a nearby label's
-# own shape).  The sentence below gives the decision a STOP: once a part has
-# turned up nowhere, on several items, that is the whole page's answer for
-# every item at once — nothing is bought by re-opening items the same read
-# already covered.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
@@ -266,10 +253,6 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
     "it — for a list, a part that none of your items has — name it, all of it "
     f"together, in one short line, before {EXTRACTED_TAG}\n"
     f"{render_line(_EXTRACT_MISSING_LINE)}\n"
-    "A part that turns up nowhere, on item after item, is settled once that is "
-    "clear — the same part will not suddenly appear further down, so there is no "
-    "need to keep checking items already covered, or to go back over ones that "
-    "are.\n"
     f"Use {NOT_PRESENT_TAG}, on a single line, when the page carries NONE of what "
     "was asked for. Never invent a value that is not in the content — when "
     f"something named is not there, say so on {EXTRACT_MISSING_TAG} (or {NOT_PRESENT_TAG} "
