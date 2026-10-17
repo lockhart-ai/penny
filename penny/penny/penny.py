@@ -117,6 +117,12 @@ class Penny:
             api_key=api_key or self.config.llm_api_key,
             timeout=self.config.llm_timeout,
             provider_pin=provider_pin,
+            # The deployment's ONE ``RuntimeParams`` (#2474) — already carrying both
+            # the env overrides ``Config.load()`` collected and the DB attached by
+            # ``_init_database`` (called before this). A micro-context draw resolves
+            # its token budget off this exact object, the same chain ``agents/base.py``
+            # reads through ``self.config.runtime``.
+            runtime=self.config.runtime,
         )
 
     def _init_llm_clients(self, config: Config) -> None:

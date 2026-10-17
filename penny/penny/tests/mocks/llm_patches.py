@@ -56,6 +56,11 @@ class MockLlmClient:
     def __init__(self, **kwargs: Any):
         self.model = kwargs.get("model", "test-model")
         self.db = kwargs.get("db")
+        # Mirrors the real ``LlmClient.runtime`` (#2474): a micro-context draw reads
+        # its token budget off ``self._model_client.runtime``, so a test exercising
+        # that resolution passes one; every other test leaves it ``None`` and gets
+        # the resolver's own default-only fallback, same as an unconfigured client.
+        self.runtime = kwargs.get("runtime")
         self.requests: list[dict] = []
         self._response_handler: Callable[[dict, int], LlmResponse] | None = None
         # Which micro-context flavours the current handler CLAIMS (see
@@ -116,6 +121,8 @@ class MockLlmClient:
         agent_name: str | None = None,
         prompt_type: str | None = None,
         run_target: str | None = None,
+        token_budget: int | None = None,
+        thinking_enabled: bool = True,
     ) -> LlmResponse:
         """Mock chat() call.
 
@@ -123,7 +130,10 @@ class MockLlmClient:
         no ambient state, no default — and ``run_id``/``parent_run_id``/
         ``parent_tool_call_id`` are read straight off it and recorded on
         ``request_data``, so a test asserting on them sees exactly what
-        production would have stamped from whatever link it was handed."""
+        production would have stamped from whatever link it was handed.
+        ``token_budget``/``thinking_enabled`` (#2474) are likewise recorded as
+        plain values, so a test asserting on the budget a call kind resolved sees
+        exactly what the real client would have been sent."""
         request_data = {
             "model": self.model,
             "run_id": call_link.run_id,
@@ -134,6 +144,8 @@ class MockLlmClient:
             "run_target": run_target,
             "parent_run_id": call_link.parent_run_id,
             "parent_tool_call_id": call_link.parent_tool_call_id,
+            "token_budget": token_budget,
+            "thinking_enabled": thinking_enabled,
         }
         # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
         # browse routes page content through one): answer deterministically with the
@@ -382,6 +394,11 @@ class _FakeChoice:
 
     def __init__(self, response: LlmResponse):
         self.message = _FakeMessage(response)
+        # ``_parse_response`` (#2474) reads this straight off the raw choice; a
+        # canned ``LlmResponse`` that names none (the overwhelming majority of
+        # handlers) carries ``None`` here too — the same "didn't say" default the
+        # field itself has.
+        self.finish_reason = response.finish_reason
 
 
 class _FakeMessage:

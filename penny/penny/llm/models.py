@@ -307,6 +307,14 @@ class LlmResponse(BaseModel):
     # pool serves one model from several providers, and only one of them need be broken
     # for a run to die while the model itself is fine.
     provider: str | None = None
+    # Why the completion stopped (``stop``, ``length``, ``tool_calls``, …), read
+    # straight off the raw choice.  ``"length"`` is the one value that matters today:
+    # it is how a provider says a token cap cut the draw off mid-thought rather than
+    # the model choosing to stop, and ``LlmResponse`` carried no way to tell the two
+    # apart before this field existed — a capped response decoded identically to a
+    # finished one.  What happens on ``"length"`` is the follow-up issues' (#2475/#2476);
+    # this is only the read.
+    finish_reason: str | None = None
 
     @property
     def content(self) -> str:

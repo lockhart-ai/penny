@@ -128,7 +128,7 @@ _HOLDINGS_GONE = (
 class Collector(BackgroundAgent):
     """Single dispatcher agent — picks the most-overdue ready collection per cycle."""
 
-    name = "collector"
+    name = PennyConstants.COLLECTOR_AGENT_NAME
 
     # Runtime rules every collector cycle gets, appended to whatever
     # extraction_prompt the chat agent (or migration) wrote on the

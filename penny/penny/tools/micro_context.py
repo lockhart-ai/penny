@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from penny.config_params import RuntimeParams, token_budget_for
 from penny.constants import PageReading, PennyConstants
 from penny.llm.call_link import CallLink
 from penny.llm.refusal import is_refusal
@@ -1374,6 +1375,18 @@ class MicroContext:
         ``parent_tool_call_id=None``."""
         messages = self._messages(content, instruction, system_prompt, user_template, reading_note)
         draw_link = call_link.child()
+        # The process's ONE ``RuntimeParams`` (#2474), read off the shared client
+        # rather than built fresh here — a fresh ``RuntimeParams(db=...)`` would carry
+        # the DB tier but never the env tier (env overrides are collected once, in
+        # ``Config.load()``, into the exact object ``LlmClient.runtime`` holds).  All
+        # eight call kinds resolve DB → env → default alike this way: the same chain
+        # ``agents/base.py`` gets through ``self.config.runtime``.  ``getattr`` rather
+        # than a plain attribute read: ``model_client`` is duck-typed throughout this
+        # codebase's own tests (a bare object implementing only ``chat()``), and such a
+        # stand-in carries no ``.runtime`` at all — that falls back to a default-only
+        # lookup rather than erroring on an attribute no minimal stub was ever asked for.
+        runtime = getattr(self._model_client, "runtime", None) or RuntimeParams()
+        token_budget = token_budget_for(runtime, agent_name)
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
                 messages=messages,
@@ -1381,6 +1394,7 @@ class MicroContext:
                 prompt_type=prompt_type,
                 call_link=draw_link,
                 run_target=run_target,
+                token_budget=token_budget,
             )
             text = response.content or ""
             if not self._is_poison(text):

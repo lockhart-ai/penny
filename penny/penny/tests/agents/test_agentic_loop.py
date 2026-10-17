@@ -263,6 +263,57 @@ class TestTerminalToolResultRecorded:
         await agent.close()
 
 
+class TestTokenBudgetReachesTheModelClient:
+    """#2474: ``_invoke_model`` resolves THIS run's own call kind's token budget
+    (``self.name`` — "chat" for every ``ChatAgent``, "collector" for the one
+    ``Collector`` dispatcher) and passes it to ``LlmClient.chat()``.
+
+    Proven against a bare ``MockLlmClient`` passed straight in as ``model_client``,
+    never through the ``mock_llm`` fixture's SDK-level patch: that patch's
+    ``_MockOpenAIClient.create()`` forwards only ``messages``/``tools``/``model`` into
+    the mock, so ``max_tokens``/``max_completion_tokens`` — and ``token_budget`` itself,
+    a ``chat()``-level kwarg — would be silently dropped before this test could see
+    them."""
+
+    @pytest.mark.asyncio
+    async def test_chat_and_collector_each_send_their_own_configured_budget(self, test_db) -> None:
+        db = Database(test_db)
+        db.create_tables()
+        config = Config(
+            channel_type="signal",
+            signal_number="+15551234567",
+            signal_api_url="http://localhost:8080",
+            discord_bot_token=None,
+            discord_channel_id=None,
+            llm_api_url="http://localhost:11434",
+            llm_model="test-model",
+            llm_embedding_model="test-embedding-model",
+            log_level="DEBUG",
+            db_path=test_db,
+            runtime=RuntimeParams(db=db),
+        )
+        for name, expected_budget in (
+            (PennyConstants.CHAT_AGENT_NAME, 5500),
+            (PennyConstants.COLLECTOR_AGENT_NAME, 1500),
+        ):
+            model = MockLlmClient()
+            agent = Agent(
+                system_prompt="test",
+                model_client=cast(Any, model),
+                embedding_model_client=cast(Any, model),
+                tools=[],
+                db=db,
+                config=config,
+            )
+            agent.name = name
+
+            response = await agent.run("test", max_steps=1, call_link=CallLink.new_top())
+
+            assert response.answer == "default mock response"
+            assert model.requests[0]["token_budget"] == expected_budget
+            await agent.close()
+
+
 class TestLastStepToolRemoval:
     """Test that on the final step, tools are removed so the model must produce text."""
 

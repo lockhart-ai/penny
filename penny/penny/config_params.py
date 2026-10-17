@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from penny.constants import PennyConstants
+
 if TYPE_CHECKING:
     from penny.database import Database
 
@@ -20,6 +22,7 @@ GROUP_BROWSE = "Browse"
 GROUP_SEND = "Send"
 GROUP_EMAIL = "Email"
 GROUP_IOS_ATTACHMENTS = "iOS Attachments"
+GROUP_TOKEN_BUDGETS = "Token budgets"
 
 # Ordered list for display
 CONFIG_GROUPS: list[str] = [
@@ -30,6 +33,7 @@ CONFIG_GROUPS: list[str] = [
     GROUP_SEND,
     GROUP_EMAIL,
     GROUP_IOS_ATTACHMENTS,
+    GROUP_TOKEN_BUDGETS,
 ]
 
 
@@ -395,6 +399,102 @@ for _key, _description in (
         group=GROUP_IOS_ATTACHMENTS,
     )
 
+# ── Token budgets — one per model-call kind (#2474) ──────────────────────────
+#
+# #2468's survey read 169 gemma eval runs' and production's own promptlog usage and
+# set these at roughly p99 plus headroom — the browse extractor pinned BELOW its eval
+# p99 on purpose, because the draws above it are #2453's own known spiral, not a
+# healthy call this cap should allow.  Runtime-configurable like every other param
+# here (DB override → env override → this default), so a threshold that turns out
+# wrong is a `/config` edit, not a code change.  What a crossed cap DOES is the
+# follow-up issues' (#2475/#2476): this one only sends the cap and reads
+# ``finish_reason`` (see ``penny.llm.client.LlmClient.chat``).
+ConfigParam(
+    key="TOKEN_BUDGET_CHAT",
+    description="Max completion tokens for a chat-turn call",
+    type=int,
+    default=5500,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_COLLECTOR",
+    description="Max completion tokens for a collector-cycle call",
+    type=int,
+    default=1500,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_BROWSE_EXTRACT",
+    description="Max completion tokens for a browse-extraction micro-context call",
+    type=int,
+    default=8000,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_NOTIFY_COMPOSER",
+    description="Max completion tokens for a notify-composing micro-context call",
+    type=int,
+    default=9500,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_SKILL_BINDER",
+    description="Max completion tokens for a skill-binding micro-context call",
+    type=int,
+    default=4000,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_SKILL_FRAMER",
+    description="Max completion tokens for a skill-framing micro-context call",
+    type=int,
+    default=9000,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_SKILL_NAMER",
+    description="Max completion tokens for a skill-naming micro-context call",
+    type=int,
+    default=7000,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+ConfigParam(
+    key="TOKEN_BUDGET_STATE_CLASSIFIER",
+    description="Max completion tokens for a state-classifier micro-context call",
+    type=int,
+    default=3500,
+    validator=_validate_positive_int,
+    group=GROUP_TOKEN_BUDGETS,
+)
+
+# Which ConfigParam names which call kind's budget.  A kind absent from this table — a
+# future agent, or a test's made-up name — gets no cap: ``token_budget_for`` returns
+# ``None`` rather than inventing a number nobody chose for it.
+TOKEN_BUDGET_PARAM_BY_AGENT_NAME: dict[str, str] = {
+    PennyConstants.CHAT_AGENT_NAME: "TOKEN_BUDGET_CHAT",
+    PennyConstants.COLLECTOR_AGENT_NAME: "TOKEN_BUDGET_COLLECTOR",
+    PennyConstants.BROWSE_EXTRACT_AGENT_NAME: "TOKEN_BUDGET_BROWSE_EXTRACT",
+    PennyConstants.NOTIFY_COMPOSE_AGENT_NAME: "TOKEN_BUDGET_NOTIFY_COMPOSER",
+    PennyConstants.SKILL_BIND_AGENT_NAME: "TOKEN_BUDGET_SKILL_BINDER",
+    PennyConstants.SKILL_FRAME_AGENT_NAME: "TOKEN_BUDGET_SKILL_FRAMER",
+    PennyConstants.SKILL_NAMING_AGENT_NAME: "TOKEN_BUDGET_SKILL_NAMER",
+    PennyConstants.STATE_CLASSIFIER_AGENT_NAME: "TOKEN_BUDGET_STATE_CLASSIFIER",
+}
+
 
 class RuntimeParams:
     """Accessor for runtime-configurable parameters.
@@ -447,3 +547,16 @@ class RuntimeParams:
             return param.validator(result.value)
         except ValueError:
             return None
+
+
+def token_budget_for(runtime: RuntimeParams, agent_name: str | None) -> int | None:
+    """The configured token budget for one call kind (#2474), or ``None`` when
+    ``agent_name`` names no kind ``TOKEN_BUDGET_PARAM_BY_AGENT_NAME`` knows — an
+    unrecognised or absent kind sends no cap, the honest "we don't know" rather
+    than a guessed number.  Reads through ``runtime`` the same way every other
+    runtime param does, so a budget set via ``/config`` or the environment takes
+    effect the same way ``MAX_STEPS`` does."""
+    key = TOKEN_BUDGET_PARAM_BY_AGENT_NAME.get(agent_name) if agent_name else None
+    if key is None:
+        return None
+    return int(getattr(runtime, key))
