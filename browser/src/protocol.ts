@@ -227,6 +227,13 @@ export interface WsIncomingPermissionDismissPayload {
 
 export interface PromptLogEntry {
   id: number;
+  // The run this ONE call belongs to — a top-level run's own id for one of its
+  // own prompts, or a draw's own (micro-context-minted) id for a draw.  Present
+  // on every record (not just a draw's) so a draw's OWN children — a
+  // micro-context nested inside another, any depth (#2435) — can be found by
+  // matching their `parent_run_id` against THIS id, purely structurally, with
+  // no name ever in the loop.
+  run_id: string;
   timestamp: string;
   model: string;
   agent_name: string;
@@ -314,7 +321,7 @@ export interface WsIncomingPromptLogsPayload {
 
 export interface WsIncomingPromptLogUpdatePayload {
   type: typeof WsIncomingType.PromptLogUpdate;
-  prompt: PromptLogEntry & { run_id: string };
+  prompt: PromptLogEntry;
 }
 
 export interface WsIncomingRunOutcomePayload {
@@ -653,7 +660,7 @@ export interface RuntimePromptLogsResponse {
 /** Background → prompts page: single prompt logged in real time */
 export interface RuntimePromptLogUpdate {
   type: typeof RuntimeMessageType.PromptLogUpdate;
-  prompt: PromptLogEntry & { run_id: string };
+  prompt: PromptLogEntry;
 }
 
 /** Background → prompts page: run outcome set (outcome / reason / target) */

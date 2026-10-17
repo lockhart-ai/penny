@@ -808,6 +808,25 @@ h1 {
   text-align: center;
 }
 
+/* A draw nested under the round that made it (#2435) — a tool step, or the
+   run itself when it carries no anchor.  `.prompt-draw-children` nests again
+   for a draw made on behalf of ANOTHER draw, to any depth: each level simply
+   stacks another indent + rule, with no depth-specific rule needed. */
+.prompt-draw {
+  background: var(--bg-tertiary);
+}
+
+.prompt-draw .prompt-step {
+  min-width: auto;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.prompt-draw-children {
+  margin-left: 20px;
+  border-left: 2px solid var(--border);
+}
+
 .prompt-type {
   font-size: 12px;
   color: var(--text-muted);

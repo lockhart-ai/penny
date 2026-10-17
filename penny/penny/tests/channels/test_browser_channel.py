@@ -1697,9 +1697,11 @@ class TestBrowserPromptLogHandlers:
         )
 
         response = await self._request_prompt_logs(channel)
-        # Each draw mints its OWN run_id for its own ledger attribution, so it
-        # also surfaces as its own (childless) run in the same page — pick "run1"
-        # out by id rather than assuming it's newest.
+        # Each draw mints its OWN run_id for its own ledger attribution — but it
+        # is a CHILD, never a top-level run in its own right (#2435): neither
+        # "draw-1" nor "draw-2" appears as its own entry in the page.
+        run_ids = {r["run_id"] for r in response["runs"]}
+        assert run_ids == {"run1"}
         run = next(r for r in response["runs"] if r["run_id"] == "run1")
 
         # The run's own prompt: made a tool call, carries no parent linkage.
@@ -1720,6 +1722,94 @@ class TestBrowserPromptLogHandlers:
         assert unanchored["parent_run_id"] == "run1"
         assert unanchored["parent_tool_call_id"] is None
         assert unanchored["made_tool_call"] is False  # a plain text reply, no tool call
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_carry_grandchild_draws(self, tmp_path):
+        """A draw made on behalf of ANOTHER draw (a micro-context nested inside a
+        micro-context, #2435) is still a descendant of the top-level run — found
+        by walking ``parent_run_id`` outward level by level, not just one hop —
+        and comes back flattened into that top-level run's own ``child_draws``,
+        each entry still carrying its OWN ``run_id``/``parent_run_id`` so the
+        addon can rebuild the full tree, to any depth, from those ids alone."""
+        channel, db = self._channel(tmp_path)
+        self._log_prompt(db, "chat", "run1")
+        # A direct child of run1 — e.g. browse-extract.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "page summary"}}]},
+            agent_name="browse-extract",
+            run_id="draw-child",
+            parent_run_id="run1",
+        )
+        # A GRANDCHILD — some future micro-context nested inside draw-child,
+        # named something this code has never heard of on purpose.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "nested detail"}}]},
+            agent_name="some-future-microcontext",
+            run_id="draw-grandchild",
+            parent_run_id="draw-child",
+        )
+
+        response = await self._request_prompt_logs(channel)
+        run = next(r for r in response["runs"] if r["run_id"] == "run1")
+        by_run_id = {d["run_id"]: d for d in run["child_draws"]}
+        assert set(by_run_id) == {"draw-child", "draw-grandchild"}
+        assert by_run_id["draw-grandchild"]["parent_run_id"] == "draw-child"
+        assert by_run_id["draw-grandchild"]["agent_name"] == "some-future-microcontext"
+        # Neither draw is ALSO listed as its own top-level run.
+        assert {r["run_id"] for r in response["runs"]} == {"run1"}
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_order_by_latest_activity_including_child_draws(self, tmp_path):
+        """A run's position in the page is its LATEST activity — its own prompts
+        OR a child draw made on its behalf, whichever is newer (#2435).  "old-run"'s
+        own last prompt is the oldest row in the whole table, but a draw lands on
+        its behalf after "new-run"'s own (newer) prompt — so old-run sorts first,
+        matching what the live push's reorder-on-update promises on screen."""
+        channel, db = self._channel(tmp_path)
+        self._log_prompt(db, "chat", "old-run")
+        self._log_prompt(db, "chat", "new-run")
+        # A draw on old-run's behalf, landing after both of the above.
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "idle"}}]},
+            agent_name="state-classifier",
+            run_id="draw-on-old-run",
+            parent_run_id="old-run",
+        )
+
+        response = await self._request_prompt_logs(channel)
+        assert [r["run_id"] for r in response["runs"]] == ["old-run", "new-run"]
+
+    @pytest.mark.asyncio
+    async def test_prompt_logs_search_excludes_child_draw_runs(self, tmp_path):
+        """The search path (FTS) is the top-level-only rule's other code path —
+        a draw's own run_id never qualifies as a search hit in its own right,
+        even when its own content matches the query."""
+        channel, db = self._channel(tmp_path)
+        db.messages.log_prompt(
+            model="m",
+            messages=[{"role": "user", "content": "q"}],
+            response={"choices": [{"message": {"content": "basketball talk"}}]},
+            agent_name="chat",
+            run_id="run1",
+            duration_ms=1,
+        )
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "basketball draw"}}]},
+            agent_name="state-classifier",
+            run_id="draw-1",
+            parent_run_id="run1",
+        )
+
+        response = await self._request_prompt_logs(channel, {"query": "basketball"})
+        assert [r["run_id"] for r in response["runs"]] == ["run1"]
 
     @pytest.mark.asyncio
     async def test_prompt_logs_flagged_only(self, tmp_path):

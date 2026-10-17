@@ -29,6 +29,16 @@ import {
   STORAGE_KEY_TOOL_USE,
 } from "../protocol.js";
 import { createSchedulePicker } from "./schedule_picker.js";
+import {
+  agentLabel,
+  attachmentIndex,
+  dedupeDraws,
+  type DrawTreeNode,
+  directChildNodes,
+  isAnchored,
+  moveToFront,
+  toolCallIds,
+} from "./draw_nesting.js";
 
 // --- Top-level state ---
 
@@ -75,6 +85,16 @@ const runElements = new Map<string, HTMLElement>();
 let activeRunId: string | null = null;
 let activeTimer: ReturnType<typeof setTimeout> | null = null;
 let promptsLoaded = false;
+
+// A live child draw (#2435) that arrived before something it needs: either its
+// parent run isn't on screen yet (held here by parent run_id), or it is but the
+// step it anchors to hasn't rendered yet (held here by run_id then tool_call id).
+// Both are drained the moment what they're waiting for shows up — never dropped,
+// never promoted to a top-level run — and both are cleared on every page reset
+// (filter switch, flagged toggle, search, reconnect) so a draw whose parent or
+// step never arrives (the user switched away) doesn't linger forever.
+const pendingDrawsByParentRun = new Map<string, PromptLogEntry[]>();
+const pendingDrawsByStep = new Map<string, Map<string, PromptLogEntry[]>>();
 
 // --- Memories state ---
 
@@ -159,6 +179,11 @@ function switchTab(tab: Tab): void {
 function handleMessage(message: RuntimeMessage): void {
   if (message.type === RuntimeMessageType.PromptLogsResponse) {
     promptsLoaded = true;
+    // A fetched run's OWN child_draws win over anything held live for it
+    // (#2435) — reconcile before rendering so the first paint is already
+    // correct, and so a live-pending duplicate (arrived both ways) is
+    // deduped rather than shown twice.
+    for (const run of message.runs) reconcilePendingDraws(run);
     if (message.runs.length > 0 && allRuns.length > 0) {
       appendRuns(message.runs);
     } else {
@@ -257,6 +282,8 @@ function setupPrompts(): void {
         allRuns = [];
         runsContainer.innerHTML = "";
         runElements.clear();
+        pendingDrawsByParentRun.clear();
+        pendingDrawsByStep.clear();
         promptsLoadMore.classList.add("hidden");
         promptsLoading.textContent = promptSearch ? "Searching…" : "Loading prompt logs…";
         promptsLoading.classList.remove("hidden");
@@ -269,6 +296,8 @@ function setupPrompts(): void {
 
 function resetAndFetchPrompts(): void {
   allRuns = [];
+  pendingDrawsByParentRun.clear();
+  pendingDrawsByStep.clear();
   requestPromptLogs(0);
 }
 
@@ -283,7 +312,17 @@ function requestPromptLogs(offset: number): void {
   });
 }
 
-function handlePromptUpdate(prompt: PromptLogEntry & { run_id: string }): void {
+// A draw (prompt.parent_run_id !== null) nests under whatever that id names —
+// a top-level run OR another draw, any depth (#2435) — purely by id, never by
+// agent_name.  A top-level prompt (parent_run_id === null) keeps the ordinary
+// top-level insert/update path, which the agent filter still gates; a draw
+// rides along with whatever its host run's filter status already resolved,
+// so it's never checked against the filter itself.
+function handlePromptUpdate(prompt: PromptLogEntry): void {
+  if (prompt.parent_run_id !== null) {
+    attachDraw(prompt);
+    return;
+  }
   if (activeAgentFilter && prompt.agent_name !== activeAgentFilter) return;
 
   const existingRun = allRuns.find((r) => r.run_id === prompt.run_id);
@@ -302,21 +341,20 @@ function updateExistingRun(run: PromptLogRun, prompt: PromptLogEntry): void {
   run.total_input_tokens += prompt.input_tokens;
   run.total_output_tokens += prompt.output_tokens;
 
+  allRuns = moveToFront(allRuns, run.run_id);
   const row = runElements.get(run.run_id);
-  if (!row) return;
-
-  const summary = row.querySelector(".run-summary")!;
-  const oldHeader = summary.querySelector(".run-header")!;
-  const newHeader = createRunHeader(run);
-  summary.replaceChild(newHeader, oldHeader);
-
-  const promptsPanel = row.querySelector(".run-view-prompts") ?? row.querySelector(".run-prompts")!;
-  promptsPanel.appendChild(createPromptRow(prompt, run.prompts.length));
-
-  markRunActive(run.run_id, row);
+  if (row) {
+    runsContainer.prepend(row);
+    const summary = row.querySelector(".run-summary")!;
+    summary.replaceChild(createRunHeader(run), summary.querySelector(".run-header")!);
+    const promptsPanel = row.querySelector(".run-view-prompts") ?? row.querySelector(".run-prompts")!;
+    promptsPanel.appendChild(createPromptRow(prompt, run.prompts.length));
+    markRunActive(run.run_id, row);
+  }
+  drainWaitingOn(prompt);
 }
 
-function insertNewRun(prompt: PromptLogEntry & { run_id: string }): void {
+function insertNewRun(prompt: PromptLogEntry): void {
   const run: PromptLogRun = {
     run_id: prompt.run_id,
     agent_name: prompt.agent_name,
@@ -334,6 +372,7 @@ function insertNewRun(prompt: PromptLogEntry & { run_id: string }): void {
     health: { bailed: false, no_writes: false, incomplete: false, tool_failures: 0, degenerate_send: false, flags: [], regressive: false },
     record: "",
     prompts: [prompt],
+    child_draws: [],
   };
   allRuns.unshift(run);
   promptsLoading.classList.add("hidden");
@@ -341,6 +380,134 @@ function insertNewRun(prompt: PromptLogEntry & { run_id: string }): void {
   const row = createRunRow(run);
   runsContainer.prepend(row);
   markRunActive(run.run_id, row);
+  drainWaitingOn(prompt);
+}
+
+// --- Nesting a child draw under the round that made it (#2435) ---
+//
+// A host run carries the FULL flat descendant list (any depth) in its own
+// `child_draws`, exactly like a fetched run does — so `findContainer` below
+// can locate ANY draw, at any depth, by searching every host's own list for a
+// matching run_id, with the tree itself built (for rendering) by
+// `directChildNodes` from `draw_nesting.ts`.
+
+/** The host run and "own rows" (the rows sharing `runId`) for whatever
+ * `runId` names — the host itself (its own top-level prompts) or one of its
+ * descendant draws (every row sharing that draw's run_id) — or `null` when
+ * nothing on screen matches yet. */
+function findContainer(runId: string): { host: PromptLogRun; ownRows: PromptLogEntry[] } | null {
+  for (const run of allRuns) {
+    if (run.run_id === runId) return { host: run, ownRows: run.prompts };
+    const rows = (run.child_draws ?? []).filter((draw) => draw.run_id === runId);
+    if (rows.length > 0) return { host: run, ownRows: rows };
+  }
+  return null;
+}
+
+function holdByParent(parentRunId: string, draw: PromptLogEntry): void {
+  const held = pendingDrawsByParentRun.get(parentRunId) ?? [];
+  held.push(draw);
+  pendingDrawsByParentRun.set(parentRunId, held);
+}
+
+function holdByStep(containerRunId: string, toolCallId: string, draw: PromptLogEntry): void {
+  const byStep = pendingDrawsByStep.get(containerRunId) ?? new Map<string, PromptLogEntry[]>();
+  const held = byStep.get(toolCallId) ?? [];
+  held.push(draw);
+  byStep.set(toolCallId, held);
+  pendingDrawsByStep.set(containerRunId, byStep);
+}
+
+/** Merge whatever was held live for `run` or any of its now-fetched
+ * descendants into `run.child_draws` (#2435) — the fetched copy wins on a
+ * duplicate id (`dedupeDraws` keeps the first, and the fetched ones are
+ * listed first).  A step-pending hold merges in too rather than being
+ * dropped: the fetched snapshot's own rows are complete, so the normal
+ * anchor lookup at render time resolves it properly — or, per point 3, falls
+ * back to nesting under the parent as a whole if it truly doesn't match.
+ * Walks outward a level at a time (a newly-merged draw's own run_id may ITSELF
+ * have something pending), so a multi-level pending chain is caught whole. */
+function reconcilePendingDraws(run: PromptLogRun): void {
+  let merged = run.child_draws ?? [];
+  let frontier = [run.run_id, ...merged.map((draw) => draw.run_id)];
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const runId of frontier) {
+      const heldByParent = pendingDrawsByParentRun.get(runId);
+      if (heldByParent) {
+        pendingDrawsByParentRun.delete(runId);
+        merged = [...merged, ...heldByParent];
+        next.push(...heldByParent.map((draw) => draw.run_id));
+      }
+      const heldByStep = pendingDrawsByStep.get(runId);
+      if (heldByStep) {
+        pendingDrawsByStep.delete(runId);
+        for (const held of heldByStep.values()) {
+          merged = [...merged, ...held];
+          next.push(...held.map((draw) => draw.run_id));
+        }
+      }
+    }
+    frontier = next;
+  }
+  run.child_draws = dedupeDraws(merged);
+}
+
+/** Attach one draw — live, at any depth: its host run isn't on screen yet
+ * (held by parent run_id), its parent IS but the step it anchors to hasn't
+ * rendered yet (held by parent run_id + tool_call id), or its parent is ready
+ * right now.  Never drops a draw, never promotes one to a top-level run. */
+function attachDraw(draw: PromptLogEntry): void {
+  const parentId = draw.parent_run_id;
+  if (parentId === null) return; // handlePromptUpdate only calls this when set
+  const container = findContainer(parentId);
+  if (!container) {
+    holdByParent(parentId, draw);
+    return;
+  }
+  const index = attachmentIndex(container.ownRows, draw.parent_tool_call_id);
+  if (isAnchored(draw.parent_tool_call_id) && index === null) {
+    holdByStep(parentId, draw.parent_tool_call_id!, draw);
+    return;
+  }
+  container.host.child_draws = dedupeDraws([...(container.host.child_draws ?? []), draw]);
+  rerenderHostBody(container.host);
+  allRuns = moveToFront(allRuns, container.host.run_id);
+  const hostRow = runElements.get(container.host.run_id);
+  if (hostRow) {
+    runsContainer.prepend(hostRow);
+    markRunActive(container.host.run_id, hostRow);
+  }
+  drainWaitingOn(draw);
+}
+
+/** Whatever was waiting on `arrived`'s own run_id: a grandchild draw held on
+ * its parent (now `arrived`), and any draw held on one of `arrived`'s own
+ * tool calls (now that `arrived` is itself a known row of that container). */
+function drainWaitingOn(arrived: PromptLogEntry): void {
+  const heldByParent = pendingDrawsByParentRun.get(arrived.run_id);
+  if (heldByParent) {
+    pendingDrawsByParentRun.delete(arrived.run_id);
+    for (const draw of heldByParent) attachDraw(draw);
+  }
+  const byStep = pendingDrawsByStep.get(arrived.run_id);
+  if (!byStep) return;
+  for (const callId of toolCallIds(arrived)) {
+    const held = byStep.get(callId);
+    if (!held) continue;
+    byStep.delete(callId);
+    for (const draw of held) attachDraw(draw);
+  }
+  if (byStep.size === 0) pendingDrawsByStep.delete(arrived.run_id);
+}
+
+function rerenderHostBody(host: PromptLogRun): void {
+  const row = runElements.get(host.run_id);
+  if (!row) return;
+  const panel = row.querySelector(".run-view-prompts") ?? row.querySelector(".run-prompts");
+  if (!panel) return;
+  panel.innerHTML = "";
+  appendPromptsAndDraws(panel as HTMLElement, host.prompts, host.run_id, host.child_draws ?? []);
 }
 
 function handleRunOutcome(runId: string, outcome: RunOutcome, reason: string): void {
@@ -348,9 +515,11 @@ function handleRunOutcome(runId: string, outcome: RunOutcome, reason: string): v
   if (!run) return;
   run.run_outcome = outcome;
   run.run_reason = reason;
+  allRuns = moveToFront(allRuns, runId);
 
   const row = runElements.get(runId);
   if (!row) return;
+  runsContainer.prepend(row);
 
   const summary = row.querySelector(".run-summary");
   if (summary) {
@@ -499,9 +668,7 @@ function createRunBody(run: PromptLogRun): HTMLElement {
 
   const prompts = document.createElement("div");
   prompts.className = "run-view run-view-prompts active";
-  for (let i = 0; i < run.prompts.length; i++) {
-    prompts.appendChild(createPromptRow(run.prompts[i], i + 1));
-  }
+  appendPromptsAndDraws(prompts, run.prompts, run.run_id, run.child_draws ?? []);
 
   // The record is only meaningful once the run is tagged (a completed collector
   // run); a live / chat run has no Penny-facing record, so it shows prompts only.
@@ -515,6 +682,58 @@ function createRunBody(run: PromptLogRun): HTMLElement {
   body.appendChild(prompts);
   body.appendChild(record);
   return body;
+}
+
+// Every top-level prompt, interleaved with the draws made on this run's
+// behalf — to ANY depth (#2435), nested recursively under whichever step (or
+// the run as a whole) each one anchors to.  `ownRunId`/`ownRows` generalize
+// the same shape `rerenderHostBody` reuses for a live update: a top-level
+// run's own run_id + prompts the first time, but the identical function is
+// what a draw's own children recurse through too.
+function appendPromptsAndDraws(
+  target: HTMLElement,
+  ownRows: PromptLogEntry[],
+  ownRunId: string,
+  allDraws: PromptLogEntry[],
+): void {
+  const nodes = directChildNodes(ownRunId, ownRows, allDraws);
+  const byStep = new Map<number, DrawTreeNode[]>();
+  const unanchored: DrawTreeNode[] = [];
+  for (const node of nodes) {
+    if (node.stepIndex === null) {
+      unanchored.push(node);
+      continue;
+    }
+    if (!byStep.has(node.stepIndex)) byStep.set(node.stepIndex, []);
+    byStep.get(node.stepIndex)!.push(node);
+  }
+  for (let i = 0; i < ownRows.length; i++) {
+    target.appendChild(createPromptRow(ownRows[i], i + 1));
+    for (const node of byStep.get(i) ?? []) appendDrawNode(target, node);
+  }
+  for (const node of unanchored) appendDrawNode(target, node);
+}
+
+// One draw row plus its own already-built children (#2435), indented one
+// level deeper per nesting level via `.prompt-draw-children`'s own CSS.
+function appendDrawNode(target: HTMLElement, node: DrawTreeNode): void {
+  target.appendChild(createDrawRow(node.draw));
+  if (node.children.length === 0) return;
+  const nested = document.createElement("div");
+  nested.className = "prompt-draw-children";
+  target.appendChild(nested);
+  for (const child of node.children) appendDrawNode(nested, child);
+}
+
+// A draw's own row — the same prompt-row component every top-level step
+// uses, labelled with its OWN agent identity (never a numbered step: a draw
+// has no fixed position among its siblings worth counting) rather than a
+// name looked up from a closed list, so a micro-context this code has never
+// heard of still reads as something (#2435).
+function createDrawRow(draw: PromptLogEntry): HTMLElement {
+  const row = createPromptRow(draw, agentLabel(draw.agent_name));
+  row.classList.add("prompt-draw");
+  return row;
 }
 
 // A "Prompts | Record" tab bar that swaps which view panel is active.
@@ -677,7 +896,7 @@ function createRunHeader(run: PromptLogRun): HTMLElement {
 
   const agent = document.createElement("span");
   agent.className = "run-agent";
-  agent.innerHTML = AGENT_LABELS[run.agent_name] ?? run.agent_name;
+  agent.innerHTML = AGENT_LABELS[run.agent_name] ?? agentLabel(run.agent_name);
   const spinner = document.createElement("span");
   spinner.className = "run-spinner";
   spinner.innerHTML = ' <i class="fa-solid fa-spinner fa-spin"></i>';
@@ -712,11 +931,12 @@ function createRunHeader(run: PromptLogRun): HTMLElement {
     `<span><i class="fa-solid fa-clock"></i>${formatDuration(run.total_duration_ms)}</span>`;
   header.appendChild(meta);
 
-  // Copy the whole run — its run_id + every prompt's full JSON (ids included) —
-  // so it can be pasted back for a deep look or looked up in the DB by run_id.
+  // Copy the whole run — its run_id + every prompt's full JSON (ids included),
+  // plus every draw made on its behalf (#2435) — so it can be pasted back for
+  // a deep look or looked up in the DB by run_id.
   header.appendChild(
     createCopyButton(
-      () => jsonOf({ run_id: run.run_id, prompts: run.prompts }),
+      () => jsonOf({ run_id: run.run_id, prompts: run.prompts, child_draws: run.child_draws ?? [] }),
       `Copy all ${run.prompt_count} prompts as JSON (run_id ${run.run_id})`,
     ),
   );
@@ -724,7 +944,11 @@ function createRunHeader(run: PromptLogRun): HTMLElement {
   return header;
 }
 
-function createPromptRow(prompt: PromptLogEntry, step: number): HTMLElement {
+// `step` is a top-level prompt's 1-based position among its run's own
+// prompts, OR a draw's own readable agent label (#2435) — a draw has no
+// fixed position among its siblings worth counting, so `createDrawRow` passes
+// its label through here instead of a number.
+function createPromptRow(prompt: PromptLogEntry, step: number | string): HTMLElement {
   const row = document.createElement("div");
   row.className = "prompt";
 
