@@ -306,6 +306,30 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # user's own steps outrank a close-looking routine has nowhere else to live.  The
 # ELICIT → LEARN and parked-LEARN conditions are untouched: from inside a round there IS
 # a task being worked on, and the correction shape is what that edge is about.
+#
+# IDLE → ELICIT vs IDLE → LEARN: TRIED AND REVERTED, #2362.  A teaching message ("new
+# job for you: each morning read X and remember Y") satisfies both conditions as written
+# — elicit's "asking to set up something that keeps running" and learn's "teaching ...
+# and their message carries the steps" are both true of it — so the classifier correctly
+# argues the two against each other every time, at several times its ordinary cost
+# (measured: one case's worst draw ran 3,319 reasoning tokens against a ~259-token
+# median; replaying it 10x reopened the comparison 10/10, landing correctly 10/10).
+# The lever tried: add "and their message doesn't yet say how to do it" to elicit's
+# condition, to make the two mutually exclusive by the fact that separates them.
+# Cost measured, on a before/after classifier-cohort run, median reasoning tokens:
+#   classifier-draws-learn-when-teaching-arrives-unprompted   719 → 500  (-31%)
+#   classifier-elicits-on-a-cold-registry                    1007 → 851  (-16%)
+#   transition-idle-to-elicit (a different case, same edge)   821 → 1173  (+43%)
+# The first two cases — both built from messages that fully narrate the steps — improved.
+# The third regressed: its message supplies SOME operational detail (a URL, what to watch)
+# without teaching language, and the new clause gave the model a second genuinely
+# ambiguous question ("does mentioning the URL count as saying how?") where before it had
+# none — it still landed on elicit every time, just more expensively.  The clause moved
+# the ambiguity rather than removing it, so it was reverted rather than kept with a
+# regressed neighbour.  Unresolved: a message with partial, non-teaching-framed detail
+# sits between the two conditions however they are worded, because the distinction being
+# drawn (teaching vs. merely mentioning facts about the job) is not reducible to a single
+# textual marker the way "carries the steps" or "doesn't say how" are.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
         "their message asks to set one of the known skills running, and supplies "
@@ -324,8 +348,7 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up something that keeps running on its own after this "
         "conversation — a job that watches, repeats, or fires again later without being "
-        "asked — and no known skill covers it, and their message doesn't yet say how to "
-        "do it. A request to do something once, right "
+        "asked — and no known skill covers it. A request to do something once, right "
         "now, is not this, however many steps it takes — and saving or remembering the "
         "result does not make it ongoing"
     ),
