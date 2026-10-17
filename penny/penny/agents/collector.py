@@ -106,6 +106,15 @@ _HOLDINGS_GONE = (
     "cycle runs without the block stating what it holds."
 )
 
+# The "what you last told the user" line (#2385) — what THIS mechanism last sent, so the
+# close's ``notify`` choice reads against the user's actual state of knowledge rather
+# than a recollection.  Anchored to the same emission provenance the self-state render
+# reads (#1568): the outgoing message the drainer stamped with this collection.
+_LAST_TOLD_HEAD = "## What you last told the user"
+_LAST_TOLD_NEVER = "You have never sent them anything about this collection."
+_LAST_TOLD_LINE = 'The last thing you told the user: "{snippet}" ({when})'
+_LAST_TOLD_SNIPPET_CHARS = 120
+
 
 class Collector(BackgroundAgent):
     """Single dispatcher agent — picks the most-overdue ready collection per cycle."""
@@ -345,29 +354,29 @@ class Collector(BackgroundAgent):
         response: ControllerResponse,
         trigger: CycleTrigger,
     ) -> NotificationOutcome | None:
-        """Tell the user about this cycle, when this cycle is one that should (#1911).
+        """Tell the user about this cycle, when the cycle itself said there was news
+        (#1911, the choice moved onto the close in #2385).
 
         The trigger is exactly three structural facts: the collection carries
-        ``notify``, no step raised a STOP, and the cycle CLOSED with ``done()`` (#1916,
-        where it used to read program coverage).  A routine with no write step AT ALL
-        passes it the same way a watch does — "some skills won't have writes at all" —
-        because what is read is the close, not what the cycle called to get there.
+        ``notify``, no step raised a STOP, and the cycle closed with a SUCCESSFUL
+        ``done(notify=true)`` — the required argument is the cycle's own recorded
+        decision, made against what the collection holds and what the user was last
+        told (both rendered on the prompt).  A close whose ``notify`` is false, like a
+        collection with notifications off, sends nothing: the decision was made and
+        recorded, and the run record shows it.
 
-        The STOP clause is what keeps no-news silent: a watch's unchanged
-        re-observation carries its STOP at the write chokepoint and the loop ends
-        there, so the close alone would read that cycle as a finished job and tell the
-        user nothing happened.  A STOP means the cycle deliberately ended early,
-        whatever else it had got through.
+        The STOP clause stays as a guard for whatever a later STOP set names: a
+        STOP means the cycle deliberately ended early, whatever else it had got
+        through, and is never a notify.  No write-gate outcome stops a cycle today
+        (#2385 emptied the stop-worthy set) — a watch's unchanged re-observation runs
+        on to its close, where the quiet cycle is recorded as ``notify=false`` rather
+        than being pre-empted by the gate.
 
         **The #2417 fourth fact — a declared write step that mutated nothing this run
         reads as a STOP — is REMOVED on this branch (#2455 naive baseline)**: it read
         the bound PROGRAM's own calls (``_program_writes``), which no longer exists —
         a job's cycle follows a free-text prompt, not a parsed program, so there is no
-        declared-write-step fact left to read.  A cycle now notifies on its ``done()``
-        close unless the write gate STOPs, exactly as before #2417.  This is a known
-        gap on this branch: a cycle that skips its own write decision without a STOP
-        can over-notify, and it is left unmeasured here rather than reintroduced as a
-        name-keyed guess at the model's intent.
+        declared-write-step fact left to read.
 
         ``trigger`` travels through to the queued row: WHETHER to tell the user is the
         facts above, WHEN it reaches them is which lane the message is in (#1939).
@@ -376,9 +385,28 @@ class Collector(BackgroundAgent):
         """
         if not collection.notify or self._stop_reason(response) is not None:
             return None
-        if not self._has_done_call(response):
+        if self._done_notify(response) is not True:
             return None
         return await self._notifier.notify(collection, run_id, response.tool_calls, trigger)
+
+    @staticmethod
+    def _done_notify(response: ControllerResponse | None) -> bool | None:
+        """The ``notify`` flag off the cycle's successful ``done()`` record, or
+        ``None`` when the cycle never closed.
+
+        Read off the ledger's own records like ``_has_done_call``: the first
+        non-failed done call — the one that ended the loop — carries the args the
+        framework acts on; a later one is unreachable.  The REQUIRED argument is
+        validated by :class:`~penny.tools.memory_args.DoneArgs`, so a successful
+        record always carries a real boolean; a failed one is not a close and is
+        skipped, letting the model's retry supply it.
+        """
+        if response is None:
+            return None
+        for record in response.tool_calls:
+            if record.tool == PennyConstants.DONE_TOOL_NAME and not record.failed:
+                return record.arguments.get("notify")
+        return None
 
     def _retire_if_ended(self, collection: MemoryRow, run_id: str) -> None:
         """Post-cycle retirement — at most one archive.
@@ -603,13 +631,14 @@ class Collector(BackgroundAgent):
         """A collector cycle ends on a successful ``done()`` OR a write-gate STOP.
 
         The base terminator is ``done()`` (#1569, restored #1916); a collector
-        additionally honors a STOP carried by a tool result (``collection_write`` →
-        any member of ``WRITE_GATE_STOP_REASONS`` on a scoped write — the value was
-        already recorded, under this key or another, #1587/#1919) — a deliberate close at the
-        write chokepoint, so no trailing ``done()`` is required (a ``done()`` after a
-        STOP would just be a no-op the loop never reaches).  STOP is honored only here
-        (must-act cadence); the chat loop uses the base and never stops on a write
-        outcome.
+        additionally honors a STOP carried by a tool result (any member of
+        ``WRITE_GATE_STOP_WORTHY_OUTCOMES``, declared as data) — a deliberate close at
+        the write chokepoint, so no trailing ``done()`` is required.  Since #2385 the
+        set holds NO members — an unchanged write no longer ends the cycle; the model
+        closes with ``done(notify=…)`` and the quiet decision is its own — so this
+        hook reads only the terminator today, and stays so a later member is data, not
+        new loop code.  STOP is honored only here (must-act cadence); the chat loop
+        uses the base and never stops on a write outcome.
 
         What this replaced is the coverage read (#1911): the calls the program makes
         were settled before the cycle began, so a cycle that departed from them for a
@@ -890,29 +919,56 @@ class Collector(BackgroundAgent):
 
     def _run_history_section(self, target_name: str) -> str:
         """A trailing block of this collector's own recent run outcomes (newest
-        first) so each cycle knows what its prior invocations did.
+        first) so each cycle knows what its prior invocations did, and — since
+        #2385 — what it last TOLD the user through this mechanism.
 
-        Empty when disabled (``COLLECTOR_RUN_HISTORY`` = 0) or there's no history
-        yet.  Each line is the run's STRUCTURAL outcome — its outcome enum, or the
-        write-gate stop reason — generated from the ledger (#1569), never a
-        model-authored ``done()`` summary (there is none).  Framed as reference,
-        not instruction: it tells the collector what it did, to avoid repeating
-        work, without feeding its own past prose back into the next cycle.
+        The runs block is empty when disabled (``COLLECTOR_RUN_HISTORY`` = 0) or
+        there's no history yet; the last-told line renders always, because the
+        close's ``notify`` choice needs it in both directions — with a prior send to
+        compare against, and the plain "never" when there is none, which is its own
+        state rather than an absence.  Each run line is the run's STRUCTURAL outcome
+        — its outcome enum, or the write-gate stop reason — generated from the ledger
+        (#1569), never a model-authored ``done()`` summary (there is none).  Framed
+        as reference, not instruction: it tells the collector what it did, to avoid
+        repeating work, without feeding its own past prose back into the next cycle.
         """
         limit = int(self.config.runtime.COLLECTOR_RUN_HISTORY)
         outcomes = self.db.messages.recent_run_outcomes(target_name, limit)
-        if not outcomes:
-            return ""
-        lines = "\n".join(
-            f"{index}. [{format_log_timestamp(when)}] {outcome}"
-            for index, (when, outcome) in enumerate(outcomes, start=1)
+        blocks = []
+        if outcomes:
+            lines = "\n".join(
+                f"{index}. [{format_log_timestamp(when)}] {outcome}"
+                for index, (when, outcome) in enumerate(outcomes, start=1)
+            )
+            blocks.append(
+                "## Your recent runs (newest first)\n"
+                "What your previous cycles did, and when — context to avoid repeating "
+                "work or re-sending, not an instruction to repeat.\n"
+                f"{lines}"
+            )
+        blocks.append(self._last_told_line(target_name))
+        return "\n\n" + "\n\n".join(blocks)
+
+    def _last_told_line(self, target_name: str) -> str:
+        """What this mechanism last sent the user, or the plain never-sent line
+        (#2385).
+
+        Read off the emission provenance the drainer stamps (#1568) — the newest
+        outgoing message whose mechanism is this collection — so the answer is a
+        read, not a judgment.  The snippet is bounded and collapsed like the
+        emission render's, so a long notification reads as one line."""
+        send = self.db.messages.latest_mechanism_send(target_name)
+        if send is None:
+            return f"{_LAST_TOLD_HEAD}\n{_LAST_TOLD_NEVER}"
+        collapsed = " ".join(send.content.split())
+        snippet = (
+            collapsed
+            if len(collapsed) <= _LAST_TOLD_SNIPPET_CHARS
+            else f"{collapsed[:_LAST_TOLD_SNIPPET_CHARS].rstrip()}…"
         )
-        return (
-            "\n\n## Your recent runs (newest first)\n"
-            "What your previous cycles did, and when — context to avoid repeating "
-            "work or re-sending, not an instruction to repeat.\n"
-            f"{lines}"
-        )
+        when = format_log_timestamp(send.timestamp)
+        line = _LAST_TOLD_LINE.format(snippet=snippet, when=when)
+        return f"{_LAST_TOLD_HEAD}\n{line}"
 
     @classmethod
     def _compose_prompt(cls, target: MemoryRow) -> str:

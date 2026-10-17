@@ -1411,14 +1411,16 @@ class TestCollectionWritesAndReads:
         )
         # A re-write under the SAME key with the SAME value is the change-gate's
         # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
-        # such (not a generic "duplicate") AND carrying a STOP the collector loop
-        # honors (this is a collector-scoped write).
+        # such (not a generic "duplicate").  It carried a STOP the collector loop
+        # honored until #2385 removed the unchanged-value STOP: the result now
+        # returns normally (stop is None) and the cycle goes on to its close, where
+        # the quiet cycle is the model's recorded decision.
         same_key = await write.execute(
             collection="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
         assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
         assert same_key.mutated is False
-        assert same_key.stop == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+        assert same_key.stop is None
         # A batch with a genuinely new entry alongside a collision gets the per-entry
         # bound call + the some-of-the-batch close, never the nothing-landed one.
         # The colliding half carries a DIFFERENT value (#1919) — a same-value collision
@@ -1468,7 +1470,9 @@ class TestCollectionWritesAndReads:
             collection="likes",
             entries=[{"key": "morning roast selection", "content": "first body"}],
         )
-        assert same_value.stop == WriteGateOutcome.DUPLICATE_UNCHANGED
+        assert (
+            same_value.stop is None
+        )  # no write outcome stops since #2385 — a result, not a verdict
         assert same_value.mutated is False
         assert (
             "Already recorded: 'morning roast selection' is already stored as 'dark roast'"
@@ -1476,7 +1480,7 @@ class TestCollectionWritesAndReads:
         )
         assert "collection_write(" not in same_value.message
         assert "was not written" not in same_value.message
-        # …and the divergent-value collision above never stops, so a change arriving
+        # …and no write outcome stops at all now, so a change arriving
         # under a reworded key is never silenced as no-news.
         assert multi.stop is None
 

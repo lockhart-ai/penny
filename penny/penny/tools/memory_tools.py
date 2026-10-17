@@ -30,7 +30,7 @@ from similarity.embeddings import is_name_variant
 
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
-    WRITE_GATE_STOP_REASONS,
+    WRITE_GATE_STOP_WORTHY_OUTCOMES,
     MutationEntityType,
     PennyConstants,
     WriteGateOutcome,
@@ -92,6 +92,7 @@ from penny.tools.memory_args import (
     CollectionSetArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
+    DoneArgs,
     FindArgs,
     GetEventArgs,
     LogAppendArgs,
@@ -102,7 +103,7 @@ from penny.tools.memory_args import (
     ReadRunCallsArgs,
     ReadSampleArgs,
 )
-from penny.tools.models import NoArgs, ToolResult
+from penny.tools.models import ToolResult
 
 if TYPE_CHECKING:
     from penny.agents.models import ToolCallRecord
@@ -1575,16 +1576,19 @@ class CollectionWriteTool(MemoryTool):
         context, so chat gets the enumerated text but never a loop-stop (#1587).
 
         Fires when the whole write resolved to a single STOP-worthy outcome (nothing
-        new landed): a watch's unchanged re-observation, reached by the exact key or —
-        since #1919 — by the dedup disjunction's strict content match under a reworded
-        one.  Which outcomes are STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS``
-        table (data), so later stages extend the table, not this code."""
+        new landed).  Since #2385 NOTHING is: the unchanged-value outcomes' STOP was
+        removed on the code owner's ruling — the write returns normally and the cycle
+        goes on to record the quiet close itself — so the declared
+        ``WRITE_GATE_STOP_WORTHY_OUTCOMES`` set is empty and this returns ``None`` for
+        every outcome the gate can produce.  The hook stays so a later member is data
+        in that set, not new loop code; the stamped reason it would carry is named in
+        ``WRITE_GATE_STOP_REASONS``."""
         if self._scope is None or not results:
             return None
         outcomes = {r.outcome for r in results}
         if len(outcomes) == 1:
             only = next(iter(outcomes))
-            if only in WRITE_GATE_STOP_REASONS:
+            if only in WRITE_GATE_STOP_WORTHY_OUTCOMES:
                 return only
         return None
 
@@ -2963,12 +2967,16 @@ class FindTool(MemoryTool):
 
 
 class DoneTool(Tool):
-    """Signal the cycle is finished — an argless sentinel (#1569, restored #1916).
+    """Signal the cycle is finished, and say whether it has news (#2385).
 
-    ``done()`` takes no arguments: it just marks the cycle finished.  The run
-    record is GENERATED from the run's canonical ledger rows (its tool calls +
+    The run record is GENERATED from the run's canonical ledger rows (its tool calls +
     write-gate outcomes + structural counts), so there is no model-authored
-    ``success``/``summary`` to confabulate — what is generated cannot lie.
+    ``success``/``summary`` to confabulate — what is generated cannot lie.  The one
+    argument the close carries is the notify CHOICE (#2385): a required ``notify``
+    boolean the framework reads after the cycle to decide whether the composer runs.
+    Saying true does not send anything by itself — the message is written after the
+    cycle, from what the cycle did, and a job with notifications off or a muted user
+    sends nothing either way.
 
     It came back because the alternative was worse.  Deriving the close from PROGRAM
     COVERAGE (#1911) fixed the path in advance, and a cycle that departed from it for
@@ -2976,16 +2984,36 @@ class DoneTool(Tool):
     said ``collection_write`` — could then never close: no coverage to reach, and no
     tool to say so with.  Measured, those cycles died rerolling on an attempt to state
     in prose what they no longer had a call for.  A model that has finished can always
-    make one more call; it cannot always walk a route decided before it started."""
+    make one more call; it cannot always walk a route decided before it started.  It
+    was an argless sentinel at that return (#1569); the notify argument was added when
+    the quiet cycle became a decision the model records rather than a STOP the gate
+    issues (#2385)."""
 
     name = PennyConstants.DONE_TOOL_NAME
     description = (
-        "Call this — with NO arguments — when the cycle is finished.  It just marks "
-        "the cycle done; the run record is generated automatically from the tool "
-        "calls you actually made, so there is nothing to summarise."
+        "Call this when the cycle is finished, with notify set to true or false. Say "
+        "true when this cycle found or stored something the user would want to hear "
+        "now; say false when nothing changed since what you last told them — a quiet "
+        "cycle is a normal outcome, not a failure. Saying true does not send anything "
+        "by itself: the message is written after the cycle, from what you did, and a "
+        "job with notifications off or a muted user sends nothing either way. The run "
+        "record is generated from your tool calls, so there is nothing to summarise."
     )
-    parameters = {"type": "object", "properties": {}}
-    args_model = NoArgs
+    parameters = {
+        "type": "object",
+        "properties": {
+            "notify": {
+                "type": "boolean",
+                "description": (
+                    "true if the user should hear about this cycle; false if they "
+                    "shouldn't. Compare what the collection holds and what you last "
+                    "told them with what you found this cycle."
+                ),
+            },
+        },
+        "required": ["notify"],
+    }
+    args_model = DoneArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
