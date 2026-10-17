@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from penny.channels.base import PageContext
 from penny.constants import PageReading
+from penny.database.skills import SkillParameter, SkillStep
 
 # Incoming message types (browser → server)
 BROWSER_MSG_TYPE_MESSAGE = "message"
@@ -34,6 +35,9 @@ BROWSER_MSG_TYPE_ENTRY_DELETE = "entry_delete"
 BROWSER_MSG_TYPE_COLLECTION_TRIGGER = "collection_trigger"
 BROWSER_MSG_TYPE_CURSOR_SET = "cursor_set"
 BROWSER_MSG_TYPE_CURSOR_CLEAR = "cursor_clear"
+BROWSER_MSG_TYPE_SKILLS_REQUEST = "skills_request"
+BROWSER_MSG_TYPE_SKILL_DETAIL_REQUEST = "skill_detail_request"
+BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST = "run_detail_request"
 
 # Outgoing message types (server → browser)
 BROWSER_RESP_TYPE_MESSAGE = "message"
@@ -51,6 +55,9 @@ BROWSER_RESP_TYPE_MEMORIES = "memories_response"
 BROWSER_RESP_TYPE_MEMORY_DETAIL = "memory_detail_response"
 BROWSER_RESP_TYPE_MEMORY_PAGE = "memory_page_response"
 BROWSER_RESP_TYPE_MEMORY_CHANGED = "memory_changed"
+BROWSER_RESP_TYPE_SKILLS = "skills_response"
+BROWSER_RESP_TYPE_SKILL_DETAIL = "skill_detail_response"
+BROWSER_RESP_TYPE_RUN_DETAIL = "run_detail_response"
 BROWSER_RESP_TYPE_COLLECTION_TRIGGER_RESULT = "collection_trigger_result"
 
 # Sections of a memory's detail view that paginate independently.
@@ -422,3 +429,74 @@ class BrowserEntryDelete(BaseModel):
     type: str
     memory: str
     key: str
+
+
+class SkillRecord(BaseModel):
+    """One skill's metadata for the addon's Skills tab (#2443) — the list view's
+    row and the detail view's header.  Read-only: skills are authored only by the
+    framework (the run-end extractor), never by the addon."""
+
+    name: str
+    intent: str
+    description: str
+    author: str
+    created_at: str
+    updated_at: str
+
+
+class BrowserSkillDetailRequest(BaseModel):
+    """A request for one skill's full detail by name."""
+
+    type: str
+    name: str
+
+
+class BrowserRunDetailRequest(BaseModel):
+    """A request for one run, fully serialized, by its ``run_id`` — e.g. the
+    Skills tab opening the run a skill's ``source_run_id`` points at."""
+
+    type: str
+    run_id: str
+
+
+class BrowserSkillsResponse(BaseModel):
+    """Every skill's metadata, for the addon's Skills tab list view."""
+
+    type: str = BROWSER_RESP_TYPE_SKILLS
+    request_id: str | None = None
+    skills: list[SkillRecord]
+
+
+class BrowserSkillDetailResponse(BaseModel):
+    """One skill's metadata plus its declared parameters and structured steps —
+    the SAME :class:`SkillParameter` / :class:`SkillStep` shapes the model-facing
+    render draws from (not pre-rendered text), so the addon can show each step's
+    tool, arguments, and dynamic leaves (hole/binding/placeholder) directly — and
+    the run it was taught from, so the tab can open it.
+
+    ``name`` echoes the request so a miss is still answered (visible degradation
+    over silent success, #2443): ``skill`` is ``None`` and ``parameters``/``steps``
+    are empty when no skill of that name exists, rather than the request going
+    unanswered."""
+
+    type: str = BROWSER_RESP_TYPE_SKILL_DETAIL
+    request_id: str | None = None
+    name: str
+    skill: SkillRecord | None = None
+    parameters: list[SkillParameter] = []
+    steps: list[SkillStep] = []
+    source_run_id: str | None = None
+
+
+class BrowserRunDetailResponse(BaseModel):
+    """One run, fully serialized (run → prompts), by its ``run_id`` — the SAME
+    shape the prompts tab's own list already carries each run in.
+
+    ``run_id`` echoes the request so a miss is still answered (#2443): ``run`` is
+    ``None`` when no prompt in the ledger carries that id (a stale or malformed
+    one), rather than the request going unanswered."""
+
+    type: str = BROWSER_RESP_TYPE_RUN_DETAIL
+    request_id: str | None = None
+    run_id: str
+    run: dict | None = None

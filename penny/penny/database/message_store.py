@@ -1251,6 +1251,16 @@ class MessageStore:
             run_ids_ordered = self._page_of_run_ids(session, limit, offset, agent_name, query)
             return self._runs_for(session, run_ids_ordered)
 
+    def get_run(self, run_id: str) -> dict | None:
+        """One run, fully serialized (run → prompts), by its ``run_id`` — the
+        fetch-one counterpart to ``get_prompt_log_runs``/``get_target_runs``'s
+        pages, for a caller that already holds the id (a skill's
+        ``source_run_id``, say) and wants to open it directly rather than paging
+        to find it.  ``None`` when no prompt in the ledger carries that run_id."""
+        with self._session() as session:
+            runs = self._runs_for(session, [run_id])
+        return runs[0] if runs else None
+
     def get_target_runs(self, run_target: str, limit: int = 50, offset: int = 0) -> list[dict]:
         """Full serialized runs for one collection's collector, newest-first —
         the per-collection Activity panel (run → prompts → turns, the same shape
@@ -1285,7 +1295,13 @@ class MessageStore:
 
         Also batches each run's child draws (#2434) in the same page — one extra
         query, not one per run — so every fetched run carries its own micro-context
-        draws alongside its prompts."""
+        draws alongside its prompts.
+
+        Every existing caller first selects ``run_ids_ordered`` off this same
+        table, so each id always has at least one prompt — except ``get_run``,
+        whose id comes from outside (a skill's ``source_run_id``, say) with no
+        guarantee it ever existed.  So a requested id with no prompt rows is
+        skipped rather than assumed present (#2443)."""
         if not run_ids_ordered:
             return []
         grouped: dict[str, list[PromptLog]] = {}
@@ -1301,7 +1317,9 @@ class MessageStore:
         child_draws_by_run = self._group_child_draws(session, run_ids_ordered)
         runs = []
         for run_id in run_ids_ordered:
-            run_prompts = grouped[run_id]
+            run_prompts = grouped.get(run_id)
+            if run_prompts is None:
+                continue
             total_duration_ms = sum(p.duration_ms or 0 for p in run_prompts)
             runs.append(
                 self._serialize_run(

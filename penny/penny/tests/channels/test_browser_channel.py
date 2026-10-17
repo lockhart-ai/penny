@@ -20,6 +20,13 @@ from penny.constants import ChannelType, PageReading, PennyConstants, Permission
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
+from penny.database.skills import (
+    SkillDraft,
+    SkillParameter,
+    SkillStep,
+    SkillSubKind,
+    SkillSubstitution,
+)
 from penny.tests.conftest import require_memory, wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
@@ -2533,3 +2540,169 @@ class TestBrowserMemoryHandlers:
             {"type": "entry_delete", "memory": "board-games", "key": "catan"}
         )
         assert require_memory(db, "board-games").get("catan") == []
+
+
+class TestBrowserSkillHandlers:
+    """skills_request / skill_detail_request / run_detail_request handlers (#2443)."""
+
+    def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
+        db = migrated_db(str(tmp_path / "test.db"))
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+        return channel, db
+
+    def _seed_skill(
+        self, db: Database, name: str = "watch-a-peak", source_run_id: str = "run-teach"
+    ) -> None:
+        draft = SkillDraft(
+            name=name,
+            intent="watch a peak's elevation",
+            description="watch a peak's elevation and save it",
+            steps=[
+                SkillStep(
+                    ordinal=1,
+                    source_ordinal=3,
+                    tool="browse_url",
+                    arguments={"url": "https://example.test/peak"},
+                    substitutions=[
+                        SkillSubstitution(
+                            path=["url"], kind=SkillSubKind.HOLE, parameter="page_url"
+                        )
+                    ],
+                )
+            ],
+            parameters=[
+                SkillParameter(name="page_url", required=True, description="the page to check")
+            ],
+            source_run_id=source_run_id,
+        )
+        db.skills.upsert(draft, author="chat")
+
+    def _log_prompt(
+        self, db: Database, agent_name: str, run_id: str, run_target: str | None = None
+    ) -> None:
+        db.messages.log_prompt(
+            model="test-model",
+            messages=[{"role": "user", "content": "test"}],
+            response={"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+            agent_name=agent_name,
+            run_id=run_id,
+            run_target=run_target,
+            duration_ms=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_skills_request_returns_every_skill(self, tmp_path):
+        """The list view receives every skill's metadata."""
+        channel, db = self._channel(tmp_path)
+        self._seed_skill(db, name="watch-a-peak", source_run_id="run-teach")
+        self._seed_skill(db, name="watch-a-valley", source_run_id="run-teach-2")
+
+        ws = _MockWs()
+        await channel._handle_skills_request(ws, {"type": "skills_request"})  # ty: ignore[invalid-argument-type]
+
+        assert len(ws.sent) == 1
+        resp = ws.sent[0]
+        assert resp["type"] == "skills_response"
+        by_name = {s["name"]: s for s in resp["skills"]}
+        assert set(by_name) == {"watch-a-peak", "watch-a-valley"}
+        assert by_name["watch-a-peak"]["intent"] == "watch a peak's elevation"
+        assert by_name["watch-a-peak"]["author"] == "chat"
+
+    @pytest.mark.asyncio
+    async def test_skills_request_dispatched_via_process_raw_message(self, tmp_path):
+        """The skills_request type routes through the main dispatcher too."""
+        channel, db = self._channel(tmp_path)
+        self._seed_skill(db)
+
+        ws = _MockWs()
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "skills_request"}),
+            None,
+        )
+        assert ws.sent[0]["type"] == "skills_response"
+
+    @pytest.mark.asyncio
+    async def test_skill_detail_request_returns_structured_steps_and_parameters(self, tmp_path):
+        """Detail returns metadata + the SAME structured step/parameter shapes
+        the model-facing render draws from — not pre-rendered text."""
+        channel, db = self._channel(tmp_path)
+        self._seed_skill(db, name="watch-a-peak", source_run_id="run-teach")
+
+        ws = _MockWs()
+        data = {"type": "skill_detail_request", "name": "watch-a-peak"}
+        await channel._handle_skill_detail_request(ws, data)  # ty: ignore[invalid-argument-type]
+
+        resp = ws.sent[0]
+        assert resp["type"] == "skill_detail_response"
+        assert resp["name"] == "watch-a-peak"
+        assert resp["skill"]["name"] == "watch-a-peak"
+        assert resp["source_run_id"] == "run-teach"
+        [parameter] = resp["parameters"]
+        assert parameter == {
+            "name": "page_url",
+            "required": True,
+            "description": "the page to check",
+            "value": None,
+        }
+        [step] = resp["steps"]
+        assert step["tool"] == "browse_url"
+        assert step["arguments"] == {"url": "https://example.test/peak"}
+        [substitution] = step["substitutions"]
+        assert substitution["kind"] == "hole"
+        assert substitution["parameter"] == "page_url"
+
+    @pytest.mark.asyncio
+    async def test_skill_detail_request_unknown_name_answers_with_null_skill(self, tmp_path):
+        """A miss is answered, not dropped (#2443): the name is echoed with a
+        null skill, rather than the request going unanswered."""
+        channel, db = self._channel(tmp_path)
+
+        ws = _MockWs()
+        data = {"type": "skill_detail_request", "name": "no-such-skill"}
+        await channel._handle_skill_detail_request(ws, data)  # ty: ignore[invalid-argument-type]
+
+        assert len(ws.sent) == 1
+        resp = ws.sent[0]
+        assert resp["type"] == "skill_detail_response"
+        assert resp["name"] == "no-such-skill"
+        assert resp["skill"] is None
+        assert resp["parameters"] == []
+        assert resp["steps"] == []
+        assert resp["source_run_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_run_detail_request_returns_the_serialized_run(self, tmp_path):
+        """The same full run → prompts shape the prompts tab's list carries,
+        fetched directly by id (e.g. a skill's source_run_id)."""
+        channel, db = self._channel(tmp_path)
+        self._log_prompt(db, "chat", "run-teach")
+        self._log_prompt(db, "chat", "run-teach")
+        self._log_prompt(db, "chat", "some-other-run")
+
+        ws = _MockWs()
+        data = {"type": "run_detail_request", "run_id": "run-teach"}
+        await channel._handle_run_detail_request(ws, data)  # ty: ignore[invalid-argument-type]
+
+        resp = ws.sent[0]
+        assert resp["type"] == "run_detail_response"
+        assert resp["run_id"] == "run-teach"
+        assert resp["run"] is not None
+        assert resp["run"]["run_id"] == "run-teach"
+        assert resp["run"]["prompt_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_run_detail_request_unknown_run_id_answers_with_null_run(self, tmp_path):
+        """A miss is answered, not dropped (#2443): the run_id is echoed with a
+        null run, rather than the request going unanswered."""
+        channel, db = self._channel(tmp_path)
+
+        ws = _MockWs()
+        data = {"type": "run_detail_request", "run_id": "no-such-run"}
+        await channel._handle_run_detail_request(ws, data)  # ty: ignore[invalid-argument-type]
+
+        assert len(ws.sent) == 1
+        resp = ws.sent[0]
+        assert resp["type"] == "run_detail_response"
+        assert resp["run_id"] == "no-such-run"
+        assert resp["run"] is None
