@@ -732,6 +732,13 @@ _PORTLINE_WORLD = World(
 # (a description for the top three) is read through provenance, never through a name ruled
 # out in advance — an invented description is prose, not a token this world could name ahead
 # of the draw that writes it.
+#
+# The headline anchors are each the FIRST WORD of the extractor's own multi-word anchor
+# (``_TOP1_HEADLINE_ANCHOR`` etc.) rather than that anchor verbatim: ``answers`` tokens must be
+# single whitespace-free words (``test_every_claimed_answer_is_one_token_its_own_world_carries``
+# in ``test_eval_harness.py``) — the extractor's own claims fold through ``spoken_form``
+# containment instead, which tolerates a multi-word span, so the two layers' anchors are
+# related but not interchangeable.
 _RUNON_HEADLINES_WORLD = World(
     name="a real-size front page with a later run-on label",
     pages=(
@@ -742,11 +749,11 @@ _RUNON_HEADLINES_WORLD = World(
     keeps=(),
     excludes=(),
     answers=(
-        _TOP1_HEADLINE_ANCHOR,
+        _TOP1_HEADLINE_ANCHOR.split()[0],
         _TOP1_LINK_ANCHOR,
-        _TOP2_HEADLINE_ANCHOR,
+        _TOP2_HEADLINE_ANCHOR.split()[0],
         _TOP2_LINK_ANCHOR,
-        _TOP3_HEADLINE_ANCHOR,
+        _TOP3_HEADLINE_ANCHOR.split()[0],
         _TOP3_LINK_ANCHOR,
     ),
 )
