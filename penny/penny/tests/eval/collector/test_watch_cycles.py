@@ -17,8 +17,9 @@ holds when the cycle starts — not a script of cycles inside one test body:
 
 The fourth case, ``watch-tells-the-asking-price-from-other-prices-on-the-same-listing``, is the
 SAME moved-reading behaviour as the third, on a different hazard: a page several kilobytes
-long whose decoys are other prices of the SAME item — list, member, bundle, per-unit,
-shipping, financing, a protection plan — rather than other products' prices.  It is a separate
+long whose asking price is stated UNLABELLED, in a price ladder of other prices of the SAME
+item — list, member, bundle, per-unit, financing, a protection plan — rather than other
+products' prices, and rather than a matchable ``Current price:`` anchor.  It is a separate
 case rather than a fifth arm of the third because what makes it worth running is the hazard
 shape, not a sixth wording of the same one (#2366); see its own section below.
 
@@ -54,8 +55,8 @@ only hazard is OTHER PRODUCTS' prices.  A watch over a different page, a differe
 different routine is another program of the same behaviour, not another behaviour, so a case
 for it would split one behaviour's samples across two numbers rather than measure anything
 these three do not (#2007).  The fourth case is kept apart from that rule because its hazard —
-several prices of the SAME item, on a page an order of magnitude larger — is not a shape any
-of the first three's pages exercise.
+an unlabelled price among several of the SAME item, on a page an order of magnitude larger —
+is not a shape any of the first three's pages exercise.
 
 Report-only (``min_pass_rate=None``).  All content is synthetic — the house listing fixture on
 an invented marketplace — because the repo is public.
@@ -63,7 +64,7 @@ an invented marketplace — because the repo is public.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import pytest
@@ -234,12 +235,12 @@ _BEHAVIOUR = {
         "exactly once."
     ),
     SAME_ITEM_DECOYS_READING.case_id: (
-        "In a price-watch collector, when the page's price has changed since she last recorded "
-        "it and the page surrounds that price with several other prices of the SAME item — a "
-        "list price, a member price, a bundle price, a per-unit price, a shipping cost, a "
-        "financing figure, a protection-plan price — Penny replaces the price she was holding "
-        "with the one labelled as the current price, names no other figure, and tells the user "
-        "exactly once."
+        "In a price-watch collector, when the page's asking price has changed since she last "
+        "recorded it and the page states it unlabelled, in a price ladder of several other "
+        "figures for the SAME item — a list price, a member price, a bundle price, a "
+        "per-unit price, a financing figure, a protection-plan price — Penny replaces the "
+        "price she was holding with what a buyer pays for one, right now, names no other "
+        "figure, and tells the user exactly once."
     ),
 }
 
@@ -385,8 +386,20 @@ READINGS = (
 # plan), on a page several kilobytes long — an order of magnitude closer to a real listing
 # than the pages above.
 #
-# Every decoy amount is a CONSTANT VALUE, reused byte-identical across all five arms — like
-# ``_SPEC_LINK`` above — so the exclusion claim below can name a token and mean it on every
+# Round 1 (ordinary placement) and round 2 (the hardest decoys moved beside a ``Current
+# price:`` label) both read 100% on checks and 0.000 variance, just at rising cost — because
+# the world still handed the model an unambiguous anchor to match.  Round 3 removes that
+# anchor: no line on this page says "current price" or "asking price".  The price a buyer
+# pays for one, right now, is a SALE line in the register real listings actually use —
+# ``Sale $449 (was $499)`` — read off the price ladder, not matched against a label.  The
+# "was" figure is deliberately the case's own BASELINE ($499, what the collection already
+# holds), because that is the realistic shape of a listing whose price just dropped, and it
+# is the harder trap: a reading that latches onto "was" rather than "Sale" reproduces as
+# "price unchanged," which is a different wrong answer than a decoy amount landing in the
+# store.
+#
+# Every decoy amount below is a CONSTANT VALUE, reused byte-identical across all five arms —
+# like ``_SPEC_LINK`` above — so the exclusion claim can name a token and mean it on every
 # arm.  Every decoy is mutually exclusive, as a bare NUMERAL, from the baseline (499), the
 # moved reading (449), and every other decoy: none is a substring of another, for the same
 # reason ``_BASELINE_AMOUNT``/``_MOVED_AMOUNT`` are — a claim matching one must never
@@ -396,26 +409,24 @@ _MEMBER_AMOUNT = "539"
 _BUNDLE_AMOUNT = "899"
 _PER_UNIT_AMOUNT = "433"
 _SHIPPING_AMOUNT = "15"
-_FINANCING_AMOUNT = "42"
+_FOUR_PAY_AMOUNT = "112"
 _WARRANTY_AMOUNT = "69"
 _OTHER_ITEM_1_AMOUNT = "329"
 _OTHER_ITEM_2_AMOUNT = "59"
 _REVIEW_AMOUNT = "520"
-# The two hardest decoys: round 1 found the moved-reading case healthy at ordinary variance
-# but at a cost already above the plain moved case, so round 2 (#2366) adds these right
-# BESIDE the true label — no header, no other sentence between them and ``_DATUM`` — rather
-# than growing the page anywhere further from it.
 _FLASH_SALE_AMOUNT = "489"
 _PRICE_MATCH_AMOUNT = "619"
 
-# Every decoy this case's exclusion claim checks for — the whole hazard, named once.
+# Every decoy this case's exclusion claim checks for — the whole hazard, named once.  The
+# baseline (499) and the moved amount (449) are NOT here: they are the tracked value and its
+# prior reading, covered by ``_holds_the_moved_price_only`` below, not a decoy to exclude.
 _SAME_ITEM_DECOY_AMOUNTS = (
     _LIST_AMOUNT,
     _MEMBER_AMOUNT,
     _BUNDLE_AMOUNT,
     _PER_UNIT_AMOUNT,
     _SHIPPING_AMOUNT,
-    _FINANCING_AMOUNT,
+    _FOUR_PAY_AMOUNT,
     _WARRANTY_AMOUNT,
     _OTHER_ITEM_1_AMOUNT,
     _OTHER_ITEM_2_AMOUNT,
@@ -424,16 +435,21 @@ _SAME_ITEM_DECOY_AMOUNTS = (
     _PRICE_MATCH_AMOUNT,
 )
 
-# Lines reused byte-identical across every arm — the decoys themselves, a spec list, a Q&A
-# block, a returns paragraph and a footer — none of which varies with the arm's wording.  Only
-# the voice around them (below) differs per arm, the same way ``_SPEC_LINK``/``_DATUM`` above
-# are constant while the surrounding prose varies.
+# Lines reused byte-identical across every arm — the price ladder, the decoys, a spec list, a
+# Q&A block, a returns paragraph and a footer — none of which varies with the arm's wording.
+# Only the voice around them (below) differs per arm, the same way ``_SPEC_LINK`` above is
+# constant while the surrounding prose varies.  ``_SALE_LINE`` is the unlabelled line a correct
+# reading must come from; everything else below it is a decoy in a different register,
+# clustered right beside it rather than spread down the page — round 2's finding carried
+# forward rather than undone.
+_SALE_LINE = f"Sale {_MOVED_PRICE} (was {_BASELINE_PRICE})"
+_FLASH_SALE_LINE = f"Today only: ${_FLASH_SALE_AMOUNT} for members who clip the coupon at checkout"
 _LIST_LINE = f"List price: ${_LIST_AMOUNT}"
-_MEMBER_LINE = f"Member price for signed-in members: ${_MEMBER_AMOUNT}"
-_BUNDLE_LINE = f"Buy 2, ship together: ${_BUNDLE_AMOUNT} for the pair"
-_PER_UNIT_LINE = f"(works out to ${_PER_UNIT_AMOUNT} each)"
+_MEMBER_LINE = f"Members: ${_MEMBER_AMOUNT}"
+_PER_UNIT_LINE = f"${_PER_UNIT_AMOUNT} / unit (case of 3)"
+_BUNDLE_LINE = f"Bundle of 3: ${_BUNDLE_AMOUNT}"
+_FOUR_PAY_LINE = f"Or 4 payments of ${_FOUR_PAY_AMOUNT}"
 _SHIPPING_LINE = f"Shipping: ${_SHIPPING_AMOUNT}, arrives in three to five business days"
-_FINANCING_LINE = f"Or ${_FINANCING_AMOUNT}/mo for 12 months, 0% interest"
 _WARRANTY_LINE = f"Add a two-year protection plan: ${_WARRANTY_AMOUNT}"
 _OTHER_ITEM_1_LINE = f"Aurora Deck 1, refurbished — ${_OTHER_ITEM_1_AMOUNT}"
 _OTHER_ITEM_2_LINE = f"Nebula Dock, charging stand — ${_OTHER_ITEM_2_AMOUNT}"
@@ -441,7 +457,6 @@ _REVIEW_ONE = (
     f'"Paid ${_REVIEW_AMOUNT} for mine last spring and have zero regrets — still going '
     'strong." — a verified buyer\n'
 )
-_FLASH_SALE_LINE = f"Today only: ${_FLASH_SALE_AMOUNT} for members who clip the coupon at checkout"
 _PRICE_MATCH_LINE = (
     f"Price-match guarantee: up to ${_PRICE_MATCH_AMOUNT} back as store credit if you find "
     "it cheaper elsewhere within 14 days"
@@ -530,35 +545,32 @@ class _MessyVoice(NamedTuple):
 
 
 def _messy_body(voice: _MessyVoice) -> str:
-    """One arm's whole page: the constant decoys and boilerplate above, wrapped in this arm's
-    own intro, seller line, condition, spec header, two further reviews and closing line.
+    """One arm's whole page: the constant price ladder, decoys and boilerplate above, wrapped
+    in this arm's own intro, seller line, condition, spec header, two further reviews and
+    closing line.
 
-    ``_DATUM`` appears exactly once, as on every page above, labelled as THE current price —
-    everything else naming a price uses a different label, which is what lets a cycle that
-    reads the label still be measured against decoys that could otherwise pass for it.
-
-    The flash-sale, list and member lines sit on the three lines immediately AFTER ``_DATUM``
-    — no header, no seller or condition sentence between them — because round 1 of this case
-    (#2366) measured no wrong-price grab with its decoys further down the page, so round 2
-    moves the hardest ones right beside the label instead of adding more distance."""
+    No line on this page is labelled "current price" or "asking price" (#2366 round 3) — the
+    price ladder immediately after the intro is six lines in a row, each a different register
+    real listings actually use, with nothing to match against but the shape of the register
+    itself.  ``_SALE_LINE`` is the one a correct reading comes from; every other line in the
+    ladder is a decoy, clustered right beside it rather than spread down the page — round 2's
+    finding carried forward rather than undone."""
     return (
         _HEAD
         + f"{voice.intro}\n"
-        + f"{_DATUM}\n"
+        + f"{_SALE_LINE}\n"
         + f"{_FLASH_SALE_LINE}\n"
         + f"{_LIST_LINE}\n"
         + f"{_MEMBER_LINE}\n"
+        + f"{_PER_UNIT_LINE}\n"
+        + f"{_BUNDLE_LINE}\n"
+        + f"{_FOUR_PAY_LINE}\n"
         + f"{_LISTING_LINK}\n"
         + f"{voice.seller}\n"
         + f"{voice.condition}\n"
         "\n"
-        "Buy more and save\n"
-        f"{_BUNDLE_LINE}\n"
-        f"{_PER_UNIT_LINE}\n"
-        "\n"
         "Delivery & payment\n"
         f"{_SHIPPING_LINE}\n"
-        f"{_FINANCING_LINE}\n"
         "\n"
         "Protect your purchase\n"
         f"{_WARRANTY_LINE}\n"
@@ -686,7 +698,22 @@ def _page(case: WatchCase, reading: Reading) -> CannedPage:
     return page if case.shows == _BASELINE_PRICE else datum(page, _DATUM, _MOVED_DATUM)
 
 
-def _world(case: WatchCase, reading: Reading) -> World:
+def _messy_page(case: WatchCase, reading: Reading) -> CannedPage:
+    """The same-item-decoy case's page (#2366 round 3): no shared ``datum()`` edit, because
+    this page carries no labelled span to edit — the asking price is a READING off an
+    unlabelled sale line, not a match on a ``Current price:`` anchor.  ``MESSY_READINGS``
+    bodies already carry the final moved-reading values (this case's only entry condition),
+    so the page is used as authored; ``case`` is accepted only to keep the same shape as
+    ``_page`` for ``_arm``'s ``page_builder`` parameter."""
+    del case
+    return CannedPage(match=_MATCH, text=reading.body)
+
+
+def _world(
+    case: WatchCase,
+    reading: Reading,
+    page_builder: Callable[[WatchCase, Reading], CannedPage] = _page,
+) -> World:
     """This arm's ground: the page its single cycle reads.
 
     ``keeps``/``excludes`` are EMPTY, and deliberately.  Those token sets back
@@ -698,7 +725,7 @@ def _world(case: WatchCase, reading: Reading) -> World:
     reads as a check that passed."""
     return World(
         name=reading.name,
-        pages=(_page(case, reading),),
+        pages=(page_builder(case, reading),),
         keeps=(),
         excludes=(),
     )
@@ -879,25 +906,33 @@ def _assert_the_entry_condition(db: Database, case: WatchCase) -> None:
     )
 
 
-def _arm(case: WatchCase, reading: Reading) -> CycleArm:
+def _arm(
+    case: WatchCase,
+    reading: Reading,
+    page_builder: Callable[[WatchCase, Reading], CannedPage] = _page,
+) -> CycleArm:
     """One arm of one case: this case's entry condition and page, under this arm's instruction.
 
     ``text`` is the instruction, because that is what makes this arm this arm."""
     return CycleArm(
         text=reading.extract,
         seed=_seeder(case, reading),
-        pages=[_page(case, reading)],
-        world=_world(case, reading),
+        pages=[page_builder(case, reading)],
+        world=_world(case, reading, page_builder),
     )
 
 
-def _arms(case: WatchCase, readings: Sequence[Reading] = READINGS) -> list[CycleArm]:
+def _arms(
+    case: WatchCase,
+    readings: Sequence[Reading] = READINGS,
+    page_builder: Callable[[WatchCase, Reading], CannedPage] = _page,
+) -> list[CycleArm]:
     """This case's five arms — five wordings of one instruction over five prose variants.
 
     ``readings`` defaults to the cross-item-decoy pages shared by the first three cases;
-    the same-item-decoy case (#2366) passes ``MESSY_READINGS`` instead — the only thing that
-    differs is which page set the case's wordings are paired with."""
-    return [_arm(case, reading) for reading in readings]
+    the same-item-decoy case (#2366) passes ``MESSY_READINGS`` and ``_messy_page`` instead —
+    the page set and how its page is built are the only things that differ."""
+    return [_arm(case, reading, page_builder) for reading in readings]
 
 
 # ── The claims ───────────────────────────────────────────────────────────────
@@ -1152,15 +1187,16 @@ async def test_the_watch_tells_the_asking_price_from_other_prices_on_the_same_li
     collector_cycles_eval: CollectorCyclesEval, model: str
 ) -> None:
     """The same moved-reading behaviour as the case above, on a page several kilobytes long
-    whose decoys are OTHER PRICES OF THE SAME ITEM — list, member, bundle, per-unit,
-    shipping, financing, a protection plan — rather than other products' prices (#2366)."""
+    whose price is stated unlabelled, in a ladder of other prices of the SAME item — list,
+    member, bundle, per-unit, financing, a protection plan — rather than other products'
+    prices, and rather than a ``Current price:`` anchor to match against (#2366 round 3)."""
     cohort = await collector_cycles_eval(
         case_id=SAME_ITEM_DECOYS_READING.case_id,
         behaviour=_BEHAVIOUR[SAME_ITEM_DECOYS_READING.case_id],
         area=Area.BACKGROUND_COLLECTORS,
         model=model,
         collection=_CONTAINER,
-        arms=_arms(SAME_ITEM_DECOYS_READING, MESSY_READINGS),
+        arms=_arms(SAME_ITEM_DECOYS_READING, MESSY_READINGS, page_builder=_messy_page),
         samples_per_phrasing=3,
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
