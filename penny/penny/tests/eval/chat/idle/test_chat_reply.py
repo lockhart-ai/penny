@@ -27,7 +27,7 @@ a case is one entry condition:
   (``chat-reply-says-nothing-is-stored``), and a store that already holds what she is asked
   to record (``chat-reply-says-already-there``).  A correct sample for one is wrong for the
   other two, and what a claim can read differs by entry condition.  On the first two the
-  claims are where the machine landed and that every specific value stored or said traces to
+  claims are that every specific value stored or said traces to
   what she was given; whether the reply SAYS the lookup failed, or that nothing is recorded,
   is prose and is measured as reply spread.
 
@@ -119,7 +119,6 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.penny import Penny
@@ -943,9 +942,6 @@ async def test_the_page_s_own_value_comes_back_in_the_reply(
     traces to what the model was given (nothing invented).  A reply that answered nothing at
     all would satisfy every other claim here vacuously."""
     cohort = await _drive(chat_eval, model, _ANSWER_FROM_PAGE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.assert_the_reply_answers_the_ask()
 
@@ -968,9 +964,6 @@ async def test_the_value_one_link_deep_comes_back_in_the_reply(
     the value arrived, however she got there; what ``TOOL_SEQUENCE`` says is how a cohort that
     stopped hopping looks."""
     cohort = await _drive(chat_eval, model, _ANSWER_ONE_LINK_DEEP)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.assert_the_reply_answers_the_ask()
 
@@ -994,9 +987,6 @@ async def test_a_compound_ask_over_a_real_size_page_gets_what_is_there_and_inven
     sourced, nothing stands in for the editor nobody gave her, and the turn still lands in
     idle."""
     cohort = await _drive(chat_eval, model, _ANSWER_PARTLY_FROM_A_REAL_SIZE_PAGE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.assert_the_reply_answers_the_ask()
 
@@ -1026,9 +1016,6 @@ async def test_a_failed_read_is_answered_only_from_what_she_was_given(
     Whether the reply NAMES the failure is prose and is not claimed; it is read on the modal
     sample and shows in the reply spread."""
     cohort = await _drive(chat_eval, model, _ADMITS_THE_READ_FAILED)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — EMPTY, and that is the correct report: nothing was seeded, so there is nothing
     # to survive, and the world carries no answer, so a reply-answers claim over it would
     # state a contract this ask cannot make.
@@ -1053,9 +1040,6 @@ async def test_an_empty_store_is_answered_only_from_what_she_was_given(
     also stood somewhere up to keep an answer in is its own call on an empty store, and shows
     in ``TOOL_SEQUENCE`` and ``ENTRIES_STORED``."""
     cohort = await _drive(chat_eval, model, _SAYS_NOTHING_IS_STORED)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — EMPTY, and that is the correct report: the store holds nothing, so there is
     # nothing to survive and no value the reply owes, and a reply-answers claim would state a
     # contract this entry condition cannot make.
@@ -1089,9 +1073,6 @@ async def test_a_second_telling_leaves_the_interest_where_it_was_kept(
     so what is claimed is the store: the interest still held in the collection that had it,
     and everything else it held still there, unchanged."""
     cohort = await _drive(chat_eval, model, _SAYS_ALREADY_THERE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the reply-answers claim is ABSENT and that is the correct report: the ask
     # supplies its own subject, so a token in the reply would prove nothing about a read.
     cohort.claim(

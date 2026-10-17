@@ -64,7 +64,7 @@ and is measured as the tool sequence, never claimed.
   a row carrying the routine carries a program.
 * ``_supplied_anchor_check`` — PRODUCTION ALREADY VALIDATES IT.  ``_next_anchor`` keeps the
   anchor of a machine that is already parked, and the from-state is what this world seeds, so
-  the claim is entailed by the landing.
+  the claim is entailed by the move itself.
 * ``Check("reply: asked for no page structure", asked_for_page_structure(reply) is None)`` and
   ``_names_the_cadence_check`` — PHRASING matches on vocabularies somebody guessed in advance.
   What the second was reaching for — whether the reply describes what actually landed — is not
@@ -174,10 +174,6 @@ _EXPECTED_CONTAINER = derive_collection_name(
     slug_skill_name(_CASE.parked.skill.name),
     [_CASE.bound[name] for name in _DECLARED_ORDER],
 )
-
-# The routine the round was negotiating, as the registry holds it — what the move has to name
-# out of the five real routines this world's history taught.
-_NEGOTIATED_ROUTINE = slug_skill_name(_CASE.parked.skill.name)
 
 # The ground every arm is answered against: every space these supplies name, installed as LIVE
 # temptations, so a turn that DOES go and open the page it was handed gets a real page back
@@ -345,12 +341,6 @@ async def test_request_to_apply_composes_both_turns_and_stands_the_job_up(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED — where the turn went, and which routine the move it recorded was about.  The
-    # routine is a real decision here and not a carry: a round parked in request has no
-    # framing, so nothing is supplied framework-side and the binder has to pick it again.
-    cohort.assert_machine_landed(ConversationState.APPLY)
-    cohort.assert_the_move_named_the_routine(_NEGOTIATED_ROUTINE)
-
     # STORE — the composed identity first, then the terms the ask gave it.
     cohort.assert_the_job_is_the_container_its_values_derive(_EXPECTED_CONTAINER)
     cohort.assert_the_job_fires_every(_EXPECTED_CONTAINER, _CASE.cadence_seconds)

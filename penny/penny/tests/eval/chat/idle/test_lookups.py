@@ -23,7 +23,6 @@ from collections.abc import Callable
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval
 from penny.tests.eval.utils.assertions import Answer
@@ -141,8 +140,6 @@ async def test_a_routine_not_running_is_recited(chat_eval: ChatEval, model: str)
         family=FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
     # STORE — empty, and that is a report: the ask reads a routine, writes nothing,
     # and the registry holds exactly the one skill this world seeded either way.
     # PROVENANCE
@@ -203,8 +200,6 @@ async def test_an_old_mention_comes_back_out_of_what_was_said(
         family=FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
     # STORE — empty, and that is a report: the ask keeps nothing and the fact lives
     # only in the conversation.
     # PROVENANCE
@@ -254,8 +249,6 @@ async def test_every_list_is_named_among_thirty(chat_eval: ChatEval, model: str)
         family=FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
     # STORE
     cohort.assert_the_running_mechanisms_survive()
     # PROVENANCE
@@ -309,8 +302,6 @@ async def test_an_archived_list_is_reached_and_read(chat_eval: ChatEval, model: 
         family=FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
     # STORE — the list stays archived, with everything it held.
     cohort.claim(
         "state: the list is still archived",
@@ -374,8 +365,6 @@ async def test_a_long_list_is_searched_not_skimmed(chat_eval: ChatEval, model: s
         family=FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
     # STORE — a read-only ask: the list is exactly as it was.
     cohort.assert_what_the_store_held_survives()
     # PROVENANCE
@@ -432,8 +421,6 @@ async def test_a_running_jobs_last_finding_and_check_are_read(
         family=FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
     # STORE — the job is still running, as it was, holding both finds.
     cohort.assert_the_running_mechanisms_survive()
     for word in (LATEST_FIND_WORD, "ribbon"):

@@ -2348,8 +2348,8 @@ NO_REPLY = "the measured turn produced no reply"
 # message BEFORE the chat agent runs.  A classifier call that raised (the endpoint failing it on
 # every attempt) never reaches the client's persist step, so it leaves no promptlog row, and the
 # machine records no move for it — the turn runs on from wherever the machine stood.  Such a
-# sample never exercised the classifier, so it can count neither for nor against any claim about
-# where the machine landed.
+# sample never exercised the classifier, so it can count neither for nor against any claim
+# about the classifier's own draw.
 NO_CLASSIFIER_DRAW = "the state classifier's call failed, so the turn ran on an undecided state"
 # The chat agent's own call fails the same way AFTER the classifier answered: the endpoint
 # refuses it on every attempt, it raises before the client's persist step and writes no row,
@@ -2692,21 +2692,6 @@ def _framed_container(db: Database) -> str | None:
     return RoundFraming.model_validate_json(latest.skill_frame).container
 
 
-def _awaited_parameters(db: Database) -> list[str]:
-    """What the round is still WAITING ON, read off the move that settled it.
-
-    From the MACHINE for the reason ``_framed_container`` is: the round's partial binding is
-    recorded on the transition and read back on every later turn of the round, so what a
-    request turn asks for is a row rather than a re-reading of the reply.  Their DECLARED
-    names, in declared order — a parameter name is a binding key, which is strictly
-    identifiable, where the sentence that asks for it is prose."""
-    latest = db.machine.latest_transition()
-    if latest is None or latest.round_shortfall is None:
-        return []
-    shortfall = RoundShortfall.model_validate_json(latest.round_shortfall)
-    return [parameter.name for parameter in shortfall.missing]
-
-
 def _scheduled_by_this_round(db: Database, before: set[str]) -> list[str]:
     """Collections this round created that carry a schedule or a notify flag.
 
@@ -2771,11 +2756,8 @@ def _observe_sample(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=landed.to_state if landed else None,
-        decision_skill=landed.skill_name if landed else None,
         turn_at=landed.created_at if landed else None,
         timezone=user_timezone_name(db),
-        awaiting=_awaited_parameters(db),
         walk=_machine_walk(db),
         routines=_routine_records(db),
         entries=_stored_entries(db),
@@ -3929,7 +3911,6 @@ def _observe_cycles(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=_cycle_shape(last) if last is not None else CYCLE_DEAD,
         walk=script,
         entries=_stored_entries(db),
         tool_sequence=[call.tool for cycle in driven.observed for call in cycle.calls],
@@ -4215,7 +4196,6 @@ def _observe_end_to_end(
         name=name,
         phrasing=phrasing,
         arm=arm,
-        landed=landed.to_state if landed else None,
         turn_at=landed.created_at if landed else None,
         timezone=user_timezone_name(db),
         walk=_end_to_end_walk(db, jobs, per_job),
@@ -4458,8 +4438,8 @@ def _observe_classification(
     """Read what ONE classification sample decided — its own observer, not the chat one.
 
     A single-call context leaves no machine walk, no registry row and no outgoing message:
-    the classifier DECIDES a transition, it does not take one, so ``landed`` would be empty
-    on every sample and a chat-shaped read would return a structurally fine, substantively
+    the classifier DECIDES a transition, it does not take one, so a chat-shaped read would
+    return a structurally fine, substantively
     hollow row (#2017).  What there is to read is the typed decision.
 
     ``given`` is the draw's own prompt, read through ``given_to_the_model`` (#2078) — the

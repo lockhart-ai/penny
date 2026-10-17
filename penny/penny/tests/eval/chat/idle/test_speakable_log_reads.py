@@ -85,7 +85,6 @@ import pytest
 
 from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants, RunOutcome
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.memory.objects import render_run_calls
@@ -673,9 +672,6 @@ async def test_what_she_said_comes_back_out_of_her_own_messages(
     is what turns "did she look back" from an assumption into something the answer itself
     settles."""
     cohort = await _drive(chat_eval, model, _PENNY_MESSAGES)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the reply carries the word her own message holds, and only that message holds.
     # No preservation claim: the world holds no collection, only the conversation, and the
     # conversation is the log the answer is read out of.
@@ -732,9 +728,6 @@ async def test_why_a_job_is_in_trouble_comes_out_of_the_run_record(
     the same introspection ask, and the clause makes the answer live somewhere only a read can
     reach."""
     cohort = await _drive(chat_eval, model, _COLLECTOR_RUNS_CASE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the reply carries the word only the run record holds, and the two jobs the world
     # started with are still there as they were.
     cohort.assert_the_reply_answers_the_ask()
@@ -889,9 +882,6 @@ async def test_what_went_wrong_comes_out_of_the_turns_own_record(
     answer and which this case does not need (there is no "job" here to ask a cause about,
     only a turn)."""
     cohort = await _drive(chat_eval, model, _FAILED_TURN_CASE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the reply carries the word only the turn's own record holds.  No preservation
     # claim: the world holds no collection and no mechanism for the turn to have disturbed.
     cohort.assert_the_reply_answers_the_ask()

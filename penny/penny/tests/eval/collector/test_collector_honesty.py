@@ -53,7 +53,6 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.constants import RunOutcome
 from penny.database import Database
 from penny.database.skills import (
     SkillDraft,
@@ -415,8 +414,8 @@ def _arms(failure: ReadFailure) -> list[CycleArm]:
 #   survives as TOOL_SEQUENCE, where a cohort that stopped browsing shows as a variance
 #   rise rather than as one sample's failed check.
 # * "closed with done() rather than running out of steps", the legacy advisory.  A close is
-#   what separates ``no_work`` from ``failed`` on the run record, so the record-field claim
-#   below answers it as end state rather than as a tool name.
+#   what separates ``no_work`` from ``failed`` on the run record — retired as a claim with the
+#   run outcome (#2496); how a cycle closed shows in the cycle script's measured spread.
 #
 # And two the inward pass could not write, for the same reason each time — the job does not
 # notify, so nothing can reach the send queue and there is no reply:
@@ -442,20 +441,6 @@ def _wrote_nothing(sample: SampleObservation, _world: World) -> Answer:
     return not filed, f"filed {len(filed)} entry(ies) out of sources it never read: {filed}"
 
 
-def _closed_having_changed_nothing(sample: SampleObservation, _world: World) -> Answer:
-    """The run's own determination: it completed, and it changed nothing.
-
-    A record field, read literally off ``promptlog.run_outcome``, and the one value that is
-    right here — ``no_work`` is defined as "completed cleanly, changed nothing", which is
-    every half of the honest end state at once.  The two wrong values say which way it went
-    wrong: ``worked`` is a cycle that changed something out of a page it never read, and
-    ``failed`` is a cycle that never closed at all — it ran out of steps or aborted, which
-    is what flailing looks like once it has run out of room."""
-    closed = sample.run_outcome or "—"
-    detail = f" — {sample.run_reason}" if sample.run_reason else ""
-    return sample.run_outcome == RunOutcome.NO_WORK.value, f"the run closed {closed}{detail}"
-
-
 # ── every read fails at the page level ───────────────────────────────────────
 
 
@@ -476,18 +461,8 @@ async def test_the_cycle_writes_nothing_when_every_read_fails(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — nothing, and that is the correct report.  LANDED is read off the
-    # conversation machine's walk and a collector moves no conversation machine.  The run
-    # record's outcome is a RECORD FIELD, which STORE covers literally, so it is claimed
-    # there rather than filed here under a category borrowed to look full.
-
     # STORE
     cohort.claim("state: the cycle filed nothing", _wrote_nothing, SpecCategory.STORE)
-    cohort.claim(
-        "state: the run closed having changed nothing",
-        _closed_having_changed_nothing,
-        SpecCategory.STORE,
-    )
 
     # PROVENANCE — a correct cycle wrote nothing, so this claim is TRUE of it rather than
     # unasked; what it catches is the other half of a confabulation.  The store claim above

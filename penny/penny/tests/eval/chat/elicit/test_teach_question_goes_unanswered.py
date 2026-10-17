@@ -23,7 +23,7 @@ draw holds there, a turn that lands elsewhere here is the turn's.  Every wording
 question back — what she would need from them — and none carries a step, an address or a
 call-off; the arms are held to that in `make check`.
 
-**This is a NO-FIRE edge, and it asserts where the machine landed, never what the turn
+**This is a NO-FIRE edge, and it asserts what the store was left holding, never what the turn
 refrained from.**  Opening the listing, saving its price or standing a watch up is the model's
 call on what it was shown, so none of them is a claim: each is measured, as the tool sequence
 and the entries stored.
@@ -35,10 +35,11 @@ and the entries stored.
   entry, no job.  The claim would print a green row for a question its world cannot ask.
 * *the round is still anchored to the ask* — PRODUCTION ALREADY VALIDATES IT.  `_next_anchor`
   keeps the anchor of a machine that is already parked, and the from-state is what this world
-  seeds, so the claim is entailed by the landing.
-* *nothing was registered* — ENTAILED by the landing.  Run-end extraction fires in `learn` and
-  nowhere else, and the only other thing that touches the registry (`abandon_round_skill`) runs
-  on an IDLE landing, so no sample can fail it without also failing `assert_machine_landed`.
+  seeds, so the claim is entailed by the move itself.
+* *nothing was registered* — ENTAILED by where the turn went.  Run-end extraction fires in
+  `learn` and nowhere else, and the only other thing that touches the registry
+  (`abandon_round_skill`) runs on a move to IDLE, so no sample can fail it without the walk
+  showing a move the story is not about.
 * *the page went unread* / *nothing was written* — a ROUTE and a restraint.  Both are measured
   in section B.
 
@@ -145,9 +146,6 @@ async def test_elicit_to_elicit_stays_parked_on_a_question_back(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.ELICIT)
-
     # STORE — no claim.  The round opened on a cold machine, so there is nothing already held
     # for a survival claim to be about; doing the job instead of answering is measured below.
 

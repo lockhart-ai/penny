@@ -103,7 +103,6 @@ from typing import Any, NamedTuple
 import pytest
 
 from penny.agents.self_state import SelfStateHeader
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.skills import (
@@ -946,9 +945,6 @@ async def test_turning_notifications_off_silences_only_that_job(
     lever than the ask named — retiring the whole job, or muting notifications globally — both
     of which look like success from inside the turn and neither of which is what was asked."""
     cohort = await _drive(chat_eval, model, _NOTIFY_OFF)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the field the ask named moved, and nothing else did.
     cohort.claim(
         "state: the job's notifications are off",
@@ -1006,9 +1002,6 @@ async def test_turning_notifications_back_on_wakes_only_that_job(
     alone fails the headline whatever its reply said.  The global switch is a separate lever
     one row up, already on in this world: it is claimed as what the turn found and left."""
     cohort = await _drive(chat_eval, model, _NOTIFY_ON)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the field the ask named moved, and nothing else did.
     cohort.claim(
         "state: the job's notifications are on",
@@ -1071,9 +1064,6 @@ async def test_retiring_a_job_archives_it_and_keeps_what_it_gathered(
     cadence or flipped the switch hands back a different job under the same name, which is why
     the drift claim below reads the whole row rather than the archive flag alone."""
     cohort = await _drive(chat_eval, model, _ARCHIVE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.claim(
         "state: the job is retired (archived)",
@@ -1164,9 +1154,6 @@ async def test_re_timing_a_job_states_no_hour_it_never_ran_at(
     the record frame asks for and this case deliberately does not demand — the harm is a
     stated prior that is false, not a confirmation that stays quiet about it."""
     cohort = await _drive(chat_eval, model, _RE_TIME)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.claim(
         "state: the job now runs at the hour they asked for",
@@ -1309,9 +1296,6 @@ async def test_giving_a_job_an_end_stops_it_when_the_ask_said(
     headline.  What the end claim reads is when the job stops, never which field holds it; the
     cadence claim beside it is what keeps "restated the rule" from being a way to re-time it."""
     cohort = await _drive(chat_eval, model, _END_CHANGED)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the end the ask named, and the rest of the job as it was.
     cohort.assert_the_job_ends_when_asked(_FINDS.container, _ASKED_END)
     cohort.claim(_STILL_LIVE, _the_job_is_still_live(_FINDS.container), SpecCategory.STORE)
@@ -1389,9 +1373,6 @@ async def test_she_describes_the_routine_the_job_runs(chat_eval: ChatEval, model
     pattern the reply must match (``docs/principles.md`` §4.7).  An invented step that names a
     specific — another site, an hour the job does not run at — is what the sourcing claim reads."""
     cohort = await _drive(chat_eval, model, _DESCRIBE, family=_LEGIBILITY_FAMILY)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the page the record carries, stated; and the job, as the turn found it.
     cohort.assert_the_reply_answers_the_ask()
     cohort.claim(
@@ -1488,9 +1469,6 @@ async def test_she_lists_every_job_she_is_running(chat_eval: ChatEval, model: st
     cadence, a switch, a page — since the ask names none of them; a specific the reply does
     state and the record does not is what the sourcing claim reads."""
     cohort = await _drive(chat_eval, model, _LIST_RUNNING, family=_LEGIBILITY_FAMILY)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — each job named in the reply; and every job, what each gathered and the global
     # switch, as the turn found them.
     cohort.assert_the_reply_answers_the_ask()
@@ -1618,9 +1596,6 @@ async def test_an_ask_matching_two_jobs_of_the_same_kind_changes_neither(
     close enough to one of the two rows and flips its switch alone, which looks like success
     from inside the turn and leaves the user's actual job untouched and unmentioned."""
     cohort = await _drive(chat_eval, model, _AMBIGUOUS_MATCH)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — neither row moved, at all; the reply names both.
     cohort.claim(
         "state: the camera-kit price watch is unchanged",

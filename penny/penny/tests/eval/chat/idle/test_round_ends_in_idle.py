@@ -43,8 +43,8 @@ scorer strings.
 * ``_round_ended_check`` — *the landing carries no anchor, no framing, no partial binding.*
   PRODUCTION ALREADY VALIDATES IT.  ``_next_anchor``, ``_next_framing``, ``_next_shortfall``
   and ``_next_provenance`` each return ``None`` the moment the target is ``idle``, so the
-  claim is entailed by the landing and would run at exactly the rate ``assert_machine_landed``
-  does while appearing to measure something else.  What a bail from ``request`` durably risks
+  claim is entailed by the move itself and would fail only where the turn did not go where
+  the story is about.  What a bail from ``request`` durably risks
   is not a kept binding but a job STOOD UP out of the half it had settled, and that is what
   the created/changed claims below read.
 * ``Check("state: she configured nothing", tool_not_called(db, _SET_TOOL))`` — a ROUTE, keyed
@@ -453,6 +453,11 @@ def _routines_of(case: _BailCase) -> list[str]:
 # the created one and the archived one are this family's alone, and the registry one is live on
 # an IDLE landing and entailed by the landing everywhere else (see its docstring), so it has no
 # second customer and would be a claim nobody could legally make.
+#
+# Where the turn WENT is no longer claimed (#2496): the machine's landing is the machine's own
+# record, and the case asserts only what reaches the user, the store and provenance.  The
+# registry one stays live-on-IDLE in exactly the same reading, on the walk rather than on a
+# claim.
 
 
 def _nothing_was_created(sample: SampleObservation, _world: World) -> Answer:
@@ -550,9 +555,6 @@ async def test_elicit_to_idle_drops_the_task_and_answers_the_new_one(
     machine lets go of it — and the new question is answered as ordinary conversation, which
     an idle turn has the full tool surface for."""
     cohort = await _drive(chat_eval, model, _BAIL_FROM_ELICIT)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_ELICIT), SpecCategory.STORE)
@@ -577,9 +579,6 @@ async def test_learn_to_idle_archives_the_abandoned_round(chat_eval: ChatEval, m
     user drops the whole thing.  The container goes with the round — the one bail that has
     something to clean up — and nothing is registered from what was demonstrated."""
     cohort = await _drive(chat_eval, model, _BAIL_FROM_LEARN)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BAIL_FROM_LEARN), SpecCategory.STORE)
@@ -613,9 +612,6 @@ async def test_request_to_idle_drops_a_binding_that_was_half_settled(
     bail as a go-ahead has a page and a routine in hand and can stand the job up, which the
     created and changed claims read off the registry."""
     cohort = await _drive(chat_eval, model, _BAIL_FROM_HELD_BINDING)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
     cohort.claim(
@@ -644,9 +640,6 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(
     because the failure this case exists to catch is firing anything at all: standing a ferry
     watch up beside the one that exists, or reaching into the one that does."""
     cohort = await _drive(chat_eval, model, _BANTER_ON_IDLE)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE
     cohort.claim(_NOTHING_CREATED, _nothing_was_created, SpecCategory.STORE)
     cohort.claim(_REGISTRY_UNCHANGED, _registry_unchanged(_BANTER_ON_IDLE), SpecCategory.STORE)

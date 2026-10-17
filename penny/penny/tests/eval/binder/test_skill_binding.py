@@ -285,10 +285,11 @@ _MISSING_KEYWORD = BindingFixture(
 # {single slot, multi slot}, plus the completion draw.  Five things they share, stated once
 # here rather than seven times over:
 #
-# STORE is EMPTY, and that is the correct report.  A micro-context is one call returning a
-# typed result — it moves no machine and writes to no store — so there is nothing for a
-# store claim to read.  What a binding becomes is round state on a later transition, and
-# none of these cases runs that.
+# The claims are STORE-category, and read the binder's own typed result (#2496): a
+# micro-context is one call returning a typed result — it moves no machine and writes to no
+# store — so what they assert is the draw's recorded output rather than a collection row.
+# What a binding becomes is round state on a later transition, and none of these cases runs
+# that.
 #
 # THREE claims are missing because PRODUCTION already validates them, and a thin set should
 # read as closed rather than as unrun.  Two are ``_fills_the_declared_signature``'s: the
@@ -299,7 +300,7 @@ _MISSING_KEYWORD = BindingFixture(
 # lines and ``names`` from the rest, so a name in one can never be in the other.
 #
 # A COMPLETE binding's "it names nothing missing" is the outcome claim said a second way, so
-# the cases expecting one make a single LANDED claim.  Those cases also do not MEASURE what
+# the cases expecting one make a single STORE claim.  Those cases also do not MEASURE what
 # the draw reported missing: the field is written on every sample and reads the EMPTY STRING
 # when nothing is missing, which ``cohort._is_blind``'s first arm reports as blind rather
 # than as agreement — the same treatment the missing-keyword case gives the value axis of
@@ -546,7 +547,7 @@ def _no_value_carries_the_terms(ported: PortedBinding) -> WorldClaim:
     so nothing here is keyed to a list of timing words in general.
 
     A draw that bound NOTHING answers this true, and correctly: no bound value carries the
-    terms because there are none.  What catches that draw is the case's own LANDED claim,
+    terms because there are none.  What catches that draw is the case's own STORE claim,
     which says which of the two enumerated answers was owed."""
 
     def claim(sample: SampleObservation, _world: World) -> Answer:
@@ -575,7 +576,7 @@ def _no_value_takes_another_parameters_span(ported: PortedBinding) -> WorldClaim
     that will read the right page for the wrong thing, and one that swapped two same-kinded
     slots has pointed the job at the right pages in the wrong roles.
 
-    A draw that bound nothing answers this true for the reason above, and the LANDED claim is
+    A draw that bound nothing answers this true for the reason above, and the STORE claim is
     what says whether binding nothing was the answer owed."""
 
     def claim(sample: SampleObservation, _world: World) -> Answer:
@@ -655,23 +656,21 @@ async def test_the_page_binds_and_the_entry_is_reported_missing(
     deliberately not MEASURED: it would be absent from every sample, which the pooler reports
     as blind rather than as agreement.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _MISSING_KEYWORD_PORT, model)
-    # LANDED — the CLOSED fields of the typed result, asserted by equality: which of the two
+    # STORE — the CLOSED fields of the typed result, asserted by equality: which of the two
     # enumerated answers the draw wrote, and which declared parameter it named.
     cohort.claim(
         "state: the draw reported a shortfall rather than a complete binding",
         _reported_a_shortfall,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: it names the keyword as the one thing nothing supplies",
         _names_exactly_missing(_MISSING_KEYWORD_PORT, "keyword"),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE — the OPEN field, which for this shape is each bound value, read in both
     # directions: the value carries the span of the ask that supplies it, and it carries
@@ -752,17 +751,15 @@ async def test_the_page_binds_and_neither_term_comes_with_it(
     settled where the job is set running, so either one inside the value is the draw reading
     the terms as part of the thing to point at.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _LISTING_PORT, model)
-    # LANDED — the CLOSED field of the typed result, asserted by equality.
+    # STORE — the CLOSED field of the typed result, asserted by equality.
     cohort.claim(
         "state: the draw bound every declared parameter",
         _bound_every_parameter,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE — the OPEN field, read in both directions.
     cohort.claim(
@@ -827,17 +824,15 @@ async def test_a_condition_with_nowhere_to_go_pads_no_value(
     nobody declared, so what is left to measure is the other way it could go: the condition
     padded into the value that does exist.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _COUNT_PORT, model)
-    # LANDED
+    # STORE
     cohort.claim(
         "state: the draw bound every declared parameter",
         _bound_every_parameter,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE
     cohort.claim(
@@ -910,17 +905,15 @@ async def test_two_parameters_take_the_two_spans_that_answer_them(
     needs a term forbidden on ONE arm rather than on the case, which the arms contract does
     not have and which is a harness change, not a fixture one.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _TWO_PARAMETERS_PORT, model)
-    # LANDED
+    # STORE
     cohort.claim(
         "state: the draw bound every declared parameter",
         _bound_every_parameter,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE
     cohort.claim(
@@ -1069,17 +1062,15 @@ async def test_two_same_kinded_slots_take_the_pages_the_ask_gives_each(
     clause satisfies them (#1884 item 2) — reading a full rate here means the roles were told
     apart, not that each value stops where it should.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _CROSSING_PORT, model)
-    # LANDED
+    # STORE
     cohort.claim(
         "state: the draw bound every declared parameter",
         _bound_every_parameter,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE
     cohort.claim(
@@ -1158,10 +1149,10 @@ async def test_an_ask_with_no_page_in_it_reports_the_page_missing(
     would read unset on every sample, which the pooler reports as blind rather than as
     agreement.  The outcome axis is where a draw that filled it anyway diverges.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _MISSING_PAGE_PORT, model)
-    # LANDED — the one CLOSED field with any discretion in it, asserted by equality.
+    # STORE — the one CLOSED field with any discretion in it, asserted by equality.
     #
     # WHICH parameter it named is NOT claimed here, and on this signature that is closed the
     # same way a complete binding's "it names nothing missing" is: the routine declares ONE
@@ -1172,10 +1163,8 @@ async def test_an_ask_with_no_page_in_it_reports_the_page_missing(
     cohort.claim(
         "state: the draw reported a shortfall rather than a complete binding",
         _reported_a_shortfall,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE — a correct draw leaves no open field, so what this reads is what a WRONG
     # one bound: the object the ask does name, or the cadence beside it, neither of which is
@@ -1283,17 +1272,15 @@ async def test_the_still_open_parameter_is_filled_from_the_turn_that_arrived(
     a term forbidden on ONE arm rather than on the case, which the arms contract does not have
     and which is a harness change, not a fixture one.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _ARRIVING_KEYWORD_PORT, model)
-    # LANDED
+    # STORE
     cohort.claim(
         "state: the draw bound the parameter that was still open",
         _bound_every_parameter,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE
     cohort.claim(
@@ -1450,22 +1437,20 @@ async def test_a_real_length_ask_declines_the_ambiguous_span_and_the_absent_one(
     gaps, even though they arrived in different shapes: one because the words supply nothing,
     one because they supply two things and no way to choose.
 
-    See the section note above for the empty STORE category and the three claims closed
+    See the section note above for how the claims read the typed result and the three claims closed
     upstream."""
     cohort = await _drive_ported(binder_eval, _COMPARISON_PORT, model)
-    # LANDED
+    # STORE
     cohort.claim(
         "state: the draw reported a shortfall rather than a complete binding",
         _reported_a_shortfall,
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: it names exactly the undecidable parameter and the absent one missing",
         _names_exactly_missing_set(_COMPARISON_PORT, ("second_url", "target_price")),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
-
-    # STORE — empty by construction; see the section note.
 
     # PROVENANCE
     cohort.claim(
