@@ -296,7 +296,6 @@ async def test_a_watch_taught_in_chat_is_run_through_its_own_cycles(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — empty; see the module docstring. The script's own machine walk is read as part
     # of the end-to-end WALK feature below, never as a claim about which states it passed
     # through.
 

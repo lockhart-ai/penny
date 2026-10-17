@@ -69,7 +69,6 @@ def _sample(name: str, *contents: str, complete: bool = True) -> SampleObservati
         name=name,
         phrasing="phrasing 1",
         complete=complete,
-        landed="idle",
         tool_sequence=["update_entry"] if contents else [],
         entries=[_entry(content) for content in contents],
         given=_ROUND,

@@ -5,7 +5,7 @@ working method, distilled from what has been learned running the suite.
 
 **This doc does not restate the contract.** [`docs/principles.md`](principles.md) is Penny's
 north star — the rules a mechanism or a test is designed by. [`docs/eval-case-design.md`](eval-case-design.md)
-is the contract one case is written or ported to: what an assertion is, the three categories,
+is the contract one case is written or ported to: what an assertion is, the two categories,
 the porting checklist, cohort sizing. [`docs/eval-iteration-workflow.md`](eval-iteration-workflow.md)
 is the loop a round of model-facing work runs in: beat → pairs → seeded world → run → report →
 ruling. Where this guide and one of those overlap, it gives the point one line and a link, then
@@ -120,17 +120,16 @@ samples each: a cohort of fifteen ([`docs/eval-case-design.md` §4, §6](eval-ca
 ## 3 · What a check is
 
 A check is strictly true or false of one sample — no thresholds, no "mostly." There are exactly
-three kinds, and nothing else is an assertion
+two kinds, and nothing else is an assertion
 ([`docs/eval-case-design.md` §2](eval-case-design.md)):
 
 | kind | reads off | what it asserts |
 |---|---|---|
-| **landed** | the conversation machine's walk | the state or outcome enum the turn ended in |
-| **store** | the sample's own database, live | what the store holds afterwards — the row or entries as the turn left them, and that everything the ask did not name is preserved |
+| **store** | the sample's own database, live | what the store holds afterwards — the row or entries as the turn left them, that everything the ask did not name is preserved, and what reached the user |
 | **provenance** | the sample's inputs vs. its output | every specific value traces to what the round was given, read in both directions: nothing supplied is omitted, nothing is invented |
 
 - **Assert what survives, never that the model refrained.** No "did not call X," no "wrote
-  nothing." A turn that should do nothing is claimed as: landed in idle, the store as it was,
+  nothing." A turn that should do nothing is claimed as: the store as it was,
   nothing invented ([`docs/eval-case-design.md` §2 "Assert what survives"](eval-case-design.md)).
 - **Never assert a route.** A tool name, an argument choice, a call count, or reply wording is
   *how*, not *what* — read in the tool-sequence and reply-spread variance features instead
@@ -476,7 +475,7 @@ coordinator fills in everything the docs already decide:
   live eval suite section): pull the real trigger from `promptlog`, confirm it reproduces, swap
   every real value for a synthetic one of the same shape, and confirm it still reproduces before
   committing the fixture.
-- **Go through the three kinds of check (§3) and say what is claimed under each, or that it is
+- **Go through the two kinds of check (§3) and say what is claimed under each, or that it is
   empty.** An empty category is a report, not an omission — say which of the two it is.
 - **A new case, or the existing one.** A case is one behaviour under one entry condition. If the
   ask or the world changes what a correct sample is, or changes the set of claims a case can
@@ -748,7 +747,7 @@ answered than the one pinned.
 
 | section | what it holds | how to recognise a failure that belongs here |
 |---|---|---|
-| **Assertions** | end-state facts only — where the machine landed, what the store holds, provenance | a claim's count is below what it was expected to run at (facts, never asserted as a floor — §3) |
+| **Assertions** | end-state facts only — what the store holds or survived, provenance | a claim's count is below what it was expected to run at (facts, never asserted as a floor — §3) |
 | **Variance** | everything the model emitted on the way — tool sequence, routine shape, reply text, cost | an outlier sample, a feature's entropy rising past a proposed ceiling, a cost figure rising on an unchanged prompt |
 | **Harness** | samples too broken to count at all — excluded before any claim was answered | a sample in the "Excluded samples" fold, a dead or mostly-dead cohort, a fault class in the health block |
 

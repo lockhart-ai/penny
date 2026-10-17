@@ -6,7 +6,7 @@ part: every claim is a sentence, and the sentence is the label the report is rea
 
 **Two rules govern what lives here.**
 
-*Only END STATE is asserted.*  Where the machine landed, what the store holds, whether the
+*Only END STATE is asserted.*  What the store holds or survived, whether the
 reply is grounded in the world.  A ROUTE is never asserted — many routes reach one end state
 (#1993: three different tools all correctly reached the run record and the check had pinned
 one), so a route is measured instead.
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from penny.conversation_machine import ConversationState
 from penny.tests.eval.utils.cohort import (
     Arm,
     AssertionRow,
@@ -177,18 +176,6 @@ class Cohort:
         return outcomes
 
     # ── the claims ───────────────────────────────────────────────────────────
-    def assert_machine_landed(self, state: ConversationState) -> None:
-        """The round ended in the state this story is about.
-
-        Scored rather than reported, for the one case whose contract only EXISTS in the state
-        it names: a story about the reply that closes a learn round has no subject at all
-        outside that state."""
-        self.claim(
-            f"state: the machine landed in {state.value}",
-            lambda s, _world: (s.landed == state.value, f"walked {s.walk}"),
-            SpecCategory.LANDED,
-        )
-
     def assert_a_routine_reached_the_registry(self) -> None:
         self.claim(
             "state: the round taught a routine",
@@ -289,21 +276,6 @@ class Cohort:
             "state: everything the store already held is still there, unchanged",
             _held_survives,
             SpecCategory.STORE,
-        )
-
-    def assert_the_move_named_the_routine(self, routine: str) -> None:
-        """The move the turn recorded NAMED this routine — the decision half of picking one
-        out of a registry of real routines of the same kind.
-
-        A registry key, which is strictly identifiable, where "she recognised the right
-        routine" said in a sentence is not.  It reads the landed transition's own
-        ``skill_name``, so it is answered whether or not the turn went on to build anything —
-        which is the distinction it exists for: picking the wrong routine and picking the right
-        one and then doing nothing are different failures."""
-        self.claim(
-            "state: the move named the routine that covers the ask",
-            _named_the_routine(routine),
-            SpecCategory.LANDED,
         )
 
     def assert_the_running_mechanisms_survive(self) -> None:
@@ -441,10 +413,10 @@ class Cohort:
     def assert_the_reply_answers_the_ask(self) -> None:
         """The reply states what the ask asked for, in the world's own terms.
 
-        The only COMPLETENESS claim in the set.  Everything else here is soundness — where
-        the machine landed, what the store holds, that nothing was invented — and a reply
-        that answers nothing at all satisfies all of it: it lands in the right state, and
-        it carries no unsourced value because it carries no value.  Measured: a sample
+        The only COMPLETENESS claim in the set.  Everything else here is soundness — what
+        the store holds, that nothing was invented — and a reply
+        that answers nothing at all satisfies all of it: it
+        carries no unsourced value because it carries no value.  Measured: a sample
         whose extractor had returned the answer replied
         "Sounds like you're surprised! Bath! What else do you want to hear about Lake
         Baikal?" and passed 5 of 5 claims as the cohort's REPRESENTATIVE sample.
@@ -585,21 +557,6 @@ def _held_survives(sample: SampleObservation, _world: World) -> Answer:
     held = {(e.collection, e.key, e.content) for e in sample.held}
     lost = [e for e in sample.held_before if (e.collection, e.key, e.content) not in held]
     return not lost, f"lost {[f'{e.collection}: {e.key}' for e in lost]}"
-
-
-def _named_the_routine(routine: str) -> WorldClaim:
-    """The claim that the landed move named ``routine``, bound to one case's covering one.
-
-    The rationale names what it bound INSTEAD, because every wrong pick here is a real routine
-    that would go on watching the wrong kind of thing."""
-
-    def answer(sample: SampleObservation, _world: World) -> Answer:
-        return (
-            sample.decision_skill == routine,
-            f"the move bound {sample.decision_skill!r}, the ask needs {routine!r}",
-        )
-
-    return answer
 
 
 def _only_the_rounds_own_changed(container: str | None) -> WorldClaim:

@@ -49,7 +49,6 @@ from typing import NamedTuple
 
 import pytest
 
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
@@ -387,9 +386,6 @@ async def test_half_the_sources_landed(chat_eval: ChatEval, model: str) -> None:
     What the store ends up holding is half of what the round set out to do, and the reply is the
     only place the user learns that — composed by a turn that visited both addresses."""
     cohort = await _drive(chat_eval, model, _SOURCE_DOWN)
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — what SURVIVES the turn, in both directions: the value the ask said to keep is in
     # the place it was asked to keep it, and what that list gained is from the one page that
     # answered.  How MANY entries she split that page into, and whether she also wrote somewhere

@@ -50,7 +50,7 @@ carries:
 `classifier-elicits-when-the-named-routine-was-wrong` draws the same decision in isolation
 from its own five wordings, over a lean snapshot with no history behind it.
 
-**What is claimed.**  Where the machine landed, and what SURVIVES the turn: the three jobs this
+**What is claimed.**  What SURVIVES the turn: the three jobs this
 user already has running, and everything their collections held.  A turn told the routine was
 wrong has the registry and three live jobs of the same kind in front of it, so changing one of
 them is a reachable way to get it wrong, and it is read off the ledger rather than a tool name.
@@ -59,8 +59,8 @@ them is a reachable way to get it wrong, and it is read off the ledger rather th
 than as a checklist nobody ran:
 
 * *the round is no longer waiting on the detail* — PRODUCTION ALREADY VALIDATES IT.
-  `_next_shortfall` keeps a binding only on a move that lands in request, so on a sample that
-  landed in elicit the claim is entailed by the landing.
+  `_next_shortfall` keeps a binding only on a move that lands in request, so on a sample whose
+  move went to elicit the claim is entailed by the move itself.
 * *the round is still anchored to the ask* — the same: `_next_anchor` keeps the anchor of a
   machine that is already parked.
 * *the move named no routine* — GENERATED rather than drawn.  Elicit is not a skill-gated
@@ -242,9 +242,6 @@ async def test_request_to_elicit_moves_a_rejected_routine_to_being_taught(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.ELICIT)
-
     # STORE — what SURVIVES a turn that was told the routine was wrong: everything the store
     # already held, and the jobs already running.  Whether the turn acted anyway is the model's
     # call and is measured below, never claimed.

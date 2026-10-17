@@ -16,9 +16,8 @@ production already enforces (`_mints_a_usable_signature` / `_values_were_demonst
 in ``tools/micro_context.py``: every minted VALUE is a literal span of the user's own
 turns, re-rolled on violation) is exactly the provenance claim this design would
 otherwise want, and asserting it here would score 15/15 by construction and measure the
-validator rather than Penny — so it stays unasserted and stated as a reason, the way
-STORE and PROVENANCE already are.  So every case now reports LANDED, STORE and
-PROVENANCE empty with the reason, and MEASURES the parameter set instead (the
+validator rather than Penny — so it stays unasserted and stated as a reason.  So every
+case makes no claim and MEASURES the parameter set instead (the
 family-multiset feature, below) — "it's okay to have eval cases that have no checks and
 only measure variance since it's still an important tool for measuring Penny's actual
 behaviour" (code owner). Every case still states its behaviour in the fixed sentence
@@ -214,9 +213,9 @@ def _minted_families(families: Sequence[ParameterFamily]) -> Feature:
 def _measure_the_draw(cohort: Cohort, positions: int, families: Sequence[ParameterFamily]) -> None:
     """The axes every ported framing case measures — the draw's own structured fields.
 
-    **LANDED is empty for every one of these cases (#2222, code owner's ruling)**: which
+    **No claim is made in any of these cases (#2222, code owner's ruling)**: which
     parameters are minted, how many, and what they answer are model OUTPUT, so none of it
-    is asserted any more — ``_minted_families`` (above) is where that question now lives,
+    is asserted — ``_minted_families`` (above) is where that question now lives,
     as a measured distribution rather than a count.  The name, the description and each
     drawn parameter's own name and line are COSMETIC — ``stock_tracker`` and
     ``share_price_watcher`` leave the same interface behind — and the naming spread is the
@@ -333,7 +332,7 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
     third thing that is not one: a ``search_term`` promoted for an ask that named a page and
     no search, invented whole rather than taken from anything the user provided.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT — "the number of [parameters] and their naming is variance" — so none
     of it is asserted.  The provenance claim the ruling does want — that every minted VALUE
@@ -341,8 +340,8 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
     check (`_mints_a_usable_signature` / `_values_were_demonstrated` in
     ``tools/micro_context.py``: an invented value is re-rolled, then refused), so asserting
     it again here would score 15/15 by construction and measure that validator rather than
-    Penny.  STORE stays empty for the usual reason too — a micro-context is one call that
-    returns a typed result, so it moves no machine and writes to no store.
+    Penny.  And nothing here reads a store for the usual reason — a micro-context is one call
+    that returns a typed result, so it moves no machine and writes to no store.
 
     What round 8's recorded failure is now caught by is the **measured** family-multiset
     (`_minted_families`, below): a `search_term` minted for this ask reads `other` in
@@ -359,8 +358,6 @@ async def test_a_page_ask_mints_the_page_and_invents_nothing_beside_it(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
@@ -455,7 +452,7 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
     set running.  Whether the framer draws exactly that shape, or instead turns the
     notification into something to be re-supplied, is now MEASURED rather than asserted.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT — "the number of [parameters] and their naming is variance" — so none
     of it is asserted.  The provenance claim the ruling does want — that every minted VALUE
@@ -491,8 +488,6 @@ async def test_the_symbol_is_the_parameter_and_everything_else_bakes(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
@@ -560,7 +555,7 @@ async def test_a_single_turn_teach_still_separates_the_piece_that_varies(
     supply.  Whether the framer separates them that way, asks what to find, or asks for
     nothing at all, is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
     — that every minted VALUE traces to the user's own words — is already enforced by the
@@ -580,8 +575,6 @@ async def test_a_single_turn_teach_still_separates_the_piece_that_varies(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
@@ -672,7 +665,7 @@ async def test_a_search_look_up_is_named_as_a_search(framer_eval: FramerEval, mo
     search-family parameter that is correct here is exactly the invention that case exists
     to watch for, so a framer cannot answer both by habit.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
     — that every minted VALUE traces to the user's own words — is already enforced by the
@@ -692,8 +685,6 @@ async def test_a_search_look_up_is_named_as_a_search(framer_eval: FramerEval, mo
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
@@ -783,7 +774,7 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
     pieces of different kinds rather than the page alone.  Whether the framer draws that
     shape is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
     — that every minted VALUE traces to the user's own words — is already enforced by the
@@ -803,8 +794,6 @@ async def test_a_place_and_a_thing_to_look_for_are_two_parameters(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
@@ -892,7 +881,7 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
     the user named.  Whether the framer draws three, folds them into a list, or something
     else is now MEASURED (`_minted_families`) rather than asserted by a count.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
     — that every minted VALUE traces to the user's own words — is already enforced by the
@@ -912,8 +901,6 @@ async def test_three_of_a_kind_stay_three_distinct_parameters(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.
@@ -994,7 +981,7 @@ async def test_a_named_count_is_framed_without_a_spiral(
     (duration, output and reasoning tokens) and the thinking trace, read off the run, not a
     claim this file states.
 
-    **LANDED, STORE and PROVENANCE are all EMPTY, and that is the correct report (#2222,
+    **No claim is made, and that is the correct report (#2222,
     code owner's ruling)**: which parameters are minted, how many, and what they answer are
     all model OUTPUT, so none of it is asserted.  The provenance claim the ruling does want
     — that every minted VALUE traces to the user's own words — is already enforced by the
@@ -1014,8 +1001,6 @@ async def test_a_named_count_is_framed_without_a_spiral(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — EMPTY; see the docstring.
-
     # STORE — EMPTY; see the docstring.
 
     # PROVENANCE — EMPTY; see the docstring.

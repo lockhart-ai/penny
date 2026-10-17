@@ -29,7 +29,7 @@ temptation), `-urgency` (act-now pressure as a reason to guess).  Their asks and
 produces the state that case starts from, and the two are one journey read at two moments.
 One spelling of the ask, read from where the world declares it.
 
-**This is a NO-FIRE edge, and it asserts where the machine landed, not what the turn
+**This is a NO-FIRE edge, and it asserts what the store was left holding, not what the turn
 refrained from.** Opening the listing, saving the price or standing the watch up is the model's
 call on what it was shown, so none of them is a claim: each is measured instead, as the tool
 sequence and entries stored below.  *What the store already held survives* has nothing to be
@@ -40,9 +40,10 @@ than as a checklist nobody ran:
 
 * *the page went unread* — a ROUTE (`assert_each_page_was_read`'s converse), which the design
   puts in section B.  A cohort that went and looked shows there, as a tool sequence that moved.
-* *nothing was registered* — ENTAILED by the landing.  Run-end extraction fires in `learn` and
-  nowhere else, and the only other thing that touches the registry (`abandon_round_skill`) runs
-  on an IDLE landing, so no sample can fail it without also failing `assert_machine_landed`.
+* *nothing was registered* — ENTAILED by where the turn went.  Run-end extraction fires in
+  `learn` and nowhere else, and the only other thing that touches the registry
+  (`abandon_round_skill`) runs on a move to IDLE, so no sample can fail it without the walk
+  showing a move the story is not about.
 * *every mechanism already running survives* — VACUOUS on this world, which is a cold machine
   with no mechanism in it at all.  Its three siblings in this tranche make it; this one would
   print a green row for a question its own world cannot ask.
@@ -54,8 +55,8 @@ than as a checklist nobody ran:
 * ``Check("calls: no enacting calls")`` — the same route, read off a tool-name set.
 * ``_anchor_check`` — *the ask is stamped as the round's anchor.*  PRODUCTION ALREADY
   VALIDATES IT: ``_next_anchor`` sets the anchor to the instigating message on every move into
-  a parked state FROM idle, so on a sample that landed in elicit the claim is entailed by the
-  landing and would run at exactly the rate ``assert_machine_landed`` does.
+  a parked state FROM idle, so on a sample whose move went to elicit the claim is entailed by
+  the move itself.
 * ``Check("reply: asked for no page structure")`` — a PHRASING match on a vocabulary somebody
   guessed in advance.  What it reached for has no end-state form and is read at review.
 
@@ -162,9 +163,6 @@ async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval, model: str)
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.ELICIT)
-
     # STORE — no claim.  On a cold machine there is nothing already held for a survival claim
     # to be about, and doing the job instead of asking is measured below.
 

@@ -872,14 +872,14 @@ async def test_two_sources_are_named_apart_however_the_demonstration_is_worded(
     """One demonstration in five wordings: read two front pages, keep the top headline of
     each.
 
-    **The LANDED category is empty for this case, and it is CLOSED UPSTREAM rather than
-    unrun.**  A labelling draw's closed field is WHICH spots were named, and production
+    **Whether every spot got a line is CLOSED UPSTREAM rather than unrun.**  A labelling
+    draw's closed field is WHICH spots were named, and production
     validates exactly that: ``_labels_every_spot`` accepts a draw only when every offered
     spot has one well-formed line and nothing else does, re-rolling while it does not.  So
     "every spot got a line" runs 15/15 by construction and would measure the validator.
     What is left to claim is what those lines SAY, which is the provenance block below.
 
-    **The STORE category is empty by construction.**  A micro-context is one call that
+    **Nothing here reads a store.**  A micro-context is one call that
     returns a typed result — it writes to no store — so there is nothing for a store claim
     to read.
 
@@ -904,8 +904,6 @@ async def test_two_sources_are_named_apart_however_the_demonstration_is_worded(
     demonstration is the one that supplies a distinction a name can collapse.
     """
     cohort = await _run_ported_case(labeller_eval, TWO_SOURCES_CASE, model)
-    # LANDED — empty, and closed upstream; see the docstring.
-    # STORE — empty by construction; see the docstring.
     # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
     _claim_every_spot_was_named_for_this_routine(cohort, TWO_SOURCES_CASE.offered)
     cohort.claim(
@@ -935,13 +933,12 @@ async def test_a_search_spot_is_named_as_a_search_however_it_is_worded(
     instrument** — ``unsourced_specifics`` reads urls, digits and capitalised phrases, and
     ``product_page`` carries none of the three — so the samples are what a reader reads.
 
-    **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
-    re-rolls); **STORE is empty by construction** (one call, a typed result, no store).  The
-    provenance block carries only the *nothing omitted* direction, for the reason above.
+    **Whether every spot got a line is closed upstream** (``_labels_every_spot`` validates
+    coverage and re-rolls); **nothing here reads a store** (one call, a typed result, no
+    store).  The provenance block carries only the *nothing omitted* direction, for the
+    reason above.
     """
     cohort = await _run_ported_case(labeller_eval, SEARCH_CASE, model)
-    # LANDED — empty, and closed upstream; see the docstring.
-    # STORE — empty by construction; see the docstring.
     # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
     _claim_every_spot_was_named_for_this_routine(cohort, SEARCH_CASE.offered)
     _measure_what_each_spot_was_called(cohort, SEARCH_CASE.offered)
@@ -963,13 +960,12 @@ async def test_a_single_turn_teach_names_every_spot_however_it_is_worded(
     for has nothing to lean on.  A spot mis-named for want of that context still carries no
     url, no digit and no capital, so it is read rather than asserted.
 
-    **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
-    re-rolls); **STORE is empty by construction** (one call, a typed result, no store).  The
-    provenance block carries only the *nothing omitted* direction, for the reason above.
+    **Whether every spot got a line is closed upstream** (``_labels_every_spot`` validates
+    coverage and re-rolls); **nothing here reads a store** (one call, a typed result, no
+    store).  The provenance block carries only the *nothing omitted* direction, for the
+    reason above.
     """
     cohort = await _run_ported_case(labeller_eval, SINGLE_TURN_CASE, model)
-    # LANDED — empty, and closed upstream; see the docstring.
-    # STORE — empty by construction; see the docstring.
     # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
     _claim_every_spot_was_named_for_this_routine(cohort, SINGLE_TURN_CASE.offered)
     _measure_what_each_spot_was_called(cohort, SINGLE_TURN_CASE.offered)
@@ -1005,15 +1001,13 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
     overlap (``delivery_storage_collection`` beside ``check_log_collection``, ``log_storage``),
     so the collapse is reachable rather than theoretical.
 
-    **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
-    re-rolls) — and on seven spots it is doing more work than on four, so a rise in excluded
-    samples here is a finding about the draw rather than about this case.  **STORE is empty by
-    construction** (one call, a typed result, no store).  The provenance block carries only the
-    *nothing omitted* direction, for the reason above.
+    **Whether every spot got a line is closed upstream** (``_labels_every_spot`` validates
+    coverage and re-rolls) — and on seven spots it is doing more work than on four, so a rise
+    in excluded samples here is a finding about the draw rather than about this case.
+    **Nothing here reads a store** (one call, a typed result, no store).  The provenance block
+    carries only the *nothing omitted* direction, for the reason above.
     """
     cohort = await _run_ported_case(labeller_eval, LONGER_ROUTINE_CASE, model)
-    # LANDED — empty, and closed upstream; see the docstring.
-    # STORE — empty by construction; see the docstring.
     # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
     _claim_every_spot_was_named_for_this_routine(cohort, LONGER_ROUTINE_CASE.offered)
     cohort.claim(
@@ -1064,14 +1058,13 @@ async def test_a_value_that_repeats_is_still_named_once_however_it_is_worded(
     side: token cost and naming-spread read against the reference run's and the replay's
     numbers.
 
-    **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
-    re-rolls); **STORE is empty by construction** (one call, a typed result, no store).
+    **Whether every spot got a line is closed upstream** (``_labels_every_spot`` validates
+    coverage and re-rolls); **nothing here reads a store** (one call, a typed result, no
+    store).
     The provenance block carries only the *nothing omitted* direction, for the reason
     every other case in this file gives.
     """
     cohort = await _run_ported_case(labeller_eval, REPEATED_VALUE_CASE, model)
-    # LANDED — empty, and closed upstream; see the docstring.
-    # STORE — empty by construction; see the docstring.
     # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
     _claim_every_spot_was_named_for_this_routine(cohort, REPEATED_VALUE_CASE.offered)
     for pair in _REPEATED_VALUE_EXTRACT_PAIRS:

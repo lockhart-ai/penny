@@ -371,9 +371,6 @@ wrote_only_what_the_page_says = _wrote_only_what_the_page_says(NOTICEBOARD_TOKEN
 def declare_the_claims(cohort: Cohort) -> None:
     """Every claim this case makes, declared on ``cohort`` — in one place, so the deterministic
     proof in ``test_eval_harness.py`` answers exactly the set the case does."""
-    # LANDED — still in the round, which is waiting for instructions it can carry out.
-    cohort.assert_machine_landed(ConversationState.LEARN)
-
     # STORE — what the turn wrote is the page's, nothing was set running, and what the store
     # held survives.  The round's own container is BORN this turn, so it is outside the
     # mechanism claim whatever happens to it.

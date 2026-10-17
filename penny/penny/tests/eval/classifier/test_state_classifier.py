@@ -4,8 +4,8 @@ the draw makes (#1706/#2055).
 Isolation and aggregate are both wanted (the #2004 ruling).  The chat transition
 cases enact these same edges end to end, deliberately rather than redundantly: a
 case here hands the draw a lean snapshot and asserts WHICH state it picked, so a
-miss is attributable to the draw itself, while an enacted case asserts where the
-machine landed after a whole turn.  They catch different things, and the canonical
+miss is attributable to the draw itself, while an enacted case asserts what a whole
+turn left behind.  They catch different things, and the canonical
 set holds both.
 
 The classifier's axis is the DECISION rather than the edge, which is why fourteen
@@ -25,10 +25,11 @@ world, one set of facts, pooled into a cohort of fifteen and claimed against
 populated-registry one is exactly what varies in production: whether the registry
 holds skills.
 
-Every case reports an EMPTY ``STORE`` and an EMPTY ``PROVENANCE``, and each says
-why in its own docstring — a single call moves no machine and writes to no store, and the
-two fields the draw returns are closed sets with nothing in them that could have been
-invented.  What a gated draw adds is a SECOND ``LANDED`` claim: the routine it bound.
+Every case's claims are read off the typed result the draw returned (#2496) — a
+single call moves no machine and writes to no store — and its ``PROVENANCE`` is
+empty, because the two fields the draw returns are closed sets with nothing in them
+that could have been invented.  What a gated draw adds is a SECOND claim: the
+routine it bound.
 
 Fictional-but-believable fixtures throughout (the repo is public).
 """
@@ -231,11 +232,11 @@ async def test_a_passing_mention_holds_idle_with_the_routine_doors_open(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw held the conversation in idle",
         _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the docstring.
@@ -382,8 +383,9 @@ async def test_a_covered_ask_missing_its_page_draws_request(
     """The idle → request draw: a known routine covers the ask, and the one value it
     declares is not in the message.
 
-    STORE and PROVENANCE are empty; the section comment above says why for every case in
-    this file.  Two LANDED claims, because this state is skill-gated: which state, and
+    The claims are read off the typed result; PROVENANCE is empty; the section comment above
+    says why for every case in
+    this file.  Two claims, because this state is skill-gated: which state, and
     which routine.
     """
     cohort = await classifier_eval(
@@ -400,16 +402,16 @@ async def test_a_covered_ask_missing_its_page_draws_request(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed fields of the typed result, asserted by equality
+    # STORE — the closed fields of the typed result, asserted by equality
     cohort.claim(
         "state: the draw parked the round in request",
         _drew(ConversationState.REQUEST),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the draw bound the routine that covers the ask",
         _bound(_PRICE_SKILL),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -473,7 +475,8 @@ async def test_unprompted_teaching_draws_learn(classifier_eval: ClassifierEval, 
     """The idle → learn draw: the user says they are teaching, and the steps are in the
     message, from a standing start rather than from inside a teach loop.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     learn binds no routine, so there is no second choice to claim.
     """
     cohort = await classifier_eval(
@@ -490,11 +493,11 @@ async def test_unprompted_teaching_draws_learn(classifier_eval: ClassifierEval, 
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw took the round into learn",
         _drew(ConversationState.LEARN),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -538,7 +541,8 @@ async def test_a_called_off_elicit_round_falls_to_idle(
 ) -> None:
     """The elicit → idle draw: the break-out edge, taken because the user dropped the task.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     idle binds no routine.
     """
     cohort = await classifier_eval(
@@ -556,11 +560,11 @@ async def test_a_called_off_elicit_round_falls_to_idle(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw broke the round out to idle",
         _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -625,7 +629,8 @@ async def test_an_accepted_offer_draws_apply(classifier_eval: ClassifierEval, mo
     """The learn → apply draw: a plain acceptance of what was just demonstrated, with the
     round's own routine standing in the registry beside two near neighbours.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  Two claims:
     because this state is skill-gated: which state, and which routine.
     """
     cohort = await classifier_eval(
@@ -644,16 +649,16 @@ async def test_an_accepted_offer_draws_apply(classifier_eval: ClassifierEval, mo
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed fields of the typed result, asserted by equality
+    # STORE — the closed fields of the typed result, asserted by equality
     cohort.claim(
         "state: the draw took the round into apply",
         _drew(ConversationState.APPLY),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the draw bound the routine the round taught",
         _bound(_FERRY_SKILL),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -715,7 +720,8 @@ async def test_the_missing_value_arriving_draws_apply(
     """The request → apply draw: the round parked asking for one detail, and this message
     is that detail.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  Two claims:
     because this state is skill-gated: which state, and which routine.
     """
     cohort = await classifier_eval(
@@ -735,16 +741,16 @@ async def test_the_missing_value_arriving_draws_apply(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed fields of the typed result, asserted by equality
+    # STORE — the closed fields of the typed result, asserted by equality
     cohort.claim(
         "state: the draw took the round into apply",
         _drew(ConversationState.APPLY),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the draw bound the routine the round was parked on",
         _bound(_PRICE_SKILL),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -790,7 +796,8 @@ async def test_a_called_off_parked_request_falls_to_idle(
     """The request → idle draw: the round asked for one detail and the user dropped the
     task instead of supplying it.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     idle binds no routine.
     """
     cohort = await classifier_eval(
@@ -810,11 +817,11 @@ async def test_a_called_off_parked_request_falls_to_idle(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw broke the round out to idle",
         _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -913,7 +920,8 @@ async def test_switching_a_running_jobs_notifications_off_draws_idle(
     thing left that can hold these samples idle is that the ask CHANGES a job rather than
     starting one.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     idle binds no routine.
     """
     cohort = await classifier_eval(
@@ -931,11 +939,11 @@ async def test_switching_a_running_jobs_notifications_off_draws_idle(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw held the conversation in idle",
         _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -983,7 +991,8 @@ async def test_a_setup_ask_on_a_cold_registry_elicits(
     """The cold idle → elicit draw: an ongoing job asked for five ways, with nothing in the
     registry and no steps in the message.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     elicit binds no routine.
     """
     cohort = await classifier_eval(
@@ -999,11 +1008,11 @@ async def test_a_setup_ask_on_a_cold_registry_elicits(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw opened a teach round in elicit",
         _drew(ConversationState.ELICIT),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1065,7 +1074,8 @@ async def test_a_fully_supplied_cold_ask_names_its_routine(
     """The idle → apply draw with the routine in question: one covered ask said five ways,
     against four routines that all read a page and record something from it.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  Two claims:
     because this state is skill-gated: which state, and which routine.
     """
     cohort = await classifier_eval(
@@ -1082,16 +1092,16 @@ async def test_a_fully_supplied_cold_ask_names_its_routine(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed fields of the typed result, asserted by equality
+    # STORE — the closed fields of the typed result, asserted by equality
     cohort.claim(
         "state: the draw took the round into apply",
         _drew(ConversationState.APPLY),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the draw bound the routine that covers the ask",
         _bound(_PRICE_SKILL),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1146,7 +1156,8 @@ async def test_chat_carrying_a_covered_ask_draws_apply(
     differ in what tempts the draw away: there, four near neighbours, so the open question is
     WHICH routine; here, two, with a chat half that could suppress the ask entirely.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  Two LANDED claims,
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  Two claims:
     because this state is skill-gated: which state, and which routine.
     """
     cohort = await classifier_eval(
@@ -1163,16 +1174,16 @@ async def test_chat_carrying_a_covered_ask_draws_apply(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed fields of the typed result, asserted by equality
+    # STORE — the closed fields of the typed result, asserted by equality
     cohort.claim(
         "state: the draw took the round into apply",
         _drew(ConversationState.APPLY),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
     cohort.claim(
         "state: the draw bound the routine that covers the ask",
         _bound(_PRICE_SKILL),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1219,7 +1230,8 @@ async def test_an_unanswered_teach_question_stays_parked(
 
     The whole turn these same five messages open is ``transition-elicit-to-elicit``.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     elicit binds no routine.
     """
     cohort = await classifier_eval(
@@ -1237,11 +1249,11 @@ async def test_an_unanswered_teach_question_stays_parked(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw left the round parked in elicit",
         _drew(ConversationState.ELICIT),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1312,7 +1324,8 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
     The whole turn that makes this move is ``transition-request-to-elicit``, which is driven
     from five wordings of its own against a round with its history behind it.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     elicit binds no routine.
     """
     cohort = await classifier_eval(
@@ -1332,11 +1345,11 @@ async def test_a_rejected_routine_returns_the_round_to_elicit(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw returned the round to elicit",
         _drew(ConversationState.ELICIT),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1401,7 +1414,8 @@ async def test_a_same_verb_different_domain_ask_still_elicits(
     discovery routine in another domain.  The routine shares everything with the ask except
     the world it is about, which is the reading a draw can plausibly get wrong.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     elicit binds no routine.
     """
     cohort = await classifier_eval(
@@ -1418,11 +1432,11 @@ async def test_a_same_verb_different_domain_ask_still_elicits(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw opened a teach round in elicit",
         _drew(ConversationState.ELICIT),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1468,7 +1482,8 @@ async def test_an_answered_teach_question_draws_learn(
     """The elicit → learn draw under the populated-registry stress: one set of instructions
     said five ways, with watch-adjacent candidates rendered beside them.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     learn binds no routine.
     """
     cohort = await classifier_eval(
@@ -1487,11 +1502,11 @@ async def test_an_answered_teach_question_draws_learn(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw took the round into learn",
         _drew(ConversationState.LEARN),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1551,7 +1566,8 @@ async def test_a_correction_holds_the_round_in_learn(
     """The learn → learn self-edge: one correction said five ways, against the failure report
     it answers — the correction-loop invariant, that a failed round holds its state.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     learn binds no routine.
     """
     cohort = await classifier_eval(
@@ -1570,11 +1586,11 @@ async def test_a_correction_holds_the_round_in_learn(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw held the round in learn",
         _drew(ConversationState.LEARN),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.
@@ -1625,7 +1641,8 @@ async def test_a_post_failure_question_falls_to_idle(
     """The learn → idle draw: one post-failure question said five ways, over the same world
     the correction case runs on.
 
-    STORE and PROVENANCE are empty; the section comment above says why.  ONE LANDED claim:
+    The claims are read off the typed result; PROVENANCE is empty; the section comment
+    above says why.  ONE claim::
     idle binds no routine.
     """
     cohort = await classifier_eval(
@@ -1644,11 +1661,11 @@ async def test_a_post_failure_question_falls_to_idle(
         min_pass_rate=None,  # report-only until the numbers are read with the code owner
         family=_FAMILY,
     )
-    # LANDED — the closed field of the typed result, asserted by equality
+    # STORE — the closed field of the typed result, asserted by equality
     cohort.claim(
         "state: the draw broke the round out to idle",
         _drew(ConversationState.IDLE),
-        SpecCategory.LANDED,
+        SpecCategory.STORE,
     )
 
     # STORE — empty by construction; see the section comment.

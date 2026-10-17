@@ -28,13 +28,16 @@ seeded with three journeys rather than five, since two routines that ask for a U
 else would be COMPLETE against that ask).  Every `_IdleRequestCase` stays in
 `transition_world.py`, so any of them can come back deliberately.
 
-**Both halves of the behaviour have a structural reading, and both are claimed.**  *Names the
-routine she recognises* is the landed move's own ``skill_name``; *asks for the one value still
-missing* is the round's recorded shortfall, whose ``missing`` names the parameter by its
-declared key.  Neither is entailed by the landing: request is reachable by two doors (the
-binder's shortfall redirect and a classifier draw), and only one of them guarantees a shortfall
-at all — so a move landing in request carrying nothing to ask about is a real, nameable
-failure, and so is one that named the wrong parameter.
+**Both halves of the behaviour have a structural reading, and both are MEASURED, not
+claimed (#2496).**  *Names the routine she recognises* is the landed move's own ``skill_name``;
+*asks for the one value still missing* is the round's recorded shortfall, whose ``missing``
+names the parameter by its declared key.  Neither is asserted as a claim: where the machine
+went and what its move carried are the machine's own record, and the case asserts only what
+reaches the user, the store and provenance.  Request is reachable by two doors (the binder's
+shortfall redirect and a classifier draw), and only one of them guarantees a shortfall at all
+— so a move landing in request carrying nothing to ask about is a real, nameable failure, and
+so is one that named the wrong parameter; both read as spread on the walk rather than as a
+failed claim.
 
 **Five source checks did not port** (the outward column):
 
@@ -44,18 +47,18 @@ failure, and so is one that named the wrong parameter.
   its end-state form is what SURVIVES the turn: *every mechanism already running is still
   there, unchanged* and *everything the store already held is still there, unchanged*.
 * ``_request_anchor_check`` — PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the
-  instigating message on every move into a parked state FROM idle, so on a sample that landed
-  in request the claim is entailed by the landing.
+  instigating message on every move into a parked state FROM idle, so on a sample whose move
+  went to request the claim is entailed by the move itself.
 * ``_asks_for_what_is_missing_check`` — a PHRASING match on a vocabulary somebody guessed in
-  advance.  Its structural form is the shortfall claim above, which reads what the round is
-  waiting on rather than what the sentence happened to call it.
+  advance.  What the round is waiting on is read off the round's recorded shortfall rather
+  than what the sentence happened to call it, and stands as MEASURED spread, not a claim.
 * ``_does_not_re_ask_check`` — the same, and n/a on this survivor anyway (its ask settles
   nothing, so there is nothing that could be asked for twice).
 
 **One more is absent by ENTAILMENT**, and is worth naming so the set reads as closed.
 *Nothing was registered*: run-end extraction fires in ``learn`` and nowhere else, and the only
-other thing that touches the registry (``abandon_round_skill``) runs on an IDLE landing — so no
-sample can fail it without also failing ``assert_machine_landed``.
+other thing that touches the registry (``abandon_round_skill``) runs on a move to IDLE — so no
+sample can fail it without the walk showing a move the story is not about.
 
 **And two the inward column added**: PROVENANCE, of both kinds.  The source case made no claim
 of either, so a reply that invented an address to ask about passed every check it carried.  The
@@ -76,18 +79,14 @@ from __future__ import annotations
 import pytest
 
 from penny.conversation_machine import ConversationState
-from penny.database.skills import slug_skill_name
 from penny.penny import Penny
 from penny.tests.eval.conftest import EVAL_MODELS, ChatEval, Preparer
-from penny.tests.eval.utils.assertions import Answer
 from penny.tests.eval.utils.catalogue import Area
 from penny.tests.eval.utils.cohort import (
     ENTRIES_STORED,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
     TRANSITIONS,
-    SampleObservation,
-    SpecCategory,
 )
 from penny.tests.eval.utils.transition_ledger import _FAMILY
 from penny.tests.eval.utils.transition_world import (
@@ -147,7 +146,6 @@ _UNKNOWN_LISTING = World(
 
 # The routine this ask is covered by, as the registry holds it — what the decision has to pick
 # out of five real routines of the same kind.
-_COVERING_ROUTINE = slug_skill_name(_SHORT_LISTING.skill.name)
 
 # What this case measures.  ``ROUTINE_SHAPE`` and ``ROUTINE_NAME`` are deliberately ABSENT: a
 # request turn mints no routine, so on a correct cohort both read the world's own seeded five
@@ -197,24 +195,12 @@ def assert_no_wording_names_a_page(case: _IdleRequestCase) -> None:
         assert "http" not in wording, f"{case.case_id}: this wording names a page — {wording!r}"
 
 
-# ── The claim this edge's own contract adds ───────────────────────────────────
+# ── What the edge's own contract adds ────────────────────────────────────────
 #
-# It reads the LANDED MOVE — the machine's own row — rather than the store, because what a
-# request turn produces is round state and not a mechanism.
-# It stays LOCAL because it is parametrised by this case's own shortfall and no other case has
-# asked for it; its sibling — the move naming the routine — GRADUATED in the same change, the
-# idle → apply case being its second customer.
-
-
-def _waiting_on_exactly_what_is_missing(sample: SampleObservation, _world: World) -> Answer:
-    """The round records EXACTLY the parameters the ask left out, by their declared names.
-
-    Two failures, one sentence.  A move that landed in request carrying no shortfall has parked
-    the round on nothing to ask about — reachable, since a classifier-drawn request whose
-    binding came back complete records none — and a move recording a parameter the ask already
-    settled is asking again for something it was given."""
-    missing = list(_SHORT_LISTING.missing)
-    return sample.awaiting == missing, f"waiting on {sample.awaiting}, the ask leaves out {missing}"
+# The round's shortfall — what the turn is waiting on — is no longer CLAIMED (#2496): where
+# the machine went and what its move carried are the machine's own record, and the case
+# asserts only what reaches the user, the store and provenance.  What the turn is waiting on
+# is MEASURED instead, as the walk's spread below.
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
@@ -240,16 +226,6 @@ async def test_idle_to_request_asks_for_the_listing(chat_eval: ChatEval, model: 
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED — where the turn went, and the two facts the move itself carries about the round
-    # it opened.  All three are read off the machine's walk.
-    cohort.assert_machine_landed(ConversationState.REQUEST)
-    cohort.assert_the_move_named_the_routine(_COVERING_ROUTINE)
-    cohort.claim(
-        "state: the round is waiting on exactly the value the ask left out",
-        _waiting_on_exactly_what_is_missing,
-        SpecCategory.LANDED,
-    )
-
     # STORE — what SURVIVES a turn parked on an interface that is not settled yet: the jobs
     # already running, and everything the store already held.  Whether the turn acted anyway
     # is the model's call and is measured below, never claimed.

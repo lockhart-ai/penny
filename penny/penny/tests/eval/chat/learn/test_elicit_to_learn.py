@@ -97,9 +97,6 @@ async def test_elicit_to_learn_runs_the_round_and_reports_what_it_captured(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.LEARN)
-
     # STORE
     cohort.assert_something_from_each_page_was_written()
     cohort.assert_the_write_landed_in_the_round_container()

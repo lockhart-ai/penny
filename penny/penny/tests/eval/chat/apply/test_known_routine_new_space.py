@@ -66,10 +66,10 @@ happened to choose.
   store already held survives.
 * ``_cold_anchor_check`` — PRODUCTION ALREADY VALIDATES IT: ``_next_anchor`` stamps the
   instigating message on every move into a parked state FROM idle, so the claim is entailed by
-  the landing.
-* ``_no_teach_question_check`` — *she did not ask to be taught*.  ENTAILED by
-  ``assert_machine_landed(APPLY)``: a turn cannot land in apply and in elicit, so the check
-  would run at exactly the rate the landing claim does.
+  the move itself.
+* ``_no_teach_question_check`` — *she did not ask to be taught*.  ENTAILED by where the turn
+  went: a move that stands a job up is an apply move, and apply and elicit are different
+  states, so the check would fail only on a turn that did not do what the case is about.
 * ``_expiry_check``'s drawn-argument leg — it reads ``last_tool_args(db, _SET_TOOL)``, which is
   a route keyed to a tool name.  What survives is the end the ROW stores, which is the right
   reading in this direction: the ask GIVES an end, so a row carrying none failed, including
@@ -82,8 +82,8 @@ happened to choose.
 **One more is absent by ENTAILMENT**, and is worth naming so the set reads as closed: *nothing
 was registered*, the claim that a cold apply teaches nothing.  Run-end extraction fires in
 ``learn`` and nowhere else, and the only other thing that touches the registry
-(``abandon_round_skill``) runs on an IDLE landing — so no sample can fail it without also
-failing ``assert_machine_landed``.
+(``abandon_round_skill``) runs on a move to IDLE — so no sample can fail it without the walk
+showing a move the story is not about.
 
 **And two the inward column added**: PROVENANCE, of both kinds.  The source case made no claim
 of either.  The store half reads only what this turn wrote: whether it wrote is the model's call
@@ -226,10 +226,6 @@ _EXPECTED_CONTAINER = derive_collection_name(
     slug_skill_name(_COLD_PRICE.skill.name), list(_COLD_PRICE.bound.values())
 )
 
-# The routine this ask is covered by, as the registry holds it — what the decision has to pick
-# out of five real routines of the same kind.
-_COVERING_ROUTINE = slug_skill_name(_COLD_PRICE.skill.name)
-
 # The ground every arm is answered against: the new space, installed as a live temptation, so a
 # turn that DOES open it gets a real page back rather than failing on a thin fixture — which is
 # what makes "she set it running instead of running it now" a real reading.
@@ -365,10 +361,6 @@ async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED — where the turn went, and which routine the move it recorded was about.
-    cohort.assert_machine_landed(ConversationState.APPLY)
-    cohort.assert_the_move_named_the_routine(_COVERING_ROUTINE)
-
     # STORE — what got created, and the terms it runs on.
     cohort.assert_the_job_is_the_container_its_values_derive(_EXPECTED_CONTAINER)
     cohort.assert_the_job_fires_every(_EXPECTED_CONTAINER, _COLD_PRICE.cadence_seconds)

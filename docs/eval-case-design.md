@@ -26,8 +26,8 @@ Read alongside:
 
 Run the same request many times and look at the spread.
 
-- **Deterministically assert only the mechanical things about the machine** — where it landed and
-  what it left behind.
+- **Deterministically assert only the mechanical facts the turn leaves behind** — what the store
+  holds or survived, and what reached the user.
 - **Everything the model emits is variance** — reply text *and tool calls alike*. A tool call is
   model output exactly as a sentence is. Many routes reach one end state, so a route is measured,
   never asserted.
@@ -37,7 +37,7 @@ A case therefore makes **three different kinds of claim**, which must never be m
 
 | | the claim | how it is judged |
 |---|---|---|
-| **A · assertions** | end state only — the three categories in §2 | **counted, never gated** — total checks passed of total checked, reported for a person to read |
+| **A · assertions** | end state only — the two categories in §2 | **counted, never gated** — total checks passed of total checked, reported for a person to read |
 | **B · variance** | model output — tool sequence, routine shape, names, reply text | a **one-sided ceiling** (only a *rise* is a regression) |
 | **C · run health** | how much of the cohort actually ran, and what killed the rest | a **gate**: broken samples are excluded *before* pooling, and a mostly-dead cohort **fails the run** |
 
@@ -130,12 +130,11 @@ sends its reader to the transcripts, which show what the model *said* rather tha
 
 ### The closed list
 
-**Three categories. Nothing else is an assertion.**
+**Two categories. Nothing else is an assertion.**
 
 | category | what it asserts | read off |
 |---|---|---|
-| `LANDED` | where the machine landed — the state transition the story is about | the conversation machine's walk |
-| `STORE` | what the store holds — entries, keys, contents, record fields, registry rows | the sample's database, while it is still live |
+| `STORE` | what the store holds — entries, keys, contents, record fields, registry rows, and the delivered reply the store holds a record of | the sample's database, while it is still live |
 | `PROVENANCE` | every specific value traces to what the model was **given** — user turns and tool results, **never Penny's own turns** | the sample's inputs vs its output |
 
 **If a check fits none of these, it is not an assertion.** Delete it, or move it to variance.
@@ -212,8 +211,9 @@ accident:
 **A `STORE` claim states what SURVIVES the turn.** The value the ask said to keep is where it was
 asked to keep it; what the store held before the turn still holds it, unchanged, unless the ask
 named it; and a fact is not mis-stored — a dislike filed under likes is a false fact, not a
-choice about how to work. `PROVENANCE` states that nothing stored or said was invented. `LANDED`
-states where the machine landed. That is the whole of what may be claimed.
+choice about how to work. `PROVENANCE` states that nothing stored or said was invented. That is
+the whole of what may be claimed (#2496 retired the landed category: where the machine went is
+the machine's own record, not a claim).
 
 **No case may assert restraint.** *Wrote nothing · created no mechanism · opened no page · wrote
 nowhere else.* Whether to note, look up, or remember something the user merely mentioned is the
@@ -226,10 +226,10 @@ entries-stored and tool-sequence features carry it as spread, and a feature read
 every sample renders blind (§5), which is the honest report that nothing happened rather than a
 check calling it correct.
 
-**A no-fire case asserts `LANDED` — the state Penny stays in — plus `PROVENANCE` and the
-preservation of what was already there, and nothing more.** It remains its own case; what changes
-is its behaviour sentence, which names the state she stays in rather than the action she refrains
-from.
+**A no-fire case asserts `PROVENANCE` and the preservation of what was already there, and
+nothing more.** It remains its own case; what changes is its behaviour sentence, which names the
+state she stays in rather than the action she refrains from, and the state she stayed in is
+read off the walk as a measured feature rather than claimed (#2496).
 
 The near boundary: *nothing the ask excluded was stored* **is** an assertion, because an excluded
 token appears only on a line the ask rules out in as many words (§12). The ask named it, so a
@@ -346,12 +346,12 @@ time, on every case.**
 
 > ### Outward — for each check on the source case
 >
-> **Which of the three categories does it fall in?**
+> **Which of the two categories does it fall in?**
 >
 > **None → delete it. It does not port.** Being on the canonical case is not a reason to keep it:
 > the canonical cases predate this design, so a check surviving there is evidence of nothing.
 >
-> ### Inward — for each of the three categories
+> ### Inward — for each of the two categories
 >
 > **Does the ported case make a claim in it?**
 >
@@ -376,7 +376,7 @@ Two checks that fit no category, as worked examples of how to recognise one:
 
 | check | why it is not an assertion | where it goes |
 |---|---|---|
-| `assert_each_page_was_read` — reads `sample.pages_read` | asserts that a **browse call happened**. That is a route. `LANDED`? No — a fetch is not a landing. `STORE`? No — nothing was stored. It is model output. | section B, inside tool sequence |
+| `assert_each_page_was_read` — reads `sample.pages_read` | asserts that a **browse call happened**. That is a route, not a claim: a fetch is not a fact about the store. It is model output. | section B, inside tool sequence |
 | `assert_the_reply_reports_what_was_stored` — asserts the reply text contains a token | a **phrasing match** — a token somebody guessed in advance, which is the thing this design exists to abolish. | delete. Whether the reply describes what actually landed is a real question and is not answerable from prose — see §9 |
 | `assert_nothing_was_written_anywhere` — reads the sample's entries | asserts the model **chose not to** note something. It reads the database, so it wears `STORE` convincingly — but what survives a turn that wrote nothing is what the store already held, and *that* is the claim. Discretion is not an end state. | rewrite as preservation of what was already there; the rest is entries-stored, in section B |
 
@@ -430,8 +430,6 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
         min_pass_rate=None,                             # assertions are never floored — §8
         family=<FAMILY>,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.<STATE>)
     # STORE
     cohort.assert_the_store_holds_an_entry()
     cohort.assert_nothing_excluded_was_stored()
@@ -444,7 +442,7 @@ async def test_<the behaviour, as a sentence>(chat_eval, model, <seed fixture>) 
                    REPLY_SPREAD)
 ```
 
-The three category comments are load-bearing: they are where the **inward** pass is run. A case
+The category comments are load-bearing: they are where the **inward** pass is run. A case
 with no `# PROVENANCE` block is a case that skipped it. Expect your case to have one claim
 nobody can hand you — a category the source case said nothing about, which only the inward column
 will surface.
@@ -467,12 +465,9 @@ async def test_<the behaviour, as a sentence>(collector_cycles_eval, model) -> N
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # LANDED — EMPTY, and that is the correct report.  A collector moves no conversation
-    # machine, so there is no walk to read a landing off.  The run record's outcome and its
-    # stop reason are RECORD FIELDS, so they are claimed under STORE.
     # STORE
     cohort.claim("state: <what the store holds>", _holds(<AMOUNT>), SpecCategory.STORE)
-    cohort.claim("state: <what the run record says>", _closed_having_worked, SpecCategory.STORE)
+    cohort.claim("state: <what reached the user>", _told_once, SpecCategory.STORE)
     # PROVENANCE
     cohort.assert_every_value_in_the_store_is_sourced()
 
@@ -500,10 +495,9 @@ async def test_<the behaviour, as a sentence>(extractor_eval, model) -> None:
         min_pass_rate=None,
         family=_FAMILY,
     )
-    # LANDED — the CLOSED field of the typed result, asserted by equality
-    cohort.claim("state: <which outcome it committed to>", _read_the_page, SpecCategory.LANDED)
-    # STORE — EMPTY, and that is the correct report.  One call returns a value; it writes
-    # to no store, so there is nothing for a store claim to read.
+    # STORE — the CLOSED field of the typed result, asserted by equality.  One call
+    # returns a value; it moves no machine and writes to no store, so its claims read the
+    # draw's recorded output rather than a collection row.
     # PROVENANCE — the OPEN fields, reachable only through fact alignment, both directions
     cohort.claim("state: <what the page supplies arrived>", _carries(<ANCHOR>),
                  SpecCategory.PROVENANCE)
@@ -852,7 +846,7 @@ and it lands as written. The review asks five things:
 - **A real use case.** The behaviour is one a user actually brings to Penny.
 - **A world the model can reasonably answer.** What the sample is given — the seeded state, the
   pages, the wording — makes the right answer reachable to a model reasoning from it.
-- **Claims only over facts.** Where the machine landed, what the store holds, values that trace to
+- **Claims only over facts.** What the store holds, values that trace to
   the world, and tokens that must be absent (§2).
 - **Everything else measured as variance.** Tool calls, routes, names and reply wording (§5).
 - **`docs/principles.md` followed.**

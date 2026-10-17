@@ -280,9 +280,6 @@ async def test_learn_to_apply_stands_the_taught_round_up_on_its_own_container(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.APPLY)
-
     # STORE — the terms the acceptance gave, on the round's own container, and what the store
     # already held surviving the turn.  The container is named rather than found, so a job
     # configured somewhere else leaves this row unscheduled and misses all three terms claims.

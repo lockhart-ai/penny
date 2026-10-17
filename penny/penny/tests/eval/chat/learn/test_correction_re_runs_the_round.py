@@ -43,8 +43,8 @@ thing every cycle.
 **Six source checks did not port** (the outward column):
 
 * ``_refetched_check`` — *the round re-ran on the page it was taught on*, read off the addresses
-  this turn asked a browse FOR.  A ROUTE: `LANDED`? no, a fetch is not a landing.  `STORE`? no,
-  nothing was stored by asking.  It is model output, and it is measured in section B, where a
+  this turn asked a browse FOR.  A ROUTE, not a claim: a fetch is not a fact about the store.
+  It is model output, and it is measured in section B, where a
   cohort that stopped re-reading shows as a variance rise rather than as one sample's failed
   check.  Its end-state form is the corrected-value claim below — the correction does not carry
   its own answer and the world has never said or stored it, so a sample holding it read a page.
@@ -1181,9 +1181,6 @@ async def test_learn_to_learn_re_runs_the_round_against_the_corrected_target(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.LEARN)
-
     # STORE — what the corrected round kept, and where.
     cohort.assert_something_from_each_page_was_written()
     cohort.assert_the_write_landed_in_the_round_container()

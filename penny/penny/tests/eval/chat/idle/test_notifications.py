@@ -51,7 +51,6 @@ from __future__ import annotations
 import pytest
 
 from penny.agents.self_state import SelfStateHeader
-from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER
@@ -166,9 +165,6 @@ async def test_an_explicit_mute_request_mutes_notifications(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the switch the ask named.  The world holds no collection, so there is nothing
     # else for a preservation claim to read.
     cohort.claim(
@@ -265,9 +261,6 @@ async def test_an_explicit_unmute_request_unmutes_notifications(
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the switch the ask named, and the only prior state this world holds.  It is a
     # claim rather than a restatement of the seed because ``assert_unmute_world`` holds the
     # seed: every sample this is answered about began muted and was told so.
@@ -358,9 +351,6 @@ async def test_a_remark_about_notifications_leaves_them_on(chat_eval: ChatEval, 
         family=_FAMILY,
         timeout=240.0,
     )
-    # LANDED
-    cohort.assert_machine_landed(ConversationState.IDLE)
-
     # STORE — the switch the world started with, still where it was: PRESERVATION of the one
     # prior state this world holds.
     cohort.claim(

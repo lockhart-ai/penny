@@ -316,7 +316,6 @@ from penny.tests.eval.conftest import (
     ParameterFamily,
     ParkedRound,
     SampleResult,
-    _awaited_parameters,
     _binding_output,
     _case_prompts,
     _chat_tool_sequence,
@@ -1258,10 +1257,7 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
     The recorded BINDING is read back through the production model here too, against the
     values the case declares: the seeder writes what a request turn's binder left (#1894),
     and everything the turn under test is answered from — the waiting-on section the
-    classifier is shown, and the values the next binder completes from — is that one row.  And
-    through the OBSERVATION reader the ported idle → request case answers its shortfall claim
-    with, since a reader that came back empty would report a correctly parked round as one that
-    had parked on nothing to ask about."""
+    classifier is shown, and the values the next binder completes from — is that one row."""
     for index, case in enumerate(REQUEST_APPLY_CASES):
         db = migrated_db(str(tmp_path / f"parked-request-{index}.db"))
         seed_parked_in_request(case)(db)
@@ -1274,11 +1270,6 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
         assert waiting.skill == slug_skill_name(case.parked.skill.name)
         assert waiting.bound == case.parked.settled
         assert tuple(one.name for one in waiting.missing) == case.parked.missing
-        assert _awaited_parameters(db) == list(case.parked.missing), (
-            "and the observation reads the same row: the idle → request case claims what the "
-            "round is waiting on, so a reader that came back empty would report every sample "
-            "as having parked on nothing to ask about"
-        )
         declared = sorted(parameter.name for parameter in case.parked.skill.parameters)
         assert declared == sorted(case.bound), (
             f"{case.case_id}: the routine declares {declared}, the two turns settle "
@@ -1450,7 +1441,6 @@ def _list_delete_sample(
     *,
     archived: tuple[str, ...],
     dropped: tuple[tuple[str, str], ...] = (),
-    landed: str = "idle",
     reply: str = "Done.",
 ) -> SampleObservation:
     """One delete-a-list sample: the four seeded lists, which of them the turn archived, and
@@ -1465,7 +1455,6 @@ def _list_delete_sample(
         name=name,
         phrasing="p",
         arm=0,
-        landed=landed,
         reply=reply,
         given=Given(_DELETE_LIST.ask),
         held_before=before,
@@ -1481,8 +1470,7 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
     A list left live misses the archive claim alone; a list emptied before it was archived
     misses only the claim that it still holds its entries; archiving a different list misses
     the archive claim and that list's own; a note dropped from a neighbour misses the claim
-    about what the other lists hold; a count nothing stated misses reply provenance; a turn
-    that left idle misses the landing."""
+    about what the other lists hold; a count nothing stated misses reply provenance."""
     recipes = tuple(("recipe-box", key) for key, _ in _DELETE_LIST.world.stores[-1].keyed)
     samples = [
         _list_delete_sample("archived", archived=("recipe-box",)),
@@ -1493,16 +1481,13 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             "pruned", archived=("recipe-box",), dropped=(("things-im-into", "jazz"),)
         ),
         _list_delete_sample("counted", archived=("recipe-box",), reply="Archived all 7 recipes."),
-        _list_delete_sample("wandered", archived=("recipe-box",), landed="elicit"),
     ]
     assert _claim_answers(_DELETE_LIST.world, claim_the_list_delete, samples) == {
-        "state: the machine landed in idle": [True, True, True, True, True, True, False],
         "state: the list it was asked to get rid of is archived": [
             True,
             False,
             True,
             False,
-            True,
             True,
             True,
         ],
@@ -1513,16 +1498,14 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             True,
             True,
             True,
-            True,
         ],
-        "state: the 'things-im-into' list is still the live list it was": [True] * 7,
-        "state: the 'things-i-avoid' list is still the live list it was": [True] * 7,
+        "state: the 'things-im-into' list is still the live list it was": [True] * 6,
+        "state: the 'things-i-avoid' list is still the live list it was": [True] * 6,
         "state: the 'gear-notes' list is still the live list it was": [
             True,
             True,
             True,
             False,
-            True,
             True,
             True,
         ],
@@ -1533,9 +1516,8 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             True,
             False,
             True,
-            True,
         ],
-        "state: every specific value in the stored entries is sourced": [True] * 7,
+        "state: every specific value in the stored entries is sourced": [True] * 6,
         "reply: every specific value in it is sourced": [
             True,
             True,
@@ -1543,7 +1525,6 @@ def test_every_list_delete_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
     }
 
@@ -1798,7 +1779,6 @@ def test_the_absent_fact_case_stands_on_its_world_and_each_claim_sees_its_failur
 # Which samples each of the case's claims misses: the faithful one never, and every claim at
 # least the sample built to break it.
 _ABSENT_FACT_MISSES = {
-    "state: the machine landed in learn": ["drifted"],
     "state: every entry this turn wrote is something the noticeboard says": [
         "noted the gap",
         "invented a date",
@@ -1833,7 +1813,6 @@ def _absent_fact_samples(case: AbsentFactCase) -> list[SampleObservation]:
     )
     broken = {
         "faithful": {},
-        "drifted": {"landed": ConversationState.IDLE.value},
         "noted the gap": {"entries": [kept, gap], "held": [*held, kept, gap]},
         "invented a date": {
             "entries": [invented],
@@ -1850,7 +1829,7 @@ def _absent_fact_samples(case: AbsentFactCase) -> list[SampleObservation]:
 
 
 def _faithful_absent_fact_sample(case: AbsentFactCase) -> SampleObservation:
-    """What a faithful sample leaves: in learn, one notice kept in the round's container, the
+    """What a faithful sample leaves: one notice kept in the round's container, the
     user's list as it was, and a reply naming only what the page says."""
     held = [
         StoredEntry(collection=store.name, key=key, content=content)
@@ -1861,7 +1840,6 @@ def _faithful_absent_fact_sample(case: AbsentFactCase) -> SampleObservation:
         name="faithful",
         phrasing="phrasing 1",
         arm=0,
-        landed=ConversationState.LEARN.value,
         entries=[_ABSENT_FACT_KEPT],
         held_before=held,
         held=[*held, _ABSENT_FACT_KEPT],
@@ -2144,7 +2122,6 @@ def _email_sample(
     name: str,
     reply: str,
     *,
-    landed: str = "idle",
     held: list[StoredEntry] | None = None,
     entries: list[StoredEntry] | None = None,
     ask: str = LOOKUP.ask,
@@ -2165,7 +2142,6 @@ def _email_sample(
         name=name,
         phrasing="p",
         arm=0,
-        landed=landed,
         reply=reply,
         given=given,
         held_before=before,
@@ -2187,15 +2163,15 @@ def test_every_email_claim_can_see_its_failure() -> None:
     The lookup: a reply that quotes the neighbour's figure misses the answer and the neighbour
     claim while every value it carries is sourced (which is why provenance alone cannot see
     it); an invented figure misses the answer and provenance; a pruned newsletter misses the
-    preservation claim; an invented stored entry misses store provenance; a turn that left idle
-    misses the landing.  The remark makes no reply claim — a reply to a remark is advice,
-    measured as variance — so an invented unread count holds every claim it makes, while a
-    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
+    preservation claim; an invented stored entry misses store provenance.  The remark makes no
+    reply claim — a reply to a remark is advice, measured as variance — so an invented unread
+    count holds every claim it makes, while a pruned newsletter and an invented stored entry
+    each miss theirs.
 
     The absent message: a reply that says nothing was found holds every claim, and so does one
     that names the sender's two amounts, since the mailbox was given and what a reply does with
     a figure it was handed is measured; an amount no message holds misses provenance; and a
-    pruned newsletter, an invented stored entry and a turn that left idle each miss theirs.
+    pruned newsletter and an invented stored entry each miss theirs.
 
     Its measured feature reads the first of those replies as naming none and the second as
     naming a mailbox figure.  It declares no absent reading, so a cohort agreeing on either
@@ -2212,18 +2188,15 @@ def test_every_email_claim_can_see_its_failure() -> None:
         _email_sample("invented", "It comes to $19,200."),
         _email_sample("pruned", f"$18,{QUOTE_FIGURE}.", held=pruned),
         _email_sample("noted", f"$18,{QUOTE_FIGURE}.", entries=[invented_entry]),
-        _email_sample("wandered", f"$18,{QUOTE_FIGURE}.", landed="elicit"),
     ]
     lookup = _claim_answers(LOOKUP.world, claim_the_lookup, samples)
     assert lookup == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
-        "reply: it states the answer the world carries": [True, False, False, True, True, True],
+        "reply: it states the answer the world carries": [True, False, False, True, True],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             True,
             False,
-            True,
             True,
         ],
         "state: every specific value in the stored entries is sourced": [
@@ -2232,13 +2205,11 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
-        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: every specific value in it is sourced": [True, True, False, True, True],
         "reply: it states no figure only a neighbouring message carries": [
             True,
             False,
-            True,
             True,
             True,
             True,
@@ -2251,18 +2222,15 @@ def test_every_email_claim_can_see_its_failure() -> None:
             _email_sample("counted", "You have 312 unread emails right now."),
             _email_sample("noted", "Noted.", entries=[invented_entry]),
             _email_sample("pruned", "Ugh, same.", held=pruned),
-            _email_sample("wandered", "Ugh, same.", landed="elicit"),
         ],
     )
     assert remark == {
-        "state: the machine landed in idle": [True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             False,
-            True,
         ],
-        "state: every specific value in the stored entries is sourced": [True, False, True, True],
+        "state: every specific value in the stored entries is sourced": [True, False, True],
     }
     nothing = "Nothing from Priya Nakamura about a battery storage estimate."
     silent = _email_sample("none", nothing, ask=ABSENT.ask)
@@ -2281,17 +2249,14 @@ def test_every_email_claim_can_see_its_failure() -> None:
             _email_sample("invented", "The estimate comes to $6,240.", ask=ABSENT.ask),
             _email_sample("pruned", nothing, held=pruned, ask=ABSENT.ask),
             _email_sample("noted", nothing, entries=[invented_entry], ask=ABSENT.ask),
-            _email_sample("wandered", nothing, landed="elicit", ask=ABSENT.ask),
         ],
     )
     assert absent == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             True,
             False,
-            True,
             True,
         ],
         "state: every specific value in the stored entries is sourced": [
@@ -2300,9 +2265,8 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
-        "reply: every specific value in it is sourced": [True, True, False, True, True, True],
+        "reply: every specific value in it is sourced": [True, True, False, True, True],
     }
 
     assert MAILBOX_FIGURE_IN_REPLY.read(silent) == NAMES_NO_MAILBOX_FIGURE
@@ -2352,23 +2316,14 @@ def test_every_email_claim_can_see_its_failure() -> None:
                 ask=UNREACHABLE.ask,
                 given=no_mailbox_given,
             ),
-            _email_sample(
-                "wandered",
-                "Couldn't reach it.",
-                landed="elicit",
-                ask=UNREACHABLE.ask,
-                given=no_mailbox_given,
-            ),
         ],
     )
     assert unreachable == {
-        "state: the machine landed in idle": [True, True, True, True, True, False],
         "state: everything the store already held is still there, unchanged": [
             True,
             True,
             True,
             False,
-            True,
             True,
         ],
         "state: every specific value in the stored entries is sourced": [
@@ -2377,9 +2332,8 @@ def test_every_email_claim_can_see_its_failure() -> None:
             True,
             True,
             False,
-            True,
         ],
-        "reply: every specific value in it is sourced": [True, False, False, True, True, True],
+        "reply: every specific value in it is sourced": [True, False, False, True, True],
     }
     assert MAILBOX_FIGURE_IN_REPLY.read(honest) == NAMES_NO_MAILBOX_FIGURE
     assert MAILBOX_FIGURE_IN_REPLY.read(guessed) == NAMES_A_MAILBOX_FIGURE
@@ -3314,14 +3268,18 @@ def test_a_cohort_cases_record_carries_the_scores_causes_and_exclusions_its_docu
     db = _make_db(tmp_path, "cohort-record")
     _log_prompt(db, response=_content_response("A perfectly ordinary draw."))
     observations = [
-        SampleObservation(name="s-1", phrasing="the ask", landed=ConversationState.LEARN.value),
-        SampleObservation(name="s-2", phrasing="the ask", landed=ConversationState.IDLE.value),
+        SampleObservation(
+            name="s-1",
+            phrasing="the ask",
+            entries=[StoredEntry(collection="c", key="k", content="something")],
+        ),
+        SampleObservation(name="s-2", phrasing="the ask"),
         SampleObservation(
             name="s-3", phrasing="the ask", complete=False, exclusion=NO_MEASURED_TURN
         ),
     ]
     cohort = Cohort(_COHORT_RECORD_CASE, "a-model", list(observations))
-    cohort.assert_machine_landed(ConversationState.LEARN)
+    cohort.assert_the_store_holds_an_entry()
     results = [_drive_time_result(db, observation) for observation in observations]
 
     _close_cohort_case(cohort, results)
@@ -3442,7 +3400,7 @@ def test_a_sample_whose_classifier_or_chat_call_failed_at_the_endpoint_is_exclud
         (False, NO_CHAT_DRAW),
         (True, None),
     ]
-    assert (answered.landed, answered.walk) == (None, "no move")
+    assert answered.walk == "no move"
     # The one structural read of a chat turn's abort (#2252): identity against the delivered
     # reply, computed only for a POOLED sample — ``unreached`` carries the same apology text but
     # is excluded for an unrelated harness reason (its chat agent never drew at all), so its flag
@@ -3450,7 +3408,7 @@ def test_a_sample_whose_classifier_or_chat_call_failed_at_the_endpoint_is_exclud
     assert [o.aborted_on_model_error for o in observations] == [False, False, False, True]
 
     cohort = Cohort(_COHORT_RECORD_CASE, "a-model", observations)
-    cohort.assert_machine_landed(ConversationState.IDLE)
+    cohort.assert_the_store_holds_an_entry()
     db = _make_db(tmp_path, "cohort-classifier")
     results = [_drive_time_result(db, observation) for observation in observations]
     _close_cohort_case(cohort, results)
@@ -3458,8 +3416,8 @@ def test_a_sample_whose_classifier_or_chat_call_failed_at_the_endpoint_is_exclud
 
     [claim] = cohort.claims
     assert [(o.sample, o.ok, o.rationale) for o in claim.outcomes] == [
-        ("s-2", False, "walked no move"),
-        ("s-4", False, "walked no move"),
+        ("s-2", False, "nothing was written"),
+        ("s-4", False, "nothing was written"),
     ]
     assert [(r.excluded, r.cause) for r in results] == [
         (NO_CLASSIFIER_DRAW, FailureCause.HARNESS),
@@ -3508,14 +3466,18 @@ def _rerolled_cohort(tmp_path, case_id: str) -> tuple[list[SampleResult], Cohort
         ],
     )
     observations = [
-        SampleObservation(name="s-1", phrasing="the ask", landed=ConversationState.LEARN.value),
-        SampleObservation(name="s-2", phrasing="the ask", landed=ConversationState.IDLE.value),
+        SampleObservation(
+            name="s-1",
+            phrasing="the ask",
+            entries=[StoredEntry(collection="c", key="k", content="something")],
+        ),
+        SampleObservation(name="s-2", phrasing="the ask"),
         SampleObservation(
             name="s-3", phrasing="the ask", complete=False, exclusion=NO_MEASURED_TURN
         ),
     ]
     cohort = Cohort(case_id, "a-model", list(observations))
-    cohort.assert_machine_landed(ConversationState.LEARN)
+    cohort.assert_the_store_holds_an_entry()
     results = []
     for index, observation in enumerate(observations):
         result = _drive_time_result(db, observation)
@@ -4910,7 +4872,7 @@ class _TrancheA(NamedTuple):
     state: ConversationState
     skills: list[SkillDraft]
     expected: ConversationState
-    # The routine the case's second LANDED claim names — None on an ungated draw, which
+    # The routine the case's second claim names — None on an ungated draw, which
     # binds nothing and makes no such claim.
     routine: str | None
     # What the case declares its parked round is waiting on (#2084) — None on any state but
