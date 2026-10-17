@@ -128,6 +128,31 @@ test("agentLabel never returns blank for a name with only separators", () => {
   assert.equal(agentLabel("---"), "---");
 });
 
+test("directChildNodes nests a direct, unanchored child under the run as a whole", () => {
+  // Today's real production shape (#2458): a browse-extract draw carries only
+  // parent_run_id — parent_tool_call_id is always null — so this is the
+  // common case, not an edge case: the draw nests directly under the run,
+  // with no step lookup needed at all.
+  const ownRows = [withToolCall("b0")];
+  const draw = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1", parent_tool_call_id: null });
+
+  const tree = directChildNodes("run1", ownRows, [draw]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].stepIndex, null);
+  assert.deepEqual(tree[0].children, []);
+});
+
+test("directChildNodes falls back to nesting under the parent when the anchor never matches", () => {
+  // A draw names a tool_call id, but none of the parent's own rows made it —
+  // still never dropped, still nests under the parent as a whole (point 3).
+  const ownRows = [withToolCall("b0")];
+  const draw = prompt({ id: 2, run_id: "draw-1", parent_run_id: "run1", parent_tool_call_id: "never-seen" });
+
+  const tree = directChildNodes("run1", ownRows, [draw]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].stepIndex, null);
+});
+
 test("directChildNodes attaches a grandchild under its own parent draw", () => {
   // run1's own step dispatched tool call "b0"; "draw-child" is anchored to it;
   // "draw-grandchild" is parented on draw-child itself — a micro-context
