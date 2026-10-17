@@ -6,17 +6,21 @@ provenance verdict, no routine name, no routine description.  The interface half
 description · parameters, decided from the user's ask alone) is the framer's, a separate
 draw that never sees this one's evidence.
 
-The file holds the canonical set (#2004's, #2058).  Four cases, each one demonstration in
-five wordings pooled into a cohort of fifteen, claimed against ``docs/eval-case-design.md``:
+The file holds the canonical set (#2004's, #2058), plus one case added for #2361.  Five
+cases, each one demonstration in five wordings pooled into a cohort of fifteen, claimed
+against ``docs/eval-case-design.md``:
 ``namer-tells-two-sources-apart`` · ``namer-names-a-search-spot-as-a-search`` ·
 ``namer-names-every-spot-from-a-single-turn-teach`` ·
-``namer-names-every-spot-in-a-longer-routine``.  All four make the SAME two claims on
-different demonstrations, plus one SHARED MEASURE (below); the two-sources and
-longer-routine cases each add a distinctness claim their ledger earns, and the other two
-exercise rather than newly assert — each says so in its own docstring rather than dressing
-it up.  No case claims that a value filling two argument sites draws ONE name: a split
-shared spot keys a line to a name nobody offered, which the production validator refuses
-and re-rolls, so the claim would run 15/15 by construction.
+``namer-names-every-spot-in-a-longer-routine`` ·
+``namer-names-a-value-that-repeats-across-the-routine``.  All five make the SAME two claims
+on different demonstrations, plus one SHARED MEASURE (below); three of them — two-sources,
+longer-routine, and the repeating-value case — each add a distinctness claim their ledger
+earns, and the other two exercise rather than newly assert — each says so in its own
+docstring rather than dressing it up.  No case claims that a value filling two argument
+sites draws ONE name: a split shared spot keys a line to a name nobody offered, which the
+production validator refuses and re-rolls, so the claim would run 15/15 by construction —
+the repeating-value case's own shared spots (#2361) are built for exactly that reason: to
+put the shape on the cohort's COST axis, never on its claims.
 
 Each case is a fixture LEDGER, and its input document is rendered from that ledger by
 the shipped ``distill_steps`` + ``build_naming_content`` — never hand-written — so the
@@ -386,7 +390,105 @@ _LONGER_ROUTINE = LabellingFixture(
 )
 
 
-# ── The PORTED set: four cases, each one demonstration in five wordings ───────
+# ── Case 5: one value repeats, byte-identical, across two call sites (#2361) ──
+#
+# Every ledger above pairs two spots that share an ARGUMENT NAME but carry two
+# DIFFERENT demonstrated values (``queries``/``queries-2``, ``memory``/``memory-2``).
+# None of them puts the SAME literal value at two sites — the shape #2361 traces the
+# namer's slowest reference-run draw to (``transition-elicit-to-learn-absent-5``, a
+# ``queries`` placeholder filling ``browse.queries[0]`` identically across three
+# repeated reads).  ``distill_steps`` collapses an identical value into ONE shared
+# parameter spanning every site it fills (``penny/penny/database/skills.py``'s
+# ``_ParameterNamer`` — "the same value in two places is ONE parameter"), so this
+# ledger revisits one page and one collection twice, each time with the identical
+# value, next to two call sites per revisit that carry genuinely different facts —
+# the shape the cohort's cost axis has never been measured on.
+_REPEATED_VALUE = LabellingFixture(
+    case_id="namer-names-a-value-that-repeats-across-the-routine",
+    conversation=(
+        _user("can you let me know the library's hours each day?"),
+        _penny(
+            "i don't have a routine for that yet — walk me through it once? what should i "
+            "check, and what should i save?"
+        ),
+    ),
+    utterance=(
+        "open library.example/hours, check what time it opens today, then check what "
+        "time it closes today, and save both to library-hours"
+    ),
+    calls=(
+        (
+            "browse",
+            {"queries": ["library.example/hours"], "extract": "what time it opens today"},
+            "You opened the library hours page (browse result)\n9am",
+            True,
+        ),
+        (
+            "browse",
+            {"queries": ["library.example/hours"], "extract": "what time it closes today"},
+            "You opened the library hours page (browse result)\n6pm",
+            True,
+        ),
+        (
+            "collection_write",
+            {
+                "collection": "library-hours",
+                "entries": [{"key": "opening time", "content": "9am"}],
+            },
+            "You saved an entry to library-hours: (collection_write result)\nWrote 1 entry.",
+            True,
+        ),
+        (
+            "collection_write",
+            {
+                "collection": "library-hours",
+                "entries": [{"key": "closing time", "content": "6pm"}],
+            },
+            "You saved an entry to library-hours: (collection_write result)\nWrote 1 entry.",
+            True,
+        ),
+    ),
+    target="library-hours",
+    leaves=(
+        "library.example/hours",
+        "what time it opens today",
+        "what time it closes today",
+        "library-hours",
+        "opening time",
+        "closing time",
+    ),
+    rendered_input=(
+        f"{_CONVERSATION_HEADING}\n"
+        "user: can you let me know the library's hours each day?\n"
+        "penny: i don't have a routine for that yet — walk me through it once? what "
+        "should i check, and what should i save?\n"
+        "user: open library.example/hours, check what time it opens today, then check "
+        "what time it closes today, and save both to library-hours\n"
+        "\n"
+        "The skill's steps:\n"
+        "1. browse(queries=[{queries}], extract={extract})\n"
+        "2. browse(queries=[{queries}], extract={extract-2})\n"
+        "3. collection_write(collection={collection}, entries=["
+        "{'key': {key}, 'content': the value from step 1}])\n"
+        "4. collection_write(collection={collection}, entries=["
+        "{'key': {key-2}, 'content': the value from step 2}])\n"
+        "\n"
+        f"{_PLACEHOLDER_HEADING}\n"
+        "- queries: fills browse.queries[0] and browse.queries[0]; "
+        "demonstrated value: 'library.example/hours'\n"
+        "- extract: fills browse.extract; demonstrated value: 'what time it opens today'\n"
+        "- extract-2: fills browse.extract; "
+        "demonstrated value: 'what time it closes today'\n"
+        "- collection: fills collection_write.collection and collection_write.collection; "
+        "demonstrated value: 'library-hours'\n"
+        "- key: fills collection_write.entries[0].key; demonstrated value: 'opening time'\n"
+        "- key-2: fills collection_write.entries[0].key; "
+        "demonstrated value: 'closing time'"
+    ),
+)
+
+
+# ── The PORTED set: five cases, each one demonstration in five wordings ───────
 #
 # THE ARM IS THE DEMONSTRATING UTTERANCE, and the LEDGER is held constant across the five.
 # Distillation is deterministic Python over the calls, so identical calls mean identical spots
@@ -406,6 +508,14 @@ _SECOND_SOURCE = "queries-2"
 # one base name, which is what makes a collapse onto a single name possible here and nowhere
 # else in the set.
 _LONGER_ROUTINE_COLLECTIONS = ("memory", "memory-2")
+
+# The repeating-value ledger's two GENUINELY DIFFERENT pairs, by the same current-name
+# convention: the two reads of the one revisited page, and the two writes to the one revisited
+# collection.  Neither pair shares a value with the other — that's the ``queries``/``collection``
+# spots, offered once each — so these two are what the case can still claim distinctness over
+# (#2361).
+_REPEATED_VALUE_EXTRACTS = ("extract", "extract-2")
+_REPEATED_VALUE_KEYS = ("key", "key-2")
 
 
 class PortedNamingCase(NamedTuple):
@@ -533,6 +643,30 @@ LONGER_ROUTINE_CASE = PortedNamingCase(
     ),
 )
 
+REPEATED_VALUE_CASE = PortedNamingCase(
+    case_id=_REPEATED_VALUE.case_id,
+    behaviour=_behaviour(
+        "a demonstrated routine revisits one page and one collection, each time with the "
+        "identical demonstrated value, while the two visits to each carry genuinely "
+        "different facts",
+        f"{_NAMES_EVERY_SPOT}, and never collapses the two different facts into one name",
+    ),
+    ledger=_REPEATED_VALUE,
+    arms=(
+        _REPEATED_VALUE.utterance,
+        "go to library.example/hours, find out when it opens today and when it closes "
+        "today, and save both to library-hours",
+        "check library.example/hours for today's opening time, then check it again for "
+        "today's closing time, and keep both in library-hours",
+        "have a look at library.example/hours, note what time it opens today and what "
+        "time it closes today, and store both in library-hours",
+        "visit library.example/hours, see what time it opens today and what time it "
+        "closes today, and remember both in library-hours",
+    ),
+    offered=("queries", "extract", "extract-2", "collection", "key", "key-2"),
+    anchors=("library.example/hours", "library-hours"),
+)
+
 # Every ported case, for the deterministic arm probe in ``make check`` — one place, so the
 # probe and the live runs can never be checking two different sets of arms.
 PORTED_CASES = (
@@ -540,6 +674,7 @@ PORTED_CASES = (
     SEARCH_CASE,
     SINGLE_TURN_CASE,
     LONGER_ROUTINE_CASE,
+    REPEATED_VALUE_CASE,
 )
 
 
@@ -884,6 +1019,62 @@ async def test_a_longer_routine_names_every_spot_however_it_is_worded(
     _measure_what_each_spot_was_called(cohort, LONGER_ROUTINE_CASE.offered)
 
 
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_value_that_repeats_is_still_named_once_however_it_is_worded(
+    labeller_eval: LabellerEval, model: str
+) -> None:
+    """One demonstration in five wordings: revisit one page and one collection twice, each
+    time with the identical demonstrated value, next to two call sites per revisit that carry
+    genuinely different facts (#2361).
+
+    **This is the only ledger in the set where a value repeats BYTE-IDENTICAL across call
+    sites.**  Every other ledger's "two spots share a base name" shape (the two-source case,
+    the longer routine's two collections) pairs two DIFFERENT values under one argument name;
+    ``distill_steps`` collapses an identical value into ONE shared parameter wherever it
+    recurs, so this ledger's ``queries`` and ``collection`` spots are each offered ONCE, each
+    attributed to two call sites.  That shape is exactly what the namer's slowest reference-run
+    draw contained (``transition-elicit-to-learn-absent-5``, #2361's own finding) and nothing in
+    the ported set before it put the shape on the cohort's cost axis.
+
+    **The two shared claims every naming case makes, plus the one THIS ledger earns**: the two
+    reads of the revisited page, and the two writes to the revisited collection, each carry a
+    genuinely different fact (opening vs. closing time; which key each is filed under) — so a
+    draw that let the repeated ``queries``/``collection`` spot bleed into its neighbours and
+    called both of a pair the same name has collapsed two different facts into one, same as the
+    two-source and longer-routine cases' own distinctness claims, reached by a different road:
+    there, two call sites coinciding in ARGUMENT NAME; here, two call sites coinciding in VALUE.
+
+    **No claim asks whether the shared ``queries``/``collection`` spot drew ONE name** — the
+    production validator already guarantees it (a split reads as a name nobody offered and is
+    refused and re-rolled), so asserting it would run 15/15 by construction, same reasoning the
+    module docstring gives for every other ledger.  What this case is FOR is the measured side:
+    token cost and naming-spread read against the reference run's numbers, to see whether the
+    repeated-value shape alone reproduces the slow draw, or whether it needs the reference run's
+    additional near-duplicate wording to do it.
+
+    **LANDED is empty and closed upstream** (``_labels_every_spot`` validates coverage and
+    re-rolls); **STORE is empty by construction** (one call, a typed result, no store).  The
+    provenance block carries only the *nothing omitted* direction, for the reason every other
+    case in this file gives.
+    """
+    cohort = await _run_ported_case(labeller_eval, REPEATED_VALUE_CASE, model)
+    # LANDED — empty, and closed upstream; see the docstring.
+    # STORE — empty by construction; see the docstring.
+    # PROVENANCE — the OPEN fields, which for this shape are the whole typed result.
+    _claim_every_spot_was_named_for_this_routine(cohort, REPEATED_VALUE_CASE.offered)
+    cohort.claim(
+        "state: the two reads of the revisited page drew different names",
+        _distinct_names(_REPEATED_VALUE_EXTRACTS),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the two writes to the revisited collection drew different names",
+        _distinct_names(_REPEATED_VALUE_KEYS),
+        SpecCategory.PROVENANCE,
+    )
+    _measure_what_each_spot_was_called(cohort, REPEATED_VALUE_CASE.offered)
+
+
 # Every ledger, for the deterministic drift probes in ``make check`` — one place, so the
 # probes and the live runs can never be checking two different fixtures.
 FIXTURES = (
@@ -891,4 +1082,5 @@ FIXTURES = (
     _SINGLE_TURN,
     _SEARCH,
     _LONGER_ROUTINE,
+    _REPEATED_VALUE,
 )
