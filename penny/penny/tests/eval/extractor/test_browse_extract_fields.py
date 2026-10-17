@@ -7,9 +7,9 @@ content carrying SOME of what was asked for is an ``EXTRACTED:`` read that gives
 it has for each thing and leaves out the rest, and ``NOT_PRESENT:`` is for content carrying
 NONE of it.
 
-Five cases over the three states a page can be in relative to its instruction — it carries
+Six cases over the three states a page can be in relative to its instruction — it carries
 ALL of what was named, SOME of it, or NONE — with the middle state reached on three different
-page shapes, one of them at REAL SIZE.  Each is five wordings of its instruction over one
+page shapes, two of them at REAL SIZE.  Each is five wordings of its instruction over one
 fixed page:
 
 * ``extract-fields-all-present`` — the CONTROL: a listing that answers everything asked of
@@ -22,6 +22,13 @@ fixed page:
   stand-in, because the undecidable loop the incident showed — re-reading the whole link
   list over and over while arguing whether a headline without its description is a partial
   unit or a missing one — only shows at that size.
+* ``extract-top-headlines-past-a-run-on-label`` — a sharper version of the same incident
+  (#2453): the same front page, with one more link spliced in just past the top three whose
+  own label runs directly into its description with no separating space.  The real production
+  draws read that run-on link correctly, then used the pattern they had just found there to
+  re-litigate whether the top three — ordinary punctuation, ordinary spaces — were hiding the
+  same split, burning several thousand extra tokens and, on the worst draws, costing the
+  response its own ``EXTRACTED:`` tag.
 * ``extract-fields-partly-present`` — the same front page read as an index of other pages:
   titles and links, and no summaries, under an instruction that asks for all three.
 * ``extract-fields-partly-present-on-a-prose-page`` — the same shortfall reached by a second
@@ -264,6 +271,27 @@ _FRONT_PAGE = (
     "[Older stories](https://news-alpha.example/archive/2036)"
 )
 
+# The same front page, with ONE more link spliced in right after the third top headline
+# (#2453): a label whose own title runs directly into its description with NO separating
+# space or punctuation gap — the exact shape that cost a real front-page read minutes of
+# deliberation and, on some draws, its own EXTRACTED: tag.  The title is two sentences
+# (mirroring the real trigger), the second ending in a question mark that the description's
+# first word follows with no gap at all.  Inserted early, beside the top three, because
+# that is where the incident showed the model start treating the run-on link's own boundary
+# as a hint that the top three might be hiding an un-signalled split too.  Fictional story,
+# invented site.
+_RUNON_LINK = (
+    "[This clinic has forty staff. Why did the merger finally happen?The two practices had "
+    "argued for years over whose name to keep, and the deal only closed once a retiring "
+    "partner agreed to drop his. Patients say little has changed from one day to the next. "
+    "Staff say the paperwork alone took months.]"
+    "(https://news-alpha.example/health/2036/clinic-merger-why-so-long)\n"
+)
+_FRONT_PAGE_WITH_RUNON_LABEL = _FRONT_PAGE.replace(
+    "lantern-festival-draws-record-crowd)\n", f"lantern-festival-draws-record-crowd)\n{_RUNON_LINK}"
+)
+assert _FRONT_PAGE_WITH_RUNON_LABEL != _FRONT_PAGE, "splice anchor not found on the front page"
+
 # A section front that prints a byline under each headline and no timestamp — the same
 # partly-answered shortfall reached by a different PAGE SHAPE.  It is a second CASE and not
 # five more arms of the link-index one, because an arm varies the WORDING of one ask: this
@@ -485,6 +513,14 @@ _LAST_LINK_ANCHOR = "https://news-alpha.example/health/2036/pharmacy-trials-late
 
 _SECTION_HEADLINE_ANCHOR = "City orchestra"
 _SECTION_BYLINE_ANCHOR = "Ines Marlowe"
+
+# The spliced-in run-on link's own title (#2453) — its smallest unique span, held against
+# `_FRONT_PAGE_WITH_RUNON_LABEL` by the same coherence probe as every other anchor here.  It
+# is never the subject of a claim on its own case (the ask is still "the top 3", and this
+# link sits below them); it exists so a reader confirming the fixture coheres with what it
+# claims can find the one thing that changed.
+_RUNON_TITLE_ANCHOR = "forty staff"
+assert _FRONT_PAGE_WITH_RUNON_LABEL.count(_RUNON_TITLE_ANCHOR) == 1
 
 
 # ── The claims ───────────────────────────────────────────────────────────────
@@ -1215,10 +1251,130 @@ async def test_a_real_size_front_page_gives_the_top_headlines_quickly(
     )
 
 
+# ── Case 6: the top headlines past a later link's run-on label (#2453) ───────
+
+_TOP_HEADLINES_PAST_A_RUNON_LABEL = ExtractFixture(
+    case_id="extract-top-headlines-past-a-run-on-label",
+    url=_FRONT_PAGE_URL,
+    page=_FRONT_PAGE_WITH_RUNON_LABEL,
+    instruction=_TOP_HEADLINES.instruction,
+    behaviour=(
+        "In the browse-extract micro-context, when a real-size front page carries the top "
+        "headlines without descriptions and a later link's own label runs directly into its "
+        "description with no separating space, Penny still comes back with the top "
+        "headlines and links, inventing no description."
+    ),
+    expectations=_TOP_HEADLINES.expectations,
+    reading=PageReading.LINK_LIST,
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_real_size_front_page_still_gives_the_top_headlines_past_a_run_on_label(
+    extractor_eval: ExtractorEval, model: str
+) -> None:
+    """The sharper trigger behind #2453: the same real-size front page as
+    ``extract-top-headlines-off-a-front-page``, with one more link spliced in just past the
+    top three — a label whose own title runs directly into a further sentence with NO space
+    or punctuation gap before it (mirroring the production incident's own page exactly).
+
+    The production thinking traces read this run-on link correctly on its own terms, then
+    used the pattern it had just found — no space after the title's own closing punctuation
+    — as a reason to go back and re-litigate whether the top three headlines, whose internal
+    colons and question marks are followed by ordinary spaces, might be hiding an
+    un-signalled split too.  That second-guessing is what burned several thousand extra
+    tokens and, on the worst draws, cost the response its own ``EXTRACTED:`` tag.  The ask
+    and the top three headlines are unchanged from the sibling case; only the page gained
+    this one link, below them, so the only variable is whether its run-on shape still
+    derails a read of headlines that never had that shape.
+
+    **The STORE category is empty for this case, and that is the correct report.**  A
+    micro-context is one call that returns a typed result — it moves no machine and writes
+    nothing to any store — so there is no store claim to make.  The empty section says the
+    shape has nothing to store, not that nobody ran the checklist.
+    """
+    cohort = await extractor_eval(
+        case_id=_TOP_HEADLINES_PAST_A_RUNON_LABEL.case_id,
+        behaviour=_TOP_HEADLINES_PAST_A_RUNON_LABEL.behaviour,
+        area=Area.READING_A_PAGE,
+        model=model,
+        url=_TOP_HEADLINES_PAST_A_RUNON_LABEL.url,
+        page=_TOP_HEADLINES_PAST_A_RUNON_LABEL.page,
+        reading=_TOP_HEADLINES_PAST_A_RUNON_LABEL.reading,
+        instruction=_TOP_HEADLINES_PAST_A_RUNON_LABEL.instruction,
+        also_instructed=_TOP_HEADLINES_PHRASINGS,
+        samples_per_phrasing=3,
+        min_pass_rate=None,  # report-only until the numbers are read with the code owner
+        family=_FAMILY,
+    )
+    # LANDED — which of the closed outcomes the draw committed to
+    cohort.claim(
+        "state: the draw read the page rather than reporting it empty",
+        _landed_on(_TOP_HEADLINES_PAST_A_RUNON_LABEL),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the docstring.
+
+    # PROVENANCE — each of the top three headlines and its link arrived, and nothing else did
+    cohort.claim(
+        "state: the answer carries the first headline the page supplies",
+        _carries(_TOP1_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the first headline's link",
+        _carries(_TOP1_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the second headline the page supplies",
+        _carries(_TOP2_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the second headline's link",
+        _carries(_TOP2_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the third headline the page supplies",
+        _carries(_TOP3_HEADLINE_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the answer carries the third headline's link",
+        _carries(_TOP3_LINK_ANCHOR),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: every specific value in the answer is on the page",
+        _nothing_invented,
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: the stated shortfall names the descriptions the page does not give",
+        _names_the_shortfall(_TOP_HEADLINES_PAST_A_RUNON_LABEL, _TOP_HEADLINES_SHORTFALL_WORDS),
+        SpecCategory.PROVENANCE,
+    )
+
+    # What is MEASURED — the draw's own structured fields, compared across the cohort.  No
+    # tool sequence and no reply spread: a single call makes neither.  Token cost is the
+    # measure this case exists for (#2453): the run-on link should cost nothing beyond the
+    # sibling case's own cost, not several thousand extra tokens of re-litigation.
+    cohort.measure(
+        output_field(EXTRACT_OUTCOME),
+        output_field(EXTRACT_VALUE, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_REASON, consequence=Consequence.COSMETIC),
+        output_field(EXTRACT_MISSING, consequence=Consequence.COSMETIC),
+    )
+
+
 # Every fixture, for the deterministic coherence probe in ``make check``.
 FIXTURES = (
     _ALL_PRESENT,
     _TOP_HEADLINES,
+    _TOP_HEADLINES_PAST_A_RUNON_LABEL,
     _PARTLY_PRESENT,
     _PARTLY_PRESENT_ON_A_PROSE_PAGE,
     _NONE_PRESENT,
