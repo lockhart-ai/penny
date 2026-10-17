@@ -14,13 +14,15 @@ draw lands in; a whole-turn case names the move its turn makes. The LAYER (class
 whole turn · micro-context · collector cycle) is not declared: each driver states its own.
 `docs/eval-catalogue.md` is the document generated from those declarations — each area's cases
 (id · behaviour sentence · first wording · edge), and one row per machine edge naming the cases
-that cover it at the classifier-draw and whole-turn layers. **`make fix` writes
-it and `make check` fails when it is stale**, so a PR that adds, renames or re-declares a case
-commits the regenerated file. Collecting the cases calls no model and no endpoint: with
+that cover it at the classifier-draw and whole-turn layers. It is generated **on demand**
+(`make catalogue`) and gitignored — never committed (#2395), so a PR that adds, renames or
+re-declares a case edits no shared file. **`make check` re-collects the same declarations**
+and fails on a bad area, a bad edge, or a case sharing its id with another — there is no
+committed file to go stale against. Collecting the cases calls no model and no endpoint: with
 `EVAL_CATALOGUE` naming a file, each driver validates its case, appends it as a
 `CatalogueEntry` and skips the test before a sample is stood up
-(`python -m penny.tests.eval.utils.catalogue write|check <path>` runs the suite that way in a
-child pytest, leaving `utils/` out — it holds no case). An eval test that reaches no driver
+(`python -m penny.tests.eval.utils.catalogue write <path>` / `check` runs the suite that way in
+a child pytest, leaving `utils/` out — it holds no case). An eval test that reaches no driver
 fails that run rather than going unlisted.
 
 ### An isolated draw is handed what production hands it — a REQUEST case declares its `parked_round` (#2084/#2099)
@@ -201,8 +203,10 @@ with no `arms`, a micro-context driver with no instruction, utterance or turns �
 or leaves `min_pass_rate` unstated, and one that states no behaviour, declares no `area` or names an
 `edge` the machine does not have, each with an error naming the case, before a sample runs. A
 case is one ask in its wordings and the claims its body makes against the cohort that comes back;
-no driver takes a per-sample scorer, and a structural pin in `make check` reads that off the
-drivers' own AST.
+no driver takes a per-sample scorer, and a structural pin in `make check` reads that off the AST
+of `conftest.py` and every module under `tests/eval/drivers/` — **a new driver is its own module
+there** (#2395), never an addition to `conftest.py`, so two case PRs that each add one never edit
+the same file. The pin has no fixed total; it walks whatever it finds.
 
 ### A sample's score is its cohort's claims, dealt back out
 

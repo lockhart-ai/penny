@@ -356,7 +356,8 @@ facts — where the machine lands, what the store holds, what the reply must and
 entry condition — what the store, the machine and the world held when the turn began; and the
 smallest input that still shows the failure.
 
-**Check what already covers it.** Look the behaviour up in `docs/eval-catalogue.md`, by area and
+**Check what already covers it.** Look the behaviour up in `docs/eval-catalogue.md` (`make
+catalogue` generates it — gitignored, so it isn't sitting in a fresh checkout), by area and
 by the machine edge it moves (§2's table groups cases by area; each case's row names its first
 wording and, where it moves one, its edge). If an existing case covers the behaviour and passes,
 say plainly what about the real input its world does not exercise — a size, a shape, a second
@@ -602,11 +603,14 @@ different, easier behaviour on that one arm and calls the result instability.
 
 ### Checking it before a run
 
-`make fix` regenerates `docs/eval-catalogue.md` from every declared case; `make check` runs
-the fixture-coherence probes (an anchor really is on the page it claims, exactly once — e.g.
-`test_each_extract_field_case_coheres_with_the_page_it_claims` in `test_eval_harness.py`) and
-the seed probes above, and fails on a stale catalogue. A case that passes `make check` has a
-coherent world and five wordings before a single sample is run against a live model.
+`make catalogue` regenerates `docs/eval-catalogue.md` (gitignored, never committed) from every
+declared case for a local look; `make check` runs the fixture-coherence probes (an anchor
+really is on the page it claims, exactly once — e.g.
+`test_each_extract_field_case_coheres_with_the_page_it_claims` in `test_eval_harness.py`), the
+seed probes above, and the same declaration checks the catalogue's own collection runs — a
+bad area, a bad edge, or a shared id — with no committed file to go stale. A case that passes
+`make check` has a coherent world and five wordings before a single sample is run against a
+live model.
 
 ### Three small worked examples
 

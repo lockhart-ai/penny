@@ -16,6 +16,7 @@ import itertools
 import json
 import logging
 import os
+import pkgutil
 import re
 from collections import Counter
 from collections.abc import (
@@ -85,6 +86,7 @@ from penny.tests.conftest import (
     stop_task,
     wait_until,
 )
+from penny.tests.eval import drivers as eval_drivers
 from penny.tests.eval.utils import artifacts as eval_artifacts
 from penny.tests.eval.utils import assertions as eval_assertions
 from penny.tests.eval.utils import catalogue as eval_catalogue
@@ -117,6 +119,17 @@ from penny.tools.micro_context import (
     StateDrawOutcome,
 )
 from penny.tools.skill_tools import render_skill_shape
+
+# A new eval DRIVER (a ``*_eval`` pytest fixture) lives in its own module under
+# ``drivers/``, never appended here (#2395) — two case PRs that each add a driver no
+# longer land on the same lines.  Loaded as a plugin, exactly like ``pytest_asyncio``
+# above it in the suite's root conftest: pytest resolves a plugin's fixtures the same
+# way it resolves this file's own, so dropping a module into ``drivers/`` is the whole
+# registration — nothing here names it.
+pytest_plugins = tuple(
+    f"{eval_drivers.__name__}.{module_info.name}"
+    for module_info in pkgutil.iter_modules(eval_drivers.__path__)
+)
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))

@@ -160,8 +160,10 @@ docs/                           — Design documents and review guides
   eval-iteration-workflow.md    — Eval iteration loop: one beat → pairs → seeded world → run → report → merge
   eval-case-design.md           — Eval case contract: end-state assertions (three categories),
                                   measured variance, the porting checklist (#1994)
-  eval-catalogue.md             — GENERATED: every eval case by area, and which cases cover each
-                                  machine edge. `make fix` writes it; `make check` fails when stale
+  eval-catalogue.md             — GENERATED ON DEMAND (gitignored, never committed, #2395): every
+                                  eval case by area, and which cases cover each machine edge.
+                                  `make catalogue` writes it; `make check` validates the same
+                                  declarations (area, edge, unique id) with no file to go stale
   eval-working-guide.md         — Working method for eval cases: planning, running, reading a run,
                                   finding and reducing variance, reasoning about a fix
   eval-suite-history.md / migration-log.md — the eval-suite history and the DB migration log, moved out of `penny/CLAUDE.md`
@@ -191,12 +193,13 @@ make clean-project-images # Remove this compose project's built images + anon vo
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
 make build            # Build the penny Docker image
 make token            # Generate GitHub App installation token for gh CLI
-make check            # Format check, lint, typecheck, eval-catalogue staleness check, and run tests
+make check            # Format check, lint, typecheck, eval-catalogue declaration checks, and run tests
 make pytest           # Run integration tests
 make eval-remote      # Live-model eval suite on OpenRouter, pinned to one provider, 8 cases x 5 samples at once (the suite's model is gemma, `google/gemma-4-26b-a4b-it` pinned to Cloudflare; name another roster entry with `LLM_MODEL=...`)
 make fmt              # Format with ruff
 make lint             # Lint with ruff
-make fix              # Format + autofix lint issues + regenerate docs/eval-catalogue.md
+make fix              # Format + autofix lint issues
+make catalogue        # Generate docs/eval-catalogue.md (gitignored, never committed) from the eval cases
 make typecheck        # Type check with ty
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes

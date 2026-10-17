@@ -552,10 +552,12 @@ not declared: it is the driver the case uses.
 
 **`docs/eval-catalogue.md` is the list of every case**, generated from those declarations: each
 area's cases with their behaviour sentence and first wording, and which cases cover each machine
-edge at the classifier-draw and whole-turn layers. `make fix` writes it and `make check` fails when
-it is stale, so adding, renaming or re-declaring a case means committing the regenerated file.
-Collecting the cases calls no model: with `EVAL_CATALOGUE` set, each driver records its case and
-skips before a sample is stood up.
+edge at the classifier-draw and whole-turn layers. It's generated **on demand** (`make
+catalogue`) and never committed, so adding, renaming or re-declaring a case touches no shared
+file (#2395); `make check` re-collects the same declarations and fails on a bad area, a bad
+edge, or a case sharing its id with another — never on staleness, since nothing is committed to
+compare against. Collecting the cases calls no model: with `EVAL_CATALOGUE` set, each driver
+records its case and skips before a sample is stood up.
 
 **A driver refuses a case it cannot drive as a cohort**, with an error naming the case, before a
 sample runs: one with no `behaviour`, one with no `area` or with an `edge` the machine does not
@@ -871,8 +873,8 @@ The numbers on the PR inform the review; they are not its verdict.
 | `penny/penny/tests/eval/utils/given.py` | what a round was given, read off its prompt log and split into content, scaffolding and moments — the world a `PROVENANCE` claim reads against |
 | `penny/penny/tests/eval/utils/run_health.py` | cohort accounting, the fault tally by class and provider, and the viability verdict — its module docstring is the fullest statement of the problem |
 | `penny/penny/tests/eval/utils/report.py` | the case document — it renders and never computes |
-| `penny/penny/tests/eval/utils/catalogue.py` | `Area` and `Layer`, the `CatalogueEntry` a driver records for its case, and the generator, renderer and staleness check behind `docs/eval-catalogue.md` |
-| `penny/penny/tests/eval/conftest.py` | the drivers, and the `_arms` seam they share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate |
+| `penny/penny/tests/eval/utils/catalogue.py` | `Area` and `Layer`, the `CatalogueEntry` a driver records for its case, and the generator, renderer and declaration checks behind `docs/eval-catalogue.md` — generated on demand (`make catalogue`), never committed (#2395) |
+| `penny/penny/tests/eval/conftest.py` | the `_arms` seam the drivers share: `ask` / `also_phrased` / `world` / `seed` / `samples_per_phrasing` for chat; `collection` / `arms=[CycleArm(...)]` for a collector, each arm carrying its own instruction wording, its own page and its own `seed` for the entry condition; `instruction` / `also_instructed` for a browse extraction. Each fixture brings its **own** observation and its **own** completeness gate. The drivers themselves (the `*_eval` fixtures) live one-per-module under `penny/penny/tests/eval/drivers/` (#2395), loaded into this conftest as plugins — a new one is a new file there, never an edit here |
 
 A `World`'s `keeps` is one token set **per source** — tokens appearing only on that page, so a
 stored copy says which page it came from and an invented one matches neither. They identify the

@@ -1,4 +1,5 @@
-"""The catalogue of supported behaviours (#2214): its render, its staleness check, its CLI.
+"""The catalogue of supported behaviours (#2214): its render, its CLI (#2395: generated on
+demand, never committed, so nothing here goes stale).
 
 Deterministic — fixture entries in, a document out.  That a driver records its case and
 stops in catalogue mode is pinned through the real drivers in ``test_run_health.py``.
@@ -24,7 +25,6 @@ from penny.tests.eval.utils.catalogue import (
     main,
     record,
     render,
-    stale_reason,
 )
 
 _IDLE = ConversationState.IDLE
@@ -74,8 +74,7 @@ _RENDERED = """\
 # Eval catalogue
 
 The behaviours Penny supports, one row per eval case, grouped by the area of Penny each case \
-is about. This file is generated from the cases: `make fix` writes it and `make check` fails \
-when it is out of date. It is not edited by hand.
+is about. Generated from the cases by `make catalogue`; not committed, and not edited by hand.
 
 A case declares its area and, where it covers one, the edge of the conversation machine it \
 moves along. The first wording is the first of the wordings the case is driven in.
@@ -210,37 +209,31 @@ def test_collecting_runs_the_cases_in_catalogue_mode_and_refuses_a_failed_run(mo
         collect()
 
 
-def test_a_doctored_catalogue_is_stale_and_the_check_says_to_run_make_fix(
+def test_write_regenerates_the_file_and_check_validates_with_no_file_at_all(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """``write`` leaves the file ``check`` accepts; a file edited by hand, or left behind when
-    a case changed, fails the check with the fix named and the difference shown — and so does
-    a missing file, a suite that cannot be collected, and a bad invocation."""
+    """``write <path>`` renders the cases to a file for a local look (#2395: gitignored, never
+    committed, so there is nothing to compare it against). ``check`` takes no path at all — it
+    just collects the cases and reports whether every one of them declares cleanly — and so do
+    a suite that cannot be collected and a bad invocation."""
     path = tmp_path / "eval-catalogue.md"
     monkeypatch.setattr(catalogue, "collect", lambda: list(_ENTRIES))
 
-    assert stale_reason(path, _RENDERED) == (
-        f"{path} is missing — run `make fix` to generate it from the eval cases"
-    )
-    assert main(["check", str(path)]) == 1
     assert main(["write", str(path)]) == 0
     assert path.read_text() == _RENDERED
-    assert stale_reason(path, _RENDERED) is None
-    assert main(["check", str(path)]) == 0
     capsys.readouterr()
 
-    path.write_text(_RENDERED.replace("`classifier-holds-idle`", "`classifier-holds-idle-edited`"))
-    assert main(["check", str(path)]) == 1
-    err = capsys.readouterr().err
-    assert "is stale" in err
-    assert "--- committed" in err
-    assert "+++ generated from the cases" in err
+    assert main(["check"]) == 0
+    assert (
+        capsys.readouterr().out == "catalogue: 4 cases declare a valid area, edge and a unique id\n"
+    )
 
     def _uncollectable() -> list[CatalogueEntry]:
         raise CatalogueError("catalogue: the eval cases could not be collected")
 
     monkeypatch.setattr(catalogue, "collect", _uncollectable)
-    assert main(["check", str(path)]) == 1
+    assert main(["check"]) == 1
     assert capsys.readouterr().err == "catalogue: the eval cases could not be collected\n"
-    assert main(["check"]) == 2
+    assert main(["check", str(path)]) == 2
+    assert main(["write"]) == 2
     assert main(["publish", str(path)]) == 2

@@ -72,6 +72,7 @@ from penny.responses import PennyResponse
 from penny.skill_extraction import build_framing_content
 from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER, require_memory, wait_until
+from penny.tests.eval import drivers as eval_drivers_package
 from penny.tests.eval.binder.test_skill_binding import (
     _MISSING_KEYWORD,
     PHRASINGS_PER_COHORT,
@@ -811,6 +812,9 @@ def test_every_runner_stands_its_sample_up_through_the_logging_seam() -> None:
 # parses — located off the package the runners live in, never off a string path.
 _SAMPLE_SEAM = "run_penny_with_server"
 _EVAL_CONFTEST = Path(str(eval_package.__file__)).parent / "conftest.py"
+# Where a driver may ALSO live (#2395): its own module under drivers/, discovered by the
+# directory rather than named here, so a driver added there needs no edit to this constant.
+_EVAL_DRIVERS_DIR = Path(str(eval_drivers_package.__file__)).parent
 
 
 def test_a_sample_is_numbered_in_exactly_one_place() -> None:
@@ -862,17 +866,26 @@ def test_every_driver_refuses_a_case_that_names_nothing_to_drive() -> None:
     and ``edge``, and takes no per-sample scorer — so a case can only be written as one ask, in
     its wordings, declared under an area, with claims made against the cohort that comes back.
 
-    Structural, off the module's own AST, so a driver added tomorrow is covered without anybody
-    remembering the rule: a driver that skipped a guard would run a case with nothing to
-    drive and report a vacuous pass for every sample, and one that skipped the declaration
-    would drive cases the catalogue never lists."""
-    tree = ast.parse(_EVAL_CONFTEST.read_text())
+    Structural, off each module's own AST — ``conftest.py`` and every module ``drivers/``
+    holds (#2395), since a driver's home is either — so a driver added tomorrow is covered
+    without anybody remembering the rule: a driver that skipped a guard would run a case with
+    nothing to drive and report a vacuous pass for every sample, and one that skipped the
+    declaration would drive cases the catalogue never lists.
+
+    No fixed total. A driver appended to either location satisfies this walk on its own, so
+    two case PRs that each add one no longer edit the same count — the exact conflict a fixed
+    number here used to cause (#2395)."""
+    driver_files = [
+        _EVAL_CONFTEST,
+        *sorted(path for path in _EVAL_DRIVERS_DIR.glob("*.py") if path.name != "__init__.py"),
+    ]
     drivers = [
         node
-        for node in tree.body
+        for path in driver_files
+        for node in ast.parse(path.read_text()).body
         if isinstance(node, ast.FunctionDef) and node.name.endswith(_DRIVER_SUFFIX)
     ]
-    assert len(drivers) == 9, f"the drivers this pin reads: {[node.name for node in drivers]}"
+    assert drivers, f"no {_DRIVER_SUFFIX!r} driver found in {[str(p) for p in driver_files]}"
     for driver in drivers:
         missing = _DRIVER_GUARDS - _names_called(driver)
         assert not missing, f"{driver.name} never calls {sorted(missing)}"

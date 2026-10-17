@@ -16,11 +16,13 @@ EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # is what decides whether a cycle closes, and importing them together would only ever
 # exercise the first one's order.
 EVAL_COLD_IMPORTS = penny.tests.eval.utils.assemble penny.tests.eval.utils.checkpoint penny.tests.eval.utils.report
-# The catalogue of supported behaviours, generated from the eval cases by
-# `penny.tests.eval.utils.catalogue`: `fix` writes it and `check` fails when it is stale, or
-# when a case states no behaviour or declares no area. Collecting the cases calls no model.
-# The path is relative to where the tools run — `penny/` under LOCAL, `/penny` in the
-# container, where docker-compose.override.yml mounts `./docs` at `/docs`.
+# The catalogue of supported behaviours, generated ON DEMAND from the eval cases by
+# `penny.tests.eval.utils.catalogue` (#2395: gitignored, never committed, so a case PR never
+# edits it). `catalogue` writes it for a local look; `check` just validates the declarations
+# (every case states its behaviour, declares its area, names an edge the machine has, and
+# shares its id with nothing else) — collecting the cases calls no model. The path is
+# relative to where the tools run — `penny/` under LOCAL, `/penny` in the container, where
+# docker-compose.override.yml mounts `./docs` at `/docs`.
 EVAL_CATALOGUE = ../docs/eval-catalogue.md
 
 # --- Eval ---------------------------------------------------------------------
@@ -251,6 +253,11 @@ endif
 fix: $(if $(LOCAL),,build)
 	$(RUN) ruff format $(RUFF_TARGETS)
 	$(RUN) ruff check --fix $(RUFF_TARGETS)
+
+# Generate docs/eval-catalogue.md (gitignored — a local look, never committed) from the
+# eval cases. Not part of `fix`/`check`: no case PR needs to run it, and nothing compares
+# against it (#2395).
+catalogue: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.tests.eval.utils.catalogue write $(EVAL_CATALOGUE)
 
 typecheck: $(if $(LOCAL),,build)
@@ -262,7 +269,7 @@ check: $(if $(LOCAL),,build)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
 	$(RUN) python -m penny.database.migrate --validate
 	$(RUN) sh -c 'for module in $(EVAL_COLD_IMPORTS); do echo "cold import: $$module" && python -c "import $$module" || exit 1; done'
-	$(RUN) python -m penny.tests.eval.utils.catalogue check $(EVAL_CATALOGUE)
+	$(RUN) python -m penny.tests.eval.utils.catalogue check
 	$(RUN) pytest $(PYTEST_ARGS)
 	cd browser && npm install --silent && npm run typecheck && npm test
 

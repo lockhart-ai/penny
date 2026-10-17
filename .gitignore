@@ -5,6 +5,9 @@
 # Quality review output
 QUALITY-REVIEW.md
 
+# The eval catalogue is generated on demand (`make catalogue`), never committed (#2395)
+docs/eval-catalogue.md
+
 # Data directory (SQLite database)
 data/
 

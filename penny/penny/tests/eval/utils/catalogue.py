@@ -2,7 +2,8 @@
 
 The eval suite is the list of what Penny is expected to do, and ``docs/eval-catalogue.md`` is
 that list as a document.  It is generated from the cases, so it cannot say something the
-cases do not.
+cases do not — and generated ON DEMAND, not committed (#2395): a case PR never edits it, so
+two case PRs never land their new rows on the same line.
 
 A case declares two things to its driver: the ``area`` of Penny it is about (:class:`Area`,
 a closed set) and, where it covers one, the machine ``edge`` it moves along.  Its
@@ -13,13 +14,15 @@ validates the case it was handed, appends it to that file as a :class:`Catalogue
 skips the test before any sample, endpoint check or database is stood up.  :func:`collect`
 runs the suite that way in a child pytest and reads the file back.
 
-CLI (run in the test container by ``make fix`` and ``make check``):
+CLI:
 
   ``python -m penny.tests.eval.utils.catalogue write <path>``
-      → collects the cases and writes the catalogue to ``<path>``.
-  ``python -m penny.tests.eval.utils.catalogue check <path>``
-      → collects the cases and exits 1, saying to run ``make fix``, when ``<path>`` is not
-      what they render to.
+      → collects the cases and writes the catalogue to ``<path>`` (``make catalogue``,
+      for a local look — the file it writes is gitignored).
+  ``python -m penny.tests.eval.utils.catalogue check``
+      → collects the cases and exits 1, naming what's wrong, when one can't be (``make
+      check`` — this is the only part of the catalogue that gates anything; there is no
+      file to compare against, since none is committed).
 
 Both exit 1, naming the case, when a case states no behaviour, declares no area, names an
 edge the machine does not have, or shares its id with another case.
@@ -27,7 +30,6 @@ edge the machine does not have, or shares its id with another case.
 
 from __future__ import annotations
 
-import difflib
 import os
 import subprocess
 import sys
@@ -222,8 +224,7 @@ _HEAD = """\
 # Eval catalogue
 
 The behaviours Penny supports, one row per eval case, grouped by the area of Penny each case \
-is about. This file is generated from the cases: `make fix` writes it and `make check` fails \
-when it is out of date. It is not edited by hand.
+is about. Generated from the cases by `make catalogue`; not committed, and not edited by hand.
 
 A case declares its area and, where it covers one, the edge of the conversation machine it \
 moves along. The first wording is the first of the wordings the case is driven in."""
@@ -301,64 +302,40 @@ def _cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
-# ── Staleness ────────────────────────────────────────────────────────────────
-
-_MISSING = "{path} is missing — run `make fix` to generate it from the eval cases"
-_STALE = (
-    "{path} is stale — the eval cases no longer render to it; run `make fix` to regenerate "
-    "it, and commit the result\n{diff}"
-)
-_COMMITTED = "committed"
-_GENERATED = "generated from the cases"
-
-
-def stale_reason(path: Path, rendered: str) -> str | None:
-    """Why the committed catalogue is not what the cases render to, or ``None`` when it is."""
-    if not path.exists():
-        return _MISSING.format(path=path)
-    committed = path.read_text()
-    if committed == rendered:
-        return None
-    diff = difflib.unified_diff(
-        committed.splitlines(), rendered.splitlines(), _COMMITTED, _GENERATED, lineterm=""
-    )
-    return _STALE.format(path=path, diff="\n".join(diff))
-
-
-# ── CLI: catalogue write <path> | catalogue check <path> ─────────────────────
+# ── CLI: catalogue write <path> | catalogue check ─────────────────────────────
 
 WRITE_CMD = "write"
 CHECK_CMD = "check"
 USAGE = (
     f"usage: python -m penny.tests.eval.utils.catalogue {WRITE_CMD} <path>\n"
-    f"       python -m penny.tests.eval.utils.catalogue {CHECK_CMD} <path>"
+    f"       python -m penny.tests.eval.utils.catalogue {CHECK_CMD}"
 )
 _WROTE = "catalogue: {count} cases → {path}"
-_CURRENT = "catalogue: {path} is current ({count} cases)"
+_VALID = "catalogue: {count} cases declare a valid area, edge and a unique id"
 
 
 def main(argv: list[str]) -> int:
-    """Dispatch the two verbs.  ``write`` regenerates the file; ``check`` exits 1 when it is
-    stale.  Either exits 1 when the cases cannot be collected.  Bad args → 2."""
-    if len(argv) != 2 or argv[0] not in (WRITE_CMD, CHECK_CMD):
+    """Dispatch the two verbs.  ``write <path>`` regenerates the (gitignored) file for a local
+    look.  ``check`` just collects the cases and reports whether every one of them declares
+    cleanly — there is nothing committed to compare against, so nothing can go stale.  Either
+    exits 1 when the cases cannot be collected.  Bad args → 2."""
+    if argv == [CHECK_CMD]:
+        path = None
+    elif len(argv) == 2 and argv[0] == WRITE_CMD:
+        path = Path(argv[1])
+    else:
         print(USAGE, file=sys.stderr)
         return 2
-    path = Path(argv[1])
     try:
         entries = collect()
     except CatalogueError as error:
         print(error, file=sys.stderr)
         return 1
-    rendered = render(entries)
-    if argv[0] == WRITE_CMD:
-        path.write_text(rendered)
-        print(_WROTE.format(count=len(entries), path=path))
+    if path is None:
+        print(_VALID.format(count=len(entries)))
         return 0
-    reason = stale_reason(path, rendered)
-    if reason is not None:
-        print(reason, file=sys.stderr)
-        return 1
-    print(_CURRENT.format(count=len(entries), path=path))
+    path.write_text(render(entries))
+    print(_WROTE.format(count=len(entries), path=path))
     return 0
 
 
