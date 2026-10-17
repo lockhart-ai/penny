@@ -73,7 +73,7 @@ A change to a prompt, `extraction_prompt`, tool description, or anything else th
 
 - Mint the token inline, immediately before the call it authorizes, and assert it's non-empty — never stash one in a file: `GH_TOKEN=$(make -C /Users/decker/Documents/penny -s token | tail -1) gh …` (or the symlinked in-tree form). An empty token is a stop, not a fallback to ambient `gh` auth.
 - Immediately before pushing, `git fetch origin main` and re-check whether it moved; rebase first if it plausibly touches your files.
-- Push the branch, then `gh pr create --draft`. Title is `type(scope): title` (six types — `feat`/`fix`/`test`/`refactor`/`chore`/`docs`; scopes `penny`/`eval`/`harness`/`client`/`browser`/`ci` — per `CLAUDE.md` → Git Workflow). Body opens with one sentence that summarises the whole PR on its own — what changes and why, readable cold by someone who hasn't seen the issue (the code owner reads PRs as phone notifications showing only that line) — then `Because` / `This commit`, ends with `Closes #<issue>`, no generated-with footer, no session URL.
+- Push the branch, then `gh pr create --draft`. Title is `type(scope): title` (six types — `feat`/`fix`/`test`/`refactor`/`chore`/`docs`; scopes `penny`/`eval`/`harness`/`client`/`browser`/`ci` — per `CLAUDE.md` → Git Workflow). Body's first sentence says what the whole PR does on its own terms, because the code owner reads it alone in a phone notification; the rest is `Because` / `This commit`, ends with `Closes #<issue>`, no generated-with footer, no session URL.
 - Right after creating it, read back `gh pr view <n> --json mergeable,autoMergeRequest`. If `CONFLICTING`, fix it now.
 
 ## 10. Wait for CI
