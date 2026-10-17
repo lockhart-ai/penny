@@ -67,6 +67,16 @@ Quotes are the code owner's own words.
      a name, a mangled call) is rejected with a reply that says what is valid.
      It is never turned into a valid call by a special case: special cases for
      one model's mistakes grow into a web of rules specific to that model.
+   - Designing a tool answers three questions, in this order:
+     1. What must stay true in the store, whatever path the model took to
+        this call? Updating a job keeps it the same job; it never quietly
+        becomes a different one.
+     2. How does the tool check it? Deterministically where it can; where it
+        takes judgement, a micro-context behind the tool boundary picks from
+        a declared set (item 7).
+     3. What does the rejection teach? What was wrong, why, and the call that
+        would succeed: *"there is no tool called `functions.done`; did you
+        mean `done`?"* followed by how `done` works.
    - What only judgement can settle, such as whether something is worth
      telling the user, the model decides from the facts it is shown, not
      through a gate.
