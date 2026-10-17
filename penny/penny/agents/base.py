@@ -23,7 +23,6 @@ from penny.agents.models import (
     account_of,
 )
 from penny.config import Config
-from penny.config_params import token_budget_for
 from penny.constants import PennyConstants
 from penny.conversation_machine import RoundFraming
 from penny.database import Database
@@ -1040,10 +1039,6 @@ class Agent:
                 # known from the first prompt — stamp it on every row so the run
                 # is identifiable at write time, not retroactively at cycle end.
                 run_target=self._memory_scope(),
-                # This run's own call kind's cap (#2474) — ``self.name`` is "chat" for
-                # every ChatAgent and "collector" for the one Collector dispatcher, the
-                # same identity every promptlog row is already stamped with.
-                token_budget=token_budget_for(self.config.runtime, self.name),
             )
         except LlmToolParseError:
             raise

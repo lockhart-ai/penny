@@ -1025,9 +1025,6 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
     assert model.requests[0]["agent_name"] == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
     assert model.requests[0]["prompt_type"] == PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE
     assert model.requests[0]["run_target"] == "widget-watch"
-    # The browse extractor's own cap (#2474) — the mock's ``db`` is None, so this
-    # resolves to TOKEN_BUDGET_BROWSE_EXTRACT's plain default rather than an override.
-    assert model.requests[0]["token_budget"] == 8000
     # The default reading is ARTICLE (#2388) — the rendered user turn is
     # byte-identical to what it was before ``reading`` existed: no note, nothing
     # before ``Content:`` beyond the instruction.
