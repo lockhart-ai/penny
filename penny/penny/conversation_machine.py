@@ -324,7 +324,8 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up something that keeps running on its own after this "
         "conversation — a job that watches, repeats, or fires again later without being "
-        "asked — and no known skill covers it. A request to do something once, right "
+        "asked — and no known skill covers it, and their message doesn't yet say how to "
+        "do it. A request to do something once, right "
         "now, is not this, however many steps it takes — and saving or remembering the "
         "result does not make it ongoing"
     ),
