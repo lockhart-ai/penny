@@ -248,7 +248,7 @@ class MessageStore:
         self,
         model: str,
         messages: list[dict],
-        response: dict,
+        response: dict | None,
         tools: list[dict] | None = None,
         thinking: str | None = None,
         duration_ms: int | None = None,
@@ -256,21 +256,41 @@ class MessageStore:
         prompt_type: str | None = None,
         run_id: str | None = None,
         run_target: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
+        call_outcome: str | None = None,
+        call_error_class: str | None = None,
+        call_error_message: str | None = None,
     ) -> None:
-        """Log a prompt/response exchange with Ollama."""
+        """Log a prompt/response exchange with Ollama.
+
+        ``response`` is ``None`` for a call that never got one — cancelled, timed
+        out, or raised (#2355 part A).  The row still carries the literal ``"{}"``
+        (never a NULL ``response`` column — see migration 0114's own note on why),
+        so every existing reader's ``if prompt.response else {}`` guard sees
+        exactly what it already expects; the NEW ``call_outcome`` column is what
+        actually distinguishes a call that never got a response from a completed
+        one with a genuinely empty body (which never happens — a completed call
+        always has at least one choice)."""
+        response_payload = response if response is not None else {}
         try:
             with self._session() as session:
                 log = PromptLog(
                     model=model,
                     messages=json.dumps(messages),
                     tools=json.dumps(tools) if tools else None,
-                    response=json.dumps(response),
+                    response=json.dumps(response_payload),
                     thinking=thinking,
                     duration_ms=duration_ms,
                     agent_name=agent_name,
                     prompt_type=prompt_type,
                     run_id=run_id,
                     run_target=run_target,
+                    parent_run_id=parent_run_id,
+                    parent_tool_call_id=parent_tool_call_id,
+                    call_outcome=call_outcome,
+                    call_error_class=call_error_class,
+                    call_error_message=call_error_message,
                     timestamp=self._clock.now(),
                 )
                 session.add(log)
@@ -278,7 +298,7 @@ class MessageStore:
                 session.refresh(log)
                 logger.debug("Logged prompt exchange (model=%s)", model)
                 if self._on_prompt_logged and run_id:
-                    input_tokens, output_tokens = self._extract_token_usage(response)
+                    input_tokens, output_tokens = self._extract_token_usage(response_payload)
                     self._on_prompt_logged(
                         {
                             "id": log.id,
@@ -292,7 +312,7 @@ class MessageStore:
                             "run_id": run_id,
                             "run_target": run_target,
                             "messages": messages,
-                            "response": response,
+                            "response": response_payload,
                             "thinking": thinking or "",
                             "has_tools": tools is not None,
                         }

@@ -492,8 +492,8 @@ class SkillExtractor:
             _resolved_attachment_names(self._db, run_id, certified),
         )
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        labels = await self._label_skill(steps, parameters, projection, conversation)
-        signature = await self._signature(framing, projection, conversation)
+        labels = await self._label_skill(run_id, steps, parameters, projection, conversation)
+        signature = await self._signature(run_id, framing, projection, conversation)
         steps, parameters = _apply_leaf_labels(steps, parameters, labels)
         name, description = _naming(signature, projection.origin_message)
         return SkillDraft(
@@ -507,6 +507,7 @@ class SkillExtractor:
 
     async def _label_skill(
         self,
+        run_id: str,
         steps: list[SkillStep],
         parameters: list[SkillParameter],
         projection: RunProjection,
@@ -526,11 +527,15 @@ class SkillExtractor:
         and the caller keeps every spot's arg-derived name."""
         content = build_naming_content(steps, parameters, projection.origin_message, conversation)
         return await self._micro_context.label_skill(
-            content, [parameter.name for parameter in parameters], run_target=self._agent_name
+            content,
+            [parameter.name for parameter in parameters],
+            run_target=self._agent_name,
+            parent_run_id=run_id,
         )
 
     async def _signature(
         self,
+        run_id: str,
         framing: RoundFraming | None,
         projection: RunProjection,
         conversation: list[tuple[str, str]],
@@ -544,10 +549,10 @@ class SkillExtractor:
         container pointing at a routine that no longer exists by that name."""
         if framing is not None:
             return framing.signature
-        return await self._frame_skill(projection, conversation)
+        return await self._frame_skill(run_id, projection, conversation)
 
     async def _frame_skill(
-        self, projection: RunProjection, conversation: list[tuple[str, str]]
+        self, run_id: str, projection: RunProjection, conversation: list[tuple[str, str]]
     ) -> SkillSignature | None:
         """One single-shot framing micro-context over the user's ask (#1830).
 
@@ -558,7 +563,9 @@ class SkillExtractor:
         one well-formed, distinctly-named parameter.  ``None`` otherwise, and the caller
         falls back to the deterministic slug with nothing to bind."""
         content = build_framing_content(projection.origin_message, conversation)
-        return await self._micro_context.frame_skill(content, run_target=self._agent_name)
+        return await self._micro_context.frame_skill(
+            content, run_target=self._agent_name, parent_run_id=run_id
+        )
 
     @staticmethod
     def _distill_inputs(

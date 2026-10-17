@@ -94,6 +94,19 @@ class Tool(ABC):
     # one whose destination is implicit (scoped to a single bound collection, with no
     # argument naming it at all).
     destination_param: str | None = None
+    # Whether THIS call's own id should be forwarded to ``execute`` (#2355 part A) —
+    # declared, like ``stores_entries``/``advises``, rather than inferred, so a tool
+    # that needs to link a model call it makes internally (a micro-context draw) back
+    # to the dispatched call it was made for opts in explicitly.  ``False`` for every
+    # other tool, whose ``execute(**kwargs)`` is untouched: the id travels as a
+    # SEPARATE keyword, never folded into the model-supplied ``kwargs`` that
+    # ``args_model`` validates, so it can never collide with a declared argument.
+    #
+    # Not stored on ``self`` — the agent loop dispatches a step's tool calls
+    # CONCURRENTLY (``asyncio.gather``), so two calls to the same tool instance in one
+    # step would race on shared state; passing it straight through as a parameter
+    # keeps each call's id tied to that call alone.
+    receives_tool_call_id: bool = False
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -102,7 +115,7 @@ class Tool(ABC):
         if "name" in cls.__dict__:
             Tool._registry[cls.name] = cls
 
-    async def run(self, **kwargs: Any) -> ToolResult:
+    async def run(self, *, tool_call_id: str | None = None, **kwargs: Any) -> ToolResult:
         """Validate the call's arguments via ``args_model``, then ``execute``.
 
         The single validate-then-handle gate every tool goes through (the
@@ -111,6 +124,11 @@ class Tool(ABC):
         with invalid args — so ``execute`` can trust its inputs and concern itself
         only with the work + any runtime/availability decisions (e.g. mute state)
         that aren't expressible as arg validation.
+
+        ``tool_call_id`` is this dispatched call's own id — the ``ToolExecutor``
+        passes it on every call, but it reaches ``execute`` only for a tool that
+        declares ``receives_tool_call_id = True`` (#2355 part A); every other
+        tool's ``execute(**kwargs)`` is unchanged.
         """
         try:
             self.args_model(**kwargs)
@@ -120,6 +138,8 @@ class Tool(ABC):
                 message=self._validation_error_message(exc),
                 success=False,
             )
+        if self.receives_tool_call_id:
+            return await self.execute(tool_call_id=tool_call_id, **kwargs)
         return await self.execute(**kwargs)
 
     def _validation_error_message(self, exc: ValidationError) -> str:
@@ -505,7 +525,7 @@ class ToolExecutor:
             logger.info("Executing tool: %s", tool_call.tool)
             logger.debug("Tool arguments: %s", tool_call.arguments)
             result = await asyncio.wait_for(
-                tool.run(**tool_call.arguments),
+                tool.run(tool_call_id=tool_call.id, **tool_call.arguments),
                 timeout=effective_timeout,
             )
             logger.info("Tool executed successfully: %s", tool_call.tool)

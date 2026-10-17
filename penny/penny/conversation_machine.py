@@ -747,7 +747,12 @@ class StateClassifier:
         self._micro_context = MicroContext(model_client)
 
     async def classify(
-        self, snapshot: MachineSnapshot, message: str, *, run_target: str | None = None
+        self,
+        snapshot: MachineSnapshot,
+        message: str,
+        *,
+        run_target: str | None = None,
+        run_id: str | None = None,
     ) -> StateDecision:
         """One tagged draw over the current state's out-edges: narrow the union
         structurally, render the scoped slice, draw once (poison-screened,
@@ -765,6 +770,7 @@ class StateClassifier:
             skill_gated_states=SKILL_GATED_STATES,
             skills=[candidate.name for candidate in snapshot.skill_candidates],
             run_target=run_target,
+            parent_run_id=run_id,
         )
         return self._decision(draw)
 
@@ -1271,7 +1277,9 @@ class ConversationMachine:
         or an earlier turn did."""
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
-        decision = await self._classifier.classify(snapshot, message, run_target=run_target)
+        decision = await self._classifier.classify(
+            snapshot, message, run_target=run_target, run_id=run_id
+        )
         entry = await self._frame_round(state, decision, message, run_id=run_id)
         self._record_decision(state, decision, message_id=message_id, run_id=run_id, entry=entry)
         turn_entry = TurnEntry(

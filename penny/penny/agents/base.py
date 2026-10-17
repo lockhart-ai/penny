@@ -1366,7 +1366,7 @@ class Agent:
             include_lifecycle=self._include_lifecycle_tools(),
             round_framing=self._configuring_round(),
         )
-        tools.append(self._build_browse_tool(author=self.name))
+        tools.append(self._build_browse_tool(author=self.name, run_id=run_id))
         # ``choose`` — the fair random picker — is on every agent surface, like
         # browse: chat dispatches it from the user's "pick one at random", and a
         # collector needs it at runtime so a demonstrated ``choose`` step captured
@@ -1394,8 +1394,13 @@ class Agent:
         """
         return True
 
-    def _build_browse_tool(self, author: str) -> BrowseTool:
-        """Build a fresh BrowseTool from config, updating self._browse_tool."""
+    def _build_browse_tool(self, author: str, run_id: str | None = None) -> BrowseTool:
+        """Build a fresh BrowseTool from config, updating self._browse_tool.
+
+        ``run_id`` (#2355 part A) is this run's own id — threaded to the tool so
+        any extraction draw it makes links back to the run on whose behalf it was
+        made; constant for the whole run (this tool is rebuilt fresh each turn/
+        cycle, so there is nothing to race unlike the per-CALL tool_call_id)."""
         max_calls = int(self.config.runtime.MAX_QUERIES)
         search_url = str(self.config.runtime.SEARCH_URL)
         tool = BrowseTool(
@@ -1406,6 +1411,7 @@ class Agent:
             model_client=self._model_client,
             author=author,
             channel_outage_recovery=self.channel_outage_recovery,
+            run_id=run_id,
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)

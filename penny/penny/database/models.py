@@ -45,6 +45,30 @@ class PromptLog(SQLModel, table=True):
     # NULL for a run that ended on a text reply (every result already
     # round-tripped) and for every row that isn't its run's last.
     trailing_messages: str | None = None
+    # How this CALL ended (#2355 part A) — "completed" | "cancelled" | "timed_out" |
+    # "raised" (see ``penny.llm.models.CallOutcome``).  NULL on every row logged before
+    # this column existed, which is read as "completed" by convention (the old code
+    # path only ever logged a call that had succeeded).  ``response`` stays "{}" rather
+    # than NULL for a call that never got one — every existing reader already treats a
+    # falsy ``response`` as an empty dict, so this needs no new NULL-handling anywhere,
+    # and it avoids widening a NOT NULL column (a SQLite table rebuild) for no reader
+    # that needs the distinction.
+    call_outcome: str | None = None
+    # The failed call's own exception class name and message, set only on
+    # "timed_out"/"raised" — empty for "completed"/"cancelled" (a cancellation's WHY is
+    # the canceller's to record, not this client's).
+    call_error_class: str | None = None
+    call_error_message: str | None = None
+    # The enclosing chat/collector run this call was made ON BEHALF OF, when it is a
+    # micro-context draw made inside that run rather than the run's own top-level call
+    # (every micro-context customer sets this; it is None for an ordinary agent-loop
+    # call, which already has no "parent" above its own ``run_id``).
+    parent_run_id: str | None = None
+    # The specific ToolCall.id the draw was made for — only ever set alongside
+    # ``parent_run_id`` for a draw made from INSIDE a dispatched tool call (today, only
+    # ``browse``'s extraction); the other micro-context customers run directly in agent
+    # code, not nested inside a tool, so they set ``parent_run_id`` alone.
+    parent_tool_call_id: str | None = None
 
     def get_messages(self) -> list[dict]:
         return json.loads(self.messages)

@@ -160,13 +160,16 @@ def _responds(content: str) -> MockLlmClient:
     return model
 
 
-def _extract_tool(db: Database, model: MockLlmClient | LlmClient) -> BrowseTool:
+def _extract_tool(
+    db: Database, model: MockLlmClient | LlmClient, *, run_id: str | None = None
+) -> BrowseTool:
     tool = BrowseTool(
         max_calls=3,
         db=db,
         embedding_client=cast(Any, MockLlmClient()),
         model_client=cast(Any, model),
         author="widget-watch",
+        run_id=run_id,
     )
     tool.set_browse_provider(_provider(_PAGE_TEXT))
     return tool
@@ -336,9 +339,9 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
             message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
         )
     )
-    tool = _extract_tool(db, client)
+    tool = _extract_tool(db, client, run_id="chat-run-1")
 
-    result = await tool.execute(queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.run(tool_call_id="call-browse-1", queries=[_PAGE_URL], extract=_INSTRUCTION)
 
     # The tool result carries the typed value alone — never the page body, and
     # no fetch-handle tail (success renders the value only; the "saved" clause
@@ -377,6 +380,11 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     assert len(rows) == 1
     assert rows[0].prompt_type == PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE
     assert rows[0].run_target == "widget-watch"
+    # And (#2355 part A) it names the TURN and the dispatched CALL it was made for
+    # — the link a run's own record reads to list the draws made on its behalf.
+    assert rows[0].parent_run_id == "chat-run-1"
+    assert rows[0].parent_tool_call_id == "call-browse-1"
+    assert rows[0].call_outcome == "completed"
 
 
 @pytest.mark.asyncio

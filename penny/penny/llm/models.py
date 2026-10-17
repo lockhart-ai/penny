@@ -106,6 +106,30 @@ _TRANSIENT_FAULTS = frozenset(
     }
 )
 
+
+class CallOutcome(StrEnum):
+    """How ONE call to :meth:`LlmClient.chat` ended (#2355 part A) — stored on the
+    one ``promptlog`` row every call now writes, however it ends, rather than only
+    on success.
+
+    ``COMPLETED`` — a usable response came back (today's only logged case).
+    ``CANCELLED`` — an ``asyncio.CancelledError`` reached the call from outside (a
+    tool's own timeout, a foreground preemption, shutdown) and was re-raised
+    untouched; the client records only THAT it was cancelled — why is the
+    canceller's to record, in its own result.
+    ``TIMED_OUT`` — every retry exhausted on ``LlmTimeoutError`` (the endpoint's own
+    request timing out), not an external cancellation.
+    ``RAISED`` — any other exception escaped (connection refused, a non-retryable
+    response, model not found, an unparseable tool call) — ``call_error_class`` /
+    ``call_error_message`` carry the exception's own class and message.
+    """
+
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+    RAISED = "raised"
+
+
 _RATE_LIMITED_STATUS = 429
 _SERVER_ERROR_STATUS = 500
 _CLIENT_ERROR_STATUS = 400

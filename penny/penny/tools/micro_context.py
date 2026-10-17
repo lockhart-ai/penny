@@ -996,7 +996,13 @@ class MicroContext:
         self._reroll_attempts = reroll_attempts
 
     async def extract(
-        self, content: str, instruction: str, *, run_target: str | None = None
+        self,
+        content: str,
+        instruction: str,
+        *,
+        run_target: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> MicroContextResult:
         """Extract ``instruction`` from ``content`` in one scoped model call.
 
@@ -1008,14 +1014,31 @@ class MicroContext:
         matching neither is a contract violation, never a value: re-drawn on the
         unchanged context for the whole budget, then the extraction fails honestly.  A
         blank draw takes the same path (a blank payload is not a payload).
+
+        ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) link this draw back
+        to the chat/collector run — and, since this is the one customer invoked from
+        INSIDE a dispatched tool call, that call's own id — it was made on behalf of,
+        so that run's own record can list it.
         """
-        drawn = await self._valid_draw(content, instruction, run_target, shape=EXTRACT_SHAPE)
+        drawn = await self._valid_draw(
+            content,
+            instruction,
+            run_target,
+            shape=EXTRACT_SHAPE,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+        )
         if isinstance(drawn, DrawFailure):
             return MicroContextResult(outcome=_EXTRACT_FAILURES[drawn])
         return _extraction_result(drawn)
 
     async def label_skill(
-        self, content: str, offered: Sequence[str], *, run_target: str | None = None
+        self,
+        content: str,
+        offered: Sequence[str],
+        *,
+        run_target: str | None = None,
+        parent_run_id: str | None = None,
     ) -> SkillLabels | None:
         """Name EVERY spot in a demonstrated routine (#1828) — the second customer of
         this machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
@@ -1039,13 +1062,18 @@ class MicroContext:
             agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_NAMING_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
+            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
         return _leaf_labels(drawn)
 
     async def frame_skill(
-        self, content: str, *, run_target: str | None = None
+        self,
+        content: str,
+        *,
+        run_target: str | None = None,
+        parent_run_id: str | None = None,
     ) -> SkillSignature | None:
         """Write a routine's public INTERFACE from the user's ask alone (#1830) — the
         FOURTH customer of this machinery.  Rides the SAME ``_valid_draw`` step as the
@@ -1078,6 +1106,7 @@ class MicroContext:
             agent_name=PennyConstants.SKILL_FRAME_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_FRAME_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
+            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1090,6 +1119,7 @@ class MicroContext:
         spoken: str,
         *,
         run_target: str | None = None,
+        parent_run_id: str | None = None,
     ) -> SkillBinding | None:
         """Fill an EXISTING routine's declared parameters from the user's own words
         (#1867) — the FIFTH customer of this machinery.  Rides the SAME ``_valid_draw``
@@ -1119,13 +1149,18 @@ class MicroContext:
             agent_name=PennyConstants.SKILL_BIND_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_BIND_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
+            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
         return _skill_binding(drawn, declared)
 
     async def compose_notification(
-        self, content: str, *, run_target: str | None = None
+        self,
+        content: str,
+        *,
+        run_target: str | None = None,
+        parent_run_id: str | None = None,
     ) -> str | None:
         """Write the one message a finished collector cycle sends the user (#1911) — the
         SIXTH customer of this machinery, and the first that closes a background cycle
@@ -1153,6 +1188,7 @@ class MicroContext:
             agent_name=PennyConstants.NOTIFY_COMPOSE_AGENT_NAME,
             prompt_type=PennyConstants.NOTIFY_COMPOSE_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
+            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return None
@@ -1166,6 +1202,7 @@ class MicroContext:
         skill_gated_states: Sequence[str] = (),
         skills: Sequence[str] = (),
         run_target: str | None = None,
+        parent_run_id: str | None = None,
     ) -> StateDraw:
         """Pick one state from ``allowed`` for a rendered conversation slice
         (#1706) — the third customer of this machinery.  Rides the SAME
@@ -1196,6 +1233,7 @@ class MicroContext:
             agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
             prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
             user_template=_BARE_CONTENT_TEMPLATE,
+            parent_run_id=parent_run_id,
         )
         if isinstance(drawn, DrawFailure):
             return StateDraw(outcome=_STATE_FAILURES[drawn])
@@ -1213,6 +1251,8 @@ class MicroContext:
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> ParsedDraw | DrawFailure:
         """The ONE validate step every customer rides (#1814): a poison-screened
         draw, read against its DECLARED ``shape`` and checked against ``accepts``
@@ -1231,7 +1271,10 @@ class MicroContext:
         budget, not a thing to reach one draw sooner.
 
         Only the shape (and the prompt + attribution) differs per customer, so no
-        customer owns a reroll loop or partitions a string of its own."""
+        customer owns a reroll loop or partitions a string of its own.  ``parent_run_id``
+        / ``parent_tool_call_id`` (#2355 part A) are passed straight through to every
+        attempt, unchanged across rerolls — they name the run (and, for a tool-nested
+        draw, the call) this WHOLE draw is being made for, not any one attempt."""
         for _ in range(self._reroll_attempts):
             draw = await self._draw_clean(
                 content,
@@ -1241,6 +1284,8 @@ class MicroContext:
                 agent_name=agent_name,
                 prompt_type=prompt_type,
                 user_template=user_template,
+                parent_run_id=parent_run_id,
+                parent_tool_call_id=parent_tool_call_id,
             )
             if draw is None:
                 return DrawFailure.POISON
@@ -1267,6 +1312,8 @@ class MicroContext:
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
         user_template: str = _USER_TEMPLATE,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
@@ -1284,6 +1331,8 @@ class MicroContext:
                 prompt_type=prompt_type,
                 run_id=run_id,
                 run_target=run_target,
+                parent_run_id=parent_run_id,
+                parent_tool_call_id=parent_tool_call_id,
             )
             text = response.content or ""
             if not self._is_poison(text):

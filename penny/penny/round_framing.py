@@ -166,7 +166,7 @@ class RoundFramer:
         ``None`` when the draw failed: NO container is built, the gate is logged, and
         everything downstream degrades to what it did before this existed — the round runs
         unframed, and run-end extraction frames it the way it always has."""
-        signature = await self._draw(ask, message)
+        signature = await self._draw(ask, message, run_id=run_id)
         if signature is None:
             logger.warning(
                 "The round entering learn could not be framed — no container was built, "
@@ -200,7 +200,9 @@ class RoundFramer:
         the round always has somewhere to write."""
         await self._settle_container(framing, run_id=run_id)
 
-    async def _draw(self, ask: str | None, message: str) -> SkillSignature | None:
+    async def _draw(
+        self, ask: str | None, message: str, *, run_id: str | None
+    ) -> SkillSignature | None:
         """One framing draw over the round's USER turns — the ask it is anchored to and
         the message that just arrived, rendered by the SHIPPED renderer so the document
         this reads is the one every other framing customer reads.
@@ -209,7 +211,9 @@ class RoundFramer:
         only the one turn, which is the floor the framer already handles."""
         conversation = [(PennyConstants.MessageDirection.INCOMING, ask)] if ask else []
         content = build_framing_content(message, conversation)
-        return await self._micro_context.frame_skill(content, run_target=self._run_target)
+        return await self._micro_context.frame_skill(
+            content, run_target=self._run_target, parent_run_id=run_id
+        )
 
     async def bind_entry(
         self,
@@ -278,7 +282,7 @@ class RoundFramer:
         open_parameters = [parameter for parameter in declared if parameter.name not in already]
         if not open_parameters:
             return await self._framed(routine, declared, already, run_id=run_id)
-        bound = await self._bind(routine, open_parameters, ask, message)
+        bound = await self._bind(routine, open_parameters, ask, message, run_id=run_id)
         if not isinstance(bound, BoundValues):
             return _shortfall(routine, declared, already, bound)
         return await self._framed(routine, declared, already | bound.values, run_id=run_id)
@@ -299,7 +303,13 @@ class RoundFramer:
         return framing
 
     async def _bind(
-        self, routine: Skill, open_parameters: list[SkillParameter], ask: str | None, message: str
+        self,
+        routine: Skill,
+        open_parameters: list[SkillParameter],
+        ask: str | None,
+        message: str,
+        *,
+        run_id: str | None,
     ) -> SkillBinding | None:
         """One BINDING draw over the round's user turns, in the binder's own typed union —
         which of its two directions came back is the caller's to read, because the two
@@ -320,6 +330,7 @@ class RoundFramer:
             [parameter.name for parameter in open_parameters],
             spoken,
             run_target=self._run_target,
+            parent_run_id=run_id,
         )
 
     async def _settle_container(self, framing: RoundFraming, *, run_id: str | None) -> None:

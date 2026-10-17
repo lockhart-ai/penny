@@ -23,6 +23,7 @@ from penny.llm.models import (
     PROVIDER_REQUEST_FIELD,
     PROVIDER_RESPONSE_FIELD,
     UNREPORTED_PROVIDER,
+    CallOutcome,
     LlmConnectionError,
     LlmError,
     LlmFault,
@@ -270,21 +271,115 @@ class LlmClient:
         prompt_type: str | None = None,
         run_id: str | None = None,
         run_target: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> LlmResponse:
-        """Generate a chat completion with optional tool calling."""
+        """Generate a chat completion with optional tool calling.
+
+        Logs ONE ``promptlog`` row for this call, however it ends — completed,
+        cancelled, timed out, or raised (#2355 part A) — written once at the END,
+        whichever way it ends, rather than inserted at send and completed later: that
+        covers every case seen and adds no "in flight" state a reader has to handle.
+        ``duration_ms`` is the call's TOTAL wall time from entry, across every
+        retried attempt — not just the one that happened to succeed — so a call
+        retried twice before answering reports its real cost, which is what the eval
+        harness's token-cost accounting reads.
+
+        ``parent_run_id`` / ``parent_tool_call_id`` link a draw made INSIDE a tool
+        (a micro-context, which mints its own ``run_id`` for its own ledger
+        attribution) back to the chat/collector run — and, for a draw made from
+        inside a dispatched tool call, that call's own id — it was made on behalf
+        of, so that run's own record can list it.
+        """
+        start = time.time()
+        messages_snapshot = list(messages)
+        try:
+            response, raw = await self._chat_attempts(messages, tools, format)
+        except asyncio.CancelledError:
+            self._log_call(
+                messages_snapshot,
+                None,
+                tools,
+                None,
+                self._elapsed_ms(start),
+                agent_name,
+                prompt_type,
+                run_id,
+                run_target,
+                parent_run_id,
+                parent_tool_call_id,
+                CallOutcome.CANCELLED,
+            )
+            raise
+        except LlmError as error:
+            outcome = (
+                CallOutcome.TIMED_OUT if isinstance(error, LlmTimeoutError) else CallOutcome.RAISED
+            )
+            self._log_call(
+                messages_snapshot,
+                None,
+                tools,
+                None,
+                self._elapsed_ms(start),
+                agent_name,
+                prompt_type,
+                run_id,
+                run_target,
+                parent_run_id,
+                parent_tool_call_id,
+                outcome,
+                error=error,
+            )
+            raise
+
+        thinking = response.thinking or response.message.thinking
+        self._log_response(response, thinking)
+        self._log_call(
+            messages_snapshot,
+            raw,
+            tools,
+            thinking,
+            self._elapsed_ms(start),
+            agent_name,
+            prompt_type,
+            run_id,
+            run_target,
+            parent_run_id,
+            parent_tool_call_id,
+            CallOutcome.COMPLETED,
+        )
+        return response
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> int:
+        """Milliseconds since ``start`` (``time.time()`` at the top of ``chat()``)."""
+        return int((time.time() - start) * 1000)
+
+    async def _chat_attempts(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None,
+        format: dict | str | None,
+    ) -> tuple[LlmResponse, openai.types.chat.ChatCompletion]:
+        """The retry loop over individual network attempts.
+
+        Unchanged in substance from before #2355 — each attempt's own outcome
+        still goes through ``_log_attempt`` (the human-readable DEBUG/WARNING line,
+        one per attempt) — except it no longer writes the call's ``promptlog`` row
+        itself: ``chat()`` does that once, for the WHOLE call, from whichever way
+        this returns or raises.  Returns the parsed response alongside the raw
+        completion the caller persists; raises an ``LlmError`` subclass (or lets a
+        ``CancelledError`` through untouched) when no attempt produced one.
+        """
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
             try:
                 logger.debug("Sending chat request (attempt %d/%d)", attempt + 1, self.max_retries)
 
-                start = time.time()
-                messages_snapshot = list(messages)
                 translated_messages = self._translate_messages(messages)
-
                 kwargs = self._build_chat_kwargs(translated_messages, tools, format)
                 raw = await self.client.chat.completions.create(**kwargs)
-                duration_ms = int((time.time() - start) * 1000)
 
                 # Checked BEFORE parsing, and treated as a retryable fault rather than
                 # raised: an LlmError raised from here would re-raise untried (see the
@@ -306,21 +401,7 @@ class LlmClient:
 
                 response = self._parse_response(raw)
                 self._log_attempt(attempt, fault=None, provider=response.provider, detail="")
-                thinking = response.thinking or response.message.thinking
-                self._log_response(response, thinking)
-                self._log_to_database(
-                    messages_snapshot,
-                    raw,
-                    tools,
-                    thinking,
-                    duration_ms,
-                    agent_name,
-                    prompt_type,
-                    run_id,
-                    run_target,
-                )
-
-                return response
+                return response, raw
 
             except LlmError:
                 raise
@@ -714,10 +795,10 @@ class LlmClient:
             logger.debug("Model thinking: %s", thinking[:200])
         logger.debug("Response content: %s", response.content)
 
-    def _log_to_database(
+    def _log_call(
         self,
         messages_snapshot: list[dict],
-        raw: openai.types.chat.ChatCompletion,
+        raw: openai.types.chat.ChatCompletion | None,
         tools: list[dict] | None,
         thinking: str | None,
         duration_ms: int,
@@ -725,14 +806,26 @@ class LlmClient:
         prompt_type: str | None,
         run_id: str | None,
         run_target: str | None,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        outcome: CallOutcome,
+        *,
+        error: Exception | None = None,
     ) -> None:
-        """Log prompt exchange to database if available."""
+        """Log this call's ONE ``promptlog`` row, however it ended (#2355 part A).
+
+        ``raw`` is the dumped completion on :attr:`CallOutcome.COMPLETED`, ``None``
+        on every other outcome — ``log_prompt`` writes the literal ``"{}"`` for a
+        call with no response, which every existing reader already treats exactly
+        as it treats a falsy ``response`` (no change needed on their side).
+        """
         if not self.db:
             return
+        response = _dispatched_response(raw.model_dump()) if raw is not None else None
         self.db.messages.log_prompt(
             model=self.model,
             messages=messages_snapshot,
-            response=_dispatched_response(raw.model_dump()),
+            response=response,
             tools=tools,
             thinking=thinking,
             duration_ms=duration_ms,
@@ -740,6 +833,11 @@ class LlmClient:
             prompt_type=prompt_type,
             run_id=run_id,
             run_target=run_target,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            call_outcome=outcome.value,
+            call_error_class=type(error).__name__ if error is not None else None,
+            call_error_message=str(error) if error is not None else None,
         )
 
 

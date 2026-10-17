@@ -9,6 +9,7 @@ the raised ``LlmError`` as well.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -27,6 +28,7 @@ from penny.llm.client import (
     _summarize_llm_error,
 )
 from penny.llm.models import (
+    LlmConnectionError,
     LlmError,
     LlmFault,
     LlmMessage,
@@ -672,3 +674,206 @@ class TestParallelCallsReturnedAsOneCall:
         assert (
             self._logged_calls(db) == completion.model_dump()["choices"][0]["message"]["tool_calls"]
         )
+
+
+class TestCallLoggedHoweverItEnds:
+    """A model call writes ONE ``promptlog`` row at its END, however it ends (#2355
+    part A) — completed, cancelled, timed out, or raised — never only on success.
+    Before this, a call cancelled by a tool's own timeout, or one that exhausted its
+    retries, left no row at all: no input, no duration, no agent name."""
+
+    @staticmethod
+    def _one_row(db: Database) -> PromptLog:
+        with db.get_session() as session:
+            return session.exec(select(PromptLog)).one()
+
+    @pytest.mark.asyncio
+    async def test_a_completed_call_is_logged_completed(self, monkeypatch, db: Database) -> None:
+        """Unchanged outcome, named explicitly: a successful call's row carries the
+        real response and ``call_outcome == "completed"``, with no error fields."""
+
+        async def answer(**kwargs):
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer)
+
+        await client.chat([{"role": "user", "content": "hi"}], agent_name="chat", run_id="run-ok")
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.call_outcome == "completed"
+        assert row.call_error_class is None
+        assert row.call_error_message is None
+        assert json.loads(row.response)["choices"][0]["message"]["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_call_leaves_one_row_and_still_propagates(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """A call cancelled from outside (a tool's own timeout, in production) leaves
+        ONE row — input, agent name, run id, a duration — marked cancelled, and the
+        ``CancelledError`` itself still propagates untouched (a canceller downstream,
+        like ``asyncio.wait_for``, must still see it)."""
+
+        async def hang_then_cancel(**kwargs):
+            raise asyncio.CancelledError()
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=3, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", hang_then_cancel)
+
+        with pytest.raises(asyncio.CancelledError):
+            await client.chat(
+                [{"role": "user", "content": "hi"}],
+                agent_name="browse-extract",
+                run_id="run-cancelled",
+            )
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.call_outcome == "cancelled"
+        assert row.agent_name == "browse-extract"
+        assert row.run_id == "run-cancelled"
+        assert row.duration_ms is not None
+        assert row.response == "{}"  # never NULL — see migration 0114's own note
+        assert json.loads(row.messages)[-1]["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_a_raised_call_leaves_one_row_with_its_error(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """A call that exhausts its retries on a connection error leaves one row
+        carrying the exception's own class and message — never silently lost."""
+
+        async def always_refuse(**kwargs):
+            raise openai.APIConnectionError(request=httpx.Request("POST", "http://x/v1"))
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=2, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", always_refuse)
+
+        with pytest.raises(LlmConnectionError):
+            await client.chat([{"role": "user", "content": "hi"}], run_id="run-raised")
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.call_outcome == "raised"
+        assert row.call_error_class == "LlmConnectionError"
+        assert row.call_error_message
+        assert row.response == "{}"
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_call_is_logged_timed_out(self, monkeypatch, db: Database) -> None:
+        """Exhausting retries on the endpoint's OWN timeout is distinguished from an
+        external cancellation and from any other raised error."""
+
+        async def always_time_out(**kwargs):
+            raise openai.APITimeoutError(request=httpx.Request("POST", "http://x/v1"))
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=2, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", always_time_out)
+
+        with pytest.raises(LlmTimeoutError):
+            await client.chat([{"role": "user", "content": "hi"}], run_id="run-timeout")
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.call_outcome == "timed_out"
+        assert row.call_error_class == "LlmTimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_a_retried_then_successful_call_logs_only_one_row(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """One row per CALL, not per network attempt (the proposal this issue
+        confirmed): a call retried once before succeeding still writes exactly one
+        ``promptlog`` row, marked completed — never a row per attempt, which would
+        read as re-rolls to anything that compares inputs (the eval harness's own
+        ``draw_rerolled``)."""
+        attempts = 0
+
+        async def fail_once_then_answer(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise openai.APIConnectionError(request=httpx.Request("POST", "http://x/v1"))
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=3, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", fail_once_then_answer)
+
+        await client.chat([{"role": "user", "content": "hi"}], run_id="run-retried")
+        await client.close()
+
+        assert attempts == 2  # it DID retry
+        row = self._one_row(db)  # but logged exactly once
+        assert row.call_outcome == "completed"
+
+    @pytest.mark.asyncio
+    async def test_duration_counts_the_whole_call_not_just_the_last_attempt(
+        self, monkeypatch, db: Database
+    ) -> None:
+        """``duration_ms`` is the call's TOTAL wall time across every retried attempt
+        — the honest cost the eval harness's token-cost accounting reads — not just
+        the attempt that happened to succeed."""
+        attempts = 0
+
+        async def slow_then_fast(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.sleep(0.05)
+                raise openai.APIConnectionError(request=httpx.Request("POST", "http://x/v1"))
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=3, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", slow_then_fast)
+
+        await client.chat([{"role": "user", "content": "hi"}], run_id="run-slow")
+        await client.close()
+
+        row = self._one_row(db)
+        assert row.duration_ms is not None
+        assert row.duration_ms >= 50  # the first (slow, failed) attempt's own time counts
+
+
+class TestMicroContextDrawLinksToItsParentCall:
+    """A draw ``LlmClient.chat`` makes on behalf of a micro-context carries
+    ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) straight through to
+    its ``promptlog`` row, so the enclosing run's own record can list it — the full
+    tool-nested path is covered in ``tests/tools/test_browse_micro_context.py``;
+    this pins the plain pass-through at the client itself."""
+
+    @pytest.mark.asyncio
+    async def test_the_parent_ids_land_on_the_logged_row(self, monkeypatch, db: Database) -> None:
+        async def answer(**kwargs):
+            return _completion("ok")
+
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", db=db, max_retries=1, retry_delay=0.0
+        )
+        monkeypatch.setattr(client.client.chat.completions, "create", answer)
+
+        await client.chat(
+            [{"role": "user", "content": "hi"}],
+            run_id="draw-run",
+            parent_run_id="chat-run-1",
+            parent_tool_call_id="call-browse-1",
+        )
+        await client.close()
+
+        with db.get_session() as session:
+            row = session.exec(select(PromptLog)).one()
+        assert row.parent_run_id == "chat-run-1"
+        assert row.parent_tool_call_id == "call-browse-1"

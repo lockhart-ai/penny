@@ -114,8 +114,15 @@ class MockLlmClient:
         prompt_type: str | None = None,
         run_id: str | None = None,
         run_target: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> LlmResponse:
-        """Mock chat() call."""
+        """Mock chat() call.
+
+        ``parent_run_id`` / ``parent_tool_call_id`` (#2355 part A) are accepted —
+        and recorded on ``request_data``, like every other real kwarg — purely so
+        a mocked call's signature matches the real client's; nothing here needs
+        to branch on them."""
         request_data = {
             "model": self.model,
             "messages": messages,
@@ -123,6 +130,8 @@ class MockLlmClient:
             "agent_name": agent_name,
             "prompt_type": prompt_type,
             "run_target": run_target,
+            "parent_run_id": parent_run_id,
+            "parent_tool_call_id": parent_tool_call_id,
         }
         # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
         # browse routes page content through one): answer deterministically with the
