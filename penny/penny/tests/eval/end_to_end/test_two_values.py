@@ -1,9 +1,15 @@
-"""End-to-end: a known routine, with both of its values changed by the ask (#2375).
+"""End-to-end: a known routine, with both of its values changed by the ask (#2375, follow-up
+added #2494).
 
 **The declared second kind** `docs/eval-case-design.md` names: a SCRIPT of real chat turns —
-here a single cold ask that changes BOTH of the routine's varying values, the page and the
-thing to look for on it — followed by the job that turn stood up, run through its OWN real
-cycles against that page.
+here a cold ask that changes BOTH of the routine's varying values, the page and the thing to
+look for on it, in one turn — with a FOLLOW-UP agreement driven only while no job has been
+created yet this run — then the job the script stood up, run through its OWN real cycles
+against that page.
+
+The follow-up answers a Penny who offers before acting on a two-parameter rebind: she may
+land on an offer ("set it up on the new page and line?") rather than creating the job on the
+cold ask alone, and a one-turn script would never answer it.
 
 The known routine is the ferry timetable watcher — represented structurally (#2455 naive
 baseline: there is no skill registry left to teach it into) by a collection ALREADY RUNNING
@@ -49,6 +55,7 @@ from penny.tests.eval.utils.cohort import (
     JOB_TERMS,
     REPLY_SPREAD,
     TOOL_SEQUENCE,
+    TURNS_DRIVEN,
     SampleObservation,
     SpecCategory,
 )
@@ -237,6 +244,11 @@ _CADENCE_TOKEN = "hour"
 _END_TOKEN = "sunday night"
 _TELLING_CLAUSES = ("let me know", "tell me", "message")
 
+# The FOLLOW-UP (#2494): driven only while the cold ask above hasn't already created the job —
+# the answer to a Penny who offers to rebind the routine onto the new page and line and waits,
+# rather than acting on the cold ask's own terms.
+_AGREEMENT = "yes, set it up as a new job on that page and line"
+
 
 def _assert_every_wording_carries_the_facts() -> None:
     """Every one of the five wordings carries the facts the claims below read — the page, the
@@ -301,7 +313,14 @@ def _seed(db: Database) -> None:
 
 
 _ARMS = tuple(
-    EndToEndArm(label=ask, turns=(ask,), seed=_seed, world=_WORLD, cycles=_CYCLES) for ask in _ASKS
+    EndToEndArm(
+        label=ask,
+        turns=(ask, _AGREEMENT),
+        seed=_seed,
+        world=_WORLD,
+        cycles=_CYCLES,
+    )
+    for ask in _ASKS
 )
 
 
@@ -344,16 +363,24 @@ def _told_the_moved_time_when_it_moved(sample: SampleObservation, _world: World)
     return bool(told), f"sent on the moved cycle: {sent}; carrying {_NEW_MOVED_TIME}: {told}"
 
 
-_MEASURED = (END_TO_END_WALK, TOOL_SEQUENCE, ENTRIES_STORED, JOB_TERMS, REPLY_SPREAD)
+_MEASURED = (
+    END_TO_END_WALK,
+    TOOL_SEQUENCE,
+    ENTRIES_STORED,
+    JOB_TERMS,
+    REPLY_SPREAD,
+    TURNS_DRIVEN,
+)
 
 
 @pytest.mark.parametrize("model", EVAL_MODELS)
 async def test_a_known_routines_job_records_the_new_thing_from_the_new_page(
     end_to_end_eval: EndToEndEval, model: str
 ) -> None:
-    """One cold ask changing BOTH of the routine's varying values — the page and the line to
-    look for on it — with terms; then the job that ask stood up runs for real across the new
-    page, whose watched value holds, then moves, while the taught line beside it stays put."""
+    """A cold ask changing BOTH of the routine's varying values — the page and the line to
+    look for on it — with terms, and an agreement driven only while no job exists yet; then
+    the job the script stood up runs for real across the new page, whose watched value
+    holds, then moves, while the taught line beside it stays put."""
     cohort = await end_to_end_eval(
         case_id=_CASE_ID,
         behaviour=_BEHAVIOUR,

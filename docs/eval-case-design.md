@@ -67,7 +67,11 @@ An end-to-end case drives **several SCRIPTED turns**, then the job those turns c
   routine still has to be taught or re-pointed through, the message giving the job its terms — is
   written in advance, one turn per step, each turn worded to read sensibly against whatever Penny
   actually said back to the one before it. The turn still drives her real reply; nothing about her
-  response is scripted or injected.
+  response is scripted or injected. The first turn is the whole natural ask; **a turn after the
+  first is driven only while no job has been created yet this run**, read structurally off the
+  registry before it is sent, so a script that stood the job up on its first turn never drives
+  the turns written for one that didn't — how many turns a sample needed is itself a measured
+  variance feature (#2494).
 - **The entry condition is still seeded** — the way every case's is: what the chat phase's world
   holds when the script starts (an empty machine, or a routine already taught and running
   elsewhere). What changes is that the round's own turns are **driven for real** rather than seeded
