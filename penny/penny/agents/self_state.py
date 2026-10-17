@@ -254,9 +254,15 @@ class SelfStateHeader:
     @staticmethod
     def _page(row: MemoryRow) -> str | None:
         """The first ``https?://`` URL in the job's FULL prompt — read whole, never
-        through the character cap, since a dropped sentence must not hide the page."""
+        through the character cap, since a dropped sentence must not hide the page.
+        Trailing punctuation (.,;:)!?'") is stripped so a URL followed by a period
+        doesn't carry it."""
         match = _FIRST_URL_RE.search(row.extraction_prompt or "")
-        return match.group(0) if match else None
+        if not match:
+            return None
+        url = match.group(0)
+        # Strip trailing punctuation that often appears at sentence ends
+        return url.rstrip(".,;:)!?'\"") or url
 
     def _instructions(self, row: MemoryRow) -> str:
         """The job's prompt as the instructions line shows it: whole when it fits the
@@ -270,11 +276,20 @@ class SelfStateHeader:
             return prompt
         sentences = self._sentences(prompt)
         first = sentences[0]
-        if len(first) > cap:
+        first_was_longer_than_cap = len(first) > cap
+        if first_was_longer_than_cap:
             first = self._cut_at_word(first, cap)
         cut = len(sentences) - 1
-        noun = "sentence" if cut == 1 else "sentences"
-        return f"{first} ({cut} more {noun} cut — memory_get('{row.name}') shows the whole prompt)"
+
+        # When the FIRST sentence itself is cut (because it's longer than cap) and
+        # it's the only sentence, say "the rest is cut". Otherwise, count additional sentences.
+        if len(sentences) == 1 and first_was_longer_than_cap:
+            return f"{first} (the rest is cut — memory_get('{row.name}') shows the whole prompt)"
+        else:
+            noun = "sentence" if cut == 1 else "sentences"
+            return (
+                f"{first} ({cut} more {noun} cut — memory_get('{row.name}') shows the whole prompt)"
+            )
 
     @staticmethod
     def _sentences(prompt: str) -> list[str]:
