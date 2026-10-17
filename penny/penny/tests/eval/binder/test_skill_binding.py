@@ -483,6 +483,30 @@ def _names_exactly_missing(ported: PortedBinding, parameter: str) -> WorldClaim:
     return claim
 
 
+def _names_exactly_missing_set(ported: PortedBinding, parameters: tuple[str, ...]) -> WorldClaim:
+    """The SET form of :func:`_names_exactly_missing`, for a case whose ask leaves more than
+    one declared parameter unresolved — one because nothing supplies it, one because two
+    spans do and neither can be told apart from the other.
+
+    Compared as a SET rather than the ordered string the field carries: the draw's own
+    order of the names it reports missing is not a fact this case's behaviour sentence
+    makes any claim about, so pinning it would be measuring an accident of generation.
+
+    Refuses a parameter the ask DOES supply a clean span for, same as the singular
+    version."""
+    for parameter in parameters:
+        if _anchor_for(ported.fixture, parameter):
+            raise ValueError(f"{ported.case_id}: the ask supplies {parameter!r}, so it is bound")
+    expected = set(parameters)
+
+    def claim(sample: SampleObservation, _world: World) -> Answer:
+        reported = sample.field(BIND_MISSING)
+        reported_names = {name.strip() for name in reported.split(",") if name.strip()}
+        return reported_names == expected, f"reported {reported!r}"
+
+    return claim
+
+
 def _binds_the_span_the_ask_supplies(ported: PortedBinding, parameter: str) -> WorldClaim:
     """One parameter carries the span its own ask supplies — the *nothing omitted* half.
 
@@ -1289,6 +1313,179 @@ async def test_the_still_open_parameter_is_filled_from_the_turn_that_arrived(
     )
 
 
+# ── A real-length ask, a signature of three, one span that is two (#2414) ─────
+#
+# Every case above is one tight clause.  This one is the shape #2360's production incident
+# named: a real-length, multi-sentence ask with chat around it, naming several parameters of
+# a known routine, where the terms supply ONE cleanly, supply a SECOND ambiguously — two
+# literal candidate spans, with the user's own words admitting there is no way to tell which
+# is meant — and supply a THIRD not at all.
+#
+# The signature declares a comparison between two listings so the ambiguous parameter is a
+# genuine SECOND address, of the same kind as the clean one, rather than a boundary question
+# on one span (the binder's existing loop class, read off the reference run: re-deriving
+# "the dawn sailing" against "dawn sailing" four or five times over).  Picking either
+# candidate for ``second_url`` is the guess the binder's own prompt (rule 3) already says is
+# the wrong answer whenever the alternative is a guess — so the correct draw declines BOTH
+# the undecidable parameter and the absent one, never choosing between the two spans it was
+# handed.
+
+_COMPARISON_ASK = (
+    "Hey, hope you're doing well! So, random thing — I've been trying to find the best deal "
+    "on a bike light for my commute, it's been driving me a little nuts honestly. Anyway, I "
+    "found one listing at https://cyclegear.example/beacon-450, and I'm pretty sure there's a "
+    "second one too, though now I'm second-guessing myself — it's either "
+    "https://ridehub.example/beacon-450 or https://veloparts.example/beacon-450, I genuinely "
+    "can't remember which. Could you just keep an eye on both and tell me whenever either one "
+    "changes price? I don't have a specific number in mind, just let me know if anything "
+    "moves. Appreciate it!"
+)
+
+_COMPARISON_PARAMETERS = (
+    SkillParameter(name="url", description="the URL of the first listing to watch"),
+    SkillParameter(
+        name="second_url", description="the URL of the second listing to compare against"
+    ),
+    SkillParameter(
+        name="target_price", description="the price to alert at when either listing reaches it"
+    ),
+)
+
+_COMPARISON = BindingFixture(
+    case_id="binder-on-a-real-length-ask-declines-the-ambiguous-span",
+    skill="compare_two_listings",
+    intent=(
+        "Watches two listings for the same item and reports which is cheaper, or when "
+        "either price changes."
+    ),
+    parameters=_COMPARISON_PARAMETERS,
+    turns=(_COMPARISON_ASK,),
+    rendered_input=(
+        "The skill that has been asked for:\n"
+        "name: compare_two_listings\n"
+        "what it is for: Watches two listings for the same item and reports which is "
+        "cheaper, or when either price changes.\n"
+        "\n"
+        "Its parameters, one line each:\n"
+        "- url: the URL of the first listing to watch\n"
+        "- second_url: the URL of the second listing to compare against\n"
+        "- target_price: the price to alert at when either listing reaches it\n"
+        "\n"
+        "What the user said, in their own words:\n"
+    )
+    + _COMPARISON_ASK,
+    expectations=(
+        BoundExpectation("url", "cyclegear.example/beacon-450"),
+        BoundExpectation("second_url"),
+        BoundExpectation("target_price"),
+    ),
+)
+
+# The four other wordings.  Each keeps: the clear ``url`` span; BOTH ``second_url`` candidate
+# spans, since an arm that dropped one would not be asking the same undecidable question; and
+# an explicit admission the two can't be told apart.  None states a number for the price.
+_COMPARISON_PHRASINGS = (
+    (
+        "hey — quick one. found a bike light at https://cyclegear.example/beacon-450, and i "
+        "think there's a second listing too but i honestly can't tell if it's "
+        "https://ridehub.example/beacon-450 or https://veloparts.example/beacon-450. can you "
+        "watch both and flag it if either price moves? no particular price in mind, just let "
+        "me know.",
+    ),
+    (
+        "hi! hope your week's going okay. i'm still hunting for a decent bike light and it's "
+        "taking forever honestly. there's a listing at https://cyclegear.example/beacon-450 i "
+        "like, and i swear there's another one somewhere — might be "
+        "https://ridehub.example/beacon-450, might be https://veloparts.example/beacon-450, i "
+        "really can't say which one it was. would you mind keeping tabs on both for me and "
+        "telling me if either changes price? i haven't settled on a number, just let me know "
+        "whatever happens. thanks a ton!",
+    ),
+    (
+        "so, bit of an odd request — i'm comparing bike lights and found one at "
+        "https://cyclegear.example/beacon-450. there's supposedly a second listing too, but "
+        "i can't figure out whether it's https://ridehub.example/beacon-450 or "
+        "https://veloparts.example/beacon-450 — no idea which. could you watch both of them "
+        "and let me know the moment either price changes? i don't have a target price picked "
+        "out, just keep me posted.",
+    ),
+    (
+        "hey there! random ask but — i'm trying to compare prices on a bike light. one "
+        "listing is at https://cyclegear.example/beacon-450. i think there's a second one "
+        "from a different shop, except i genuinely don't know if it's "
+        "https://ridehub.example/beacon-450 or https://veloparts.example/beacon-450. could "
+        "you keep an eye on both and ping me if either price shifts? i don't have a set "
+        "price in mind — just let me know.",
+    ),
+)
+
+_COMPARISON_PORT = PortedBinding(
+    case_id=_COMPARISON.case_id,
+    behaviour=(
+        f"{_LOCUS}when a real-length ask names several parameters of a known routine, gives "
+        "one of them clearly, gives a second one two spans with no way to tell which is "
+        "meant, and gives nothing at all for a third, Penny binds the one it was given and "
+        "reports both the undecidable one and the absent one missing, taking neither "
+        "candidate span as a guess."
+    ),
+    fixture=_COMPARISON,
+    also_phrased=_COMPARISON_PHRASINGS,
+    forbids=("ridehub.example/beacon-450", "veloparts.example/beacon-450"),
+    # No arm states a concrete price — the one thing that would answer ``target_price`` — so
+    # an arm carrying a dollar figure has supplied the very thing this case claims absent.
+    never_states=("$",),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_a_real_length_ask_declines_the_ambiguous_span_and_the_absent_one(
+    binder_eval: BinderEval, model: str
+) -> None:
+    """One real-length, multi-sentence ask in five wordings, with chat around it: compare two
+    bike-light listings, one named cleanly, a second named by two candidate addresses the
+    user admits they can't tell apart, and a price threshold never named at all.
+
+    The binder's own prompt (rule 3) already says declining is the right answer whenever the
+    alternative is a guess — so the draw owed here is the SAME declining answer for both
+    gaps, even though they arrived in different shapes: one because the words supply nothing,
+    one because they supply two things and no way to choose.
+
+    See the section note above for the empty STORE category and the three claims closed
+    upstream."""
+    cohort = await _drive_ported(binder_eval, _COMPARISON_PORT, model)
+    # LANDED
+    cohort.claim(
+        "state: the draw reported a shortfall rather than a complete binding",
+        _reported_a_shortfall,
+        SpecCategory.LANDED,
+    )
+    cohort.claim(
+        "state: it names exactly the undecidable parameter and the absent one missing",
+        _names_exactly_missing_set(_COMPARISON_PORT, ("second_url", "target_price")),
+        SpecCategory.LANDED,
+    )
+
+    # STORE — empty by construction; see the section note.
+
+    # PROVENANCE
+    cohort.claim(
+        "state: the url is bound to the one address the ask gives cleanly",
+        _binds_the_span_the_ask_supplies(_COMPARISON_PORT, "url"),
+        SpecCategory.PROVENANCE,
+    )
+    cohort.claim(
+        "state: no bound value carries either candidate for the second listing",
+        _no_value_carries_the_terms(_COMPARISON_PORT),
+        SpecCategory.PROVENANCE,
+    )
+
+    cohort.measure(
+        output_field(BIND_OUTCOME),
+        output_field(BIND_MISSING),
+        _bound_value_axis(_COMPARISON_PORT, "url"),
+    )
+
+
 # Every ported case, for the arms probe in ``make check`` — one place, so the probe and the
 # live runs can never be checking two different cohorts.
 PORTED_BINDINGS = (
@@ -1299,6 +1496,7 @@ PORTED_BINDINGS = (
     _CROSSING_PORT,
     _MISSING_PAGE_PORT,
     _ARRIVING_KEYWORD_PORT,
+    _COMPARISON_PORT,
 )
 
 # Every case's document, for the deterministic drift probes in ``make check`` — one place, so
@@ -1312,4 +1510,5 @@ FIXTURES = (
     _MISSING_KEYWORD,
     _CROSSING,
     _ARRIVING_KEYWORD,
+    _COMPARISON,
 )
