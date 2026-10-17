@@ -88,6 +88,7 @@ from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.database.memory.objects import render_run_calls
 from penny.database.skills import DistillInput, SkillDraft
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, require_memory
@@ -750,6 +751,150 @@ async def test_why_a_job_is_in_trouble_comes_out_of_the_run_record(
     cohort.measure(*_MEASURED)
 
 
+# ═══ what went wrong with an earlier turn ════════════════════════════════════
+#
+# #2355's own case 1 — sibling of ``speak-logread-collector-runs`` above, and a DIFFERENT
+# sentence for the same reason that pair split: the alternative each rules out differs.  A
+# collector cycle's reason is the one fact the self-state header CANNOT carry (it renders
+# only the outcome), which is what forces a read; a CHAT turn that fell back to the
+# honest-account machinery (#2355 part D) stamps a run exactly the same way, but its reason
+# renders straight into the header's own activity line (``SelfStateHeader._chat_failure_line``)
+# — so the header alone already answers "what went wrong", at zero calls, and `run_get` on
+# the typed `run <id>` it carries is the one-call drill-down to the tool call and the model
+# call that did not finish (never forced; measured in TOOL_SEQUENCE like every other route
+# here).  The world is a single SEEDED past turn — #2355 part A's own link
+# (`parent_run_id`/`parent_tool_call_id`) is exercised too, so a sample that does look
+# further finds the SAME record `run_get` renders in production, not a thinner stand-in.
+
+_FAILED_PAGE = "https://pemberwick.example/tribune"
+_FAILED_EXTRACT_ASK = "the day's headlines"
+_FAILED_TURN_REASON = (
+    "the pemberwick tribune's front page was read and stored, but the headline extraction "
+    "didn't finish before timing out"
+)
+_FAILED_TURN_TOKEN = "pemberwick"
+
+
+def _seed_the_failed_turn(db: Database) -> None:
+    """One past chat turn (#2355 parts A+D): a browse call that read and stored the page,
+    the nested extraction draw that never finished (linked by `parent_run_id`/
+    `parent_tool_call_id`, exactly as production links one), and the run stamped FAILED
+    with the reason the header's activity line — and `run_get` — both carry."""
+    run_id = seeded_run_id("failed-browse-turn")
+    browse_step = DistillInput(
+        source_ordinal=1,
+        tool=_BROWSE,
+        arguments={"queries": [_FAILED_PAGE], "extract": _FAILED_EXTRACT_ASK},
+        result="",
+    )
+    call_id = f"{run_id}-0"
+    db.messages.log_prompt(
+        model="seed",
+        messages=[],
+        response=_seeded_response(tool_calls=[_wire_tool_call(call_id, browse_step)]),
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+        run_id=run_id,
+    )
+    db.messages.log_prompt(
+        model="seed",
+        messages=[],
+        response=None,
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        run_id=f"{run_id}-draw",
+        parent_run_id=run_id,
+        parent_tool_call_id=call_id,
+        call_outcome="cancelled",
+        duration_ms=300_000,
+    )
+    db.messages.set_run_outcome(run_id, RunOutcome.FAILED.value, _FAILED_TURN_REASON)
+
+
+def assert_the_failed_turn_record_is_the_only_route(db: Database) -> None:
+    """The failed-turn case's premise (#2355's case 1): the cause is reachable through the
+    self-state header's own activity line (zero calls) or `run_get` on its typed anchor (one
+    call), and the collections hold it nowhere — the "it got written down somewhere" route
+    this case has none of.
+
+    Also checks the fixture itself produced what it claims (#2001's lesson, applied here): the
+    seeded run's `run_get` render carries BOTH the browse call and the nested unfinished draw,
+    so a sample that DOES look further finds the same record production would show it rather
+    than a thinner stand-in."""
+    for row in collection_rows(db):
+        held = " ".join(
+            f"{key} {content}" for key, content in collection_entries(db, row.name).items()
+        )
+        assert _FAILED_TURN_TOKEN not in fold_typography(held), (
+            f"{row.name} carries {_FAILED_TURN_TOKEN!r} — the cause must not be reachable by "
+            "reading a collection"
+        )
+    header = SelfStateHeader(db, TEST_SENDER).render()
+    assert _FAILED_TURN_TOKEN in fold_typography(header), (
+        "the self-state header's activity line must carry the failed turn's own reason — "
+        f"it did not:\n{header}"
+    )
+    run_id = seeded_run_id("failed-browse-turn")
+    rendered = render_run_calls(
+        db.messages.get_run_prompts(run_id), db.messages.get_child_draws(run_id)
+    )
+    assert _BROWSE in rendered, "the seeded run's own browse call must render in run_get"
+    assert "cancelled" in rendered, (
+        "the nested extraction draw must render under its step — the fixture claims an "
+        f"unfinished model call and run_get does not show one:\n{rendered}"
+    )
+
+
+_FAILED_TURN_CASE = _LogReadCase(
+    case_id="speak-logread-failed-chat-turn",
+    area=Area.MEMORY,
+    behaviour=(
+        "In the chat agent, when the user asks what went wrong with an earlier turn whose "
+        "page was read but whose extraction did not finish, Penny states the cause the run's "
+        "record carries."
+    ),
+    seed=_seed_the_failed_turn,
+    premise=assert_the_failed_turn_record_is_the_only_route,
+    answer=_FAILED_TURN_TOKEN,
+    ask=(
+        "hey, earlier i asked you to check the pemberwick tribune's headlines and it never "
+        "worked out — what happened there?"
+    ),
+    also_phrased=(
+        "what went wrong before when i asked you to pull the headlines off the pemberwick tribune?",
+        "that pemberwick tribune headlines thing didn't work earlier — what happened?",
+        "can you tell me why checking the pemberwick tribune's headlines failed last time?",
+        "i tried to get you to grab the pemberwick tribune's headlines a bit ago and it "
+        "didn't pan out — why not?",
+    ),
+)
+
+
+@pytest.mark.parametrize("model", EVAL_MODELS)
+async def test_what_went_wrong_comes_out_of_the_turns_own_record(
+    chat_eval: ChatEval, model: str
+) -> None:
+    """A single seeded past turn: the page was read and stored, the extraction never came
+    back, and the run is stamped the way #2355 part D stamps one.
+
+    No forced read: the header's own activity line already states the cause, so a correct
+    sample can answer at zero calls — exactly like the "how are your jobs doing" half of the
+    collector-runs sibling, and unlike that case's SECOND half, which the header cannot
+    answer and which this case does not need (there is no "job" here to ask a cause about,
+    only a turn)."""
+    cohort = await _drive(chat_eval, model, _FAILED_TURN_CASE)
+    # LANDED
+    cohort.assert_machine_landed(ConversationState.IDLE)
+
+    # STORE — the reply carries the word only the turn's own record holds.  No preservation
+    # claim: the world holds no collection and no mechanism for the turn to have disturbed.
+    cohort.assert_the_reply_answers_the_ask()
+
+    # PROVENANCE — the reply half.  The STORE half is absent for the message case's reason:
+    # the ask keeps nothing.
+    cohort.assert_every_value_in_the_reply_is_sourced()
+
+    cohort.measure(*_MEASURED)
+
+
 # Every ported case, in one place — so the deterministic probe in ``test_eval_harness.py`` can
 # drive each one's seeder and premise without a GPU.
-LOG_READ_CASES = (_PENNY_MESSAGES, _COLLECTOR_RUNS_CASE)
+LOG_READ_CASES = (_PENNY_MESSAGES, _COLLECTOR_RUNS_CASE, _FAILED_TURN_CASE)

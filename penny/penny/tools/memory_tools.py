@@ -2976,7 +2976,11 @@ class GetEventTool(Tool):
         prompts = self._db.messages.get_run_prompts(run_id)
         if not prompts:
             return ToolResult(message=_GET_EVENT_NO_RUN.format(run_id=run_id), success=False)
-        return ToolResult(message=render_run_calls(prompts))
+        # The model calls made ON BEHALF of this run (#2355 part D) — a browse-extract
+        # draw, say — nested under the step that made them, so a run whose tool
+        # succeeded but whose own extraction didn't finish shows BOTH facts here.
+        child_draws = self._db.messages.get_child_draws(run_id)
+        return ToolResult(message=render_run_calls(prompts, child_draws))
 
     @staticmethod
     def _parse_run_id(event_id: str) -> str | None:

@@ -1571,7 +1571,43 @@ def _step_line(index: int, call: LoggedToolCall, result: str | None) -> str:
     return f"{rendered} => {preview}" if preview else rendered
 
 
-def render_run_calls(prompts: list[PromptLog]) -> str:
+def _draw_outcome_clause(draw: PromptLog) -> str:
+    """How ONE child draw ended, for its nested ``model call:`` line (#2355 part D):
+    ``completed`` reads as plain ``completed``, every other outcome adds its duration
+    and (when raised/timed out) the exception's own class — the structural facts
+    ``LlmClient.chat`` stamped on the row, never a narration."""
+    outcome = draw.call_outcome or "completed"
+    duration = f" after {draw.duration_ms}ms" if draw.duration_ms is not None else ""
+    error = f" ({draw.call_error_class})" if draw.call_error_class else ""
+    return f"{outcome}{duration}{error}"
+
+
+def _draw_line(draw: PromptLog) -> str:
+    """One child draw's line — the model call a micro-context made on behalf of this
+    run, by its own agent attribution and how it ended.  Indented one step further
+    than the step line it nests under (or, for a draw tied to no particular tool call
+    — the five micro-context customers that aren't invoked from inside a dispatched
+    tool call — appended after every step instead)."""
+    return f"        model call: {draw.agent_name or '?'} — {_draw_outcome_clause(draw)}"
+
+
+def _draws_by_tool_call(
+    child_draws: list[PromptLog],
+) -> tuple[dict[str, list[PromptLog]], list[PromptLog]]:
+    """Child draws split into ``(by their parent_tool_call_id, the rest)`` — the rest
+    being drawn on behalf of the run as a whole (the five non-tool-nested
+    micro-context customers), which have no step to nest under."""
+    by_call_id: dict[str, list[PromptLog]] = {}
+    unanchored: list[PromptLog] = []
+    for draw in child_draws:
+        if draw.parent_tool_call_id:
+            by_call_id.setdefault(draw.parent_tool_call_id, []).append(draw)
+        else:
+            unanchored.append(draw)
+    return by_call_id, unanchored
+
+
+def render_run_calls(prompts: list[PromptLog], child_draws: list[PromptLog] | None = None) -> str:
     """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
     conclusion → egress``.
 
@@ -1589,15 +1625,26 @@ def render_run_calls(prompts: list[PromptLog]) -> str:
     unambiguously (#1471).  Leads with the run's own id and closes with the egress/
     media trace — what was attached/delivered alongside the reply — so a reader can
     inspect its own turn's delivery (tools + outcomes + what went out) instead of
-    confabulating it, every referenced neighbour named, never guessed (#1560)."""
+    confabulating it, every referenced neighbour named, never guessed (#1560).
+
+    ``child_draws`` (#2355 part D) are the model calls a micro-context made ON
+    BEHALF of this run — a browse-extract draw, say — linked by ``parent_run_id``/
+    ``parent_tool_call_id`` rather than sharing this run's own ``run_id`` (a
+    micro-context mints its own, for its own ledger attribution).  ``None`` (the
+    default, used by every caller that hasn't fetched them) renders exactly as
+    before this existed; an empty list and ``None`` are identical."""
     if not prompts:
         return "(no data)"
     results = _tool_results_by_id(prompts)
+    by_call_id, unanchored = _draws_by_tool_call(child_draws or [])
     lines = [_run_header(prompts), _run_origin(prompts)]
     for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1):
         if call.tool == "done":
             continue  # consumes the coordinate (gap, never renumber), not shown
         lines.append(_step_line(index, call, results.get(call_id) if call_id else None))
+        if call_id:
+            lines.extend(_draw_line(draw) for draw in by_call_id.get(call_id, []))
+    lines.extend(_draw_line(draw) for draw in unanchored)
     conclusion = _run_conclusion(prompts)
     if conclusion:
         lines.append(conclusion)

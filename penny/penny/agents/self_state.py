@@ -25,7 +25,12 @@ one guess-free tool call from the detail). Sections:
   hop. The *complement* of the
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
-  #1568) appear.
+  #1568) appear. **One exception (#2355 part D):** a chat turn that FAILED (fell
+  back to the last-draw-or-account machinery) IS a background fact in the sense
+  that matters here — asked about it a turn, or a day, later, there is no
+  conversation left to carry it — so it gets its own ``run <id> · <when> · chat
+  turn failed: <reason>`` line, its typed ``run <id>`` the same ``run_get`` anchor
+  every other activity line renders.
 - **Your memory** — the map of stores: EVERY live collection and log, no cap
   (#2288), names + one-line scope — the index for an anchored lookup, never the
   content. One compact trailing line names every ARCHIVED collection and log by
@@ -76,7 +81,12 @@ if TYPE_CHECKING:
 
     from penny.database.database import Database
     from penny.database.memory.types import RunWrite
-    from penny.database.message_store import EmissionActivity, RunActivity, RunOutcomeStamp
+    from penny.database.message_store import (
+        ChatFailureActivity,
+        EmissionActivity,
+        RunActivity,
+        RunOutcomeStamp,
+    )
     from penny.database.models import MemoryRow, MutationEvent
 
 
@@ -328,6 +338,10 @@ class SelfStateHeader:
             (emission.sent_at, self._emission_line(emission))
             for emission in self.db.messages.recent_emissions(fetch)
         )
+        events.extend(
+            (failure.finished_at, self._chat_failure_line(failure))
+            for failure in self.db.messages.recent_failed_chat_turns(fetch)
+        )
         events.sort(key=lambda event: event[0], reverse=True)
         return events
 
@@ -340,6 +354,19 @@ class SelfStateHeader:
         return (
             f"sent · {format_log_timestamp(emission.sent_at)} · "
             f'{emission.mechanism} — "{emission.snippet}"'
+        )
+
+    @staticmethod
+    def _chat_failure_line(failure: ChatFailureActivity) -> str:
+        """``run <run_id> · <when> · chat turn failed: <reason>`` — a chat turn that
+        fell back to the last-draw-or-account machinery (#2355 part D), the ONE
+        exception to "chat turns are already the conversation": asked about it
+        later, there is no conversation left to carry it, so it gets the same typed
+        ``run <id>`` anchor every other activity line renders — ``run_get`` on it
+        shows the tool call and the model call that did not finish."""
+        return (
+            f"{PennyConstants.RUN_EVENT_PREFIX}{failure.run_id} · "
+            f"{format_log_timestamp(failure.finished_at)} · chat turn failed: {failure.reason}"
         )
 
     @staticmethod

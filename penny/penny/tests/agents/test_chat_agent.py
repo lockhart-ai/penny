@@ -970,6 +970,10 @@ async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
         assert parked is not None
         assert parked.to_state == ConversationState.LEARN.value
         assert parked.anchor_message_id == anchor_id
+        # The turn is stamped on its own run (#2355 part D), the way a collector
+        # cycle stamps its own — so asked later what happened, Penny can look it up.
+        failures = penny.db.messages.recent_failed_chat_turns(5)
+        assert [f.reason for f in failures] == ["the turn captured no routine to learn"]
 
 
 @pytest.mark.asyncio
@@ -1283,6 +1287,11 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
         user_turns = [m["content"] for m in called[0]["messages"] if m["role"] == "user"]
         assert "great — do that every hour and tell me when it changes" in user_turns
         assert {row.name for row in penny.db.memories.list_all()} == before
+        # Stamped on its own run (#2355 part D), the way a collector cycle stamps its
+        # own — a chat turn that fell back to the honest-account machinery is the one
+        # kind of "conversation" that still needs a record outside the conversation.
+        failures = penny.db.messages.recent_failed_chat_turns(5)
+        assert [f.reason for f in failures] == ["the turn had no routine to configure"]
 
 
 @pytest.mark.asyncio

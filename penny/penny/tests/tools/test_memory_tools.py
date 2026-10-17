@@ -4027,6 +4027,63 @@ class TestLogTools:
         assert "collection_write(collection='ai-news'" in result.message
 
     @pytest.mark.asyncio
+    async def test_run_get_lists_a_draw_made_on_the_runs_behalf(self, db):
+        """``run_get`` nests the model call a micro-context made FOR this run's own
+        ``browse`` step under that step (#2355 part D) — the unfinished extraction
+        draw the motivating incident lost entirely, now one call away alongside the
+        tool call that dispatched it."""
+        await self._create_collection(db, "ai-news")
+        self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
+        # A browse step the run itself made, keyed "b0" (distinct from the write's
+        # own "w0"), plus the nested draw browse dispatched on its behalf — mints its
+        # own run_id for its own ledger attribution, linked back via parent_run_id /
+        # parent_tool_call_id rather than sharing "news-1".
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "b0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "browse",
+                                        "arguments": json.dumps(
+                                            {"queries": ["https://example.test"], "extract": "x"}
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            agent_name="collector",
+            run_id="news-1",
+            run_target="ai-news",
+        )
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response=None,
+            agent_name="browse-extract",
+            run_id="draw-1",
+            parent_run_id="news-1",
+            parent_tool_call_id="b0",
+            call_outcome="cancelled",
+            duration_ms=300_000,
+        )
+
+        result = await GetEventTool(db).run(run="run news-1")
+
+        lines = result.message.splitlines()
+        browse_index = next(i for i, line in enumerate(lines) if "browse(" in line)
+        assert "model call: browse-extract — cancelled after 300000ms" in lines[browse_index + 1]
+
+    @pytest.mark.asyncio
     async def test_run_get_tolerates_the_paren_framed_mutation_anchor(self, db):
         """The mutation activity line renders its causing run as ``(run <id>)``; the
         parse strips the framing so BOTH rendered forms resolve to the same run — the

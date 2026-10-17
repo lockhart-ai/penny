@@ -94,6 +94,21 @@ class RunActivity(BaseModel):
     call_count: int
 
 
+class ChatFailureActivity(BaseModel):
+    """One chat turn that needed the honest-fallback machinery, at rollup altitude,
+    for the self-state header's recent-activity block (#2355 part D).
+
+    ``run_id`` is the typed anchor the header names verbatim (consumed by
+    ``run_get(run='run <id>')``, exactly as a collector run's is); ``reason`` is the
+    THIRD-PERSON structural fact ``ChatAgent._record_turn_failure`` stamped
+    (``run_reason`` — never a model-authored summary); ``finished_at`` is the
+    stamped prompt's own timestamp."""
+
+    run_id: str
+    reason: str
+    finished_at: datetime
+
+
 class RunOutcomeStamp(BaseModel):
     """A collector's most recent completed run \u2014 its ``RunOutcome`` value and
     finish time.  The mechanism-inventory 'last run' line reads one of these per
@@ -1010,18 +1025,39 @@ class MessageStore:
                 ).all()
             )
 
+    def get_child_draws(self, run_id: str) -> list[PromptLog]:
+        """Every model call a micro-context made ON BEHALF of ``run_id`` (#2355 part
+        D) — a browse-extract draw, say, found by ``parent_run_id`` rather than
+        ``run_id`` (a micro-context mints its own, for its own ledger attribution),
+        ascending time order.  ``render_run_calls`` nests each under the step it was
+        made for.  Empty when the run made no such calls (the ordinary case)."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(PromptLog)
+                    .where(PromptLog.parent_run_id == run_id)
+                    .order_by(col(PromptLog.timestamp).asc())
+                ).all()
+            )
+
     def recent_collector_runs(self, limit: int) -> list[RunActivity]:
         """The most recent completed collector runs across ALL collections, newest
         first — the run half of the self-state header's activity block (#1555).
 
-        Chat turns are excluded by construction: a chat run stamps no
-        ``run_outcome`` and no ``run_target`` (the header renders the *complement*
-        of the conversation — background runs, not the turns already in context).
-        Cancelled runs (foreground-preempted, not a real cycle) are excluded, like
-        every other run index.  Each run's outcome lands on exactly one prompt row
-        (its last, via ``set_run_outcome``), so that row's timestamp is the finish
-        time and one row = one run.  A second bounded query groups those runs'
-        prompts to count their tool calls (the rollup summary)."""
+        Scoped to ``run_target IS NOT NULL`` — collector cycles alone; an ORDINARY
+        chat turn still stamps no ``run_outcome`` at all and so is excluded by
+        construction (the header renders the *complement* of the conversation —
+        background runs, not the turns already in context).  A chat turn that
+        FAILED is the one exception (#2355 part D): it stamps ``run_outcome`` too,
+        but never ``run_target`` (a chat run names no collection), so it is still
+        excluded HERE and surfaced instead through ``recent_failed_chat_turns`` —
+        its own query, not a relaxed filter on this one, so an ordinary collector
+        activity line's shape is untouched.  Cancelled runs (foreground-preempted,
+        not a real cycle) are excluded, like every other run index.  Each run's
+        outcome lands on exactly one prompt row (its last, via ``set_run_outcome``),
+        so that row's timestamp is the finish time and one row = one run.  A second
+        bounded query groups those runs' prompts to count their tool calls (the
+        rollup summary)."""
         if limit <= 0:
             return []
         with self._session() as session:
@@ -1054,6 +1090,35 @@ class MessageStore:
             )
             for run_id, target, outcome, finished in rows
             if run_id is not None and target is not None and outcome is not None
+        ]
+
+    def recent_failed_chat_turns(self, limit: int) -> list[ChatFailureActivity]:
+        """The most recent chat turns stamped FAILED, newest first — the chat half
+        of the self-state header's recent-activity block (#2355 part D).
+
+        A chat run stamps ``run_outcome`` only through
+        ``ChatAgent._record_turn_failure`` (never ``WORKED``/``NO_WORK`` — an
+        ordinary successful reply is the conversation already, not this
+        complement's business), so ``run_outcome = FAILED`` alone is the filter;
+        ``run_target IS NULL`` is what tells a chat run apart from a collector's
+        (which always stamps one), and is what keeps this query's rows out of
+        ``recent_collector_runs``'s own (which requires a target)."""
+        if limit <= 0:
+            return []
+        with self._session() as session:
+            rows = session.exec(
+                select(PromptLog.run_id, PromptLog.run_reason, PromptLog.timestamp)
+                .where(
+                    PromptLog.run_outcome == RunOutcome.FAILED.value,
+                    col(PromptLog.run_target).is_(None),
+                )
+                .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
+                .limit(limit)
+            ).all()
+        return [
+            ChatFailureActivity(run_id=run_id, reason=reason or "", finished_at=finished)
+            for run_id, reason, finished in rows
+            if run_id is not None
         ]
 
     def recent_emissions(self, limit: int) -> list[EmissionActivity]:

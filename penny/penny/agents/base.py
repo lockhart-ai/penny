@@ -412,6 +412,23 @@ class Agent:
         """Cap on agentic loop iterations — reads the shared runtime config."""
         return int(self.config.runtime.MAX_STEPS)
 
+    def _record_turn_failure(self, run_id: str, reason: str) -> None:
+        """A turn that needed the last-draw-or-account fallback machinery (#2355 part
+        D) — called from the ONE chokepoint every such turn passes through
+        (``_narrate_or_account``) and from ``_aborted_response``'s own immediate
+        return (the model-runner-unreachable branch, which never reaches that
+        chokepoint).
+
+        A no-op on the base ``Agent``: ``Collector`` never overrides this, because a
+        collector cycle already stamps its own richer outcome + reason on the run
+        itself (``Collector._tag_promptlog_run`` / ``_tag_promptlog_run_cancelled``,
+        in ``run_cycle``'s own ``finally``) — this hook firing there too would just be
+        overwritten by that later, more specific stamp, so leaving it a no-op avoids a
+        redundant write rather than relying on write order to make it harmless.
+        ``ChatAgent`` overrides it: a chat turn has no such second stamp, so this is
+        the only one it gets, and without it a turn that fell back to the honest
+        account would be invisible outside the conversation itself."""
+
     # ── Agentic loop entry ───────────────────────────────────────────────
 
     async def run(
@@ -546,12 +563,23 @@ class Agent:
         """
         abort = RunAbort(step=step, after_tool=self._last_successful_tool(records), error=error)
         if error.error_class != REROLL_EXHAUSTED:
+            # No draw follows — nothing will reach ``_narrate_or_account``'s own
+            # stamp, so this is the one place that chokepoint can't cover and the
+            # hook is called directly.
+            if run_id is not None:
+                self._record_turn_failure(run_id, abort.render())
             return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR, abort=abort)
         facts = PennyResponse.FACTS_REROLLS_EXHAUSTED.format(
             attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         )
         result = await self._narrate_or_account(
-            self._with_facts_turn(messages, facts), facts, records, run_id, prompt_type, logged
+            self._with_facts_turn(messages, facts),
+            facts,
+            records,
+            run_id,
+            prompt_type,
+            logged,
+            reason=abort.render(),
         )
         return result.model_copy(update={"abort": abort})
 
@@ -658,6 +686,7 @@ class Agent:
             run_id,
             prompt_type,
             logged,
+            reason="the step limit was reached before an answer was written",
         )
         return result.model_copy(update={"ran_out_of_steps": True})
 
@@ -1196,6 +1225,7 @@ class Agent:
             run_id,
             prompt_type,
             logged,
+            reason="the model's final answer came back empty",
         )
 
     # ── The last tools-off draw (#2370) ───────────────────────────────────
@@ -1235,6 +1265,8 @@ class Agent:
         run_id: str | None,
         prompt_type: str | None,
         logged: _LoggedBoundary | None = None,
+        *,
+        reason: str,
     ) -> ControllerResponse:
         """One last draw, tools off, over ``messages`` — which already ends in a user
         turn stating ``facts``, a plain statement of this run's own state, never an
@@ -1259,13 +1291,33 @@ class Agent:
         through untouched to ``_draw_narration`` — only a call site still inside
         ``_run_agentic_loop_body`` has one; the others (``ChatAgent``'s post-run
         narrations) leave it ``None``, having nothing left to stamp.
+
+        Every call site here is a turn that needed this fallback machinery — the
+        fallback firing IS the signal (#2355 part D) — so this is also the one
+        chokepoint that stamps it: ``_record_turn_failure(run_id, reason)``, a
+        template-method hook that is a no-op on the base ``Agent`` (a collector run
+        stamps its own richer reason itself, in ``Collector.run_cycle``) and that
+        ``ChatAgent`` overrides to record it on the run.  ``reason`` is the caller's
+        own THIRD-PERSON structural fact, distinct from ``facts`` — which is the
+        model-facing, second-person sentence the draw is handed — so the stamped
+        record reads naturally when Penny reads it back later, not as a leftover
+        instruction to herself.
+
+        Stamped AFTER the draw, not before: ``set_run_outcome`` targets the LAST
+        promptlog row for ``run_id``, and the draw itself (when it reaches the
+        model at all) logs one — stamping first would land the record on the row
+        BEFORE it, one step removed from the reply it is actually about.
         """
         try:
             content = await self._draw_narration(messages, run_id, prompt_type, logged)
         except ModelCallAbortedError:
+            if run_id is not None:
+                self._record_turn_failure(run_id, reason)
             return ControllerResponse(
                 answer=PennyResponse.AGENT_MODEL_ERROR, tool_calls=tool_call_records
             )
+        if run_id is not None:
+            self._record_turn_failure(run_id, reason)
         if content is not None:
             return ControllerResponse(answer=content, tool_calls=tool_call_records)
         return ControllerResponse(

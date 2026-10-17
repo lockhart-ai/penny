@@ -292,6 +292,26 @@ def _add_chat_run(session: Session, *, run_id: str, when: datetime) -> None:
     )
 
 
+def _add_failed_chat_run(session: Session, *, run_id: str, reason: str, when: datetime) -> None:
+    """A chat run that ended in a failure (#2355 part D) — ``ChatAgent._record_turn_
+    failure``'s own shape: ``run_outcome = "failed"``, a THIRD-PERSON structural
+    ``reason``, and NO ``run_target`` (a chat run names no collection — that is what
+    keeps it out of ``recent_collector_runs`` and routes it through
+    ``recent_failed_chat_turns`` instead)."""
+    session.add(
+        PromptLog(
+            model="test-model",
+            messages="[]",
+            response=json.dumps({"choices": []}),
+            agent_name="chat",
+            run_id=run_id,
+            run_outcome="failed",
+            run_reason=reason,
+            timestamp=when,
+        )
+    )
+
+
 def _add_mutation(
     session: Session,
     *,
@@ -958,6 +978,39 @@ def test_activity_excludes_cancelled_and_chat_runs(db):
     assert "ff66cancel" not in actual
     assert "99chatturn" not in actual
     assert actual == _EXCLUSION_RENDER
+
+
+def test_activity_failed_chat_turn_renders_its_cause_and_run_id(db):
+    """The one exception to "chat turns are excluded" (#2355 part D): a chat turn
+    that fell back to the honest-account machinery stamps a run_outcome too, and
+    gets its own line — interleaved by time with an ordinary collector run, never
+    confused with one (no target, no call count — just the typed run id and the
+    third-person reason)."""
+    with Session(db.engine) as session:
+        _add_failed_chat_run(
+            session,
+            run_id="cc88failed",
+            reason="the turn captured no routine to learn",
+            when=_t(9, 50),
+        )
+        _add_run(
+            session,
+            run_id="aa77worked",
+            target="alpha-watch",
+            outcome="worked",
+            calls=1,
+            finished_at=_t(9, 30),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert (
+        "run cc88failed · 2026-07-11 09:50 UTC · "
+        "chat turn failed: the turn captured no routine to learn"
+    ) in actual
+    # Newest first, same as every other activity source.
+    failed_line = actual.index("cc88failed")
+    worked_line = actual.index("aa77worked")
+    assert failed_line < worked_line
 
 
 def test_activity_mutation_lines_changed_fields_matrix(db):

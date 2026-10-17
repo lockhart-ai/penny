@@ -15,7 +15,7 @@ from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
-from penny.constants import ChatPromptType, MutationEntityType, PennyConstants
+from penny.constants import ChatPromptType, MutationEntityType, PennyConstants, RunOutcome
 from penny.conversation_machine import (
     ConversationState,
     RoundFraming,
@@ -563,7 +563,12 @@ class ChatAgent(Agent):
             self._build_messages(content, history, system_prompt), facts
         )
         return await self._narrate_or_account(
-            messages, facts, [], run_id, ChatPromptType.USER_MESSAGE
+            messages,
+            facts,
+            [],
+            run_id,
+            ChatPromptType.USER_MESSAGE,
+            reason="the turn had no routine to configure",
         )
 
     async def _enforce_learn_terminal(
@@ -610,8 +615,24 @@ class ChatAgent(Agent):
         facts = PennyResponse.FACTS_NOTHING_LEARNED
         messages = self._with_facts_turn(self._run_messages(run_id), facts)
         return await self._narrate_or_account(
-            messages, facts, response.tool_calls, run_id, ChatPromptType.USER_MESSAGE
+            messages,
+            facts,
+            response.tool_calls,
+            run_id,
+            ChatPromptType.USER_MESSAGE,
+            reason="the turn captured no routine to learn",
         )
+
+    def _record_turn_failure(self, run_id: str, reason: str) -> None:
+        """Stamp a chat turn that needed the honest-fallback machinery (#2355 part
+        D), the way a collector cycle stamps its own run — ``Agent``'s default is a
+        no-op, since a chat turn has no second, richer stamp coming (unlike a
+        collector cycle): this is the only one it gets.  ``run_target`` stays
+        unset — a chat run names no collection, which is exactly what keeps it out
+        of the collector-only activity queries (``recent_collector_runs``) and
+        routes it instead through ``recent_failed_chat_turns``, the self-state
+        header's own read of this stamp."""
+        self.db.messages.set_run_outcome(run_id, RunOutcome.FAILED.value, reason)
 
     # ── Message building ────────────────────────────────────────────────
 
