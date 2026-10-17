@@ -14,12 +14,13 @@ import pytest
 
 from penny.email.models import EmailAddress, EmailDetail, EmailSummary
 from penny.tools.draft_email import DraftEmailTool
+from penny.tools.list_emails import MAILBOX_LIST_FAILED
 from penny.tools.list_emails import NO_EMAILS_FOUND as LIST_NO_EMAILS_FOUND
 from penny.tools.list_emails import ListEmailsTool
-from penny.tools.list_folders import ListFoldersTool
+from penny.tools.list_folders import MAILBOX_FOLDERS_FAILED, ListFoldersTool
 from penny.tools.models import ToolResult
-from penny.tools.read_emails import NO_EMAILS_TO_READ, ReadEmailsTool
-from penny.tools.search_emails import NO_EMAILS_FOUND, SearchEmailsTool
+from penny.tools.read_emails import MAILBOX_READ_FAILED, NO_EMAILS_TO_READ, ReadEmailsTool
+from penny.tools.search_emails import MAILBOX_SEARCH_FAILED, NO_EMAILS_FOUND, SearchEmailsTool
 
 SAMPLE_SUMMARIES = [
     EmailSummary(
@@ -195,6 +196,66 @@ async def test_draft_email_tool_saves_well_formed_draft():
     assert result.success is True
     assert result.mutated is True
     mock_client.draft_response.assert_called_once()
+
+
+# ── Mailbox tools handle their own failures (#2368) ───────────────────────────
+# Each tool's backend call is wrapped: a raised failure is caught and narrated — what
+# happened, with no order attached — rather than falling through to the executor's generic
+# "check the arguments" narration, which makes no sense for a backend outage.  Mocked at the
+# backend boundary, the same seam every other test in this file mocks at.
+
+
+@pytest.mark.asyncio
+async def test_search_emails_tool_reports_a_raised_search():
+    mock_client = AsyncMock()
+    mock_client.search_emails.side_effect = RuntimeError("connection refused")
+    tool = SearchEmailsTool(mock_client)
+
+    result = await tool.run(text="package")
+
+    assert result.success is False
+    assert result.message == MAILBOX_SEARCH_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_read_emails_tool_reports_a_raised_read():
+    mock_client = AsyncMock()
+    mock_client.read_emails.side_effect = RuntimeError("connection refused")
+    tool = ReadEmailsTool(
+        mock_client,
+        AsyncMock(),
+        "test query",
+        "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
+    )
+
+    result = await tool.run(email_ids=["M001"])
+
+    assert result.success is False
+    assert result.message == MAILBOX_READ_FAILED.format(e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_list_emails_tool_reports_a_raised_listing():
+    mock_client = AsyncMock()
+    mock_client.list_emails.side_effect = RuntimeError("connection refused")
+    tool = ListEmailsTool(mock_client)
+
+    result = await tool.run(folder="Sent")
+
+    assert result.success is False
+    assert result.message == MAILBOX_LIST_FAILED.format(folder="Sent", e="connection refused")
+
+
+@pytest.mark.asyncio
+async def test_list_folders_tool_reports_a_raised_listing():
+    mock_client = AsyncMock()
+    mock_client.get_folders.side_effect = RuntimeError("connection refused")
+    tool = ListFoldersTool(mock_client)
+
+    result = await tool.run()
+
+    assert result.success is False
+    assert result.message == MAILBOX_FOLDERS_FAILED.format(e="connection refused")
 
 
 # ── Result narration (epic #1478) ─────────────────────────────────────────────

@@ -16,11 +16,11 @@ type + description hints for that exact shape (asserted below).
 """
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
-from penny.tools.generate_image import GenerateImageTool
+from penny.tools.generate_image import IMAGE_GENERATION_FAILED, GenerateImageTool
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
@@ -215,6 +215,24 @@ class TestGenerateImageResultNarration:
         assert framed == (
             'You drew "a red fox": (generate_image result)\nGenerated an image of: a red fox.'
         )
+
+
+class TestGenerateImageToolHandlesItsOwnFailure:
+    """``generate_image``'s backend call is wrapped (#2368): a raised failure is caught and
+    narrated — what happened, with no order attached — rather than falling through to the
+    executor's generic "check the arguments" narration, which makes no sense for a backend
+    outage."""
+
+    async def test_a_raised_generation_returns_an_actionable_failure(self):
+        image_client = MagicMock()
+        image_client.generate_image = AsyncMock(side_effect=RuntimeError("endpoint unreachable"))
+        tool = GenerateImageTool(image_client, MagicMock(), MagicMock())
+
+        result = await tool.execute(description="a red fox")
+
+        assert result.success is False
+        assert result.message == IMAGE_GENERATION_FAILED.format(e="endpoint unreachable")
+        image_client.generate_image.assert_called_once()
 
 
 class TestMemoryReadNarration:

@@ -19,6 +19,10 @@ NO_EMAILS_TO_READ = (
     "or `list_emails(folder=<folder>)` call (those return the ids this tool expects)."
 )
 
+# The account a backend failure gets (#2368): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result.
+MAILBOX_READ_FAILED = "That email couldn't be opened ({e}), so nothing was read from it."
+
 
 class ReadEmailsTool(Tool):
     """Read the full body of one or more emails by ID."""
@@ -78,7 +82,11 @@ class ReadEmailsTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Read emails and summarize relevant content."""
         args = ReadEmailsArgs(**kwargs)
-        emails = await self._client.read_emails(args.email_ids)
+        try:
+            emails = await self._client.read_emails(args.email_ids)
+        except Exception as e:
+            logger.exception("Mailbox read failed")
+            return ToolResult(message=MAILBOX_READ_FAILED.format(e=e), success=False)
         if not emails:
             return ToolResult(message=NO_EMAILS_TO_READ)
 

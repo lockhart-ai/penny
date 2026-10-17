@@ -11,6 +11,12 @@ from penny.tools.models import NoArgs, ToolResult
 
 logger = logging.getLogger(__name__)
 
+# The account a backend failure gets (#2368): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result.
+MAILBOX_FOLDERS_FAILED = (
+    "The mailbox folders couldn't be listed ({e}), so nothing was read from the mailbox."
+)
+
 
 class ListFoldersTool(Tool):
     """List available email folders."""
@@ -42,7 +48,11 @@ class ListFoldersTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List all folders and return formatted list."""
-        folders = await self._client.get_folders()
+        try:
+            folders = await self._client.get_folders()
+        except Exception as e:
+            logger.exception("Mailbox folder listing failed")
+            return ToolResult(message=MAILBOX_FOLDERS_FAILED.format(e=e), success=False)
         if not folders:
             return ToolResult(
                 message="No mail folders returned — this usually means the mail account isn't "

@@ -17,6 +17,12 @@ NO_EMAILS_FOUND = (
     "to look."
 )
 
+# The account a backend failure gets (#2368): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result.
+MAILBOX_SEARCH_FAILED = (
+    "The mailbox search didn't go through ({e}), so nothing was read from the mailbox."
+)
+
 
 def _search_criteria(arguments: dict) -> str:
     """A short human phrase for the search terms the call used, for narration.
@@ -101,7 +107,11 @@ class SearchEmailsTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Search emails and return formatted summaries."""
         args = SearchEmailsArgs(**kwargs)
-        results = await self._client.search_emails(**args.model_dump(exclude_none=True))
+        try:
+            results = await self._client.search_emails(**args.model_dump(exclude_none=True))
+        except Exception as e:
+            logger.exception("Mailbox search failed")
+            return ToolResult(message=MAILBOX_SEARCH_FAILED.format(e=e), success=False)
         if not results:
             return ToolResult(message=NO_EMAILS_FOUND)
         header = f"Found {len(results)} email(s):\n\n"

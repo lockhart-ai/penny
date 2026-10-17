@@ -20,6 +20,12 @@ NO_EMAILS_FOUND = (
     "a different folder."
 )
 
+# The account a backend failure gets (#2368): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result.
+MAILBOX_LIST_FAILED = (
+    "The emails in {folder} couldn't be listed ({e}), so nothing was read from the mailbox."
+)
+
 
 class ListEmailsTool(Tool):
     """List emails from a specific folder."""
@@ -69,7 +75,14 @@ class ListEmailsTool(Tool):
         args = ListEmailsArgs(**kwargs)
         folder = args.folder
 
-        results = await self._client.list_emails(folder_name=folder)
+        try:
+            results = await self._client.list_emails(folder_name=folder)
+        except Exception as e:
+            logger.exception("Mailbox folder listing failed")
+            return ToolResult(
+                message=MAILBOX_LIST_FAILED.format(folder=folder or DEFAULT_FOLDER, e=e),
+                success=False,
+            )
         if not results:
             return ToolResult(message=NO_EMAILS_FOUND)
 

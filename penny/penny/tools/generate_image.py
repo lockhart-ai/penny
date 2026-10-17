@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 # Ollama's image-generation endpoint returns a base64-encoded PNG.
 _GENERATED_IMAGE_MIME = "image/png"
 
+# The account a backend failure gets (#2368): what happened, with no order attached — the
+# model reads the state and reasons from it, same as every other tool result.
+IMAGE_GENERATION_FAILED = "The image couldn't be generated ({e}); no image was made."
+
 
 class GenerateImageTool(Tool):
     """Generate an image from a text description and deliver it to the user."""
@@ -77,7 +81,11 @@ class GenerateImageTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Generate the image, store it for egress, and confirm what was drawn."""
         args = GenerateImageArgs(**kwargs)
-        image_b64 = await self._image_client.generate_image(prompt=args.description)
+        try:
+            image_b64 = await self._image_client.generate_image(prompt=args.description)
+        except Exception as e:
+            logger.exception("Image generation failed")
+            return ToolResult(message=IMAGE_GENERATION_FAILED.format(e=e), success=False)
         media_id = await self._store_media(args.description, image_b64)
         logger.info("Generated image %d for description: %s", media_id, args.description)
         return ToolResult(
