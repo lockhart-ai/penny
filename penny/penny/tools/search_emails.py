@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from penny.email.protocol import EmailClient
+from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.models import SearchEmailsArgs, ToolResult
 
@@ -104,7 +105,7 @@ class SearchEmailsTool(Tool):
     def __init__(self, email_client: EmailClient) -> None:
         self._client = email_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Search emails and return formatted summaries."""
         args = SearchEmailsArgs(**kwargs)
         try:

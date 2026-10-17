@@ -74,6 +74,13 @@ class ToolCallRecord(BaseModel):
 # kept tripping rides in the message.
 REROLL_EXHAUSTED = "reroll-exhausted"
 
+# The error class stamped when a draw came back cut by its own token budget
+# (``LlmResponse.finish_reason == PennyConstants.FINISH_REASON_LENGTH``, #2475) rather
+# than discarded as merely unusable.  Distinct from ``REROLL_EXHAUSTED``: this fires on
+# the FIRST cut draw, never re-rolled on the same budget and thinking settings first,
+# because a cap that cut once would almost certainly cut the retry too.
+BUDGET_EXCEEDED = "budget-exceeded"
+
 
 class ModelCallError(BaseModel):
     """Why one model call came back with nothing usable (#1909).

@@ -7,6 +7,7 @@ from typing import Any
 
 from penny.constants import PennyConstants
 from penny.email.protocol import EmailClient
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.prompts import Prompt
 from penny.tools.base import Tool
@@ -79,7 +80,7 @@ class ReadEmailsTool(Tool):
         self._user_query = user_query
         self._today = today
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Read emails and summarize relevant content."""
         args = ReadEmailsArgs(**kwargs)
         try:
@@ -96,5 +97,7 @@ class ReadEmailsTool(Tool):
             query=self._user_query,
             emails=raw_content,
         )
-        response = await self._ollama.chat([{"role": "user", "content": prompt}])
+        response = await self._ollama.chat(
+            [{"role": "user", "content": prompt}], call_link=call_link.child()
+        )
         return ToolResult(message=response.content or raw_content)

@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import websockets
 from pydantic import BaseModel, ValidationError
@@ -43,7 +43,9 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_PERMISSION_DECISION,
     BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST,
     BROWSER_MSG_TYPE_REGISTER,
+    BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST,
     BROWSER_MSG_TYPE_TOOL_RESPONSE,
+    BROWSER_RESP_TYPE_CALL_STARTED,
     BROWSER_RESP_TYPE_CONFIG,
     BROWSER_RESP_TYPE_MEMORY_CHANGED,
     BROWSER_RESP_TYPE_MESSAGE,
@@ -51,8 +53,11 @@ from penny.channels.browser.models import (
     BROWSER_RESP_TYPE_PROMPT_LOGS,
     BROWSER_RESP_TYPE_RUN_OUTCOME,
     BROWSER_RESP_TYPE_STATUS,
+    BROWSER_RESP_TYPE_TOOL_FINISHED,
+    BROWSER_RESP_TYPE_TOOL_STARTED,
     BROWSER_RESP_TYPE_TYPING,
     MEMORY_SECTION_COLLECTOR_RUNS,
+    BrowserCallStarted,
     BrowserCapabilitiesUpdate,
     BrowserCollectionTrigger,
     BrowserCollectionTriggerResult,
@@ -74,15 +79,20 @@ from penny.channels.browser.models import (
     BrowserMemoryDetailResponse,
     BrowserMemoryPageRequest,
     BrowserMemoryPageResponse,
+    BrowserMemorySaveError,
     BrowserMemoryUpdate,
     BrowserOutgoing,
     BrowserPermissionDecision,
     BrowserPermissionDismiss,
     BrowserPermissionPrompt,
     BrowserRegister,
+    BrowserRunDetailRequest,
+    BrowserRunDetailResponse,
     BrowserRunOutcomeUpdate,
+    BrowserToolFinished,
     BrowserToolRequest,
     BrowserToolResponse,
+    BrowserToolStarted,
     CursorRecord,
     DomainPermissionRecord,
     MemoryEntryRecord,
@@ -97,8 +107,17 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
 )
+from penny.database.message_store import CallStarted, ToolFinished, ToolStarted
 from penny.database.models import RuntimeConfig
+from penny.datetime_utils import user_timezone_name
 from penny.tools.base import Tool
+from penny.tools.collection_instantiation import (
+    Schedule,
+    ScheduleError,
+    describe_schedule,
+    parse_schedule,
+    schedules_equivalent,
+)
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -172,9 +191,15 @@ class BrowserChannel(MessageChannel):
         self._liveness_task: asyncio.Task | None = None
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
-        db.messages._on_prompt_logged = self._on_prompt_logged
-        db.messages._on_run_outcome_set = self._on_run_outcome_set
-        db.memories._on_memory_changed = self._on_memory_changed
+        db.messages.subscribe_prompt_logged(self._on_prompt_logged)
+        db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
+        db.memories.subscribe_memory_changed(self._on_memory_changed)
+        # Live step markers (#2439) — the addon's Prompts tab is the only
+        # consumer today; iOS's data browser is read-only and has no live
+        # renderer, so it deliberately doesn't subscribe these.
+        db.messages.subscribe_call_started(self._on_call_started)
+        db.messages.subscribe_tool_started(self._on_tool_started)
+        db.messages.subscribe_tool_finished(self._on_tool_finished)
 
     def _on_prompt_logged(self, prompt_data: dict) -> None:
         """Callback fired after each prompt is logged — broadcast to browsers."""
@@ -185,6 +210,43 @@ class BrowserChannel(MessageChannel):
         """Callback fired when a run outcome is set — broadcast to browsers."""
         payload = BrowserRunOutcomeUpdate(run_id=run_id, outcome=outcome, reason=reason)
         self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_RUN_OUTCOME)
+
+    def _on_call_started(self, event: CallStarted) -> None:
+        """Callback fired just before a model call is made (#2439) — broadcast
+        to browsers so a running row can show ahead of the logged record."""
+        payload = BrowserCallStarted(
+            run_id=event.run_id,
+            parent_run_id=event.parent_run_id,
+            parent_tool_call_id=event.parent_tool_call_id,
+            agent_name=event.agent_name,
+            prompt_type=event.prompt_type,
+            model=event.model,
+            run_target=event.run_target,
+            started_at=event.started_at.isoformat(),
+        )
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_CALL_STARTED)
+
+    def _on_tool_started(self, event: ToolStarted) -> None:
+        """Callback fired just before a dispatched tool call runs (#2439)."""
+        payload = BrowserToolStarted(
+            run_id=event.run_id,
+            tool_call_id=event.tool_call_id,
+            tool_name=event.tool_name,
+            status=event.status,
+            started_at=event.started_at.isoformat(),
+        )
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_TOOL_STARTED)
+
+    def _on_tool_finished(self, event: ToolFinished) -> None:
+        """Callback fired right after a dispatched tool call finishes (#2439)."""
+        payload = BrowserToolFinished(
+            run_id=event.run_id,
+            tool_call_id=event.tool_call_id,
+            tool_name=event.tool_name,
+            status=event.status,
+            success=event.success,
+        )
+        self._push(payload.model_dump_json(), BROWSER_RESP_TYPE_TOOL_FINISHED)
 
     def _on_memory_changed(self, name: str | None) -> None:
         """Callback fired after any memory mutation — broadcast to browsers
@@ -539,11 +601,11 @@ class BrowserChannel(MessageChannel):
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_CREATE:
-            await self._handle_memory_create(data)
+            await self._handle_memory_create(ws, data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_UPDATE:
-            await self._handle_memory_update(data)
+            await self._handle_memory_update(ws, data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_ARCHIVE:
@@ -560,6 +622,10 @@ class BrowserChannel(MessageChannel):
 
         if msg_type == BROWSER_MSG_TYPE_ENTRY_DELETE:
             self._handle_entry_delete(data)
+            return device_label
+
+        if msg_type == BROWSER_MSG_TYPE_RUN_DETAIL_REQUEST:
+            await self._handle_run_detail_request(ws, data)
             return device_label
 
         return device_label
@@ -959,8 +1025,7 @@ class BrowserChannel(MessageChannel):
             for log_name, last_read_at in sorted(cursors)
         ]
 
-    @staticmethod
-    def _memory_to_record(memory, entry_count: int) -> MemoryRecord:
+    def _memory_to_record(self, memory, entry_count: int) -> MemoryRecord:
         return MemoryRecord(
             name=memory.name,
             type=memory.type,
@@ -969,6 +1034,9 @@ class BrowserChannel(MessageChannel):
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
+            # The model's own plain-words reading (#2428), so the addon's schedule
+            # picker never re-derives it in TypeScript (#2442).
+            schedule_description=describe_schedule(memory, user_timezone_name(self._db)) or None,
             last_collected_at=(
                 memory.last_collected_at.isoformat() if memory.last_collected_at else None
             ),
@@ -993,13 +1061,16 @@ class BrowserChannel(MessageChannel):
     # codebase (user-directed writes land as ``"user"``).
     _ADDON_ENTRY_AUTHOR = "user"
 
-    async def _handle_memory_create(self, data: dict) -> None:
+    async def _handle_memory_create(self, ws: ServerConnection, data: dict) -> None:
         """Create a new collection from the addon.  Logs are seeded by
         migrations and not user-creatable here."""
         try:
             req = BrowserMemoryCreate(**data)
         except ValidationError:
             logger.warning("Invalid memory_create: %s", str(data)[:200])
+            return
+        parsed, ok = await self._validated_schedule(ws, "create", req.name, req.schedule)
+        if not ok:
             return
         description_embedding = await self._message_agent.embed_description(req.description)
         try:
@@ -1008,20 +1079,34 @@ class BrowserChannel(MessageChannel):
                 req.description,
                 extraction_prompt=req.extraction_prompt,
                 schedule=req.schedule,
+                max_runs=parsed.max_runs if parsed else None,
+                expires_at=parsed.expires_at if parsed else None,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
         except MemoryAlreadyExistsError:
             logger.warning("memory_create with duplicate name: %s", req.name)
 
-    async def _handle_memory_update(self, data: dict) -> None:
+    async def _handle_memory_update(self, ws: ServerConnection, data: dict) -> None:
         """Edit metadata on an existing collection.  Only fields that are
-        not ``None`` are applied, matching ``update_collection_metadata``."""
+        not ``None`` are applied, matching ``update_collection_metadata`` —
+        except ``schedule``: the addon's form always resends its current picker
+        state, so a resent schedule that actually DIFFERS from the one stored is
+        applied as a full replace (#2442).  A resend of the SAME schedule leaves
+        the whole schedule axis untouched, so an ``expires_at`` set independently
+        from chat (never folded into the rule's own ``UNTIL=``) survives an edit
+        that only changed, say, the description — ``replace_schedule`` always on
+        wiped it the moment the form resent the unchanged rule alongside an
+        unrelated field (#2457 review)."""
         try:
             req = BrowserMemoryUpdate(**data)
         except ValidationError:
             logger.warning("Invalid memory_update: %s", str(data)[:200])
             return
+        parsed, ok = await self._validated_schedule(ws, "update", req.name, req.schedule)
+        if not ok:
+            return
+        replace_schedule = not self._schedule_unchanged(req.name, req.schedule)
         # Re-embed the meaning anchor whenever the description changes.
         description_embedding = (
             await self._message_agent.embed_description(req.description)
@@ -1033,12 +1118,60 @@ class BrowserChannel(MessageChannel):
                 req.name,
                 description=req.description,
                 extraction_prompt=req.extraction_prompt,
-                schedule=req.schedule,
+                schedule=req.schedule if replace_schedule else None,
+                max_runs=(parsed.max_runs if parsed else None) if replace_schedule else None,
+                expires_at=(parsed.expires_at if parsed else None) if replace_schedule else None,
+                replace_schedule=replace_schedule,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
         except (MemoryNotFoundError, MemoryTypeError) as exc:
             logger.warning("memory_update failed for %s: %s", req.name, exc)
+
+    def _schedule_unchanged(self, name: str, schedule: str | None) -> bool:
+        """Whether a resent ``schedule`` states the SAME thing as the collection's
+        CURRENT stored one.  The addon's form always resends its full picker
+        state, so this is the one way to tell "the user left the schedule
+        control alone" apart from "the user set a new schedule" — compared
+        STRUCTURALLY (``schedules_equivalent``), not as raw text, because a
+        preset regenerates a rule's parts in its own fixed order, which need not
+        match how the same rule was written elsewhere (chat, by hand) (#2457
+        review).  An unmatched/missing collection is never reported as
+        unchanged, so the real update call makes its own actionable
+        ``MemoryNotFoundError``, not this helper."""
+        memory = self._db.memories.get(name)
+        return memory is not None and schedules_equivalent(memory.schedule, schedule)
+
+    async def _validated_schedule(
+        self,
+        ws: ServerConnection,
+        action: Literal["create", "update"],
+        name: str,
+        schedule: str | None,
+    ) -> tuple[Schedule | None, bool]:
+        """Parse an addon-supplied ``schedule`` string (``None`` = no schedule) and
+        report a rejection back to the requesting connection — the custom-RRULE box has
+        no client-side grammar check, so a reject must be SAID, never silent (#2442).
+        Returns ``(parsed, ok)``; ``ok`` is ``False`` once the rejection has been
+        delivered, telling the caller to stop without touching the store."""
+        if schedule is None:
+            return None, True
+        try:
+            return parse_schedule(schedule), True
+        except ScheduleError as exc:
+            await self._deliver_save_error(ws, action, name, str(exc))
+            return None, False
+
+    async def _deliver_save_error(
+        self, ws: ServerConnection, action: Literal["create", "update"], name: str, message: str
+    ) -> None:
+        """Get a rejected memory_create/memory_update's reason back to the requesting
+        addon connection.  Delivered directly (unlike the collector-trigger result's
+        broadcast fallback, #1935): this answers the same request/response round trip
+        the connection is still waiting on, not a minutes-long background run."""
+        error = BrowserMemorySaveError(action=action, name=name, message=message)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.send(error.model_dump_json())
 
     def _handle_memory_archive(self, data: dict) -> None:
         """Soft-delete a memory from the active list."""
@@ -1105,6 +1238,25 @@ class BrowserChannel(MessageChannel):
             memory.delete(req.key)
         except MemoryTypeError as exc:
             logger.warning("entry_delete on non-collection %s: %s", req.memory, exc)
+
+    # ── Run detail (read-only — #2443) ───────────────────────────────────────
+
+    async def _handle_run_detail_request(self, ws: ServerConnection, data: dict) -> None:
+        """Send one run, fully serialized, by its ``run_id`` — e.g. the Skills
+        tab opening the run a skill was taught from.  A miss is answered, not
+        dropped (#2443): an unknown id still gets a reply, with ``run`` null and
+        the requested ``run_id`` echoed."""
+        try:
+            req = BrowserRunDetailRequest(**data)
+        except ValidationError:
+            logger.warning("Invalid run_detail_request: %s", str(data)[:200])
+            return
+        run = self._db.messages.get_run(req.run_id)
+        if run is None:
+            logger.warning("run_detail_request for unknown run_id: %s", req.run_id)
+        payload = BrowserRunDetailResponse(run_id=req.run_id, run=run)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.send(payload.model_dump_json())
 
     async def _handle_config_request(self, ws: ServerConnection) -> None:
         """Return all runtime config params with current values."""

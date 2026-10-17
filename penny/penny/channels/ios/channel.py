@@ -113,7 +113,9 @@ from penny.database.memory import (
     MemoryTypeError,
 )
 from penny.database.models import RuntimeConfig
+from penny.datetime_utils import user_timezone_name
 from penny.llm.embeddings import serialize_embedding
+from penny.tools.collection_instantiation import describe_schedule
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -183,9 +185,9 @@ class IosChannel(MessageChannel):
         self._closed = asyncio.Event()
         self._permission_manager: PermissionManager | None = None
         self._collector: Collector | None = None
-        db.messages._on_prompt_logged = self._on_prompt_logged
-        db.messages._on_run_outcome_set = self._on_run_outcome_set
-        db.memories._on_memory_changed = self._on_memory_changed
+        db.messages.subscribe_prompt_logged(self._on_prompt_logged)
+        db.messages.subscribe_run_outcome_set(self._on_run_outcome_set)
+        db.memories.subscribe_memory_changed(self._on_memory_changed)
 
     @property
     def sender_id(self) -> str:
@@ -681,8 +683,7 @@ class IosChannel(MessageChannel):
             for log_name, last_read_at in sorted(cursors)
         ]
 
-    @staticmethod
-    def _memory_to_record(memory, entry_count: int) -> MemoryRecord:
+    def _memory_to_record(self, memory, entry_count: int) -> MemoryRecord:
         return MemoryRecord(
             name=memory.name,
             type=memory.type,
@@ -691,6 +692,9 @@ class IosChannel(MessageChannel):
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
+            # The model's own plain-words reading (#2428), matching the browser
+            # channel's record (#2442) — this model is shared between the two.
+            schedule_description=describe_schedule(memory, user_timezone_name(self._db)) or None,
             last_collected_at=(
                 memory.last_collected_at.isoformat() if memory.last_collected_at else None
             ),

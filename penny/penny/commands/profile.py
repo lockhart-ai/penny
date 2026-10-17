@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +12,7 @@ from pydantic import BaseModel, Field
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
 from penny.datetime_utils import current_datetime_line, get_timezone
+from penny.llm.call_link import CallLink
 from penny.responses import PennyResponse
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ class ProfileCommand(Command):
                 prompt=prompt,
                 tools=None,
                 format=ProfileCreateParse.model_json_schema(),
-                run_id=uuid.uuid4().hex,
+                call_link=CallLink.new_top(),
             )
 
             # Parse JSON response with Pydantic schema
@@ -125,7 +125,7 @@ class ProfileCommand(Command):
                 prompt=prompt,
                 tools=None,
                 format=ProfileUpdateParse.model_json_schema(),
-                run_id=uuid.uuid4().hex,
+                call_link=CallLink.new_top(),
             )
 
             # Parse JSON response with Pydantic schema

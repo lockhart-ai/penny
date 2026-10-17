@@ -31,6 +31,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel
 
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmError, LlmFault, ProviderPin
 
@@ -185,7 +186,9 @@ async def _smoke_once(
     client = _smoke_client(api_url=api_url, model=model, api_key=api_key, provider=provider)
     try:
         response = await client.chat(
-            [{"role": "user", "content": SMOKE_PROMPT}], tools=[SMOKE_TOOL]
+            [{"role": "user", "content": SMOKE_PROMPT}],
+            tools=[SMOKE_TOOL],
+            call_link=CallLink.new_top(),
         )
         return SmokeResult(
             subject="chat",

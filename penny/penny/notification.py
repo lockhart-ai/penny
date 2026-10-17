@@ -49,6 +49,7 @@ from penny.constants import CycleEnd, CycleTrigger, PennyConstants
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp
+from penny.llm.call_link import CallLink
 from penny.llm.refusal import is_refusal
 from penny.llm.similarity import embed_text
 from penny.tools.micro_context import MicroContext
@@ -326,6 +327,8 @@ class CollectorNotifier:
         run_id: str,
         records: Sequence[ToolCallRecord],
         trigger: CycleTrigger,
+        *,
+        call_link: CallLink,
     ) -> NotificationOutcome:
         """Tell the user about this cycle — assemble, draw, queue.
 
@@ -338,7 +341,7 @@ class CollectorNotifier:
         success."""
         document = await self._document(target, run_id, records)
         message = await self._micro_context.compose_notification(
-            render_notification(document), run_target=target.name, parent_run_id=run_id
+            render_notification(document), call_link=call_link, run_target=target.name
         )
         if message is None:
             logger.warning(

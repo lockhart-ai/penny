@@ -44,6 +44,7 @@ import os
 import sqlite3
 from dataclasses import dataclass, field
 
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmError
 
@@ -199,7 +200,9 @@ async def _replay(
     tally = _Tally()
     for index in range(samples):
         try:
-            response = await client.chat(messages, tools=tools, prompt_type=f"replay-{label}")
+            response = await client.chat(
+                messages, tools=tools, call_link=CallLink.new_top(), prompt_type=f"replay-{label}"
+            )
         except LlmError as error:
             tally.record_error()
             print(f"  [{label} {index + 1}/{samples}] ERROR {type(error).__name__}: {error}")

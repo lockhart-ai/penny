@@ -6,6 +6,7 @@ from penny.agents.base import Agent
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
+from penny.llm.call_link import CallLink
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.models import ToolArgs, ToolCall
 
@@ -28,7 +29,7 @@ class StubSearchTool(Tool):
     }
     args_model = _StubSearchArgs
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return "Mock search results for testing"
 
 
@@ -93,7 +94,7 @@ class TestToolNotFound:
         mock_llm.set_response_handler(handler)
 
         # Agent should not crash - it should handle the error gracefully
-        response = await agent.run("test prompt", max_steps=3)
+        response = await agent.run("test prompt", max_steps=3, call_link=CallLink.new_top())
 
         # Verify that we got a response (not a crash)
         assert response.answer is not None
@@ -165,7 +166,7 @@ class TestToolNotFound:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test prompt", max_steps=3)
+        await agent.run("test prompt", max_steps=3, call_link=CallLink.new_top())
 
         # The tool result fed back must be the successful search output, not a
         # 'not found' error — i.e. the Harmony-suffixed name dispatched cleanly.
@@ -192,7 +193,7 @@ class StubReadLatestTool(Tool):
         "required": ["memory"],
     }
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return "entries"
 
 
@@ -207,7 +208,7 @@ class StubMemoryGetTool(Tool):
         "required": ["memory"],
     }
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return "metadata"
 
 
@@ -224,7 +225,7 @@ class StubCollectionConfigureTool(Tool):
         "required": ["name"],
     }
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return "set"
 
 
@@ -239,7 +240,7 @@ class StubSkillGetTool(Tool):
         "required": ["skill"],
     }
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return "skill"
 
 
@@ -259,7 +260,7 @@ class TestToolNotFoundSuggestion:
         executor = ToolExecutor(registry, timeout=30.0)
 
         tool_call = ToolCall(tool="read_last", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is False
         # The first-person frame is carried on ``narration`` (#1482) so ``format_result``
@@ -283,7 +284,9 @@ class TestToolNotFoundSuggestion:
         registry.register(StubCollectionConfigureTool())
         executor = ToolExecutor(registry, timeout=30.0)
 
-        result = await executor.execute(ToolCall(tool="collection_metadata", arguments={}))
+        result = await executor.execute(
+            ToolCall(tool="collection_metadata", arguments={}), CallLink.new_top()
+        )
 
         assert result.success is False
         assert result.narration == (
@@ -305,7 +308,9 @@ class TestToolNotFoundSuggestion:
         registry.register(StubSkillGetTool())
         executor = ToolExecutor(registry, timeout=30.0)
 
-        result = await executor.execute(ToolCall(tool="skill_read", arguments={}))
+        result = await executor.execute(
+            ToolCall(tool="skill_read", arguments={}), CallLink.new_top()
+        )
 
         assert result.success is False
         assert result.message == (
@@ -321,7 +326,9 @@ class TestToolNotFoundSuggestion:
         registry.register(StubMemoryGetTool())
         executor = ToolExecutor(registry, timeout=30.0)
 
-        result = await executor.execute(ToolCall(tool="memory_gt", arguments={}))
+        result = await executor.execute(
+            ToolCall(tool="memory_gt", arguments={}), CallLink.new_top()
+        )
 
         assert result.success is False
         assert result.message == (
@@ -338,7 +345,7 @@ class TestToolNotFoundSuggestion:
         executor = ToolExecutor(registry, timeout=30.0)
 
         tool_call = ToolCall(tool="completely_unknown_xyz", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is False
         assert "Did you mean" not in result.message
@@ -373,7 +380,7 @@ class StubDoneTool(Tool):
     }
     args_model = _StubDoneArgs
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link: CallLink, **kwargs):
         return "done"
 
 
@@ -385,7 +392,7 @@ class TestMissingRequiredParameters:
     @pytest.mark.asyncio
     async def test_missing_params_error_includes_type_and_description(self):
         """Error names type and description for each missing required parameter."""
-        result = await StubDoneTool().run()
+        result = await StubDoneTool().run(CallLink.new_top())
 
         assert result.success is False
         # The first-person frame is carried on ``narration`` (#1482); the per-field
@@ -402,7 +409,7 @@ class TestMissingRequiredParameters:
     @pytest.mark.asyncio
     async def test_missing_params_error_only_lists_absent_params(self):
         """Only the actually-missing parameter appears in the error."""
-        result = await StubDoneTool().run(success=True)
+        result = await StubDoneTool().run(CallLink.new_top(), success=True)
 
         assert result.success is False
         assert "summary" in result.message
@@ -411,7 +418,7 @@ class TestMissingRequiredParameters:
     @pytest.mark.asyncio
     async def test_no_error_when_all_required_params_present(self):
         """With all required params, validation passes and execute runs."""
-        result = await StubDoneTool().run(success=True, summary="done")
+        result = await StubDoneTool().run(CallLink.new_top(), success=True, summary="done")
 
         assert result == "done"  # the stub's execute output — no validation failure
 
@@ -419,7 +426,9 @@ class TestMissingRequiredParameters:
     async def test_unknown_param_rejected_not_silently_ignored(self):
         """An unknown argument no longer runs the tool with default behaviour — it
         flows through the envelope naming the bad param and the accepted ones."""
-        result = await StubDoneTool().run(success=True, summary="done", verbose=True)
+        result = await StubDoneTool().run(
+            CallLink.new_top(), success=True, summary="done", verbose=True
+        )
 
         assert result.success is False
         assert "unknown parameter 'verbose'" in result.message
@@ -430,7 +439,7 @@ class TestMissingRequiredParameters:
     @pytest.mark.asyncio
     async def test_unknown_param_suggests_closest_valid_param(self):
         """A near-miss misspelling gets a 'did you mean' pointer at the real field."""
-        result = await StubDoneTool().run(success=True, sumary="done")
+        result = await StubDoneTool().run(CallLink.new_top(), success=True, sumary="done")
 
         assert result.success is False
         assert "unknown parameter 'sumary'" in result.message
@@ -482,7 +491,7 @@ class TestMissingRequiredParameters:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test", max_steps=3)
+        await agent.run("test", max_steps=3, call_link=CallLink.new_top())
 
         # The error fed back to the model must include type hints
         second_call_messages = messages_sent[1]
@@ -546,7 +555,7 @@ class TestMissingRequiredParameters:
 
         mock_llm.set_response_handler(handler)
 
-        await agent.run("test", max_steps=3)
+        await agent.run("test", max_steps=3, call_link=CallLink.new_top())
 
         # The tool result fed back is the stub's success — not a forbid-extra rejection.
         tool_messages = [m for m in messages_sent[1] if m.get("role") == "tool"]

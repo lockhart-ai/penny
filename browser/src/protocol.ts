@@ -60,7 +60,8 @@ export type WsOutgoingType =
   | "entry_delete"
   | "collection_trigger"
   | "cursor_set"
-  | "cursor_clear";
+  | "cursor_clear"
+  | "run_detail_request";
 export const WsOutgoingType = {
   Message: "message",
   ToolResponse: "tool_response",
@@ -85,6 +86,7 @@ export const WsOutgoingType = {
   CollectionTrigger: "collection_trigger",
   CursorSet: "cursor_set",
   CursorClear: "cursor_clear",
+  RunDetailRequest: "run_detail_request",
 } as const satisfies Record<string, WsOutgoingType>;
 
 export interface WsOutgoingMessage {
@@ -140,7 +142,12 @@ export type WsIncomingType =
   | "memory_detail_response"
   | "memory_page_response"
   | "memory_changed"
-  | "collection_trigger_result";
+  | "collection_trigger_result"
+  | "run_detail_response"
+  | "memory_save_error"
+  | "call_started"
+  | "tool_started"
+  | "tool_finished";
 export const WsIncomingType = {
   Message: "message",
   Typing: "typing",
@@ -158,6 +165,11 @@ export const WsIncomingType = {
   MemoryPageResponse: "memory_page_response",
   MemoryChanged: "memory_changed",
   CollectionTriggerResult: "collection_trigger_result",
+  RunDetailResponse: "run_detail_response",
+  MemorySaveError: "memory_save_error",
+  CallStarted: "call_started",
+  ToolStarted: "tool_started",
+  ToolFinished: "tool_finished",
 } as const satisfies Record<string, WsIncomingType>;
 
 export interface WsIncomingMessagePayload {
@@ -221,6 +233,13 @@ export interface WsIncomingPermissionDismissPayload {
 
 export interface PromptLogEntry {
   id: number;
+  // The run this ONE call belongs to — a top-level run's own id for one of its
+  // own prompts, or a draw's own (micro-context-minted) id for a draw.  Present
+  // on every record (not just a draw's) so a draw's OWN children — a
+  // micro-context nested inside another, any depth (#2435) — can be found by
+  // matching their `parent_run_id` against THIS id, purely structurally, with
+  // no name ever in the loop.
+  run_id: string;
   timestamp: string;
   model: string;
   agent_name: string;
@@ -257,9 +276,24 @@ export interface PromptLogRun {
   run_id: string;
   agent_name: string;
   prompt_count: number;
+  // The run's REAL start/end (#2438) — the earliest `timestamp - duration_ms`
+  // and the latest `timestamp` across this run's own prompts AND its child
+  // draws, computed the same way on the server (`_run_window`) and here
+  // (`runTimingWindow`) so the two can't disagree.
   started_at: string;
   ended_at: string;
+  // "Model time" — this run's OWN prompts' summed `duration_ms`, EXCLUDING
+  // child draws (a draw can run long after the model itself has gone quiet,
+  // reading a page, say).  Kept exactly as it always was: paired with
+  // `total_output_tokens` for the header's tok/s figure.  See
+  // `wall_duration_ms` for the real elapsed time, children included.
   total_duration_ms: number;
+  // "Wall time" (#2438) — `ended_at - started_at` in ms, children included —
+  // the real duration of the round, which `total_duration_ms` alone used to
+  // be mistaken for (a browse round whose extraction read pages for minutes
+  // showed under a minute, since that reading time is a child draw's own
+  // `duration_ms`, never summed into the run's).
+  wall_duration_ms: number;
   total_input_tokens: number;
   total_output_tokens: number;
   run_outcome: RunOutcome | null;
@@ -308,7 +342,7 @@ export interface WsIncomingPromptLogsPayload {
 
 export interface WsIncomingPromptLogUpdatePayload {
   type: typeof WsIncomingType.PromptLogUpdate;
-  prompt: PromptLogEntry & { run_id: string };
+  prompt: PromptLogEntry;
 }
 
 export interface WsIncomingRunOutcomePayload {
@@ -322,18 +356,16 @@ export interface MemoryRecord {
   name: string;
   type: "collection" | "log";
   description: string;
-  /** The user's stated goal at creation — editable only via the user (UI)
-   * path, never by the agent's collection_update tool. */
-  intent: string | null;
-  /** Stage-1 routing: does this memory participate in recall at all. */
-  inclusion: "always" | "relevant" | "never";
-  /** Stage-2 entry rendering once included. */
-  recall: "all" | "relevant" | "recent";
-  /** Pub/sub: when true the notifier delivers new entries to the user. Orthogonal to recall. */
+  /** Pub/sub: when true the notifier delivers new entries to the user. */
   published: boolean;
   archived: boolean;
   extraction_prompt: string | null;
-  collector_interval_seconds: number | null;
+  /** The collection's cadence as one RRULE (#1857), or null for a
+   * storage-only collection with no schedule. */
+  schedule: string | null;
+  /** The schedule in plain words, with the exact rule alongside in a code
+   * span (#2428's describe_schedule) — null alongside a null schedule. */
+  schedule_description: string | null;
   last_collected_at: string | null;
   entry_count: number;
 }
@@ -396,6 +428,62 @@ export interface WsIncomingCollectionTriggerResultPayload {
   message: string;
 }
 
+/** One run, fully serialized (run → prompts → turns) — the same shape the
+ * prompts tab's own list already carries each run in.  A miss is answered,
+ * not dropped: `run` is `null` and the requested `run_id` is echoed when no
+ * prompt in the ledger carries that id. */
+export interface WsIncomingRunDetailPayload {
+  type: typeof WsIncomingType.RunDetailResponse;
+  run_id: string;
+  run: PromptLogRun | null;
+}
+
+/** A memory_create/memory_update whose schedule failed server-side
+ * validation — delivered back to the requesting connection so a rejected
+ * custom RRULE never saves silently (#2442). */
+export interface WsIncomingMemorySaveErrorPayload {
+  type: typeof WsIncomingType.MemorySaveError;
+  action: "create" | "update";
+  name: string;
+  message: string;
+}
+
+/** A model call is about to be made (#2439) — no `promptlog` row exists for it
+ * yet.  Carries the same identity the eventual logged row will carry, so a
+ * live Prompts tab can show a running step and later match it by `run_id`. */
+export interface WsIncomingCallStartedPayload {
+  type: typeof WsIncomingType.CallStarted;
+  run_id: string;
+  parent_run_id: string | null;
+  parent_tool_call_id: string | null;
+  agent_name: string | null;
+  prompt_type: string | null;
+  model: string;
+  run_target: string | null;
+  started_at: string;
+}
+
+/** A dispatched tool call is about to run (#2439) — `(run_id, tool_call_id)`
+ * is an exact identity, unlike a model call's. */
+export interface WsIncomingToolStartedPayload {
+  type: typeof WsIncomingType.ToolStarted;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  started_at: string;
+}
+
+/** A dispatched tool call just finished (#2439). */
+export interface WsIncomingToolFinishedPayload {
+  type: typeof WsIncomingType.ToolFinished;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  success: boolean;
+}
+
 export type WsIncomingPayload =
   | WsIncomingMessagePayload
   | WsIncomingTypingPayload
@@ -412,7 +500,12 @@ export type WsIncomingPayload =
   | WsIncomingMemoryDetailPayload
   | WsIncomingMemoryPagePayload
   | WsIncomingMemoryChangedPayload
-  | WsIncomingCollectionTriggerResultPayload;
+  | WsIncomingCollectionTriggerResultPayload
+  | WsIncomingRunDetailPayload
+  | WsIncomingMemorySaveErrorPayload
+  | WsIncomingCallStartedPayload
+  | WsIncomingToolStartedPayload
+  | WsIncomingToolFinishedPayload;
 
 // --- Runtime messages (sidebar ↔ background) ---
 
@@ -452,8 +545,14 @@ export type RuntimeMessageType =
   | "entry_delete"
   | "collection_trigger"
   | "collection_trigger_result"
+  | "memory_save_error"
   | "cursor_set"
-  | "cursor_clear";
+  | "cursor_clear"
+  | "run_detail_request"
+  | "run_detail_response"
+  | "call_started"
+  | "tool_started"
+  | "tool_finished";
 
 export const RuntimeMessageType = {
   SendChat: "send_chat",
@@ -491,8 +590,14 @@ export const RuntimeMessageType = {
   EntryDelete: "entry_delete",
   CollectionTrigger: "collection_trigger",
   CollectionTriggerResult: "collection_trigger_result",
+  MemorySaveError: "memory_save_error",
   CursorSet: "cursor_set",
   CursorClear: "cursor_clear",
+  RunDetailRequest: "run_detail_request",
+  RunDetailResponse: "run_detail_response",
+  CallStarted: "call_started",
+  ToolStarted: "tool_started",
+  ToolFinished: "tool_finished",
 } as const satisfies Record<string, RuntimeMessageType>;
 
 /** Sidebar → background: user typed a chat message */
@@ -621,7 +726,7 @@ export interface RuntimePromptLogsResponse {
 /** Background → prompts page: single prompt logged in real time */
 export interface RuntimePromptLogUpdate {
   type: typeof RuntimeMessageType.PromptLogUpdate;
-  prompt: PromptLogEntry & { run_id: string };
+  prompt: PromptLogEntry;
 }
 
 /** Background → prompts page: run outcome set (outcome / reason / target) */
@@ -630,6 +735,40 @@ export interface RuntimeRunOutcomeUpdate {
   run_id: string;
   outcome: RunOutcome;
   reason: string;
+}
+
+/** Background → prompts page: a model call is about to be made (#2439) —
+ * live step markers, no promptlog row yet. */
+export interface RuntimeCallStarted {
+  type: typeof RuntimeMessageType.CallStarted;
+  run_id: string;
+  parent_run_id: string | null;
+  parent_tool_call_id: string | null;
+  agent_name: string | null;
+  prompt_type: string | null;
+  model: string;
+  run_target: string | null;
+  started_at: string;
+}
+
+/** Background → prompts page: a dispatched tool call is about to run (#2439). */
+export interface RuntimeToolStarted {
+  type: typeof RuntimeMessageType.ToolStarted;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  started_at: string;
+}
+
+/** Background → prompts page: a dispatched tool call just finished (#2439). */
+export interface RuntimeToolFinished {
+  type: typeof RuntimeMessageType.ToolFinished;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  status: string;
+  success: boolean;
 }
 
 /** Memories tab → background: request the memories list */
@@ -715,13 +854,11 @@ export interface RuntimeMemoryCreate {
   type: typeof RuntimeMessageType.MemoryCreate;
   name: string;
   description: string;
-  intent: string;
-  inclusion: "always" | "relevant" | "never";
-  recall: "recent" | "relevant" | "all";
   /** Pub/sub: notify the user of new entries (default false). */
   published?: boolean;
   extraction_prompt?: string | null;
-  collector_interval_seconds?: number | null;
+  /** One RRULE (#1857), or null/omitted for a storage-only collection. */
+  schedule?: string | null;
 }
 
 /** Memories tab → background: update collection metadata */
@@ -729,13 +866,20 @@ export interface RuntimeMemoryUpdate {
   type: typeof RuntimeMessageType.MemoryUpdate;
   name: string;
   description?: string | null;
-  intent?: string | null;
-  inclusion?: "always" | "relevant" | "never" | null;
-  recall?: "recent" | "relevant" | "all" | null;
   /** Pub/sub: flip notify-on-new; omit/null leaves it unchanged. */
   published?: boolean | null;
   extraction_prompt?: string | null;
-  collector_interval_seconds?: number | null;
+  /** One RRULE (#1857); omitted/null leaves the schedule unchanged. */
+  schedule?: string | null;
+}
+
+/** Background → memories tab: a memory_create/memory_update's schedule was
+ * rejected — the picker's custom box must surface this, never fail quietly. */
+export interface RuntimeMemorySaveError {
+  type: typeof RuntimeMessageType.MemorySaveError;
+  action: "create" | "update";
+  name: string;
+  message: string;
 }
 
 /** Memories tab → background: set a collection's read cursor over one log */
@@ -783,6 +927,20 @@ export interface RuntimeEntryDelete {
   key: string;
 }
 
+/** Open the run a skill was taught from (or just view a run) */
+export interface RuntimeRunDetailRequest {
+  type: typeof RuntimeMessageType.RunDetailRequest;
+  run_id: string;
+}
+
+/** Background → skills tab: one run, fully serialized.  A miss is answered,
+ * not dropped: `run` is `null` and `run_id` echoes the request when unknown. */
+export interface RuntimeRunDetailResponse {
+  type: typeof RuntimeMessageType.RunDetailResponse;
+  run_id: string;
+  run: PromptLogRun | null;
+}
+
 export type RuntimeMessage =
   | RuntimeSendChat
   | RuntimeChatMessage
@@ -813,6 +971,7 @@ export type RuntimeMessage =
   | RuntimeMemoryChanged
   | RuntimeCollectionTrigger
   | RuntimeCollectionTriggerResult
+  | RuntimeMemorySaveError
   | RuntimeMemoryCreate
   | RuntimeMemoryUpdate
   | RuntimeMemoryArchive
@@ -820,7 +979,12 @@ export type RuntimeMessage =
   | RuntimeEntryUpdate
   | RuntimeEntryDelete
   | RuntimeCursorSet
-  | RuntimeCursorClear;
+  | RuntimeCursorClear
+  | RuntimeRunDetailRequest
+  | RuntimeRunDetailResponse
+  | RuntimeCallStarted
+  | RuntimeToolStarted
+  | RuntimeToolFinished;
 
 // --- Domain permissions ---
 

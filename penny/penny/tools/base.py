@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from pydantic import ValidationError
 
 from penny.constants import PennyConstants, ProgressEmoji
+from penny.llm.call_link import CallLink
 from penny.text_validity import suggest_tool_name
 from penny.tools.models import NoArgs, ToolArgs, ToolCall, ToolDefinition, ToolResult
 
@@ -88,19 +89,6 @@ class Tool(ABC):
     # one whose destination is implicit (scoped to a single bound collection, with no
     # argument naming it at all).
     destination_param: str | None = None
-    # Whether THIS call's own id should be forwarded to ``execute`` (#2355 part A) —
-    # declared, like ``stores_entries``/``advises``, rather than inferred, so a tool
-    # that needs to link a model call it makes internally (a micro-context draw) back
-    # to the dispatched call it was made for opts in explicitly.  ``False`` for every
-    # other tool, whose ``execute(**kwargs)`` is untouched: the id travels as a
-    # SEPARATE keyword, never folded into the model-supplied ``kwargs`` that
-    # ``args_model`` validates, so it can never collide with a declared argument.
-    #
-    # Not stored on ``self`` — the agent loop dispatches a step's tool calls
-    # CONCURRENTLY (``asyncio.gather``), so two calls to the same tool instance in one
-    # step would race on shared state; passing it straight through as a parameter
-    # keeps each call's id tied to that call alone.
-    receives_tool_call_id: bool = False
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -109,7 +97,7 @@ class Tool(ABC):
         if "name" in cls.__dict__:
             Tool._registry[cls.name] = cls
 
-    async def run(self, *, tool_call_id: str | None = None, **kwargs: Any) -> ToolResult:
+    async def run(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Validate the call's arguments via ``args_model``, then ``execute``.
 
         The single validate-then-handle gate every tool goes through (the
@@ -119,10 +107,11 @@ class Tool(ABC):
         only with the work + any runtime/availability decisions (e.g. mute state)
         that aren't expressible as arg validation.
 
-        ``tool_call_id`` is this dispatched call's own id — the ``ToolExecutor``
-        passes it on every call, but it reaches ``execute`` only for a tool that
-        declares ``receives_tool_call_id = True`` (#2355 part A); every other
-        tool's ``execute(**kwargs)`` is unchanged.
+        ``call_link`` (#2458) is REQUIRED on every tool, not just the ones that draw
+        — uniformly, so a new tool that makes a model call internally can't forget
+        to accept it (the code owner's ruling: a declared opt-in flag is exactly
+        the forgettable shape this replaces).  Forwarded to ``execute`` unchanged;
+        most tools never read it.
         """
         try:
             self.args_model(**kwargs)
@@ -132,9 +121,7 @@ class Tool(ABC):
                 message=self._validation_error_message(exc),
                 success=False,
             )
-        if self.receives_tool_call_id:
-            return await self.execute(tool_call_id=tool_call_id, **kwargs)
-        return await self.execute(**kwargs)
+        return await self.execute(call_link=call_link, **kwargs)
 
     def _validation_error_message(self, exc: ValidationError) -> str:
         """Actionable rejection body: each bad field, why, and how to fix it.
@@ -232,12 +219,16 @@ class Tool(ABC):
         )
 
     @abstractmethod
-    async def execute(self, **kwargs) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs) -> ToolResult:
         """
         Execute the tool with already-validated arguments.
 
         ``run`` validates ``kwargs`` against ``args_model`` before this is
         called, so ``execute`` never sees invalid args.
+
+        ``call_link`` is this dispatched call's own linkage (#2458) — required on
+        every tool uniformly; a tool that draws internally (a micro-context) passes
+        it straight through, every other tool ignores it.
 
         Returns:
             A ToolResult carrying the model-facing message plus the
@@ -448,17 +439,22 @@ class ToolExecutor:
         self.registry = registry
         self.timeout = timeout
 
-    async def execute(self, tool_call: ToolCall) -> ToolResult:
+    async def execute(self, tool_call: ToolCall, call_link: CallLink) -> ToolResult:
         """Run a tool call: resolve the tool, then drive it through ``tool.run``
         (which validates args against the tool's ``args_model`` before executing).
 
         The executor owns only the framework concerns the tool can't: an unknown
         tool name, a timeout, an uncaught exception.  Argument validation lives on
-        the tool (its ``args_model``), not here."""
+        the tool (its ``args_model``), not here.
+
+        ``call_link`` (#2458) is passed straight through — the caller
+        (``Agent._execute_single_tool``) already built it via
+        ``CallLink.for_tool_call(tool_call.id)``, so the executor forwards it rather
+        than deriving anything itself."""
         tool = self.registry.get(tool_call.tool)
         if tool is None:
             return self._tool_not_found_result(tool_call)
-        return await self._execute_with_timeout(tool, tool_call)
+        return await self._execute_with_timeout(tool, tool_call, call_link)
 
     def _tool_not_found_result(self, tool_call: ToolCall) -> ToolResult:
         """Build a failed result when the requested tool doesn't exist.
@@ -487,7 +483,9 @@ class ToolExecutor:
             success=False,
         )
 
-    async def _execute_with_timeout(self, tool: Tool, tool_call: ToolCall) -> ToolResult:
+    async def _execute_with_timeout(
+        self, tool: Tool, tool_call: ToolCall, call_link: CallLink
+    ) -> ToolResult:
         """Drive the tool through ``run`` (validate-then-execute) under a timeout.
 
         ``run`` returns its own ``ToolResult`` — including the actionable failure
@@ -499,7 +497,7 @@ class ToolExecutor:
             logger.info("Executing tool: %s", tool_call.tool)
             logger.debug("Tool arguments: %s", tool_call.arguments)
             result = await asyncio.wait_for(
-                tool.run(tool_call_id=tool_call.id, **tool_call.arguments),
+                tool.run(call_link, **tool_call.arguments),
                 timeout=effective_timeout,
             )
             logger.info("Tool executed successfully: %s", tool_call.tool)

@@ -38,10 +38,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlmodel import Session, select
 
+from penny.config_params import RuntimeParams
 from penny.constants import PageReading, PennyConstants
 from penny.database import Database
 from penny.database.memory.objects import render_tool_call
 from penny.database.models import PromptLog
+from penny.llm.call_link import CallLink
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmTimeoutError
 from penny.prompts import Prompt
@@ -165,7 +167,6 @@ def _extract_tool(
     db: Database,
     model: MockLlmClient | LlmClient,
     *,
-    run_id: str | None = None,
     reading: PageReading = PageReading.ARTICLE,
 ) -> BrowseTool:
     tool = BrowseTool(
@@ -174,7 +175,6 @@ def _extract_tool(
         embedding_client=cast(Any, MockLlmClient()),
         model_client=cast(Any, model),
         author="widget-watch",
-        run_id=run_id,
     )
     tool.set_browse_provider(_provider(_PAGE_TEXT, reading))
     return tool
@@ -269,6 +269,7 @@ class _OverlapProbe:
     """
 
     def __init__(self, replies: dict[str, str]) -> None:
+        self.runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
         self._replies = replies  # page marker → its tagged reply, in issue order
         self._markers = list(replies)
         self._all_in_flight = asyncio.Event()
@@ -344,9 +345,13 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
             message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
         )
     )
-    tool = _extract_tool(db, client, run_id="chat-run-1")
+    tool = _extract_tool(db, client)
 
-    result = await tool.run(tool_call_id="call-browse-1", queries=[_PAGE_URL], extract=_INSTRUCTION)
+    # The dispatched call's own link (#2458) a real dispatch would already have
+    # built — constructed here directly since this test drives the tool without
+    # the agent loop around it.
+    dispatched_link = CallLink.top("chat-run-1").for_tool_call("call-browse-1")
+    result = await tool.run(dispatched_link, queries=[_PAGE_URL], extract=_INSTRUCTION)
 
     # The tool result carries the typed value alone — never the page body, and
     # no fetch-handle tail (success renders the value only; the "saved" clause
@@ -413,7 +418,7 @@ async def test_extract_link_list_reading_reaches_the_model_end_to_end(tmp_path, 
     )
     tool = _extract_tool(db, client, reading=PageReading.LINK_LIST)
 
-    result = await tool.run(queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.run(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
 
     assert f"{_INSTRUCTION}: {_EXTRACTED_VALUE}" in result.message
     with Session(db.engine) as session:
@@ -438,7 +443,7 @@ async def test_browse_without_extract_is_rejected_at_the_gate(tmp_path):
     model = MockLlmClient()
     tool = _extract_tool(db, model)
 
-    result = await tool.run(queries=[_PAGE_URL])
+    result = await tool.run(CallLink.new_top(), queries=[_PAGE_URL])
 
     assert result.success is False
     assert "extract" in result.message
@@ -460,7 +465,7 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
     )
     tool.set_browse_provider(_provider(_CATALOGUE_TEXT))
 
-    result = await tool.execute(queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(CallLink.new_top(), queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
 
     stored_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert stored_log is not None
@@ -481,7 +486,7 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
 async def _execute_extract(tmp_path, name: str, model_content: str):
     db = _make_db(tmp_path, name)
     tool = _extract_tool(db, _responds(model_content))
-    result = await tool.execute(queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert browse_log is not None
     stored = browse_log.read_all()
@@ -568,7 +573,9 @@ async def test_two_page_batch_yields_two_attributed_sections(tmp_path, mock_llm)
         db, client, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+    )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
@@ -607,7 +614,9 @@ async def test_not_present_page_does_not_mask_extracted_page(tmp_path):
         db, model, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+    )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
@@ -638,7 +647,9 @@ async def test_failed_fetch_section_coexists_with_extracted_section(tmp_path):
         ),
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+    )
 
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
     assert len(sections) == 2
@@ -675,7 +686,9 @@ async def test_failed_fetch_in_the_middle_keeps_its_slot_and_its_siblings_handle
         ),
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION
+    )
 
     # Only the two READ pages were stored; the failed fetch stored nothing.
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
@@ -723,7 +736,7 @@ async def test_search_section_is_returned_as_links_and_never_extracted(tmp_path)
     model = MockLlmClient()
     tool = _multi_extract_tool(db, model, _provider(_SEARCH_PAGE_TEXT))
 
-    result = await tool.execute(queries=[_SEARCH_QUERY], extract=_INSTRUCTION)
+    result = await tool.execute(CallLink.new_top(), queries=[_SEARCH_QUERY], extract=_INSTRUCTION)
 
     assert result.message == (
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}"
@@ -749,7 +762,9 @@ async def test_search_beside_a_page_read_extracts_only_the_page(tmp_path):
         _provider_by_url({_SEARCH_PAGE_URL: _SEARCH_PAGE_TEXT, _PAGE_URL: _PAGE_TEXT}),
     )
 
-    result = await tool.execute(queries=[_SEARCH_QUERY, _PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_SEARCH_QUERY, _PAGE_URL], extract=_INSTRUCTION
+    )
 
     assert result.message.split(PennyConstants.SECTION_SEPARATOR) == [
         f"{PennyConstants.BROWSE_SEARCH_HEADER}{_SEARCH_QUERY}\n{_TRIMMED_SEARCH_RESULT}",
@@ -779,7 +794,7 @@ async def test_failed_extraction_hands_back_the_pages_links(tmp_path):
     model = _responds(_UNTAGGED_APOLOGY)
     tool = _multi_extract_tool(db, model, _provider(_CATALOGUE_TEXT))
 
-    result = await tool.execute(queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(CallLink.new_top(), queries=[_CATALOGUE_URL], extract=_INSTRUCTION)
 
     browse_log = db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
     assert browse_log is not None
@@ -822,7 +837,9 @@ async def test_page_batch_draws_concurrently_and_renders_in_page_order(tmp_path)
         ),
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2, _PAGE_URL_3], extract=_INSTRUCTION
+    )
 
     assert probe.draws == Counter({_MARKER_1: 1, _MARKER_2: 1, _MARKER_3: 1})
     assert probe.peak_in_flight == 3
@@ -845,7 +862,7 @@ async def test_single_page_batch_is_one_draw_rendered_unchanged(tmp_path):
     probe = _OverlapProbe({_MARKER_1: _TAGGED_VALUE})
     tool = _multi_extract_tool(db, cast(Any, probe), _provider_by_url({_PAGE_URL: _PAGE_TEXT}))
 
-    result = await tool.execute(queries=[_PAGE_URL], extract=_INSTRUCTION)
+    result = await tool.execute(CallLink.new_top(), queries=[_PAGE_URL], extract=_INSTRUCTION)
 
     assert probe.draws == Counter({_MARKER_1: 1})
     assert probe.peak_in_flight == 1
@@ -871,7 +888,9 @@ async def test_poisoned_draw_rerolls_only_its_own_context(tmp_path):
         db, model, _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2})
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+    )
 
     assert draws[_MARKER_1] == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert draws[_MARKER_2] == 1  # the clean sibling was never re-drawn
@@ -898,6 +917,8 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
     finished: list[str] = []
 
     class _RaisesOnTheFirstPage:
+        runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
+
         async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
             content = messages[-1].get("content", "")
             if _MARKER_1 in content:
@@ -912,7 +933,9 @@ async def test_a_raising_draw_is_rendered_as_that_pages_own_failure(tmp_path):
         _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2}),
     )
 
-    result = await tool.execute(queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION)
+    result = await tool.execute(
+        CallLink.new_top(), queries=[_PAGE_URL, _PAGE_URL_2], extract=_INSTRUCTION
+    )
 
     assert finished == [_MARKER_2]  # the sibling drew undisturbed
     sections = result.message.split(PennyConstants.SECTION_SEPARATOR)
@@ -938,6 +961,8 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
     db = _make_db(tmp_path)
 
     class _StallsOnTheSecondPage:
+        runtime = None  # mirrors LlmClient.runtime — no runtime, no token budget
+
         async def chat(self, messages: list[dict], **_kwargs: Any) -> LlmResponse:
             content = messages[-1].get("content", "")
             if _MARKER_1 in content:
@@ -950,7 +975,7 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
         cast(Any, _StallsOnTheSecondPage()),
         _provider_by_url({_PAGE_URL: _PAGE_TEXT, _PAGE_URL_2: _PAGE_TEXT_2}),
     )
-    tool.timeout = 0.2  # type: ignore[assignment]  # BrowseTool.timeout defaults to 300.0
+    tool.timeout = 0.2  # type: ignore[assignment]  # BrowseTool.timeout defaults to 900.0
 
     registry = ToolRegistry()
     registry.register(tool)
@@ -959,7 +984,8 @@ async def test_timeout_report_names_the_finished_page_and_the_one_still_waiting(
     result = await executor.execute(
         ToolCall(
             tool="browse", arguments={"queries": [_PAGE_URL, _PAGE_URL_2], "extract": _INSTRUCTION}
-        )
+        ),
+        CallLink.new_top(),
     )
 
     assert result.success is False
@@ -997,7 +1023,7 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
     draw named nothing missing" rather than an absent field (#2360)."""
     model = _responds(f"  {_TAGGED_VALUE}  ")
     result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, run_target="widget-watch"
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top(), run_target="widget-watch"
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
@@ -1022,7 +1048,7 @@ async def test_micro_context_link_list_reading_adds_one_note_before_content():
     absence on every other reading."""
     model = _responds(_TAGGED_VALUE)
     result = await MicroContext(cast(Any, model)).extract(
-        _PAGE_BODY, _INSTRUCTION, reading=PageReading.LINK_LIST
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top(), reading=PageReading.LINK_LIST
     )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     turn = model.requests[0]["messages"][1]["content"]
@@ -1039,7 +1065,9 @@ async def test_micro_context_not_present_is_enumerated_not_a_value():
     ``missing`` (#2360) is read only on the ``EXTRACTED`` branch — a draw that
     already answers nothing has no shortfall to add beside its ``reason``."""
     model = _responds(_TAGGED_NOT_PRESENT)
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.NOT_PRESENT
     assert result.reason == _NOT_PRESENT_REASON
     assert result.value == ""
@@ -1058,7 +1086,9 @@ async def test_micro_context_reads_a_leading_missing_line_as_the_stated_shortfal
     must still be found at line 0 with no ``MISSING:`` line (the sibling tests
     above) and at line 1 when one precedes it, here."""
     model = _responds(_TAGGED_VALUE_WITH_SHORTFALL)
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
     assert result.missing == _SHORTFALL
@@ -1070,7 +1100,9 @@ async def test_micro_context_malformed_missing_line_is_absent_not_a_violation():
     the tag with nothing after it — is simply absent, never a reroll, exactly
     like every other OPTIONAL line's "absence is never a verdict" (#1770)."""
     model = _responds(f"{EXTRACT_MISSING_TAG}   \n{_TAGGED_VALUE}")
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
     assert result.missing == ""
@@ -1084,7 +1116,9 @@ async def test_micro_context_extracts_multi_line_digest_value():
     tag, so an item-per-line list survives the parse intact into MicroContextResult."""
     digest = "Notable lots:\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids\n- Lot 7: 3 zorkmids"
     model = _responds(f"{EXTRACTED_TAG} {digest}")
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == digest  # every line preserved, verbatim
     assert result.value.count("\n") == 3  # the four-line digest is intact
@@ -1096,7 +1130,9 @@ async def test_micro_context_not_present_reason_stays_single_line():
     lines (a model that keeps talking) can never be multi-line-promoted into the
     reason, so a not-present apology never smuggles a body value through."""
     model = _responds(f"{NOT_PRESENT_TAG} no bid amount here\nbut lot 42 looks interesting")
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.NOT_PRESENT
     assert result.reason == "no bid amount here"
     assert "lot 42" not in result.reason
@@ -1110,13 +1146,17 @@ async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_
     not grammar, so stripping decoration from it would corrupt what was extracted."""
     digest = "**Notable lots:**\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids"
     model = _responds(f"- **{EXTRACTED_TAG}** {digest}")
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     # Line 1 lost its decoration with the tag; every later line is byte-identical.
     assert result.value == "Notable lots:\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids"
 
     quoted = _responds(f'{NOT_PRESENT_TAG} "{_NOT_PRESENT_REASON}"')
-    reason = await MicroContext(cast(Any, quoted)).extract(_PAGE_BODY, _INSTRUCTION)
+    reason = await MicroContext(cast(Any, quoted)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert reason.outcome == MicroExtractOutcome.NOT_PRESENT
     assert reason.reason == _NOT_PRESENT_REASON
 
@@ -1215,13 +1255,17 @@ async def test_micro_context_untagged_is_rerolled_then_fails():
     honest EXTRACTION_FAILED.  The apology prose is never promoted to a value, and a
     blank draw takes the same path (no tag to parse)."""
     model = _responds(_UNTAGGED_APOLOGY)
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert result.value == ""
     assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
     blank = _responds("   ")
-    result = await MicroContext(cast(Any, blank)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, blank)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert len(blank.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
@@ -1240,7 +1284,9 @@ async def test_micro_context_untagged_reroll_can_recover():
             )
         )
     )
-    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
     assert len(model.requests) == 2
@@ -1254,7 +1300,9 @@ async def test_micro_context_untagged_reroll_can_recover():
             )
         )
     )
-    recovered = await MicroContext(cast(Any, late)).extract(_PAGE_BODY, _INSTRUCTION)
+    recovered = await MicroContext(cast(Any, late)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
     assert recovered.outcome == MicroExtractOutcome.EXTRACTED
     assert recovered.value == _EXTRACTED_VALUE
     assert len(late.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -1266,11 +1314,44 @@ async def test_micro_context_poison_is_discarded_and_rerolled():
     unchanged context up to the reroll budget, then fails honestly."""
     model = _responds("...???...")
     result = await MicroContext(cast(Any, model), reroll_attempts=3).extract(
-        _PAGE_BODY, _INSTRUCTION
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
     )
     assert result.outcome == MicroExtractOutcome.POISON_REROLL_FAILED
     assert result.value == ""
     assert len(model.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_micro_context_cut_draw_gets_one_thinking_off_last_draw():
+    """A draw the token budget cut (``finish_reason="length"``, empty content)
+    gets ONE more call on the same messages with thinking disabled and the same
+    budget (#2476), and that response answers the draw in place of the cut one —
+    the parse then reads it like any other draw.  Both calls carry the call kind's
+    own token budget, resolved off the client's ``runtime`` by ``agent_name``."""
+    model = MockLlmClient(
+        runtime=RuntimeParams(env_overrides={"TOKEN_BUDGET_BROWSE_EXTRACT": 1234})
+    )
+    model.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content="" if count == 1 else _TAGGED_VALUE,
+            ),
+            finish_reason="length" if count == 1 else None,
+        )
+    )
+    result = await MicroContext(cast(Any, model)).extract(
+        _PAGE_BODY, _INSTRUCTION, call_link=CallLink.new_top()
+    )
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert result.value == _EXTRACTED_VALUE
+    assert len(model.requests) == 2
+    # Both calls carried the draw's kind budget, resolved from this client's runtime.
+    assert model.requests[0]["token_budget"] == 1234
+    assert model.requests[1]["token_budget"] == 1234
+    # The retry is the thinking-off last draw; the first draw keeps the default.
+    assert model.requests[0]["thinking_enabled"] is True
+    assert model.requests[1]["thinking_enabled"] is False
 
 
 def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):

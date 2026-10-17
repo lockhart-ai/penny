@@ -42,6 +42,7 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory import MemoryType
 from penny.database.models import PromptLog
+from penny.llm.call_link import CallLink
 from penny.llm.models import (
     LlmMessage,
     LlmToolCall,
@@ -1086,7 +1087,9 @@ async def test_the_drawn_image_claim_reads_what_the_real_tool_stored(
         install_image_client(penny)
         assert_image_world(penny, "image-claim-probe")
         tool = next(t for t in penny.chat_agent.get_tools() if t.name == "generate_image")
-        result = await tool.run(description="A teal origami dragon on a stormy Lighthouse")
+        result = await tool.run(
+            call_link=CallLink.new_top(), description="A teal origami dragon on a stormy Lighthouse"
+        )
         assert result.success, result.message
         penny.db.media.put(
             data=b"page", mime_type="image/png", source_url="https://pier.example/x", title="t"
@@ -1137,9 +1140,17 @@ async def test_the_email_world_stands_up_through_the_driver(
         for case in EMAIL_CASES:
             assert_mailbox_world(penny, case)
         search = next(t for t in penny.chat_agent.get_tools() if t.name == EMAIL_TOOLS[0])
-        by_sender = (await search.run(from_addr=ABSENT_ASK_SENDER)).message
-        by_subject = (await search.run(subject="rooftop solar quote")).message
-        absent = (await search.run(from_addr=ABSENT_ASK_SENDER, subject=ABSENT_SUBJECT)).message
+        by_sender = (
+            await search.run(call_link=CallLink.new_top(), from_addr=ABSENT_ASK_SENDER)
+        ).message
+        by_subject = (
+            await search.run(call_link=CallLink.new_top(), subject="rooftop solar quote")
+        ).message
+        absent = (
+            await search.run(
+                call_link=CallLink.new_top(), from_addr=ABSENT_ASK_SENDER, subject=ABSENT_SUBJECT
+            )
+        ).message
     assert "Your rooftop solar quote" in by_sender and "Site assessment invoice" in by_sender
     assert "Sunvale" not in by_sender
     assert NEIGHBOUR_FIGURES[0] in by_sender, "the sender search previews an amount"

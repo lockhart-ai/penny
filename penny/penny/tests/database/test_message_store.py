@@ -204,3 +204,93 @@ class TestMessagesInOneMicrosecondKeepTheirWriteOrder:
             "anything on the ferry?",
             "the ferry is delayed",
         ]
+
+
+class TestLiveStepMarkerPublishing:
+    """publish_call_started/publish_tool_started/publish_tool_finished (#2439) —
+    the same subscriber fan-out pattern subscribe_prompt_logged already uses,
+    a no-op with nobody subscribed (no connected browser)."""
+
+    def test_call_started_is_a_no_op_with_no_subscribers(self, db):
+        db.messages.publish_call_started(
+            run_id="run1",
+            parent_run_id=None,
+            parent_tool_call_id=None,
+            agent_name="chat",
+            prompt_type="idle",
+            model="test-model",
+            run_target=None,
+        )  # must not raise
+
+    def test_call_started_notifies_every_subscriber_with_the_given_identity(self, db):
+        first: list = []
+        second: list = []
+        db.messages.subscribe_call_started(first.append)
+        db.messages.subscribe_call_started(second.append)
+
+        db.messages.publish_call_started(
+            run_id="run1",
+            parent_run_id="parent1",
+            parent_tool_call_id="tool-call-1",
+            agent_name="chat",
+            prompt_type="idle",
+            model="test-model",
+            run_target="some-collection",
+        )
+
+        for events in (first, second):
+            assert len(events) == 1
+            event = events[0]
+            assert event.run_id == "run1"
+            assert event.parent_run_id == "parent1"
+            assert event.parent_tool_call_id == "tool-call-1"
+            assert event.agent_name == "chat"
+            assert event.prompt_type == "idle"
+            assert event.model == "test-model"
+            assert event.run_target == "some-collection"
+            assert event.started_at is not None
+
+    def test_tool_started_and_tool_finished_carry_the_dispatched_identity(self, db):
+        started: list = []
+        finished: list = []
+        db.messages.subscribe_tool_started(started.append)
+        db.messages.subscribe_tool_finished(finished.append)
+
+        db.messages.publish_tool_started(
+            run_id="run1", tool_call_id="call1", tool_name="search", status="Searching…"
+        )
+        db.messages.publish_tool_finished(
+            run_id="run1",
+            tool_call_id="call1",
+            tool_name="search",
+            status="Searching…",
+            success=False,
+        )
+
+        assert len(started) == len(finished) == 1
+        assert started[0].run_id == finished[0].run_id == "run1"
+        assert started[0].tool_call_id == finished[0].tool_call_id == "call1"
+        assert finished[0].success is False
+
+    def test_a_raising_subscriber_never_blocks_the_rest(self, db):
+        """One subscriber raising must not stop the others — the same guarantee
+        every other publish here gives (#2441)."""
+        received: list = []
+
+        def bad_listener(event):
+            raise RuntimeError("boom")
+
+        db.messages.subscribe_call_started(bad_listener)
+        db.messages.subscribe_call_started(received.append)
+
+        db.messages.publish_call_started(
+            run_id="run1",
+            parent_run_id=None,
+            parent_tool_call_id=None,
+            agent_name=None,
+            prompt_type=None,
+            model="test-model",
+            run_target=None,
+        )
+
+        assert len(received) == 1

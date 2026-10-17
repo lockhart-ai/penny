@@ -4,12 +4,13 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 from sqlalchemy import and_, bindparam, func, inspect, or_, text
 from sqlmodel import Session, col, select
+from sqlmodel.sql.expression import SelectOfScalar
 
 from penny.agents.models import MessageRole
 from penny.clock import Clock
@@ -30,6 +31,56 @@ _BOLD_ITALIC_RE = re.compile(r"\*{1,3}(.+?)\*{1,3}")
 _STRIKETHROUGH_RE = re.compile(r"~{1,2}(.+?)~{1,2}")
 _MONOSPACE_RE = re.compile(r"`(.+?)`")
 _TILDE_OPERATOR = "\u223c"
+
+
+class CallStarted(BaseModel):
+    """A model call about to be made (#2439) — published BEFORE any ``promptlog``
+    row exists for it, from ``LlmClient.chat()`` itself (the one chokepoint every
+    caller shares: the agent loop, a micro-context's own draw via
+    ``CallLink.child()``, the conversation-machine classifier, round framing,
+    skill extraction).  Carries exactly the identity the eventual logged row
+    will carry (``run_id``/``parent_run_id``/``parent_tool_call_id``), so a live
+    Prompts tab can show a running row in the same place the logged draw will
+    land, and later match the two by ``run_id`` — a ``child()`` draw mints a
+    fresh one every time (unique, trivial match); a run's own sequential steps
+    share one, but the agent loop awaits each call before starting the next, so
+    at most one is ever outstanding for a given ``run_id`` (unambiguous FIFO)."""
+
+    run_id: str
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    agent_name: str | None
+    prompt_type: str | None
+    model: str
+    run_target: str | None
+    started_at: datetime
+
+
+class ToolStarted(BaseModel):
+    """A dispatched tool call about to execute (#2439) — published from the
+    dispatcher (``Agent._execute_single_tool``) before ``ToolExecutor.execute``
+    runs.  ``(run_id, tool_call_id)`` is an exact identity (unlike a model
+    call's), so a running tool entry never needs FIFO matching."""
+
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    started_at: datetime
+
+
+class ToolFinished(BaseModel):
+    """A dispatched tool call that just finished (#2439) — published right
+    after ``ToolExecutor.execute`` returns, from the same site as
+    ``ToolStarted``.  ``success`` is the tool's own structural result, so the
+    addon can flip a running row to a checkmark/x immediately, ahead of the
+    authoritative logged record a later call's ``messages`` will carry."""
+
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    status: str
+    success: bool
 
 
 class PromptPerf(NamedTuple):
@@ -188,8 +239,134 @@ class MessageStore:
     def __init__(self, engine, clock: Clock | None = None):
         self.engine = engine
         self._clock = clock if clock is not None else Clock()
-        self._on_prompt_logged: Callable[[dict], None] | None = None
-        self._on_run_outcome_set: Callable[[str, str, str], None] | None = None
+        # Lists, not slots (#2441): every connected channel — browser extension AND
+        # iOS — subscribes its own listener here, so each gets every push instead of
+        # only the one built last silently taking over the other's.
+        self._prompt_logged_listeners: list[Callable[[dict], None]] = []
+        self._run_outcome_set_listeners: list[Callable[[str, str, str], None]] = []
+        # Live step markers (#2439) — published ahead of any DB row, from
+        # LlmClient.chat() and the tool dispatcher, so a connected addon can show
+        # a running step before the logged record exists.  No channel subscribes
+        # these by default (browser does; iOS doesn't yet — no live renderer).
+        self._call_started_listeners: list[Callable[[CallStarted], None]] = []
+        self._tool_started_listeners: list[Callable[[ToolStarted], None]] = []
+        self._tool_finished_listeners: list[Callable[[ToolFinished], None]] = []
+
+    def subscribe_prompt_logged(self, listener: Callable[[dict], None]) -> None:
+        """Add a listener notified after every logged prompt that carries a run id."""
+        self._prompt_logged_listeners.append(listener)
+
+    def subscribe_run_outcome_set(self, listener: Callable[[str, str, str], None]) -> None:
+        """Add a listener notified whenever a run's outcome is set."""
+        self._run_outcome_set_listeners.append(listener)
+
+    def subscribe_call_started(self, listener: Callable[[CallStarted], None]) -> None:
+        """Add a listener notified just before every model call is made (#2439)."""
+        self._call_started_listeners.append(listener)
+
+    def subscribe_tool_started(self, listener: Callable[[ToolStarted], None]) -> None:
+        """Add a listener notified just before every dispatched tool call runs (#2439)."""
+        self._tool_started_listeners.append(listener)
+
+    def subscribe_tool_finished(self, listener: Callable[[ToolFinished], None]) -> None:
+        """Add a listener notified right after every dispatched tool call finishes (#2439)."""
+        self._tool_finished_listeners.append(listener)
+
+    def _publish_prompt_logged(self, payload: dict) -> None:
+        """Notify every subscriber; one raising must not stop the rest, or the
+        write that already landed before this fires."""
+        for listener in tuple(self._prompt_logged_listeners):
+            try:
+                listener(payload)
+            except Exception:
+                logger.exception("A prompt-logged listener failed")
+
+    def _publish_run_outcome_set(self, run_id: str, outcome: str, reason: str) -> None:
+        """Notify every subscriber; one raising must not stop the rest."""
+        for listener in tuple(self._run_outcome_set_listeners):
+            try:
+                listener(run_id, outcome, reason)
+            except Exception:
+                logger.exception("A run-outcome-set listener failed")
+
+    def publish_call_started(
+        self,
+        *,
+        run_id: str,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        agent_name: str | None,
+        prompt_type: str | None,
+        model: str,
+        run_target: str | None,
+    ) -> None:
+        """Notify every subscriber that a model call is about to be made (#2439).
+
+        Called from ``LlmClient.chat()`` BEFORE the network request — the one
+        chokepoint every caller (the agent loop, a micro-context draw, the
+        classifier, round framing, skill extraction) shares — so a connected
+        addon can show a running row before any ``promptlog`` row exists for
+        this call.  A no-op with nobody subscribed (no connected browser), the
+        same guard every publish here uses."""
+        if not self._call_started_listeners:
+            return
+        event = CallStarted(
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            agent_name=agent_name,
+            prompt_type=prompt_type,
+            model=model,
+            run_target=run_target,
+            started_at=self._clock.now(),
+        )
+        for listener in tuple(self._call_started_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("A call-started listener failed")
+
+    def publish_tool_started(
+        self, *, run_id: str, tool_call_id: str, tool_name: str, status: str
+    ) -> None:
+        """Notify every subscriber that a dispatched tool call is about to run
+        (#2439).  Called from the dispatcher (``Agent._execute_single_tool``)
+        before ``ToolExecutor.execute`` — a no-op with nobody subscribed."""
+        if not self._tool_started_listeners:
+            return
+        event = ToolStarted(
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            started_at=self._clock.now(),
+        )
+        for listener in tuple(self._tool_started_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("A tool-started listener failed")
+
+    def publish_tool_finished(
+        self, *, run_id: str, tool_call_id: str, tool_name: str, status: str, success: bool
+    ) -> None:
+        """Notify every subscriber that a dispatched tool call just finished
+        (#2439).  Called from the same dispatcher site, right after
+        ``ToolExecutor.execute`` returns — a no-op with nobody subscribed."""
+        if not self._tool_finished_listeners:
+            return
+        event = ToolFinished(
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            success=success,
+        )
+        for listener in tuple(self._tool_finished_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("A tool-finished listener failed")
 
     def _session(self) -> Session:
         return Session(self.engine)
@@ -312,9 +489,9 @@ class MessageStore:
                 session.commit()
                 session.refresh(log)
                 logger.debug("Logged prompt exchange (model=%s)", model)
-                if self._on_prompt_logged and run_id:
+                if self._prompt_logged_listeners and run_id:
                     input_tokens, output_tokens = self._extract_token_usage(response_payload)
-                    self._on_prompt_logged(
+                    self._publish_prompt_logged(
                         {
                             "id": log.id,
                             "timestamp": log.timestamp.isoformat(),
@@ -854,8 +1031,8 @@ class MessageStore:
                     last_prompt.tool_failures = tool_failures
                     session.add(last_prompt)
                     session.commit()
-                    if self._on_run_outcome_set:
-                        self._on_run_outcome_set(run_id, outcome, reason)
+                    if self._run_outcome_set_listeners:
+                        self._publish_run_outcome_set(run_id, outcome, reason)
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
@@ -1221,22 +1398,84 @@ class MessageStore:
                 grouped.setdefault(prompt.run_id, []).append(prompt)
         return grouped
 
+    # A micro-context can itself be moved to run inside another one (a draw whose
+    # own ``parent_run_id`` names another draw's ``run_id``, not a top-level run) —
+    # the code owner may rearrange these at any time with no code change here, so
+    # the walk below follows the chain to WHATEVER depth it actually goes, capped
+    # only so a runaway chain can't make one page's query unbounded.
+    _CHILD_DRAW_MAX_DEPTH = 8
+
     @staticmethod
     def _group_child_draws(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:
-        """Every child draw (#2434) made on behalf of any of the given runs —
-        the batch form of ``get_child_draws``, one query for a whole page of runs
-        instead of one per run — grouped by ``parent_run_id``, ascending time order
-        (the order ``_serialize_run`` renders them in)."""
+        """Every child draw (#2434) made on behalf of any of the given TOP-LEVEL
+        runs, AT ANY DEPTH (#2435) — the batch form of ``get_child_draws``, one
+        query per LEVEL for a whole page of runs instead of one per run.
+
+        Walks outward from ``run_ids`` by ``parent_run_id`` a level at a time
+        (each level's query keyed on the previous level's own run_ids), so a
+        draw dispatched from INSIDE another draw is found exactly like one
+        dispatched from a top-level run — nothing here is keyed to which
+        micro-context a row's ``agent_name`` names.  Every row is kept, even
+        when several share one run_id (a micro-context's own poison-reroll
+        attempts keep one run_id across tries), then each is attributed back to
+        the top-level run it ultimately descends from by walking its own
+        ``parent_run_id`` chain up through what this page just found.
+
+        Grouped by that top-level run_id, ascending time order (the order
+        ``_serialize_run`` renders them in) — a FLAT list per top-level run,
+        same shape #2434 shipped: every entry still carries its own
+        ``parent_run_id``/``parent_tool_call_id``, so the addon builds the
+        whole nesting tree itself, to any depth, from those ids alone."""
+        top_level_ids = set(run_ids)
+        all_draws: list[PromptLog] = []
+        parent_of: dict[str, str] = {}
+        frontier = top_level_ids
+        for _ in range(MessageStore._CHILD_DRAW_MAX_DEPTH):
+            if not frontier:
+                break
+            level = session.exec(
+                select(PromptLog)
+                .where(col(PromptLog.parent_run_id).in_(frontier))
+                .order_by(col(PromptLog.timestamp).asc())
+            ).all()
+            if not level:
+                break
+            next_frontier: set[str] = set()
+            for draw in level:
+                if draw.run_id is None or draw.parent_run_id is None:
+                    continue
+                all_draws.append(draw)
+                if draw.run_id not in parent_of:
+                    next_frontier.add(draw.run_id)
+                parent_of[draw.run_id] = draw.parent_run_id
+            frontier = next_frontier
+
         grouped: dict[str, list[PromptLog]] = {}
-        draws = session.exec(
-            select(PromptLog)
-            .where(col(PromptLog.parent_run_id).in_(run_ids))
-            .order_by(col(PromptLog.timestamp).asc())
-        ).all()
-        for draw in draws:
-            if draw.parent_run_id is not None:
-                grouped.setdefault(draw.parent_run_id, []).append(draw)
+        for draw in all_draws:
+            origin = MessageStore._top_level_origin(draw.parent_run_id, parent_of, top_level_ids)
+            if origin is not None:
+                grouped.setdefault(origin, []).append(draw)
+        for draws in grouped.values():
+            draws.sort(key=lambda d: d.timestamp)
         return grouped
+
+    @staticmethod
+    def _top_level_origin(
+        parent_run_id: str | None, parent_of: dict[str, str], top_level_ids: set[str]
+    ) -> str | None:
+        """Walk a draw's own ``parent_run_id`` chain up to the top-level run it
+        ultimately descends from, through the parent-of-each-run_id map
+        ``_group_child_draws`` already built for this page.  ``None`` for a
+        chain this page never fully resolved — its own origin fell outside
+        ``run_ids``, or the chain ran past ``_CHILD_DRAW_MAX_DEPTH``."""
+        current = parent_run_id
+        for _ in range(MessageStore._CHILD_DRAW_MAX_DEPTH):
+            if current is None:
+                return None
+            if current in top_level_ids:
+                return current
+            current = parent_of.get(current)
+        return None
 
     def get_prompt_log_runs(
         self,
@@ -1269,6 +1508,16 @@ class MessageStore:
                 return self._flagged_runs(session, agent_name, query)
             run_ids_ordered = self._page_of_run_ids(session, limit, offset, agent_name, query)
             return self._runs_for(session, run_ids_ordered)
+
+    def get_run(self, run_id: str) -> dict | None:
+        """One run, fully serialized (run → prompts), by its ``run_id`` — the
+        fetch-one counterpart to ``get_prompt_log_runs``/``get_target_runs``'s
+        pages, for a caller that already holds the id (a skill's
+        ``source_run_id``, say) and wants to open it directly rather than paging
+        to find it.  ``None`` when no prompt in the ledger carries that run_id."""
+        with self._session() as session:
+            runs = self._runs_for(session, [run_id])
+        return runs[0] if runs else None
 
     def get_target_runs(self, run_target: str, limit: int = 50, offset: int = 0) -> list[dict]:
         """Full serialized runs for one collection's collector, newest-first —
@@ -1304,7 +1553,13 @@ class MessageStore:
 
         Also batches each run's child draws (#2434) in the same page — one extra
         query, not one per run — so every fetched run carries its own micro-context
-        draws alongside its prompts."""
+        draws alongside its prompts.
+
+        Every existing caller first selects ``run_ids_ordered`` off this same
+        table, so each id always has at least one prompt — except ``get_run``,
+        whose id comes from outside (a skill's ``source_run_id``, say) with no
+        guarantee it ever existed.  So a requested id with no prompt rows is
+        skipped rather than assumed present (#2443)."""
         if not run_ids_ordered:
             return []
         grouped: dict[str, list[PromptLog]] = {}
@@ -1320,7 +1575,11 @@ class MessageStore:
         child_draws_by_run = self._group_child_draws(session, run_ids_ordered)
         runs = []
         for run_id in run_ids_ordered:
-            run_prompts = grouped[run_id]
+            run_prompts = grouped.get(run_id)
+            if run_prompts is None:
+                continue
+            # Model time: this run's OWN prompts only — _serialize_run keeps
+            # child draws out of this sum on purpose (#2438).
             total_duration_ms = sum(p.duration_ms or 0 for p in run_prompts)
             runs.append(
                 self._serialize_run(
@@ -1401,9 +1660,10 @@ class MessageStore:
         agent_name: str | None,
         search: str | None = None,
     ) -> list[str]:
-        """Return one page of run_ids, ordered newest-first by each run's most
-        recent prompt.  Touches only the indexed run_id/timestamp columns — no
-        heavy JSON payloads — so it stays cheap as the table grows.
+        """Return one page of TOP-LEVEL run_ids, ordered newest-first by each
+        run's latest activity.  Touches only the indexed run_id/parent_run_id/
+        timestamp columns — no heavy JSON payloads — so it stays cheap as the
+        table grows.
 
         ``search`` keeps only runs with a prompt whose ``response`` or
         ``thinking`` matches it via the ``promptlog_fts`` full-text index
@@ -1412,22 +1672,68 @@ class MessageStore:
         """
         if search:
             return MessageStore._page_of_run_ids_fts(session, limit, offset, agent_name, search)
-        query = select(PromptLog.run_id).where(col(PromptLog.run_id).isnot(None))
-        if agent_name:
-            query = query.where(PromptLog.agent_name == agent_name)
-        query = (
-            query.group_by(PromptLog.run_id)
-            .order_by(func.max(PromptLog.timestamp).desc())
-            .limit(limit)
-            .offset(offset)
-        )
+        query = MessageStore._top_level_run_ids_by_activity(agent_name).limit(limit).offset(offset)
         return [run_id for run_id in session.exec(query).all() if run_id is not None]
+
+    @staticmethod
+    def _top_level_run_ids_by_activity(agent_name: str | None) -> SelectOfScalar[str]:
+        """Every top-level run_id (#2435 — one with at least one prompt of its
+        OWN, never only a micro-context draw made on another run's behalf),
+        ordered by latest activity across both its own prompts AND any child
+        draw (#2434) made on its behalf — so a run whose own steps are stale
+        but whose draw just landed still sorts to the top, matching the live
+        push's reorder-on-update.
+
+        A run_id with zero top-level prompts of its own (every row a child
+        draw) never enters this result at all — the bug this exists to fix, a
+        draw's own run_id surfacing as its own anonymous top-level run.
+        ``agent_name`` filters the TOP-LEVEL rows only; a run's children always
+        come along with it regardless of their own agent_name — the addon
+        attaches them client-side once the page is loaded.
+
+        Built from two grouped subqueries rather than a raw SQL union, so the
+        "latest of two sources" comparison stays expressed through SQLAlchemy:
+        SQLite's scalar (two-plus-argument) ``MAX()`` — distinct from its
+        single-argument AGGREGATE ``MAX()`` — picks the larger of a run's own
+        latest timestamp and its latest child draw's, coalescing a run with no
+        draws (no match on the outer join) back to its own latest."""
+        own = select(
+            col(PromptLog.run_id).label("run_id"),
+            func.max(PromptLog.timestamp).label("own_max"),
+        ).where(col(PromptLog.run_id).isnot(None), col(PromptLog.parent_run_id).is_(None))
+        if agent_name:
+            own = own.where(PromptLog.agent_name == agent_name)
+        own_activity = own.group_by(PromptLog.run_id).subquery()
+
+        draw_activity = (
+            select(
+                col(PromptLog.parent_run_id).label("run_id"),
+                func.max(PromptLog.timestamp).label("draw_max"),
+            )
+            .where(col(PromptLog.parent_run_id).isnot(None))
+            .group_by(PromptLog.parent_run_id)
+            .subquery()
+        )
+
+        latest_activity = func.max(
+            own_activity.c.own_max,
+            func.coalesce(draw_activity.c.draw_max, own_activity.c.own_max),
+        )
+        return (
+            select(own_activity.c.run_id)
+            .outerjoin(draw_activity, draw_activity.c.run_id == own_activity.c.run_id)
+            .order_by(latest_activity.desc())
+        )
 
     @staticmethod
     def _page_of_run_ids_fts(
         session: Session, limit: int, offset: int, agent_name: str | None, search: str
     ) -> list[str]:
-        """Run-id page for a full-text search, newest-first, via promptlog_fts.
+        """Run-id page for a full-text search, newest-first by latest activity,
+        via promptlog_fts — the search-path twin of
+        ``_top_level_run_ids_by_activity``.  Raw SQL throughout (not just for the
+        latest-activity comparison): ``promptlog_fts`` is a virtual table with no
+        SQLModel mapping, so the MATCH join already has to be text().
 
         The user's text becomes a per-word prefix query (``morning news`` →
         ``morning* news*``, implicit AND).  With no searchable word characters
@@ -1437,10 +1743,18 @@ class MessageStore:
             return []
         agent_clause = "AND p.agent_name = :agent" if agent_name else ""
         sql = text(
+            "WITH child_activity AS ("
+            "  SELECT parent_run_id AS run_id, MAX(timestamp) AS draw_max"
+            "  FROM promptlog WHERE parent_run_id IS NOT NULL GROUP BY parent_run_id"
+            ") "
             "SELECT p.run_id FROM promptlog p "
             "JOIN promptlog_fts f ON f.rowid = p.id "
-            f"WHERE p.run_id IS NOT NULL AND promptlog_fts MATCH :q {agent_clause} "
-            "GROUP BY p.run_id ORDER BY MAX(p.timestamp) DESC LIMIT :limit OFFSET :offset"
+            "LEFT JOIN child_activity c ON c.run_id = p.run_id "
+            f"WHERE p.run_id IS NOT NULL AND p.parent_run_id IS NULL "
+            f"AND promptlog_fts MATCH :q {agent_clause} "
+            "GROUP BY p.run_id "
+            "ORDER BY MAX(MAX(p.timestamp), COALESCE(MAX(c.draw_max), MAX(p.timestamp))) DESC "
+            "LIMIT :limit OFFSET :offset"
         )
         params: dict[str, Any] = {"q": match, "limit": limit, "offset": offset}
         if agent_name:
@@ -1543,11 +1857,15 @@ class MessageStore:
         merely offered).  ``parent_run_id``/``parent_tool_call_id`` link a child
         draw back to the run/step it was made for (``None`` for an ordinary
         top-level call); ``call_outcome``/``call_error_class``/``call_error_message``
-        carry how the call itself ended."""
+        carry how the call itself ended.  ``run_id`` is carried on every record
+        (not only a draw's) so a draw's OWN children — a micro-context nested
+        inside another, to any depth (#2435) — can be found by matching their
+        ``parent_run_id`` against THIS id, purely structurally."""
         response = json.loads(p.response) if p.response else {}
         input_tokens, output_tokens = MessageStore._extract_token_usage(response)
         return {
             "id": p.id,
+            "run_id": p.run_id,
             "timestamp": p.timestamp.isoformat(),
             "model": p.model,
             "agent_name": p.agent_name or "",
@@ -1569,6 +1887,24 @@ class MessageStore:
         }
 
     @staticmethod
+    def _run_window(rows: list[PromptLog]) -> tuple[datetime, datetime]:
+        """The structural start/end of a run: the earliest ``timestamp -
+        duration_ms`` and the latest ``timestamp`` across EVERY row handed to it
+        (#2438).  ``PromptLog.timestamp`` is stamped when a call is logged, i.e.
+        when it ENDS, so a row's own start is recovered by subtracting how long it
+        took; a null ``duration_ms`` (a row logged before the column existed, or a
+        call that never finished) is read as 0, same as the duration sums
+        elsewhere in this module.
+
+        Callers hand this the run's own prompts AND its child draws together (a
+        flat list, any nesting depth) — nothing here is keyed to an agent or tool
+        name, so it adapts to however many micro-contexts a cycle makes without a
+        code change."""
+        starts = [p.timestamp - timedelta(milliseconds=p.duration_ms or 0) for p in rows]
+        ends = [p.timestamp for p in rows]
+        return min(starts), max(ends)
+
+    @staticmethod
     def _serialize_run(
         run_id: str,
         prompts: list[PromptLog],
@@ -1583,7 +1919,21 @@ class MessageStore:
         — each entry already carries its own ``parent_tool_call_id`` (or ``None``
         for the five micro-context customers that aren't nested inside a dispatched
         tool call), so the addon nests them itself rather than this needing a
-        second, run-shaped schema."""
+        second, run-shaped schema.
+
+        Two timings, kept deliberately separate (#2438): ``wall_duration_ms`` is
+        the real elapsed time of the whole run tree — ``started_at`` to
+        ``ended_at``, both computed by ``_run_window`` over this run's own
+        prompts AND its child draws, so a browse round whose extraction read
+        pages for minutes shows that whole span.  ``total_duration_ms`` stays
+        exactly what it always was — this run's OWN prompts' summed model-call
+        time, EXCLUDING child draws — labelled "model time" by the addon; a
+        child draw can run long after the model itself has gone quiet (reading a
+        page, say), and keeping it out of ``total_duration_ms`` keeps that number
+        paired with ``total_output_tokens`` for an honest tok/s."""
+        all_rows = [*prompts, *(child_draws or [])]
+        started_at, ended_at = MessageStore._run_window(all_rows)
+        wall_duration_ms = int((ended_at - started_at).total_seconds() * 1000)
         total_input_tokens = 0
         total_output_tokens = 0
         serialized_prompts = []
@@ -1620,9 +1970,10 @@ class MessageStore:
             "run_id": run_id,
             "agent_name": prompts[0].agent_name or "unknown",
             "prompt_count": len(prompts),
-            "started_at": prompts[0].timestamp.isoformat(),
-            "ended_at": prompts[-1].timestamp.isoformat(),
+            "started_at": started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
             "total_duration_ms": total_duration_ms,
+            "wall_duration_ms": wall_duration_ms,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
             "run_outcome": run_outcome,

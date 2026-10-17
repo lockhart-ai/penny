@@ -260,14 +260,22 @@ class MemoryStore:
         self._send_queue = (
             send_queue if send_queue is not None else SendQueueStore(engine, self._clock)
         )
-        # Fired after any mutation so observers (the browser channel) can refresh.
-        # The factory injects it into each Memory object it builds.
-        self._on_memory_changed: Callable[[str | None], None] | None = None
+        # Fired after any mutation so observers (the browser extension, iOS) can
+        # refresh.  A list, not a slot (#2441): every connected channel subscribes
+        # its own listener, so each gets the refresh instead of only the one built
+        # last silently taking over the other's.  ``_notify_changed`` is the single
+        # callable the factory injects into each Memory object it builds, and it
+        # fans out to every subscriber.
+        self._memory_changed_listeners: list[Callable[[str | None], None]] = []
         # The bound collector cycle's undo journal (#1936) — ``None`` outside a cycle,
         # which is when there is nothing to undo.  It lives here rather than being
         # passed down because the mutations it records happen at this layer's own
         # chokepoint, several call frames below anything the collector holds.
         self._journal: CycleJournal | None = None
+
+    def subscribe_memory_changed(self, listener: Callable[[str | None], None]) -> None:
+        """Add a listener notified after any memory mutation."""
+        self._memory_changed_listeners.append(listener)
 
     # ── The bound cycle's undo journal (#1936) ────────────────────────────────
 
@@ -326,7 +334,7 @@ class MemoryStore:
         row = self.get(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG)
         if row is None:
             return None
-        return RunLog(row, self.engine, on_changed=self._on_memory_changed, clock=self._clock)
+        return RunLog(row, self.engine, on_changed=self._notify_changed, clock=self._clock)
 
     def _build(self, row: MemoryRow) -> Memory:
         """Construct the right ``Memory`` subclass for an already-loaded row."""
@@ -335,21 +343,21 @@ class MemoryStore:
                 row,
                 self.engine,
                 direction=_MESSAGE_LOG_DIRECTIONS[row.name],
-                on_changed=self._on_memory_changed,
+                on_changed=self._notify_changed,
                 clock=self._clock,
             )
         if row.name == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
-            return RunLog(row, self.engine, on_changed=self._on_memory_changed, clock=self._clock)
+            return RunLog(row, self.engine, on_changed=self._notify_changed, clock=self._clock)
         if row.type == MemoryType.COLLECTION:
             return Collection(
                 row,
                 self.engine,
                 runtime=self._runtime,
-                on_changed=self._on_memory_changed,
+                on_changed=self._notify_changed,
                 journal=self._journal_for(row.name),
                 clock=self._clock,
             )
-        return Log(row, self.engine, on_changed=self._on_memory_changed, clock=self._clock)
+        return Log(row, self.engine, on_changed=self._notify_changed, clock=self._clock)
 
     def _journal_for(self, name: str) -> CycleJournal | None:
         """The bound cycle's journal, iff ``name`` is the collection it is bound to.
@@ -604,8 +612,16 @@ class MemoryStore:
             return set(rows)
 
     def _notify_changed(self, name: str | None) -> None:
-        if self._on_memory_changed is not None:
-            self._on_memory_changed(name)
+        """Fan out to every subscriber; one raising must not stop the rest.
+
+        This is the single callable the factory hands each ``Memory`` object as
+        ``on_changed`` (#2441) — the object calls one thing, this is what turns
+        that one call into every connected channel's own listener."""
+        for listener in tuple(self._memory_changed_listeners):
+            try:
+                listener(name)
+            except Exception:
+                logger.exception("A memory-changed listener failed")
 
     def notify_changed(self, name: str) -> None:
         """Raise the memory-changed refresh signal without writing anything.

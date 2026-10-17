@@ -142,7 +142,8 @@ penny/
     migrate.py        — Migration runner: file discovery, tracking table, validation
     migrations/       — Numbered migration files (0001–0025)
   llm/
-    client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one
+    client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one. `chat` takes a required `call_link: CallLink` and reads `run_id`/`parent_run_id`/`parent_tool_call_id` straight off it — no ambient state, no default
+    call_link.py      — `CallLink` (#2458): the frozen, explicit run/tool-call linkage every model call and every dispatched tool call carries — `run_id`/`parent_run_id`/`parent_tool_call_id` (logged identity) plus `tool_call_id` (position: the tool call this link is presently inside, consumed only by `child()`). Constructors: `top(run_id)` / `new_top()` for a run starter, `for_tool_call(id)` for the dispatcher, `child()` for a micro-context's own draw — required everywhere, no ambient reads, no fallback
     image_client.py   — OllamaImageClient: Ollama-specific HTTP client for image generation and model listing
     models.py         — LlmMessage, LlmResponse, LlmToolCall, LlmError hierarchy (SDK-decoupled Pydantic types)
     embeddings.py     — Re-exports serialize/deserialize/cosine from shared similarity/ package
@@ -225,7 +226,7 @@ There are no conditional (config-gated) commands — email retired onto the chat
 - `RuntimeParams` class provides attribute access: `config.runtime.IDLE_SECONDS`
 - Three-tier lookup chain: DB override → env override → ConfigParam.default
 - Config values are read on each use (not cached), so changes take effect immediately
-- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout)
+- Groups: Chat (max steps, search URL, context limits, domain permission mode), Background (idle threshold, COLLECTOR_TICK_INTERVAL, COLLECTOR_RUN_HISTORY, BACKGROUND_MAX_STEPS, dedup thresholds), Email (body max length, search/list limits, request timeout), Token budgets (one `TOKEN_BUDGET_*` param per model-call kind — chat, collector, browse-extract, notify-composer, skill-binder, skill-framer, skill-namer, state-classifier — read by `token_budget_for(runtime, agent_name)` and sent as `LlmClient.chat()`'s `token_budget`, #2474)
 
 ## Data Model
 

@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from penny.constants import PennyConstants
+from penny.llm.call_link import CallLink
 from penny.plugins.zoho.email_tools import (
     APPLY_LABEL_FAILED,
     CREATE_FOLDER_FAILED,
@@ -34,6 +35,7 @@ async def test_move_emails_to_existing_folder():
 
     tool = MoveEmailsTool(client)
     result = await tool.execute(
+        CallLink.new_top(),
         message_ids=["F001:M1", "F001:M2"],
         folder_path="Invoices",
         create_if_missing=True,
@@ -56,6 +58,7 @@ async def test_move_emails_creates_folder_when_missing():
 
     tool = MoveEmailsTool(client)
     result = await tool.execute(
+        CallLink.new_top(),
         message_ids=["F001:M1"],
         folder_path="Accounting/Expenses/AWS",
         create_if_missing=True,
@@ -71,6 +74,7 @@ async def test_move_emails_no_message_ids():
     client = MagicMock()
     tool = MoveEmailsTool(client)
     result = await tool.execute(
+        CallLink.new_top(),
         message_ids=[],
         folder_path="Invoices",
         create_if_missing=True,
@@ -89,7 +93,7 @@ async def test_create_folder_tool():
     client.create_nested_folder = AsyncMock(return_value=folder)
 
     tool = CreateFolderTool(client)
-    result = await tool.execute(folder_path="Clients/Acme")
+    result = await tool.execute(CallLink.new_top(), folder_path="Clients/Acme")
 
     assert isinstance(result, ToolResult)
     assert result.success is True
@@ -106,6 +110,7 @@ async def test_apply_label_tool_creates_label_when_missing():
 
     tool = ApplyLabelTool(client)
     result = await tool.execute(
+        CallLink.new_top(),
         message_ids=["F001:M1"],
         label_name="Done",
         create_if_missing=True,
@@ -130,7 +135,7 @@ async def test_list_labels_tool():
     )
 
     tool = ListLabelsTool(client)
-    result = await tool.execute()
+    result = await tool.execute(CallLink.new_top())
 
     assert isinstance(result, ToolResult)
     assert result.success is True
@@ -143,6 +148,7 @@ async def test_create_email_rule_persists_via_store(db):
     """create_email_rule stores a typed rule through db.email_rules and echoes it."""
     tool = CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO)
     result = await tool.run(
+        CallLink.new_top(),
         name="AWS invoices",
         condition={"from": "aws@amazon.com"},
         action={"move_to": "Accounting/Expenses/AWS"},
@@ -176,12 +182,13 @@ async def test_list_email_rules_renders_active_rules(db):
     """list_email_rules reads active rules via the store and renders them."""
     create = CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO)
     await create.run(
+        CallLink.new_top(),
         name="AWS invoices",
         condition={"from": "aws@amazon.com"},
         action={"move_to": "Accounting/Expenses/AWS"},
     )
 
-    result = await ListEmailRulesTool(db, PennyConstants.PROVIDER_ZOHO).run()
+    result = await ListEmailRulesTool(db, PennyConstants.PROVIDER_ZOHO).run(CallLink.new_top())
 
     assert isinstance(result, ToolResult)
     assert result.success is True
@@ -199,7 +206,7 @@ async def test_list_email_rules_renders_active_rules(db):
 @pytest.mark.asyncio
 async def test_list_email_rules_when_none(db):
     """list_email_rules reports an empty rule set honestly."""
-    result = await ListEmailRulesTool(db, PennyConstants.PROVIDER_ZOHO).run()
+    result = await ListEmailRulesTool(db, PennyConstants.PROVIDER_ZOHO).run(CallLink.new_top())
     assert result.success is True
     assert result.message == "No email rules configured."
 
@@ -208,6 +215,7 @@ async def test_list_email_rules_when_none(db):
 async def test_create_email_rule_rejects_empty_condition(db):
     """An all-empty condition is refused with an actionable, field-naming message."""
     result = await CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO).run(
+        CallLink.new_top(),
         name="catch all",
         condition={},
         action={"move_to": "Somewhere"},
@@ -229,6 +237,7 @@ async def test_create_email_rule_rejects_empty_condition(db):
 async def test_create_email_rule_rejects_unknown_field(db):
     """An unknown condition field is refused, not silently absorbed."""
     result = await CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO).run(
+        CallLink.new_top(),
         name="typo rule",
         condition={"sender": "aws"},
         action={"label": "invoices"},
@@ -264,6 +273,7 @@ async def test_move_emails_reports_a_raised_move():
     client.move_messages = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     result = await MoveEmailsTool(client).execute(
+        CallLink.new_top(),
         message_ids=["F001:M1"],
         folder_path="Invoices",
     )
@@ -279,7 +289,7 @@ async def test_create_folder_reports_a_raised_create():
         side_effect=RuntimeError("Zoho OAuth error: invalid_grant")
     )
 
-    result = await CreateFolderTool(client).execute(folder_path="Clients/Acme")
+    result = await CreateFolderTool(client).execute(CallLink.new_top(), folder_path="Clients/Acme")
 
     assert result.success is False
     assert result.message == CREATE_FOLDER_FAILED.format(e="Zoho OAuth error: invalid_grant")
@@ -292,6 +302,7 @@ async def test_apply_label_reports_a_raised_apply():
     client.apply_label = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     result = await ApplyLabelTool(client).execute(
+        CallLink.new_top(),
         message_ids=["F001:M1"],
         label_name="Done",
     )
@@ -305,7 +316,7 @@ async def test_list_labels_reports_a_raised_listing():
     client = MagicMock()
     client.get_labels = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    result = await ListLabelsTool(client).execute()
+    result = await ListLabelsTool(client).execute(CallLink.new_top())
 
     assert result.success is False
     assert result.message == LIST_LABELS_FAILED.format(e="connection refused")

@@ -24,6 +24,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from penny.llm.call_link import CallLink
 from penny.tools.base import Tool
 from penny.tools.models import NoArgs, ToolResult
 
@@ -51,7 +52,7 @@ class _NotificationsTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         recipient = self._db.users.get_primary_sender()
         if recipient is None:
             return ToolResult(message=self._NO_RECIPIENT_RESPONSE, success=False)

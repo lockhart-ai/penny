@@ -40,6 +40,7 @@ class PennyResponse:
     # is the one exception, read only by the account (never handed to a draw), so it
     # stays third person.
     FACTS_REROLLS_EXHAUSTED = "Your last {attempts} answers this turn came back unusable."
+    FACTS_BUDGET_EXCEEDED = "Your last answer ran past its thinking budget before it could finish."
     FACTS_MAX_STEPS = (
         "The step limit of {steps} tool steps was reached before an answer was written."
     )

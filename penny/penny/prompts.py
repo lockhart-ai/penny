@@ -212,14 +212,18 @@ class Prompt:
     # the turn.  ``{record}`` is the ledger's own answer: the entries this run's stamp is
     # on, or — when it tried and none landed — each try with the tool's own answer to it.
     #
-    # It is a section of Penny's OWN STATE, appended to the end of the system prompt, and
-    # the reply is drawn after it; it is never a message in the conversation (#2030).  As a
-    # user turn arriving after a reply was already written, it read as the user correcting
-    # that reply, and the reply that followed answered the correction ("You're totally
-    # right…") instead of the user.  So the draft it would have corrected is discarded and
-    # the record is part of what the one reply is written from, in the place Penny reads
-    # her own situation.  The closing lines give PERMISSION to report a shortfall, because
-    # the reply this replaces was not lying — it was counting from the wrong place.
+    # It is a section of Penny's OWN STATE, appended to the end of the step's own
+    # tool-result message the moment the write call lands (#2473), and the one reply this
+    # run drafts is drawn after it; it is never a message in the conversation (#2030) and
+    # never edited into the system prompt (editing the prefix mid-run would invalidate a
+    # local build's prefix cache).  A message arriving after a reply reads as the user
+    # correcting it, and the reply that followed used to answer the correction ("You're
+    # totally right…") instead of the user — which is also what used to force a whole
+    # second draw, discarding whatever the first one said.  Delivered this early, there is
+    # no draft to discard: the record is part of what the one reply is written from, in
+    # the place Penny reads her own situation.  The closing lines give PERMISSION to report
+    # a shortfall, because the reply this replaces was not lying — it was counting from the
+    # wrong place.
     WRITES_LANDED_RECORD = (
         "### What this turn saved\n"
         "Read back from the store after this turn's last call:\n\n"

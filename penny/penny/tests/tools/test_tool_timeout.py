@@ -8,6 +8,7 @@ from penny.agents.base import Agent
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
+from penny.llm.call_link import CallLink
 from penny.tools import ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.base import Tool
 
@@ -22,7 +23,7 @@ class SlowTool(Tool):
     def __init__(self, sleep_duration: float):
         self.sleep_duration = sleep_duration
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link, **kwargs):
         """Sleep for the configured duration."""
         await asyncio.sleep(self.sleep_duration)
         return "completed"
@@ -40,7 +41,7 @@ class ReportingTool(Tool):
     def __init__(self):
         self.progress = "nothing yet"
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link, **kwargs):
         self.progress = "read page 1"
         await asyncio.sleep(10)
         return "completed"  # pragma: no cover - never reached in the timeout test
@@ -57,7 +58,7 @@ class LongTimeoutTool(Tool):
     parameters = {"type": "object", "properties": {}}
     timeout = 10.0
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link, **kwargs):
         await asyncio.sleep(0.05)
         return "done"
 
@@ -76,7 +77,7 @@ class TestToolTimeout:
         executor = ToolExecutor(registry, timeout=0.1)
 
         tool_call = ToolCall(tool="slow_tool", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is False
         # The first-person frame is carried on ``narration`` (#1482); the remedy body
@@ -102,7 +103,7 @@ class TestToolTimeout:
         executor = ToolExecutor(registry, timeout=0.05)
 
         tool_call = ToolCall(tool="reporting_tool", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is False
         assert result.message == "It timed out after 0.05s. Progress so far: read page 1."
@@ -118,7 +119,7 @@ class TestToolTimeout:
         executor = ToolExecutor(registry, timeout=2.0)
 
         tool_call = ToolCall(tool="slow_tool", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is True
         assert result.message == "completed"
@@ -175,7 +176,7 @@ class TestToolTimeout:
         executor = ToolExecutor(registry, timeout=0.01)
 
         tool_call = ToolCall(tool="long_timeout_tool", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is True
         assert result.message == "done"
@@ -191,7 +192,7 @@ class TestToolTimeout:
         executor = ToolExecutor(registry, timeout=60.0)
 
         tool_call = ToolCall(tool="slow_tool", arguments={})
-        result = await executor.execute(tool_call)
+        result = await executor.execute(tool_call, CallLink.new_top())
 
         assert result.success is False
         assert "timed out" in result.message.lower()
@@ -205,7 +206,7 @@ class CrashingTool(Tool):
     description = "A tool that always raises"
     parameters = {"type": "object", "properties": {}}
 
-    async def execute(self, **kwargs):
+    async def execute(self, call_link, **kwargs):
         raise RuntimeError("boom")
 
 
@@ -223,7 +224,9 @@ class TestCrashEnvelope:
         registry.register(CrashingTool())
         executor = ToolExecutor(registry, timeout=1.0)
 
-        result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
+        result = await executor.execute(
+            ToolCall(tool="crashing_tool", arguments={}), CallLink.new_top()
+        )
 
         assert result.success is False
         # The uncaught-exception error detail moves into the first-person frame (#1482);

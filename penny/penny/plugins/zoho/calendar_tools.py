@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 from pydantic import Field
 
+from penny.llm.call_link import CallLink
 from penny.plugins.zoho.models import ZohoCalendarInfo, ZohoEvent
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
@@ -138,7 +139,7 @@ class ListCalendarsTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """List all calendars."""
         try:
             calendars = await self._client.get_calendars()
@@ -192,7 +193,7 @@ class GetEventsTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Get events from a calendar."""
         args = GetEventsArgs(**kwargs)
 
@@ -272,7 +273,7 @@ class CheckAvailabilityTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Check availability for a time range."""
         args = CheckAvailabilityArgs(**kwargs)
 
@@ -393,7 +394,7 @@ class CreateEventTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Create a calendar event."""
         args = CreateEventArgs(**kwargs)
 
@@ -484,7 +485,7 @@ class FindFreeSlotsTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Find free time slots."""
         args = FindFreeSlotsArgs(**kwargs)
 
@@ -579,7 +580,7 @@ class UpdateEventTool(Tool):
     def __init__(self, calendar_client: Any) -> None:
         self._client = calendar_client
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Update a calendar event: resolve calendar, find event, apply changes."""
         args = UpdateEventArgs(**kwargs)
 

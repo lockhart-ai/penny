@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from penny.constants import PageReading, PennyConstants, ProgressEmoji
 from penny.database.memory import LogEntryInput
+from penny.llm.call_link import CallLink
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
@@ -210,17 +211,13 @@ class BrowseTool(Tool):
 
     name = "browse"
     args_model = BrowseArgs
-    # Whole-tool executor budget.  Must comfortably exceed the per-URL
-    # BROWSE_REQUEST_TIMEOUT across all retries so a slow/hung URL fires its own
-    # per-attempt timeout — captured by ``asyncio.gather(return_exceptions=True)``
-    # as a graceful error section — before the outer executor cancels the whole
-    # browse call (which would surface as a blunt "Tool execution timeout").
-    timeout = 300.0
-    # The extraction micro-context is the one customer invoked from INSIDE a
-    # dispatched tool call (#2355 part A) — the other five run directly in agent
-    # code — so this is the one tool that needs its own call's id to link an
-    # extraction draw back to the turn it was made for.
-    receives_tool_call_id = True
+    # A backstop, not the bound on extraction: each extraction draw stops at its token
+    # budget (8,000 for browse-extract) with one thinking-off retry, so the worst
+    # legitimate call on the slowest measured hardware (about 26 tokens/s) is one page
+    # fetch exhausting its retries (~165 s) plus one extraction and its retry (16,000
+    # tokens, ~615 s). 900 s covers that with margin; when it fires, timeout_report
+    # says what finished.
+    timeout = 900.0
 
     def __init__(
         self,
@@ -232,19 +229,12 @@ class BrowseTool(Tool):
         embedding_client: LlmClient,
         model_client: LlmClient | None = None,
         channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT,
-        run_id: str | None = None,
     ):
         self._max_calls = max_calls
         self._search_url = search_url
         self._db = db
         self._embedding_client = embedding_client
         self._author = author
-        # The turn/cycle this instance was built for (#2355 part A) — threaded to
-        # every extraction draw as ``parent_run_id``, so that run's own record can
-        # list the model calls made on its behalf.  Constant for this instance's
-        # whole lifetime (one per run — ``Agent.get_tools`` rebuilds it fresh each
-        # turn), so unlike the per-CALL ``tool_call_id`` there is nothing to race.
-        self._run_id = run_id
         # The shared model client powers the ``extract`` micro-context (a
         # single-shot extraction call).  Optional: chat's browse never sets
         # ``extract``, and tests that don't exercise it leave this None; an
@@ -375,18 +365,17 @@ class BrowseTool(Tool):
             parts.append(template.format(urls=", ".join(reads)))
         return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
-    async def execute(self, *, tool_call_id: str | None = None, **kwargs: Any) -> ToolResult:
+    async def execute(self, call_link: CallLink, **kwargs: Any) -> ToolResult:
         """Dispatch all lookups in parallel via the browser extension.
 
         With an ``extract`` micro-instruction (and at least one readable page),
         the fetched content goes to a fresh micro-context and only the typed
         result returns; otherwise the assembled sections return directly.
 
-        ``tool_call_id`` is THIS dispatched call's own id (``receives_tool_call_id
-        = True``, #2355 part A) — threaded to every extraction draw as
-        ``parent_tool_call_id``, alongside ``self._run_id``, so a reader of this
-        run can find the model call(s) made on behalf of this one browse call.
-        """
+        ``call_link`` (#2458) is THIS dispatched call's own linkage — the tool
+        dispatcher built it via ``CallLink.for_tool_call(tool_call_id)`` before
+        ``run`` even validated args. Threaded through to every extraction draw this
+        call makes, so each one links back to the run AND to this dispatched call."""
         self._read_log, self._extract_log, self._extracting = [], [], False
         args = BrowseArgs(**kwargs)
         cap = self._max_calls
@@ -412,7 +401,7 @@ class BrowseTool(Tool):
         if args.extract is not None and not all_failed:
             self._extracting = True
             return await self._extract_result(
-                sections, stored, page_readings, args.extract, tool_call_id
+                sections, stored, page_readings, args.extract, call_link
             )
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
@@ -487,7 +476,7 @@ class BrowseTool(Tool):
         stored: list[MemoryEntry],
         page_readings: list[PageReading],
         instruction: str,
-        tool_call_id: str | None,
+        call_link: CallLink,
     ) -> ToolResult:
         """One micro-context call PER successfully-fetched page (#1682) — each result
         rendered UNDER that page's own ``## browse …:`` section header, so a
@@ -520,7 +509,7 @@ class BrowseTool(Tool):
         drawn = await asyncio.gather(
             *[
                 self._extract_one_page(
-                    micro_context, section, instruction, entry, reading, tool_call_id
+                    micro_context, section, instruction, entry, reading, call_link
                 )
                 for _, section, entry, reading in batch
             ],
@@ -604,7 +593,7 @@ class BrowseTool(Tool):
         instruction: str,
         entry: MemoryEntry | None,
         reading: PageReading,
-        tool_call_id: str | None,
+        call_link: CallLink,
     ) -> tuple[str, bool]:
         """Extract ONE fetched page's content and render the typed result under that
         page's own section header — the extracted value (or an honest NOT_PRESENT /
@@ -628,9 +617,8 @@ class BrowseTool(Tool):
             micro = await micro_context.extract(
                 section,
                 instruction,
+                call_link=call_link,
                 run_target=self._author,
-                parent_run_id=self._run_id,
-                parent_tool_call_id=tool_call_id,
                 reading=reading,
             )
         except Exception as exc:
