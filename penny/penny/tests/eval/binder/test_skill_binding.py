@@ -1372,8 +1372,8 @@ _COMPARISON = BindingFixture(
         "- target_price: the price to alert at when either listing reaches it\n"
         "\n"
         "What the user said, in their own words:\n"
-    )
-    + _COMPARISON_ASK,
+        f"{_COMPARISON_ASK}"
+    ),
     expectations=(
         BoundExpectation("url", "cyclegear.example/beacon-450"),
         BoundExpectation("second_url"),
