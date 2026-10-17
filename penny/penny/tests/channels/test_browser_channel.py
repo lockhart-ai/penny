@@ -2540,6 +2540,61 @@ class TestBrowserMemoryHandlers:
         assert memory.schedule is None
         assert memory.max_runs is None  # the lifted COUNT= goes with it, not orphaned
 
+    def test_memory_update_resending_the_same_rule_keeps_an_independent_expiry(self, tmp_path):
+        """An ``expires_at`` set on its own — not lifted from the rule's own
+        ``UNTIL=`` — survives an edit that resends the SAME rule alongside an
+        unrelated field (a description change).  The addon's form always
+        resends its current picker state, so resending the unchanged rule must
+        read as "the user left the schedule alone", not as a replace — an
+        unconditional ``replace_schedule=True`` wiped this end condition the
+        moment any other field was edited (#2457 review).  A genuinely
+        DIFFERENT rule, however, still replaces the end conditions atomically,
+        same as before."""
+        channel, db = self._channel(tmp_path)
+        expiry = datetime(2026, 12, 31, tzinfo=UTC)
+        db.memories.create_collection(
+            "board-games",
+            "old description",
+            schedule="FREQ=DAILY;BYHOUR=8",
+            expires_at=expiry,
+        )
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "description": "new description",
+                    "schedule": "FREQ=DAILY;BYHOUR=8",  # unchanged
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.description == "new description"
+        assert memory.schedule == "FREQ=DAILY;BYHOUR=8"
+        # SQLite hands datetimes back naive; they are stored UTC (`stored_as_utc`).
+        assert memory.expires_at is not None
+        assert memory.expires_at.replace(tzinfo=UTC) == expiry  # the independent expiry survives
+
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "schedule": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9",  # a different rule
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule == "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9"
+        # The new rule carries no end condition of its own, and a real schedule
+        # change replaces the axis atomically — the old rule's independent expiry
+        # does not carry over onto a different rule.
+        assert memory.expires_at is None
+
     def test_memory_update_rejects_unreadable_schedule_and_reports_it(self, tmp_path):
         """An unparseable custom schedule on an edit is rejected and reported,
         and the collection's existing schedule is left exactly as it was."""

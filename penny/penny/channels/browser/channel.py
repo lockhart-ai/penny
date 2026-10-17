@@ -1039,9 +1039,14 @@ class BrowserChannel(MessageChannel):
     async def _handle_memory_update(self, ws: ServerConnection, data: dict) -> None:
         """Edit metadata on an existing collection.  Only fields that are
         not ``None`` are applied, matching ``update_collection_metadata`` —
-        except ``schedule``, which the addon's form always resends in full and
-        which is therefore always applied as a full replace (#2442), clearing
-        any previous schedule/end-conditions on a ``None`` (no-schedule) save."""
+        except ``schedule``: the addon's form always resends its current picker
+        state, so a resent schedule that actually DIFFERS from the one stored is
+        applied as a full replace (#2442).  A resend of the SAME schedule leaves
+        the whole schedule axis untouched, so an ``expires_at`` set independently
+        from chat (never folded into the rule's own ``UNTIL=``) survives an edit
+        that only changed, say, the description — ``replace_schedule`` always on
+        wiped it the moment the form resent the unchanged rule alongside an
+        unrelated field (#2457 review)."""
         try:
             req = BrowserMemoryUpdate(**data)
         except ValidationError:
@@ -1050,6 +1055,7 @@ class BrowserChannel(MessageChannel):
         parsed, ok = await self._validated_schedule(ws, "update", req.name, req.schedule)
         if not ok:
             return
+        replace_schedule = not self._schedule_unchanged(req.name, req.schedule)
         # Re-embed the meaning anchor whenever the description changes.
         description_embedding = (
             await self._message_agent.embed_description(req.description)
@@ -1061,15 +1067,26 @@ class BrowserChannel(MessageChannel):
                 req.name,
                 description=req.description,
                 extraction_prompt=req.extraction_prompt,
-                schedule=req.schedule,
-                max_runs=parsed.max_runs if parsed else None,
-                expires_at=parsed.expires_at if parsed else None,
-                replace_schedule=True,
+                schedule=req.schedule if replace_schedule else None,
+                max_runs=(parsed.max_runs if parsed else None) if replace_schedule else None,
+                expires_at=(parsed.expires_at if parsed else None) if replace_schedule else None,
+                replace_schedule=replace_schedule,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
         except (MemoryNotFoundError, MemoryTypeError) as exc:
             logger.warning("memory_update failed for %s: %s", req.name, exc)
+
+    def _schedule_unchanged(self, name: str, schedule: str | None) -> bool:
+        """Whether a resent ``schedule`` matches the collection's CURRENT stored
+        one.  The addon's form always resends its full picker state, so this is
+        the one way to tell "the user left the schedule control alone" apart from
+        "the user set a new schedule that happens to read identically" — an
+        unmatched/missing collection is never reported as unchanged, so the real
+        update call makes its own actionable ``MemoryNotFoundError`` (#2457
+        review), not this helper."""
+        memory = self._db.memories.get(name)
+        return memory is not None and memory.schedule == schedule
 
     async def _validated_schedule(
         self,
