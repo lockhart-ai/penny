@@ -2,6 +2,7 @@
 
 import logging
 import os
+import uuid
 
 from penny.database.database import Database
 from penny.datetime_utils import current_datetime_line
@@ -66,7 +67,10 @@ async def get_restart_message(db: Database, ollama_client: LlmClient, commit_mes
 
     try:
         response = await ollama_client.generate(
-            prompt, agent_name="startup", prompt_type="startup_announcement"
+            prompt,
+            agent_name="startup",
+            prompt_type="startup_announcement",
+            run_id=uuid.uuid4().hex,
         )
         announcement = response.content.strip()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -87,6 +88,7 @@ class ProfileCommand(Command):
                 prompt=prompt,
                 tools=None,
                 format=ProfileCreateParse.model_json_schema(),
+                run_id=uuid.uuid4().hex,
             )
 
             # Parse JSON response with Pydantic schema
@@ -123,6 +125,7 @@ class ProfileCommand(Command):
                 prompt=prompt,
                 tools=None,
                 format=ProfileUpdateParse.model_json_schema(),
+                run_id=uuid.uuid4().hex,
             )
 
             # Parse JSON response with Pydantic schema

@@ -7,9 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlmodel import col, select
 
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.constants import ChannelType, PennyConstants
+from penny.database.models import PromptLog
 from penny.llm.models import LlmConnectionError
 from penny.penny import Penny
 from penny.preflight import CheckStatus, PreflightCheck, PreflightError
@@ -24,6 +26,16 @@ def _find_request(mock_llm, needle: str) -> str:
             if needle in message["content"]:
                 return message["content"]
     raise AssertionError(f"No LLM request containing {needle!r}")
+
+
+def _prompt_log_for(session, needle: str) -> PromptLog:
+    """The logged ``PromptLog`` row whose messages contain ``needle`` (#2440 —
+    a model call with no run id never gets pushed live and is filtered out of
+    every run-indexed fetch)."""
+    rows = session.exec(select(PromptLog).where(col(PromptLog.messages).contains(needle))).all()
+    if not rows:
+        raise AssertionError(f"No logged prompt containing {needle!r}")
+    return rows[0]
 
 
 class StartupReadyChannel(MessageChannel):
@@ -106,7 +118,7 @@ async def test_startup_announcement_with_commit(
     before = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
         PennyConstants.CURRENT_DATETIME_FORMAT
     )
-    async with running_penny(test_config):
+    async with running_penny(test_config) as penny:
         await wait_until(lambda: len(signal_server.outgoing_messages) > 0)
 
         # Should have received startup announcement
@@ -140,6 +152,12 @@ async def test_startup_announcement_with_commit(
         assert any(
             f"Current date and time: {stamp}" in transform_prompt for stamp in (before, after)
         )
+
+        # The transform call now carries a run id (#2440), so it is pushed live
+        # and shows up in a run-indexed fetch instead of being silently filtered out.
+        with penny.db.get_session() as session:
+            logged = _prompt_log_for(session, "Transform this git commit message")
+            assert logged.run_id is not None
 
 
 @pytest.mark.asyncio

@@ -4,9 +4,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlmodel import col, select
 
 from penny.constants import PennyConstants
-from penny.database.models import UserInfo
+from penny.database.models import PromptLog, UserInfo
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 
@@ -21,6 +22,16 @@ def _find_request(mock_llm, needle: str) -> str:
             if needle in message["content"]:
                 return message["content"]
     raise AssertionError(f"No LLM request containing {needle!r}")
+
+
+def _prompt_log_for(session, needle: str) -> PromptLog:
+    """The logged ``PromptLog`` row whose messages contain ``needle`` (#2440 —
+    a model call with no run id never gets pushed live and is filtered out of
+    every run-indexed fetch)."""
+    rows = session.exec(select(PromptLog).where(col(PromptLog.messages).contains(needle))).all()
+    if not rows:
+        raise AssertionError(f"No logged prompt containing {needle!r}")
+    return rows[0]
 
 
 @pytest.mark.asyncio
@@ -61,6 +72,12 @@ async def test_profile_update_parse_grounded_in_date(
         parse_prompt = _find_request(mock_llm, "Extract the user's name and/or location")
         assert "Current date and time: " in parse_prompt
         assert any(f"Current date and time: {stamp}" in parse_prompt for stamp in (before, after))
+
+        # The parse call now carries a run id (#2440), so it is pushed live and
+        # shows up in a run-indexed fetch instead of being silently filtered out.
+        with penny.db.get_session() as session:
+            logged = _prompt_log_for(session, "Extract the user's name and/or location")
+            assert logged.run_id is not None
 
 
 @pytest.mark.asyncio
