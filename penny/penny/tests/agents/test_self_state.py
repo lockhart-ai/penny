@@ -521,6 +521,52 @@ def test_self_state_archived_heavy_render(db):
 # ── 4a. The instructions line — what a live job reads and follows (#2495) ──
 
 
+# First, test for a sentence longer than the cap (single-sentence prompt)
+def test_self_state_job_instructions_first_sentence_over_cap(db):
+    """When the FIRST sentence itself is cut because it's longer than the cap,
+    the note reads '(the rest is cut — memory_get(...) shows the whole prompt)'
+    instead of '(0 more sentences cut — ...)'."""
+    # Create a prompt with a single sentence much longer than the cap
+    # (no periods to avoid creating sentence boundaries)
+    long_words = "this is a very long instruction with many words that goes on and on "
+    long_sentence = "1. " + (long_words * 5) + "done"
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "long-instruction",
+            description="job with long single sentence",
+            extraction_prompt=long_sentence,
+            schedule="FREQ=HOURLY",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    # Should render with "the rest is cut" not "0 more sentences cut"
+    assert "the rest is cut" in actual
+    assert "0 more sentences cut" not in actual
+
+
+def test_self_state_job_instructions_url_with_trailing_punctuation(db):
+    """The page URL is stripped of trailing punctuation so 'https://example.com.'
+    renders as 'https://example.com' not with the period."""
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "url-with-period",
+            description="instruction ending with URL followed by period",
+            extraction_prompt="1. read the page at https://example.com. then analyze it.",
+            schedule="FREQ=HOURLY",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    # The URL should appear without the trailing period
+    assert "reads https://example.com —" in actual
+    assert "reads https://example.com. —" not in actual
+
+
 def test_self_state_job_instructions_line_shapes(db):
     """Every shape of the hung instructions line (#2495) in one render: a job whose
     prompt names a page renders ``reads <first-url> — "<instructions>"``; a job whose
