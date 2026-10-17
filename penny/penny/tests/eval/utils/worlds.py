@@ -81,6 +81,10 @@ class World(BaseModel):
     together as ``sources``; a world whose ground is entries rather than pages is not a world
     with no ground.  ``mailbox`` is the third substrate: the messages the email tools answer
     from (``CannedMailbox``), installed by the driver beside the pages for the same reason.
+    ``mailbox_fails`` makes that mailbox unreachable instead — every search and read raises
+    rather than answering from ``mailbox`` — the mailbox-level counterpart of a page's own
+    ``fails``; it still needs ``mailbox`` non-empty, since an empty mailbox never installs the
+    email tools at all (``_seed_sample``).
 
     ``keeps`` is one token set per SOURCE, in that same order — tokens that appear ONLY on that
     source, so a stored copy says which one it came from and an invented one matches neither.
@@ -117,6 +121,7 @@ class World(BaseModel):
     answers: tuple[str, ...] = ()
     stores: tuple[SynthCollection, ...] = ()
     mailbox: tuple[CannedEmail, ...] = ()
+    mailbox_fails: bool = False
 
     @property
     def sources(self) -> tuple[WorldSource, ...]:

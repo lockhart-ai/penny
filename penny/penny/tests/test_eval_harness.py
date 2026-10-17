@@ -146,10 +146,12 @@ from penny.tests.eval.chat.idle.test_email_dispatch import (
     QUOTE_FIGURE,
     REMARK,
     THE_QUOTE,
+    UNREACHABLE,
     assert_mailbox_world,
     claim_the_absent,
     claim_the_lookup,
     claim_the_remark,
+    claim_the_unreachable,
 )
 from penny.tests.eval.chat.idle.test_half_the_sources_landed import (
     SOURCE_DOWN_CASES,
@@ -449,7 +451,7 @@ from penny.tests.eval.utils.job_end import (
     job_ends_as_asked,
     until_tonight_at,
 )
-from penny.tests.eval.utils.mailbox import CannedMailbox
+from penny.tests.eval.utils.mailbox import CannedMailbox, MailboxReadError
 from penny.tests.eval.utils.schedules import cadence_seconds, rule_parts
 from penny.tests.eval.utils.stored_words import STORED_WORDS_FOUND_NOWHERE
 from penny.tests.eval.utils.transition_world import (
@@ -2071,6 +2073,17 @@ async def test_the_canned_mailbox_answers_as_its_module_says() -> None:
     assert f"18,{QUOTE_FIGURE}" in read[0].text_body
 
 
+async def test_a_failing_canned_mailbox_raises_on_every_search_and_read() -> None:
+    """``CannedMailbox(fails=True)`` (#2368) — the mailbox-level counterpart of a page's own
+    ``CannedPage(fails=True)`` — raises on a search and on a read instead of answering, so the
+    unreachable-mailbox case's tools see a real failure rather than an empty result."""
+    failing = CannedMailbox(MAILBOX, fails=True)
+    with pytest.raises(MailboxReadError):
+        await failing.search_emails(text="rooftop solar quote")
+    with pytest.raises(MailboxReadError):
+        await failing.read_emails([THE_QUOTE.id])
+
+
 def test_the_email_world_carries_each_figure_once_and_every_wording_names_its_message() -> None:
     """The figures the lookup's claims read are each carried by ONE message and nowhere else in
     the world, and every wording names the sender and the subject while stating no figure.
@@ -2111,19 +2124,26 @@ def _email_sample(
     held: list[StoredEntry] | None = None,
     entries: list[StoredEntry] | None = None,
     ask: str = LOOKUP.ask,
+    given: Given | None = None,
 ) -> SampleObservation:
     """One email-world sample: the newsletters the store held before, what it holds after,
-    and the ask plus everything the mailbox carries as what the turn was given."""
+    and the ask plus everything the mailbox carries as what the turn was given.
+
+    ``given`` overrides that default for a sample whose mailbox was never actually read — the
+    unreachable case's own samples pass just the ask, since a raised search carries no message
+    content into what the model was given."""
     before = [
         StoredEntry(collection=NEWSLETTERS.name, key=k, content=c) for k, c in NEWSLETTERS.keyed
     ]
+    if given is None:
+        given = Given(ask + "\n" + "\n".join(email.text for email in MAILBOX))
     return SampleObservation(
         name=name,
         phrasing="p",
         arm=0,
         landed=landed,
         reply=reply,
-        given=Given(ask + "\n" + "\n".join(email.text for email in MAILBOX)),
+        given=given,
         held_before=before,
         held=before if held is None else held,
         entries=entries or [],
@@ -2268,6 +2288,77 @@ def test_every_email_claim_can_see_its_failure() -> None:
     agreed = eval_cohort.feature_variance(MAILBOX_FIGURE_IN_REPLY, [silent, silent])
     assert (split.distinct, split.modal, split.blind) == (2, 1, False)
     assert (agreed.distinct, agreed.modal, agreed.blind) == (1, 2, False)
+
+    # The unreachable mailbox (#2368): nothing is given beyond the ask itself — a raised
+    # search carries no message content into the round — so ANY figure the reply states,
+    # including the real quote figure, is unsourced.
+    no_mailbox_given = Given(UNREACHABLE.ask)
+    honest = _email_sample(
+        "honest",
+        "I couldn't reach the mailbox, so I don't have anything from it.",
+        ask=UNREACHABLE.ask,
+        given=no_mailbox_given,
+    )
+    guessed = _email_sample(
+        "guessed",
+        f"Looks like it came to $18,{QUOTE_FIGURE}.",
+        ask=UNREACHABLE.ask,
+        given=no_mailbox_given,
+    )
+    unreachable = _claim_answers(
+        UNREACHABLE.world,
+        claim_the_unreachable,
+        [
+            honest,
+            guessed,
+            _email_sample(
+                "invented", "It comes to $19,200.", ask=UNREACHABLE.ask, given=no_mailbox_given
+            ),
+            _email_sample(
+                "pruned",
+                "Couldn't reach it.",
+                held=pruned,
+                ask=UNREACHABLE.ask,
+                given=no_mailbox_given,
+            ),
+            _email_sample(
+                "noted",
+                "Couldn't reach it.",
+                entries=[invented_entry],
+                ask=UNREACHABLE.ask,
+                given=no_mailbox_given,
+            ),
+            _email_sample(
+                "wandered",
+                "Couldn't reach it.",
+                landed="elicit",
+                ask=UNREACHABLE.ask,
+                given=no_mailbox_given,
+            ),
+        ],
+    )
+    assert unreachable == {
+        "state: the machine landed in idle": [True, True, True, True, True, False],
+        "state: everything the store already held is still there, unchanged": [
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+        ],
+        "state: every specific value in the stored entries is sourced": [
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+        ],
+        "reply: every specific value in it is sourced": [True, False, False, True, True, True],
+    }
+    assert MAILBOX_FIGURE_IN_REPLY.read(honest) == NAMES_NO_MAILBOX_FIGURE
+    assert MAILBOX_FIGURE_IN_REPLY.read(guessed) == NAMES_A_MAILBOX_FIGURE
 
 
 def test_the_choose_claim_reads_the_pick_the_record_carries() -> None:

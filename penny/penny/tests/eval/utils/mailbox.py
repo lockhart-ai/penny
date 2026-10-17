@@ -50,6 +50,14 @@ _STOPWORDS = frozenset(
 )
 
 
+class MailboxReadError(Exception):
+    """Raised by a ``fails=True`` ``CannedMailbox`` so a search or a read renders a real
+    failure inside the mailbox tools, the mailbox-level counterpart of ``CannedPage``'s
+    ``fails=True`` (``install_browse``'s ``_BrowseReadError``).  Deliberately NOT a
+    ``ConnectionError``/``TimeoutError`` — those are kinds a production backend retries on,
+    and this is a case fixture raising on purpose, not a transient fault to back off from."""
+
+
 @dataclass(frozen=True)
 class CannedEmail:
     """One message in a canned mailbox, synthetic throughout.
@@ -124,10 +132,13 @@ class CannedMailbox:
     """The ``EmailClient`` protocol over a fixed set of messages.
 
     Reads only: a canned mailbox is never changed by a turn, so the surface it backs is
-    Fastmail's — search and read."""
+    Fastmail's — search and read.  ``fails=True`` makes every search and every read raise a
+    ``MailboxReadError`` instead of answering — the mailbox is unreachable, the same shape as
+    a page-level ``CannedPage(fails=True)``."""
 
-    def __init__(self, emails: Sequence[CannedEmail]) -> None:
+    def __init__(self, emails: Sequence[CannedEmail], *, fails: bool = False) -> None:
         self._emails = tuple(emails)
+        self._fails = fails
 
     async def search_emails(
         self,
@@ -138,6 +149,8 @@ class CannedMailbox:
         before: str | None = None,
     ) -> list[EmailSummary]:
         """Every message the filters match, best match first — see the module docstring."""
+        if self._fails:
+            raise MailboxReadError("the mailbox search could not be reached")
         asked: _Filters = (
             (words(text or ""), CannedEmail.all_words),
             (words(from_addr or ""), CannedEmail.sender_words),
@@ -154,6 +167,8 @@ class CannedMailbox:
 
     async def read_emails(self, email_ids: list[str]) -> list[EmailDetail]:
         """The messages the ids name, in the order asked; an unknown id is simply not there."""
+        if self._fails:
+            raise MailboxReadError("the mailbox could not be reached")
         by_id = {email.id: email for email in self._emails}
         return [by_id[one].detail for one in email_ids if one in by_id]
 

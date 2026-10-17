@@ -1016,7 +1016,7 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
     penny.collector._browse_provider = provider
 
 
-def install_mailbox(penny: Penny, emails: Sequence[CannedEmail]) -> None:
+def install_mailbox(penny: Penny, emails: Sequence[CannedEmail], *, fails: bool = False) -> None:
     """Put a canned mailbox behind the chat agent's email tools.
 
     The email tools are config-gated: ``ChatAgent`` registers them only when a mailbox is
@@ -1024,8 +1024,12 @@ def install_mailbox(penny: Penny, emails: Sequence[CannedEmail]) -> None:
     builder is PRODUCTION'S OWN Fastmail one (``Penny._fastmail_tools_builder``) wrapped
     around a ``CannedMailbox``, so the tools, their descriptions and the per-turn summarising
     read are the shipped ones and only the boundary behind them is canned.  Fastmail's
-    surface — search and read — because a canned mailbox is never changed by a turn."""
-    penny.chat_agent._email_tools_builder = penny._fastmail_tools_builder(CannedMailbox(emails))
+    surface — search and read — because a canned mailbox is never changed by a turn.
+    ``fails=True`` (from ``World.mailbox_fails``) makes that boundary unreachable instead: the
+    tools still install (so a world that means to fail is never scored on a turn that was
+    never offered them), but every search and read raises."""
+    mailbox = CannedMailbox(emails, fails=fails)
+    penny.chat_agent._email_tools_builder = penny._fastmail_tools_builder(mailbox)
 
 
 async def _embed_seeds(penny: Penny) -> None:
@@ -3366,7 +3370,7 @@ async def _seed_sample(
     if browse is not None:
         install_browse(penny, browse)
     if world is not None and world.mailbox:
-        install_mailbox(penny, world.mailbox)
+        install_mailbox(penny, world.mailbox, fails=world.mailbox_fails)
     if prepare is not None:
         prepare(penny)
 
