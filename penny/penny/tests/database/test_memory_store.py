@@ -292,7 +292,7 @@ steps: 1. browse for hedgehog news. 2. done().
 
 Operational settings (cadence — secondary):
 notify: False
-schedule: FREQ=HOURLY
+schedule: every hour (rule: `FREQ=HOURLY`)
 status: archived 2026-03-05 08:10 UTC
 expires: never
 created: 2026-03-05 08:00 UTC by run run-t1
@@ -386,7 +386,7 @@ Recent changes (newest first):
         # notify surfaces in metadata so the chat agent + quality can read notify-on-new.
         assert "notify: True" in result.message
         # The schedule renders back VERBATIM (#1857) — the rule IS the copyable form.
-        assert "schedule: FREQ=MINUTELY;INTERVAL=5" in result.message
+        assert "schedule: every 5 minutes (rule: `FREQ=MINUTELY;INTERVAL=5`)" in result.message
         assert "last collected: never" in result.message
         assert "Browse for new board games and write entries." in result.message
         # Timestamps render through the shared log-timestamp format (compact UTC),

@@ -52,6 +52,8 @@ from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
     SCHEDULE_EXAMPLES,
     ScheduleError,
+    describe_schedule,
+    describe_schedule_field,
     parse_expires_at,
     parse_schedule,
     render_applied_configuration,
@@ -311,13 +313,15 @@ _MONEY_LITERAL = (
 # (#1857, display form == invocation form), its newline written as \n so the line
 # stays a line; everything else is the recurring echo shape.
 _ONE_SHOT_ECHO_LITERAL = (
-    "On the schedule DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1 I'll run "
+    "On the schedule once, at Friday, December 25, 2026 at 09:00 AM UTC, then it "
+    "retires (rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`) I'll run "
     "'Watch elevation' against 'one-shot' and quietly store what it finds.\n"
     "Created collection 'one-shot' from skill 'Watch elevation':\n"
     "  description: check the peak once, on christmas morning\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  schedule: DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1\n"
+    "  schedule: once, at Friday, December 25, 2026 at 09:00 AM UTC, then it retires "
+    "(rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`)\n"
     "  notify: False\n"
     "  expires: never\n"
     "  steps: |\n"
@@ -329,13 +333,13 @@ _ONE_SHOT_ECHO_LITERAL = (
 # The whole creation echo — skill · bound params · schedule · notify · expiry · the
 # rendered routine (the money literal, indented) — confirmed back to the user.
 _CREATE_ECHO_LITERAL = (
-    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-elevation' and "
-    "message you when something changes.\n"
+    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
+    "'cinder-elevation' and message you when something changes.\n"
     "Created collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  schedule: FREQ=HOURLY\n"
+    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
     "  notify: True\n"
     "  expires: never\n"
     "  steps: |\n"
@@ -768,12 +772,12 @@ class TestCollectionCreateFrontDoor:
         assert row is not None
 
         assert render_applied_configuration(row) == (
-            "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-peak' "
-            "and message you when something changes.\n"
+            "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' "
+            "against 'cinder-peak' and message you when something changes.\n"
             "  collection: cinder-peak\n"
             "  skill: Watch elevation\n"
             "  params: peak=Cinder Peak\n"
-            "  schedule: FREQ=HOURLY\n"
+            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
             "  notify: True\n"
             "  expires: never"
         )
@@ -809,12 +813,13 @@ class TestCollectionCreateFrontDoor:
         priors = db.mutations.priors_for_run("cinder-peak", "run-fix")
 
         assert render_applied_configuration(row, priors) == (
-            "On the schedule FREQ=DAILY;BYHOUR=18 I'll run 'Watch elevation' against "
-            "'cinder-peak' and quietly store what it finds.\n"
+            "On the schedule every day at 06:00 PM (rule: `FREQ=DAILY;BYHOUR=18`) I'll run "
+            "'Watch elevation' against 'cinder-peak' and quietly store what it finds.\n"
             "  collection: cinder-peak\n"
             "  skill: Watch elevation\n"
             "  params: peak=Cinder Peak\n"
-            "  schedule: was FREQ=HOURLY → now FREQ=DAILY;BYHOUR=18\n"
+            "  schedule: was every hour (rule: `FREQ=HOURLY`) → now every day at 06:00 PM "
+            "(rule: `FREQ=DAILY;BYHOUR=18`)\n"
             "  notify: was True → now False\n"
             "  expires: never"
         )
@@ -900,7 +905,7 @@ class TestCollectionCreateFrontDoor:
             schedule="FREQ=DAILY;COUNT=3",
         )
         assert result.success
-        assert "  schedule: FREQ=DAILY;COUNT=3\n" in result.message
+        assert "  schedule: every day, 3 times (rule: `FREQ=DAILY;COUNT=3`)\n" in result.message
         assert db.memories.get("thrice").max_runs == 3
 
     @pytest.mark.asyncio
@@ -945,13 +950,13 @@ class TestCollectionCreateFrontDoor:
         assert result.success
         assert db.memories.get("forever-watch").expires_at is None
         assert result.message == (
-            "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'forever-watch' "
-            "and quietly store what it finds.\n"
+            "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' "
+            "against 'forever-watch' and quietly store what it finds.\n"
             "Created collection 'forever-watch' from skill 'Watch elevation':\n"
             "  description: watch the peak indefinitely\n"
             "  skill: Watch elevation\n"
             "  params: peak=Cinder Peak\n"
-            "  schedule: FREQ=HOURLY\n"
+            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
             "  notify: False\n"
             "  expires: never\n"
             "  steps: |\n"
@@ -980,13 +985,13 @@ class TestCollectionCreateFrontDoor:
         stored = db.memories.get("season-watch").expires_at
         assert stored.replace(tzinfo=UTC) == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
         assert result.message == (
-            "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'season-watch' "
-            "and quietly store what it finds.\n"
+            "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' "
+            "against 'season-watch' and quietly store what it finds.\n"
             "Created collection 'season-watch' from skill 'Watch elevation':\n"
             "  description: watch the peak until the season ends\n"
             "  skill: Watch elevation\n"
             "  params: peak=Cinder Peak\n"
-            "  schedule: FREQ=HOURLY\n"
+            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
             "  notify: False\n"
             "  expires: Tuesday, September 01, 2026 at 09:00 AM UTC\n"
             "  steps: |\n"
@@ -1518,6 +1523,94 @@ class TestScheduleRoundTrip:
         assert render_schedule_clause(stored) == "FREQ=DAILY;BYHOUR=9;BYMINUTE=30"
 
 
+def _row_with_schedule(schedule: str | None) -> MemoryRow:
+    """A bare row carrying only a schedule — ``describe_schedule``/``has_schedule`` read
+    nothing else off it."""
+    return MemoryRow(name="x", type="collection", description="d", schedule=schedule)
+
+
+class TestDescribeSchedule:
+    """Plain words for a schedule, with its exact rule beside them in a code span
+    (#2425): the fix for a raw ``DTSTART``/RRULE reaching the model and a reply copying
+    it verbatim.  ``describe_schedule`` is built from the rule's own parts rather than a
+    lookup of the taught shapes, so this also covers combinations the grammar allows but
+    nothing taught (e.g. a comma list of BYHOUR values, COUNT > 1 with no DTSTART)."""
+
+    @pytest.mark.parametrize(
+        "schedule, words",
+        [
+            ("FREQ=HOURLY", "every hour (rule: `FREQ=HOURLY`)"),
+            (
+                "FREQ=MINUTELY;INTERVAL=90",
+                "every 90 minutes (rule: `FREQ=MINUTELY;INTERVAL=90`)",
+            ),
+            ("FREQ=DAILY;BYHOUR=8", "every day at 08:00 AM (rule: `FREQ=DAILY;BYHOUR=8`)"),
+            (
+                "FREQ=DAILY;BYHOUR=8,20",
+                "every day at 08:00 AM and 08:00 PM (rule: `FREQ=DAILY;BYHOUR=8,20`)",
+            ),
+            (
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
+                "weekdays at 09:00 AM (rule: `FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9`)",
+            ),
+            (
+                "FREQ=WEEKLY;BYDAY=SA,SU",
+                "weekends (rule: `FREQ=WEEKLY;BYDAY=SA,SU`)",
+            ),
+            (
+                "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+                "Monday, Wednesday, and Friday (rule: `FREQ=WEEKLY;BYDAY=MO,WE,FR`)",
+            ),
+            ("FREQ=DAILY;COUNT=3", "every day, 3 times (rule: `FREQ=DAILY;COUNT=3`)"),
+        ],
+    )
+    def test_taught_and_untaught_shapes_read_as_words(self, schedule, words):
+        assert describe_schedule(_row_with_schedule(schedule)) == words
+
+    def test_an_explicit_utc_dtstart_converts_to_the_users_clock(self):
+        """A model-invented ``DTSTART:…Z`` reads on the USER's clock, not UTC (#1932) —
+        the same reading an occurrence gets — so the words say what the model actually
+        set up rather than a UTC instant nobody but it would compute."""
+        schedule = "DTSTART:20261014T210000Z\nFREQ=HOURLY"
+        words = describe_schedule(_row_with_schedule(schedule), "America/Los_Angeles")
+        assert words == (
+            "starting Wednesday, October 14, 2026 at 02:00 PM PDT, then every hour "
+            "(rule: `DTSTART:20261014T210000Z FREQ=HOURLY`)"
+        )
+
+    def test_a_floating_dtstart_is_read_as_the_users_own_wall_clock(self):
+        """A ``DTSTART`` with no zone states no zone — RFC 5545 reads that as the user's
+        own wall clock, never UTC — so it renders the stated hour, not a converted one."""
+        schedule = "DTSTART:20261014T140000\nFREQ=HOURLY"
+        words = describe_schedule(_row_with_schedule(schedule), "America/Los_Angeles")
+        assert words == (
+            "starting Wednesday, October 14, 2026 at 02:00 PM PDT, then every hour "
+            "(rule: `DTSTART:20261014T140000 FREQ=HOURLY`)"
+        )
+
+    def test_a_one_shot_dtstart_retires_instead_of_restating_its_cadence(self):
+        """``COUNT=1`` reads as 'once … then it retires' — the cadence words
+        (``every day``) would be misleading for a rule that never repeats."""
+        schedule = "DTSTART:20261225T090000Z\nFREQ=DAILY;COUNT=1"
+        words = describe_schedule(_row_with_schedule(schedule))
+        assert words == (
+            "once, at Friday, December 25, 2026 at 09:00 AM UTC, then it retires "
+            "(rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`)"
+        )
+
+    def test_no_schedule_is_empty_for_the_clause_and_none_for_the_field(self):
+        row = _row_with_schedule(None)
+        assert describe_schedule(row) == ""
+        assert describe_schedule_field(row) == "none"
+
+    def test_the_end_condition_is_not_restated_inside_the_words(self):
+        """``UNTIL=`` is already lifted onto ``expires_at`` and rendered on its own
+        line — stating it again here would say the same fact twice."""
+        schedule = "FREQ=DAILY;UNTIL=20260901T000000Z"
+        words = describe_schedule(_row_with_schedule(schedule))
+        assert words == f"every day (rule: `{schedule}`)"
+
+
 class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_persists(self, db):
@@ -1730,13 +1823,13 @@ async def _create_watch_collection(db, *, name: str = "cinder-elevation") -> Non
 # The refresh echo — the SAME skill re-taught, re-rendered from its CURRENT steps with
 # the CURRENT bindings; render-at-update mirrors the creation echo.
 _REFRESH_ECHO_LITERAL = (
-    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-elevation' and "
-    "quietly store what it finds.\n"
+    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
+    "'cinder-elevation' and quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  schedule: FREQ=HOURLY\n"
+    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
     "  notify: False\n"
     "  expires: never\n"
     "  steps: |\n"
@@ -1747,13 +1840,13 @@ _REFRESH_ECHO_LITERAL = (
 
 # The rebind echo — SAME skill (original steps), NEW params bound and re-rendered.
 _REBIND_ECHO_LITERAL = (
-    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-elevation' and "
-    "quietly store what it finds.\n"
+    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
+    "'cinder-elevation' and quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
     "  params: peak=Ashfall Ridge\n"
-    "  schedule: FREQ=HOURLY\n"
+    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
     "  notify: False\n"
     "  expires: never\n"
     "  steps: |\n"
@@ -1765,13 +1858,13 @@ _REBIND_ECHO_LITERAL = (
 # The swap echo — a DIFFERENT skill rendered into the same collection, its write
 # retargeted to that collection (#1629 — the river skill demoed against 'flows').
 _SWAP_ECHO_LITERAL = (
-    "On the schedule FREQ=HOURLY I'll run 'Track river flow' against 'cinder-elevation' "
-    "and quietly store what it finds.\n"
+    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Track river flow' against "
+    "'cinder-elevation' and quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Track river flow':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Track river flow\n"
     "  params: river=Silt River\n"
-    "  schedule: FREQ=HOURLY\n"
+    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
     "  notify: False\n"
     "  expires: never\n"
     "  steps: |\n"
@@ -1783,13 +1876,13 @@ _SWAP_ECHO_LITERAL = (
 # The adopt echo — a legacy skill=NULL collection given a skill for the first time; its
 # hand-authored text is replaced by the render, writes retargeted to it (#1629).
 _ADOPT_ECHO_LITERAL = (
-    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'legacy-notes' "
-    "and quietly store what it finds.\n"
+    "On the schedule every hour (rule: `FREQ=HOURLY`) I'll run 'Watch elevation' against "
+    "'legacy-notes' and quietly store what it finds.\n"
     "Re-rendered collection 'legacy-notes' from skill 'Watch elevation':\n"
     "  description: a running list the user asked me to keep\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  schedule: FREQ=HOURLY\n"
+    "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
     "  notify: False\n"
     "  expires: never\n"
     "  steps: |\n"
@@ -2699,7 +2792,7 @@ class TestCollectionUpdateScheduleAtApply:
         # that tells the turn what became of the value it passed.
         assert result.message == (
             "Updated collection 'watch':\n"
-            "  schedule: FREQ=HOURLY\n"
+            "  schedule: every hour (rule: `FREQ=HOURLY`)\n"
             "  notify: False\n"
             "  expires: was 2099-12-31 00:00 UTC → now never\n"
             "  description: x\n"
@@ -4508,10 +4601,12 @@ class TestRegistryProvenanceAndLifecycle:
         assert "expires: Friday, December 25, 2026 at 09:00 AM UTC" in result.message
 
     @pytest.mark.asyncio
-    async def test_schedule_renders_verbatim_in_metadata(self, db):
-        """Every collection's metadata carries its schedule AS the copyable rule (#1857,
-        display form == invocation form) — the stored string verbatim, with a two-line
-        rule's newline written ``\\n`` so the metadata line stays a line."""
+    async def test_schedule_renders_in_plain_words_with_its_exact_rule_in_metadata(self, db):
+        """Every collection's metadata carries its schedule in plain words, with the
+        EXACT rule alongside in a code span (#2425) — #1857's display == invocation
+        contract stays true (the rule is still there, copyable, on one line even for a
+        two-line DTSTART+RRULE shape), it just no longer stands alone as the text a
+        reply would echo verbatim."""
         _seed_collection(
             db,
             name="one-off",
@@ -4527,8 +4622,11 @@ class TestRegistryProvenanceAndLifecycle:
         tool = MemoryMetadataTool(db)
         one_off = await tool.execute(memory="one-off")
         plain = await tool.execute(memory="plain")
-        assert "schedule: DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1" in one_off.message
-        assert "schedule: FREQ=HOURLY" in plain.message
+        assert (
+            "schedule: once, at Friday, December 25, 2026 at 09:00 AM UTC, then it "
+            "retires (rule: `DTSTART:20261225T090000Z FREQ=DAILY;COUNT=1`)"
+        ) in one_off.message
+        assert "schedule: every hour (rule: `FREQ=HOURLY`)" in plain.message
 
 
 class TestCollectionSkillProvenanceRender:

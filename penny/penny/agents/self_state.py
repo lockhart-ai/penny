@@ -68,7 +68,7 @@ from penny.constants import PennyConstants
 from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp, format_user_timestamp, user_timezone_name
-from penny.tools.collection_instantiation import render_schedule_clause
+from penny.tools.collection_instantiation import describe_schedule
 from penny.tools.skill_tools import render_skill_brief
 
 if TYPE_CHECKING:
@@ -253,13 +253,14 @@ class SelfStateHeader:
         be guessed at."""
         return self.MECHANISM_NOTIFIES if row.notify else self.MECHANISM_QUIET
 
-    @staticmethod
-    def _cadence(row: MemoryRow) -> str:
-        """The mechanism's schedule rendered VERBATIM (#1857, display form ==
-        invocation form): the stored RRULE, which is exactly what the ``schedule``
-        argument accepts back.  Empty when the collection has no schedule yet (an
-        adopted skill awaiting one), so the mechanism line drops the clause."""
-        return render_schedule_clause(row)
+    def _cadence(self, row: MemoryRow) -> str:
+        """The mechanism's schedule in plain words, with its exact rule alongside in a
+        code span (#2425) — #1857's display == invocation contract stays true (the
+        model still reads the copyable form it would write back), it just no longer
+        stands alone as the text a reply would echo.  Empty when the collection has no
+        schedule yet (an adopted skill awaiting one), so the mechanism line drops the
+        clause."""
+        return describe_schedule(row, user_timezone_name(self.db))
 
     def _end_condition(self, row: MemoryRow) -> str:
         """The mechanism's end condition — an expiry time, on the USER's own clock

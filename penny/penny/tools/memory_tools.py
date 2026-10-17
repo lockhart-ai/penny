@@ -81,6 +81,7 @@ from penny.tools.collection_instantiation import (
     ScheduleError,
     SkillResolution,
     SkillResolutionKind,
+    describe_schedule_field,
     expiry_was_normalised,
     has_schedule,
     parse_expires_at,
@@ -91,7 +92,6 @@ from penny.tools.collection_instantiation import (
     render_inert_echo,
     render_no_skill_found,
     render_reinstantiation_echo,
-    render_schedule_field,
     render_skill_parameters,
     render_tombstone_duplicate,
     render_unbound_parameters,
@@ -446,16 +446,17 @@ def _format_collection_echo(
     making up fields.  Includes the full extraction_prompt verbatim
     so the model's reply can summarize accurately (the model previously
     confabulated this because the create/update returns were one-liners).
-    The schedule renders via ``render_schedule_field`` — the stored rule verbatim when
-    the collection has one, else ``schedule: none`` for an inert/unscheduled one, so a
-    plain update on an unscheduled collection never echoes a blank clause (#1666).
+    The schedule renders via ``describe_schedule_field`` — plain words with the exact
+    rule in a code span (#2425) when the collection has one, else ``schedule: none`` for
+    an inert/unscheduled one, so a plain update on an unscheduled collection never
+    echoes a blank clause (#1666).
     The end condition renders too (#2251 — this echo used to carry no expiry line at
     all, so a call that gave a job its first end had nothing confirming it landed),
     on the user's own clock (#2206) and as ``was … → now …`` when this call moved it.
     """
     return (
         f"{verb} collection '{memory.name}':\n"
-        f"  schedule: {render_schedule_field(memory)}\n"
+        f"  schedule: {describe_schedule_field(memory, timezone_name)}\n"
         f"  notify: {memory.notify}\n"
         f"  expires: {render_expiry_update_line(memory, timezone_name, priors)}\n"
         f"  description: {memory.description}\n"
@@ -2505,7 +2506,7 @@ class MemoryMetadataTool(MemoryTool):
             "",
             "Operational settings (cadence — secondary):",
             f"notify: {memory.notify}",
-            self._schedule_line(memory),
+            self._schedule_line(memory, user_timezone_name(self._db)),
             *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
@@ -2517,12 +2518,12 @@ class MemoryMetadataTool(MemoryTool):
         return "\n".join(lines)
 
     @staticmethod
-    def _schedule_line(memory: Any) -> str:
-        """The copyable ``schedule`` clause (#1857, display form == invocation form): the
-        stored RRULE verbatim for a collection with a schedule, or ``schedule: none``
-        for a log / an inert collection with no cadence yet — so the render never emits a
-        half-formed clause (#1666, via the shared ``render_schedule_field``)."""
-        return f"schedule: {render_schedule_field(memory)}"
+    def _schedule_line(memory: Any, timezone_name: str | None) -> str:
+        """The schedule in plain words with the exact rule in a code span (#2425), or
+        ``schedule: none`` for a log / an inert collection with no cadence yet — so the
+        render never emits a half-formed clause (#1666, via the shared
+        ``describe_schedule_field``)."""
+        return f"schedule: {describe_schedule_field(memory, timezone_name)}"
 
 
 class CollectionRemoveTool(MemoryTool):

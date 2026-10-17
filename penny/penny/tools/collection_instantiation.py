@@ -18,7 +18,11 @@ are whole-render tested in isolation:
   #1857) and the ``expires_at`` end condition (ISO or natural language), with
   ``render_schedule_clause`` rendering the stored rule back verbatim — it IS the
   input form — and ``next_occurrence`` reading that stored rule on the USER'S
-  clock (#1932), the seam the collector's readiness gate goes through;
+  clock (#1932), the seam the collector's readiness gate goes through.
+  ``describe_schedule``/``describe_schedule_field`` (#2425) are what every
+  model-facing surface reads instead: plain words leading, with that same exact
+  rule kept alongside in a code span, so a reply narrating a job's cadence has
+  words to copy rather than the raw RRULE;
 * the **creation echo** (skill · params · schedule · notify · expiry · the rendered
   prompt), so the chat agent confirms back exactly what landed.
 
@@ -487,6 +491,168 @@ def render_schedule_field(row: MemoryRow) -> str:
     return render_schedule_clause(row) if has_schedule(row) else _NO_SCHEDULE_CLAUSE
 
 
+# ── Plain-words schedule description (#2425) ──────────────────────────────────
+#
+# The raw RRULE is exact but unreadable prose: a model asked to tell a job's cadence in
+# its own words instead copied the grammar verbatim, and once a reply does that an
+# invented DTSTART reads as a fact the user stated.  ``describe_schedule`` /
+# ``describe_schedule_field`` lead with plain words and keep the exact rule alongside in
+# a code span, so #1857's display == invocation contract still holds — the model still
+# reads the exact copyable form it would write back to change the schedule — it just no
+# longer stands alone as the thing a reply naturally echoes.
+
+_FREQ_UNIT = {
+    "SECONDLY": "second",
+    "MINUTELY": "minute",
+    "HOURLY": "hour",
+    "DAILY": "day",
+    "WEEKLY": "week",
+    "MONTHLY": "month",
+    "YEARLY": "year",
+}
+
+_WEEKDAY_NAMES = {
+    "MO": "Monday",
+    "TU": "Tuesday",
+    "WE": "Wednesday",
+    "TH": "Thursday",
+    "FR": "Friday",
+    "SA": "Saturday",
+    "SU": "Sunday",
+}
+_WEEKDAY_SET = frozenset({"MO", "TU", "WE", "TH", "FR"})
+_WEEKEND_SET = frozenset({"SA", "SU"})
+
+
+def _clock_phrase(hour: str, minute: str | None) -> str:
+    """One BYHOUR[,BYMINUTE] value as a 12-hour clock phrase — BYHOUR is the user's own
+    wall-clock hour, never a zone to convert (the grammar's own convention — see
+    SCHEDULE_EXAMPLES's "the user's own clock")."""
+    stamp = datetime(2000, 1, 1, int(hour), int(minute) if minute is not None else 0)
+    return stamp.strftime("%I:%M %p")
+
+
+def _hours_phrase(byhour: str | None, byminute: str | None) -> str | None:
+    """Every BYHOUR value (RRULE allows a comma list) as a clock phrase, joined 'and' —
+    ``None`` with no BYHOUR at all, so a caller knows there is no time of day to state."""
+    if byhour is None:
+        return None
+    minutes = byminute.split(",") if byminute else []
+    hours = byhour.split(",")
+    phrases = [
+        _clock_phrase(hour, minutes[i] if i < len(minutes) else None)
+        for i, hour in enumerate(hours)
+    ]
+    return " and ".join(phrases)
+
+
+def _days_phrase(byday: str) -> str:
+    """BYDAY's comma list as plain words — the taught Mon-Fri set reads as 'weekdays'
+    (SCHEDULE_EXAMPLES' own word for it), Sat/Sun as 'weekends', anything else spells
+    out each day by name."""
+    codes = [code.strip().upper() for code in byday.split(",")]
+    if frozenset(codes) == _WEEKDAY_SET:
+        return "weekdays"
+    if frozenset(codes) == _WEEKEND_SET:
+        return "weekends"
+    names = [_WEEKDAY_NAMES.get(code, code) for code in codes]
+    if len(names) <= 2:
+        return " and ".join(names)
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
+def _cadence_phrase(parts: Mapping[str, str]) -> str:
+    """How often, in words — FREQ x INTERVAL x BYHOUR/BYDAY — built from the rule's own
+    parts rather than looked up by shape, so a combination nobody taught still reads as
+    words instead of falling back to the raw grammar."""
+    freq = parts.get("FREQ", "").upper()
+    unit = _FREQ_UNIT.get(freq, freq.lower() or "cycle")
+    interval = parts.get("INTERVAL")
+    plain = interval in (None, "1")
+    every = "every" if plain else f"every {interval}"
+    noun = unit if plain else f"{unit}s"
+
+    hours = _hours_phrase(parts.get("BYHOUR"), parts.get("BYMINUTE"))
+    if freq == "WEEKLY" and "BYDAY" in parts:
+        days = _days_phrase(parts["BYDAY"])
+        return f"{days} at {hours}" if hours else days
+    return f"{every} {noun} at {hours}" if hours else f"{every} {noun}"
+
+
+def _has_dtstart(canonical: str) -> bool:
+    """Whether the schedule states its own start — the only other line a stored rule
+    can carry alongside its one rule line (#1857's grammar)."""
+    return any(line.strip().upper().startswith(_DTSTART_TAG) for line in canonical.splitlines())
+
+
+def _dtstart_phrase(canonical: str, timezone_name: str | None) -> str:
+    """The schedule's own DTSTART read on the clock it actually states (#1932/#2425): an
+    exact ``…Z`` instant converted to the user's own clock, or a floating (no-zone) stamp
+    read AS the user's own wall clock already — never UTC for the floating case, the
+    same reading ``_zoned`` gives one of the rule's own occurrences.  Read via
+    ``rrulestr`` — the single authority on the grammar — rather than a bespoke format
+    guess, since a stored schedule already parsed once at write time and this must read
+    it identically."""
+    moment = rrulestr(canonical, dtstart=_VALIDATION_DTSTART)._dtstart
+    if moment.tzinfo is not None:
+        return format_user_timestamp(moment, timezone_name)
+    local = moment.replace(tzinfo=zone_or_utc(timezone_name))
+    return local.strftime(PennyConstants.CURRENT_DATETIME_FORMAT)
+
+
+def _describe_rule(rule: str, timezone_name: str | None) -> str:
+    """One rule's own words: its cadence, its own start when it states one, and how many
+    times when it is bounded.  The end condition (``UNTIL=``) is NOT restated here — it
+    is already lifted onto the collection's own ``expires_at`` and rendered on that line,
+    so repeating it here would state the same fact twice."""
+    canonical = _canonical_lines(rule)
+    rule_line = _rule_line(canonical)
+    assert rule_line is not None  # a stored rule always has one — parse_schedule refused otherwise
+    parts = _rule_parts(rule_line)
+    cadence = _cadence_phrase(parts)
+    count = parts.get("COUNT")
+    start = _dtstart_phrase(canonical, timezone_name) if _has_dtstart(canonical) else None
+
+    if count == "1":
+        at = f", at {start}" if start else ""
+        return f"once{at}, then it retires"
+    times = f", {count} times" if count not in (None, "1") else ""
+    if start:
+        return f"starting {start}, then {cadence}{times}"
+    return f"{cadence}{times}"
+
+
+def _describe_rule_with_span(rule: str, clause: str, timezone_name: str | None) -> str:
+    """Plain words plus the rule's own exact text in a code span, one line: the shared
+    tail of ``describe_schedule`` (reading the span off ``render_schedule_clause``) and
+    the was→now line's "was" side (reading it off a bare prior string, #1946) — both
+    need the identical "<words> (rule: `<rule>`)" shape, so it lives once here.
+    ``clause`` is joined onto one line with a plain SPACE rather than the ``\\n`` escape
+    ``render_schedule_clause`` uses for its own copy-back form — that escape is what a
+    reply echoed verbatim (#2425)."""
+    return f"{_describe_rule(rule, timezone_name)} (rule: `{clause.replace(_LINE_ESCAPE, ' ')}`)"
+
+
+def describe_schedule(row: MemoryRow, timezone_name: str | None = None) -> str:
+    """Plain words for the mechanism's schedule, with its exact rule alongside in a code
+    span (#1857's display == invocation contract, #2425's plain-words-first fix): the
+    model still reads the exact copyable form (``render_schedule_clause``) it would
+    write back to change the schedule, it just no longer stands alone as the thing a
+    reply would naturally echo.  Empty for no schedule, like ``render_schedule_clause``."""
+    if row.schedule is None:
+        return ""
+    return _describe_rule_with_span(row.schedule, render_schedule_clause(row), timezone_name)
+
+
+def describe_schedule_field(row: MemoryRow, timezone_name: str | None = None) -> str:
+    """The labelled-field counterpart (#1666's ``none`` fallback) over
+    ``describe_schedule`` — reads the fallback off ``render_schedule_field`` so that
+    function keeps a production caller too."""
+    if not has_schedule(row):
+        return render_schedule_field(row)
+    return describe_schedule(row, timezone_name)
+
+
 # ── The end condition: ISO first, then the user's own words (#1857) ──────────
 
 # What dateparser is told about the words it is reading: they are the USER's, so they
@@ -622,11 +788,10 @@ def _parse_spoken_datetime(value: str, timezone_name: str | None, now: datetime)
 # ── Creation echo ─────────────────────────────────────────────────────────────
 
 
-def _schedule_line(row: MemoryRow) -> str:
-    """The echo's one-line schedule summary — the stored rule verbatim when the
-    collection has one, or ``schedule: none`` for an inert/unscheduled one (#1666;
-    #1857, display form == invocation form)."""
-    return f"  schedule: {render_schedule_field(row)}"
+def _schedule_line(row: MemoryRow, timezone_name: str | None) -> str:
+    """The echo's one-line schedule summary — plain words with the exact rule in a code
+    span (#2425), or ``schedule: none`` for an inert/unscheduled one (#1666)."""
+    return f"  schedule: {describe_schedule_field(row, timezone_name)}"
 
 
 def _params_line(params: dict[str, str]) -> str:
@@ -663,14 +828,15 @@ def _expires_line(row: MemoryRow, timezone_name: str | None) -> str:
 # detailed field-by-field echo stays below it.
 
 
-def _lead_cadence_phrase(row: MemoryRow) -> str:
-    """The 'when it runs' clause, built off the SAME stored rule
-    ``render_schedule_clause`` reads — a bare 'I'll run' when the collection carries no
-    schedule at all (defensive — a skill-backed collection always has one)."""
+def _lead_cadence_phrase(row: MemoryRow, timezone_name: str | None) -> str:
+    """The 'when it runs' clause, in plain words with the exact rule in a code span
+    (#2425, ``describe_schedule``) — a bare 'I'll run' when the collection carries no
+    schedule at all (defensive — a skill-backed collection always has one).  Any run
+    quota is already stated in those words (``_describe_rule``'s own COUNT handling),
+    so it is not stated a second time here."""
     if not has_schedule(row):
         return "I'll run"
-    times = f" ({row.max_runs} times)" if row.max_runs not in (None, 1) else ""
-    return f"On the schedule {render_schedule_clause(row)}{times} I'll run"
+    return f"On the schedule {describe_schedule(row, timezone_name)} I'll run"
 
 
 def _lead_notify_tail(row: MemoryRow) -> str:
@@ -680,12 +846,13 @@ def _lead_notify_tail(row: MemoryRow) -> str:
     return "quietly store what it finds."
 
 
-def _lead_line(row: MemoryRow, skill_name: str) -> str:
+def _lead_line(row: MemoryRow, skill_name: str, timezone_name: str | None) -> str:
     """One deterministic English sentence: cadence + skill + target + notify —
-    e.g. "Every 900 seconds I'll run 'watch-a-page' against 'aurora-prices' and
-    message you when something changes." / "…and quietly store what it finds."."""
+    e.g. "On the schedule every 15 minutes (rule: `FREQ=MINUTELY;INTERVAL=15`) I'll run
+    'watch-a-page' against 'aurora-prices' and message you when something changes." /
+    "…and quietly store what it finds."."""
     return (
-        f"{_lead_cadence_phrase(row)} '{skill_name}' against '{row.name}' and "
+        f"{_lead_cadence_phrase(row, timezone_name)} '{skill_name}' against '{row.name}' and "
         f"{_lead_notify_tail(row)}"
     )
 
@@ -704,12 +871,12 @@ def _instantiation_echo(
     collection and a re-rendered one confirm back the same fields."""
     prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
     lines = [
-        _lead_line(row, skill_name),
+        _lead_line(row, skill_name, timezone_name),
         headline,
         f"  description: {row.description}",
         f"  skill: {skill_name}",
         _params_line(params),
-        _schedule_line(row),
+        _schedule_line(row, timezone_name),
         f"  notify: {row.notify}",
         _expires_line(row, timezone_name),
         "  steps: |",
@@ -783,6 +950,27 @@ def render_expiry_update_line(
     return _configured_value(_expires_value(row, timezone_name), _EXPIRES_FIELD, priors)
 
 
+def _schedule_configured_value(
+    row: MemoryRow, timezone_name: str | None, priors: Mapping[str, str | None]
+) -> str:
+    """The schedule's own was→now line (#1946's convention), with BOTH sides in plain
+    words plus their exact rule (#2425) — not the generic ``_configured_value``, because
+    that compares the "now" value (already rendered) against the recorded prior (still
+    the bare rule text) byte-for-byte, which a plain-words "now" can never equal.  The
+    recorded prior is the raw text the field held before this call (#1946), so the "was"
+    side is built straight from it rather than off a row — there is no earlier row left
+    to read it from."""
+    after = describe_schedule_field(row, timezone_name)
+    if _SCHEDULE_FIELD not in priors:
+        return after
+    before_raw = priors[_SCHEDULE_FIELD]
+    if before_raw is None:
+        before = _NO_PRIOR_VALUE
+    else:
+        before = _describe_rule_with_span(before_raw, _one_line(before_raw), timezone_name)
+    return after if before == after else _CHANGED_VALUE.format(before=before, after=after)
+
+
 def render_applied_configuration(
     row: MemoryRow,
     priors: Mapping[str, str | None] | None = None,
@@ -806,8 +994,9 @@ def render_applied_configuration(
     it always was, which is every path but the one that has a ledger to read.
 
     ``timezone_name`` is the user's own IANA zone (#2206/#2251), read on the expiry line
-    only — the one field a fact on the user's own clock, never the UTC a historical
-    timestamp renders in; ``None`` falls back to UTC like every other clock read here.
+    and on the schedule's own words (#2425, an explicit DTSTART's moment) — facts on the
+    user's own clock, never the UTC a historical timestamp renders in; ``None`` falls
+    back to UTC like every other clock read here.
 
     ``None`` when the collection carries no routine — an inert container has no
     configuration to state, and saying it was set up would be the claim the honest-failure
@@ -822,11 +1011,11 @@ def render_applied_configuration(
     params = skill_params(row)
     return "\n".join(
         [
-            _lead_line(row, row.skill_name),
+            _lead_line(row, row.skill_name, timezone_name),
             f"  collection: {row.name}",
             f"  skill: {_configured_value(row.skill_name, _SKILL_FIELD, moved)}",
             _params_line(params),
-            f"  schedule: {_configured_value(render_schedule_field(row), _SCHEDULE_FIELD, moved)}",
+            f"  schedule: {_schedule_configured_value(row, timezone_name, moved)}",
             f"  notify: {_configured_value(str(row.notify), _NOTIFY_FIELD, moved)}",
             f"  expires: {render_expiry_update_line(row, timezone_name, moved)}",
         ]

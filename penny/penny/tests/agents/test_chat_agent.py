@@ -1188,7 +1188,7 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
         assert "the aurora deck 2 price" in frame
         # The container arrived inert, so both terms the turn set were previously unset —
         # and the record states that rather than leaving the before-state to be recalled.
-        assert "  schedule: was not set → now FREQ=HOURLY" in frame
+        assert "  schedule: was not set → now every hour (rule: `FREQ=HOURLY`)" in frame
         assert "  notify: was False → now True" in frame
         assert response.answer == reply
 
