@@ -1400,7 +1400,7 @@ class MicroContext:
                 run_target=run_target,
                 token_budget=token_budget,
             )
-            if response.finish_reason == "length" and not retried_cut:
+            if response.finish_reason == PennyConstants.FINISH_REASON_LENGTH and not retried_cut:
                 retried_cut = True
                 logger.warning(
                     "%s draw was cut at its token budget — one more draw with thinking off",

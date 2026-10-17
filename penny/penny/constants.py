@@ -451,6 +451,8 @@ class PennyConstants:
     # Provider-specific endpoint some OpenAI-compatible backends (e.g. openrouter)
     # use to list embedding-capable models that ``/v1/models`` omits.
     LLM_EMBEDDING_MODELS_ENDPOINT = "/v1/embeddings/models"
+    # The finish_reason a provider returns when a token cap cut the draw.
+    FINISH_REASON_LENGTH = "length"
     MAX_SEARCH_LINKS = 10
     BROWSE_SEARCH_HEADER = "## browse search: "
     BROWSE_PAGE_HEADER = "## browse: "
