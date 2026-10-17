@@ -1708,6 +1708,35 @@ h1 {
   white-space: pre-wrap;
 }
 
+.schedule-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.schedule-picker-sub {
+  display: flex;
+  gap: 8px;
+}
+
+.schedule-picker-sub > select,
+.schedule-picker-sub > input {
+  flex: 1;
+}
+
+.schedule-picker-sub > textarea {
+  flex: 1;
+  width: 100%;
+}
+
+.schedule-picker-caption {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: 1em;
+}
+
 .memory-form-actions {
   display: flex;
   gap: 8px;

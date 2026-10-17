@@ -24,6 +24,7 @@ from penny.tests.conftest import require_memory, wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.browse import BrowseTool
+from penny.tools.collection_instantiation import describe_schedule
 from penny.tools.models import ToolResult
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
@@ -1994,9 +1995,17 @@ class TestBrowserMemoryHandlers:
         assert by_name["board-games"]["entry_count"] == 1
         assert by_name["board-games"]["extraction_prompt"] == "extract games"
         assert by_name["board-games"]["schedule"] == "FREQ=MINUTELY;INTERVAL=5"
+        # The plain-words reading (#2428) the addon's schedule picker shows under its
+        # control (#2442) — no profile seeded in this DB, so timezone_name is None.
+        board_games_row = db.memories.get("board-games")
+        assert board_games_row is not None
+        assert by_name["board-games"]["schedule_description"] == describe_schedule(
+            board_games_row, None
+        )
         assert by_name["collector-runs"]["type"] == "log"
         assert by_name["collector-runs"]["entry_count"] == 1
         assert by_name["collector-runs"]["extraction_prompt"] is None
+        assert by_name["collector-runs"]["schedule_description"] is None
 
     @pytest.mark.asyncio
     async def test_memories_request_query_matches_name_or_entry_content(self, tmp_path):
@@ -2392,6 +2401,7 @@ class TestBrowserMemoryHandlers:
         channel, db = self._channel(tmp_path)
         asyncio.run(
             channel._handle_memory_create(
+                cast(Any, _MockWs()),
                 {
                     "type": "memory_create",
                     "name": "board-games",
@@ -2399,7 +2409,7 @@ class TestBrowserMemoryHandlers:
                     "published": True,
                     "extraction_prompt": "extract games",
                     "schedule": "FREQ=MINUTELY;INTERVAL=10",
-                }
+                },
             )
         )
         memory = db.memories.get("board-games")
@@ -2409,6 +2419,51 @@ class TestBrowserMemoryHandlers:
         assert memory.extraction_prompt == "extract games"
         assert memory.schedule == "FREQ=MINUTELY;INTERVAL=10"
 
+    def test_memory_create_lifts_count_into_max_runs(self, tmp_path):
+        """A custom schedule's COUNT= is lifted into max_runs on create (#1857's
+        atomic rule+quota pairing), not left orphaned behind a schedule text
+        that promises a run limit the row doesn't enforce (#2442)."""
+        channel, db = self._channel(tmp_path)
+        asyncio.run(
+            channel._handle_memory_create(
+                cast(Any, _MockWs()),
+                {
+                    "type": "memory_create",
+                    "name": "board-games",
+                    "description": "board games",
+                    "schedule": "FREQ=DAILY;BYHOUR=8;COUNT=3",
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule == "FREQ=DAILY;BYHOUR=8;COUNT=3"
+        assert memory.max_runs == 3
+
+    def test_memory_create_rejects_unreadable_schedule_and_reports_it(self, tmp_path):
+        """An unparseable custom schedule is never silently stored — the picker's
+        raw-rule box has no client-side grammar check, so the rejection must
+        reach the addon (#2442)."""
+        channel, db = self._channel(tmp_path)
+        ws = _MockWs()
+        asyncio.run(
+            channel._handle_memory_create(
+                cast(Any, ws),
+                {
+                    "type": "memory_create",
+                    "name": "board-games",
+                    "description": "board games",
+                    "schedule": "not a schedule",
+                },
+            )
+        )
+        assert db.memories.get("board-games") is None  # nothing persisted
+        assert len(ws.sent) == 1
+        assert ws.sent[0]["type"] == "memory_save_error"
+        assert ws.sent[0]["action"] == "create"
+        assert ws.sent[0]["name"] == "board-games"
+        assert "not a schedule" in ws.sent[0]["message"]
+
     def test_memory_create_silently_drops_duplicate_name(self, tmp_path):
         """A duplicate name is logged and dropped — no crash."""
 
@@ -2416,11 +2471,12 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection("board-games", "first")
         asyncio.run(
             channel._handle_memory_create(
+                cast(Any, _MockWs()),
                 {
                     "type": "memory_create",
                     "name": "board-games",
                     "description": "second",
-                }
+                },
             )
         )
         memory = db.memories.get("board-games")
@@ -2428,7 +2484,10 @@ class TestBrowserMemoryHandlers:
         assert memory.description == "first"  # original wins, no overwrite
 
     def test_memory_update_changes_only_supplied_fields(self, tmp_path):
-        """Fields the addon doesn't send stay untouched."""
+        """Fields the addon doesn't send stay untouched — except ``schedule``,
+        which the browser form always resends in full, so it is always applied
+        as a replace (see ``test_memory_update_clears_schedule_when_none_sent``
+        for the picker's "No schedule" case this makes possible, #2442)."""
 
         channel, db = self._channel(tmp_path)
         db.memories.create_collection(
@@ -2439,6 +2498,7 @@ class TestBrowserMemoryHandlers:
         )
         asyncio.run(
             channel._handle_memory_update(
+                cast(Any, _MockWs()),
                 {
                     "type": "memory_update",
                     "name": "board-games",
@@ -2448,8 +2508,8 @@ class TestBrowserMemoryHandlers:
                     "intent": "track only co-op games now",
                     "published": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
-                    "schedule": None,
-                }
+                    "schedule": "FREQ=MINUTELY;INTERVAL=5",
+                },
             )
         )
         memory = db.memories.get("board-games")
@@ -2458,6 +2518,52 @@ class TestBrowserMemoryHandlers:
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "old prompt"
         assert memory.schedule == "FREQ=MINUTELY;INTERVAL=5"
+
+    def test_memory_update_clears_schedule_when_none_sent(self, tmp_path):
+        """The picker's "No schedule" preset sends ``schedule: None`` to mean
+        exactly that — cleared, not "leave unchanged" — since the addon's form
+        always resends its full current picker state (#2442)."""
+        channel, db = self._channel(tmp_path)
+        db.memories.create_collection(
+            "board-games",
+            "x",
+            schedule="FREQ=DAILY;BYHOUR=8;COUNT=3",
+        )
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, _MockWs()),
+                {"type": "memory_update", "name": "board-games", "schedule": None},
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule is None
+        assert memory.max_runs is None  # the lifted COUNT= goes with it, not orphaned
+
+    def test_memory_update_rejects_unreadable_schedule_and_reports_it(self, tmp_path):
+        """An unparseable custom schedule on an edit is rejected and reported,
+        and the collection's existing schedule is left exactly as it was."""
+        channel, db = self._channel(tmp_path)
+        db.memories.create_collection("board-games", "x", schedule="FREQ=MINUTELY;INTERVAL=5")
+        ws = _MockWs()
+        asyncio.run(
+            channel._handle_memory_update(
+                cast(Any, ws),
+                {
+                    "type": "memory_update",
+                    "name": "board-games",
+                    "schedule": "not a schedule",
+                },
+            )
+        )
+        memory = db.memories.get("board-games")
+        assert memory is not None
+        assert memory.schedule == "FREQ=MINUTELY;INTERVAL=5"  # untouched by the rejected edit
+        assert len(ws.sent) == 1
+        assert ws.sent[0]["type"] == "memory_save_error"
+        assert ws.sent[0]["action"] == "update"
+        assert ws.sent[0]["name"] == "board-games"
+        assert "not a schedule" in ws.sent[0]["message"]
 
     def test_memory_archive_marks_archived(self, tmp_path):
 

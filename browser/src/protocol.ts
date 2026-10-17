@@ -143,7 +143,8 @@ export type WsIncomingType =
   | "memory_page_response"
   | "memory_changed"
   | "collection_trigger_result"
-  | "run_detail_response";
+  | "run_detail_response"
+  | "memory_save_error";
 export const WsIncomingType = {
   Message: "message",
   Typing: "typing",
@@ -162,6 +163,7 @@ export const WsIncomingType = {
   MemoryChanged: "memory_changed",
   CollectionTriggerResult: "collection_trigger_result",
   RunDetailResponse: "run_detail_response",
+  MemorySaveError: "memory_save_error",
 } as const satisfies Record<string, WsIncomingType>;
 
 export interface WsIncomingMessagePayload {
@@ -326,18 +328,16 @@ export interface MemoryRecord {
   name: string;
   type: "collection" | "log";
   description: string;
-  /** The user's stated goal at creation — editable only via the user (UI)
-   * path, never by the agent's collection_update tool. */
-  intent: string | null;
-  /** Stage-1 routing: does this memory participate in recall at all. */
-  inclusion: "always" | "relevant" | "never";
-  /** Stage-2 entry rendering once included. */
-  recall: "all" | "relevant" | "recent";
-  /** Pub/sub: when true the notifier delivers new entries to the user. Orthogonal to recall. */
+  /** Pub/sub: when true the notifier delivers new entries to the user. */
   published: boolean;
   archived: boolean;
   extraction_prompt: string | null;
-  collector_interval_seconds: number | null;
+  /** The collection's cadence as one RRULE (#1857), or null for a
+   * storage-only collection with no schedule. */
+  schedule: string | null;
+  /** The schedule in plain words, with the exact rule alongside in a code
+   * span (#2428's describe_schedule) — null alongside a null schedule. */
+  schedule_description: string | null;
   last_collected_at: string | null;
   entry_count: number;
 }
@@ -410,6 +410,16 @@ export interface WsIncomingRunDetailPayload {
   run: PromptLogRun | null;
 }
 
+/** A memory_create/memory_update whose schedule failed server-side
+ * validation — delivered back to the requesting connection so a rejected
+ * custom RRULE never saves silently (#2442). */
+export interface WsIncomingMemorySaveErrorPayload {
+  type: typeof WsIncomingType.MemorySaveError;
+  action: "create" | "update";
+  name: string;
+  message: string;
+}
+
 export type WsIncomingPayload =
   | WsIncomingMessagePayload
   | WsIncomingTypingPayload
@@ -427,7 +437,8 @@ export type WsIncomingPayload =
   | WsIncomingMemoryPagePayload
   | WsIncomingMemoryChangedPayload
   | WsIncomingCollectionTriggerResultPayload
-  | WsIncomingRunDetailPayload;
+  | WsIncomingRunDetailPayload
+  | WsIncomingMemorySaveErrorPayload;
 
 // --- Runtime messages (sidebar ↔ background) ---
 
@@ -467,6 +478,7 @@ export type RuntimeMessageType =
   | "entry_delete"
   | "collection_trigger"
   | "collection_trigger_result"
+  | "memory_save_error"
   | "cursor_set"
   | "cursor_clear"
   | "run_detail_request"
@@ -508,6 +520,7 @@ export const RuntimeMessageType = {
   EntryDelete: "entry_delete",
   CollectionTrigger: "collection_trigger",
   CollectionTriggerResult: "collection_trigger_result",
+  MemorySaveError: "memory_save_error",
   CursorSet: "cursor_set",
   CursorClear: "cursor_clear",
   RunDetailRequest: "run_detail_request",
@@ -734,13 +747,11 @@ export interface RuntimeMemoryCreate {
   type: typeof RuntimeMessageType.MemoryCreate;
   name: string;
   description: string;
-  intent: string;
-  inclusion: "always" | "relevant" | "never";
-  recall: "recent" | "relevant" | "all";
   /** Pub/sub: notify the user of new entries (default false). */
   published?: boolean;
   extraction_prompt?: string | null;
-  collector_interval_seconds?: number | null;
+  /** One RRULE (#1857), or null/omitted for a storage-only collection. */
+  schedule?: string | null;
 }
 
 /** Memories tab → background: update collection metadata */
@@ -748,13 +759,20 @@ export interface RuntimeMemoryUpdate {
   type: typeof RuntimeMessageType.MemoryUpdate;
   name: string;
   description?: string | null;
-  intent?: string | null;
-  inclusion?: "always" | "relevant" | "never" | null;
-  recall?: "recent" | "relevant" | "all" | null;
   /** Pub/sub: flip notify-on-new; omit/null leaves it unchanged. */
   published?: boolean | null;
   extraction_prompt?: string | null;
-  collector_interval_seconds?: number | null;
+  /** One RRULE (#1857); omitted/null leaves the schedule unchanged. */
+  schedule?: string | null;
+}
+
+/** Background → memories tab: a memory_create/memory_update's schedule was
+ * rejected — the picker's custom box must surface this, never fail quietly. */
+export interface RuntimeMemorySaveError {
+  type: typeof RuntimeMessageType.MemorySaveError;
+  action: "create" | "update";
+  name: string;
+  message: string;
 }
 
 /** Memories tab → background: set a collection's read cursor over one log */
@@ -846,6 +864,7 @@ export type RuntimeMessage =
   | RuntimeMemoryChanged
   | RuntimeCollectionTrigger
   | RuntimeCollectionTriggerResult
+  | RuntimeMemorySaveError
   | RuntimeMemoryCreate
   | RuntimeMemoryUpdate
   | RuntimeMemoryArchive

@@ -22,11 +22,13 @@ import {
   type RuntimeConfigParam,
   type RuntimeMemoryDetailResponse,
   type RuntimeMemoryPageResponse,
+  type RuntimeMemorySaveError,
   type RuntimeMessage,
   RuntimeMessageType,
   STORAGE_KEY_DOMAIN_ALLOWLIST,
   STORAGE_KEY_TOOL_USE,
 } from "../protocol.js";
+import { createSchedulePicker } from "./schedule_picker.js";
 
 // --- Top-level state ---
 
@@ -190,6 +192,8 @@ function handleMessage(message: RuntimeMessage): void {
     handleMemoryChanged(message.name);
   } else if (message.type === RuntimeMessageType.CollectionTriggerResult) {
     handleCollectionTriggerResult(message);
+  } else if (message.type === RuntimeMessageType.MemorySaveError) {
+    handleMemorySaveError(message);
   } else if (message.type === RuntimeMessageType.ConnectionState) {
     handleConnectionState(message.state);
   }
@@ -1387,13 +1391,10 @@ function createNewMemoryForm(): HTMLElement {
 
   const fields = createMemoryFormFields({
     description: "",
-    intent: "",
-    inclusion: "relevant",
-    recall: "relevant",
     published: false,
     extraction_prompt: "",
-    collector_interval_seconds: null,
   });
+  const schedulePicker = createSchedulePicker({ schedule: null, description: null });
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.placeholder = "collection-name";
@@ -1401,12 +1402,9 @@ function createNewMemoryForm(): HTMLElement {
 
   form.appendChild(labelled("Name", nameInput));
   form.appendChild(labelled("Description", fields.description));
-  form.appendChild(labelled("Intent", fields.intent));
-  form.appendChild(labelled("Inclusion", fields.inclusion));
-  form.appendChild(labelled("Recall", fields.recall));
   form.appendChild(labelled("Notify on new (published)", fields.published));
   form.appendChild(labelled("Extraction prompt", fields.extractionPrompt));
-  form.appendChild(labelled("Collector interval (seconds)", fields.intervalInput));
+  form.appendChild(labelled("Schedule", schedulePicker.element));
 
   const actions = document.createElement("div");
   actions.className = "memory-form-actions";
@@ -1425,23 +1423,14 @@ function createNewMemoryForm(): HTMLElement {
       showToast("Name is required");
       return;
     }
-    const intentValue = fields.intent.value.trim();
-    if (!intentValue) {
-      showToast("Intent is required — what should this collection do?");
-      return;
-    }
     const promptValue = fields.extractionPrompt.value.trim();
-    const intervalValue = fields.intervalInput.value.trim();
     browser.runtime.sendMessage({
       type: RuntimeMessageType.MemoryCreate,
       name,
       description: fields.description.value.trim(),
-      intent: intentValue,
-      inclusion: fields.inclusion.value as "always" | "relevant" | "never",
-      recall: fields.recall.value as "recent" | "relevant" | "all",
       published: fields.published.checked,
       extraction_prompt: promptValue || null,
-      collector_interval_seconds: intervalValue ? Number(intervalValue) : null,
+      schedule: schedulePicker.getValue(),
     });
     showToast("Created");
   });
@@ -1454,50 +1443,19 @@ function createNewMemoryForm(): HTMLElement {
 
 interface MemoryFormFields {
   description: HTMLTextAreaElement;
-  intent: HTMLTextAreaElement;
-  inclusion: HTMLSelectElement;
-  recall: HTMLSelectElement;
   published: HTMLInputElement;
   extractionPrompt: HTMLTextAreaElement;
-  intervalInput: HTMLInputElement;
-}
-
-function selectOf(values: string[], selected: string): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.className = "memory-form-input";
-  for (const value of values) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = value;
-    if (value === selected) option.selected = true;
-    select.appendChild(option);
-  }
-  return select;
 }
 
 function createMemoryFormFields(initial: {
   description: string;
-  intent: string;
-  inclusion: string;
-  recall: string;
   published: boolean;
   extraction_prompt: string;
-  collector_interval_seconds: number | null;
 }): MemoryFormFields {
   const description = document.createElement("textarea");
   description.className = "memory-form-input";
   description.rows = 2;
   description.value = initial.description;
-
-  const intent = document.createElement("textarea");
-  intent.className = "memory-form-input";
-  intent.rows = 2;
-  intent.placeholder = "what you asked this collection to do, in your words";
-  intent.value = initial.intent;
-
-  // Stage-1 routing and stage-2 entry rendering are independent flags.
-  const inclusion = selectOf(["always", "relevant", "never"], initial.inclusion);
-  const recall = selectOf(["recent", "relevant", "all"], initial.recall);
 
   // Pub/sub: when checked, the notifier delivers new entries to the user.
   const published = document.createElement("input");
@@ -1515,16 +1473,7 @@ function createMemoryFormFields(initial: {
   // value naturally.
   extractionPrompt.value = unescapeNewlines(initial.extraction_prompt);
 
-  const intervalInput = document.createElement("input");
-  intervalInput.type = "number";
-  intervalInput.className = "memory-form-input";
-  intervalInput.min = "30";
-  intervalInput.placeholder = "300";
-  if (initial.collector_interval_seconds !== null) {
-    intervalInput.value = String(initial.collector_interval_seconds);
-  }
-
-  return { description, intent, inclusion, recall, published, extractionPrompt, intervalInput };
+  return { description, published, extractionPrompt };
 }
 
 function labelled(label: string, control: HTMLElement): HTMLElement {
@@ -1843,7 +1792,6 @@ function createLogMetadataSection(memory: MemoryRecord): HTMLElement {
   const grid = document.createElement("dl");
   grid.className = "memory-detail-grid";
   appendDef(grid, "Description", memory.description || "—");
-  appendDef(grid, "Recall", memory.recall);
   appendDef(grid, "Entries", String(memory.entry_count));
   section.appendChild(grid);
   return section;
@@ -1859,21 +1807,18 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
 
   const fields = createMemoryFormFields({
     description: memory.description,
-    intent: memory.intent ?? "",
-    inclusion: memory.inclusion,
-    recall: memory.recall,
     published: memory.published,
     extraction_prompt: memory.extraction_prompt ?? "",
-    collector_interval_seconds: memory.collector_interval_seconds,
+  });
+  const schedulePicker = createSchedulePicker({
+    schedule: memory.schedule,
+    description: memory.schedule_description,
   });
 
   section.appendChild(labelled("Description", fields.description));
-  section.appendChild(labelled("Intent", fields.intent));
-  section.appendChild(labelled("Inclusion", fields.inclusion));
-  section.appendChild(labelled("Recall", fields.recall));
   section.appendChild(labelled("Notify on new (published)", fields.published));
   section.appendChild(labelled("Extraction prompt", fields.extractionPrompt));
-  section.appendChild(labelled("Collector interval (seconds)", fields.intervalInput));
+  section.appendChild(labelled("Schedule", schedulePicker.element));
 
   const readOnlyGrid = document.createElement("dl");
   readOnlyGrid.className = "memory-detail-grid";
@@ -1906,17 +1851,13 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
   save.className = "memory-form-save";
   save.textContent = "Save";
   save.addEventListener("click", () => {
-    const intervalValue = fields.intervalInput.value.trim();
     browser.runtime.sendMessage({
       type: RuntimeMessageType.MemoryUpdate,
       name: memory.name,
       description: fields.description.value.trim(),
-      intent: fields.intent.value.trim(),
-      inclusion: fields.inclusion.value as "always" | "relevant" | "never",
-      recall: fields.recall.value as "recent" | "relevant" | "all",
       published: fields.published.checked,
       extraction_prompt: fields.extractionPrompt.value.trim() || null,
-      collector_interval_seconds: intervalValue ? Number(intervalValue) : null,
+      schedule: schedulePicker.getValue(),
     });
     showToast("Saved");
   });
@@ -1949,6 +1890,15 @@ function handleCollectionTriggerResult(message: RuntimeCollectionTriggerResult):
   // Refresh the detail so re-enabled button, new entries, and updated
   // "last collected" all reflect the run (also arrives via memory_changed).
   if (activeMemory && activeMemory.name === message.name) renderMemoryDetail();
+}
+
+// A memory_create/memory_update whose schedule the server rejected (#2442) —
+// the optimistic "Created"/"Saved" toast already fired, so this one follows
+// it with the real outcome rather than leaving the rejection unsaid. Nothing
+// was persisted, so there is no detail to refresh.
+function handleMemorySaveError(message: RuntimeMemorySaveError): void {
+  const verb = message.action === "create" ? "Create" : "Save";
+  showToast(`${verb} failed: ${message.message}`);
 }
 
 function appendDef(grid: HTMLElement, label: string, value: string, monospace = false): void {

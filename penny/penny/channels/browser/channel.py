@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import websockets
 from pydantic import BaseModel, ValidationError
@@ -75,6 +75,7 @@ from penny.channels.browser.models import (
     BrowserMemoryDetailResponse,
     BrowserMemoryPageRequest,
     BrowserMemoryPageResponse,
+    BrowserMemorySaveError,
     BrowserMemoryUpdate,
     BrowserOutgoing,
     BrowserPermissionDecision,
@@ -101,7 +102,14 @@ from penny.database.memory import (
     MemoryTypeError,
 )
 from penny.database.models import RuntimeConfig
+from penny.datetime_utils import user_timezone_name
 from penny.tools.base import Tool
+from penny.tools.collection_instantiation import (
+    Schedule,
+    ScheduleError,
+    describe_schedule,
+    parse_schedule,
+)
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -542,11 +550,11 @@ class BrowserChannel(MessageChannel):
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_CREATE:
-            await self._handle_memory_create(data)
+            await self._handle_memory_create(ws, data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_UPDATE:
-            await self._handle_memory_update(data)
+            await self._handle_memory_update(ws, data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_ARCHIVE:
@@ -966,8 +974,7 @@ class BrowserChannel(MessageChannel):
             for log_name, last_read_at in sorted(cursors)
         ]
 
-    @staticmethod
-    def _memory_to_record(memory, entry_count: int) -> MemoryRecord:
+    def _memory_to_record(self, memory, entry_count: int) -> MemoryRecord:
         return MemoryRecord(
             name=memory.name,
             type=memory.type,
@@ -976,6 +983,9 @@ class BrowserChannel(MessageChannel):
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
             schedule=memory.schedule,
+            # The model's own plain-words reading (#2428), so the addon's schedule
+            # picker never re-derives it in TypeScript (#2442).
+            schedule_description=describe_schedule(memory, user_timezone_name(self._db)) or None,
             last_collected_at=(
                 memory.last_collected_at.isoformat() if memory.last_collected_at else None
             ),
@@ -1000,13 +1010,16 @@ class BrowserChannel(MessageChannel):
     # codebase (user-directed writes land as ``"user"``).
     _ADDON_ENTRY_AUTHOR = "user"
 
-    async def _handle_memory_create(self, data: dict) -> None:
+    async def _handle_memory_create(self, ws: ServerConnection, data: dict) -> None:
         """Create a new collection from the addon.  Logs are seeded by
         migrations and not user-creatable here."""
         try:
             req = BrowserMemoryCreate(**data)
         except ValidationError:
             logger.warning("Invalid memory_create: %s", str(data)[:200])
+            return
+        parsed, ok = await self._validated_schedule(ws, "create", req.name, req.schedule)
+        if not ok:
             return
         description_embedding = await self._message_agent.embed_description(req.description)
         try:
@@ -1015,19 +1028,27 @@ class BrowserChannel(MessageChannel):
                 req.description,
                 extraction_prompt=req.extraction_prompt,
                 schedule=req.schedule,
+                max_runs=parsed.max_runs if parsed else None,
+                expires_at=parsed.expires_at if parsed else None,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
         except MemoryAlreadyExistsError:
             logger.warning("memory_create with duplicate name: %s", req.name)
 
-    async def _handle_memory_update(self, data: dict) -> None:
+    async def _handle_memory_update(self, ws: ServerConnection, data: dict) -> None:
         """Edit metadata on an existing collection.  Only fields that are
-        not ``None`` are applied, matching ``update_collection_metadata``."""
+        not ``None`` are applied, matching ``update_collection_metadata`` —
+        except ``schedule``, which the addon's form always resends in full and
+        which is therefore always applied as a full replace (#2442), clearing
+        any previous schedule/end-conditions on a ``None`` (no-schedule) save."""
         try:
             req = BrowserMemoryUpdate(**data)
         except ValidationError:
             logger.warning("Invalid memory_update: %s", str(data)[:200])
+            return
+        parsed, ok = await self._validated_schedule(ws, "update", req.name, req.schedule)
+        if not ok:
             return
         # Re-embed the meaning anchor whenever the description changes.
         description_embedding = (
@@ -1041,11 +1062,45 @@ class BrowserChannel(MessageChannel):
                 description=req.description,
                 extraction_prompt=req.extraction_prompt,
                 schedule=req.schedule,
+                max_runs=parsed.max_runs if parsed else None,
+                expires_at=parsed.expires_at if parsed else None,
+                replace_schedule=True,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
         except (MemoryNotFoundError, MemoryTypeError) as exc:
             logger.warning("memory_update failed for %s: %s", req.name, exc)
+
+    async def _validated_schedule(
+        self,
+        ws: ServerConnection,
+        action: Literal["create", "update"],
+        name: str,
+        schedule: str | None,
+    ) -> tuple[Schedule | None, bool]:
+        """Parse an addon-supplied ``schedule`` string (``None`` = no schedule) and
+        report a rejection back to the requesting connection — the custom-RRULE box has
+        no client-side grammar check, so a reject must be SAID, never silent (#2442).
+        Returns ``(parsed, ok)``; ``ok`` is ``False`` once the rejection has been
+        delivered, telling the caller to stop without touching the store."""
+        if schedule is None:
+            return None, True
+        try:
+            return parse_schedule(schedule), True
+        except ScheduleError as exc:
+            await self._deliver_save_error(ws, action, name, str(exc))
+            return None, False
+
+    async def _deliver_save_error(
+        self, ws: ServerConnection, action: Literal["create", "update"], name: str, message: str
+    ) -> None:
+        """Get a rejected memory_create/memory_update's reason back to the requesting
+        addon connection.  Delivered directly (unlike the collector-trigger result's
+        broadcast fallback, #1935): this answers the same request/response round trip
+        the connection is still waiting on, not a minutes-long background run."""
+        error = BrowserMemorySaveError(action=action, name=name, message=message)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.send(error.model_dump_json())
 
     def _handle_memory_archive(self, data: dict) -> None:
         """Soft-delete a memory from the active list."""

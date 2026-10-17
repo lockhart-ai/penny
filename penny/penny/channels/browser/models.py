@@ -54,6 +54,7 @@ BROWSER_RESP_TYPE_MEMORY_PAGE = "memory_page_response"
 BROWSER_RESP_TYPE_MEMORY_CHANGED = "memory_changed"
 BROWSER_RESP_TYPE_RUN_DETAIL = "run_detail_response"
 BROWSER_RESP_TYPE_COLLECTION_TRIGGER_RESULT = "collection_trigger_result"
+BROWSER_RESP_TYPE_MEMORY_SAVE_ERROR = "memory_save_error"
 
 # Sections of a memory's detail view that paginate independently.
 MEMORY_SECTION_ENTRIES = "entries"
@@ -241,6 +242,11 @@ class MemoryRecord(BaseModel):
     # still reading that key sees it absent, and updating the client surface is its own
     # change (the #1583/#1631 precedent).
     schedule: str | None
+    # The schedule in plain words, with its exact rule alongside in a code span
+    # (``describe_schedule``, #2428) — ``None`` alongside a ``None`` schedule.  Sent so
+    # the addon's schedule picker (#2442) never has to re-derive the model's own wording
+    # in TypeScript.
+    schedule_description: str | None
     last_collected_at: str | None
     entry_count: int
 
@@ -323,6 +329,18 @@ class BrowserCollectionTriggerResult(BaseModel):
     message: str
 
 
+class BrowserMemorySaveError(BaseModel):
+    """A ``memory_create``/``memory_update`` whose ``schedule`` failed validation,
+    sent back to the requesting connection (#2442).  The picker's custom RRULE box has
+    no client-side grammar check, so a rejected schedule must say why rather than
+    silently not saving."""
+
+    type: str = BROWSER_RESP_TYPE_MEMORY_SAVE_ERROR
+    action: Literal["create", "update"]
+    name: str
+    message: str
+
+
 class BrowserMemoryChanged(BaseModel):
     """Push notification: a memory was mutated.  ``name`` is the affected
     memory, or ``None`` for fan-out events not scoped to one memory."""
@@ -368,7 +386,11 @@ class BrowserMemoryUpdate(BaseModel):
     # maps to the ``memory.notify`` column server-side (#1557).
     published: bool | None = None
     extraction_prompt: str | None = None
-    # One RRULE (#1857); None = leave the schedule unchanged.
+    # One RRULE (#1857), or None for no schedule.  The addon's form always resends its
+    # full current picker state, so the handler applies this as a full replace (clearing
+    # any previous schedule/end-conditions when None) rather than a partial "leave
+    # unchanged" poke (#2442) — unlike the chat tool's ``collection_configure``, which
+    # does treat an omitted schedule as untouched.
     schedule: str | None = None
 
 
