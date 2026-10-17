@@ -35,6 +35,7 @@ import {
   dedupeDraws,
   type DrawTreeNode,
   directChildNodes,
+  expandedIdsAfterRebuild,
   isAnchored,
   moveToFront,
   toolCallIds,
@@ -506,8 +507,46 @@ function rerenderHostBody(host: PromptLogRun): void {
   if (!row) return;
   const panel = row.querySelector(".run-view-prompts") ?? row.querySelector(".run-prompts");
   if (!panel) return;
+  const snapshot = capturePanelState(panel as HTMLElement);
   panel.innerHTML = "";
   appendPromptsAndDraws(panel as HTMLElement, host.prompts, host.run_id, host.child_draws ?? []);
+  restorePanelState(panel as HTMLElement, snapshot);
+}
+
+interface PanelSnapshot {
+  expandedIds: Set<number>;
+  // The PAGE's own scroll, not the panel's: nothing under `.run-prompts`
+  // scrolls internally (the page itself does, via the browser's native
+  // document scroll) — capturing `panel.scrollTop` would always read 0.
+  scrollY: number;
+}
+
+/** Every row the code owner currently has open to read (by promptlog id) and
+ * the page's scroll position — what a live rebuild (`rerenderHostBody`) must
+ * carry across the wipe, so Penny making another call never collapses what
+ * he's watching mid-run or jumps the page out from under him. */
+function capturePanelState(panel: HTMLElement): PanelSnapshot {
+  const expandedIds = new Set<number>();
+  for (const el of Array.from(panel.querySelectorAll<HTMLElement>(".prompt.expanded"))) {
+    const id = Number(el.dataset.promptId);
+    if (!Number.isNaN(id)) expandedIds.add(id);
+  }
+  return { expandedIds, scrollY: window.scrollY };
+}
+
+/** Re-opens whatever `snapshot` captured, scoped to rows the rebuilt panel
+ * still carries (`expandedIdsAfterRebuild`), and restores the page's scroll
+ * position last — after the rows it might need to scroll to are back. */
+function restorePanelState(panel: HTMLElement, snapshot: PanelSnapshot): void {
+  const rows = Array.from(panel.querySelectorAll<HTMLElement>(".prompt"));
+  const currentIds = rows
+    .map((el) => Number(el.dataset.promptId))
+    .filter((id) => !Number.isNaN(id));
+  const keep = expandedIdsAfterRebuild(snapshot.expandedIds, currentIds);
+  for (const el of rows) {
+    if (keep.has(Number(el.dataset.promptId))) el.classList.add("expanded");
+  }
+  window.scrollTo(window.scrollX, snapshot.scrollY);
 }
 
 function handleRunOutcome(runId: string, outcome: RunOutcome, reason: string): void {
@@ -951,6 +990,10 @@ function createRunHeader(run: PromptLogRun): HTMLElement {
 function createPromptRow(prompt: PromptLogEntry, step: number | string): HTMLElement {
   const row = document.createElement("div");
   row.className = "prompt";
+  // Keyed by the promptlog id, not position — a live rebuild of the panel
+  // (`rerenderHostBody`) reads this to carry an expanded row's open state
+  // across the rebuild rather than collapsing it.
+  row.dataset.promptId = String(prompt.id);
 
   const header = document.createElement("div");
   header.className = "prompt-header";

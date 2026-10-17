@@ -12,6 +12,7 @@ import {
   byTimestamp,
   dedupeDraws,
   directChildNodes,
+  expandedIdsAfterRebuild,
   isAnchored,
   moveToFront,
   toolCallIds,
@@ -170,6 +171,21 @@ test("directChildNodes attaches a grandchild under its own parent draw", () => {
   assert.equal(tree[0].children[0].draw.id, 3);
   assert.equal(tree[0].children[0].stepIndex, null);
   assert.deepEqual(tree[0].children[0].children, []);
+});
+
+test("expandedIdsAfterRebuild keeps every previously-expanded id still present", () => {
+  const kept = expandedIdsAfterRebuild(new Set([1, 2, 3]), [1, 2, 3, 4]);
+  assert.deepEqual([...kept].sort(), [1, 2, 3]);
+});
+
+test("expandedIdsAfterRebuild drops a previously-expanded id the rebuild no longer carries", () => {
+  const kept = expandedIdsAfterRebuild(new Set([1, 2]), [2, 3]);
+  assert.deepEqual([...kept], [2]);
+});
+
+test("expandedIdsAfterRebuild is empty when nothing was expanded", () => {
+  const kept = expandedIdsAfterRebuild(new Set(), [1, 2]);
+  assert.equal(kept.size, 0);
 });
 
 test("directChildNodes nests a retry's children only under its first attempt", () => {

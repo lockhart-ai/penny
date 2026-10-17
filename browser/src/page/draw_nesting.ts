@@ -90,6 +90,26 @@ export function agentLabel(name: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/** The expanded-row ids to keep across a panel rebuild (#2461 review) — a
+ * live update must never collapse a row the code owner has open to read, so
+ * `page.ts`'s `rerenderHostBody` captures every expanded id before wiping a
+ * run's panel and restores this subset after rebuilding it.  Only the
+ * intersection with `currentIds` survives: a rebuild only ever ADDS rows in
+ * practice, but a stale id — one the rebuilt panel no longer carries at all —
+ * is dropped rather than kept forever, never re-applied to some unrelated
+ * row that happens to reuse a DOM position. */
+export function expandedIdsAfterRebuild(
+  previouslyExpanded: ReadonlySet<number>,
+  currentIds: Iterable<number>,
+): Set<number> {
+  const current = new Set(currentIds);
+  const kept = new Set<number>();
+  for (const id of previouslyExpanded) {
+    if (current.has(id)) kept.add(id);
+  }
+  return kept;
+}
+
 /** One draw, nested to any depth (#2435): the step of the PARENT's own rows it
  * anchors to (by index into whatever `ownRows` the caller resolved for that
  * parent — `null` for "directly under the parent as a whole", whether the
